@@ -1623,7 +1623,7 @@ in rec {
         ;
       coreGuarantees = interfaces.serviceManagement.guaranteeDeclarations;
       coreInterfaces =
-        interfaces.serviceManagement.declarations
+        interfaces.serviceManagement.moduleDeclarations
         // interfaces.networkPolicy.declarations
         // interfaces.bootPreparation.declarations
         // interfaces.kubernetesObjectManagement.declarations;

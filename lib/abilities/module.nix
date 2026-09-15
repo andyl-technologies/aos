@@ -589,12 +589,43 @@
     if config == null
     then {}
     else config.aos.abilities.interfaces;
+  configuredGuarantees =
+    if config == null
+    then {}
+    else config.aos.abilities.guarantees;
+  guaranteeForReference = context: reference:
+    if !builtins.isString reference
+    then throw "${context} must use an exact guarantee declaration alias."
+    else if builtins.hasAttr reference configuredGuarantees
+    then guaranteeIdentity configuredGuarantees.${reference}
+    else throw "${context} references absent guarantee declaration '${reference}'.";
+  semanticInterfaceDeclaration = context: declaration:
+    declaration
+    // {
+      guarantees =
+        builtins.map
+        (guarantee: guaranteeForReference "${context} guarantee" guarantee)
+        declaration.guarantees;
+      methods = builtins.mapAttrs (methodName: method:
+        method
+        // {
+          guarantees =
+            builtins.map
+            (guarantee: guaranteeForReference "${context} method '${methodName}' guarantee" guarantee)
+            method.guarantees;
+        })
+      declaration.methods;
+    };
+  interfaceIdentityForDeclaration = context: declaration:
+    interfaceIdentity (
+      interfaceDocumentFromDeclaration (semanticInterfaceDeclaration context declaration)
+    );
   interfaceDeclarationForReference = context: reference:
     if builtins.isString reference
     then configuredInterfaces.${reference} or (throw "${context} references absent interface declaration '${reference}'.")
     else let
       matches = builtins.filter (declaration:
-        interfaceIdentity (interfaceDocumentFromDeclaration declaration) == reference)
+        interfaceIdentityForDeclaration context declaration == reference)
       (builtins.attrValues configuredInterfaces);
     in
       if builtins.length matches == 1
@@ -609,7 +640,7 @@
     ) (builtins.attrValues configuredInterfaces);
   uniqueInterfaceDeclarations = declarations:
     builtins.attrValues (builtins.listToAttrs (builtins.map (declaration: let
-        identity = interfaceIdentity (interfaceDocumentFromDeclaration declaration);
+        identity = interfaceIdentityForDeclaration "interface declaration" declaration;
       in {
         name = builtins.toJSON identity;
         value = declaration;
@@ -617,7 +648,7 @@
       declarations));
   interfacesMatchingRequirement = requirement:
     uniqueInterfaceDeclarations (builtins.filter (declaration: let
-      identity = interfaceIdentity (interfaceDocumentFromDeclaration declaration);
+      identity = interfaceIdentityForDeclaration "requirement interface" declaration;
     in
       identity.name
       == requirement.interface
@@ -1103,14 +1134,23 @@
   in {
     declaration = name;
     package = implementation.package;
-    interface = interfaceIdentity (interfaceDocumentFromDeclaration declaration);
-    requirements =
-      builtins.mapAttrs (_: requirement: builtins.removeAttrs requirement ["description"])
-      implementation.requirements;
+    interface = interfaceIdentityForDeclaration "implementation '${name}' interface" declaration;
+    requirements = builtins.mapAttrs (requirementName: requirement:
+      (builtins.removeAttrs requirement ["description"])
+      // {
+        guarantees =
+          builtins.map
+          (guarantee: guaranteeForReference "implementation '${name}' requirement '${requirementName}' guarantee" guarantee)
+          requirement.guarantees;
+      })
+    implementation.requirements;
+    guarantees =
+      builtins.map
+      (guarantee: guaranteeForReference "implementation '${name}' guarantee" guarantee)
+      implementation.guarantees;
     inherit
       (implementation)
       methods
-      guarantees
       state_format
       artifact
       artifacts

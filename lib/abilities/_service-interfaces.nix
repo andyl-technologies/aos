@@ -133,6 +133,15 @@
     ${guaranteeAliases.linuxCondition.capability} = linuxConditionGuaranteeDeclarations.capability;
     ${guaranteeAliases.templateExactReuse} = templateInstanceGuaranteeDeclaration;
   };
+  guaranteeAliasFor = identity: let
+    matches =
+      builtins.filter
+      (alias: guaranteeIdentity guaranteeDeclarations.${alias} == identity)
+      (builtins.attrNames guaranteeDeclarations);
+  in
+    if builtins.length matches == 1
+    then builtins.head matches
+    else throw "canonical service guarantee identity does not resolve to one declaration alias";
 
   canonicalWithGuarantees = guarantees: interfaceOutputs: alias: name: description: requestType: observationType: methodsFor: let
     methods = methodsFor "aos.service.instance";
@@ -154,7 +163,8 @@
     };
     document = interfaceDocumentFromDeclaration declaration;
   in {
-    inherit alias declaration document requestType observationType guarantees;
+    inherit alias declaration document requestType observationType;
+    guarantees = builtins.map guaranteeAliasFor guarantees;
     identity = interfaceIdentity document;
     methods = builtins.attrNames methods;
   };
@@ -535,7 +545,7 @@
             "Stops the exact assembled service resource."
             stopSemantics;
         }))
-      // {guaranteesByKind.instance = templateInstanceGuarantee;};
+      // {guaranteesByKind.instance = guaranteeAliasFor templateInstanceGuarantee;};
     templateDefinition =
       canonicalWithGuarantees [] {service-resource = plannedServiceResourceOutput;}
       "service-template-definition" "aos.service.template-definition"
@@ -579,7 +589,7 @@
             "Observes the service's exact environment conditions."
             read;
         }))
-      // {guaranteesByKind = conditionGuarantees;};
+      // {guaranteesByKind = builtins.mapAttrs (_: guaranteeAliasFor) conditionGuarantees;};
     linuxConditions =
       (canonicalWithGuarantees (builtins.attrValues linuxConditionGuarantees) {}
         "linux-service-conditions" "aos.platform.linux.service-conditions"
@@ -592,7 +602,7 @@
             "Observes the Linux capability conditions applied to the service."
             read;
         }))
-      // {guaranteesByKind = linuxConditionGuarantees;};
+      // {guaranteesByKind = builtins.mapAttrs (_: guaranteeAliasFor) linuxConditionGuarantees;};
     instantiation =
       canonical "service-instantiation" "aos.service.instantiation"
       "Contributes singleton, static-template, or exact template-derived instance identity to a service resource."
@@ -1124,5 +1134,5 @@
   };
 in {
   interfaces = declarations;
-  inherit guaranteeAliases guaranteeDeclarations;
+  inherit guaranteeAliases guaranteeDeclarations guaranteeAliasFor;
 }

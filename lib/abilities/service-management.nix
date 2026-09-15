@@ -23,6 +23,17 @@
     inherit interfaceDocumentFromDeclaration interfaceIdentity;
     serviceInterfaces = interfaces;
   };
+  moduleDeclaration = interface:
+    interface.declaration
+    // {
+      guarantees = interface.guarantees or [];
+      methods = builtins.mapAttrs (_: method:
+        method
+        // {
+          guarantees = builtins.map interfaceCatalog.guaranteeAliasFor method.guarantees;
+        })
+      interface.declaration.methods;
+    };
 in {
   types = serviceTypes;
   inherit (interfaceCatalog) guaranteeAliases guaranteeDeclarations;
@@ -32,5 +43,11 @@ in {
       value = value.declaration;
     })
     (builtins.attrValues interfaces));
+  moduleDeclarations = builtins.listToAttrs (builtins.map (interface: {
+      name = interface.alias;
+      value = moduleDeclaration interface;
+    })
+    (builtins.attrValues interfaces));
+  guarantees = interfaceCatalog.guaranteeDeclarations;
   inherit (constructors) featureInterfaces forConfiguration forProducer forProducers forService instanceOf splitContribution structuredSource validate;
 }
