@@ -665,7 +665,7 @@ in {
       manifest_v1 = json.loads(runtime.succeed(
           f"cat /var/lib/profiles/system/gen-{generation_v1}/manifest.json"
       ))
-      assert manifest_v1["schema"] == "aos.config-manifest/v3", manifest_v1
+      assert manifest_v1["schema"] == "aos.config-manifest/v2", manifest_v1
       activation_input_v1 = manifest_v1["inputs"]["ability_activation"]
       assert activation_input_v1["required_features"] == [
           "abilities-v1",

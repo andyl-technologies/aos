@@ -161,10 +161,8 @@ pub struct ConfigManifest {
 impl ConfigManifest {
     /// Legacy manifest schema without runtime operator modules.
     pub const SCHEMA_V1: &'static str = "aos.config-manifest/v1";
-    /// Manifest schema binding a generation-pinned runtime module set.
+    /// Manifest schema binding generation-pinned transactional inputs.
     pub const SCHEMA_V2: &'static str = "aos.config-manifest/v2";
-    /// Manifest schema binding structured ability activation inputs.
-    pub const SCHEMA_V3: &'static str = "aos.config-manifest/v3";
     /// Default schema emitted for image and host-only manifests.
     pub const SCHEMA: &'static str = Self::SCHEMA_V1;
 
@@ -175,19 +173,11 @@ impl ConfigManifest {
     /// Returns an error for a wrong schema, malformed paths or modes, duplicate
     /// ordered records, inconsistent ABI/input data, or an invalid graph.
     pub fn validate(&self) -> Result<()> {
-        if !matches!(
-            self.schema.as_str(),
-            Self::SCHEMA_V1 | Self::SCHEMA_V2 | Self::SCHEMA_V3
-        ) {
+        if !matches!(self.schema.as_str(), Self::SCHEMA_V1 | Self::SCHEMA_V2) {
             bail!(
                 "unsupported config-manifest schema {:?} (expected {:?})",
                 self.schema,
-                format!(
-                    "{}, {}, or {}",
-                    Self::SCHEMA_V1,
-                    Self::SCHEMA_V2,
-                    Self::SCHEMA_V3
-                )
+                format!("{} or {}", Self::SCHEMA_V1, Self::SCHEMA_V2)
             );
         }
         match self.schema.as_str() {
@@ -196,30 +186,20 @@ impl ConfigManifest {
                     && self.inputs.expected_current_generation.is_none()
                     && self.inputs.ability_activation.is_none() => {}
             Self::SCHEMA_V1 => bail!("config-manifest/v1 cannot carry runtime transaction state"),
-            Self::SCHEMA_V2 if self.inputs.ability_activation.is_none() => {
-                let runtime = self
-                    .inputs
-                    .runtime_modules
-                    .as_ref()
-                    .context("config-manifest/v2 requires runtime_modules")?;
-                runtime.validate()?;
-                if self.inputs.expected_current_generation.is_none() {
-                    bail!("config-manifest/v2 requires expected_current_generation");
+            Self::SCHEMA_V2 => {
+                if self.inputs.runtime_modules.is_none() && self.inputs.ability_activation.is_none()
+                {
+                    bail!("config-manifest/v2 requires transactional inputs");
                 }
-            }
-            Self::SCHEMA_V2 => bail!("config-manifest/v2 cannot carry ability_activation"),
-            Self::SCHEMA_V3 => {
                 if let Some(runtime) = &self.inputs.runtime_modules {
                     runtime.validate()?;
                 }
                 if self.inputs.expected_current_generation.is_none() {
-                    bail!("config-manifest/v3 requires expected_current_generation");
+                    bail!("config-manifest/v2 requires expected_current_generation");
                 }
-                self.inputs
-                    .ability_activation
-                    .as_ref()
-                    .context("config-manifest/v3 requires ability_activation")?
-                    .validate(&self.package_outputs, &self.config_projections)?;
+                if let Some(activation) = &self.inputs.ability_activation {
+                    activation.validate(&self.package_outputs, &self.config_projections)?;
+                }
             }
             _ => unreachable!(),
         }
@@ -228,10 +208,10 @@ impl ConfigManifest {
                 .ability
                 .as_ref()
                 .is_some_and(|ability| ability.activation_mode == "structured-effects")
-        }) && (self.schema != Self::SCHEMA_V3 || self.inputs.ability_activation.is_none())
+        }) && (self.schema != Self::SCHEMA_V2 || self.inputs.ability_activation.is_none())
         {
             bail!(
-                "structured-effects package output requires config-manifest/v3 ability_activation"
+                "structured-effects package output requires config-manifest/v2 ability_activation"
             );
         }
         if self.module_abi != self.inputs.base_lib.module_abi {
@@ -590,7 +570,7 @@ impl ConfigManifest {
             ) {
                 bail!("packageOutputs.{package}.store_path is not owned by that package");
             }
-            validate_runtime_pin(package, pin, self.schema == Self::SCHEMA_V3)?;
+            validate_runtime_pin(package, pin, self.inputs.ability_activation.is_some())?;
             if let Some(artifact) = &pin.expose_artifact {
                 if !self.store_paths.contains(&artifact.store_path) {
                     bail!(
@@ -2889,7 +2869,7 @@ mod tests {
             document_sha256: format!("sha256:{}", "a".repeat(64)),
             document_size: 1,
         };
-        manifest.schema = ConfigManifest::SCHEMA_V3.to_string();
+        manifest.schema = ConfigManifest::SCHEMA_V2.to_string();
         manifest.inputs.expected_current_generation = Some(7);
         manifest.inputs.ability_activation = Some(AbilityActivationInput {
             schema: AbilityActivationInput::SCHEMA.to_string(),
@@ -2945,7 +2925,7 @@ mod tests {
             document_sha256: format!("sha256:{}", "a".repeat(64)),
             document_size: 1,
         };
-        manifest.schema = ConfigManifest::SCHEMA_V3.to_string();
+        manifest.schema = ConfigManifest::SCHEMA_V2.to_string();
         manifest.removed_etc = vec!["victim".to_string()];
         manifest.inputs.expected_current_generation = Some(7);
         manifest.inputs.ability_activation = Some(AbilityActivationInput {
@@ -3029,7 +3009,7 @@ mod tests {
         let error = manifest
             .validate()
             .expect_err("v1 must not ignore structured activation ownership");
-        assert!(error.to_string().contains("config-manifest/v3"));
+        assert!(error.to_string().contains("config-manifest/v2"));
 
         manifest.schema = ConfigManifest::SCHEMA_V2.to_string();
         manifest.inputs.runtime_modules = Some(RuntimeModulesInput {
@@ -3044,11 +3024,11 @@ mod tests {
         let error = manifest
             .validate()
             .expect_err("v2 must not ignore structured activation ownership");
-        assert!(error.to_string().contains("config-manifest/v3"));
+        assert!(error.to_string().contains("config-manifest/v2"));
     }
 
     #[test]
-    fn manifest_versions_reject_mixed_runtime_state() {
+    fn manifest_versions_require_transactional_state() {
         let mut manifest =
             manifest_from(r#"{ "schema": "aos.config-manifest/v1", "etc": {}, "jobScripts": {} }"#);
         manifest.inputs.expected_current_generation = Some(1);
@@ -3061,38 +3041,7 @@ mod tests {
                 .validate()
                 .unwrap_err()
                 .to_string()
-                .contains("runtime_modules")
-        );
-
-        manifest.inputs.ability_activation = Some(AbilityActivationInput {
-            schema: AbilityActivationInput::SCHEMA.to_string(),
-            required_features: Vec::new(),
-            desired_state: PinnedAbilitySidecar {
-                store_path: String::new(),
-                nar_hash: String::new(),
-                nar_size: 0,
-                references: Vec::new(),
-                document: String::new(),
-                document_sha256: String::new(),
-                document_size: 0,
-            },
-            authenticated_policy_set: PinnedAbilitySidecar {
-                store_path: String::new(),
-                nar_hash: String::new(),
-                nar_size: 0,
-                references: Vec::new(),
-                document: String::new(),
-                document_sha256: String::new(),
-                document_size: 0,
-            },
-            packages: Vec::new(),
-        });
-        assert!(
-            manifest
-                .validate()
-                .unwrap_err()
-                .to_string()
-                .contains("cannot carry ability_activation")
+                .contains("transactional inputs")
         );
     }
 

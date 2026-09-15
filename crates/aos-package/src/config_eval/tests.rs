@@ -934,7 +934,7 @@ fn structured_runtime_retains_config_bytes_without_legacy_unit_actions() {
         .extend(serde_json::Map::from_iter([
             (
                 "schema".to_string(),
-                serde_json::json!(super::materialize::ConfigManifest::SCHEMA_V3),
+                serde_json::json!(super::materialize::ConfigManifest::SCHEMA_V2),
             ),
             ("units".to_string(), serde_json::json!({})),
             ("jobScripts".to_string(), serde_json::json!({})),

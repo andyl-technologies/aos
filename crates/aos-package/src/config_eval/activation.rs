@@ -1734,7 +1734,7 @@ mod tests {
     #[test]
     fn direct_activation_rejects_structured_effects_before_generation_mutation() {
         let (_root, params, mut manifest) = setup();
-        manifest["schema"] = json!(ConfigManifest::SCHEMA_V3);
+        manifest["schema"] = json!(ConfigManifest::SCHEMA_V2);
         manifest["inputs"]["expected_current_generation"] = json!(1);
         manifest["inputs"]["ability_activation"] = json!({
             "schema": "aos.ability.activation-input/v1",
