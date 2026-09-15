@@ -13,7 +13,7 @@
     },
     {
       "blockers": [],
-      "evidence": ["checks.fleet.ability-native-activation"],
+      "evidence": ["checks.fleet.runtime-module-composition"],
       "id": "systemd-manager/host",
       "interface_descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
       "interface_name": "aos.systemd-manager",

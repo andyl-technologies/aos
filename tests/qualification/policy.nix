@@ -282,7 +282,7 @@ in
     "disabled-production-executor-has-no-crucible-closure"
   ];
   assert abilityRequirements.ability-native-activation.regressions
-  == ["checks.fleet.ability-native-activation"];
+  == ["checks.fleet.runtime-module-composition"];
   assert abilityRequirements.ability-native-activation.checks
   == [
     "authenticated-package-policy-and-operator-authority"
@@ -342,7 +342,7 @@ in
   ];
   assert abilityRequirements.ability-native-adapter-matrix.regressions
   == [
-    "checks.fleet.ability-native-activation"
+    "checks.fleet.runtime-module-composition"
     "checks.fleet.ability-native-foreground-container"
     "checks.fleet.ability-native-image-rollout"
     "checks.fleet.k3s-control-plane-worker"
@@ -415,7 +415,6 @@ in
   assert builtins.attrNames releaseExecutor.passthru.qualification.scenarios
   == [
     "ability-crucible-baseline"
-    "ability-native-activation"
     "ability-native-adapter-matrix"
     "ability-native-image-rollout"
     "ability-native-kubernetes"

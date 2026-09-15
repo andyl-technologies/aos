@@ -71,7 +71,7 @@
     ];
   };
   requiredRegressions = {
-    ability-native-activation = ["checks.fleet.ability-native-activation"];
+    ability-native-activation = ["checks.fleet.runtime-module-composition"];
     ability-native-image-rollout = ["checks.fleet.ability-native-image-rollout"];
     ability-native-kubernetes = ["checks.fleet.k3s-control-plane-worker"];
     ability-native-recovery = [

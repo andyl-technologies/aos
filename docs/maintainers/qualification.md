@@ -618,7 +618,7 @@ predecessor dimensions. The verifier rejects an observation digest reused by
 any other postcondition or cell in the matrix.
 
 The established scenario `regressions` fields point to
-`checks.fleet.ability-native-activation`,
+`checks.fleet.runtime-module-composition`,
 `checks.fleet.ability-native-image-rollout`,
 `checks.fleet.k3s-control-plane-worker`,
 `checks.fleet.ability-native-power-loss`. Those derivations establish
@@ -635,8 +635,10 @@ exercises object replacement and removal. Release admission consumes fresh
 evidence through the ordinary report scenario; it does not patch a fabricated
 package companion to impersonate the finalized K3s or systemd artifacts.
 
-The x86 release executor maps the implemented native policy IDs to ability
-scenarios for activation, adapter matrix, image rollout, and recovery.
+The x86 release executor maps the remaining implemented native policy IDs to
+ability scenarios for the Crucible baseline, adapter matrix, image rollout,
+and recovery. Activation uses the ordinary report scenario while its source
+regression runs the production package-module and APM configuration path.
 Each mapped scenario selects the exact finalized server QCOW2,
 slot-A UKI, metadata, unsigned assembly, and finalized-set objects from the
 downloaded release case.
