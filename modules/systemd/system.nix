@@ -80,6 +80,7 @@ in {
     packages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [];
+      contributable = true;
       description = ''
         AOS packages that ship systemd unit files under
         `$pkg/lib/systemd/system/` (or `$pkg/etc/systemd/system/`).

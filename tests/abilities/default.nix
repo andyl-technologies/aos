@@ -474,6 +474,9 @@
   compositionDriver = import ./composition-driver.nix {
     inherit lib;
   };
+  systemdPackagedUnit = import ./systemd-packaged-unit.nix {
+    inherit lib;
+  };
   smokeAbilityProjection = pkgs.ability-package-smoke.abilities;
   smokeArtifactSelectors = smokeAbilityProjection._artifact_outputs.selectors;
   oversizedFallback = builtins.tryEval (builtins.deepSeq (
@@ -879,6 +882,7 @@ in
   assert managedIdentityAllocation;
   assert systemServiceModules;
   assert compositionDriver;
+   assert systemdPackagedUnit;
   assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
   assert builtins.length (builtins.attrNames smokeAbilityProjection.requirementTemplates) == 1;

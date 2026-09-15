@@ -41,6 +41,7 @@ members = [
     "aos-kubernetes-provider",
     "aos-kernel-tunable-provider",
     "aos-nix-store-provider",
+    "aos-systemd-provider",
     "crucible-cas",
     "crucible-sim",
     "crucible-assert",

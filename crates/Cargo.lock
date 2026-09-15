@@ -994,6 +994,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-systemd-provider"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-ability-model",
+ "aos-contract",
+ "aos-provider-protocol",
+ "aos-systemd",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "arc-swap"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
