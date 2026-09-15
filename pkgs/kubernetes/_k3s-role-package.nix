@@ -2,6 +2,7 @@
   lib,
   mkDerivation,
   k3s,
+  aos-kubernetes-provider,
   containerd,
   runc,
   cni-plugins,
@@ -14,7 +15,6 @@
   util-linux,
   kmod,
   coreutils,
-  jq,
   writeShellScriptBin,
 }:
 let
@@ -33,7 +33,6 @@ let
       util-linux
       kmod
       coreutils
-      jq
       writeShellScriptBin
       ;
   };
@@ -45,14 +44,13 @@ in
 }:
 let
   roleSpec = (import ./_k3s-config/roles.nix).${pname};
-  addonRenderer = common.addonRenderer pname roleSpec.role;
-  launcher = common.launcher pname roleSpec.command addonRenderer;
+  launcher = common.launcher pname roleSpec.command;
 in
 mkDerivation {
   inherit pname;
   inherit (k3s) version;
   src = null;
-  runtimeDeps = common.runtimePath;
+  runtimeDeps = common.runtimePath ++ [ aos-kubernetes-provider ];
 
   abilities = ./_k3s-config/module.nix;
 
@@ -60,8 +58,17 @@ mkDerivation {
     {
       name = "install";
       script = ''
-        mkdir -p "$out/bin" "$out/share/${pname}"
+        mkdir -p "$out/bin" "$out/libexec" "$out/share/${pname}"
         ln -s ${launcher}/bin/k3s-${pname}-start "$out/bin/k3s-role-start"
+        ln -s ${k3s}/bin/k3s "$out/libexec/k3s"
+        ln -s ${aos-kubernetes-provider}/bin/aos-kubernetes-provider \
+          "$out/libexec/aos-kubernetes-provider"
+        cp ${./_k3s-config/object-provider.nix} \
+          "$out/share/${pname}/object-provider.nix"
+        cp ${./_k3s-config/configuration-provider.nix} \
+          "$out/share/${pname}/configuration-provider.nix"
+        cp ${./_k3s-config/configuration-interface.nix} \
+          "$out/share/${pname}/configuration-interface.nix"
         printf '%s\n' ${lib.escapeShellArg pname} > "$out/share/${pname}/payload.txt"
       '';
     }

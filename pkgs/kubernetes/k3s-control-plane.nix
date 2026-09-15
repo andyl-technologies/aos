@@ -2,6 +2,7 @@
   lib,
   mkDerivation,
   k3s,
+  aos-kubernetes-provider,
   containerd,
   runc,
   cni-plugins,
@@ -14,7 +15,6 @@
   util-linux,
   kmod,
   coreutils,
-  jq,
   writeShellScriptBin,
 }:
 let
@@ -23,6 +23,7 @@ let
       lib
       mkDerivation
       k3s
+      aos-kubernetes-provider
       containerd
       runc
       cni-plugins
@@ -35,7 +36,6 @@ let
       util-linux
       kmod
       coreutils
-      jq
       writeShellScriptBin
       ;
   };

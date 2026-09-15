@@ -5,269 +5,196 @@
   packageName,
   packageVersion,
   ...
-}:
-let
-  inherit (lib) mkIf mkOption types;
+}: let
+  inherit (lib) mkIf mkOption;
+  abilityTypes = lib.abilities.types;
 
   roleSpec = (import ./roles.nix).${packageName};
   package = packageName;
   role = roleSpec.role;
   cfg = config.k3s;
 
-  nonEmptyStr = types.strMatching ".+";
-  nullableNonEmptyStr = types.nullOr nonEmptyStr;
+  nonEmptyStr = abilityTypes.refined {
+    name = "non-empty K3s string";
+    description = "a bounded non-empty K3s configuration value";
+    type = abilityTypes.string {
+      maxLength = 4096;
+      syntax = null;
+    };
+    predicate = value: builtins.stringLength value > 0;
+  };
+  nullableNonEmptyStr = abilityTypes.optional nonEmptyStr;
   labelNameRegex = "([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?";
   labelValueRegex = "([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)?";
   taintRegex = "${labelNameRegex}(=${labelValueRegex})?:(NoSchedule|PreferNoSchedule|NoExecute)";
-  resourceNameRegex = "[a-z0-9]([-a-z0-9.]*[a-z0-9])?";
-  resourceApiVersionRegex = "[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[A-Za-z0-9]([-A-Za-z0-9.]*[A-Za-z0-9])?)?";
-  resourceKindRegex = "[A-Z][A-Za-z0-9]*";
-  resourceNameType = types.strMatching resourceNameRegex;
-  canonicalJsonValue =
-    value:
-    let
-      valueType = builtins.typeOf value;
-    in
-    if
-      builtins.elem valueType [
-        "null"
-        "bool"
-        "string"
-        "int"
-      ]
-    then
-      true
-    else if valueType == "list" then
-      builtins.all canonicalJsonValue value
-    else if valueType == "set" then
-      builtins.all canonicalJsonValue (builtins.attrValues value)
-    else
-      false;
-  canonicalJsonObjectType = types.attrs // {
-    description = "integer-profile JSON object";
-    merge =
-      location: definitions:
-      let
-        merged = types.attrs.merge location definitions;
-      in
-      if canonicalJsonValue merged then
-        merged
-      else
-        throw "The option '${builtins.concatStringsSep "." location}' must contain only canonical integer-profile JSON values.";
+  secretReference = abilityTypes.refined {
+    name = "K3s credential reference";
+    description = "an opaque supported K3s credential reference";
+    type = abilityTypes.runtimeString;
+    predicate = value:
+      builtins.match "(tpm2-credstore|desired-toml|system-credential)(:[A-Za-z0-9_.-]+)?" value != null;
   };
-  secretRefType = lib.serviceTypes.namedSecretRef;
-  cniIntegrationType = types.submodule (
-    { ... }: {
-      config._module.strict = true;
-      options = {
-        disableFlannel = mkOption {
-          type = types.bool;
-          default = false;
-          description = "Disable the built-in Flannel implementation for this CNI integration.";
-        };
-        disableNetworkPolicy = mkOption {
-          type = types.bool;
-          default = false;
-          description = "Disable the built-in network-policy controller for this CNI integration.";
-        };
-        disableKubeProxy = mkOption {
-          type = types.bool;
-          default = false;
-          description = "Disable kube-proxy for this CNI integration.";
-        };
-      };
-    }
-  );
-  csiIntegrationType = types.submodule (
-    { ... }: {
-      config._module.strict = true;
-      options.nodeLabels = mkOption {
-        type = types.attrsOf types.str;
-        default = { };
-        description = "Node labels required to select nodes for this CSI integration.";
-      };
-    }
-  );
-  resourceType = types.submodule (
-    { ... }: {
-      config._module.strict = true;
-      options = {
-        apiVersion = mkOption {
-          type = nonEmptyStr;
-          description = "Kubernetes API group and version for the submitted object.";
-        };
-        kind = mkOption {
-          type = nonEmptyStr;
-          description = "Kubernetes kind for the submitted object.";
-        };
-        name = mkOption {
-          type = resourceNameType;
-          description = "Kubernetes metadata.name for the submitted object.";
-        };
-        namespace = mkOption {
-          type = types.nullOr resourceNameType;
-          default = null;
-          description = "Kubernetes namespace, or null for a cluster-scoped object.";
-        };
-        spec = mkOption {
-          type = canonicalJsonObjectType;
-          description = "Typed integer-profile Kubernetes object spec serialized without parsing package-authored YAML.";
-        };
-        priority = mkOption {
-          type = types.addCheck types.int (value: value >= 0 && value <= 999);
-          default = 500;
-          description = "Stable ordering priority used before the resource name.";
-        };
-      };
-    }
-  );
-  resourceGrantType = types.submodule (
-    { ... }: {
-      config._module.strict = true;
-      options = {
-        contribution = mkOption {
-          type = resourceNameType;
-          description = "Authorized named contribution below k3s.integrations.resources.";
-        };
-        apiVersion = mkOption {
-          type = nonEmptyStr;
-          description = "Exact authorized Kubernetes API version.";
-        };
-        kind = mkOption {
-          type = nonEmptyStr;
-          description = "Exact authorized Kubernetes kind.";
-        };
-        name = mkOption {
-          type = resourceNameType;
-          description = "Exact authorized Kubernetes object name.";
-        };
-        namespace = mkOption {
-          type = types.nullOr resourceNameType;
-          default = null;
-          description = "Exact authorized namespace, or null for cluster scope.";
-        };
-      };
-    }
-  );
-
-  cniIntegrations = builtins.attrValues cfg.integrations.cni;
-  csiIntegrations = builtins.attrValues cfg.integrations.csi;
-  anyCni = field: builtins.any (integration: integration.${field}) cniIntegrations;
-  integrationLabels = builtins.foldl' (
-    labels: integration: labels // integration.nodeLabels
-  ) { } csiIntegrations;
-  nodeLabels = cfg.node.labels // integrationLabels;
-  resourceNames = builtins.attrNames cfg.integrations.resources;
-  renderedResources =
-    builtins.sort
-      (
-        left: right:
-        if left.priority == right.priority then left.name < right.name else left.priority < right.priority
-      )
-      (
-        lib.mapAttrsToList (
-          name: resource:
-          let
-            object = {
-              inherit (resource) apiVersion kind spec;
-              metadata = {
-                inherit (resource) name;
-              }
-              // lib.optionalAttrs (resource.namespace != null) {
-                inherit (resource) namespace;
-              };
-            };
-          in
-          {
-            inherit name object;
-            inherit (resource) priority;
-            revision = "sha256:${builtins.hashString "sha256" (builtins.toJSON object)}";
-          }
-        ) cfg.integrations.resources
-      );
-  resourceIdentities = map (
-    resource:
-    builtins.toJSON [
-      resource.object.apiVersion
-      resource.object.kind
-      (resource.object.metadata.namespace or null)
-      resource.object.metadata.name
-    ]
-  ) renderedResources;
-  resourceAuthorized =
-    contribution: resource:
-    builtins.any (
-      grant:
-      grant.contribution == contribution
-      && grant.apiVersion == resource.apiVersion
-      && grant.kind == resource.kind
-      && grant.name == resource.name
-      && grant.namespace == resource.namespace
-    ) cfg.integrations.resourceGrants;
-  validResourceShapes = builtins.all (
-    resource:
-    builtins.match resourceApiVersionRegex resource.apiVersion != null
-    && builtins.match resourceKindRegex resource.kind != null
-  ) (builtins.attrValues cfg.integrations.resources);
-  resourcesAuthorized = builtins.all (
-    contribution: resourceAuthorized contribution cfg.integrations.resources.${contribution}
-  ) resourceNames;
-  addonPayload = {
-    schema = "aos.kubernetes-resources/v1";
-    inherit role;
-    resources = renderedResources;
+  secretRefType = abilityTypes.record {
+    fields.ref = {
+      type = secretReference;
+      description = "Opaque reference to the cluster token.";
+    };
   };
-  addonRevision = "sha256:${builtins.hashString "sha256" (builtins.toJSON addonPayload)}";
+  objectContract = lib.abilities.interfaces.kubernetesObjectManagement;
+  configurationContract = import ./configuration-interface.nix {inherit lib;};
+  serverRole = role != "worker";
+  labelValue = abilityTypes.refined {
+    name = "Kubernetes label value";
+    description = "a bounded Kubernetes label value";
+    type = abilityTypes.string {
+      maxLength = 253;
+      syntax = null;
+    };
+    predicate = value: builtins.match labelValueRegex value != null;
+  };
+  labelsType = abilityTypes.map {
+    keyMaxLength = 253;
+    keySyntax = null;
+    maxEntries = 256;
+    value = labelValue;
+  };
+  nodeLabels = cfg.node.labels;
   validLabels = builtins.all (
     name:
-    builtins.match labelNameRegex name != null
-    && builtins.match labelValueRegex nodeLabels.${name} != null
+      builtins.match labelNameRegex name
+      != null
+      && builtins.match labelValueRegex nodeLabels.${name} != null
   ) (builtins.attrNames nodeLabels);
-  renderAssignments =
-    values:
+  renderAssignments = values:
     builtins.mapAttrs (_: value: builtins.toString value) (
-      lib.filterAttrs (_: value: value != null && value != [ ] && value != { }) values
+      lib.filterAttrs (_: value: value != null && value != [] && value != {}) values
     );
   commaList = values: lib.concatStringsSep "," values;
-  labelList = values: commaList (lib.mapAttrsToList (name: value: "${name}=${value}") values);
-  effectiveFlannelBackend =
-    if builtins.any (integration: integration.disableFlannel) cniIntegrations then
-      "none"
-    else
-      cfg.networking.flannelBackend;
   desiredEnv = renderAssignments {
-    K3S_ENABLED = if cfg.enable then "true" else "false";
     K3S_URL = cfg.serverUrl;
     K3S_NODE_NAME = cfg.node.name;
     K3S_NODE_IP = cfg.node.ip;
     K3S_NODE_EXTERNAL_IP = cfg.node.externalIp;
-    K3S_NODE_LABEL = if nodeLabels == { } then null else labelList nodeLabels;
-    K3S_NODE_TAINT = if cfg.node.taints == [ ] then null else commaList cfg.node.taints;
-    K3S_FLANNEL_BACKEND = effectiveFlannelBackend;
+    K3S_NODE_TAINT =
+      if cfg.node.taints == []
+      then null
+      else commaList cfg.node.taints;
     K3S_FLANNEL_IFACE = cfg.networking.flannelInterface;
     K3S_CLUSTER_CIDR = cfg.networking.clusterCidr;
     K3S_SERVICE_CIDR = cfg.networking.serviceCidr;
     K3S_CLUSTER_DNS = cfg.networking.clusterDns;
-    K3S_DISABLE_NETWORK_POLICY =
-      if cfg.networking.disableNetworkPolicy || anyCni "disableNetworkPolicy" then "true" else null;
-    K3S_DISABLE_KUBE_PROXY =
-      if cfg.networking.disableKubeProxy || anyCni "disableKubeProxy" then "true" else null;
-    K3S_CLUSTER_INIT = if cfg.server.clusterInit then "true" else null;
+    K3S_CLUSTER_INIT =
+      if cfg.server.clusterInit
+      then "true"
+      else null;
     K3S_DISABLE =
-      if cfg.server.disableComponents == [ ] then null else commaList cfg.server.disableComponents;
-    K3S_TLS_SAN = if cfg.server.tlsSans == [ ] then null else commaList cfg.server.tlsSans;
+      if cfg.server.disableComponents == []
+      then null
+      else commaList cfg.server.disableComponents;
+    K3S_TLS_SAN =
+      if cfg.server.tlsSans == []
+      then null
+      else commaList cfg.server.tlsSans;
     K3S_KUBECONFIG_MODE = cfg.kubeconfigMode;
   };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  networkPolicy = lib.abilities.interfaces.networkPolicy;
   serviceTypes = serviceManagement.types;
   resultOf = lib.abilities.resultOf;
-  producer =
-    key: interface: parameters:
+  objectArtifact = lib.abilities.packageOutput {};
+  objectImplementations = lib.optionalAttrs serverRole {
+    ${objectContract.controller.alias} = {
+      description = "Converges exact authorized Kubernetes objects through the packaged K3s API client.";
+      interface = objectContract.controller.identity;
+      artifact = objectArtifact;
+      methods = objectContract.controller.methods;
+      guarantees = [];
+      providerModule = {
+        artifact = objectArtifact;
+        path = "share/${packageName}/object-provider.nix";
+      };
+      handlerDescriptor = {
+        artifact = objectArtifact;
+        entryPoint = "libexec/aos-kubernetes-provider";
+        arguments = objectContract.controller.requestType;
+        result = objectContract.controller.observationType;
+      };
+      desiredType = objectContract.controller.realizationType;
+      requiredFeatures = [];
+    };
+    ${objectContract.contribution.alias} = {
+      description = "Aggregates authorized package-owned Kubernetes objects into the K3s object set.";
+      interface = objectContract.contribution.identity;
+      artifact = objectArtifact;
+      methods = objectContract.contribution.methods;
+      guarantees = [];
+      providerModule = {
+        artifact = objectArtifact;
+        path = "share/${packageName}/object-provider.nix";
+      };
+      handlerDescriptor = {
+        artifact = objectArtifact;
+        entryPoint = "libexec/aos-kubernetes-provider";
+        arguments = objectContract.contribution.requestType;
+        result = objectContract.contribution.observationType;
+      };
+      desiredType = objectContract.controller.realizationType;
+      requiredFeatures = [];
+    };
+  };
+  configurationInterfaces = {
+    ${configurationContract.controller.alias} = configurationContract.controller.declaration;
+    ${configurationContract.contribution.alias} = configurationContract.contribution.declaration;
+  };
+  configurationImplementations = {
+    ${configurationContract.controller.alias} = {
+      description = "Materializes one exact K3s configuration assembled from authorized contributions.";
+      interface = configurationContract.controller.alias;
+      artifact = objectArtifact;
+      methods = configurationContract.controller.methods;
+      guarantees = [];
+      providerModule = {
+        artifact = objectArtifact;
+        path = "share/${packageName}/configuration-provider.nix";
+      };
+      handlerDescriptor = {
+        artifact = objectArtifact;
+        entryPoint = "libexec/aos-kubernetes-provider";
+        arguments = configurationContract.controller.requestType;
+        result = configurationContract.controller.observationType;
+      };
+      desiredType = configurationContract.controller.realizationType;
+      requiredFeatures = [];
+    };
+    ${configurationContract.contribution.alias} = {
+      description = "Merges authorized package settings into the K3s runtime configuration.";
+      interface = configurationContract.contribution.alias;
+      artifact = objectArtifact;
+      methods = configurationContract.contribution.methods;
+      guarantees = [];
+      providerModule = {
+        artifact = objectArtifact;
+        path = "share/${packageName}/configuration-provider.nix";
+      };
+      handlerDescriptor = {
+        artifact = objectArtifact;
+        entryPoint = "libexec/aos-kubernetes-provider";
+        arguments = configurationContract.contribution.requestType;
+        result = configurationContract.contribution.observationType;
+      };
+      desiredType = configurationContract.controller.realizationType;
+      requiredFeatures = [];
+    };
+  };
+  producer = key: interface: parameters:
     serviceManagement.forProducer {
       consumerInstance = "service";
       inherit key interface parameters;
     };
-  tokenName = if cfg.token == null then null else lib.last (lib.splitString ":" cfg.token.ref);
+  tokenName =
+    if cfg.token == null
+    then null
+    else lib.last (lib.splitString ":" cfg.token.ref);
   tokenSource = serviceManagement.forProducers {
     consumerInstance = "service";
     interface = serviceManagement.interfaces.namedCredential;
@@ -291,18 +218,6 @@ let
       };
     };
   };
-  addonsConfiguration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "service";
-    declaration = {
-      name = "addons";
-      source = {
-        kind = "inline-text";
-        content = builtins.toJSON (addonPayload // { revision = addonRevision; });
-      };
-      mode = "0444";
-    };
-  };
   network = producer "network" serviceManagement.interfaces.networkReadiness {
     scope = "configured-connectivity";
     address_families = [
@@ -310,6 +225,17 @@ let
       "ipv6"
     ];
   };
+  ingressPolicy = producer "ingress-policy" networkPolicy.interfaces.ingress {
+    endpoints = roleSpec.ingressEndpoints;
+    prerequisites = [];
+  };
+  forwardingPolicy = producer "forwarding-policy" networkPolicy.interfaces.forwarding {
+    policy = "accept";
+    prerequisites = [];
+  };
+  policyReadiness =
+    [(resultOf "ingress-policy" "readiness-resource")]
+    ++ lib.optional roleSpec.acceptForwardedTraffic (resultOf "forwarding-policy" "readiness-resource");
   modules = producer "kernel-modules" serviceManagement.interfaces.kernelModules {
     modules = roleSpec.kernelModules;
     required = true;
@@ -323,25 +249,25 @@ let
       lifecycle = {
         description = "${roleSpec.description} (${packageName} ${packageVersion})";
         execution_model = "foreground";
-        environment_files = [ ];
-        condition = [ ];
-        pre_start = [ ];
+        environment_files = [];
+        condition = [];
+        pre_start = [];
         start = [
           {
             executable = {
-              artifact = lib.abilities.packageOutput { };
+              artifact = lib.abilities.packageOutput {};
               entry_point = "bin/k3s-role-start";
               arguments = [
-                (resultOf "addons" "execution-path")
+                (resultOf "configuration-base" "execution-path")
                 (resultOf "token" "credential-path")
               ];
             };
             ignore_failure = false;
           }
         ];
-        post_start = [ ];
-        stop = [ ];
-        post_stop = [ ];
+        post_start = [];
+        stop = [];
+        post_stop = [];
         restart = "always";
         restart_delay_millis = 5000;
         remain_after_exit = false;
@@ -350,13 +276,21 @@ let
         stop_timeout_millis = 90000;
       };
       dependencies = {
-        after = [
-          (resultOf "network" "readiness-resource")
-          (resultOf "kernel-modules" "readiness-resource")
-        ];
-        before = [ ];
-        requires = [ (resultOf "kernel-modules" "readiness-resource") ];
-        wants = [ (resultOf "network" "readiness-resource") ];
+        after =
+          [
+            (resultOf "network" "readiness-resource")
+            (resultOf "kernel-modules" "readiness-resource")
+            (resultOf "configuration-base" "readiness-resource")
+          ]
+          ++ policyReadiness;
+        before = [];
+        requires =
+          [
+            (resultOf "kernel-modules" "readiness-resource")
+            (resultOf "configuration-base" "readiness-resource")
+          ]
+          ++ policyReadiness;
+        wants = [(resultOf "network" "readiness-resource")];
       };
       supervision = {
         startup_protocol = "notification";
@@ -377,7 +311,7 @@ let
       };
       environment = {
         variables = desiredEnv;
-        search_path = map (package: lib.abilities.packageOutput { inherit package; }) [
+        search_path = map (package: lib.abilities.packageOutput {inherit package;}) [
           "k3s"
           "containerd"
           "runc"
@@ -391,22 +325,28 @@ let
           "util-linux"
           "kmod"
           "coreutils"
-          "jq"
         ];
       };
-      directories.managed = map (path: {
-        inherit path;
-        purpose = "state";
-        mode = "0755";
-        retention = "persistent";
-      }) roleSpec.stateDirectories;
-      configuration.views = [
-        {
-          name = "addons";
-          source = resultOf "addons" "execution-path";
-          optional = false;
-        }
-      ];
+      directories.managed =
+        map
+        (path: {
+          inherit path;
+          purpose = "state";
+          mode = "0755";
+          retention = "persistent";
+        })
+        roleSpec.stateDirectories
+        ++ map
+        (path: {
+          inherit path;
+          purpose = "configuration";
+          mode = "0755";
+          retention = "persistent";
+        }) [
+          "rancher/k3s"
+          "rancher/node"
+        ];
+      configuration.views = [];
       credentials.views = [
         {
           name = "token";
@@ -418,11 +358,11 @@ let
       logging = {
         standard_output = "structured";
         standard_error = "structured";
-        directories = [ ];
+        directories = [];
         directory_mode = "0750";
       };
       identity = {
-        supplementary_groups = [ ];
+        supplementary_groups = [];
         ephemeral = false;
         file_creation_mask = "0022";
       };
@@ -433,16 +373,21 @@ let
         process_visibility = "host";
         termination_scope = "main-process";
         temporary_directory = "shared";
-        devices = [ ];
-        host_paths = map (entry: {
-          source = entry.path;
-          mode = if entry.mode == "rw" then "read-write" else "read-only";
-        }) roleSpec.hostPaths;
+        devices = [];
+        host_paths =
+          map (entry: {
+            source = entry.path;
+            mode =
+              if entry.mode == "rw"
+              then "read-write"
+              else "read-only";
+          })
+          roleSpec.hostPaths;
         permit_core_dumps = true;
       };
       linux_isolation = {
         allow_privilege_escalation = true;
-        ambient_capabilities = [ ];
+        ambient_capabilities = [];
         capability_bounds = {
           kind = "restricted";
           capabilities = [
@@ -463,7 +408,7 @@ let
         kernel_tunable_access = true;
         lock_personality = false;
         memory_write_execute = true;
-        namespace_isolation = [ ];
+        namespace_isolation = [];
         network_address_families = [
           "ipv4"
           "ipv6"
@@ -475,9 +420,9 @@ let
         permit_realtime = true;
         permit_suid_sgid = true;
         process_visibility = "all";
-        syscall_architectures = [ ];
-        syscall_allow = [ ];
-        syscall_deny = [ ];
+        syscall_architectures = [];
+        syscall_allow = [];
+        syscall_deny = [];
         syscall_profile = "privileged";
         user_namespace_ownership = "none";
       };
@@ -485,45 +430,77 @@ let
         baseline_access = "standard-runtime-devices";
         rules =
           map
-            (class: {
-              selector = {
-                kind = "class";
-                device_type = "character";
-                inherit class;
-              };
-              read = true;
-              write = true;
-              create_node = false;
-            })
-            [
-              "fuse"
-              "kernel-message"
-              "network-tunnel"
-            ];
+          (class: {
+            selector = {
+              kind = "class";
+              device_type = "character";
+              inherit class;
+            };
+            read = true;
+            write = true;
+            create_node = false;
+          })
+          [
+            "fuse"
+            "kernel-message"
+            "network-tunnel"
+          ];
       };
     };
   };
-  fragments = [
-    network
-    modules
-    addonsConfiguration
-    tokenSource
-    tokenDelivery
-    service
-  ];
+  objectController = serviceManagement.forProducer {
+    consumerInstance = "service";
+    key = "cluster-objects";
+    interface = {
+      alias = objectContract.controller.alias;
+      declaration = objectContract.controller.declaration;
+    };
+    parameters.cluster.prerequisites = [
+      (resultOf "lifecycle" "retained-resource")
+    ];
+    parameters.contributions = {};
+  };
+  configurationController = serviceManagement.forProducer {
+    consumerInstance = "service";
+    key = "configuration-base";
+    interface = {
+      alias = configurationContract.controller.alias;
+      declaration = configurationContract.controller.declaration;
+    };
+    parameters = {
+      base = {
+        flannel_backend = cfg.networking.flannelBackend;
+        disable_network_policy = cfg.networking.disableNetworkPolicy;
+        disable_kube_proxy = cfg.networking.disableKubeProxy;
+        node_labels = nodeLabels;
+        prerequisites = [];
+      };
+      contributions = {};
+    };
+  };
+  fragments =
+    [
+      network
+      modules
+      ingressPolicy
+      tokenSource
+      tokenDelivery
+      service
+      configurationController
+    ]
+    ++ lib.optional roleSpec.acceptForwardedTraffic forwardingPolicy
+    ++ lib.optional serverRole objectController;
   contributions = map serviceManagement.splitContribution fragments;
-
-in
-{
+in {
   options.k3s = {
     enable = mkOption {
-      type = types.bool;
+      type = abilityTypes.boolean;
       default = false;
       description = "Enable the selected k3s role.";
     };
 
     role = mkOption {
-      type = types.enum [
+      type = abilityTypes.enum [
         "worker"
         "control-plane"
         "combined"
@@ -539,7 +516,7 @@ in
     };
 
     token = mkOption {
-      type = types.nullOr secretRefType;
+      type = abilityTypes.optional secretRefType;
       default = null;
       description = "Opaque reference to the cluster token delivered as an opaque service credential.";
     };
@@ -561,20 +538,25 @@ in
         description = "External IP address advertised for the node.";
       };
       labels = mkOption {
-        type = types.attrsOf types.str;
-        default = { };
+        type = labelsType;
+        default = {};
         description = "Labels registered on the node.";
       };
       taints = mkOption {
-        type = types.listOf nonEmptyStr;
-        default = [ ];
+        type = abilityTypes.list {
+          element = nonEmptyStr;
+          maxItems = 256;
+          unique = true;
+          canonicalOrder = true;
+        };
+        default = [];
         description = "Taints registered on the node in Kubernetes taint syntax.";
       };
     };
 
     networking = {
       flannelBackend = mkOption {
-        type = types.enum [
+        type = abilityTypes.enum [
           "vxlan"
           "host-gw"
           "wireguard-native"
@@ -604,12 +586,12 @@ in
         description = "Cluster DNS service address.";
       };
       disableNetworkPolicy = mkOption {
-        type = types.bool;
+        type = abilityTypes.boolean;
         default = false;
         description = "Disable the built-in network-policy controller.";
       };
       disableKubeProxy = mkOption {
-        type = types.bool;
+        type = abilityTypes.boolean;
         default = false;
         description = "Disable kube-proxy for a replacement data plane.";
       };
@@ -617,33 +599,41 @@ in
 
     server = {
       clusterInit = mkOption {
-        type = types.bool;
+        type = abilityTypes.boolean;
         default = false;
         description = "Initialize a new embedded-etcd cluster.";
       };
       disableComponents = mkOption {
-        type = types.listOf (
-          types.enum [
+        type = abilityTypes.list {
+          element = abilityTypes.enum [
             "coredns"
             "servicelb"
             "traefik"
             "local-storage"
             "metrics-server"
             "runtimes"
-          ]
-        );
-        default = [ ];
+          ];
+          maxItems = 6;
+          unique = true;
+          canonicalOrder = true;
+        };
+        default = [];
         description = "Packaged server components not deployed by k3s.";
       };
       tlsSans = mkOption {
-        type = types.listOf nonEmptyStr;
-        default = [ ];
+        type = abilityTypes.list {
+          element = nonEmptyStr;
+          maxItems = 256;
+          unique = true;
+          canonicalOrder = true;
+        };
+        default = [];
         description = "Additional subject alternative names for the API server certificate.";
       };
     };
 
     kubeconfigMode = mkOption {
-      type = types.enum [
+      type = abilityTypes.enum [
         "0600"
         "0640"
         "0644"
@@ -651,43 +641,30 @@ in
       default = "0600";
       description = "Mode of the administrator kubeconfig emitted by server roles.";
     };
-
-    integrations = {
-      cni = mkOption {
-        type = types.attrsOf cniIntegrationType;
-        default = { };
-        contributable = true;
-        description = "Named, package-contributable CNI integration requirements.";
-      };
-      csi = mkOption {
-        type = types.attrsOf csiIntegrationType;
-        default = { };
-        contributable = true;
-        description = "Named, package-contributable CSI integration requirements.";
-      };
-      resources = mkOption {
-        type = types.attrsOf resourceType;
-        default = { };
-        contributable = true;
-        description = "Named, package-contributable Kubernetes objects reconciled by server roles.";
-      };
-      resourceGrants = mkOption {
-        type = types.listOf resourceGrantType;
-        default = [ ];
-        description = "Operator-authorized exact Kubernetes object identities.";
-      };
-    };
   };
 
   config = {
     k3s.role = role;
 
     aos.abilities = lib.mkMerge (
-      (map (contribution: contribution.declarations) contributions)
+      [
+        {
+          interfaces = configurationInterfaces;
+          implementations = objectImplementations // configurationImplementations;
+        }
+      ]
+      ++ (map (contribution: contribution.declarations) contributions)
       ++ [
         (mkIf cfg.enable (
           lib.mkMerge (
-            [ { instances.service = { }; } ]
+            [
+              {
+                instances =
+                  {service = {};}
+                  // {configuration-controller = {};}
+                  // lib.optionalAttrs serverRole {object-controller = {};};
+              }
+            ]
             ++ map (contribution: contribution.configured) contributions
           )
         ))
@@ -718,22 +695,6 @@ in
       {
         assertion = validLabels;
         message = "k3s node label names and values must use Kubernetes label syntax";
-      }
-      {
-        assertion = builtins.all (name: builtins.match resourceNameRegex name != null) resourceNames;
-        message = "k3s.integrations.resources names must use lowercase DNS-label syntax";
-      }
-      {
-        assertion = validResourceShapes;
-        message = "k3s Kubernetes resources must use normalized API versions and kinds";
-      }
-      {
-        assertion = resourcesAuthorized;
-        message = "k3s Kubernetes resource object lacks an exact operator grant";
-      }
-      {
-        assertion = builtins.length resourceIdentities == builtins.length (lib.unique resourceIdentities);
-        message = "k3s Kubernetes resource contributions must have unique object identities";
       }
       {
         assertion = builtins.all (taint: builtins.match taintRegex taint != null) cfg.node.taints;
