@@ -214,7 +214,7 @@
     packages =
       map (package: {
         payload = package;
-        manifest = package.abilityContract;
+        manifest = package.abilities.contract;
       })
       abilityPackages;
     runtimeRoots = auditRoots;

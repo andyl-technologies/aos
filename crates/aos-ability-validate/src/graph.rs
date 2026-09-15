@@ -8,7 +8,7 @@ use aos_ability_model::{
     Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase, EffectPlanDocument,
     EnvironmentDocument, InterfaceDocument, InterfaceKey, MergeNode, MethodReference, Operation,
     PackageDocument, PlanId, PlanNodeKey, ProviderReadiness, RequiredFeature, ScopedOperationKey,
-    VersionedDocument, encode_canonical,
+    encode_canonical,
 };
 use aos_contract::Sha256Digest;
 
@@ -119,10 +119,21 @@ impl ValidationContext {
                 );
                 break;
             }
-            let key = InterfaceKey {
-                name: document.interface.name.clone(),
-                abi: document.interface.abi,
-                descriptor: Sha256Digest::separated(InterfaceDocument::SCHEMA, bytes),
+            let key = match document.interface_key() {
+                Ok(key) => key,
+                Err(error) => {
+                    push_diagnostic(
+                        &mut diagnostics,
+                        diagnostic(
+                            DiagnosticCode::ValueTypeMismatch,
+                            DiagnosticClass::InvalidContract,
+                            DiagnosticPhase::Schema,
+                            path,
+                            error.to_string(),
+                        ),
+                    );
+                    continue;
+                }
             };
 
             validate_interface_document(&document, index, &mut diagnostics);

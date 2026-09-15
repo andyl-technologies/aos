@@ -9,7 +9,6 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
 use anyhow::Result;
-use aos_contract::Sha256Digest;
 
 use crate::{
     GuaranteeKey, IndeterminateSemantics, InterfaceDescriptor, InterfaceDocument, InterfaceKey,
@@ -19,10 +18,6 @@ use crate::{
 
 /// Names the manager-neutral service lifecycle interface.
 pub const SERVICE_MANAGEMENT_INTERFACE_NAME: &str = "aos.service-management";
-
-/// Carries the canonical descriptor of the manager-neutral interface.
-pub const SERVICE_MANAGEMENT_INTERFACE_DESCRIPTOR: &str =
-    "sha256:a51e8ccfbde3b8caa89120afdd033edfaa51f087ffc399c3aa3006f34e6c0dff";
 
 /// Names the guarantee for continuous service supervision.
 pub const SERVICE_SUPERVISION_GUARANTEE_NAME: &str = "aos.service.feature.supervision";
@@ -186,6 +181,7 @@ pub fn service_management_interface() -> Result<InterfaceDocument> {
                 retains_persistent_by_default: false,
                 persistent_delete_method: None,
             },
+            aggregation: super::aggregation("service-management")?,
             guarantees: service_feature_guarantees()?,
         },
     })
@@ -201,11 +197,7 @@ pub fn service_management_interface_key() -> Result<InterfaceKey> {
 }
 
 fn service_feature_guarantee(name: &str, semantics: &str) -> Result<GuaranteeKey> {
-    Ok(GuaranteeKey {
-        name: InterfaceName::new(name)?,
-        version: NonZeroU32::new(1).ok_or_else(|| anyhow::anyhow!("invalid built-in version"))?,
-        descriptor: Sha256Digest::separated("aos.ability.execution-guarantee/v1", semantics),
-    })
+    super::execution_guarantee(name, semantics)
 }
 
 #[cfg(test)]
@@ -220,8 +212,8 @@ mod tests {
             .expect("built-in contract must hash");
 
         assert_eq!(
-            key.descriptor.to_string(),
-            SERVICE_MANAGEMENT_INTERFACE_DESCRIPTOR
+            key,
+            document.interface_key().expect("stable interface identity")
         );
         assert_eq!(document.interface.methods.len(), 5);
         assert_eq!(document.interface.guarantees.len(), 9);

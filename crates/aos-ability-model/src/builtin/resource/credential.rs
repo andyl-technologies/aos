@@ -83,6 +83,7 @@ pub fn credential_delivery_effects_interface() -> Result<InterfaceDocument> {
 
     interface_document(
         interface_name,
+        "credential",
         credential_delivery_request_schema()?,
         methods,
         LifecycleSemantics {

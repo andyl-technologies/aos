@@ -1,7 +1,5 @@
 ##! Focused PostgreSQL transition checks for observation-driven repair kinds.
 let
-  providerModule = import ../../../pkgs/storage/_postgresql-ability/provider;
-
   environment = {
     authority = "deployment";
     key = "postgresql-reconciliation-test";
@@ -38,6 +36,14 @@ let
     networkPolicy = interface "aos.host-network-policy-effects";
     postgresql = interface "aos.postgresql-effects";
     storage = interface "aos.host-storage-effects";
+  };
+  providerModule = import ../../../pkgs/storage/_postgresql-ability/provider {
+    inherit interfaces;
+    loopbackIngressGuarantee = {
+      name = "aos.guarantee.loopback-tcp-ingress-enforcement";
+      version = 1;
+      descriptor = revision "bb";
+    };
   };
 
   desiredBinding = requestKey: selectedInterface: selectedResource: methods: access: {

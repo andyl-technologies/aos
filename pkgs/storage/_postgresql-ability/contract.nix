@@ -1,144 +1,125 @@
 ##! Shared PostgreSQL ability contracts and pure provider.
 {lib}: let
-  inherit (lib.abilities) schemas;
+  inherit (lib.abilities) types;
 
   providerSource = ./provider;
 
-  interface = name: descriptor: {
-    inherit name descriptor;
+  interfaceDeclaration = name: {
+    inherit name;
     abi = 1;
   };
-
-  postgresqlInterface =
-    interface
-    "aos.postgresql"
-    "sha256:0c2cfe5a8480b0dd1113e56414241cb81c54c080a5e0bc63be60b6d033464898";
-  endpointEffects =
-    interface
-    "aos.network-endpoint-effects"
-    "sha256:6b4d345ab4350917a04b770f0ac4b82888ffe6ef7e647caa9fe94ccb9f9dac6a";
-  storageEffects =
-    interface
-    "aos.host-storage-effects"
-    "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8";
-  networkPolicyEffects =
-    interface
-    "aos.host-network-policy-effects"
-    "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e";
-  credentialEffects =
-    interface
-    "aos.credential-delivery-effects"
-    "sha256:bc251c0837c1d453a6c5840d9146d9e27a95ad82032d9b4c60baf40d293cf1eb";
-  postgresqlEffects =
-    interface
-    "aos.postgresql-effects"
-    "sha256:6a1e7d5fb03d9b91127144a64fb96e4c98f4995e7f4f0de258f79fb61fbb9fd6";
+  postgresqlDeclaration = interfaceDeclaration "aos.postgresql";
+  endpointDeclaration = interfaceDeclaration "aos.network-endpoint-effects";
+  storageDeclaration = interfaceDeclaration "aos.host-storage-effects";
+  networkPolicyDeclaration = interfaceDeclaration "aos.host-network-policy-effects";
+  credentialDeclaration = interfaceDeclaration "aos.credential-delivery-effects";
+  postgresqlEffectsDeclaration = interfaceDeclaration "aos.postgresql-effects";
   compatibleStateFormat = "sha256:3f1ee821c852480fa2cc3160555bbb187668c1509f84345d4339306910487596";
   incompatibleStateFormat = "sha256:8825d1eed586b8e50a61fc1ee0cd51330da8ae06b605c865b3201d64d426786d";
 
   loopbackIngressGuarantee = lib.abilities.guarantee {
     name = "aos.guarantee.loopback-tcp-ingress-enforcement";
     version = 1;
-    descriptor = "sha256:6b12b1c4db768f272434c6e43ca8c484887fc0fa3a51be2ae2784982325c2092";
+    semantics = "A successful apply installs a host policy that admits TCP ingress only to the requested 127.0.0.1 address and concrete port. A successful observe proves that exact rule remains active. Neither operation admits ingress to that port through a non-loopback address.";
   };
 
   string = maximum:
-    schemas.string {
+    types.string {
       maxLength = maximum;
       syntax = null;
     };
-  localKey = schemas.string {
+  localKey = types.string {
     maxLength = 128;
     syntax = "local-key-v1";
   };
-  postgresqlName = schemas.string {
+  postgresqlName = types.string {
     maxLength = 63;
     syntax = "local-key-v1";
   };
   revision = string 71;
-  optionalRevision = schemas.optional revision;
+  optionalRevision = types.optional revision;
   path = string 4096;
 
-  endpoint = schemas.record {
+  endpoint = types.record {
     fields = {
       address = string 15;
-      port = schemas.integer {
+      port = types.integer {
         minimum = 1024;
         maximum = 65535;
       };
-      transport = schemas.enum ["tcp"];
+      transport = types.enum ["tcp"];
     };
     optional = [];
   };
-  endpointRequest = schemas.record {
+  endpointRequest = types.record {
     fields = {
-      address = schemas.enum ["127.0.0.1"];
-      port = schemas.integer {
+      address = types.enum ["127.0.0.1"];
+      port = types.integer {
         minimum = 0;
         maximum = 65535;
       };
-      transport = schemas.enum ["tcp"];
+      transport = types.enum ["tcp"];
     };
     optional = [];
   };
-  credentialView = schemas.record {
+  credentialView = types.record {
     fields = {
       path = path;
       version = revision;
     };
     optional = [];
   };
-  credentialRequest = schemas.record {
+  credentialRequest = types.record {
     fields = {
       version = revision;
       view = localKey;
     };
     optional = [];
   };
-  credentialObservation = schemas.record {
+  credentialObservation = types.record {
     fields = {
-      delivered = schemas.boolean;
+      delivered = types.boolean;
       observed_version = optionalRevision;
       requested_version = revision;
-      schema = schemas.enum ["aos.ability.credential-delivery-observation/v1"];
+      schema = types.enum ["aos.ability.credential-delivery-observation/v1"];
       view = localKey;
     };
     optional = [];
   };
-  storageRequest = schemas.record {
+  storageRequest = types.record {
     fields = {
       cluster = localKey;
-      lifetime = schemas.enum ["instance" "persistent"];
-      owner = schemas.enum ["postgresql-slot" "root"];
+      lifetime = types.enum ["instance" "persistent"];
+      owner = types.enum ["postgresql-slot" "root"];
       purpose = localKey;
     };
     optional = [];
   };
   networkPolicyRequest = requiredEndpoint:
-    schemas.record {
+    types.record {
       fields = {
-        direction = schemas.enum ["ingress"];
+        direction = types.enum ["ingress"];
         endpoint =
           if requiredEndpoint
           then endpoint
-          else schemas.optional endpoint;
-        protocol = schemas.enum ["tcp"];
+          else types.optional endpoint;
+        protocol = types.enum ["tcp"];
       };
       optional = [];
     };
-  postgresqlRequest = schemas.record {
+  postgresqlRequest = types.record {
     fields = {
       cluster = localKey;
       configuration_revision = revision;
       database = postgresqlName;
-      credential_view = schemas.optional credentialView;
-      endpoint = schemas.optional endpoint;
+      credential_view = types.optional credentialView;
+      endpoint = types.optional endpoint;
       role = postgresqlName;
-      storage_path = schemas.optional path;
+      storage_path = types.optional path;
     };
     optional = [];
   };
-  postgresqlContribution = schemas.record {
+  postgresqlContribution = types.record {
     fields = {
       cluster = localKey;
       database = postgresqlName;
@@ -149,7 +130,7 @@
   };
 
   revisionedObservation = schema: fields:
-    schemas.record {
+    types.record {
       fields =
         fields
         // {
@@ -161,36 +142,36 @@
     };
   endpointObservation =
     revisionedObservation
-    (schemas.enum ["aos.ability.network-endpoint-observation/v1"])
+    (types.enum ["aos.ability.network-endpoint-observation/v1"])
     {
-      endpoint = schemas.optional endpoint;
-      owned = schemas.boolean;
+      endpoint = types.optional endpoint;
+      owned = types.boolean;
     };
   storageObservation =
     revisionedObservation
-    (schemas.enum ["aos.ability.host-storage-observation/v1"])
+    (types.enum ["aos.ability.host-storage-observation/v1"])
     {
-      attached = schemas.boolean;
-      exists = schemas.boolean;
+      attached = types.boolean;
+      exists = types.boolean;
       path = path;
     };
   networkPolicyObservation =
     revisionedObservation
-    (schemas.enum ["aos.ability.host-network-policy-observation/v1"])
+    (types.enum ["aos.ability.host-network-policy-observation/v1"])
     {
-      active = schemas.boolean;
-      endpoint = schemas.optional endpoint;
+      active = types.boolean;
+      endpoint = types.optional endpoint;
     };
-  postgresqlObservation = schemas.record {
+  postgresqlObservation = types.record {
     fields = {
       cluster = localKey;
       database = postgresqlName;
-      endpoint = schemas.optional endpoint;
+      endpoint = types.optional endpoint;
       observed_revision = optionalRevision;
-      production_control_path = schemas.enum ["/bin/postgresql-control"];
-      ready = schemas.boolean;
+      production_control_path = types.enum ["/bin/postgresql-control"];
+      ready = types.boolean;
       role = postgresqlName;
-      schema = schemas.enum ["aos.ability.postgresql-observation/v1"];
+      schema = types.enum ["aos.ability.postgresql-observation/v1"];
       submitted_revision = revision;
     };
     optional = [];
@@ -230,9 +211,17 @@
     supportsRejectedBeforeEffect = true;
     indeterminate = "reconcile";
   };
+  methodSemantics = name: {
+    requiredTargetAccess =
+      if builtins.elem name ["observe" "observe-boot" "observe-health" "validate" "verify"]
+      then "read"
+      else "exclusive-write";
+    stopsProvider = name == "stop";
+  };
   method = target: name: operationFamily: parameters: outputs: evidence: {
     targetResource = target;
-    inherit operationFamily parameters outputs;
+    inherit parameters outputs;
+    semantics = methodSemantics name;
     permittedOperations = [name];
     guarantees = [];
     outcome = outcome evidence;
@@ -240,7 +229,7 @@
 
   endpointMethods = {
     materialize =
-      method endpointEffects.name "materialize" {
+      method endpointDeclaration.name "materialize" {
         kind = "network-endpoint";
         action = "materialize";
       }
@@ -249,7 +238,7 @@
       }
       endpointObservation;
     observe =
-      method endpointEffects.name "observe" {
+      method endpointDeclaration.name "observe" {
         kind = "network-endpoint";
         action = "observe";
       }
@@ -258,7 +247,7 @@
       }
       endpointObservation;
     release =
-      method endpointEffects.name "release" {
+      method endpointDeclaration.name "release" {
         kind = "network-endpoint";
         action = "release";
       }
@@ -267,7 +256,7 @@
   };
   storageMethods = {
     ensure =
-      method storageEffects.name "ensure" {
+      method storageDeclaration.name "ensure" {
         kind = "host-storage";
         action = "ensure";
       }
@@ -276,7 +265,7 @@
       }
       storageObservation;
     observe =
-      method storageEffects.name "observe" {
+      method storageDeclaration.name "observe" {
         kind = "host-storage";
         action = "observe";
       }
@@ -285,7 +274,7 @@
       }
       storageObservation;
     release =
-      method storageEffects.name "release" {
+      method storageDeclaration.name "release" {
         kind = "host-storage";
         action = "release";
       }
@@ -300,25 +289,25 @@
       };
   in {
     apply = withEnforcement (
-      method networkPolicyEffects.name "apply" {
+      method networkPolicyDeclaration.name "apply" {
         kind = "host-network-policy";
         action = "apply";
       } (networkPolicyRequest true) {
-        active = runtimeOutput schemas.boolean "instance";
+        active = runtimeOutput types.boolean "instance";
       }
       networkPolicyObservation
     );
     observe = withEnforcement (
-      method networkPolicyEffects.name "observe" {
+      method networkPolicyDeclaration.name "observe" {
         kind = "host-network-policy";
         action = "observe";
       } (networkPolicyRequest true) {
-        active = runtimeOutput schemas.boolean "instance";
+        active = runtimeOutput types.boolean "instance";
       }
       networkPolicyObservation
     );
     remove =
-      method networkPolicyEffects.name "remove" {
+      method networkPolicyDeclaration.name "remove" {
         kind = "host-network-policy";
         action = "remove";
       } (networkPolicyRequest false) {}
@@ -326,7 +315,7 @@
   };
   credentialMethods = {
     acquire =
-      method credentialEffects.name "acquire" {
+      method credentialDeclaration.name "acquire" {
         kind = "credential";
         action = "acquire";
       }
@@ -335,7 +324,7 @@
       }
       credentialObservation;
     deliver =
-      method credentialEffects.name "deliver" {
+      method credentialDeclaration.name "deliver" {
         kind = "credential";
         action = "deliver";
       }
@@ -344,7 +333,7 @@
       }
       credentialObservation;
     release =
-      method credentialEffects.name "release" {
+      method credentialDeclaration.name "release" {
         kind = "release-resource";
       }
       credentialRequest {}
@@ -352,7 +341,7 @@
   };
   postgresqlMethods = {
     materialize =
-      method postgresqlEffects.name "materialize" {
+      method postgresqlEffectsDeclaration.name "materialize" {
         kind = "prepare-managed-configuration";
       }
       postgresqlRequest {
@@ -360,31 +349,31 @@
       }
       postgresqlObservation;
     observe =
-      method postgresqlEffects.name "observe" {
+      method postgresqlEffectsDeclaration.name "observe" {
         kind = "observe-readiness";
       }
       postgresqlRequest {
         observed-revision = observationOutput optionalRevision;
-        ready = observationOutput schemas.boolean;
+        ready = observationOutput types.boolean;
         submitted-revision = observationOutput revision;
       }
       postgresqlObservation;
     start =
-      method postgresqlEffects.name "start" {
+      method postgresqlEffectsDeclaration.name "start" {
         kind = "service-lifecycle";
         action = "start";
       }
       postgresqlRequest {}
       postgresqlObservation;
     restart =
-      method postgresqlEffects.name "restart" {
+      method postgresqlEffectsDeclaration.name "restart" {
         kind = "service-lifecycle";
         action = "restart";
       }
       postgresqlRequest {}
       postgresqlObservation;
     stop =
-      method postgresqlEffects.name "stop" {
+      method postgresqlEffectsDeclaration.name "stop" {
         kind = "service-lifecycle";
         action = "stop";
       }
@@ -414,18 +403,81 @@
       ownsResourceKinds = [selected.name];
     };
 
-  postgresqlProvider = import ./provider;
+  interfaceFor = export:
+    lib.abilities.interfaceIdentity (lib.abilities.interfaceDocument [] export);
+  credentialEffects = interfaceFor (terminalExport {
+    selected = credentialDeclaration;
+    group = "credential";
+    handler = "native-credential-delivery";
+    requestSchema = credentialRequest;
+    methods = credentialMethods;
+    persistent = false;
+  });
+  endpointEffects = interfaceFor (terminalExport {
+    selected = endpointDeclaration;
+    group = "endpoint";
+    handler = "native-network-endpoint";
+    requestSchema = endpointRequest;
+    methods = endpointMethods;
+    persistent = false;
+  });
+  networkPolicyEffects = interfaceFor (terminalExport {
+    selected = networkPolicyDeclaration;
+    group = "network-policy";
+    handler = "native-host-network-policy";
+    requestSchema = networkPolicyRequest false;
+    methods = networkPolicyMethods;
+    persistent = false;
+    guarantees = [loopbackIngressGuarantee];
+  });
+  postgresqlEffects = interfaceFor (terminalExport {
+    selected = postgresqlEffectsDeclaration;
+    group = "postgresql-terminal";
+    handler = "native-postgresql";
+    requestSchema = postgresqlRequest;
+    methods = postgresqlMethods;
+    persistent = true;
+  });
+  storageEffects = interfaceFor (terminalExport {
+    selected = storageDeclaration;
+    group = "storage";
+    handler = "native-host-storage";
+    requestSchema = storageRequest;
+    methods = storageMethods;
+    persistent = true;
+    selectedLifecycle = {
+      stableResourceIdentity = true;
+      releasesEphemeralOnDisable = true;
+      retainsPersistentByDefault = true;
+      persistentDeleteMethod = null;
+    };
+  });
+
+  postgresqlProvider = import ./provider {
+    interfaces = {
+      inherit
+        credentialEffects
+        endpointEffects
+        networkPolicyEffects
+        postgresqlEffects
+        storageEffects
+        ;
+    };
+    inherit loopbackIngressGuarantee;
+  };
+
+  postgresqlInterface = interfaceFor (postgresqlExport null);
 
   postgresqlExport = stateFormat:
     lib.abilities.define {
-      interface = postgresqlInterface.name;
-      abi = postgresqlInterface.abi;
+      interface = postgresqlDeclaration.name;
+      abi = postgresqlDeclaration.abi;
       requestSchema = postgresqlContribution;
-      outputs.clusters = output (schemas.map {
+      outputs.clusters = output (types.map {
         keyMaxLength = 128;
         keySyntax = "local-key-v1";
         maxEntries = 64;
-        value = schemas.resourceReference;
+        value = types.resourceReference;
       }) "planning" "persistent";
       methods = {};
       lifecycle = lifecycle true;
@@ -445,8 +497,8 @@
       composeEntry = "compose";
       transitionEntry = "transition";
       ownsResourceKinds =
-        [postgresqlInterface.name]
-        ++ lib.optional (stateFormat != null) postgresqlEffects.name;
+        [postgresqlDeclaration.name]
+        ++ lib.optional (stateFormat != null) postgresqlEffectsDeclaration.name;
       inherit stateFormat;
       compose = postgresqlProvider.compose;
       transition = postgresqlProvider.transition;

@@ -133,7 +133,7 @@
       packages = [
         {
           payload = pkgs.ability-package-smoke;
-          manifest = pkgs.ability-package-smoke.abilityContract;
+          manifest = pkgs.ability-package-smoke.abilities.contract;
         }
       ];
       runtimeRoots = [applicationRoot pkgs.ability-package-smoke];
@@ -426,9 +426,9 @@
   };
   tryBuilder = value: builtins.tryEval (builtins.deepSeq value true);
   uncheckedAbilityCompanion =
-    pkgs.ability-package-smoke.abilityContract
+    pkgs.ability-package-smoke.abilities.contract
     // {
-      passthru = builtins.removeAttrs pkgs.ability-package-smoke.abilityContract.passthru [
+      passthru = builtins.removeAttrs pkgs.ability-package-smoke.abilities.contract.passthru [
         "abilitySemanticValidator"
       ];
     };
@@ -455,7 +455,7 @@
     packages = [
       {
         payload = application;
-        manifest = pkgs.ability-package-smoke.abilityContract;
+        manifest = pkgs.ability-package-smoke.abilities.contract;
       }
     ];
     runtimeRoots = [application];
@@ -469,7 +469,7 @@
     packages = [
       {
         payload = pkgs.ability-package-smoke;
-        manifest = pkgs.ability-package-smoke.abilityContract;
+        manifest = pkgs.ability-package-smoke.abilities.contract;
       }
     ];
     runtimeRoots = [application];
@@ -699,10 +699,10 @@ in
           ${oci.common.realizedStorePolicyScript}
 
           mkdir -p invalid-ability/interfaces
-          cp ${pkgs.ability-package-smoke.abilityContract}/interfaces/*.json invalid-ability/interfaces/
+          cp ${pkgs.ability-package-smoke.abilities.contract}/interfaces/*.json invalid-ability/interfaces/
           jq -cS \
             '.exports[0].implementation = "sha256:0000000000000000000000000000000000000000000000000000000000000000"' \
-            ${pkgs.ability-package-smoke.abilityContract}/package.json \
+            ${pkgs.ability-package-smoke.abilities.contract}/package.json \
             > invalid-ability/package.with-newline.json
           invalid_size=$(stat -c %s invalid-ability/package.with-newline.json)
           truncate -s "$((invalid_size - 1))" invalid-ability/package.with-newline.json

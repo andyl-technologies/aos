@@ -1,6 +1,6 @@
 ##! tests/abilities/composition.nix - Recursive nginx composition fixture.
 {abilities}: let
-  inherit (abilities) schemas;
+  inherit (abilities) types;
 
   reverse = builtins.foldl' (values: value: [value] ++ values) [];
 
@@ -42,12 +42,12 @@
     export = abilities.define {
       interface = configurationKey.name;
       abi = configurationKey.abi;
-      requestSchema = schemas.record {
-        fields.files = schemas.map {
+      requestSchema = types.record {
+        fields.files = types.map {
           keyMaxLength = 128;
           keySyntax = "local-key-v1";
           maxEntries = 64;
-          value = schemas.string {
+          value = types.string {
             maxLength = 4096;
             syntax = null;
           };
@@ -55,7 +55,7 @@
         optional = [];
       };
       outputs.publishedConfiguration = {
-        schema = schemas.resourceReference;
+        schema = types.resourceReference;
         phase = "planning";
         visibility = "protected";
         lifetime = "instance";
@@ -95,10 +95,10 @@
     export = abilities.define {
       interface = serviceKey.name;
       abi = serviceKey.abi;
-      requestSchema = schemas.record {
+      requestSchema = types.record {
         fields = {
-          configuration = schemas.resourceReference;
-          unit = schemas.string {
+          configuration = types.resourceReference;
+          unit = types.string {
             maxLength = 128;
             syntax = "local-key-v1";
           };
@@ -106,7 +106,7 @@
         optional = [];
       };
       outputs.manager = {
-        schema = schemas.resourceReference;
+        schema = types.resourceReference;
         phase = "planning";
         visibility = "protected";
         lifetime = "instance";
@@ -140,8 +140,8 @@
     export = abilities.define {
       interface = credentialKey.name;
       abi = credentialKey.abi;
-      requestSchema = schemas.record {
-        fields.host = schemas.string {
+      requestSchema = types.record {
+        fields.host = types.string {
           maxLength = 128;
           syntax = "qualified-name-v1";
         };
@@ -159,17 +159,17 @@
     descriptor = credentialKey.descriptor;
   };
 
-  virtualHostSchema = schemas.record {
+  virtualHostSchema = types.record {
     fields = {
-      host = schemas.string {
+      host = types.string {
         maxLength = 128;
         syntax = "qualified-name-v1";
       };
-      port = schemas.integer {
+      port = types.integer {
         minimum = 1;
         maximum = 65535;
       };
-      tls = schemas.boolean;
+      tls = types.boolean;
     };
     optional = ["tls"];
   };
@@ -179,7 +179,7 @@
     abi = 1;
     requestSchema = virtualHostSchema;
     outputs.count = {
-      schema = schemas.integer {
+      schema = types.integer {
         minimum = 0;
         maximum = 64;
       };
@@ -450,7 +450,7 @@
       export = abilities.define {
         interface = cycleKey.name;
         abi = cycleKey.abi;
-        requestSchema = schemas.boolean;
+        requestSchema = types.boolean;
         outputs = {};
         methods = {};
         lifecycle = emptyLifecycle;

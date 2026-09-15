@@ -201,7 +201,12 @@
           value = package;
         })
         (builtins.filter
-          (package: builtins.isAttrs package && package ? packageModule)
+          (package:
+            builtins.isAttrs package
+            && (
+              (package ? abilities && package.abilities ? module)
+              || package ? packageModule
+            ))
           selectionEvaluation.config.environment.systemPackages)
       );
     in
@@ -210,8 +215,14 @@
     nativeAbilityPackageModules =
       builtins.map (package: {
         name = package.pname or package.name;
-        module = package.packageModule;
-        outputs = package.packageModuleOutputs;
+        module =
+          if package ? abilities && package.abilities ? module
+          then package.abilities.module
+          else package.packageModule;
+        outputs =
+          if package ? abilities && package.abilities ? moduleOutputs
+          then package.abilities.moduleOutputs
+          else package.packageModuleOutputs;
       }) (builtins.filter
         (package: !(builtins.elem (package.pname or package.name) callerPackageNames))
         selectedAbilityPackages);

@@ -5,7 +5,7 @@
 }: let
   parseManifest = package:
     builtins.fromJSON (
-      builtins.unsafeDiscardStringContext package.abilityContract.abilityTemplateJson
+      builtins.unsafeDiscardStringContext package.abilities.contract.abilityTemplateJson
     );
 
   payload = parseManifest pkgs.k3s;
@@ -16,21 +16,10 @@
     pkgs.k3s-worker
   ];
 
-  k3sInterface = {
-    abi = 1;
-    descriptor = "sha256:64fe45877c89cb26fa3d46e31af58b9ecdd69b276f15535242156f095ea30524";
-    name = "aos.k3s-cluster";
-  };
-  kubernetesInterface = {
-    abi = 1;
-    descriptor = "sha256:bbced9c501c3c41ab4b5f2a70a2945bde2128ef0a37ad900f6d9f1e2f110963e";
-    name = "aos.kubernetes-object-effects";
-  };
-  systemdInterface = {
-    abi = 1;
-    descriptor = "sha256:833e92258892d87a1f1cb16f66bfd1629c47a97386a9853cd93ffa30037b82f1";
-    name = "aos.systemd-provider-bootstrap";
-  };
+  contracts = import ../../pkgs/kubernetes/_ability-contracts.nix {inherit lib;};
+  inherit (contracts) k3sInterface;
+  kubernetesInterface = contracts.kubernetesEffects;
+  systemdInterface = contracts.systemdBootstrap;
 
   requirement = alias: selected: methods: {
     accepted_interfaces = [selected];
@@ -52,7 +41,7 @@
     && manifest.ownership == [[]]
     && (builtins.head manifest.exports).name == "k3s"
     && (builtins.head manifest.exports).interface.name == k3sInterface.name
-    && provider.owns_resource_kinds == [k3sInterface.name]
+    && provider.owns_resource_kinds == []
     && provider.requirements
     == [
       (requirement "kubernetes-terminal" kubernetesInterface ["apply" "delete" "observe"])

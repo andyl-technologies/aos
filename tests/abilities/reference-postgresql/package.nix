@@ -197,7 +197,7 @@
       src = selectedProviderSource;
       runtimeDeps = [packageRuntime selectedControl selectedPostgresql];
       abilities = {
-        config.aos.abilities.implementations = {
+        config.aos.abilities = lib.abilities.projectDefinitions {
           postgresql = {
             artifacts = [
               (lib.abilities.packageOutput {package = selectedControl.pname;})

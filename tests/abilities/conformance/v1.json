@@ -538,7 +538,7 @@
             }
           },
           "guarantee": {
-            "descriptor": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+            "descriptor": "sha256:f89444c425673ffed0c7018f399d41251dd8cdc526b1f54c563e2223d577e6f8",
             "name": "aos.test.guarantee",
             "version": 1
           },
@@ -592,6 +592,13 @@
       "arguments": {
         "interface": {
           "abi": 1,
+          "aggregation": {
+            "controller_group": "corpus",
+            "key": "authorized-slot",
+            "merge_contract": null,
+            "reject_slot_collisions": true,
+            "scope": "provider-instance"
+          },
           "configuration": {
             "kind": "boolean"
           },
@@ -605,9 +612,6 @@
           "methods": {
             "observe": {
               "guarantees": [],
-              "operation_family": {
-                "kind": "observe-readiness"
-              },
               "outcome": {
                 "completion_evidence": {
                   "kind": "boolean"
@@ -639,7 +643,11 @@
               "permitted_operations": [
                 "observe"
               ],
-              "target_resource": "aos.test.corpus"
+              "target_resource": "aos.test.corpus",
+              "semantics": {
+                "required_target_access": "read",
+                "stops_provider": false
+              }
             }
           },
           "name": "aos.test.corpus",
@@ -687,6 +695,13 @@
         "value": {
           "interface": {
             "abi": 1,
+            "aggregation": {
+              "controller_group": "corpus",
+              "key": "authorized-slot",
+              "merge_contract": null,
+              "reject_slot_collisions": true,
+              "scope": "provider-instance"
+            },
             "configuration": {
               "kind": "boolean"
             },
@@ -700,9 +715,6 @@
             "methods": {
               "observe": {
                 "guarantees": [],
-                "operation_family": {
-                  "kind": "observe-readiness"
-                },
                 "outcome": {
                   "completion_evidence": {
                     "kind": "boolean"
@@ -734,7 +746,11 @@
                 "permitted_operations": [
                   "observe"
                 ],
-                "target_resource": "aos.test.corpus"
+                "target_resource": "aos.test.corpus",
+                "semantics": {
+                  "required_target_access": "read",
+                  "stops_provider": false
+                }
               }
             },
             "name": "aos.test.corpus",
@@ -795,9 +811,6 @@
           "methods": {
             "observe": {
               "guarantees": [],
-              "operation_family": {
-                "kind": "observe-readiness"
-              },
               "outcome": {
                 "completion_evidence": {
                   "kind": "boolean"
@@ -829,7 +842,11 @@
               "permitted_operations": [
                 "observe"
               ],
-              "target_resource": "aos.test.foreign"
+              "target_resource": "aos.test.foreign",
+              "semantics": {
+                "required_target_access": "read",
+                "stops_provider": false
+              }
             }
           },
           "name": "aos.test.corpus",
@@ -873,8 +890,7 @@
         "rust"
       ],
       "expected": {
-        "code": "method-contract-mismatch",
-        "outcome": "reject"
+        "outcome": "accept"
       },
       "id": "interface-foreign-method-target",
       "operation": "interface-document",
@@ -897,9 +913,6 @@
           "methods": {
             "observe": {
               "guarantees": [],
-              "operation_family": {
-                "kind": "observe-readiness"
-              },
               "outcome": {
                 "completion_evidence": {
                   "kind": "boolean"
@@ -931,7 +944,11 @@
               "permitted_operations": [
                 "observe"
               ],
-              "target_resource": "aos.test.corpus"
+              "target_resource": "aos.test.corpus",
+              "semantics": {
+                "required_target_access": "read",
+                "stops_provider": false
+              }
             }
           },
           "name": "aos.test.corpus",
@@ -977,13 +994,6 @@
         "outcome": "accept",
         "value": {
           "declaration": {
-            "aggregation": {
-              "controller_group": "corpus",
-              "key": "authorized-slot",
-              "merge_contract": null,
-              "reject_slot_collisions": true,
-              "scope": "provider-instance"
-            },
             "implementation": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
             "interface": {
               "abi": 1,
@@ -2861,9 +2871,6 @@
           "methods": {
             "observe": {
               "guarantees": [],
-              "operation_family": {
-                "kind": "observe-readiness"
-              },
               "outcome": {
                 "completion_evidence": {
                   "kind": "boolean"
@@ -2895,7 +2902,11 @@
               "permitted_operations": [
                 "observe"
               ],
-              "target_resource": "aos.test.corpus"
+              "target_resource": "aos.test.corpus",
+              "semantics": {
+                "required_target_access": "read",
+                "stops_provider": false
+              }
             }
           },
           "name": "aos.test.corpus",
@@ -2963,9 +2974,6 @@
           "methods": {
             "observe": {
               "guarantees": [],
-              "operation_family": {
-                "kind": "future-operation"
-              },
               "outcome": {
                 "completion_evidence": {
                   "kind": "boolean"
@@ -2997,7 +3005,11 @@
               "permitted_operations": [
                 "observe"
               ],
-              "target_resource": "aos.test.corpus"
+              "target_resource": "aos.test.corpus",
+              "semantics": {
+                "required_target_access": "exclusive-write",
+                "stops_provider": false
+              }
             }
           },
           "name": "aos.test.corpus",
@@ -3147,9 +3159,6 @@
           "methods": {
             "observe": {
               "guarantees": [],
-              "operation_family": {
-                "kind": "observe-readiness"
-              },
               "outcome": {
                 "completion_evidence": {
                   "kind": "boolean"
@@ -3181,7 +3190,11 @@
               "permitted_operations": [
                 "observe"
               ],
-              "target_resource": "aos.test.corpus"
+              "target_resource": "aos.test.corpus",
+              "semantics": {
+                "required_target_access": "read",
+                "stops_provider": false
+              }
             }
           },
           "name": "aos.test.corpus",
@@ -3503,14 +3516,20 @@
       "bindingReference",
       "compose",
       "contribution",
+      "declareInterface",
       "define",
+      "descriptorFor",
       "effects",
       "environmentId",
       "expand",
+      "exportForImplementation",
       "guarantee",
       "instance",
       "instanceId",
+      "interfaceDeclarationFromDocument",
       "interfaceDocument",
+      "interfaceDocumentFromDeclaration",
+      "interfaceIdentity",
       "interfaces",
       "module",
       "normalizeExport",
@@ -3519,6 +3538,8 @@
       "normalizeRequirements",
       "packageOutput",
       "pinInterface",
+      "projectDefinitions",
+      "qualifyPackageAbilities",
       "request",
       "requestId",
       "resourceReference",

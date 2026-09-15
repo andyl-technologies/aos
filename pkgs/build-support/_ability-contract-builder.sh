@@ -26,6 +26,16 @@ domain_digest() {
   } | sha256sum | cut -d ' ' -f 1
 }
 
+envelope_digest() {
+  local domain=$1
+  local document=$2
+
+  jq -cnS --arg domain "$domain" --slurpfile document "$document" \
+    '{domain:$domain,document:$document[0]}' > work/descriptor-envelope.json
+  canonical_json work/descriptor-envelope.json work/descriptor-envelope.canonical.json
+  sha256sum work/descriptor-envelope.canonical.json | cut -d ' ' -f 1
+}
+
 canonical_nar_hash() {
   local value=$1
   printf 'sha256:%s' "${canonicalNarHashes[$value]}"
@@ -131,7 +141,7 @@ while IFS= read -r spec; do
   export_name=$(jq -r .name <<<"$spec")
   jq '.document' <<<"$spec" > work/interface.json
   canonical_json work/interface.json work/interface.canonical.json
-  descriptor="sha256:$(domain_digest aos.ability.interface/v1 work/interface.canonical.json)"
+  descriptor="sha256:$(envelope_digest aos.ability.interface/v1 work/interface.canonical.json)"
   interface_name=$(jq -r '.interface.name' work/interface.canonical.json)
   interface_abi=$(jq -r '.interface.abi' work/interface.canonical.json)
   cp work/interface.canonical.json "$out/interfaces/${descriptor#sha256:}.json"

@@ -107,6 +107,7 @@ pub fn host_network_policy_interface() -> Result<InterfaceDocument> {
 
     let mut document = interface_document(
         interface_name,
+        "network-policy",
         host_network_policy_request_schema(false)?,
         methods,
         LifecycleSemantics {

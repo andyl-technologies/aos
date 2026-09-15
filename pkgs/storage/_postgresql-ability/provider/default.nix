@@ -1,35 +1,16 @@
 ##! Pure PostgreSQL provider with runtime endpoint, credential, and storage data flow.
-let
-  endpointEffects = {
-    name = "aos.network-endpoint-effects";
-    abi = 1;
-    descriptor = "sha256:6b4d345ab4350917a04b770f0ac4b82888ffe6ef7e647caa9fe94ccb9f9dac6a";
-  };
-  storageEffects = {
-    name = "aos.host-storage-effects";
-    abi = 1;
-    descriptor = "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8";
-  };
-  networkPolicyEffects = {
-    name = "aos.host-network-policy-effects";
-    abi = 1;
-    descriptor = "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e";
-  };
-  credentialEffects = {
-    name = "aos.credential-delivery-effects";
-    abi = 1;
-    descriptor = "sha256:bc251c0837c1d453a6c5840d9146d9e27a95ad82032d9b4c60baf40d293cf1eb";
-  };
-  postgresqlEffects = {
-    name = "aos.postgresql-effects";
-    abi = 1;
-    descriptor = "sha256:6a1e7d5fb03d9b91127144a64fb96e4c98f4995e7f4f0de258f79fb61fbb9fd6";
-  };
-  loopbackIngressGuarantee = {
-    name = "aos.guarantee.loopback-tcp-ingress-enforcement";
-    version = 1;
-    descriptor = "sha256:6b12b1c4db768f272434c6e43ca8c484887fc0fa3a51be2ae2784982325c2092";
-  };
+{
+  interfaces,
+  loopbackIngressGuarantee,
+}: let
+  inherit
+    (interfaces)
+    credentialEffects
+    endpointEffects
+    networkPolicyEffects
+    postgresqlEffects
+    storageEffects
+    ;
 
   operationDeadline = {
     attempt_timeout_millis = 300000;

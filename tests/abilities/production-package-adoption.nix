@@ -5,7 +5,7 @@
 }: let
   packageContract = package: let
     ability = builtins.fromJSON (
-      builtins.unsafeDiscardStringContext package.abilityContract.abilityTemplateJson
+      builtins.unsafeDiscardStringContext package.abilities.contract.abilityTemplateJson
     );
     exposure = package.expose.passthru.manifest;
   in {
@@ -18,9 +18,7 @@
   inventory = import ../../qualification/package-activation-inventory.nix {
     inherit pkgs lib;
   };
-  serviceManagement = import ../../lib/abilities/service-management.nix {
-    inherit (lib.abilities) schemas guarantee;
-  };
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
   migratedServices = [
     "cloudcore"
     "conntrack-tools"
@@ -144,7 +142,7 @@
     && (builtins.head contract.ability.exports).interface.name == spec.interface
     && (builtins.head contract.ability.exports).interface.abi == 1
     && provider.implementation.kind == "pure-composition"
-    && provider.owns_resource_kinds == [serviceManagement.interface.name]
+    && provider.owns_resource_kinds == []
     && requirement.accepted_interfaces == [serviceManagement.interface]
     && requirement.methods == spec.methods
     && requirement.guarantees == requiredGuarantees

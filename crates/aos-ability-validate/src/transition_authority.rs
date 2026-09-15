@@ -726,7 +726,6 @@ fn validate_teardown_provider(
                         && package.exports.iter().any(|export| {
                             export.interface == implementation.interface
                                 && export.implementation == authorization.implementation.descriptor
-                                && export.aggregation.is_some()
                         })
                 })
         }

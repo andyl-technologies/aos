@@ -133,6 +133,7 @@ pub fn ab_image_rollout_interface() -> Result<InterfaceDocument> {
 
     let mut document = interface_document(
         interface_name,
+        "rollout",
         request,
         methods,
         LifecycleSemantics {

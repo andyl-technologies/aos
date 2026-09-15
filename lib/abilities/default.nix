@@ -6,6 +6,7 @@
 {
   types,
   mkOption,
+  evalModules,
 }: let
   moduleOptionTypes = types;
   schemas = import ./schema.nix;
@@ -18,7 +19,6 @@
 
   fail = message:
     diagnostics.throw "value-type-mismatch" "abilities: ${message}";
-  normalizeOperationFamily = import ./_operation-family.nix {inherit fail;};
   failLimit = message:
     diagnostics.throw "limit-exceeded" "abilities: ${message}";
   failMissingReference = message:
@@ -72,6 +72,233 @@
     if builtins.isString value && builtins.match "sha256:[0-9a-f]{64}" value != null
     then value
     else fail "${context} must be a sha256 digest";
+
+  descriptorFor = domain: document: "sha256:${builtins.hashString "sha256" (builtins.toJSON {inherit domain document;})}";
+
+  interfaceIdentity = document: {
+    inherit (document.interface) name abi;
+    descriptor = descriptorFor "aos.ability.interface/v1" document;
+  };
+
+  declareInterface = {
+    name,
+    abi,
+    description,
+    requestType,
+    configurationType ? null,
+    outputs ? {},
+    methods ? {},
+    lifecycle,
+    aggregation,
+    guarantees ? [],
+    requiredFeatures ? [],
+  }: {
+    inherit name abi description requestType configurationType outputs methods lifecycle aggregation guarantees requiredFeatures;
+  };
+
+  interfaceDeclarationFromDefinition = requiredFeatures: definition: let
+    export = requireMarker "interface definition" "aos-ability-export" definition;
+  in
+    export._interface_declaration // {inherit requiredFeatures;};
+
+  makeInterfaceDocument = requiredFeatures: export: {
+    schema = "aos.ability.interface/v1";
+    required_features = uniqueSortedStrings "required features" requiredFeatures;
+    interface = normalizeExport export;
+  };
+
+  interfaceDocumentFromDeclaration = declaration: let
+    semanticOutput = output: builtins.removeAttrs output ["description"];
+    semanticMethod = method:
+      (builtins.removeAttrs method ["description"])
+      // {outputs = builtins.mapAttrs (_: semanticOutput) method.outputs;};
+  in
+    makeInterfaceDocument declaration.requiredFeatures (define {
+      interface = declaration.name;
+      inherit (declaration) abi lifecycle guarantees;
+      outputs = builtins.mapAttrs (_: semanticOutput) declaration.outputs;
+      methods = builtins.mapAttrs (_: semanticMethod) declaration.methods;
+      requestSchema = declaration.requestType;
+      configurationSchema = declaration.configurationType;
+      aggregation = declaration.aggregation;
+      requires = {};
+      composeEntry = "compose";
+      transitionEntry = "transition";
+      ownsResourceKinds = [];
+      compose = _: {};
+      transition = _: {};
+    });
+
+  interfaceDeclarationFromDocument = {
+    document,
+    documentation,
+  }: let
+    interface = document.interface;
+    outputFromDocument = description: output: {
+      inherit description;
+      schema = abilityTypes.fromSchema output.schema;
+      inherit (output) phase visibility lifetime;
+    };
+    outcomeFromDocument = outcome: {
+      completionEvidence = abilityTypes.fromSchema outcome.completion_evidence;
+      observationEvidence = abilityTypes.fromSchema outcome.observation_evidence;
+      supportsRejectedBeforeEffect = outcome.supports_rejected_before_effect;
+      inherit (outcome) indeterminate;
+    };
+    methodFromDocument = name: method: {
+      description = documentation.methods.${name}.description;
+      semantics = {
+        requiredTargetAccess = method.semantics.required_target_access;
+        stopsProvider = method.semantics.stops_provider;
+      };
+      parameters = abilityTypes.fromSchema method.parameters;
+      targetResource = method.target_resource;
+      outputs = builtins.mapAttrs (outputName: output:
+        outputFromDocument documentation.methods.${name}.outputs.${outputName} output)
+      method.outputs;
+      permittedOperations = method.permitted_operations;
+      inherit (method) guarantees;
+      outcome = outcomeFromDocument method.outcome;
+    };
+  in
+    declareInterface {
+      description = documentation.description;
+      inherit (interface) name abi lifecycle guarantees;
+      requestType = abilityTypes.fromSchema interface.request;
+      configurationType =
+        if interface ? configuration
+        then abilityTypes.fromSchema interface.configuration
+        else null;
+      outputs = builtins.mapAttrs (name: output: outputFromDocument documentation.outputs.${name} output) interface.outputs;
+      methods = builtins.mapAttrs methodFromDocument interface.methods;
+      aggregation = {
+        inherit (interface.aggregation) scope;
+        key = interface.aggregation.key;
+        rejectSlotCollisions = interface.aggregation.reject_slot_collisions;
+        mergeContract = interface.aggregation.merge_contract;
+        controllerGroup = interface.aggregation.controller_group;
+      };
+      requiredFeatures = document.required_features;
+    };
+
+  implementationFromDefinition = interfaceAlias: entry: let
+    definition = requireMarker "implementation definition" "aos-ability-export" entry.definition;
+  in {
+    _legacy = true;
+    description = null;
+    interface = interfaceAlias;
+    methods = builtins.attrNames (definition._interface_declaration.methods or {});
+    guarantees = definition._interface_declaration.guarantees or [];
+    inherit
+      (definition)
+      requirements
+      state_format
+      compose
+      transition
+      provide
+      ;
+    artifact = entry.artifact or null;
+    artifacts = entry.artifacts or [];
+    handlerDescriptor = entry.handler or null;
+    providerModule = entry.providerModule or null;
+    desiredType =
+      if entry ? desiredType
+      then entry.desiredType
+      else definition._interface_declaration.requestType or null;
+    requiredFeatures = entry.requiredFeatures or [];
+  };
+
+  projectDefinitions = entries: {
+    interfaces =
+      builtins.mapAttrs (
+        _: entry:
+          interfaceDeclarationFromDefinition (entry.requiredFeatures or []) entry.definition
+      )
+      entries;
+    implementations = builtins.mapAttrs implementationFromDefinition entries;
+  };
+
+  exportForImplementation = document: implementationName: implementation: {
+    _type = "aos-ability-export";
+    interface = {
+      inherit (document.interface) name abi;
+      descriptor = null;
+    };
+    request_schema = document.interface.request;
+    configuration_schema = document.interface.configuration or null;
+    inherit (document.interface) outputs methods lifecycle guarantees;
+    aggregation = document.interface.aggregation;
+    inherit (implementation) requirements state_format compose transition provide;
+    compose_entry =
+      if implementation.compose == null
+      then null
+      else "compose";
+    transition_entry =
+      if implementation.transition == null
+      then null
+      else "transition";
+    owns_resource_kinds = builtins.attrNames (builtins.listToAttrs (builtins.map
+      (method: {
+        name = method.target_resource;
+        value = true;
+      })
+      (builtins.filter
+        (method: method.semantics.required_target_access == "exclusive-write")
+        (builtins.map
+          (name: document.interface.methods.${name})
+          implementation.methods))));
+    handler =
+      if implementation.handlerDescriptor == null
+      then null
+      else implementationName;
+  };
+
+  qualifyPackageAbilities = packageName: abilities: let
+    checkedPackageName =
+      if abilityTypes.packageName.check packageName
+      then packageName
+      else fail "ability package name is invalid";
+    qualify = name: "${checkedPackageName}:${requireLocalKey "package-local ability alias" name}";
+    qualifyAttrs = transform: values:
+      builtins.listToAttrs (builtins.map (name: {
+        name = qualify name;
+        value = transform values.${name};
+      }) (builtins.attrNames values));
+    qualifyDeferredResults = value:
+      if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
+      then value // {request = qualify value.request;}
+      else if builtins.isAttrs value
+      then builtins.mapAttrs (_: qualifyDeferredResults) value
+      else if builtins.isList value
+      then builtins.map qualifyDeferredResults value
+      else value;
+  in {
+    environment = abilities.environment or null;
+    interfaces = qualifyAttrs (value: value) (abilities.interfaces or {});
+    implementations = qualifyAttrs (value:
+      value
+      // {
+        interface = qualify value.interface;
+        package = packageName;
+      }) (abilities.implementations or {});
+    requirementTemplates = qualifyAttrs (value: value) (abilities.requirementTemplates or {});
+    instances = qualifyAttrs (value:
+      value
+      // {
+        implementation =
+          if value.implementation == null
+          then null
+          else qualify value.implementation;
+      }) (abilities.instances or {});
+    requests = qualifyAttrs (value:
+      (qualifyDeferredResults value)
+      // {
+        requirement = qualify value.requirement;
+        package = packageName;
+      }) (abilities.requests or {});
+    bindings = abilities.bindings or {};
+    desiredResources = abilities.desiredResources or {};
+  };
 
   requireU32Positive = context: value:
     if builtins.isInt value && value > 0 && value <= 4294967295
@@ -333,6 +560,7 @@
   normalizeRequirement = alias: value: let
     checked =
       requireAttrs "requirement '${alias}'" [
+        "description"
         "interface"
         "abi"
         "descriptor"
@@ -385,7 +613,7 @@
   normalizeOutput = context: value: let
     checked = requireAttrs context ["schema" "phase" "visibility" "lifetime"] value;
   in {
-    schema = schemas.validateSchema "${context} schema" checked.schema;
+    schema = schemaFromType "${context} type" checked.schema;
     phase =
       requireChoice
       "${context} phase"
@@ -403,8 +631,8 @@
   normalizeOutcome = context: value: let
     checked = requireAttrs context ["completionEvidence" "observationEvidence" "supportsRejectedBeforeEffect" "indeterminate"] value;
   in {
-    completion_evidence = schemas.validateSchema "${context} completionEvidence" checked.completionEvidence;
-    observation_evidence = schemas.validateSchema "${context} observationEvidence" checked.observationEvidence;
+    completion_evidence = schemaFromType "${context} completionEvidence type" checked.completionEvidence;
+    observation_evidence = schemaFromType "${context} observationEvidence type" checked.observationEvidence;
     supports_rejected_before_effect =
       if builtins.isBool checked.supportsRejectedBeforeEffect
       then checked.supportsRejectedBeforeEffect
@@ -442,7 +670,7 @@
   normalizeMethod = name: value: let
     checked =
       requireAttrs "method '${name}'" [
-        "operationFamily"
+        "semantics"
         "parameters"
         "targetResource"
         "outputs"
@@ -451,9 +679,21 @@
         "outcome"
       ]
       value;
+    semantics = requireAttrs "method '${name}' semantics" ["requiredTargetAccess" "stopsProvider"] checked.semantics;
   in {
-    operation_family = normalizeOperationFamily checked.operationFamily;
-    parameters = schemas.validateSchema "method '${name}' parameters" checked.parameters;
+    semantics = {
+      required_target_access =
+        requireChoice "method '${name}' required target access"
+        ["read" "shared-write" "exclusive-write"]
+        semantics.requiredTargetAccess;
+      stops_provider =
+        if !builtins.isBool semantics.stopsProvider
+        then fail "method '${name}' stopsProvider must be a Boolean"
+        else if semantics.stopsProvider && semantics.requiredTargetAccess != "exclusive-write"
+        then fail "method '${name}' that stops a provider requires exclusive-write target access"
+        else semantics.stopsProvider;
+    };
+    parameters = schemaFromType "method '${name}' parameter type" checked.parameters;
     target_resource = requireQualifiedName "method '${name}' targetResource" checked.targetResource;
     outputs =
       builtins.mapAttrs (
@@ -465,12 +705,7 @@
     outcome = normalizeOutcome "method '${name}' outcome" checked.outcome;
   };
 
-  normalizeOwnedMethod = interface: name: value: let
-    method = normalizeMethod name value;
-  in
-    if method.target_resource == interface
-    then method
-    else failMethodContract "method '${name}' targetResource must equal its owning interface";
+  normalizeOwnedMethod = _: normalizeMethod;
 
   configurationSchemaIsLiteral = schema:
     if
@@ -491,8 +726,11 @@
     then builtins.all configurationSchemaIsLiteral (builtins.attrValues schema.variants)
     else true;
 
+  schemaFromType = context: value:
+    abilityTypes.schemaOf context value;
+
   normalizeConfigurationSchema = value: let
-    schema = schemas.validateSchema "export configurationSchema" value;
+    schema = schemaFromType "export configuration type" value;
   in
     if configurationSchemaIsLiteral schema
     then schema
@@ -552,7 +790,7 @@
         name = checked.interface;
         abi = requireU32Positive "interface ABI" checked.abi;
       };
-      request_schema = schemas.validateSchema "export requestSchema" checked.requestSchema;
+      request_schema = schemaFromType "export request type" checked.requestSchema;
       configuration_schema =
         if (checked.configurationSchema or null) == null
         then null
@@ -584,6 +822,28 @@
         then null
         else requireDigest "provider state-format descriptor" checked.stateFormat;
       inherit compose transition handler provide;
+      _interface_declaration = {
+        _legacy = true;
+        description = null;
+        name = checked.interface;
+        abi = checked.abi;
+        requestType = checked.requestSchema;
+        configurationType = checked.configurationSchema or null;
+        outputs = builtins.mapAttrs (_: output:
+          output // {description = null;})
+        checked.outputs;
+        methods = builtins.mapAttrs (_: method:
+          method
+          // {
+            description = null;
+            outputs = builtins.mapAttrs (_: output:
+              output // {description = null;})
+            method.outputs;
+          })
+        (checked.methods or {});
+        inherit (checked) lifecycle aggregation;
+        guarantees = checked.guarantees or [];
+      };
     };
 
   normalizeExport = value: let
@@ -592,7 +852,7 @@
     {
       inherit (export.interface) name abi;
       request = export.request_schema;
-      inherit (export) outputs methods lifecycle guarantees;
+      inherit (export) outputs methods lifecycle guarantees aggregation;
     }
     // (
       if export.configuration_schema == null
@@ -645,7 +905,6 @@
       if export.interface ? descriptor
       then export.interface
       else fail "package export requires a validator-derived interface descriptor pin";
-    aggregation = export.aggregation;
     implementation = requireDigest "provider implementation descriptor" implementation;
   };
 
@@ -1228,31 +1487,54 @@ in rec {
     schemas
     effects
     define
+    declareInterface
     normalizeExport
     normalizeExportDeclaration
     normalizeImplementation
     compose
     expand
     transition
+    descriptorFor
+    interfaceIdentity
+    interfaceDocumentFromDeclaration
+    interfaceDeclarationFromDocument
+    projectDefinitions
+    exportForImplementation
+    qualifyPackageAbilities
     ;
   types = abilityTypes;
   interfaces = {
     serviceManagement = import ./service-management.nix {
-      inherit schemas guarantee;
+      inherit declareInterface guarantee interfaceDocumentFromDeclaration interfaceIdentity;
+      inherit (abilityTypes) boolean;
     };
   };
-  module = import ./module.nix {
-    inherit mkOption;
-    moduleTypes = moduleOptionTypes;
-  };
+  module = {config, ...}:
+    import ./module.nix {
+      inherit config mkOption abilityTypes schemas evalModules interfaceDocumentFromDeclaration interfaceIdentity;
+      moduleTypes = moduleOptionTypes;
+    };
 
   normalizeRequirements = values:
     builtins.map
     (alias: normalizeRequirement alias values.${alias})
     (builtins.attrNames values);
 
-  guarantee = value:
-    guaranteeKey "guarantee" value;
+  guarantee = value: let
+    checked = requireAttrs "guarantee" ["name" "version" "semantics"] value;
+    document = {
+      name = requireQualifiedName "guarantee name" checked.name;
+      version = requireU32Positive "guarantee version" checked.version;
+      semantics =
+        if builtins.isString (checked.semantics or null) && checked.semantics != ""
+        then checked.semantics
+        else fail "guarantee semantics must be a non-empty string";
+    };
+  in
+    guaranteeKey "guarantee" {
+      inherit (document) name version;
+      descriptor = descriptorFor "aos.ability.execution-guarantee/v1" document;
+    };
 
   resultOf = request: output: {
     _type = "aos-request-output-reference";
@@ -1393,9 +1675,5 @@ in rec {
     closure = requireDigest "artifact closure" checked.closure;
   };
 
-  interfaceDocument = requiredFeatures: export: {
-    schema = "aos.ability.interface/v1";
-    required_features = uniqueSortedStrings "required features" requiredFeatures;
-    interface = normalizeExport export;
-  };
+  interfaceDocument = makeInterfaceDocument;
 }

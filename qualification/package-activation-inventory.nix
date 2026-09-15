@@ -9,10 +9,10 @@
 
   exposes = name: pkgs.${name} ? expose;
   hasAbility = name:
-    pkgs.${name} ? abilityContract;
+    pkgs.${name} ? abilities && pkgs.${name}.abilities ? contract;
   activationMode = name:
     (builtins.fromJSON (
-      builtins.unsafeDiscardStringContext pkgs.${name}.abilityContract.abilityTemplateJson
+      builtins.unsafeDiscardStringContext pkgs.${name}.abilities.contract.abilityTemplateJson
     ))
     .activation_mode;
   documentationKind = name:

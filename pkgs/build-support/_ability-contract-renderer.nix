@@ -57,6 +57,7 @@ in {
         "artifacts"
         "exports"
         "handlers"
+        "interfaces"
         "ownership"
         "requiredFeatures"
         "requirements"
@@ -66,6 +67,9 @@ in {
     requiredFeatures = lib.sort builtins.lessThan (lib.unique (checked.requiredFeatures or ["abilities-v1"]));
     authoredExports = checked.exports or {};
     authoredHandlers = checked.handlers or {};
+    authoredInterfaces = checked.interfaces or {};
+    interfaceNames = builtins.attrNames authoredInterfaces;
+    exportInterfaceCheck = builtins.attrNames authoredExports == interfaceNames;
 
     preparedExports =
       builtins.mapAttrs (name: value: let
@@ -75,7 +79,7 @@ in {
         # from the payload derivation to its separately built companion.
         artifact = resolveArtifact (entry.artifact or (abilities.packageOutput {}));
         authored = entry.export or (fail packageName "export '${name}' must set export");
-        interfaceDocument = abilities.interfaceDocument (entry.requiredFeatures or []) authored;
+        interfaceDocument = authoredInterfaces.${name};
         pinned = abilities.pinInterface {
           export = authored;
           descriptor = placeholderDigest;
@@ -96,8 +100,8 @@ in {
       in {
         artifact = resolveArtifact entry.artifact;
         entry_point = entry.entryPoint or (fail packageName "handler '${name}' must set entryPoint");
-        arguments = abilities.schemas.validateSchema "ability handler '${name}' arguments" entry.arguments;
-        result = abilities.schemas.validateSchema "ability handler '${name}' result" entry.result;
+        arguments = abilities.types.schemaOf "ability handler '${name}' argument type" entry.arguments;
+        result = abilities.types.schemaOf "ability handler '${name}' result type" entry.result;
       })
       authoredHandlers;
 
@@ -194,6 +198,7 @@ in {
       exportNames;
   in
     assert featureCheck;
+    assert exportInterfaceCheck || fail packageName "must project exactly one interface document per implementation";
     assert handlerLinkCheck || fail packageName "contains a terminal export without an exact same-artifact handler"; {
       inherit allPaths graphSpecs interfaces referenceGraph template;
       templateJson = builtins.toJSON template;

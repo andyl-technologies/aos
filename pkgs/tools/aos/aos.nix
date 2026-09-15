@@ -197,11 +197,11 @@
   abilityReferenceNginxGraph = mkReferenceGraph {
     rootPaths =
       [abilityReferenceNginxFixture abilityReferenceHttpBackendFixture]
-      ++ builtins.map (package: package.abilityContract) (builtins.attrValues abilityReferenceRegistryPackages);
+      ++ builtins.map (package: package.abilities.contract) (builtins.attrValues abilityReferenceRegistryPackages);
     pname = "aos-ability-reference-nginx-graph";
   };
   abilityContractSmokeGraph = mkReferenceGraph {
-    rootPaths = [ability-package-smoke ability-package-smoke.abilityContract];
+    rootPaths = [ability-package-smoke ability-package-smoke.abilities.contract];
     pname = "aos-ability-package-smoke-graph";
   };
   abilityEvaluatorIfdFixture = builtins.derivation {
@@ -466,10 +466,10 @@ in
       export AOS_TEST_ABILITY_REFERENCE_SERVICE_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceServiceFixture})"
       export AOS_TEST_ABILITY_REFERENCE_PACKAGES="${
         lib.concatStringsSep ":" (
-          builtins.map (package: "${package.abilityContract}") (builtins.attrValues abilityReferenceRegistryPackages)
+          builtins.map (package: "${package.abilities.contract}") (builtins.attrValues abilityReferenceRegistryPackages)
         )
       }"
-      export AOS_TEST_ABILITY_PACKAGE_SMOKE="${ability-package-smoke.abilityContract}"
+      export AOS_TEST_ABILITY_PACKAGE_SMOKE="${ability-package-smoke.abilities.contract}"
       export AOS_TEST_ABILITY_CACHE="$NIX_BUILD_TOP/ability-evaluator-cache"
       ${lib.optionalString (!isCross) ''
         ability_nix_root="$NIX_BUILD_TOP/ability-retention-nix"

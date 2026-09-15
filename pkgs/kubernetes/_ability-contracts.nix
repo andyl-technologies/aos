@@ -1,24 +1,10 @@
 ##! Shared ability contracts for Kubernetes role and contribution packages.
 {lib}: let
-  inherit (lib.abilities) schemas;
+  inherit (lib.abilities) types;
 
-  interface = name: descriptor: {
-    inherit name descriptor;
-    abi = 1;
-  };
-
-  k3sInterface =
-    interface
-    "aos.k3s-cluster"
-    "sha256:64fe45877c89cb26fa3d46e31af58b9ecdd69b276f15535242156f095ea30524";
-  systemdBootstrap =
-    interface
-    "aos.systemd-provider-bootstrap"
-    "sha256:833e92258892d87a1f1cb16f66bfd1629c47a97386a9853cd93ffa30037b82f1";
-  kubernetesEffects =
-    interface
-    "aos.kubernetes-object-effects"
-    "sha256:bbced9c501c3c41ab4b5f2a70a2945bde2128ef0a37ad900f6d9f1e2f110963e";
+  k3sInterfaceName = "aos.k3s-cluster";
+  systemdBootstrapName = "aos.systemd-provider-bootstrap";
+  kubernetesEffectsName = "aos.kubernetes-object-effects";
 
   lifecycle = persistentDeleteMethod: {
     stableResourceIdentity = true;
@@ -54,24 +40,24 @@
   };
 
   string = maximum:
-    schemas.string {
+    types.string {
       maxLength = maximum;
       syntax = null;
     };
-  optionalString = maximum: schemas.optional (string maximum);
-  stringMap = schemas.map {
+  optionalString = maximum: types.optional (string maximum);
+  stringMap = types.map {
     keyMaxLength = 128;
     keySyntax = "local-key-v1";
     maxEntries = 16;
     value = string 1048576;
   };
-  resourceMap = schemas.map {
+  resourceMap = types.map {
     keyMaxLength = 128;
     keySyntax = "local-key-v1";
     maxEntries = 16;
-    value = schemas.resourceReference;
+    value = types.resourceReference;
   };
-  addon = schemas.record {
+  addon = types.record {
     fields = {
       chart = string 4096;
       repo = string 4096;
@@ -81,7 +67,7 @@
     };
     optional = [];
   };
-  kubernetesIdentity = schemas.record {
+  kubernetesIdentity = types.record {
     fields = {
       "api-version" = string 256;
       kind = string 256;
@@ -90,15 +76,15 @@
     };
     optional = [];
   };
-  kubernetesObservation = schemas.record {
+  kubernetesObservation = types.record {
     fields = {
-      available = schemas.boolean;
-      "content-matches" = schemas.boolean;
-      exists = schemas.boolean;
+      available = types.boolean;
+      "content-matches" = types.boolean;
+      exists = types.boolean;
       "object-revision" = optionalString 71;
-      owned = schemas.boolean;
+      owned = types.boolean;
       "resource-version" = optionalString 4096;
-      schema = schemas.enum ["aos.ability.kubernetes-object-observation/v1"];
+      schema = types.enum ["aos.ability.kubernetes-object-observation/v1"];
       uid = optionalString 4096;
     };
     optional = [];
@@ -110,9 +96,16 @@
     supportsRejectedBeforeEffect = true;
     inherit indeterminate;
   };
+  methodSemantics = name: {
+    requiredTargetAccess =
+      if builtins.elem name ["observe" "observe-boot" "observe-health" "validate" "verify"]
+      then "read"
+      else "exclusive-write";
+    stopsProvider = name == "stop";
+  };
   method = target: name: family: parameters: outputs: evidence: {
     targetResource = target;
-    operationFamily = family;
+    semantics = methodSemantics name;
     inherit parameters outputs;
     permittedOperations = [name];
     guarantees = [];
@@ -122,11 +115,11 @@
   kubernetesMethods = builtins.listToAttrs (builtins.map (name: {
     inherit name;
     value =
-      method kubernetesEffects.name name {
+      method kubernetesEffectsName name {
         kind = "kubernetes-object";
         action = name;
       }
-      schemas.boolean {
+      types.boolean {
         observation = output kubernetesObservation "observation";
       }
       kubernetesObservation;
@@ -134,31 +127,31 @@
 
   bootstrapMethods = {
     observe-manager =
-      method systemdBootstrap.name "observe-manager" {
+      method systemdBootstrapName "observe-manager" {
         kind = "observe-readiness";
       }
-      schemas.boolean {
-        cluster-assignment = output schemas.providerAssignment "observation";
+      types.boolean {
+        cluster-assignment = output types.providerAssignment "observation";
       }
-      schemas.boolean;
+      types.boolean;
     start =
-      method systemdBootstrap.name "start" {
+      method systemdBootstrapName "start" {
         kind = "service-lifecycle";
         action = "start";
       }
-      schemas.boolean {}
-      schemas.boolean;
+      types.boolean {}
+      types.boolean;
     stop =
-      method systemdBootstrap.name "stop" {
+      method systemdBootstrapName "stop" {
         kind = "service-lifecycle";
         action = "stop";
       }
-      schemas.boolean {}
-      schemas.boolean;
+      types.boolean {}
+      types.boolean;
   };
 
   terminalExport = {
-    selected,
+    name,
     group,
     handler,
     requestSchema,
@@ -166,16 +159,71 @@
     deleteMethod ? null,
   }:
     lib.abilities.define {
-      interface = selected.name;
-      abi = selected.abi;
+      interface = name;
+      abi = 1;
       inherit requestSchema methods handler;
       outputs = {};
       lifecycle = lifecycle deleteMethod;
       guarantees = [];
       aggregation = aggregation group;
       requires = {};
-      ownsResourceKinds = [selected.name];
+      ownsResourceKinds = [name];
     };
+  systemdDefinition = terminalExport {
+    name = systemdBootstrapName;
+    group = "systemd-bootstrap";
+    handler = "systemd-bootstrap-terminal";
+    requestSchema = types.boolean;
+    methods = bootstrapMethods;
+  };
+  kubernetesDefinition = terminalExport {
+    name = kubernetesEffectsName;
+    group = "kubernetes";
+    handler = "native-kubernetes-object";
+    requestSchema = kubernetesIdentity;
+    methods = kubernetesMethods;
+    deleteMethod = "delete";
+  };
+  systemdBootstrap = lib.abilities.interfaceIdentity (lib.abilities.interfaceDocument [] systemdDefinition);
+  kubernetesEffects = lib.abilities.interfaceIdentity (lib.abilities.interfaceDocument [] kubernetesDefinition);
+
+  k3sDefinition = {
+    bootstrapMatrix ? false,
+    effectQualification ? false,
+    providerStateQualification ? false,
+    transitionTransform ? transition: transition,
+  }:
+    lib.abilities.define {
+      interface = k3sInterfaceName;
+      abi = 1;
+      requestSchema = addon;
+      outputs = {
+        object-json = output stringMap "planning";
+        objects = output resourceMap "planning";
+        service = output types.resourceReference "planning";
+        services = output resourceMap "planning";
+      };
+      methods = {};
+      lifecycle = lifecycle null;
+      guarantees = [];
+      aggregation = aggregation "k3s";
+      requires = {
+        systemd-bootstrap = requirement systemdBootstrap ["observe-manager" "start" "stop"];
+        kubernetes-terminal = requirement kubernetesEffects ["apply" "delete" "observe"];
+      };
+      composeEntry = "compose";
+      transitionEntry = "transition";
+      ownsResourceKinds = [k3sInterfaceName];
+      inherit (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix systemdBootstrap kubernetesEffects;}) compose;
+      transition = transitionTransform (
+        if providerStateQualification
+        then (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix systemdBootstrap kubernetesEffects;}).providerStateQualificationTransition
+        else if effectQualification
+        then (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix systemdBootstrap kubernetesEffects;}).effectQualificationTransition
+        else (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix systemdBootstrap kubernetesEffects;}).transition
+      );
+    };
+  k3sInterface = lib.abilities.interfaceIdentity (lib.abilities.interfaceDocument [] (k3sDefinition {}));
 in rec {
   inherit k3sInterface kubernetesEffects systemdBootstrap;
 
@@ -192,76 +240,42 @@ in rec {
     transitionTransform ? transition: transition,
     bootstrapMatrix ? false,
   }: {
-    config.aos.abilities.implementations.k3s = {
-      artifacts = payloadArtifacts;
-      definition = lib.abilities.define {
-        interface = k3sInterface.name;
-        abi = k3sInterface.abi;
-        requestSchema = addon;
-        outputs = {
-          object-json = output stringMap "planning";
-          objects = output resourceMap "planning";
-          service = output schemas.resourceReference "planning";
-          services = output resourceMap "planning";
+    config.aos.abilities = lib.abilities.projectDefinitions {
+      k3s = {
+        artifacts = payloadArtifacts;
+        definition = k3sDefinition {
+          inherit bootstrapMatrix effectQualification providerStateQualification transitionTransform;
         };
-        methods = {};
-        lifecycle = lifecycle null;
-        guarantees = [];
-        aggregation = aggregation "k3s";
-        requires = {
-          systemd-bootstrap = requirement systemdBootstrap ["observe-manager" "start" "stop"];
-          kubernetes-terminal = requirement kubernetesEffects ["apply" "delete" "observe"];
-        };
-        composeEntry = "compose";
-        transitionEntry = "transition";
-        ownsResourceKinds = [k3sInterface.name];
-        inherit (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}) compose;
-        transition = transitionTransform (
-          if providerStateQualification
-          then (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}).providerStateQualificationTransition
-          else if effectQualification
-          then (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}).effectQualificationTransition
-          else (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}).transition
-        );
       };
     };
   };
 
   systemdPackage = runtimeSelector: {
-    config.aos.abilities.implementations.systemd-bootstrap = {
-      artifact = runtimeSelector;
-      definition = terminalExport {
-        selected = systemdBootstrap;
-        group = "systemd-bootstrap";
-        handler = "systemd-bootstrap-terminal";
-        requestSchema = schemas.boolean;
-        methods = bootstrapMethods;
-      };
-      handler = {
+    config.aos.abilities = lib.abilities.projectDefinitions {
+      systemd-bootstrap = {
         artifact = runtimeSelector;
-        entryPoint = "bin/.aos-package-runtime-unwrapped";
-        arguments = schemas.boolean;
-        result = schemas.boolean;
+        definition = systemdDefinition;
+        handler = {
+          artifact = runtimeSelector;
+          entryPoint = "bin/.aos-package-runtime-unwrapped";
+          arguments = types.boolean;
+          result = types.boolean;
+        };
       };
     };
   };
 
   kubernetesPackage = runtimeSelector: {
-    config.aos.abilities.implementations.kubernetes = {
-      artifact = runtimeSelector;
-      definition = terminalExport {
-        selected = kubernetesEffects;
-        group = "kubernetes";
-        handler = "native-kubernetes-object";
-        requestSchema = kubernetesIdentity;
-        methods = kubernetesMethods;
-        deleteMethod = "delete";
-      };
-      handler = {
+    config.aos.abilities = lib.abilities.projectDefinitions {
+      kubernetes = {
         artifact = runtimeSelector;
-        entryPoint = "libexec/aos-kubernetes-object-handler";
-        arguments = schemas.boolean;
-        result = kubernetesObservation;
+        definition = kubernetesDefinition;
+        handler = {
+          artifact = runtimeSelector;
+          entryPoint = "libexec/aos-kubernetes-object-handler-v1";
+          arguments = types.boolean;
+          result = kubernetesObservation;
+        };
       };
     };
   };

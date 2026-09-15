@@ -4,7 +4,7 @@
   abilityContractRenderer ? null,
   fixtureRoot ? ../.,
 }: let
-  inherit (abilities) effects schemas;
+  inherit (abilities) effects schemas types;
 
   digest = byte: "sha256:${builtins.concatStringsSep "" (builtins.genList (_: byte) 64)}";
 
@@ -91,19 +91,23 @@
     builtins.foldl' (value: _: {nested = value;}) leaf (builtins.genList (_: null) depth);
 
   outputToAuthoring = value: {
-    inherit (value) schema phase visibility lifetime;
+    schema = types.fromSchema value.schema;
+    inherit (value) phase visibility lifetime;
   };
 
   outcomeToAuthoring = value: {
-    completionEvidence = value.completion_evidence;
-    observationEvidence = value.observation_evidence;
+    completionEvidence = types.fromSchema value.completion_evidence;
+    observationEvidence = types.fromSchema value.observation_evidence;
     supportsRejectedBeforeEffect = value.supports_rejected_before_effect;
     inherit (value) indeterminate;
   };
 
   methodToAuthoring = value: {
-    operationFamily = value.operation_family;
-    inherit (value) parameters;
+    semantics = {
+      requiredTargetAccess = value.semantics.required_target_access;
+      stopsProvider = value.semantics.stops_provider;
+    };
+    parameters = types.fromSchema value.parameters;
     targetResource = value.target_resource;
     outputs = builtins.mapAttrs (_: outputToAuthoring) value.outputs;
     permittedOperations = value.permitted_operations;
@@ -115,8 +119,11 @@
     abilities.define {
       interface = value.name;
       inherit (value) abi;
-      requestSchema = value.request;
-      configurationSchema = value.configuration or null;
+      requestSchema = types.fromSchema value.request;
+      configurationSchema =
+        if (value.configuration or null) == null
+        then null
+        else types.fromSchema value.configuration;
       outputs = builtins.mapAttrs (_: outputToAuthoring) value.outputs;
       methods = builtins.mapAttrs (_: methodToAuthoring) value.methods;
       lifecycle = {
@@ -147,7 +154,7 @@
     abilities.define {
       interface = "aos.test.terminal";
       abi = 1;
-      requestSchema = schemas.boolean;
+      requestSchema = types.boolean;
       outputs = {};
       methods = {};
       lifecycle = {
@@ -173,7 +180,7 @@
   compositeExport = abilities.define {
     interface = "aos.test.composite";
     abi = 1;
-    requestSchema = schemas.boolean;
+    requestSchema = types.boolean;
     outputs = {};
     methods = {};
     lifecycle = {
@@ -207,7 +214,7 @@
     abilities.define ({
         interface = "aos.test.stateful";
         abi = 1;
-        requestSchema = schemas.boolean;
+        requestSchema = types.boolean;
         outputs = {};
         methods = {};
         lifecycle = {
@@ -266,14 +273,15 @@
           export = stateFormatExport arguments;
           requiredFeatures = [];
         };
+        interfaces.stateful = abilities.interfaceDocument [] (stateFormatExport arguments);
         handlers =
           if arguments.implementation == "terminal-handler"
           then {
             stateful-handler = {
               artifact = abilities.packageOutput {};
               entryPoint = "bin/stateful-handler";
-              arguments = schemas.boolean;
-              result = schemas.boolean;
+              arguments = types.boolean;
+              result = types.boolean;
             };
           }
           else {};
@@ -362,7 +370,7 @@
         guarantee = abilities.guarantee {
           name = "aos.test.guarantee";
           version = 1;
-          descriptor = digest "4";
+          semantics = "test guarantee semantics";
         };
         result = abilities.resultOf "child" "endpoint";
       }
@@ -470,7 +478,21 @@
       }
     else if operation == "interface-document"
     then {
-      abilities = ["define" "effects" "interfaceDocument" "normalizeExport" "schemas"];
+      abilities = [
+        "declareInterface"
+        "define"
+        "descriptorFor"
+        "effects"
+        "exportForImplementation"
+        "interfaceDocument"
+        "interfaceDocumentFromDeclaration"
+        "interfaceDeclarationFromDocument"
+        "interfaceIdentity"
+        "normalizeExport"
+        "projectDefinitions"
+        "qualifyPackageAbilities"
+        "schemas"
+      ];
       effects = [];
       schemas = ["validateSchema"];
     }
@@ -558,7 +580,7 @@
       };
     in
       assert abilities.types.schemaOf "conformance Boolean" abilities.types.boolean == abilities.schemas.boolean;
-      assert builtins.attrNames abilities.module.options == ["aos"]; {
+      assert builtins.attrNames (abilities.module {config = null;}).options == ["aos"]; {
         implementation = abilities.normalizeImplementation artifact pinned;
         declaration = abilities.normalizeExportDeclaration "corpus" (digest "6") pinned;
         requirements = abilities.normalizeRequirements {};
@@ -614,7 +636,7 @@
       export = abilities.define {
         interface = "aos.test.fallback-limit";
         abi = 1;
-        requestSchema = schemas.boolean;
+        requestSchema = types.boolean;
         outputs = {};
         methods = {};
         lifecycle = {

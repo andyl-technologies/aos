@@ -4,48 +4,47 @@
   mkDerivation,
   packageRuntime,
 }: let
-  inherit (lib.abilities) schemas;
+  inherit (lib.abilities) types;
   providerArtifact = ./provider;
   systemdManager = {
     name = "aos.systemd-manager";
     abi = 1;
-    descriptor = "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3";
   };
-  localManager = {
+  localManager = lib.abilities.guarantee {
     name = "aos.local-systemd-manager";
     version = 1;
-    descriptor = "sha256:50995c1c62000543639c8d9f85995c35cc44a9022933ed79e5447654593291d4";
+    semantics = "the selected manager controls the local host systemd instance";
   };
-  delegatedManager = {
+  delegatedManager = lib.abilities.guarantee {
     name = "aos.system-container-manager-delegation";
     version = 1;
-    descriptor = "sha256:a811c4d2cc0fd8e09a019ae518bbe95f393ed5bc3265a1b72902adfa7325ceda";
+    semantics = "the selected manager delegates lifecycle control into a system container";
   };
   string = maximum:
-    schemas.string {
+    types.string {
       maxLength = maximum;
       syntax = null;
     };
-  optionalString = maximum: schemas.optional (string maximum);
-  resourceMap = schemas.map {
+  optionalString = maximum: types.optional (string maximum);
+  resourceMap = types.map {
     keyMaxLength = 128;
     keySyntax = "local-key-v1";
     maxEntries = 8;
-    value = schemas.resourceReference;
+    value = types.resourceReference;
   };
-  request = schemas.record {
+  request = types.record {
     fields.unit = string 256;
     optional = [];
   };
-  observation = schemas.record {
+  observation = types.record {
     fields = {
-      active = schemas.optional schemas.boolean;
+      active = types.optional types.boolean;
       active_state = optionalString 128;
       job_path = optionalString 4096;
       job_result = optionalString 128;
       manager_bus_id = optionalString 1024;
       manager_owner = optionalString 1024;
-      schema = schemas.enum ["aos.ability.systemd-observation/v1"];
+      schema = types.enum ["aos.ability.systemd-observation/v1"];
       state = string 128;
       unit = string 256;
       unit_identity = optionalString 1024;
@@ -65,18 +64,21 @@
     mergeContract = null;
     controllerGroup = group;
   };
+  methodSemantics = name: {
+    requiredTargetAccess =
+      if builtins.elem name ["observe" "observe-boot" "observe-health" "validate" "verify"]
+      then "read"
+      else "exclusive-write";
+    stopsProvider = name == "stop";
+  };
   method = name: {
-    operationFamily =
-      if name == "observe"
-      then {kind = "observe-readiness";}
-      else {
-        kind = "service-lifecycle";
-        action = name;
-      };
+    description = "Performs the ${name} operation through the systemd manager.";
+    semantics = methodSemantics name;
     parameters = request;
     targetResource = systemdManager.name;
     outputs.active = {
-      schema = schemas.boolean;
+      description = "Reports whether the selected unit is active.";
+      schema = types.boolean;
       phase = "observation";
       visibility = "protected";
       lifetime = "attempt";
@@ -91,29 +93,45 @@
     };
   };
   methods = ["observe" "reload" "restart" "start" "stop"];
+  systemdManagerDeclaration = lib.abilities.declareInterface {
+    inherit (systemdManager) name abi;
+    description = "Controls and observes units through the host systemd manager.";
+    requestType = request;
+    outputs = {};
+    methods = builtins.listToAttrs (builtins.map (name: {
+        inherit name;
+        value = method name;
+      })
+      methods);
+    inherit lifecycle;
+    guarantees = [localManager delegatedManager];
+    aggregation = aggregation "systemd-manager";
+  };
+  systemdManagerDocument = lib.abilities.interfaceDocumentFromDeclaration systemdManagerDeclaration;
+  systemdManagerIdentity = lib.abilities.interfaceIdentity systemdManagerDocument;
   requirement = {
-    interface = systemdManager.name;
-    inherit (systemdManager) abi descriptor;
+    interface = systemdManagerIdentity.name;
+    inherit (systemdManagerIdentity) abi descriptor;
     inherit methods;
     strength = "required";
     fallback = null;
     guarantees = [localManager];
   };
-  provider = import ./provider/default.nix;
+  provider = import ./provider/default.nix {systemdManager = systemdManagerIdentity;};
   packageRuntimeSelector = lib.abilities.packageOutput {
     package = "aos";
     output = "packageRuntime";
   };
   abilities = {
-    config.aos.abilities.implementations = {
+    config.aos.abilities = lib.abilities.projectDefinitions {
       driver = {
         definition = lib.abilities.define {
           interface = "aos.test.systemd-manager-matrix";
           abi = 1;
-          requestSchema = schemas.boolean;
-          configurationSchema = schemas.record {
+          requestSchema = types.boolean;
+          configurationSchema = types.record {
             fields = {
-              action = schemas.enum methods;
+              action = types.enum methods;
               revision = string 128;
             };
             optional = [];

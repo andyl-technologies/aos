@@ -7,67 +7,51 @@
   effectQualification ? false,
   providerStateQualification ? false,
 }: let
-  inherit (lib.abilities) schemas;
+  inherit (lib.abilities) types;
   serviceManagementContract = lib.abilities.interfaces.serviceManagement;
-
-  interface = name: descriptor: {
-    inherit name descriptor;
-    abi = 1;
+  runtimeInterfaces = import ./_nginx-runtime-interfaces.nix {
+    inherit (lib.abilities) declareInterface guarantee interfaceDocumentFromDeclaration interfaceIdentity;
+    inherit (lib.abilities) types;
   };
 
-  managedConfiguration =
-    interface
-    "aos.managed-configuration"
-    "sha256:fce7ea027ff0640e13116a3501b96fd356ac96d47d82d26aff193d6d2bc8780e";
-  credentialDelivery =
-    interface
-    "aos.credential-delivery"
-    "sha256:e8c5924bd71f8c018958430a91907c662e09af55221d2c94a758dc4a1377d44f";
-  serviceDefinition =
-    interface
-    "aos.service-definition"
-    "sha256:71b6dad75359531ccfc92bfbb5824fb3555afb097e697d994ee6f9f862ae46af";
-  nginxValidation =
-    interface
-    "aos.nginx-validation"
-    "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1";
-  httpBackend =
-    interface
-    "aos.http-backend"
-    "sha256:289893585ef1b59314c8adfb77c26e698d6db1333178e3b3d1e1e0c0b54754c0";
+  managedConfiguration = runtimeInterfaces.managedConfiguration.interface;
+  credentialDelivery = runtimeInterfaces.credentialDelivery.interface;
+  serviceDefinition = runtimeInterfaces.serviceDefinition.interface;
+  nginxValidationDeclaration = {
+    name = "aos.nginx-validation";
+    abi = 1;
+  };
+  httpBackend = runtimeInterfaces.httpBackend.interface;
   serviceManagement = serviceManagementContract.interface;
-  endpointEffects =
-    interface
-    "aos.network-endpoint-effects"
-    "sha256:6b4d345ab4350917a04b770f0ac4b82888ffe6ef7e647caa9fe94ccb9f9dac6a";
-  storageEffects =
-    interface
-    "aos.host-storage-effects"
-    "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8";
-  networkPolicyEffects =
-    interface
-    "aos.host-network-policy-effects"
-    "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e";
-  foregroundProcess =
-    interface
-    "aos.foreground-process"
-    "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb";
+  endpointEffectsDeclaration = {
+    name = "aos.network-endpoint-effects";
+    abi = 1;
+  };
+  storageEffectsDeclaration = {
+    name = "aos.host-storage-effects";
+    abi = 1;
+  };
+  networkPolicyEffectsDeclaration = {
+    name = "aos.host-network-policy-effects";
+    abi = 1;
+  };
+  foregroundProcess = runtimeInterfaces.foregroundProcess.interface;
 
-  foregroundProcessSupervisionGuarantee = {
+  foregroundProcessSupervisionGuarantee = lib.abilities.guarantee {
     name = "aos.foreground-process-supervision";
     version = 1;
-    descriptor = "sha256:b213e3c6ef28e4930a1091296e28fbfddde9f539d2daeb0287edfe955047311a";
+    semantics = "the application-container executor retains and observes the exact declared foreground process";
   };
 
   loopbackIngressGuarantee = lib.abilities.guarantee {
     name = "aos.guarantee.loopback-tcp-ingress-enforcement";
     version = 1;
-    descriptor = "sha256:6b12b1c4db768f272434c6e43ca8c484887fc0fa3a51be2ae2784982325c2092";
+    semantics = "A successful apply installs a host policy that admits TCP ingress only to the requested 127.0.0.1 address and concrete port. A successful observe proves that exact rule remains active. Neither operation admits ingress to that port through a non-loopback address.";
   };
   loopbackEgressGuarantee = lib.abilities.guarantee {
     name = "aos.guarantee.loopback-tcp-egress-enforcement";
     version = 1;
-    descriptor = "sha256:91fc94f9ff09a955256a2a86d1df6df00e1635c8fc035e2f68e262cbc29dcd53";
+    semantics = "A successful apply installs a host policy that admits TCP egress to the requested endpoint only through its 127.0.0.1 address and concrete port. A successful observe proves that exact rule remains active. Neither operation admits egress to that port through a non-loopback address.";
   };
 
   lifecycle = {
@@ -115,80 +99,80 @@
     lifetime = "instance";
   };
 
-  string = schemas.string {
+  string = types.string {
     maxLength = 65536;
     syntax = null;
   };
 
-  revision = schemas.string {
+  revision = types.string {
     maxLength = 71;
     syntax = null;
   };
 
-  optionalRevision = schemas.optional revision;
+  optionalRevision = types.optional revision;
 
-  localKeyString = schemas.string {
+  localKeyString = types.string {
     maxLength = 128;
     syntax = "local-key-v1";
   };
 
-  resourcePath = schemas.string {
+  resourcePath = types.string {
     maxLength = 4096;
     syntax = null;
   };
 
-  endpoint = schemas.record {
+  endpoint = types.record {
     fields = {
-      address = schemas.string {
+      address = types.string {
         maxLength = 15;
         syntax = null;
       };
-      port = schemas.integer {
+      port = types.integer {
         minimum = 1024;
         maximum = 65535;
       };
-      transport = schemas.enum ["tcp"];
+      transport = types.enum ["tcp"];
     };
     optional = [];
   };
 
-  endpointRequest = schemas.record {
+  endpointRequest = types.record {
     fields = {
-      address = schemas.enum ["127.0.0.1"];
-      port = schemas.integer {
+      address = types.enum ["127.0.0.1"];
+      port = types.integer {
         minimum = 0;
         maximum = 65535;
       };
-      transport = schemas.enum ["tcp"];
+      transport = types.enum ["tcp"];
     };
     optional = [];
   };
 
-  storageRequest = schemas.record {
+  storageRequest = types.record {
     fields = {
       cluster = localKeyString;
-      lifetime = schemas.enum ["instance" "persistent"];
-      owner = schemas.enum ["postgresql-slot" "root"];
+      lifetime = types.enum ["instance" "persistent"];
+      owner = types.enum ["postgresql-slot" "root"];
       purpose = localKeyString;
     };
     optional = [];
   };
 
   networkPolicyRequest = requiredEndpoint:
-    schemas.record {
+    types.record {
       fields = {
-        direction = schemas.enum ["egress" "ingress"];
+        direction = types.enum ["egress" "ingress"];
         endpoint =
           if requiredEndpoint
           then endpoint
-          else schemas.optional endpoint;
-        protocol = schemas.enum ["tcp"];
+          else types.optional endpoint;
+        protocol = types.enum ["tcp"];
       };
       optional = [];
     };
 
   revisionedObservation = schema: fields:
-    schemas.record {
+    types.record {
       fields =
         fields
         // {
@@ -201,36 +185,36 @@
 
   endpointObservation =
     revisionedObservation
-    (schemas.enum ["aos.ability.network-endpoint-observation/v1"])
+    (types.enum ["aos.ability.network-endpoint-observation/v1"])
     {
-      endpoint = schemas.optional endpoint;
-      owned = schemas.boolean;
+      endpoint = types.optional endpoint;
+      owned = types.boolean;
     };
 
   storageObservation =
     revisionedObservation
-    (schemas.enum ["aos.ability.host-storage-observation/v1"])
+    (types.enum ["aos.ability.host-storage-observation/v1"])
     {
-      attached = schemas.boolean;
-      exists = schemas.boolean;
+      attached = types.boolean;
+      exists = types.boolean;
       path = resourcePath;
     };
 
   networkPolicyObservation =
     revisionedObservation
-    (schemas.enum ["aos.ability.host-network-policy-observation/v1"])
+    (types.enum ["aos.ability.host-network-policy-observation/v1"])
     {
-      active = schemas.boolean;
-      endpoint = schemas.optional endpoint;
+      active = types.boolean;
+      endpoint = types.optional endpoint;
     };
 
-  credentialView = schemas.record {
+  credentialView = types.record {
     fields = {
-      path = schemas.string {
+      path = types.string {
         maxLength = 4096;
         syntax = null;
       };
-      version = schemas.string {
+      version = types.string {
         maxLength = 71;
         syntax = null;
       };
@@ -238,7 +222,7 @@
     optional = [];
   };
 
-  storagePaths = schemas.record {
+  storagePaths = types.record {
     fields = {
       logs = string;
       runtime = string;
@@ -247,12 +231,12 @@
     optional = [];
   };
 
-  runtimeStoragePath = schemas.string {
+  runtimeStoragePath = types.string {
     maxLength = 4096;
     syntax = null;
   };
 
-  runtimeStoragePaths = schemas.record {
+  runtimeStoragePaths = types.record {
     fields = {
       logs = runtimeStoragePath;
       runtime = runtimeStoragePath;
@@ -261,34 +245,34 @@
     optional = [];
   };
 
-  nginxValidationRequest = schemas.record {
+  nginxValidationRequest = types.record {
     fields = {
-      candidate = schemas.boolean;
-      credential_views = schemas.list {
+      candidate = types.boolean;
+      credential_views = types.list {
         element = credentialView;
         maxItems = 1024;
       };
-      storage_paths = schemas.optional runtimeStoragePaths;
+      storage_paths = types.optional runtimeStoragePaths;
     };
     optional = [];
   };
 
-  consumerProbe = schemas.record {
+  consumerProbe = types.record {
     fields = {
-      address = schemas.string {
+      address = types.string {
         maxLength = 15;
         syntax = null;
       };
-      execution_strategy = schemas.enum ["foreground-process" "managed-service"];
-      port = schemas.integer {
+      execution_strategy = types.enum ["foreground-process" "managed-service"];
+      port = types.integer {
         minimum = 1024;
         maximum = 65535;
       };
-      tls_credential_path = schemas.string {
+      tls_credential_path = types.string {
         maxLength = 4096;
         syntax = null;
       };
-      tls_port = schemas.integer {
+      tls_port = types.integer {
         minimum = 1024;
         maximum = 65535;
       };
@@ -296,17 +280,17 @@
     optional = ["tls_credential_path" "tls_port"];
   };
 
-  virtualHost = schemas.record {
+  virtualHost = types.record {
     fields = {
       host = string;
-      response_content = schemas.string {
+      response_content = types.string {
         maxLength = 256;
         syntax = null;
       };
       response_identity = localKeyString;
-      proxy_backend = schemas.boolean;
-      tls = schemas.boolean;
-      credential_version = schemas.string {
+      proxy_backend = types.boolean;
+      tls = types.boolean;
+      credential_version = types.string {
         maxLength = 71;
         syntax = null;
       };
@@ -314,27 +298,36 @@
     optional = ["credential_version" "proxy_backend"];
   };
 
+  methodSemantics = name: {
+    requiredTargetAccess =
+      if builtins.elem name ["observe" "observe-boot" "observe-health" "validate" "verify"]
+      then "read"
+      else "exclusive-write";
+    stopsProvider = name == "stop";
+  };
   method = targetResource: operationFamily: name: {
-    inherit operationFamily targetResource;
-    parameters = schemas.boolean;
+    inherit targetResource;
+    semantics = methodSemantics name;
+    parameters = types.boolean;
     outputs = {};
     permittedOperations = [name];
     guarantees = [];
     outcome = {
-      completionEvidence = schemas.boolean;
-      observationEvidence = schemas.boolean;
+      completionEvidence = types.boolean;
+      observationEvidence = types.boolean;
       supportsRejectedBeforeEffect = true;
       indeterminate = "reconcile";
     };
   };
 
   validationMethod = operationFamily: name:
-    (method nginxValidation.name operationFamily name)
+    (method nginxValidationDeclaration.name operationFamily name)
     // {parameters = nginxValidationRequest;};
 
   endpointEffectMethod = operationFamily: name: outputs: {
-    targetResource = endpointEffects.name;
-    inherit operationFamily outputs;
+    targetResource = endpointEffectsDeclaration.name;
+    inherit outputs;
+    semantics = methodSemantics name;
     parameters = endpointRequest;
     permittedOperations = [name];
     guarantees = [];
@@ -347,8 +340,9 @@
   };
 
   storageEffectMethod = operationFamily: name: outputs: {
-    targetResource = storageEffects.name;
-    inherit operationFamily outputs;
+    targetResource = storageEffectsDeclaration.name;
+    inherit outputs;
+    semantics = methodSemantics name;
     parameters = storageRequest;
     permittedOperations = [name];
     guarantees = [];
@@ -361,8 +355,9 @@
   };
 
   networkPolicyEffectMethod = operationFamily: name: parameters: outputs: guarantees: {
-    targetResource = networkPolicyEffects.name;
-    inherit operationFamily parameters outputs guarantees;
+    targetResource = networkPolicyEffectsDeclaration.name;
+    inherit parameters outputs guarantees;
+    semantics = methodSemantics name;
     permittedOperations = [name];
     outcome = {
       completionEvidence = networkPolicyObservation;
@@ -384,7 +379,7 @@
     group,
     handler,
     methods,
-    requestSchema ? schemas.boolean,
+    requestSchema ? types.boolean,
     selectedLifecycle ? lifecycle,
     guarantees ? [],
   }:
@@ -402,7 +397,126 @@
       inherit handler;
     };
 
-  provider = import providerArtifact;
+  nginxValidationDefinition = terminalExport {
+    name = nginxValidationDeclaration.name;
+    group = "nginx-validation";
+    handler = "nginx-terminal";
+    methods = {
+      record = validationMethod {kind = "record-generation-association";} "record";
+      release = validationMethod {kind = "release-resource";} "release";
+      validate = validationMethod {kind = "validate-candidate";} "validate";
+    };
+  };
+  endpointEffectsDefinition = terminalExport {
+    name = endpointEffectsDeclaration.name;
+    group = "network-endpoint";
+    handler = "native-network-endpoint";
+    requestSchema = endpointRequest;
+    selectedLifecycle = ephemeralLifecycle;
+    methods = {
+      materialize =
+        endpointEffectMethod {
+          kind = "network-endpoint";
+          action = "materialize";
+        } "materialize" {
+          endpoint = runtimeMethodOutput endpoint;
+        };
+      observe =
+        endpointEffectMethod {
+          kind = "network-endpoint";
+          action = "observe";
+        } "observe" {
+          endpoint = runtimeMethodOutput endpoint;
+        };
+      release = endpointEffectMethod {
+        kind = "network-endpoint";
+        action = "release";
+      } "release" {};
+    };
+  };
+  networkPolicyEffectsDefinition = terminalExport {
+    name = networkPolicyEffectsDeclaration.name;
+    group = "network-policy";
+    handler = "native-host-network-policy";
+    requestSchema = networkPolicyRequest false;
+    selectedLifecycle = ephemeralLifecycle;
+    guarantees = [loopbackEgressGuarantee loopbackIngressGuarantee];
+    methods = {
+      apply =
+        networkPolicyEffectMethod {
+          kind = "host-network-policy";
+          action = "apply";
+        } "apply" (networkPolicyRequest true) {
+          active = runtimeMethodOutput types.boolean;
+        } [loopbackEgressGuarantee loopbackIngressGuarantee];
+      observe =
+        networkPolicyEffectMethod {
+          kind = "host-network-policy";
+          action = "observe";
+        } "observe" (networkPolicyRequest true) {
+          active = runtimeMethodOutput types.boolean;
+        } [loopbackEgressGuarantee loopbackIngressGuarantee];
+      remove = networkPolicyEffectMethod {
+        kind = "host-network-policy";
+        action = "remove";
+      } "remove" (networkPolicyRequest false) {} [];
+    };
+  };
+  storageEffectsDefinition = terminalExport {
+    name = storageEffectsDeclaration.name;
+    group = "storage";
+    handler = "native-host-storage";
+    requestSchema = storageRequest;
+    methods = {
+      ensure =
+        storageEffectMethod {
+          kind = "host-storage";
+          action = "ensure";
+        } "ensure" {
+          path = runtimeMethodOutput resourcePath;
+        };
+      observe =
+        storageEffectMethod {
+          kind = "host-storage";
+          action = "observe";
+        } "observe" {
+          path = runtimeMethodOutput resourcePath;
+        };
+      release = storageEffectMethod {
+        kind = "host-storage";
+        action = "release";
+      } "release" {};
+    };
+  };
+  interfaceFor = export:
+    lib.abilities.interfaceIdentity (lib.abilities.interfaceDocument [] export);
+  nginxValidation = interfaceFor nginxValidationDefinition;
+  endpointEffects = interfaceFor endpointEffectsDefinition;
+  networkPolicyEffects = interfaceFor networkPolicyEffectsDefinition;
+  storageEffects = interfaceFor storageEffectsDefinition;
+
+  provider = import providerArtifact {
+    interfaces = {
+      inherit
+        credentialDelivery
+        endpointEffects
+        foregroundProcess
+        httpBackend
+        managedConfiguration
+        networkPolicyEffects
+        nginxValidation
+        serviceDefinition
+        serviceManagement
+        storageEffects
+        ;
+    };
+    serviceFeatures = builtins.attrValues serviceManagementContract.features;
+    inherit
+      foregroundProcessSupervisionGuarantee
+      loopbackIngressGuarantee
+      loopbackEgressGuarantee
+      ;
+  };
   runtimeAttrs = lib.optionalAttrs (runtimeArtifact != null) {
     artifact = runtimeArtifact;
   };
@@ -419,11 +533,11 @@ in let
           requestSchema = virtualHost;
           configurationSchema = consumerProbe;
           outputs = {
-            configuration = output schemas.resourceReference;
-            credential-view = output (schemas.optional schemas.resourceReference);
-            manager = output schemas.resourceReference;
+            configuration = output types.resourceReference;
+            credential-view = output (types.optional types.resourceReference);
+            manager = output types.resourceReference;
             rendered-configuration = output string;
-            virtual-host-count = output (schemas.integer {
+            virtual-host-count = output (types.integer {
               minimum = 0;
               maximum = 1024;
             });
@@ -485,113 +599,26 @@ in let
 
       nginx-validation =
         {
-          export = terminalExport {
-            name = nginxValidation.name;
-            group = "nginx-validation";
-            handler = "nginx-terminal";
-            methods = {
-              record = validationMethod {kind = "record-generation-association";} "record";
-              release = validationMethod {kind = "release-resource";} "release";
-              validate = validationMethod {kind = "validate-candidate";} "validate";
-            };
-          };
+          export = nginxValidationDefinition;
         }
         // runtimeAttrs;
     }
     // lib.optionalAttrs (hostResourceRuntime != null) {
       network-endpoint =
         {
-          export = terminalExport {
-            name = endpointEffects.name;
-            group = "network-endpoint";
-            handler = "native-network-endpoint";
-            requestSchema = endpointRequest;
-            selectedLifecycle = ephemeralLifecycle;
-            methods = {
-              materialize =
-                endpointEffectMethod {
-                  kind = "network-endpoint";
-                  action = "materialize";
-                } "materialize" {
-                  endpoint = runtimeMethodOutput endpoint;
-                };
-              observe =
-                endpointEffectMethod {
-                  kind = "network-endpoint";
-                  action = "observe";
-                } "observe" {
-                  endpoint = runtimeMethodOutput endpoint;
-                };
-              release = endpointEffectMethod {
-                kind = "network-endpoint";
-                action = "release";
-              } "release" {};
-            };
-          };
+          export = endpointEffectsDefinition;
         }
         // hostResourceRuntimeAttrs;
 
       network-policy =
         {
-          export = terminalExport {
-            name = networkPolicyEffects.name;
-            group = "network-policy";
-            handler = "native-host-network-policy";
-            requestSchema = networkPolicyRequest false;
-            selectedLifecycle = ephemeralLifecycle;
-            guarantees = [loopbackEgressGuarantee loopbackIngressGuarantee];
-            methods = {
-              apply =
-                networkPolicyEffectMethod {
-                  kind = "host-network-policy";
-                  action = "apply";
-                } "apply" (networkPolicyRequest true) {
-                  active = runtimeMethodOutput schemas.boolean;
-                } [loopbackEgressGuarantee loopbackIngressGuarantee];
-              observe =
-                networkPolicyEffectMethod {
-                  kind = "host-network-policy";
-                  action = "observe";
-                } "observe" (networkPolicyRequest true) {
-                  active = runtimeMethodOutput schemas.boolean;
-                } [loopbackEgressGuarantee loopbackIngressGuarantee];
-              remove = networkPolicyEffectMethod {
-                kind = "host-network-policy";
-                action = "remove";
-              } "remove" (networkPolicyRequest false) {} [];
-            };
-          };
+          export = networkPolicyEffectsDefinition;
         }
         // hostResourceRuntimeAttrs;
 
       storage =
         {
-          export = terminalExport {
-            name = storageEffects.name;
-            group = "storage";
-            handler = "native-host-storage";
-            requestSchema = storageRequest;
-            methods = {
-              ensure =
-                storageEffectMethod {
-                  kind = "host-storage";
-                  action = "ensure";
-                } "ensure" {
-                  path = runtimeMethodOutput resourcePath;
-                };
-              observe =
-                storageEffectMethod {
-                  kind = "host-storage";
-                  action = "observe";
-                } "observe" {
-                  path = runtimeMethodOutput resourcePath;
-                };
-              release = storageEffectMethod {
-                kind = "host-storage";
-                action = "release";
-              } "release" {};
-            };
-          };
+          export = storageEffectsDefinition;
         }
         // hostResourceRuntimeAttrs;
     };
@@ -602,35 +629,35 @@ in let
         {
           entryPoint = "bin/nginx";
           arguments = nginxValidationRequest;
-          result = schemas.boolean;
+          result = types.boolean;
         }
         // runtimeAttrs;
     }
     // lib.optionalAttrs (hostResourceRuntime != null) {
       native-network-endpoint =
         {
-          entryPoint = "libexec/aos-network-endpoint-handler";
+          entryPoint = "libexec/aos-network-endpoint-handler-v1";
           arguments = endpointRequest;
           result = endpointObservation;
         }
         // hostResourceRuntimeAttrs;
       native-host-network-policy =
         {
-          entryPoint = "libexec/aos-host-network-policy-handler";
+          entryPoint = "libexec/aos-host-network-policy-handler-v1";
           arguments = networkPolicyRequest false;
           result = networkPolicyObservation;
         }
         // hostResourceRuntimeAttrs;
       native-host-storage =
         {
-          entryPoint = "libexec/aos-host-storage-handler";
+          entryPoint = "libexec/aos-host-storage-handler-v1";
           arguments = storageRequest;
           result = storageObservation;
         }
         // hostResourceRuntimeAttrs;
     };
 in {
-  config.aos.abilities.implementations =
+  config.aos.abilities = lib.abilities.projectDefinitions (
     builtins.mapAttrs (
       _: implementation: {
         definition = implementation.export;
@@ -641,5 +668,6 @@ in {
           else handlers.${implementation.export.handler};
       }
     )
-    implementations;
+    implementations
+  );
 }

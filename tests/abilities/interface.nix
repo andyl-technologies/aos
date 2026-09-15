@@ -1,20 +1,20 @@
 ##! tests/abilities/interface.nix - Canonical interface-document fixture.
 {abilities}: let
-  inherit (abilities) schemas;
+  inherit (abilities) types;
 
   guarantee = abilities.guarantee {
     name = "aos.guarantee.readiness";
     version = 1;
-    descriptor = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+    semantics = "the provider reports readiness for the requested revision";
   };
 
   interface = abilities.define {
     interface = "aos.test.echo";
     abi = 1;
-    requestSchema = schemas.record {
+    requestSchema = types.record {
       fields = {
-        enabled = schemas.boolean;
-        label = schemas.string {
+        enabled = types.boolean;
+        label = types.string {
           maxLength = 64;
           syntax = null;
         };
@@ -23,7 +23,7 @@
     };
     outputs = {
       endpoint = {
-        schema = schemas.resourceReference;
+        schema = types.resourceReference;
         phase = "planning";
         visibility = "protected";
         lifetime = "instance";
@@ -31,15 +31,18 @@
     };
     methods = {
       observe = {
-        operationFamily = {kind = "observe-readiness";};
-        parameters = schemas.record {
+        semantics = {
+          requiredTargetAccess = "read";
+          stopsProvider = false;
+        };
+        parameters = types.record {
           fields = {};
           optional = [];
         };
         targetResource = "aos.test.echo";
         outputs = {
           ready = {
-            schema = schemas.boolean;
+            schema = types.boolean;
             phase = "observation";
             visibility = "protected";
             lifetime = "attempt";
@@ -48,8 +51,8 @@
         permittedOperations = ["observe"];
         guarantees = [guarantee];
         outcome = {
-          completionEvidence = schemas.boolean;
-          observationEvidence = schemas.boolean;
+          completionEvidence = types.boolean;
+          observationEvidence = types.boolean;
           supportsRejectedBeforeEffect = true;
           indeterminate = "reconcile";
         };

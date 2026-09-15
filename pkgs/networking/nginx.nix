@@ -398,7 +398,7 @@ in
                 and .implementation.handlers."nginx-terminal".entry_point == "bin/nginx"
                 and .module_entry_points.compose == .module_entry_points.transition
                 and .module_entry_points.compose != $document.package.payload
-            ' ${self.abilityContract}/package.json >/dev/null
+            ' ${self.abilities.contract}/package.json >/dev/null
 
             mkdir -p "$out"
             printf '%s\n' PASS > "$out/result"

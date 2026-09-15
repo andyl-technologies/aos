@@ -230,20 +230,63 @@
       else if builtins.isList authoredAbilities
       then authoredAbilities
       else [authoredAbilities];
+    retainedAbilityModule = {imports = abilityModules;};
     abilityEvaluation =
       if authoredAbilities == null
       then null
       else
         lib.evalModules {
-          modules = [lib.abilities.module] ++ abilityModules;
+          modules = [lib.abilities.module];
+          packageModules = [
+            {
+              name = packageName;
+              module = retainedAbilityModule;
+            }
+          ];
           inherit lib;
           pkgs = self;
           specialArgs = {inherit packageName;};
         };
-    abilityProjection =
+    localAbilityProjection =
       if abilityEvaluation == null
       then null
       else abilityEvaluation.config.aos.abilities;
+    packageAbilityPrefix = "${packageName}:";
+    localAbilityName = name:
+      if lib.hasPrefix packageAbilityPrefix name
+      then builtins.substring (builtins.stringLength packageAbilityPrefix) (-1) name
+      else name;
+    projectLocalAbilityMap = transform: values:
+      builtins.listToAttrs (builtins.map (name: {
+          name = localAbilityName name;
+          value = transform values.${name};
+        })
+        (builtins.attrNames values));
+    abilityProjection =
+      if localAbilityProjection == null
+      then null
+      else
+        localAbilityProjection
+        // {
+          interfaces =
+            projectLocalAbilityMap
+            (declaration: lib.abilities.interfaceDocumentFromDeclaration declaration)
+            localAbilityProjection.interfaces;
+          implementations = projectLocalAbilityMap (implementation:
+            (builtins.removeAttrs implementation ["description" "desiredType"])
+            // {
+              interface = localAbilityName implementation.interface;
+              desired_type =
+                if implementation.desiredType == null
+                then null
+                else lib.abilities.types.schemaOf "implementation desired realization" implementation.desiredType;
+            })
+          localAbilityProjection.implementations;
+          requirementTemplates =
+            projectLocalAbilityMap
+            (requirement: builtins.removeAttrs requirement ["description"])
+            localAbilityProjection.requirementTemplates;
+        };
     preparedAuthoredConfigModule =
       if authoredConfigModule != null
       then
@@ -473,45 +516,55 @@
       else builtins.attrNames abilityProjection.implementations;
     implementationValues =
       builtins.map (name: abilityProjection.implementations.${name}) implementationNames;
+    implementationExport = name: entry:
+      lib.abilities.exportForImplementation
+      abilityProjection.interfaces.${entry.interface}
+      name
+      entry;
     authoredAbilityContract =
       if abilityProjection == null
       then null
       else {
         activationMode =
-          if builtins.any (entry: entry.definition.compose != null) implementationValues
+          if builtins.any (entry: entry.compose != null) implementationValues
           then "structured-effects"
           else "contracts-only";
         requiredFeatures = lib.unique (
           ["abilities-v1"]
           ++ lib.concatMap (entry: entry.requiredFeatures) implementationValues
           ++ lib.optional
-          (builtins.any (entry: entry.definition.state_format != null) implementationValues)
+          (builtins.any (entry: entry.state_format != null) implementationValues)
           "provider-state-format-v1"
         );
         ownership = lib.optional (implementationNames != []) [];
         artifacts = lib.concatMap (entry: entry.artifacts) implementationValues;
         exports =
           builtins.mapAttrs (
-            _: entry:
+            name: entry: let
+              export = implementationExport name entry;
+            in
               {
-                export = entry.definition;
+                inherit export;
                 inherit (entry) requiredFeatures;
               }
               // lib.optionalAttrs (entry.artifact != null) {inherit (entry) artifact;}
           )
           abilityProjection.implementations;
-        handlers = builtins.listToAttrs (lib.concatMap (entry:
-          lib.optional (entry.handler != null) {
-            name = entry.definition.handler;
+        handlers = builtins.listToAttrs (lib.concatMap (name: let
+          entry = abilityProjection.implementations.${name};
+        in
+          lib.optional (entry.handlerDescriptor != null) {
+            inherit name;
             value =
               {
-                inherit (entry.handler) entryPoint arguments result;
+                inherit (entry.handlerDescriptor) entryPoint arguments result;
               }
-              // lib.optionalAttrs (entry.handler.artifact != null) {
-                inherit (entry.handler) artifact;
+              // lib.optionalAttrs (entry.handlerDescriptor.artifact != null) {
+                artifact = entry.handlerDescriptor.artifact;
               };
           })
-        implementationValues);
+        implementationNames);
+        interfaces = abilityProjection.interfaces;
         requirements = abilityProjection.requirementTemplates;
       };
     abilityArtifactDependencies = lib.unique (
@@ -606,14 +659,40 @@
     abilityAttrs =
       if abilityContract != null
       then {
-        abilities = abilityProjection;
-        abilityModule = authoredAbilities;
-        inherit packageModule;
-        packageModuleOutputs = {
-          self = builtins.toString drv;
-          dependencies = preparedConfigModule.dependencyOutputs or {};
+        abilities = {
+          inherit (abilityProjection) interfaces implementations;
+          requirements = abilityProjection.requirementTemplates;
+          module = packageModule;
+          moduleOutputs = {
+            self = lib.abilities.packageOutput {};
+            dependencies = preparedConfigModule.dependencyOutputs or {};
+          };
+          contract = abilityContract;
+          optionSurface =
+            builtins.filter
+            (declaration: declaration.owner == packageName)
+            abilityEvaluation._optionDecls;
+          documentation = {
+            interfaces =
+              builtins.mapAttrs (_: declaration: {
+                inherit (declaration) description;
+                methods =
+                  builtins.mapAttrs (_: method: {
+                    inherit (method) description;
+                    outputs = builtins.mapAttrs (_: output: output.description) method.outputs;
+                  })
+                  declaration.methods;
+                outputs = builtins.mapAttrs (_: output: output.description) declaration.outputs;
+              })
+              localAbilityProjection.interfaces;
+            implementations =
+              builtins.mapAttrs (_: implementation: implementation.description)
+              localAbilityProjection.implementations;
+            requirements =
+              builtins.mapAttrs (_: requirement: requirement.description)
+              localAbilityProjection.requirementTemplates;
+          };
         };
-        inherit abilityContract;
       }
       else if hasConfigModule
       then {
