@@ -1,5 +1,13 @@
 ##! Verifies the package-owned boot-preparation implementation through the fixed point.
-{lib}: let
+{
+  lib,
+  pkgs,
+}: let
+  selectedProvider = import ./_selected-package-provider.nix {
+    inherit lib;
+    package = pkgs.aos-boot-preparation-provider;
+    implementation = "boot-preparation";
+  };
   preparation = lib.abilities.interfaces.bootPreparation.interfaces.preparation;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   childRequest = lib.abilities.compositionRequestKey {
@@ -18,6 +26,7 @@
             key = "boot-preparation-provider";
             stage = "initrd";
           };
+          instances."aos-boot-preparation-provider:manager" = {};
           bindings."test:prepare" = {
             request = "consumer:prepare";
             implementation = "aos-boot-preparation-provider:boot-preparation";
@@ -36,11 +45,8 @@
     packageModules = [
       {
         name = "aos-boot-preparation-provider";
-        module.imports = [
-          ../../pkgs/boot/_aos-boot-preparation-provider/module.nix
-          ../../pkgs/boot/_aos-boot-preparation-provider/provider.nix
-          {config.aos.abilities.instances.manager = {};}
-        ];
+        inherit (pkgs.aos-boot-preparation-provider) version;
+        module = pkgs.aos-boot-preparation-provider.module + "/module.nix";
       }
       {
         name = "consumer";
@@ -63,6 +69,7 @@
         ];
       }
     ];
+    selectedProviderModules = [selectedProvider];
   };
   abilities = evaluated.config.aos.abilities;
   desired = builtins.head (builtins.attrValues abilities.desiredResources);
