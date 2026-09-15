@@ -43,6 +43,8 @@ in
       ];
     propagatedDeps = [];
 
+    abilities = ./_chrony-abilities/module.nix;
+
     phases = [
       {
         name = "unpack";
