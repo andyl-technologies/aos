@@ -28,7 +28,6 @@ use crate::config::ApmConfig;
 use crate::registry::RegistrySet;
 use crate::types::ProfileScope;
 
-const INTERFACE: &str = "aos.registry.synchronized-snapshot";
 const SNAPSHOT_SCHEMA: &str = "aos.registry.synchronized-snapshot/v1";
 const OBSERVATION_SCHEMA: &str = "aos.ability.registry-snapshot-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.registry.synchronized-snapshot-context/v1";
@@ -145,10 +144,7 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
     );
     validate_admission_resource(&request)?;
     validate_resource_contexts(&request.resources)?;
-    validate_method(
-        request.method.interface.name.as_str(),
-        request.method.method.as_str(),
-    )?;
+    validate_method(request.method.method.as_str())?;
 
     let expected: SnapshotRequest = decode(&request.resource_spec.value)?;
     validate_request(&expected, &request.resources)?;
@@ -188,13 +184,22 @@ fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResult> {
             == invocation.request.native_context_digest,
         "resource contexts differ from their authenticated digest"
     );
-    validate_method(
-        invocation.method.interface.name.as_str(),
-        invocation.method.method.as_str(),
-    )?;
+    validate_method(invocation.method.method.as_str())?;
+    validate_method(invocation.request.method.method.as_str())?;
 
     let target = exact_context(&invocation.request.target, &invocation.request.resources)?;
     let bound = validate_resource_context(target)?;
+    ensure!(
+        invocation.method.interface == invocation.request.method.interface
+            && invocation.method.interface == invocation.request.target.interface
+            && invocation
+                .request
+                .target
+                .operations
+                .binary_search(&invocation.method.method)
+                .is_ok(),
+        "invocation method differs from the checked registry snapshot target"
+    );
     let expected: SnapshotRequest = decode(&bound.resource_spec.value)?;
     let inputs: SnapshotRequest = decode(&invocation.request.inputs)?;
     ensure!(
@@ -365,11 +370,8 @@ fn validate_request(request: &SnapshotRequest, resources: &[ResourceContext]) ->
     Ok(())
 }
 
-fn validate_method(interface: &str, method: &str) -> Result<()> {
-    ensure!(
-        interface == INTERFACE && method == "observe",
-        "unsupported registry snapshot method"
-    );
+fn validate_method(method: &str) -> Result<()> {
+    ensure!(method == "observe", "unsupported registry snapshot method");
     Ok(())
 }
 
