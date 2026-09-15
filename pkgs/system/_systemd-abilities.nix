@@ -1134,16 +1134,25 @@
   readinessControllers = [
     serviceInterfaces.networkReadiness
     serviceInterfaces.filesystemReadiness
+    serviceInterfaces.activationMilestone
   ];
+  readinessEffectsRequest = selected:
+    types.record {
+      fields = {
+        expected = selected.requestType;
+        systemd_unit = systemdUnitIdentity;
+      };
+    };
   readinessEffectsAlias = selected: "systemd-${selected.alias}-effects";
   readinessEffectsDeclaration = selected:
     lib.abilities.declareInterface {
       name = "aos.systemd.${selected.alias}-effects";
       description = "Executes checked terminal systemd observation for ${selected.document.interface.name}.";
       abi = 1;
-      requestType = selected.requestType;
+      requestType = readinessEffectsRequest selected;
       outputs = {};
       methods.observe = selected.declaration.methods.observe // {
+        parameters = readinessEffectsRequest selected;
         targetResource = selected.identity.name;
       };
       lifecycle = selected.declaration.lifecycle;
@@ -1168,7 +1177,7 @@
         handlerDescriptor = {
           artifact = handlerArtifact;
           entryPoint = "bin/aos-systemd-provider";
-          arguments = selected.requestType;
+          arguments = readinessEffectsRequest selected;
           result = selected.observationType;
         };
         desiredType = null;
