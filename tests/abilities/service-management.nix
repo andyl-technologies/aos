@@ -596,6 +596,25 @@
   invalidOwnedStorageAllocation =
     placedStorageAllocation
     // {owner = "invalid/principal";};
+  filesystemDirectory = {
+    name = "wrapper-root";
+    entry.kind = "directory";
+    destination = "/run/aos/wrappers";
+    owner = resultOf "service-principal" "principal-name";
+    group = resultOf "service-group" "group-name";
+    mode = "0750";
+    prerequisites = [
+      (resultOf "runtime-root" "retained-resource")
+    ];
+  };
+  invalidFilesystemDirectory =
+    filesystemDirectory
+    // {
+      entry = {
+        kind = "copied-file";
+        maximum_size_bytes = 4096;
+      };
+    };
   restrictedCapabilityBounds = {
     kind = "restricted";
     capabilities = ["CAP_NET_BIND_SERVICE"];
@@ -1123,6 +1142,13 @@ in
   assert !succeedsAs serviceTypes.storageAllocation invalidPlacedStorageAllocation;
   assert succeedsAs serviceTypes.storageAllocation ownedStorageAllocation;
   assert !succeedsAs serviceTypes.storageAllocation invalidOwnedStorageAllocation;
+  assert interfaces.filesystemEntry.document.interface.outputs.planned-path.phase == "planning";
+  assert interfaces.filesystemEntry.document.interface.methods.materialize.outputs.execution-path.phase == "runtime";
+  assert interfaces.filesystemEntry.document.interface.methods.release.semantics.stops_provider;
+  assert succeedsAs serviceTypes.storageAllocation placedStorageAllocation;
+  assert !succeedsAs serviceTypes.storageAllocation invalidPlacedStorageAllocation;
+  assert succeedsAs serviceTypes.filesystemEntry filesystemDirectory;
+  assert !succeedsAs serviceTypes.filesystemEntry invalidFilesystemDirectory;
   assert succeedsAs serviceTypes.capabilityBounds restrictedCapabilityBounds;
   assert succeedsAs serviceTypes.capabilityBounds unrestrictedCapabilityBounds;
   assert succeedsAs serviceTypes.resourceLimit maximumResourceLimit;

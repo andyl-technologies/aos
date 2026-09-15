@@ -1243,6 +1243,62 @@
       };
     };
   };
+  filesystemEntrySource = types.taggedUnion {
+    tag = "kind";
+    variants = {
+      artifact-file = types.record {
+        fields = {
+          kind = types.enum ["artifact-file"];
+          reference = types.artifactFileReference;
+        };
+      };
+      execution-path = types.record {
+        fields = {
+          kind = types.enum ["execution-path"];
+          resource = types.deferredResult types.resourceReference;
+          path = types.deferredResult executionPath;
+        };
+      };
+    };
+  };
+  filesystemEntryKind = types.taggedUnion {
+    tag = "kind";
+    variants = {
+      directory = types.record {
+        fields.kind = types.enum ["directory"];
+      };
+      copied-file = types.record {
+        fields = {
+          kind = types.enum ["copied-file"];
+          source = filesystemEntrySource;
+          maximum_size_bytes = types.integer {
+            minimum = 1;
+            maximum = types.limits.maxSafeInteger;
+          };
+        };
+      };
+    };
+  };
+  filesystemEntry = types.record {
+    fields = {
+      name = localKey;
+      entry = filesystemEntryKind;
+      destination = types.deferredResult executionPath;
+      owner = {
+        type = types.optional (types.deferredResult principalName);
+        optional = true;
+      };
+      group = {
+        type = types.optional (types.deferredResult groupName);
+        optional = true;
+      };
+      mode = types.fileMode;
+      prerequisites = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+      };
+    };
+  };
   hostPathView = types.record {
     fields =
       referencedViewFields
@@ -1333,6 +1389,11 @@
       (types.enum ["aos.ability.storage-allocation-observation/v1"])
       storageAllocation
       storagePath;
+    filesystemEntry =
+      producerObservation
+      (types.enum ["aos.ability.filesystem-entry-observation/v1"])
+      filesystemEntry
+      executionPath;
     hostPathView =
       producerObservation
       (types.enum ["aos.ability.host-path-view-observation/v1"])
@@ -1588,6 +1649,7 @@ in {
     credentialDelivery
     storageView
     storageAllocation
+    filesystemEntry
     hostPathView
     deviceView
     rootDirectoryView

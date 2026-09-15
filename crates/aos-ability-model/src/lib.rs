@@ -54,7 +54,7 @@ pub use identity::{
     ResourceId, RevisionId, ScopePath, ScopedOperationKey, TransactionId,
 };
 pub use interface::*;
-pub use limits::{ABILITY_LIMITS_V1, LimitProfile};
+pub use limits::{ABILITY_LIMITS_V1, LimitProfile, MAX_SAFE_INTEGER};
 pub use option::{
     DocumentedValue, OptionEnumValue, OptionSource, OptionType, OptionVisibility,
     PackageOptionDeclaration, validate_package_option_declarations,
