@@ -55,6 +55,24 @@ in
   == "/etc/ssh/authorized_keys";
   assert requests."openssh:privilege-separation-directory".parameters.destination == "/var/empty";
   assert requests."openssh:sshd-principal".parameters.requested_id == 198;
+  assert requests."openssh:network-ingress".parameters
+  == {
+    endpoints = [
+      {
+        transport = "tcp";
+        port = 22;
+      }
+    ];
+    prerequisites = [];
+  };
+  assert config.aos.contributions.pamServices.sshd
+  == {
+    unixAuth = false;
+    startSession = true;
+    setLoginUid = true;
+  };
+  assert config.aos.contributions.runtimeChecks.ssh.description == "SSH server checks";
+  assert lib.abilities.types.isPortableOptionTree evaluated.options.aos.contributions;
   assert config.systemd.services == {};
   assert !(config.environment.etc ? "ssh/sshd_config");
   assert !(config.environment.etc ? "tmpfiles.d/aos-ssh.conf"); true
