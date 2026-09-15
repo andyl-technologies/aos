@@ -144,12 +144,10 @@
     group = producer "service-group" serviceManagement.interfaces.groupResolution {
       name = "openldap";
       allocation = "managed";
-      requested_id = 805;
     };
     principal = producer "service-principal" serviceManagement.interfaces.principalResolution {
       name = "openldap";
       allocation = "managed";
-      requested_id = 805;
       description = "OpenLDAP directory service";
       home_directory = resultOf "state-storage" "storage-path";
       login_access = "disabled";

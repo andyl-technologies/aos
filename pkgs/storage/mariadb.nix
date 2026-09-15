@@ -871,8 +871,8 @@ in
         && configurationPathOutput "mariadb:log-storage" == "planned-path"
         && (builtins.elemAt mainLifecycle.start 0).executable.entry_point == "bin/mariadb-control"
         && (builtins.elemAt mainDependencies.after 0).request == "mariadb:initialize-lifecycle"
-        && abilities.requests."mariadb:service-group".parameters.requested_id == 803
-        && abilities.requests."mariadb:service-principal".parameters.requested_id == 803;
+        && !(abilities.requests."mariadb:service-group".parameters ? requested_id)
+        && !(abilities.requests."mariadb:service-principal".parameters ? requested_id);
     in {
       version = testing.mkToolCheck {
         pname = "storage-mariadb";

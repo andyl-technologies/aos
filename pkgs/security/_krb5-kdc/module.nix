@@ -96,12 +96,10 @@
   serviceGroup = producer "service-group" serviceManagement.interfaces.groupResolution {
     name = "krb5-kdc";
     allocation = "managed";
-    requested_id = 806;
   };
   servicePrincipal = producer "service-principal" serviceManagement.interfaces.principalResolution {
     name = "krb5-kdc";
     allocation = "managed";
-    requested_id = 806;
     description = "MIT Kerberos KDC service";
     home_directory = statePath;
     login_access = "disabled";

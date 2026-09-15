@@ -108,12 +108,10 @@
   group = producer "service-group" serviceManagement.interfaces.groupResolution {
     name = principalName;
     allocation = "managed";
-    requested_id = 802;
   };
   principal = producer "service-principal" serviceManagement.interfaces.principalResolution {
     name = principalName;
     allocation = "managed";
-    requested_id = 802;
     description = "AOS registry hub";
     home_directory = cfg.root;
     login_access = "disabled";

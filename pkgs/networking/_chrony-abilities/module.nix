@@ -89,12 +89,10 @@
   group = producer "chrony-group" serviceManagement.interfaces.groupResolution {
     name = principalName;
     allocation = "managed";
-    requested_id = 994;
   };
   principal = producer "chrony-principal" serviceManagement.interfaces.principalResolution {
     name = principalName;
     allocation = "managed";
-    requested_id = 994;
     description = "chrony NTP daemon";
     home_directory = statePath;
     login_access = "disabled";
