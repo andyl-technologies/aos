@@ -57,20 +57,27 @@
       (builtins.tryEval (builtins.deepSeq (schemas.validateSchema "module ability schema" value) true)).success);
   isCanonicalValue = depth: value:
     depth
-    <= 64
+    <= abilityTypes.limits.maxStructuralDepth
     && (
       value
       == null
       || builtins.isBool value
-      || (builtins.isInt value && value >= -9007199254740991 && value <= 9007199254740991)
-      || (builtins.isString value && builtins.stringLength value <= 1048576)
+      || (
+        builtins.isInt value
+        && value >= -abilityTypes.limits.maxSafeInteger
+        && value <= abilityTypes.limits.maxSafeInteger
+      )
+      || (
+        builtins.isString value
+        && builtins.stringLength value <= abilityTypes.limits.maxStringLength
+      )
       || (builtins.isList value && builtins.all (isCanonicalValue (depth + 1)) value)
       || (
         builtins.isAttrs value
         && builtins.all (
           name:
             builtins.stringLength name
-            <= 1048576
+            <= abilityTypes.limits.maxStringLength
             && isCanonicalValue (depth + 1) value.${name}
         ) (builtins.attrNames value)
       )
@@ -170,11 +177,6 @@
       else throw "The option '${builtins.concatStringsSep "." location}' must be an ability constructor function.";
   };
 
-  isLocalKey = value:
-    builtins.isString value
-    && builtins.stringLength value > 0
-    && builtins.stringLength value <= 128
-    && builtins.match "[A-Za-z0-9._-]+" value != null;
   localKeyType = abilityTypes.localKey;
   packageNameType = abilityTypes.packageName;
   declarationKeyType = abilityTypes.declarationKey;
@@ -182,9 +184,10 @@
   relativePathType = abilityTypes.relativePath;
   qualifiedNameType = abilityTypes.qualifiedName;
   digestType = abilityTypes.digest;
-  positiveU32Type =
-    moduleTypes.addCheck moduleTypes.int (value:
-      value > 0 && value <= 4294967295);
+  positiveU32Type = abilityTypes.integer {
+    minimum = 1;
+    maximum = abilityTypes.limits.maxU32;
+  };
   stageType = abilityTypes.stage;
   valuePhaseType = abilityTypes.valuePhase;
   lifetimeType = abilityTypes.lifetime;
@@ -518,8 +521,11 @@
             config.value = value;
           }
         ];
-      }).config.value
-      true)).success;
+      })
+      .config
+      .value
+      true))
+    .success;
 
   handlerType = strictSubmodule {
     artifact = mkOption {
