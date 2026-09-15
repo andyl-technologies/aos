@@ -19,13 +19,12 @@ use aos_ability_model::document::{
 };
 use aos_ability_model::{
     AbilityValue, AccessMode, AuthorityGrant, BindingId, DesiredStateDocument, EnvironmentDocument,
-    EnvironmentId, ExecutionStage, ImplementationKind, InstanceId, InterfaceDescriptor,
-    InterfaceDocument, InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey, OutputDescriptor,
-    PackageDocument, ProviderAdoptionAuthorization, ProviderAdoptionEndpoint,
-    ProviderImplementation, ProviderImplementationReference, RequiredFeature, ResourceId,
-    ResourceLifetime, ResourcePermission, RevisionId, TeardownBindingAuthorization,
-    TeardownProviderAuthorization, TransitionAuthorizationDocument, ValuePhase, ValueSchema,
-    ValueVisibility, VersionedDocument,
+    EnvironmentId, ExecutionStage, InstanceId, InterfaceDescriptor, InterfaceDocument,
+    InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey, OutputDescriptor, PackageDocument,
+    ProviderAdoptionAuthorization, ProviderAdoptionEndpoint, ProviderImplementation,
+    ProviderImplementationReference, RequiredFeature, ResourceId, ResourceLifetime,
+    ResourcePermission, RevisionId, TeardownBindingAuthorization, TeardownProviderAuthorization,
+    TransitionAuthorizationDocument, ValuePhase, ValueSchema, ValueVisibility, VersionedDocument,
 };
 use aos_ability_plan::{
     AbRolloutRequest, BindingCandidate, CandidateSelection, CompositionError,
@@ -568,10 +567,7 @@ fn adoption_endpoint(
         .iter()
         .find(|implementation| {
             implementation.interface.name.as_str() == HIGH_LEVEL_INTERFACE
-                && matches!(
-                    implementation.implementation,
-                    ImplementationKind::PureComposition { .. }
-                )
+                && implementation.provider_module.is_some()
                 && implementation.state_format.is_some()
                 && implementation
                     .owns_resource_kinds
@@ -677,19 +673,13 @@ impl RolloutFixture {
             let reference = provider_reference(implementation)?;
             if implementation.interface == high_interface {
                 ensure!(
-                    matches!(
-                        implementation.implementation,
-                        ImplementationKind::PureComposition { .. }
-                    ),
+                    implementation.provider_module.is_some(),
                     "rollout strategy provider is not pure composition"
                 );
                 high_implementation = Some(reference);
             } else if implementation.interface == effects_interface {
                 ensure!(
-                    matches!(
-                        implementation.implementation,
-                        ImplementationKind::TerminalHandler { .. }
-                    ),
+                    implementation.handler.is_some(),
                     "rollout effects provider is not terminal"
                 );
                 effects_implementation = Some(reference);
@@ -1095,14 +1085,10 @@ fn high_level_interface(qualification: bool) -> Result<InterfaceDocument> {
 fn provider_reference(
     implementation: &ProviderImplementation,
 ) -> Result<ProviderImplementationReference> {
-    let handler = match &implementation.implementation {
-        ImplementationKind::PureComposition { .. } => None,
-        ImplementationKind::TerminalHandler { handler } => Some(handler.clone()),
-    };
     Ok(ProviderImplementationReference {
         descriptor: implementation.descriptor_digest()?,
         artifact: implementation.artifact.clone(),
-        handler,
+        handler: implementation.handler.clone(),
     })
 }
 

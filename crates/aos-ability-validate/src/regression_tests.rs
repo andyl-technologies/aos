@@ -8,15 +8,16 @@ use aos_ability_model::{
     AggregateOutputReference, AggregationContract, AggregationScope, ArtifactReference, BindingId,
     BranchMembership, ContributionPermission, ControllerAssignment, DecisionAlternative,
     DecisionNode, DecisionPredicate, DecisionSelector, DependencyEdge, DependencyKind,
-    DiagnosticCode, ExecutionStage, ExportDeclaration, HandlerDescriptor, ImplementationKind,
+    DiagnosticCode, ExecutionStage, ExportDeclaration, HandlerDescriptor,
     IncarnationId, LocalKey, MergeNode, MergedOutput, MethodReference, MethodSemantics,
-    OperationResultReference, OutputDescriptor, PROVIDER_STATE_FORMAT_V1, PackageDocument,
-    PackageImplementation, PlanNodeKey, ProviderAssignment, ProviderImplementation,
-    ProviderStateFormat, RequiredFeature, RequirementDeclaration, RequirementFallback,
-    RequirementStrength, ResourceId, ResourceLifetime, ResourcePermission, ResourceReference,
-    ResourceRevision, ResultProducerKey, RevisionId, ScopePath, ScopedOperationKey,
-    StringConstraint, ValueExpression, ValuePhase, ValueSchema, ValueVisibility, VersionedDocument,
-    compare_edges, compare_operation_keys, compare_resource_ids,
+    ModuleLocator, OperationResultReference,
+    OutputDescriptor, PROVIDER_STATE_FORMAT_V1, PackageDocument, PackageImplementation,
+    PlanNodeKey, ProviderAssignment, ProviderImplementation, ProviderStateFormat, RelativePath,
+    RequiredFeature, RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceId,
+    ResourceLifetime, ResourcePermission, ResourceReference, ResourceRevision, ResultProducerKey,
+    RevisionId, ScopePath, ScopedOperationKey, StringConstraint, ValueExpression, ValuePhase,
+    ValueSchema, ValueVisibility, VersionedDocument, compare_edges, compare_operation_keys,
+    compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
 
@@ -296,9 +297,8 @@ fn contracts_only_package_cannot_catalog_a_terminal_handler() {
     let package = &mut fixture.binding_inputs.packages[0];
     let artifact = package.implementation.providers[0].artifact.clone();
     let handler = key("terminal");
-    package.implementation.providers[0].implementation = ImplementationKind::TerminalHandler {
-        handler: handler.clone(),
-    };
+    package.implementation.providers[0].provider_module = None;
+    package.implementation.providers[0].handler = Some(handler.clone());
     package.implementation.handlers.insert(
         handler,
         HandlerDescriptor {
@@ -1423,16 +1423,16 @@ fn add_ungranted_resource(fixture: &mut PlanFixture) -> ResourceId {
 fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
     let binding = &mut fixture.binding_plan.bindings[0];
     let artifact = binding.implementation.artifact.clone();
-    let compose_entry = key("compose");
-    let transition_entry = key("transition");
     let implementation = ProviderImplementation {
         interface: binding.interface.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
-        implementation: ImplementationKind::PureComposition {
-            compose_entry: compose_entry.clone(),
-            transition_entry: transition_entry.clone(),
-        },
+        desired_schema: None,
+        provider_module: Some(ModuleLocator {
+            artifact: artifact.clone(),
+            path: RelativePath::new("default.nix").expect("valid module path"),
+        }),
+        handler: None,
         owns_resource_kinds: Vec::new(),
         state_format: None,
     };
@@ -1460,10 +1460,6 @@ fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
             implementation: descriptor,
         }],
         requirements: Vec::new(),
-        module_entry_points: BTreeMap::from([
-            (compose_entry, artifact.clone()),
-            (transition_entry, artifact),
-        ]),
         implementation: PackageImplementation {
             providers: vec![implementation],
             handlers: BTreeMap::new(),
@@ -1530,9 +1526,8 @@ fn configure_primary_state_format(fixture: &mut PlanFixture, mode: StateFormatFi
         });
         if matches!(mode, StateFormatFixture::TerminalProvider) {
             let handler = key("stateful-terminal");
-            implementation.implementation = ImplementationKind::TerminalHandler {
-                handler: handler.clone(),
-            };
+            implementation.provider_module = None;
+            implementation.handler = Some(handler.clone());
             implementation
                 .state_format
                 .as_mut()

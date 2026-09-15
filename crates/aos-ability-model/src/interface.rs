@@ -12,6 +12,7 @@ use anyhow::bail;
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
+use crate::document::ModuleLocator;
 use crate::identity::{InterfaceKey, InterfaceName, LocalKey};
 use crate::plan::AccessMode;
 use crate::schema::ValueSchema;
@@ -261,24 +262,6 @@ pub struct RequirementFallback {
     pub outputs: BTreeMap<LocalKey, AbilityValue>,
 }
 
-/// Identifies how a provider realizes one exported interface.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum ImplementationKind {
-    /// Uses authenticated Nix entry points to construct finite child graphs.
-    PureComposition {
-        /// Names the pure composition entry point.
-        compose_entry: LocalKey,
-        /// Names the pure transition entry point.
-        transition_entry: LocalKey,
-    },
-    /// Terminates composition at an exact trusted adapter or cataloged helper.
-    TerminalHandler {
-        /// Names the handler in the package's handler catalog.
-        handler: LocalKey,
-    },
-}
-
 /// Identifies the persistent-state format understood by one implementation.
 ///
 /// The descriptor names the format independently from the executable that
@@ -304,8 +287,15 @@ pub struct ProviderImplementation {
     pub artifact: ArtifactReference,
     /// Lists the bounded lower-interface discovery vocabulary.
     pub requirements: Vec<RequirementDeclaration>,
-    /// Defines how recursive composition terminates or expands.
-    pub implementation: ImplementationKind,
+    /// Validates the provider realization emitted for this implementation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desired_schema: Option<ValueSchema>,
+    /// Locates the selected provider module when it contributes pure semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_module: Option<ModuleLocator>,
+    /// Names an optional runtime handler independently from pure semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler: Option<LocalKey>,
     /// Names provider-owned resource kinds in canonical order.
     pub owns_resource_kinds: Vec<InterfaceName>,
     /// Declares the persistent-state format eligible for explicit adoption.
@@ -357,18 +347,22 @@ fn consume_provider_implementation_items(
     remaining_items: &mut u64,
     max_depth: u32,
 ) -> anyhow::Result<()> {
-    // Count the fixed provider, interface-key, artifact, and tagged implementation
-    // record members alongside every dynamic collection below.
-    consume_items(remaining_items, 5)?;
+    // Count the fixed provider, interface-key, and artifact record members
+    // alongside every dynamic collection below.
+    consume_items(remaining_items, 4)?;
     consume_items(remaining_items, 3)?;
     consume_items(remaining_items, 4)?;
-    consume_items(
-        remaining_items,
-        match implementation.implementation {
-            ImplementationKind::PureComposition { .. } => 3,
-            ImplementationKind::TerminalHandler { .. } => 2,
-        },
-    )?;
+    if implementation.provider_module.is_some() {
+        consume_items(remaining_items, 1)?;
+        consume_items(remaining_items, 2)?;
+        consume_items(remaining_items, 4)?;
+    }
+    if implementation.handler.is_some() {
+        consume_items(remaining_items, 1)?;
+    }
+    if implementation.desired_schema.is_some() {
+        consume_items(remaining_items, 1)?;
+    }
     consume_items(remaining_items, implementation.requirements.len())?;
     consume_items(remaining_items, implementation.owns_resource_kinds.len())?;
     if implementation.state_format.is_some() {
@@ -605,10 +599,9 @@ mod tests {
                 strength: RequirementStrength::Advisory,
                 fallback: Some(fallback),
             }],
-            implementation: ImplementationKind::PureComposition {
-                compose_entry: LocalKey::new("compose").expect("valid entry name"),
-                transition_entry: LocalKey::new("transition").expect("valid entry name"),
-            },
+            desired_schema: None,
+            provider_module: None,
+            handler: None,
             owns_resource_kinds: vec![
                 InterfaceName::new("aos.test.resource").expect("valid resource name"),
             ],
@@ -659,13 +652,13 @@ mod tests {
                 closure: digest(4),
             },
             requirements: Vec::new(),
-            implementation: ImplementationKind::TerminalHandler {
-                handler: LocalKey::new("run").expect("valid handler name"),
-            },
+            desired_schema: None,
+            provider_module: None,
+            handler: Some(LocalKey::new("run").expect("valid handler name")),
             owns_resource_kinds: Vec::new(),
             state_format: None,
         };
-        let expected = br#"{"artifact":{"closure":"sha256:0404040404040404040404040404040404040404040404040404040404040404","content":"sha256:0202020202020202020202020202020202020202020202020202020202020202","nar_hash":"sha256:0303030303030303030303030303030303030303030303030303030303030303","store_path":"/nix/store/stateless-provider"},"implementation":{"handler":"run","kind":"terminal-handler"},"interface":{"abi":1,"descriptor":"sha256:0101010101010101010101010101010101010101010101010101010101010101","name":"aos.test.stateless"},"owns_resource_kinds":[],"requirements":[]}"#;
+        let expected = br#"{"artifact":{"closure":"sha256:0404040404040404040404040404040404040404040404040404040404040404","content":"sha256:0202020202020202020202020202020202020202020202020202020202020202","nar_hash":"sha256:0303030303030303030303030303030303030303030303030303030303030303","store_path":"/nix/store/stateless-provider"},"handler":"run","interface":{"abi":1,"descriptor":"sha256:0101010101010101010101010101010101010101010101010101010101010101","name":"aos.test.stateless"},"owns_resource_kinds":[],"requirements":[]}"#;
 
         let encoded = aos_contract::canonical::to_vec(&stateless)
             .expect("stateless provider implementation encodes canonically");

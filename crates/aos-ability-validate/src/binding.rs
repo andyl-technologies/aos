@@ -10,10 +10,9 @@ use aos_ability_model::document::ProviderState;
 use aos_ability_model::identity::{compare_instance_ids, compare_request_ids};
 use aos_ability_model::{
     AccessMode, AuthorityGrant, Binding, BindingPlanDocument, Diagnostic, DiagnosticClass,
-    DiagnosticCode, DiagnosticPhase, ImplementationKind, InstanceId, InterfaceKey,
-    PROVIDER_STATE_FORMAT_V1, PackageDocument, PlanId, RequestId, RequirementDeclaration,
-    RequirementStrength, ResourceLifetime, ValueExpression, VersionedDocument,
-    compare_resource_ids,
+    DiagnosticCode, DiagnosticPhase, InstanceId, InterfaceKey, PROVIDER_STATE_FORMAT_V1,
+    PackageDocument, PlanId, RequestId, RequirementDeclaration, RequirementStrength,
+    ResourceLifetime, ValueExpression, VersionedDocument, compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
 
@@ -49,6 +48,7 @@ struct BindingInputIndex {
     inventory_by_instance: BTreeMap<InstanceId, Vec<usize>>,
     enabled_desired_by_instance: BTreeMap<InstanceId, Vec<usize>>,
     in_scope_instances: BTreeSet<InstanceId>,
+    request_packages: BTreeMap<InstanceId, aos_ability_model::LocalKey>,
     requests: BTreeMap<RequestId, usize>,
 }
 
@@ -265,6 +265,7 @@ pub(crate) fn prepare_binding_candidates(
             index,
             context,
             &input_index.in_scope_instances,
+            &input_index.request_packages,
             &mut diagnostics,
         );
     }
@@ -515,7 +516,6 @@ pub(crate) fn validate_binding_document(
         context,
         &document,
         &inputs,
-        &input_index,
         &binding_indices,
         &resources,
         &mut diagnostics,
@@ -568,6 +568,7 @@ pub(crate) fn validate_binding_document(
             index,
             context,
             &input_index.in_scope_instances,
+            &input_index.request_packages,
             &mut diagnostics,
         );
         let binding_count = request_bindings
@@ -977,6 +978,9 @@ fn validate_binding_inputs(
             continue;
         }
         let package = &inputs.packages[input_index.packages[&desired.package]];
+        input_index
+            .request_packages
+            .insert(desired.instance.clone(), package.package.name.clone());
         validate_declared_root_requests(
             desired,
             package,
@@ -1092,6 +1096,7 @@ fn validate_request(
     index: usize,
     context: &ValidationContext,
     in_scope_instances: &BTreeSet<InstanceId>,
+    request_packages: &BTreeMap<InstanceId, aos_ability_model::LocalKey>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     check_strict_order(
@@ -1136,8 +1141,33 @@ fn validate_request(
         item.request = Some(request.id.clone());
         push_diagnostic(diagnostics, item);
     }
-    for interface in &request.accepted_interfaces {
-        if context.interface(interface).is_none() {
+    match request_packages.get(&request.id.consumer) {
+        Some(package) if package == &request.package => {}
+        Some(package) => {
+            let mut item = diagnostic(
+                DiagnosticCode::BindingPrincipalMismatch,
+                DiagnosticClass::Unauthorized,
+                DiagnosticPhase::Binding,
+                vec![
+                    "requests".to_string(),
+                    index.to_string(),
+                    "package".to_string(),
+                ],
+                format!(
+                    "request package '{}' differs from consumer package '{}'",
+                    request.package.as_str(),
+                    package.as_str()
+                ),
+            );
+            item.request = Some(request.id.clone());
+            push_diagnostic(diagnostics, item);
+        }
+        // Environment-only consumers have no desired package record to compare.
+        // Their provenance was already injected by the authenticated module carrier.
+        None => {}
+    }
+    for accepted in &request.accepted_interfaces {
+        let Some(interface) = context.interface(accepted) else {
             let mut item = diagnostic(
                 DiagnosticCode::MissingReference,
                 DiagnosticClass::IncompatibleInterface,
@@ -1151,6 +1181,26 @@ fn validate_request(
             );
             item.request = Some(request.id.clone());
             push_diagnostic(diagnostics, item);
+            continue;
+        };
+
+        let expression = ValueExpression::Literal {
+            value: request.parameters.clone(),
+        };
+        if let Err(errors) = validate_value(&interface.interface.request, &expression) {
+            for mut item in errors.into_diagnostics() {
+                let mut prefixed = SchemaPath::root()
+                    .child("requests")
+                    .child(index.to_string())
+                    .child("parameters")
+                    .components()
+                    .to_vec();
+                prefixed.extend(item.path);
+                item.path = prefixed;
+                item.phase = DiagnosticPhase::Binding;
+                item.request = Some(request.id.clone());
+                push_diagnostic(diagnostics, item);
+            }
         }
     }
 }
@@ -1555,27 +1605,18 @@ fn package_supplies_binding(
         return None;
     }
 
-    match &implementation.implementation {
-        ImplementationKind::PureComposition {
-            compose_entry,
-            transition_entry,
-        } => (binding.implementation.handler.is_none()
-            && package.module_entry_points.get(compose_entry)
-                == Some(&binding.implementation.artifact)
-            && package.module_entry_points.get(transition_entry)
-                == Some(&binding.implementation.artifact))
-        .then_some(PackageProviderKind::PureComposition),
-        ImplementationKind::TerminalHandler { handler } => {
-            (binding.implementation.handler.as_ref() == Some(handler)
-                && package
-                    .implementation
-                    .handlers
-                    .get(handler)
-                    .is_some_and(|descriptor| {
-                        descriptor.artifact == binding.implementation.artifact
-                    }))
-            .then_some(PackageProviderKind::TerminalHandler)
-        }
+    match &binding.implementation.handler {
+        Some(handler) => (implementation.handler.as_ref() == Some(handler)
+            && package
+                .implementation
+                .handlers
+                .get(handler)
+                .is_some_and(|descriptor| descriptor.artifact == binding.implementation.artifact))
+        .then_some(PackageProviderKind::TerminalHandler),
+        None => implementation
+            .provider_module
+            .is_some()
+            .then_some(PackageProviderKind::PureComposition),
     }
 }
 
@@ -1765,7 +1806,6 @@ fn validate_contributions(
     context: &ValidationContext,
     document: &BindingPlanDocument,
     inputs: &BindingValidationInputs,
-    input_index: &BindingInputIndex,
     binding_indices: &BTreeMap<aos_ability_model::BindingId, usize>,
     resources: &BTreeSet<aos_ability_model::ResourceId>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1879,11 +1919,11 @@ fn retained_contribution_artifacts(inputs: &BindingValidationInputs) -> Artifact
         for artifact in &package.artifacts {
             insert_artifact(&mut artifacts, artifact);
         }
-        for artifact in package.module_entry_points.values() {
-            insert_artifact(&mut artifacts, artifact);
-        }
         for provider in &package.implementation.providers {
             insert_artifact(&mut artifacts, &provider.artifact);
+            if let Some(module) = &provider.provider_module {
+                insert_artifact(&mut artifacts, &module.artifact);
+            }
         }
         for handler in package.implementation.handlers.values() {
             insert_artifact(&mut artifacts, &handler.artifact);

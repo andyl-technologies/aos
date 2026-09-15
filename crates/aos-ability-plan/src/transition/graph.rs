@@ -381,7 +381,14 @@ pub(super) fn package_for_group<'a>(
 pub(super) fn pure_transition<'a>(
     group: &TransitionGroup,
     package: &'a PackageDocument,
-) -> Result<Option<(&'a ProviderImplementation, &'a LocalKey)>, TransitionError> {
+) -> Result<
+    Option<(
+        &'a ProviderImplementation,
+        &'a aos_ability_model::ModuleLocator,
+        LocalKey,
+    )>,
+    TransitionError,
+> {
     let implementation = package
         .implementation
         .providers
@@ -395,21 +402,15 @@ pub(super) fn pure_transition<'a>(
         .ok_or_else(|| TransitionError::MissingImplementation {
             provider: group.provider.clone(),
         })?;
-    match &implementation.implementation {
-        aos_ability_model::ImplementationKind::PureComposition {
-            transition_entry, ..
-        } if group.reference.handler.is_none()
-            && package.module_entry_points.get(transition_entry)
-                == Some(&group.reference.artifact) =>
-        {
-            Ok(Some((implementation, transition_entry)))
-        }
-        aos_ability_model::ImplementationKind::TerminalHandler { .. } => Ok(None),
-        aos_ability_model::ImplementationKind::PureComposition { .. } => {
-            Err(TransitionError::MissingImplementation {
+    match &implementation.provider_module {
+        Some(module) => Ok(Some((
+            implementation,
+            module,
+            LocalKey::new("transition").map_err(|_| TransitionError::MissingImplementation {
                 provider: group.provider.clone(),
-            })
-        }
+            })?,
+        ))),
+        None => Ok(None),
     }
 }
 
@@ -1274,11 +1275,11 @@ fn retained_transition_artifacts(
         for artifact in &package.artifacts {
             insert_artifact(&mut artifacts, artifact, &fallback_provider)?;
         }
-        for artifact in package.module_entry_points.values() {
-            insert_artifact(&mut artifacts, artifact, &fallback_provider)?;
-        }
         for implementation in &package.implementation.providers {
             insert_artifact(&mut artifacts, &implementation.artifact, &fallback_provider)?;
+            if let Some(module) = &implementation.provider_module {
+                insert_artifact(&mut artifacts, &module.artifact, &fallback_provider)?;
+            }
         }
         for handler in package.implementation.handlers.values() {
             insert_artifact(&mut artifacts, &handler.artifact, &fallback_provider)?;

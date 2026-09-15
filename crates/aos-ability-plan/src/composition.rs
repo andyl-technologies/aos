@@ -9,8 +9,8 @@ use aos_ability_model::document::{Contribution, encode_canonical};
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, AggregateOutput, Binding, BindingRequest,
     ControllerAssignment, DesiredStateDocument, EnvironmentDocument, InstanceId, InterfaceKey,
-    LocalKey, PackageDocument, ProviderImplementationReference, RequestId, ResourceRevision,
-    RevisionId, ScopePath, VersionedDocument,
+    LocalKey, ModuleLocator, PackageDocument, ProviderImplementationReference, RequestId,
+    ResourceRevision, RevisionId, ScopePath, VersionedDocument,
 };
 use aos_ability_validate::ValidationContext;
 use aos_contract::Sha256Digest;
@@ -134,7 +134,7 @@ fn validate_child_depth(
 
 /// Evaluates one exact authenticated package entry without external effects.
 pub trait CompositionEvaluator {
-    /// Evaluates `entry` from `implementation` against one bounded input value.
+    /// Evaluates `entry` from an authenticated provider module against one bounded input value.
     ///
     /// # Errors
     ///
@@ -143,6 +143,7 @@ pub trait CompositionEvaluator {
     fn evaluate(
         &mut self,
         implementation: &ProviderImplementationReference,
+        module: &ModuleLocator,
         entry: &LocalKey,
         input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError>;

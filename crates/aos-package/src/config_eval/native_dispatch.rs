@@ -4171,7 +4171,6 @@ mod tests {
             implementation: implementation.descriptor,
         }];
         package.requirements.clear();
-        package.module_entry_points.clear();
         package.implementation = PackageImplementation {
             providers: vec![provider],
             handlers: BTreeMap::from([(

@@ -205,7 +205,14 @@ pub fn systemd_manager_plan_fixture() -> PlanFixture {
 
     let methods = vec![key("observe"), key("start")];
     fixture.binding_inputs.desired_state.child_requests[0].methods = methods.clone();
+    fixture.binding_inputs.desired_state.child_requests[0].parameters =
+        AbilityValue::new(serde_json::json!({"unit": "example.service"}))
+            .expect("systemd request parameters must be bounded");
     fixture.binding_plan.requests[0].methods = methods.clone();
+    fixture.binding_plan.requests[0].parameters =
+        fixture.binding_inputs.desired_state.child_requests[0]
+            .parameters
+            .clone();
     fixture.binding_plan.bindings[0].caller_grant.methods = methods;
     fixture.binding_plan.bindings[0].caller_grant.resources[0].access = AccessMode::ExclusiveWrite;
     fixture.binding_plan.bindings[0].caller_grant.resources[0].operations =
@@ -285,9 +292,9 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
         interface: terminal_interface.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
-        implementation: ImplementationKind::TerminalHandler {
-            handler: handler.clone(),
-        },
+        desired_schema: None,
+        provider_module: None,
+        handler: Some(handler.clone()),
         owns_resource_kinds: Vec::new(),
         state_format: None,
     };
@@ -313,10 +320,12 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
         interface: owner_interface_key.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
-        implementation: ImplementationKind::PureComposition {
-            compose_entry: key("compose"),
-            transition_entry: key("transition"),
-        },
+        desired_schema: None,
+        provider_module: Some(ModuleLocator {
+            artifact: artifact.clone(),
+            path: RelativePath::new("default.nix").expect("valid module path"),
+        }),
+        handler: None,
         owns_resource_kinds: vec![terminal_interface.name.clone()],
         state_format: Some(ProviderStateFormat {
             descriptor: Sha256Digest::of_bytes("stateful owner test format"),
@@ -359,10 +368,6 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
             },
         ],
         requirements: Vec::new(),
-        module_entry_points: BTreeMap::from([
-            (key("compose"), artifact.clone()),
-            (key("transition"), artifact.clone()),
-        ]),
         implementation: PackageImplementation {
             providers,
             handlers: BTreeMap::from([(
@@ -387,6 +392,8 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
         configuration: None,
     }];
     fixture.binding_inputs.packages = vec![package];
+    fixture.binding_inputs.desired_state.child_requests[0].package = key("stateful-owner-provider");
+    fixture.binding_plan.requests[0].package = key("stateful-owner-provider");
 
     let owner_resource = ResourceId {
         provider: provider.clone(),
@@ -422,6 +429,7 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
     fixture.binding_plan.bindings[0].lifetime = ResourceLifetime::Persistent;
 
     let owner_request = BindingRequest {
+        package: key("stateful-owner-provider"),
         id: RequestId {
             consumer: provider.clone(),
             scope: ScopePath::root(),
@@ -431,6 +439,8 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
         methods: vec![key("observe")],
         guarantees: Vec::new(),
         lifetime: ResourceLifetime::Persistent,
+        parameters: AbilityValue::new(serde_json::json!(true))
+            .expect("owner request parameters must be bounded"),
     };
     let owner_binding = Binding {
         id: BindingId(key("owner")),
@@ -588,6 +598,8 @@ pub fn plan_fixture() -> PlanFixture {
         },
     };
     let request = BindingRequest {
+        package: aos_ability_model::LocalKey::new("test-package")
+            .expect("valid test package provenance"),
         id: RequestId {
             consumer: provider.clone(),
             scope: ScopePath::root(),
@@ -597,6 +609,8 @@ pub fn plan_fixture() -> PlanFixture {
         methods: vec![key("observe")],
         guarantees: Vec::new(),
         lifetime: ResourceLifetime::Instance,
+        parameters: AbilityValue::new(serde_json::json!(true))
+            .expect("test request parameters must be bounded"),
     };
     let desired_state = DesiredStateDocument {
         schema: DesiredStateDocument::SCHEMA.to_string(),

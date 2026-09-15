@@ -6,10 +6,9 @@ use aos_ability_model::document::Contribution;
 use aos_ability_model::identity::compare_request_ids;
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityActivationMode, AbilityValue, AggregateOutput, ArtifactReference,
-    Binding, BindingRequest, ControllerAssignment, DesiredStateDocument, ImplementationKind,
-    InstanceId, InterfaceKey, LocalKey, PackageDocument, ProviderImplementation,
-    ProviderImplementationReference, ResourceRevision, RevisionId, ValuePhase,
-    compare_resource_ids,
+    Binding, BindingRequest, ControllerAssignment, DesiredStateDocument, InstanceId, InterfaceKey,
+    LocalKey, PackageDocument, ProviderImplementation, ProviderImplementationReference,
+    ResourceRevision, RevisionId, ValuePhase, compare_resource_ids,
 };
 use aos_ability_validate::{ValidationContext, validate_value};
 use aos_contract::Sha256Digest;
@@ -129,6 +128,7 @@ pub(super) fn evaluate_pure_providers<E: CompositionEvaluator>(
         let incoming = group.incoming;
         let Some(PureImplementation {
             implementation,
+            module,
             compose_entry,
             aggregation_group,
             activation_mode,
@@ -208,7 +208,7 @@ pub(super) fn evaluate_pure_providers<E: CompositionEvaluator>(
         )
         .map_err(|error| CompositionError::Encoding(error.to_string()))?;
         retain_evaluation_bytes(evaluation_bytes, input.encoded_size(), limits)?;
-        let output = match evaluator.evaluate(reference, compose_entry, &input) {
+        let output = match evaluator.evaluate(reference, module, &compose_entry, &input) {
             Ok(output) => {
                 evaluation_trace.push(CompositionEvaluation {
                     provider: provider.clone(),
@@ -316,7 +316,8 @@ struct ProviderEvaluationGroup<'a> {
 
 struct PureImplementation<'a> {
     implementation: &'a ProviderImplementation,
-    compose_entry: &'a LocalKey,
+    module: &'a aos_ability_model::ModuleLocator,
+    compose_entry: LocalKey,
     aggregation_group: Option<&'a LocalKey>,
     activation_mode: AbilityActivationMode,
 }
@@ -372,27 +373,19 @@ fn pure_implementation<'a>(
         })
         .and_then(|export| context.interface(&export.interface))
         .map(|interface| &interface.interface.aggregation.controller_group);
-    match &implementation.implementation {
-        ImplementationKind::PureComposition {
-            compose_entry,
-            transition_entry,
-        } if reference.handler.is_none()
-            && package.module_entry_points.get(compose_entry) == Some(&reference.artifact)
-            && package.module_entry_points.get(transition_entry) == Some(&reference.artifact) =>
-        {
-            Ok(Some(PureImplementation {
-                implementation,
-                compose_entry,
-                aggregation_group,
-                activation_mode: package.activation_mode,
-            }))
-        }
-        ImplementationKind::PureComposition { .. } => {
-            Err(CompositionError::MissingImplementation {
-                provider: provider.clone(),
-            })
-        }
-        ImplementationKind::TerminalHandler { .. } => Ok(None),
+    match &implementation.provider_module {
+        Some(module) => Ok(Some(PureImplementation {
+            implementation,
+            module,
+            compose_entry: LocalKey::new("compose").map_err(|_| {
+                CompositionError::MissingImplementation {
+                    provider: provider.clone(),
+                }
+            })?,
+            aggregation_group,
+            activation_mode: package.activation_mode,
+        })),
+        None => Ok(None),
     }
 }
 
@@ -748,15 +741,13 @@ pub(super) fn validate_enabled_providers(
             .providers
             .iter()
             .any(|implementation| {
-                matches!(
-                    implementation.implementation,
-                    ImplementationKind::PureComposition { .. }
-                ) && implementation.descriptor_digest().is_ok_and(|descriptor| {
-                    package.exports.iter().any(|export| {
-                        export.interface == implementation.interface
-                            && export.implementation == descriptor
+                implementation.provider_module.is_some()
+                    && implementation.descriptor_digest().is_ok_and(|descriptor| {
+                        package.exports.iter().any(|export| {
+                            export.interface == implementation.interface
+                                && export.implementation == descriptor
+                        })
                     })
-                })
             });
         if has_pure_aggregate
             && !policy
@@ -802,19 +793,7 @@ pub(super) fn validate_enabled_providers(
             export.interface == selection.interface
                 && export.implementation == selection.implementation.descriptor
         });
-        let valid_entry = match &implementation.implementation {
-            ImplementationKind::PureComposition {
-                compose_entry,
-                transition_entry,
-            } => {
-                selection.implementation.handler.is_none()
-                    && package.module_entry_points.get(compose_entry)
-                        == Some(&selection.implementation.artifact)
-                    && package.module_entry_points.get(transition_entry)
-                        == Some(&selection.implementation.artifact)
-            }
-            ImplementationKind::TerminalHandler { .. } => false,
-        };
+        let valid_entry = implementation.provider_module.is_some();
         let selected_interface = context.interface(&selection.interface);
         let methods_valid = selected_interface.is_some_and(|interface| {
             selection
@@ -901,6 +880,13 @@ fn provider_artifacts(
     let mut artifacts = package.artifacts.clone();
     artifacts.push(package.package.payload.clone());
     artifacts.push(package.package.source.clone());
-    artifacts.extend(package.module_entry_points.values().cloned());
+    artifacts.extend(
+        package
+            .implementation
+            .providers
+            .iter()
+            .filter_map(|provider| provider.provider_module.as_ref())
+            .map(|locator| locator.artifact.clone()),
+    );
     artifacts
 }

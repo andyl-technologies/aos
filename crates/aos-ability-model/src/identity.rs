@@ -15,6 +15,7 @@ use thiserror::Error;
 
 const MAX_LOCAL_KEY_BYTES: usize = 128;
 const MAX_OPAQUE_ID_BYTES: usize = 1_048_576;
+const MAX_RELATIVE_PATH_BYTES: usize = 4_096;
 const MAX_SCOPE_COMPONENTS: usize = 64;
 
 /// Reports why an ability identity component is invalid.
@@ -35,6 +36,9 @@ pub enum IdentityError {
     /// A hierarchy exceeded the version-1 structural depth bound.
     #[error("scope path exceeds its {limit} component limit")]
     ScopeTooDeep { limit: usize },
+    /// An artifact-relative path was empty, absolute, or non-normalized.
+    #[error("relative path must be a nonempty normalized path of at most {limit} bytes")]
+    InvalidRelativePath { limit: usize },
 }
 
 /// Identifies one bounded local name inside an authenticated parent scope.
@@ -91,6 +95,74 @@ impl Serialize for LocalKey {
 }
 
 impl<'de> Deserialize<'de> for LocalKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Identifies a normalized file below an authenticated artifact root.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct RelativePath(String);
+
+impl RelativePath {
+    /// Constructs an artifact-relative path without `.` or `..` components.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `value` is empty, absolute, exceeds 4,096 bytes,
+    /// contains a NUL byte, or is not lexically normalized.
+    pub fn new(value: impl Into<String>) -> Result<Self, IdentityError> {
+        let value = value.into();
+        let valid = !value.is_empty()
+            && value.len() <= MAX_RELATIVE_PATH_BYTES
+            && !value.starts_with('/')
+            && !value.contains('\0')
+            && value
+                .split('/')
+                .all(|component| !component.is_empty() && component != "." && component != "..");
+        if !valid {
+            return Err(IdentityError::InvalidRelativePath {
+                limit: MAX_RELATIVE_PATH_BYTES,
+            });
+        }
+        Ok(Self(value))
+    }
+
+    /// Returns the serialized artifact-relative path.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for RelativePath {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl FromStr for RelativePath {
+    type Err = IdentityError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::new(value)
+    }
+}
+
+impl Serialize for RelativePath {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for RelativePath {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -506,6 +578,29 @@ mod tests {
         assert!(InterfaceName::new("nginx.virtual-host").is_ok());
         assert!(InterfaceName::new("virtual-host").is_err());
         assert!(InterfaceName::new("nginx..virtual-host").is_err());
+    }
+
+    #[test]
+    fn relative_paths_stay_below_the_authenticated_artifact_root() {
+        assert_eq!(
+            RelativePath::new("lib/aos/provider.nix")
+                .expect("normalized relative path")
+                .as_str(),
+            "lib/aos/provider.nix"
+        );
+
+        for rejected in [
+            "",
+            "/default.nix",
+            "./default.nix",
+            "lib/../default.nix",
+            "lib//default.nix",
+        ] {
+            assert!(
+                RelativePath::new(rejected).is_err(),
+                "accepted {rejected:?}"
+            );
+        }
     }
 
     #[test]

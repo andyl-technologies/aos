@@ -208,9 +208,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use aos_ability_model::{
-        AbilityActivationMode, ArtifactReference, ExportDeclaration, ImplementationKind,
-        PackageDocument, PackageImplementation, ProviderImplementation, RequiredFeature,
-        VersionedDocument, decode_canonical, encode_canonical,
+        AbilityActivationMode, ArtifactReference, ExportDeclaration, ModuleLocator,
+        PackageDocument, PackageImplementation, ProviderImplementation, RelativePath,
+        RequiredFeature, VersionedDocument, decode_canonical, encode_canonical,
     };
     use aos_contract::Sha256Digest;
 
@@ -307,16 +307,16 @@ mod tests {
             nar_hash: Sha256Digest::from_bytes([2; 32]),
             closure: Sha256Digest::from_bytes([3; 32]),
         };
-        let compose_entry = aos_ability_model::LocalKey::new("compose").expect("valid entry");
-        let transition_entry = aos_ability_model::LocalKey::new("transition").expect("valid entry");
         let provider = ProviderImplementation {
             interface: interface_key.clone(),
             artifact: artifact.clone(),
             requirements: Vec::new(),
-            implementation: ImplementationKind::PureComposition {
-                compose_entry: compose_entry.clone(),
-                transition_entry: transition_entry.clone(),
-            },
+            desired_schema: None,
+            provider_module: Some(ModuleLocator {
+                artifact: artifact.clone(),
+                path: RelativePath::new("default.nix").expect("valid module path"),
+            }),
+            handler: None,
             owns_resource_kinds: Vec::new(),
             state_format: None,
         };
@@ -346,10 +346,6 @@ mod tests {
                 },
             ],
             requirements: Vec::new(),
-            module_entry_points: BTreeMap::from([
-                (compose_entry, artifact.clone()),
-                (transition_entry, artifact),
-            ]),
             implementation: PackageImplementation {
                 providers: vec![provider],
                 handlers: BTreeMap::new(),

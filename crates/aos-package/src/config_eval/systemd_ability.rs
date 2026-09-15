@@ -14,15 +14,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::io;
-use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use aos_ability_model::{
-    AbilityActivationMode, AbilityValue, ExecutionStage, IncarnationId, InterfaceKey,
-    InterfaceName, LocalKey, MethodReference, Operation, ProviderAssignment,
-    ProviderImplementationReference, ResourceAccess, ResourceId, RevisionId, ValueSchema,
+    AbilityActivationMode, AbilityValue, ExecutionStage, IncarnationId, LocalKey, MethodReference,
+    Operation, ProviderAssignment, ProviderImplementationReference, ResourceAccess, ResourceId,
+    RevisionId, ValueSchema,
     builtin::{
         systemd_manager_handler, systemd_manager_handler_key, systemd_manager_interface_key,
         systemd_manager_provider, systemd_provider_bootstrap_interface_key,
@@ -65,8 +64,6 @@ const CATALOG_QUALIFICATION_MILLIS: u64 = 30_000;
 const NATIVE_EXECUTOR_SUFFIX: &str = "bin/.aos-package-runtime-unwrapped";
 const SERVICE_MANAGEMENT_INTERFACE: &str =
     aos_ability_model::builtin::SERVICE_MANAGEMENT_INTERFACE_NAME;
-const SERVICE_MANAGEMENT_DESCRIPTOR: &str =
-    aos_ability_model::builtin::SERVICE_MANAGEMENT_INTERFACE_DESCRIPTOR;
 const SERVICE_MANAGEMENT_HANDLER: &str = "service-management-terminal";
 const SYSTEMD_PROVIDER_BOOTSTRAP_HANDLER: &str = "systemd-bootstrap-terminal";
 
@@ -816,15 +813,8 @@ fn authenticate_service_management(
         ));
     }
 
-    let expected_interface = InterfaceKey {
-        name: InterfaceName::new(SERVICE_MANAGEMENT_INTERFACE).map_err(|error| {
-            invalid_data(format!("invalid service-management interface: {error}"))
-        })?,
-        abi: NonZeroU32::new(1).ok_or_else(|| invalid_data("invalid service-management ABI"))?,
-        descriptor: Sha256Digest::parse(SERVICE_MANAGEMENT_DESCRIPTOR).map_err(|error| {
-            invalid_data(format!("invalid service-management descriptor: {error}"))
-        })?,
-    };
+    let expected_interface = aos_ability_model::builtin::service_management_interface_key()
+        .map_err(|error| invalid_data(format!("invalid service-management interface: {error}")))?;
     let handler_key = LocalKey::new(SERVICE_MANAGEMENT_HANDLER)
         .map_err(|error| invalid_data(format!("invalid service-management handler: {error}")))?;
     if assignment.interface != expected_interface
@@ -2167,7 +2157,6 @@ mod tests {
             artifacts: vec![artifact.clone()],
             exports: Vec::new(),
             requirements: Vec::new(),
-            module_entry_points: BTreeMap::new(),
             implementation: aos_ability_model::PackageImplementation {
                 providers: vec![systemd_manager_provider(artifact.clone())?],
                 handlers: BTreeMap::from([(
@@ -2208,19 +2197,15 @@ mod tests {
         let checked = checked_systemd_manager_effect_plan();
         let binding = &checked.binding_plan().bindings()[0];
         let artifact = binding.implementation.artifact.clone();
-        let interface = InterfaceKey {
-            name: InterfaceName::new(SERVICE_MANAGEMENT_INTERFACE)?,
-            abi: NonZeroU32::new(1).unwrap(),
-            descriptor: Sha256Digest::parse(SERVICE_MANAGEMENT_DESCRIPTOR)?,
-        };
+        let interface = aos_ability_model::builtin::service_management_interface_key()?;
         let handler_key = LocalKey::new(SERVICE_MANAGEMENT_HANDLER)?;
         let provider = aos_ability_model::ProviderImplementation {
             interface: interface.clone(),
             artifact: artifact.clone(),
             requirements: Vec::new(),
-            implementation: aos_ability_model::ImplementationKind::TerminalHandler {
-                handler: handler_key.clone(),
-            },
+            desired_schema: None,
+            provider_module: None,
+            handler: Some(handler_key.clone()),
             owns_resource_kinds: vec![interface.name.clone()],
             state_format: None,
         };
@@ -2255,7 +2240,6 @@ mod tests {
             artifacts: vec![artifact.clone()],
             exports: Vec::new(),
             requirements: Vec::new(),
-            module_entry_points: BTreeMap::new(),
             implementation: aos_ability_model::PackageImplementation {
                 providers: vec![provider],
                 handlers: BTreeMap::from([(handler_key.clone(), handler)]),

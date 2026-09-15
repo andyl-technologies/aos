@@ -21,9 +21,8 @@ use std::path::{Component, Path};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AggregateOutput, DesiredStateDocument, EnvironmentDocument,
-    ImplementationKind, RequiredFeature, ResourceReference, TransitionAuthorizationDocument,
-    ValueExpression, VersionedDocument,
+    ABILITY_LIMITS_V1, AggregateOutput, DesiredStateDocument, EnvironmentDocument, RequiredFeature,
+    ResourceReference, TransitionAuthorizationDocument, ValueExpression, VersionedDocument,
 };
 use aos_ability_plan::{
     PlanningReplayInputs, PlanningSnapshot, ResolutionPolicyDocument, TransitionInputs,
@@ -982,10 +981,7 @@ fn mapping_has_checked_owner_route(
                 == Some(handler_binding.implementation.descriptor)
                 && implementation.interface == handler_binding.interface
                 && implementation.artifact == handler_binding.implementation.artifact
-                && matches!(
-                    implementation.implementation,
-                    ImplementationKind::TerminalHandler { .. }
-                )
+                && implementation.handler.is_some()
         })
         .count()
         == 1;
@@ -2051,7 +2047,7 @@ mod tests {
     use aos_ability_model::{
         AbilityActivationMode, AbilityValue, AccessMode, AggregateId, AggregateOutput,
         ArtifactReference, BindingId, EnvironmentId, ExecutionStage, ExportDeclaration,
-        HandlerDescriptor, ImplementationKind, InstanceId, InterfaceKey, InterfaceName, LocalKey,
+        HandlerDescriptor, InstanceId, InterfaceKey, InterfaceName, LocalKey,
         MethodSemantics, OperationPhase, OutputDescriptor, PackageDocument, PackageImplementation,
         PlanId, ProviderImplementation, ProviderImplementationReference, ResourceId,
         ResourceLifetime, ResourceReference, RevisionId, ScopePath, TransactionId, ValueExpression,
@@ -2521,9 +2517,9 @@ mod tests {
             interface: interface_key.clone(),
             artifact: artifact.clone(),
             requirements: Vec::new(),
-            implementation: ImplementationKind::TerminalHandler {
-                handler: handler_key.clone(),
-            },
+            desired_schema: None,
+            provider_module: None,
+            handler: Some(handler_key.clone()),
             owns_resource_kinds: vec![interface_key.name.clone()],
             state_format: None,
         };
@@ -2555,7 +2551,6 @@ mod tests {
                 implementation: provider_descriptor,
             }],
             requirements: Vec::new(),
-            module_entry_points: BTreeMap::new(),
             implementation: PackageImplementation {
                 providers: vec![provider],
                 handlers: BTreeMap::from([(
@@ -2751,7 +2746,6 @@ mod tests {
         package.activation_mode = AbilityActivationMode::StructuredEffects;
         package.exports.clear();
         package.requirements.clear();
-        package.module_entry_points.clear();
         package.implementation = PackageImplementation {
             providers: Vec::new(),
             handlers: BTreeMap::new(),

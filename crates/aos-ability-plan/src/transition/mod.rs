@@ -257,7 +257,9 @@ impl<'a> TransitionPlanner<'a> {
         for group in groups.into_values() {
             budget.begin(self.limits)?;
             let package = package_for_group(&group, &packages)?;
-            let Some((implementation, transition_entry)) = pure_transition(&group, package)? else {
+            let Some((implementation, module, transition_entry)) =
+                pure_transition(&group, package)?
+            else {
                 continue;
             };
             let operation_scope = operation_scope(&group.provider, group.reference.descriptor)?;
@@ -359,26 +361,27 @@ impl<'a> TransitionPlanner<'a> {
             budget.preflight_context(&context, self.limits)?;
             let input = encode_ability_value(&context)?;
             budget.retain_bytes(input.encoded_size(), self.limits)?;
-            let output = match evaluator.evaluate(&group.reference, transition_entry, &input) {
-                Ok(output) => output,
-                Err(source) => {
-                    let message = bounded_evaluation_message(&source);
-                    let evaluation = TransitionEvaluation {
-                        provider: group.provider.clone(),
-                        implementation: group.reference.clone(),
-                        entry: transition_entry.clone(),
-                        input,
-                        result: TransitionEvaluationResult::Failed {
-                            message: message.clone(),
-                        },
-                    };
-                    return Err(TransitionError::Evaluation {
-                        provider: group.provider.clone(),
-                        message,
-                        evaluation: Box::new(evaluation),
-                    });
-                }
-            };
+            let output =
+                match evaluator.evaluate(&group.reference, module, &transition_entry, &input) {
+                    Ok(output) => output,
+                    Err(source) => {
+                        let message = bounded_evaluation_message(&source);
+                        let evaluation = TransitionEvaluation {
+                            provider: group.provider.clone(),
+                            implementation: group.reference.clone(),
+                            entry: transition_entry.clone(),
+                            input,
+                            result: TransitionEvaluationResult::Failed {
+                                message: message.clone(),
+                            },
+                        };
+                        return Err(TransitionError::Evaluation {
+                            provider: group.provider.clone(),
+                            message,
+                            evaluation: Box::new(evaluation),
+                        });
+                    }
+                };
             let evaluation = TransitionEvaluation {
                 provider: group.provider.clone(),
                 implementation: group.reference.clone(),

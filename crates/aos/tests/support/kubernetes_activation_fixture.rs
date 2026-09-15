@@ -18,10 +18,9 @@ use aos_ability_model::identity::compare_instance_ids;
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, AccessMode, AggregateId, Binding, BindingId, BindingRequest,
     ContributionPermission, DesiredStateDocument, EnvironmentDocument, EnvironmentId,
-    ExecutionStage, ImplementationKind, InstanceId, InterfaceDocument, InterfaceKey, LocalKey,
-    PackageDocument, ProviderImplementation, ProviderImplementationReference, RequestId,
-    RequiredFeature, ResourceId, ResourceLifetime, ResourcePermission, RevisionId, ScopePath,
-    VersionedDocument,
+    ExecutionStage, InstanceId, InterfaceDocument, InterfaceKey, LocalKey, PackageDocument,
+    ProviderImplementation, ProviderImplementationReference, RequestId, RequiredFeature,
+    ResourceId, ResourceLifetime, ResourcePermission, RevisionId, ScopePath, VersionedDocument,
 };
 use aos_ability_plan::{
     BindingCandidate, CandidateSelection, CompositionError, EnabledProviderSelection,
@@ -828,7 +827,12 @@ impl KubernetesFixture {
             ));
         }
         if fault == Some("cyclic-k3s-bootstrap") {
+            let parameters = addons
+                .first()
+                .map(|(_, _, value)| value.clone())
+                .context("cyclic K3s fixture has no valid request parameters")?;
             child_requests.push(BindingRequest {
+                package: key("ability-reference-k3s")?,
                 id: RequestId {
                     consumer: k3s.clone(),
                     scope: ScopePath::root(),
@@ -838,6 +842,7 @@ impl KubernetesFixture {
                 methods: Vec::new(),
                 guarantees: Vec::new(),
                 lifetime: ResourceLifetime::Instance,
+                parameters: AbilityValue::new(parameters)?,
             });
         }
         for (name, package_name, value) in addons {
@@ -854,11 +859,13 @@ impl KubernetesFixture {
                 configuration: None,
             });
             child_requests.push(BindingRequest {
+                package: key(package_name)?,
                 id: request.clone(),
                 accepted_interfaces: vec![self.interface(K3S_INTERFACE)?],
                 methods: Vec::new(),
                 guarantees: Vec::new(),
                 lifetime: ResourceLifetime::Instance,
+                parameters: AbilityValue::new(value.clone())?,
             });
             contributions.push(Contribution {
                 request: request.clone(),
@@ -1313,14 +1320,10 @@ fn output_locator(
 fn provider_reference(
     implementation: &ProviderImplementation,
 ) -> Result<ProviderImplementationReference> {
-    let handler = match &implementation.implementation {
-        ImplementationKind::PureComposition { .. } => None,
-        ImplementationKind::TerminalHandler { handler } => Some(handler.clone()),
-    };
     Ok(ProviderImplementationReference {
         descriptor: implementation.descriptor_digest()?,
         artifact: implementation.artifact.clone(),
-        handler,
+        handler: implementation.handler.clone(),
     })
 }
 

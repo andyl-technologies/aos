@@ -503,6 +503,13 @@ mod tests {
             interface: InterfaceDescriptor {
                 name: InterfaceName::new("aos.test.service").expect("interface name"),
                 abi: std::num::NonZeroU32::new(1).expect("nonzero ABI"),
+                aggregation: aos_ability_model::AggregationContract {
+                    scope: aos_ability_model::AggregationScope::ProviderInstance,
+                    key: key("resource"),
+                    controller_group: key("reference"),
+                    reject_slot_collisions: true,
+                    merge_contract: None,
+                },
                 request: ValueSchema::Boolean,
                 configuration: Some(ValueSchema::String {
                     max_length: 64,

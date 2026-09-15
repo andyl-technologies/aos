@@ -652,6 +652,7 @@ impl CompositionEvaluator for TranscriptEvaluator<'_> {
     fn evaluate(
         &mut self,
         implementation: &aos_ability_model::ProviderImplementationReference,
+        _module: &aos_ability_model::ModuleLocator,
         entry: &aos_ability_model::LocalKey,
         input: &aos_ability_model::AbilityValue,
     ) -> Result<aos_ability_model::AbilityValue, EvaluationError> {

@@ -142,6 +142,16 @@ pub struct ArtifactReference {
     pub closure: Sha256Digest,
 }
 
+/// Computes the semantic content identity for one immutable NAR.
+///
+/// The Nix store path is an authenticated locator and does not participate in
+/// this identity. Two releases that retain byte-identical NARs therefore name
+/// the same content even when their input-addressed store paths differ.
+#[must_use]
+pub fn artifact_content_identity(nar_hash: &Sha256Digest) -> Sha256Digest {
+    Sha256Digest::separated("aos.ability.artifact/v1", nar_hash.as_bytes())
+}
+
 /// Defines how long a referenced resource is expected to remain usable.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -463,6 +473,19 @@ fn validate_string_length(
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artifact_content_identity_depends_only_on_the_nar() {
+        let nar_hash = Sha256Digest::parse(
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .expect("valid test NAR identity");
+
+        assert_eq!(
+            artifact_content_identity(&nar_hash).to_string(),
+            "sha256:d79a5482e516d2659bd271d08dc6b6a0358eb75402da659e368136554b133331"
+        );
+    }
 
     #[test]
     fn value_limits_reject_collection_growth_before_traversal() {

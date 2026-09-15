@@ -13,11 +13,10 @@ use serde::Serialize;
 
 use crate::{
     AccessMode, AggregationContract, AggregationScope, ArtifactReference, ExecutionStage,
-    GuaranteeKey, HandlerDescriptor, ImplementationKind, IndeterminateSemantics,
-    InterfaceDescriptor, InterfaceDocument, InterfaceKey, InterfaceName, LifecycleSemantics,
-    LocalKey, MethodDescriptor, MethodSemantics, OutcomeSemantics, OutputDescriptor,
-    ProviderImplementation, ResourceLifetime, StringSyntax, ValuePhase, ValueSchema,
-    ValueVisibility, VersionedDocument,
+    GuaranteeKey, HandlerDescriptor, IndeterminateSemantics, InterfaceDescriptor,
+    InterfaceDocument, InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey,
+    MethodDescriptor, MethodSemantics, OutcomeSemantics, OutputDescriptor, ProviderImplementation,
+    ResourceLifetime, StringSyntax, ValuePhase, ValueSchema, ValueVisibility, VersionedDocument,
 };
 
 mod resource;
@@ -405,9 +404,9 @@ pub fn kubernetes_object_provider(artifact: ArtifactReference) -> Result<Provide
         interface: interface.clone(),
         artifact,
         requirements: Vec::new(),
-        implementation: ImplementationKind::TerminalHandler {
-            handler: kubernetes_object_handler_key()?,
-        },
+        desired_schema: None,
+        provider_module: None,
+        handler: Some(kubernetes_object_handler_key()?),
         owns_resource_kinds: vec![interface.name],
         state_format: None,
     })
@@ -678,9 +677,9 @@ pub fn foreground_process_provider(artifact: ArtifactReference) -> Result<Provid
         interface: interface.clone(),
         artifact,
         requirements: Vec::new(),
-        implementation: ImplementationKind::TerminalHandler {
-            handler: foreground_process_handler_key()?,
-        },
+        desired_schema: None,
+        provider_module: None,
+        handler: Some(foreground_process_handler_key()?),
         owns_resource_kinds: vec![interface.name],
         state_format: None,
     })
@@ -810,9 +809,9 @@ pub fn systemd_manager_provider(artifact: ArtifactReference) -> Result<ProviderI
         interface: interface.clone(),
         artifact,
         requirements: Vec::new(),
-        implementation: ImplementationKind::TerminalHandler {
-            handler: systemd_manager_handler_key()?,
-        },
+        desired_schema: None,
+        provider_module: None,
+        handler: Some(systemd_manager_handler_key()?),
         owns_resource_kinds: vec![interface.name],
         state_format: None,
     })

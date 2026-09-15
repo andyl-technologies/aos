@@ -4,11 +4,11 @@ use std::collections::BTreeMap;
 
 use aos_ability_model::document::{DesiredInstance, PackageSubject};
 use aos_ability_model::{
-    AbilityActivationMode, AbilityValue, AccessMode, AggregationContract, AggregationScope,
-    AuthorityGrant, BindingRequest, DeploymentObligation, DesiredStateDocument, ExportDeclaration,
-    HandlerDescriptor, ImplementationKind, InstanceId, LocalKey, ObligationKind, PackageDocument,
-    PackageImplementation, ProviderImplementation, ProviderImplementationReference, RequestId,
-    RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceLifetime,
+    AbilityActivationMode, AbilityValue, AccessMode, ArtifactReference, AuthorityGrant,
+    BindingRequest, DeploymentObligation, DesiredStateDocument, ExportDeclaration,
+    HandlerDescriptor, InstanceId, LocalKey, ModuleLocator, ObligationKind, PackageDocument,
+    PackageImplementation, ProviderImplementation, ProviderImplementationReference, RelativePath,
+    RequestId, RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceLifetime,
     ResourcePermission, ScopePath, ValueSchema, VersionedDocument,
 };
 use aos_ability_validate::ValidationContext;
@@ -96,6 +96,7 @@ impl CompositionEvaluator for AlternatingRequirementEvaluator {
     fn evaluate(
         &mut self,
         _implementation: &ProviderImplementationReference,
+        _module: &aos_ability_model::ModuleLocator,
         _entry: &LocalKey,
         input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError> {
@@ -135,6 +136,7 @@ impl CompositionEvaluator for LowerRequirementEvaluator {
     fn evaluate(
         &mut self,
         _implementation: &ProviderImplementationReference,
+        _module: &aos_ability_model::ModuleLocator,
         _entry: &LocalKey,
         input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError> {
@@ -166,6 +168,7 @@ impl CompositionEvaluator for EmptyEvaluator {
     fn evaluate(
         &mut self,
         _implementation: &ProviderImplementationReference,
+        _module: &aos_ability_model::ModuleLocator,
         _entry: &LocalKey,
         input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError> {
@@ -859,12 +862,15 @@ struct OscillatingRequirementSetup {
 fn configure_oscillating_requirement(fixture: &mut PlannerFixture) -> OscillatingRequirementSetup {
     let lower_alias = key("alternating-service");
     let lower_request = BindingRequest {
+        package: aos_ability_model::LocalKey::new("test-package")
+            .expect("valid test package provenance"),
         id: crate::child_request_id(&fixture.provider, lower_alias.clone())
             .expect("test child request is in scope"),
         accepted_interfaces: vec![fixture.implementation_interface()],
         methods: fixture.desired.child_requests[0].methods.clone(),
         guarantees: Vec::new(),
         lifetime: ResourceLifetime::Instance,
+        parameters: fixture.desired.child_requests[0].parameters.clone(),
     };
     let lower_provider = sibling_instance(&fixture.provider, "alternating-provider");
     add_provider_inventory(fixture, &lower_provider);
@@ -970,12 +976,15 @@ fn configure_recursive_fallback(fixture: &mut PlannerFixture) -> RecursiveFallba
 
     let lower_alias = key("lower-service");
     let lower_request = BindingRequest {
+        package: aos_ability_model::LocalKey::new("test-package")
+            .expect("valid test package provenance"),
         id: crate::child_request_id(&first_parent, lower_alias.clone())
             .expect("test child request is in scope"),
         accepted_interfaces: vec![fixture.implementation_interface()],
         methods: fixture.desired.child_requests[0].methods.clone(),
         guarantees: Vec::new(),
         lifetime: ResourceLifetime::Instance,
+        parameters: fixture.desired.child_requests[0].parameters.clone(),
     };
     let base_implementation = fixture.implementation.clone();
     let mut recursive_package = fixture.packages[0].clone();
@@ -989,17 +998,10 @@ fn configure_recursive_fallback(fixture: &mut PlannerFixture) -> RecursiveFallba
         strength: RequirementStrength::Required,
         fallback: None,
     }];
-    let recursive_entry = key("compose-recursive");
-    let ImplementationKind::PureComposition {
-        transition_entry, ..
-    } = &recursive_implementation.implementation
-    else {
-        panic!("planner fixture must use pure composition");
-    };
-    recursive_implementation.implementation = ImplementationKind::PureComposition {
-        compose_entry: recursive_entry.clone(),
-        transition_entry: transition_entry.clone(),
-    };
+    recursive_implementation.provider_module = Some(ModuleLocator {
+        artifact: base_implementation.artifact.clone(),
+        path: RelativePath::new("compose-recursive.nix").expect("valid recursive module path"),
+    });
     let recursive_descriptor = recursive_implementation
         .descriptor_digest()
         .expect("recursive test implementation must have a digest");
@@ -1008,9 +1010,6 @@ fn configure_recursive_fallback(fixture: &mut PlannerFixture) -> RecursiveFallba
         artifact: base_implementation.artifact.clone(),
         handler: None,
     };
-    recursive_package
-        .module_entry_points
-        .insert(recursive_entry, base_implementation.artifact.clone());
     recursive_package.exports[0].implementation = recursive_descriptor;
     let recursive_package_digest = recursive_package
         .content_digest()
@@ -1189,9 +1188,8 @@ fn add_alternate_provider_implementation(
     package.package.name = key("integrated-service-manager");
     let handler = key("integrated-service-manager");
     let provider_implementation = &mut package.implementation.providers[0];
-    provider_implementation.implementation = ImplementationKind::TerminalHandler {
-        handler: handler.clone(),
-    };
+    provider_implementation.provider_module = None;
+    provider_implementation.handler = Some(handler.clone());
     package.implementation.handlers.insert(
         handler.clone(),
         HandlerDescriptor {
@@ -1287,16 +1285,13 @@ fn planner_fixture_with_contract(
         .implementation
         .artifact
         .clone();
-    let compose_entry = key("compose");
-    let transition_entry = key("transition");
     let provider_implementation = ProviderImplementation {
         interface: interface.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
-        implementation: ImplementationKind::PureComposition {
-            compose_entry: compose_entry.clone(),
-            transition_entry: transition_entry.clone(),
-        },
+        desired_schema: None,
+        provider_module: Some(module_locator(artifact.clone())),
+        handler: None,
         owns_resource_kinds: Vec::new(),
         state_format: None,
     };
@@ -1325,10 +1320,6 @@ fn planner_fixture_with_contract(
             implementation: descriptor,
         }],
         requirements: Vec::new(),
-        module_entry_points: BTreeMap::from([
-            (compose_entry, artifact.clone()),
-            (transition_entry, artifact),
-        ]),
         implementation: PackageImplementation {
             providers: vec![provider_implementation],
             handlers: BTreeMap::new(),
@@ -1357,6 +1348,8 @@ fn planner_fixture_with_contract(
         consumer_inventory.incarnation = None;
         environment.providers.push(consumer_inventory);
         let request = BindingRequest {
+            package: aos_ability_model::LocalKey::new("test-package")
+                .expect("valid test package provenance"),
             id: RequestId {
                 consumer: consumer.clone(),
                 scope: ScopePath::root(),
@@ -1366,6 +1359,7 @@ fn planner_fixture_with_contract(
             methods: request_template.methods.clone(),
             guarantees: guarantees.clone(),
             lifetime: ResourceLifetime::Instance,
+            parameters: request_template.parameters.clone(),
         };
         let candidate = BindingCandidate {
             key: key(&format!("provider-{index}")),
@@ -1451,6 +1445,13 @@ fn empty_grant(principal: InstanceId) -> AuthorityGrant {
 
 fn value(value: serde_json::Value) -> AbilityValue {
     AbilityValue::new(value).expect("test value must use the canonical ability dialect")
+}
+
+fn module_locator(artifact: ArtifactReference) -> ModuleLocator {
+    ModuleLocator {
+        artifact,
+        path: RelativePath::new("default.nix").expect("valid test module path"),
+    }
 }
 
 fn two_obligations(request: &RequestId) -> Vec<DeploymentObligation> {

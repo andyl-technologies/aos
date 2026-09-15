@@ -6,10 +6,9 @@ use std::num::NonZeroU32;
 use anyhow::Result;
 
 use crate::{
-    ArtifactReference, ImplementationKind, IndeterminateSemantics, InterfaceDescriptor,
-    InterfaceDocument, InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey, MethodDescriptor,
-    MethodSemantics, OutcomeSemantics, OutputDescriptor, ProviderImplementation, ValueSchema,
-    VersionedDocument,
+    ArtifactReference, IndeterminateSemantics, InterfaceDescriptor, InterfaceDocument,
+    InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey, MethodDescriptor, MethodSemantics,
+    OutcomeSemantics, OutputDescriptor, ProviderImplementation, ValueSchema, VersionedDocument,
 };
 
 pub(super) const REVISION_MAX_BYTES: u64 = 71;
@@ -106,7 +105,9 @@ pub(crate) fn terminal_provider(
         interface,
         artifact,
         requirements: Vec::new(),
-        implementation: ImplementationKind::TerminalHandler { handler },
+        desired_schema: None,
+        provider_module: None,
+        handler: Some(handler),
     })
 }
 

@@ -20,8 +20,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 use crate::identity::{
-    AggregateId, EnvironmentId, IncarnationId, InstanceId, InterfaceKey, LocalKey, RequestId,
-    ResourceId, RevisionId, ScopePath, ScopedOperationKey, TransactionId,
+    AggregateId, EnvironmentId, IncarnationId, InstanceId, InterfaceKey, LocalKey, RelativePath,
+    RequestId, ResourceId, RevisionId, ScopePath, ScopedOperationKey, TransactionId,
 };
 use crate::interface::{
     ExportDeclaration, GuaranteeKey, InterfaceDescriptor, PackageImplementation,
@@ -375,12 +375,20 @@ pub struct PackageDocument {
     pub exports: Vec<ExportDeclaration>,
     /// Lists declarative imports in canonical alias order.
     pub requirements: Vec<RequirementDeclaration>,
-    /// Maps module entry names to exact authenticated artifacts.
-    pub module_entry_points: BTreeMap<LocalKey, ArtifactReference>,
     /// Contains provider-specific implementations and handler declarations.
     pub implementation: PackageImplementation,
     /// Names configuration/resource ownership roots in canonical order.
     pub ownership: Vec<ScopePath>,
+}
+
+/// Locates one Nix provider module below an authenticated artifact root.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModuleLocator {
+    /// Authenticates and retains the artifact containing the module.
+    pub artifact: ArtifactReference,
+    /// Selects the normalized module file below the artifact root.
+    pub path: RelativePath,
 }
 
 /// Identifies the package artifacts authenticated by an enclosing release.
@@ -397,7 +405,7 @@ pub struct PackageSubject {
     pub version: String,
     /// Identifies the exact payload artifact.
     pub payload: ArtifactReference,
-    /// Identifies the exact source artifact used for the package build.
+    /// Identifies the exact release-recorded build-source artifact.
     pub source: ArtifactReference,
 }
 
