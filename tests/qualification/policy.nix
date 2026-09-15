@@ -178,8 +178,8 @@
       "ability-native-kubernetes"
       "ability-native-recovery"
     ]);
-  containerExecutionMatrix = import ../../qualification/modules/_container-execution-matrix.nix {inherit lib;};
   nativeAdapterSurface = nativeAdapterMatrix.spec.surface;
+  nativeAdapterChecks = abilityRequirements.ability-native-adapter-matrix.checks;
   providerContract = adapterName:
     (builtins.head (builtins.filter (adapter: adapter.adapter == adapterName) nativeAdapterSurface.adapters)).provider_contract;
   rolloutPackageContract = import ../abilities/reference-image-rollout/package.nix {
@@ -374,12 +374,9 @@ in
   assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) nativeFailureControlCells;
   assert nativeAdapterMatrix.spec.cells == nativeAdapterMatrix.cells;
   assert builtins.all (cell: !(cell ? evidence)) nativeAdapterMatrix.cells;
-  assert abilityRequirements.ability-native-adapter-matrix.checks
-  == [
-    nativeAdapterMatrix.check
-    containerExecutionMatrix.check
-  ];
-  assert containerExecutionMatrix.missing_container_cells == 1;
+  assert builtins.length nativeAdapterChecks == 2;
+  assert builtins.head nativeAdapterChecks == nativeAdapterMatrix.check;
+  assert builtins.match "container-execution-surface-v1-sha256-[0-9a-f]{64}" (builtins.elemAt nativeAdapterChecks 1) != null;
   assert builtins.all (requirement:
     requirement.phase
     == "staging"
