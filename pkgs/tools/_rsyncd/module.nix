@@ -142,6 +142,7 @@
         parameters = {
           inherit name;
           source = resultOf "state-storage" "retained-resource";
+          source_path = resultOf "state-storage" "planned-path";
           access = "read-write";
           relative_path = "exports/${name}";
         };
