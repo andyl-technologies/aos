@@ -329,6 +329,9 @@
   productionPackageAdoption = import ./production-package-adoption.nix {
     inherit pkgs lib;
   };
+  serviceManagement = import ./service-management.nix {
+    inherit lib;
+  };
   smokeAbilityProjection = pkgs.ability-package-smoke.abilities;
   smokePublishedInterfaces = builtins.fromJSON (
     builtins.unsafeDiscardStringContext pkgs.ability-package-smoke.abilities.contract.abilityInterfacesJson
@@ -729,6 +732,7 @@ in
   assert postgresqlReconciliation.reconcile_divergent == ["materialize" "observe" "restart" "stop"];
   assert productionKubernetes;
   assert productionPackageAdoption;
+  assert serviceManagement;
   assert builtins.attrNames smokeAbilityProjection == ["contract" "documentation" "implementations" "interfaces" "module" "moduleOutputs" "optionSurface" "requirements"];
   assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
