@@ -790,7 +790,7 @@ let
     "storage/_garage-config/module.nix" = "linux-only-config-source";
     "storage/_garage-tests/lifecycle.nix" = "linux-only-test-source";
     "storage/_longhorn-config/module.nix" = "linux-only-config-source";
-    "storage/_mariadb-config/module.nix" = "linux-only-config-source";
+    "storage/_mariadb/module.nix" = "linux-only-config-source";
     "storage/_mariadb-tests/lifecycle.nix" = "linux-only-test-source";
     "storage/_postgresql-config/module.nix" = "linux-only-config-source";
     "storage/_postgresql-tests/expose.nix" = "linux-only-test-source";

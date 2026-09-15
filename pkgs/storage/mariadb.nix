@@ -2,7 +2,6 @@
 {
   lib,
   mkDerivation,
-  mkServiceAbilityModule,
   fetchurl,
   gnumake,
   cmake,
@@ -112,150 +111,6 @@
     };
   };
 
-  expose = {
-    units = {
-      "mariadb-init.service" = {
-        description = "Initialize MariaDB state";
-        before = ["mariadb.service"];
-        serviceConfig = {
-          Type = "oneshot";
-          User = "mariadb";
-          Group = "mariadb";
-          EnvironmentFile = "/etc/aos/packages/mariadb/runtime.env";
-          ExecCondition = "/bin/mariadb-control enabled";
-          ExecStart = "/bin/mariadb-control init";
-          StateDirectory = "aos-pkg-mariadb";
-          StateDirectoryMode = "0750";
-          RuntimeDirectory = "mariadb";
-          RuntimeDirectoryMode = "0750";
-          RemainAfterExit = true;
-          UMask = "0027";
-        };
-      };
-
-      "mariadb.service" = {
-        description = "MariaDB database server";
-        after = ["network.target" "mariadb-init.service"];
-        requires = ["mariadb-init.service"];
-        restartIfChanged = true;
-        stopOnRemoval = true;
-        serviceConfig = {
-          Type = "notify";
-          NotifyAccess = "all";
-          User = "mariadb";
-          Group = "mariadb";
-          EnvironmentFile = "/etc/aos/packages/mariadb/runtime.env";
-          ExecCondition = "/bin/mariadb-control enabled";
-          ExecStartPre = "/bin/mariadb-control prepare";
-          ExecStart = "/bin/mariadb-control run";
-          ExecStartPost = "/bin/mariadb-control cleanup";
-          ExecStopPost = "/bin/mariadb-control cleanup";
-          Restart = "on-failure";
-          RestartSec = "5s";
-          StateDirectory = "aos-pkg-mariadb";
-          StateDirectoryMode = "0750";
-          RuntimeDirectory = "mariadb";
-          RuntimeDirectoryMode = "0750";
-          LogsDirectory = "mariadb";
-          LogsDirectoryMode = "0750";
-          UMask = "0027";
-          LimitNOFILE = "65536";
-        };
-      };
-    };
-
-    config = {
-      artifacts = [
-        {
-          name = "runtime";
-          path = "/etc/aos/packages/mariadb/runtime.env";
-          format = "env";
-          required = ["MARIADB_CONFIG_GENERATION" "MARIADB_ENABLED"];
-          units = ["mariadb-init.service" "mariadb.service"];
-          reload = "restart";
-        }
-      ];
-      credentials =
-        builtins.map (name: {
-          inherit name;
-          source = "/run/credstore/mariadb/${name}";
-          units = ["mariadb.service"];
-          encrypted = false;
-          optional = true;
-        }) [
-          "tls-certificate"
-          "tls-private-key"
-          "tls-ca"
-          "admin-bootstrap-sql"
-          "replication-bootstrap-sql"
-        ];
-    };
-
-    permissions = {
-      network = "host";
-      capabilities = [];
-      devices = [];
-      host-paths = [
-        {
-          path = "/etc/aos/packages/mariadb/my.cnf";
-          mode = "read-only";
-        }
-      ];
-      syscalls = "system-service";
-      security-label = "aos-pkg-mariadb";
-    };
-  };
-
-  configModule = {
-    src = ./_mariadb-config;
-    moduleAbiCompat = {
-      min = 1;
-      max = 2;
-    };
-    declares = [
-      "mariadb.bindAddress"
-      "mariadb.bootstrap.adminSql"
-      "mariadb.bootstrap.replicationSql"
-      "mariadb.characterSet"
-      "mariadb.collation"
-      "mariadb.enable"
-      "mariadb.maxConnections"
-      "mariadb.port"
-      "mariadb.skipNameResolve"
-      "mariadb.sqlMode"
-      "mariadb.tls.ca"
-      "mariadb.tls.certificate"
-      "mariadb.tls.enable"
-      "mariadb.tls.privateKey"
-    ];
-    ownsRoots = [
-      {
-        root = "mariadb";
-        interfaceAbi = 1;
-      }
-    ];
-    artifacts = {
-      etc = ["aos/packages/mariadb/my.cnf"];
-      units = [];
-      users = ["mariadb"];
-      groups = ["mariadb"];
-    };
-    documentation = {
-      summary = "MariaDB community relational database server";
-      sections = {
-        lifecycle = lib.aosDoc.section "Initialization and lifecycle" [
-          (lib.aosDoc.paragraph "Initial system tables are created before the daemon starts. Database state remains in /var/lib/aos-pkg-mariadb across package and configuration generations.")
-        ];
-        credentials = lib.aosDoc.section "Credentials" [
-          (lib.aosDoc.paragraph "TLS material and idempotent bootstrap SQL use opaque references. Volatile mode-0600 files are assembled immediately before startup and removed after readiness.")
-        ];
-        networking = lib.aosDoc.section "Network policy" [
-          (lib.aosDoc.paragraph "Keep the default loopback listener unless remote clients are required, and pair every non-loopback binding with an explicit AOS firewall rule.")
-        ];
-      };
-    };
-  };
-
   # MariaDB exports six build-time generators for cross builds. Build that
   # small target with the native package set and import it into the Darwin
   # CMake graph so no Mach-O executable is ever run on Linux.
@@ -347,38 +202,24 @@
   control = writeShellScriptBin "mariadb-control" ''
     set -euo pipefail
 
-    runtime=/etc/aos/packages/mariadb/runtime.env
-    config=/etc/aos/packages/mariadb/my.cnf
-    bootstrap=/run/mariadb/bootstrap.sql
-
-    enabled() {
-      set -a
-      source "$runtime"
-      set +a
-      [[ "''${MARIADB_ENABLED:-0}" == 1 ]]
-    }
-
+    program_dir="''${0%/*}"
     case "''${1:-}" in
-      enabled) enabled ;;
-      prepare)
-        ${coreutils}/bin/install -m 0600 /dev/null "$bootstrap"
-        for name in admin-bootstrap-sql replication-bootstrap-sql; do
-          source="''${CREDENTIALS_DIRECTORY:-}/$name"
-          if [[ -n "''${CREDENTIALS_DIRECTORY:-}" && -r "$source" ]]; then
-            ${coreutils}/bin/cat "$source" >> "$bootstrap"
-            printf '\n' >> "$bootstrap"
-          fi
-        done
-        ;;
       init)
-        if [[ ! -d /var/lib/aos-pkg-mariadb/mysql ]]; then
-          /bin/mariadb-install-db --defaults-file="$config" \
-            --auth-root-authentication-method=socket --force --skip-test-db
+        config=$2
+        state=$3
+        if [[ ! -d "$state/mysql" ]]; then
+          exec "$program_dir/mariadb-install-db" \
+            --defaults-file="$config" \
+            --auth-root-authentication-method=socket \
+            --force \
+            --skip-test-db
         fi
         ;;
-      run) exec /bin/mariadbd --defaults-file="$config" ;;
-      cleanup) ${coreutils}/bin/rm -f -- "$bootstrap" ;;
-      *) echo "usage: mariadb-control {enabled|prepare|init|run|cleanup}" >&2; exit 64 ;;
+      run)
+        config=$2
+        exec "$program_dir/mariadbd" --defaults-file="$config"
+        ;;
+      *) echo "usage: mariadb-control init CONFIG STATE | mariadb-control run CONFIG" >&2; exit 64 ;;
     esac
   '';
 in
@@ -459,24 +300,7 @@ in
         ]
         ++ [bash coreutils sed control];
     propagatedDeps = [];
-    inherit expose configModule;
-
-    abilities = mkServiceAbilityModule {
-      packageName = "mariadb";
-      spec = {
-        interface = "aos.service.mariadb";
-        services = [
-          {
-            key = "initialize";
-            dependencies = [];
-          }
-          {
-            key = "main";
-            dependencies = ["initialize"];
-          }
-        ];
-      };
-    };
+    abilities = ./_mariadb/module.nix;
 
     phases = [
       {
@@ -797,81 +621,265 @@ in
       testing,
       self,
       pkgs,
-      ...
     }: let
-      moduleStub = {
-        options = {
-          assertions = lib.mkOption {
-            type = lib.types.listOf lib.types.attrs;
-            default = [];
-          };
-          mariadb.config = lib.mkOption {
-            type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
-            default = {};
-          };
-          mariadb.credentials = lib.mkOption {
-            type = lib.types.attrsOf lib.types.attrs;
-            default = {};
-          };
-          environment.etc = lib.mkOption {
-            type = lib.types.attrsOf lib.types.attrs;
-            default = {};
-          };
-          aos.users.users = lib.mkOption {
-            type = lib.types.attrsOf lib.types.attrs;
-            default = {};
-          };
-          aos.users.groups = lib.mkOption {
-            type = lib.types.attrsOf lib.types.attrs;
-            default = {};
-          };
-        };
+      serviceManagement = lib.abilities.interfaces.serviceManagement;
+      environmentId = lib.abilities.environmentId {
+        authority = "deployment";
+        key = "mariadb-test";
+        stage = "host";
       };
-      evaluate = value:
+      environment = builtins.removeAttrs environmentId ["_type"];
+      credentialProvider = lib.abilities.instanceId {
+        environment = environmentId;
+        key = "credential-provider";
+      };
+      secret = name:
+        lib.abilities.resourceReference {
+          interface = serviceManagement.interfaces.credentialDelivery.identity;
+          resource = {
+            provider = credentialProvider;
+            key = name;
+          };
+          operations = ["observe"];
+          lifetime = "persistent";
+        };
+      evaluate = mariadbConfig:
         lib.evalModules {
-          modules = [moduleStub ./_mariadb-config/module.nix {mariadb = value;}];
+          modules = [
+            ../../modules/abilities/default.nix
+            {
+              options.assertions = lib.mkOption {
+                type = lib.types.listOf lib.types.attrs;
+                default = [];
+                contributable = true;
+              };
+              aos.abilities.environment = environment;
+              mariadb = mariadbConfig;
+            }
+          ];
+          packageModules = [
+            {
+              name = "mariadb";
+              module.imports = [./_mariadb/module.nix];
+            }
+          ];
           inherit lib;
         };
-      evaluated = evaluate {
+      variants = [
+        {
+          tls = false;
+          ca = false;
+          admin = false;
+          replication = false;
+        }
+        {
+          tls = false;
+          ca = false;
+          admin = false;
+          replication = true;
+        }
+        {
+          tls = false;
+          ca = false;
+          admin = true;
+          replication = false;
+        }
+        {
+          tls = false;
+          ca = false;
+          admin = true;
+          replication = true;
+        }
+        {
+          tls = true;
+          ca = false;
+          admin = false;
+          replication = false;
+        }
+        {
+          tls = true;
+          ca = false;
+          admin = false;
+          replication = true;
+        }
+        {
+          tls = true;
+          ca = false;
+          admin = true;
+          replication = false;
+        }
+        {
+          tls = true;
+          ca = false;
+          admin = true;
+          replication = true;
+        }
+        {
+          tls = true;
+          ca = true;
+          admin = false;
+          replication = false;
+        }
+        {
+          tls = true;
+          ca = true;
+          admin = false;
+          replication = true;
+        }
+        {
+          tls = true;
+          ca = true;
+          admin = true;
+          replication = false;
+        }
+        {
+          tls = true;
+          ca = true;
+          admin = true;
+          replication = true;
+        }
+      ];
+      configFor = variant: {
         enable = true;
         bindAddress = "127.0.0.1";
         maxConnections = 200;
-        tls = {
-          enable = true;
-          certificate.ref = "system-credential:mariadb-certificate";
-          privateKey.ref = "system-credential:mariadb-private-key";
-          ca.ref = "tpm2-credstore:mariadb-ca";
-        };
-        bootstrap = {
-          adminSql.ref = "system-credential:mariadb-admin-bootstrap";
-          replicationSql.ref = "desired-toml:mariadb-replication-bootstrap";
-        };
+        tls =
+          {enable = variant.tls;}
+          // lib.optionalAttrs variant.tls {
+            certificate.resource = secret "tls-certificate";
+            privateKey.resource = secret "tls-private-key";
+          }
+          // lib.optionalAttrs variant.ca {
+            ca.resource = secret "tls-ca";
+          };
+        bootstrap =
+          lib.optionalAttrs variant.admin {
+            adminSql.resource = secret "admin-bootstrap-sql";
+          }
+          // lib.optionalAttrs variant.replication {
+            replicationSql.resource = secret "replication-bootstrap-sql";
+          };
       };
-      assertionsHold = builtins.all (assertion: assertion.assertion) evaluated.config.assertions;
-      rendered = evaluated.config.environment.etc."aos/packages/mariadb/my.cnf".text;
-      renderedFile = pkgs.writeTextFile {
-        name = "mariadb-config-module-check";
-        destination = "/my.cnf";
-        text = rendered;
-      };
-      lifecycleEvaluated = evaluate {
-        enable = true;
-        bindAddress = "127.0.0.1";
-        maxConnections = 200;
-      };
-      lifecycleRenderedFile = pkgs.writeTextFile {
-        name = "mariadb-lifecycle-config";
-        destination = "/my.cnf";
-        text = lifecycleEvaluated.config.environment.etc."aos/packages/mariadb/my.cnf".text;
-      };
+      evaluations = builtins.map (variant: evaluate (configFor variant)) variants;
+      evaluated = builtins.elemAt evaluations ((builtins.length evaluations) - 1);
+      plainEvaluated = builtins.head evaluations;
+      disabled = evaluate {};
+      assertionsHold = result:
+        builtins.all (assertion: assertion.assertion) result.config.assertions;
       invalidTls = evaluate {
         enable = true;
         tls = {
           enable = true;
-          certificate.ref = "system-credential:mariadb-certificate";
+          certificate.resource = secret "tls-certificate";
         };
       };
-      invalidTlsRejected = !builtins.all (assertion: assertion.assertion) invalidTls.config.assertions;
+      disabledTlsCredentials = evaluate {
+        tls.certificate.resource = secret "tls-certificate";
+      };
+      disabledIncompleteTls = evaluate {
+        tls.enable = true;
+      };
+      abilities = evaluated.config.aos.abilities;
+      plainAbilities = plainEvaluated.config.aos.abilities;
+      disabledAbilities = disabled.config.aos.abilities;
+      requests = builtins.attrNames abilities.requests;
+      plainRequests = builtins.attrNames plainAbilities.requests;
+      disabledRequirements = builtins.attrNames disabledAbilities.requirementTemplates;
+      serverSource = abilities.requests."mariadb:server-configuration".parameters.source;
+      bootstrapSource = abilities.requests."mariadb:bootstrap-configuration".parameters.source;
+      serverLiteralText = lib.concatStringsSep "" (builtins.map
+        (fragment:
+          if fragment.kind == "literal"
+          then fragment.text
+          else "")
+        serverSource.fragments);
+      mainLifecycle = abilities.requests."mariadb:main-lifecycle".parameters;
+      mainDependencies = abilities.requests."mariadb:main-dependencies".parameters;
+      mainStorage = abilities.requests."mariadb:main-storage".parameters;
+      servicePrincipal = abilities.requests."mariadb:service-principal".parameters;
+      configurationPathOutput = request:
+        (builtins.head (builtins.filter
+          (fragment:
+            fragment.kind
+            == "execution-path"
+            && (fragment.value.request or null) == request)
+          serverSource.fragments))
+        .value.output;
+      lifecycleConfig = pkgs.writeTextFile {
+        name = "mariadb-lifecycle-config";
+        destination = "/my.cnf";
+        # This fixture exercises the packaged binary. Production paths come
+        # only from typed provider outputs in the ability module above.
+        text = ''
+          [client]
+          socket=/run/mariadb/mariadb.sock
+          port=3306
+
+          [mariadbd]
+          bind-address=127.0.0.1
+          port=3306
+          socket=/run/mariadb/mariadb.sock
+          pid-file=/run/mariadb/mariadb.pid
+          datadir=/var/lib/aos-pkg-mariadb
+          log-error=/var/log/mariadb/error.log
+          character-set-server=utf8mb4
+          collation-server=utf8mb4_uca1400_ai_ci
+          max-connections=200
+          skip-name-resolve=ON
+          sql-mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+          skip-ssl
+        '';
+      };
+      allVariantsEvaluate = builtins.all (result:
+        assertionsHold result
+        && builtins.length (builtins.attrNames result.config.aos.abilities.requests) >= 20)
+      evaluations;
+      contractHolds =
+        allVariantsEvaluate
+        && assertionsHold disabledTlsCredentials
+        && assertionsHold disabledIncompleteTls
+        && !assertionsHold invalidTls
+        && disabledAbilities.instances == {}
+        && disabledAbilities.requests == {}
+        && builtins.elem "mariadb:credential-delivery" disabledRequirements
+        && builtins.elem "mariadb:service-credentials" disabledRequirements
+        && builtins.elem "mariadb:service-lifecycle" disabledRequirements
+        && builtins.elem "mariadb:initialize-lifecycle" requests
+        && builtins.elem "mariadb:main-lifecycle" requests
+        && builtins.elem "mariadb:credential-tls-certificate" requests
+        && builtins.elem "mariadb:credential-tls-private-key" requests
+        && builtins.elem "mariadb:credential-tls-ca" requests
+        && builtins.elem "mariadb:credential-admin-bootstrap-sql" requests
+        && builtins.elem "mariadb:credential-replication-bootstrap-sql" requests
+        && !(builtins.elem "mariadb:credential-tls-certificate" plainRequests)
+        && !(builtins.elem "mariadb:bootstrap-configuration" plainRequests)
+        && !(builtins.elem "mariadb:main-credentials" plainRequests)
+        && builtins.length (builtins.filter
+          (name: name == "mariadb:credential-delivery")
+          (builtins.attrNames abilities.requirementTemplates))
+        == 1
+        && serverSource.kind == "interpolated-text"
+        && bootstrapSource.kind == "interpolated-text"
+        && bootstrapSource.maximum_size_bytes == lib.abilities.types.limits.maxDocumentBytes
+        && lib.hasInfix "bind-address=127.0.0.1" serverLiteralText
+        && lib.hasInfix "max-connections=200" serverLiteralText
+        && lib.hasInfix "ssl-cert=" serverLiteralText
+        && lib.hasInfix "ssl-key=" serverLiteralText
+        && lib.hasInfix "ssl-ca=" serverLiteralText
+        && !(lib.hasInfix "/etc/" (builtins.toJSON serverSource))
+        && !(lib.hasInfix "/var/lib/" (builtins.toJSON serverSource))
+        && !(lib.hasInfix "MARIADB_CONFIG_GENERATION" (builtins.toJSON abilities.requests))
+        && mainLifecycle.restart == "on-failure"
+        && mainLifecycle.configuration_change_action == "restart"
+        && servicePrincipal.home_directory.output == "planned-path"
+        && builtins.all (mount: mount.source.output == "planned-path") mainStorage.mounts
+        && configurationPathOutput "mariadb:state-storage" == "planned-path"
+        && configurationPathOutput "mariadb:runtime-storage" == "planned-path"
+        && configurationPathOutput "mariadb:log-storage" == "planned-path"
+        && (builtins.elemAt mainLifecycle.start 0).executable.entry_point == "bin/mariadb-control"
+        && (builtins.elemAt mainDependencies.after 0).request == "mariadb:initialize-lifecycle"
+        && abilities.requests."mariadb:service-group".parameters.requested_id == 803
+        && abilities.requests."mariadb:service-principal".parameters.requested_id == 803;
     in {
       version = testing.mkToolCheck {
         pname = "storage-mariadb";
@@ -907,51 +915,18 @@ in
         '';
       };
 
-      config-module-contract = assert assertionsHold;
-      assert invalidTlsRejected;
-      assert evaluated.config.mariadb.config.runtime.MARIADB_ENABLED == "1";
-      assert builtins.stringLength evaluated.config.mariadb.config.runtime.MARIADB_CONFIG_GENERATION == 64;
-      assert evaluated.config.mariadb.credentials."tls-certificate".ref == "system-credential:mariadb-certificate";
-        pkgs.runCommand "storage-mariadb-config-module-contract" {} ''
-            test -f ${self.config}/module.nix
-            test -f ${self.config}/config-meta.json
-            grep -q '"root":"mariadb"' ${self.config}/config-meta.json
-            grep -q 'aos/packages/mariadb/my.cnf' ${self.config}/config-meta.json
+      ability-module-contract =
+        if contractHolds
+        then
+          pkgs.runCommand "storage-mariadb-ability-module-contract" {} ''
+            mkdir -p "$out"
+            printf '%s\n' PASS >"$out/result"
+          ''
+        else throw "the MariaDB ability module contract checks failed";
 
-          grep -q '^bind-address=127.0.0.1$' ${renderedFile}/my.cnf
-          grep -q '^max-connections=200$' ${renderedFile}/my.cnf
-          grep -q '^ssl-cert=/run/credentials/mariadb.service/tls-certificate$' ${renderedFile}/my.cnf
-          ${self}/bin/my_print_defaults --defaults-file=${renderedFile}/my.cnf mariadbd \
-            | grep -q -- '--max-connections=200'
-
-          for name in tls-certificate tls-private-key tls-ca admin-bootstrap-sql replication-bootstrap-sql; do
-            grep -q "\"encrypted\":false,\"name\":\"$name\",\"optional\":true,\"source\":\"/run/credstore/mariadb/$name\",\"units\":\[\"mariadb.service\"\]" \
-                ${self.expose}/manifest.json
-            done
-            if grep -Eq 'LoadCredential(Encrypted)?=.*(tls-|bootstrap-sql)' ${self.expose}/units/mariadb.service; then
-            echo "optional MariaDB credentials became unconditional unit bindings" >&2
-            exit 1
-          fi
-            grep -qx 'User=mariadb' ${self.expose}/units/mariadb.service
-            grep -Eq '^Requires=.*mariadb-init\.service( |$)' ${self.expose}/units/mariadb.service
-            grep -Eq '^After=.*mariadb-init\.service( |$)' ${self.expose}/units/mariadb.service
-            grep -Eq '^After=.*network\.target( |$)' ${self.expose}/units/mariadb.service
-            grep -qx 'StateDirectory=aos-pkg-mariadb' ${self.expose}/units/mariadb.service
-            grep -qx 'BindReadOnlyPaths=/etc/aos/packages/mariadb/my.cnf' ${self.expose}/units/mariadb.service
-
-          printf '[mariadbd]\nunknown-aos-option=1\n' > malformed.cnf
-          if ${self}/bin/mariadbd --defaults-file="$PWD/malformed.cnf" --verbose --help >/dev/null 2>&1; then
-            echo "MariaDB accepted an unknown generated option" >&2
-            exit 1
-          fi
-
-          mkdir -p "$out"
-          printf '%s\n' PASS > "$out/result"
-        '';
-
-      config-module-lifecycle = import ./_mariadb-tests/lifecycle.nix {
+      lifecycle = import ./_mariadb-tests/lifecycle.nix {
         inherit testing self;
-        renderedFile = lifecycleRenderedFile;
+        renderedFile = lifecycleConfig;
         coreutils = pkgs.coreutils;
         grep = pkgs.grep;
         iproute2 = pkgs.iproute2;
