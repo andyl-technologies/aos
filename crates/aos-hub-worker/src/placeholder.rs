@@ -111,14 +111,11 @@ mod tests {
 
     #[test]
     fn worker_sql_accepts_every_production_migration() {
-        assert!(
-            !MIGRATIONS.is_empty(),
-            "production schema has no migrations"
-        );
+        assert!(!MIGRATIONS.is_empty(), "production schema has no migrations");
         for migration in MIGRATIONS {
             for statement in split_statements(migration) {
-                let (translated, parameters) =
-                    prepare(Dialect::Sqlite, &statement, &[]).expect("Worker SQLite translation");
+                let (translated, parameters) = prepare(Dialect::Sqlite, &statement, &[])
+                    .expect("Worker SQLite translation");
                 let (positional, bound) = numbered_to_positional(&translated, &parameters);
                 assert_eq!(positional, translated);
                 assert!(bound.is_empty());

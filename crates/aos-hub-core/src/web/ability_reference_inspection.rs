@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use anyhow::{ensure, Context as _, Result};
+use anyhow::{Context as _, Result, ensure};
 use aos_ability_inspect::{
     GraphQuery, NodeKey, ReferenceGraphSlice, ReferenceInspectionInput, ReferenceInspectionView,
 };
