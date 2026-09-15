@@ -28,7 +28,6 @@ use aos_provider_protocol::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-const INTERFACE_NAME: &str = "aos.kernel.tunable-effects";
 const REALIZATION_SCHEMA: &str = "aos.kernel.tunables-realization/v1";
 const OBSERVATION_SCHEMA: &str = "aos.ability.kernel-tunables-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.kernel.tunables-context/v1";
@@ -147,11 +146,7 @@ impl KernelTunableProvider {
     }
 
     fn admit(&self, request: AdmissionRequest) -> Result<AdmissionResult> {
-        validate_method(
-            request.method.interface.name.as_str(),
-            request.method.method.as_str(),
-            &request.semantics,
-        )?;
+        validate_method(request.method.method.as_str(), &request.semantics)?;
         validate_admission_resource(&request)?;
         validate_resource_contexts(&request.resources)?;
         let desired: TunableRequest = decode_value(&request.resource_spec.value)?;
@@ -192,11 +187,7 @@ impl KernelTunableProvider {
             invocation.method_is_bound(),
             "invocation method is not durably bound"
         );
-        validate_method(
-            invocation.method.interface.name.as_str(),
-            invocation.method.method.as_str(),
-            &invocation.semantics,
-        )?;
+        validate_method(invocation.method.method.as_str(), &invocation.semantics)?;
         validate_resource_contexts(&invocation.request.resources)?;
         ensure!(
             resource_set_digest(&invocation.request.resources)?
@@ -206,7 +197,8 @@ impl KernelTunableProvider {
         let target = require_resource(&invocation.request.resources, &invocation.request.target)?;
         let bound: BoundNativeContext = validate_resource_context(target)?;
         ensure!(
-            invocation.method.interface == invocation.request.target.interface
+            invocation.method.interface == invocation.request.method.interface
+                && invocation.method.interface == invocation.request.target.interface
                 && invocation
                     .request
                     .target
@@ -570,11 +562,7 @@ fn valid_tunable_key(key: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
-fn validate_method(interface: &str, method: &str, semantics: &MethodSemantics) -> Result<()> {
-    ensure!(
-        interface == INTERFACE_NAME,
-        "selected interface is not kernel tunables"
-    );
+fn validate_method(method: &str, semantics: &MethodSemantics) -> Result<()> {
     let access = match method {
         "observe" => AccessMode::Read,
         "apply" | "remove" => AccessMode::ExclusiveWrite,
@@ -655,10 +643,12 @@ mod tests {
     };
     use tempfile::tempdir;
 
+    const TEST_INTERFACE: &str = "aos.test.kernel-tunable-effects";
+
     fn reference() -> ResourceReference {
         ResourceReference {
             interface: InterfaceKey {
-                name: InterfaceName::new(INTERFACE_NAME).expect("interface"),
+                name: InterfaceName::new(TEST_INTERFACE).expect("interface"),
                 abi: std::num::NonZeroU32::new(1).expect("nonzero ABI"),
                 descriptor: Sha256Digest::of_bytes(b"kernel tunables test"),
             },
