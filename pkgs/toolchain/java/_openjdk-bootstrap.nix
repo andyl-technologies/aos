@@ -34,6 +34,7 @@
   extraBuildDeps ? [],
   extraDarwinFrameworks ? [],
   extraPatches ? [],
+  qualification ? null,
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   buildTools =
@@ -234,7 +235,7 @@
 in
   mkDerivation {
     pname = "openjdk-${toString major}";
-    inherit version;
+    inherit version qualification;
 
     src = fetchurl {
       urls = [

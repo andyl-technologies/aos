@@ -40,6 +40,7 @@
   needsGccIteratorCompat ? false,
   extraRuntimeDeps ? [],
   extraCmakeFlags ? [],
+  qualification ? null,
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   versionMatch = builtins.match "([0-9]+)\\..*" version;
@@ -60,7 +61,7 @@
 in
   mkDerivation {
     pname = "llvm";
-    inherit version;
+    inherit version qualification;
 
     src = fetchurl {
       urls = [

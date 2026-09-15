@@ -31,6 +31,7 @@
   needsNativeCryptoBuildDeps ? builtins.compareVersions version "1.93.0" < 0,
   needsNativeZlibLink ? builtins.compareVersions version "1.79.0" >= 0 && builtins.compareVersions version "1.93.0" < 0,
   description,
+  qualification ? null,
   buildTool ? null,
 }: let
   buildTriple = stdenv.buildPlatform.config;
@@ -95,7 +96,7 @@ in
   then throw "${pname}: native LLVM ${nativeLlvmVersion} does not match target LLVM ${targetLlvmVersion}"
   else
     mkDerivation {
-      inherit pname version src outputs;
+      inherit pname version src outputs qualification;
 
       buildDeps =
         [
