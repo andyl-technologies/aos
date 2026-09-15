@@ -2,6 +2,11 @@
 {lib}: let
   preparation = lib.abilities.interfaces.bootPreparation.interfaces.preparation;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  childRequest = lib.abilities.compositionRequestKey {
+    implementation = "aos-boot-preparation-provider:boot-preparation";
+    providerInstance = "aos-boot-preparation-provider:manager";
+    key = "prepare";
+  };
   evaluated = lib.evalModules {
     inherit lib;
     modules = [
@@ -16,6 +21,12 @@
           bindings."test:prepare" = {
             request = "consumer:prepare";
             implementation = "aos-boot-preparation-provider:boot-preparation";
+            providerInstance = "aos-boot-preparation-provider:manager";
+            slot = "prepare";
+          };
+          bindings."test:prepare-command" = {
+            request = childRequest;
+            implementation = "aos-boot-preparation-provider:boot-preparation-command";
             providerInstance = "aos-boot-preparation-provider:manager";
             slot = "prepare";
           };
@@ -56,12 +67,22 @@
   abilities = evaluated.config.aos.abilities;
   desired = builtins.head (builtins.attrValues abilities.desiredResources);
   output = abilities.compositionOutputs."consumer:prepare".preparation-resource;
+  controller = abilities.implementations."aos-boot-preparation-provider:boot-preparation";
+  terminal = abilities.implementations."aos-boot-preparation-provider:boot-preparation-command";
 in
-  assert builtins.attrNames abilities.implementations == ["aos-boot-preparation-provider:boot-preparation"];
+  assert builtins.attrNames abilities.implementations
+  == [
+    "aos-boot-preparation-provider:boot-preparation"
+    "aos-boot-preparation-provider:boot-preparation-command"
+  ];
+  assert controller.providerModule != null;
+  assert controller.handlerDescriptor == null;
+  assert terminal.providerModule == null;
+  assert terminal.handlerDescriptor != null;
+  assert abilities.compositionPendingRequests == {};
   assert desired.kind == "aos.boot.preparation";
   assert desired.lifetime == "transaction";
   assert desired.realization == {schema = "aos.boot.preparation-realization/v1";};
   assert output.phase == "planning";
   assert output.lifetime == "transaction";
-  assert output.value.resource == desired.resource;
-  true
+  assert output.value.resource == desired.resource; true

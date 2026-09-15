@@ -24,7 +24,7 @@ use serde_json::json;
 
 use crate::process::{CommandRunner, ProcessCommandRunner};
 
-const INTERFACE_NAME: &str = "aos.boot.preparation";
+const INTERFACE_NAME: &str = "aos.boot.preparation-command";
 const REALIZATION_SCHEMA: &str = "aos.boot.preparation-realization/v1";
 const OBSERVATION_SCHEMA: &str = "aos.ability.boot-preparation-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.boot.preparation-context/v1";
