@@ -89,6 +89,10 @@ in
       self,
       pkgs,
     }: let
+      qualifiedResultOf = request: output: {
+        _type = "aos-request-output-reference";
+        inherit request output;
+      };
       evaluate = conntrackdConfig:
         lib.evalModules {
           inherit lib;
@@ -124,6 +128,7 @@ in
           peerAddress = "192.0.2.11";
         };
       };
+      disabled = evaluate {};
       invalidHashRange = evaluate {
         hashSize = 8192;
         hashLimit = 4096;
@@ -131,9 +136,12 @@ in
       assertionsHold = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
       requests = evaluated.config.aos.abilities.requests;
+      disabledAbilities = disabled.config.aos.abilities;
+      disabledRequirements = builtins.attrNames disabledAbilities.requirementTemplates;
       source = requests."conntrack-tools:daemon-configuration".parameters.source;
       lifecycle = requests."conntrack-tools:main-lifecycle".parameters;
       identity = requests."conntrack-tools:main-identity".parameters;
+      storageMounts = requests."conntrack-tools:main-storage".parameters.mounts;
       literalText = builtins.concatStringsSep "" (builtins.map
         (fragment:
           if fragment.kind == "literal"
@@ -143,6 +151,10 @@ in
       contractHolds =
         assertionsHold evaluated
         && !assertionsHold invalidHashRange
+        && disabledAbilities.instances == {}
+        && disabledAbilities.requests == {}
+        && builtins.elem "conntrack-tools:configuration-materialization" disabledRequirements
+        && builtins.elem "conntrack-tools:service-lifecycle" disabledRequirements
         && source.kind == "interpolated-text"
         && lib.hasInfix "Mode FTFW" literalText
         && lib.hasInfix "IPv4_address 192.0.2.10" literalText
@@ -154,6 +166,11 @@ in
         == "conntrack-tools:persistent-storage-allocation"
         && lifecycle.configuration_change_action == "restart"
         && identity.file_creation_mask == "0027"
+        && builtins.map (mount: mount.source) storageMounts
+        == [
+          (qualifiedResultOf "conntrack-tools:runtime-storage" "planned-path")
+          (qualifiedResultOf "conntrack-tools:log-storage" "planned-path")
+        ]
         && !(self ? configModule)
         && !(self ? expose);
     in {
