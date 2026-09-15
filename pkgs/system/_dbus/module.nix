@@ -264,7 +264,10 @@
   ];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
-  imports = [./registration-interface.nix];
+  imports = [
+    ./availability-interface.nix
+    ./registration-interface.nix
+  ];
 
   options.aos.services.dbus = {
     enable = lib.mkOption {
@@ -292,6 +295,7 @@ in {
         [
           {
             instances = {
+              availability = {};
               system-bus = {};
               registration = {};
             };

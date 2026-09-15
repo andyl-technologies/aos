@@ -231,6 +231,8 @@ in
             "$out/share/dbus-1/system.conf"
 
           mkdir -p "$out/share/aos/providers"
+          cp ${./_dbus/availability-provider.nix} \
+            "$out/share/aos/providers/dbus-availability.nix"
           cp ${./_dbus/registration-provider.nix} \
             "$out/share/aos/providers/dbus-registration.nix"
           cp ${./_dbus/registration-transition.nix} \
