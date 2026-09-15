@@ -297,6 +297,39 @@
   };
   filesystemReadinessDocument = interfaceDocumentFromDeclaration filesystemReadinessDeclaration;
 
+  activationMilestoneName = "aos.activation.milestone";
+  activationMilestoneMethods = {
+    observe =
+      method
+      serviceTypes.activationMilestone
+      serviceTypes.activationMilestoneObservation
+      activationMilestoneName
+      "observe"
+      "Observes whether the requested provider-neutral activation milestone has been reached."
+      read;
+  };
+  activationMilestoneDeclaration = declareInterface {
+    name = activationMilestoneName;
+    description = "Publishes readiness for a provider-neutral system activation milestone.";
+    abi = 1;
+    requestType = serviceTypes.activationMilestone;
+    outputs.readiness-resource =
+      output "planning" "instance"
+      "References the exact activation milestone selected for this request."
+      serviceTypes.resourceReference;
+    methods = activationMilestoneMethods;
+    lifecycle = lifecyclePolicy // {releasesEphemeralOnDisable = false;};
+    guarantees = [];
+    aggregation = {
+      scope = "provider-instance";
+      key = "slot";
+      rejectSlotCollisions = true;
+      mergeContract = null;
+      controllerGroup = "activation-milestone";
+    };
+  };
+  activationMilestoneDocument = interfaceDocumentFromDeclaration activationMilestoneDeclaration;
+
   kernelModulesName = "aos.kernel.modules";
   kernelModulesMethods = {
     load =
@@ -845,6 +878,17 @@
           "Observes the service's declared log routing and retention."
           read;
       });
+    terminal =
+      canonical "service-terminal" "aos.service.terminal"
+      "Contributes provider-neutral terminal attachment and console-start semantics to a service resource."
+      serviceTypes.terminal
+      serviceTypes.observations.terminal
+      (targetResource: {
+        observe =
+          method serviceTypes.terminal serviceTypes.observations.terminal targetResource "observe"
+          "Observes the service's exact terminal attachment and console-start semantics."
+          read;
+      });
     identity =
       canonical "service-identity" "aos.service.identity"
       "Contributes resolved runtime identity to an assembled service resource."
@@ -915,6 +959,15 @@
       methods = builtins.attrNames filesystemReadinessMethods;
       requestType = serviceTypes.filesystemReadiness;
       observationType = serviceTypes.filesystemReadinessObservation;
+    };
+    activationMilestone = {
+      alias = "activation-milestone";
+      declaration = activationMilestoneDeclaration;
+      document = activationMilestoneDocument;
+      identity = interfaceIdentity activationMilestoneDocument;
+      methods = builtins.attrNames activationMilestoneMethods;
+      requestType = serviceTypes.activationMilestone;
+      observationType = serviceTypes.activationMilestoneObservation;
     };
     kernelModules = {
       alias = "kernel-modules";

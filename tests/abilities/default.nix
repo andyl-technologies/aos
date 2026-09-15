@@ -516,6 +516,9 @@
   systemdServiceRealization = import ./systemd-service-realization.nix {
     inherit pkgs lib;
   };
+  utilLinuxGetty = import ./util-linux-getty.nix {
+    inherit pkgs lib;
+  };
   systemdDirectoryPreparation = import ./systemd-directory-preparation.nix {
     inherit pkgs lib;
   };
@@ -970,6 +973,7 @@ in
   assert compositionDriver;
   assert systemdPackagedUnit;
   assert systemdServiceRealization;
+  assert utilLinuxGetty;
   assert systemdDirectoryPreparation;
   assert systemdIdentityRealization;
   assert systemdReadiness;
