@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 pub const HANDLER_ABI_ARGUMENT: &str = "--aos-primitive-v1";
 /// Identifies one durable command request.
 pub const REQUEST_SCHEMA: &str = "aos.primitive.command-handler-request/v1";
-/// Identifies one effect, reconciliation, or cancellation invocation.
+/// Identifies one effect, reconciliation, cancellation, or compensation invocation.
 pub const INVOCATION_SCHEMA: &str = "aos.primitive.command-handler-invocation/v1";
 /// Identifies one effect-free native resource admission request.
 pub const ADMISSION_REQUEST_SCHEMA: &str = "aos.primitive.command-handler-admission-request/v1";
@@ -104,6 +104,8 @@ pub struct DurableRequest {
     pub method: MethodReference,
     /// Carries its retained provider-neutral authority semantics.
     pub semantics: MethodSemantics,
+    /// Retains every explicitly declared recovery method.
+    pub recovery: RecoveryMethods,
     /// Retains the full target resource authority.
     pub target: ResourceReference,
     /// Carries resolved, method-typed inputs.
@@ -114,18 +116,69 @@ pub struct DurableRequest {
     pub native_context_digest: Sha256Digest,
 }
 
-/// Carries one bounded handler effect, reconciliation, or cancellation call.
+impl DurableRequest {
+    /// Returns the exact method authorized for one invocation purpose.
+    #[must_use]
+    pub const fn method_for(&self, purpose: InvocationPurpose) -> Option<&MethodReference> {
+        self.recovery.method_for(&self.method, purpose)
+    }
+}
+
+/// Carries one bounded handler effect, recovery, or compensation call.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Invocation {
     /// Carries [`INVOCATION_SCHEMA`].
     pub schema: String,
-    /// Selects effect, reconciliation, or cancellation behavior.
+    /// Selects effect, recovery, or compensation behavior.
     pub purpose: InvocationPurpose,
+    /// Identifies the exact method selected for this purpose.
+    pub method: MethodReference,
+    /// Carries the selected method's retained authority semantics.
+    pub semantics: MethodSemantics,
     /// Carries the exact durable request.
     pub request: DurableRequest,
     /// Carries live bounded execution control.
     pub control: InvocationControl,
+}
+
+impl Invocation {
+    /// Reports whether the selected method is bound to the durable recovery contract.
+    #[must_use]
+    pub fn method_is_bound(&self) -> bool {
+        self.request.method_for(self.purpose) == Some(&self.method)
+    }
+}
+
+/// Retains the methods authorized for operation recovery.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryMethods {
+    /// Names the observation method used after an ambiguous effect.
+    pub reconcile: Option<MethodReference>,
+    /// Names the explicitly supported cancellation method.
+    pub cancel: Option<MethodReference>,
+    /// Names the explicitly supported compensation method.
+    pub compensate: Option<MethodReference>,
+}
+
+impl RecoveryMethods {
+    /// Returns the method authorized for one purpose around the primary effect.
+    #[must_use]
+    pub const fn method_for<'a>(
+        &'a self,
+        effect: &'a MethodReference,
+        purpose: InvocationPurpose,
+    ) -> Option<&'a MethodReference> {
+        match purpose {
+            InvocationPurpose::Effect => Some(effect),
+            InvocationPurpose::Reconcile | InvocationPurpose::ReconcileCompensation => {
+                self.reconcile.as_ref()
+            }
+            InvocationPurpose::Cancel => self.cancel.as_ref(),
+            InvocationPurpose::Compensate => self.compensate.as_ref(),
+        }
+    }
 }
 
 /// Supplies live deadlines and cancellation state to one handler call.
@@ -150,6 +203,10 @@ pub enum InvocationPurpose {
     Reconcile,
     /// Requests bounded cancellation without creating a missing effect.
     Cancel,
+    /// Executes the method declared to compensate the primary effect.
+    Compensate,
+    /// Observes and resolves an ambiguous compensation effect.
+    ReconcileCompensation,
 }
 
 /// Reports an effect-free native resource admission.
@@ -168,6 +225,16 @@ pub struct AdmissionResult {
     pub observation: AbilityValue,
     /// Carries provider-owned native identity and drift context.
     pub native_context: AbilityValue,
+    /// Lists every invocation purpose this admission can execute safely.
+    pub supported_purposes: Vec<InvocationPurpose>,
+}
+
+impl AdmissionResult {
+    /// Reports whether admission explicitly supports one invocation purpose.
+    #[must_use]
+    pub fn supports(&self, purpose: InvocationPurpose) -> bool {
+        self.supported_purposes.contains(&purpose)
+    }
 }
 
 /// Reports whether an admission probe accepted a resource.
@@ -195,7 +262,7 @@ pub enum AdmissionRevision {
     Unknown,
 }
 
-/// Reports one command-handler effect, reconciliation, or cancellation call.
+/// Reports one command-handler effect, recovery, or compensation call.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct InvocationResult {
@@ -231,8 +298,14 @@ pub enum InvocationDisposition {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU32;
+
+    use aos_ability_model::{InterfaceKey, InterfaceName, LocalKey, MethodReference};
+    use aos_contract::Sha256Digest;
+
     use super::{
         AdmissionDisposition, AdmissionRevision, InvocationDisposition, InvocationPurpose,
+        RecoveryMethods,
     };
 
     #[test]
@@ -241,6 +314,11 @@ mod tests {
             (InvocationPurpose::Effect, r#""effect""#),
             (InvocationPurpose::Reconcile, r#""reconcile""#),
             (InvocationPurpose::Cancel, r#""cancel""#),
+            (InvocationPurpose::Compensate, r#""compensate""#),
+            (
+                InvocationPurpose::ReconcileCompensation,
+                r#""reconcile-compensation""#,
+            ),
         ];
         let dispositions = [
             (InvocationDisposition::Completed, r#""completed""#),
@@ -266,6 +344,43 @@ mod tests {
         for (disposition, expected) in dispositions {
             assert_eq!(serde_json::to_string(&disposition).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn compensation_selects_only_declared_recovery_methods() {
+        let method = |name: &str| MethodReference {
+            interface: InterfaceKey {
+                name: InterfaceName::new("aos.test.handler").expect("interface is valid"),
+                abi: NonZeroU32::MIN,
+                descriptor: Sha256Digest::of_bytes(b"test-handler-interface"),
+            },
+            method: LocalKey::new(name).expect("method is valid"),
+        };
+        let effect = method("apply");
+        let reconcile = method("observe");
+        let compensate = method("remove");
+        let recovery = RecoveryMethods {
+            reconcile: Some(reconcile.clone()),
+            cancel: None,
+            compensate: Some(compensate.clone()),
+        };
+
+        assert_eq!(
+            recovery.method_for(&effect, InvocationPurpose::Effect),
+            Some(&effect)
+        );
+        assert_eq!(
+            recovery.method_for(&effect, InvocationPurpose::Compensate),
+            Some(&compensate)
+        );
+        assert_eq!(
+            recovery.method_for(&effect, InvocationPurpose::ReconcileCompensation),
+            Some(&reconcile)
+        );
+        assert_eq!(
+            recovery.method_for(&effect, InvocationPurpose::Cancel),
+            None
+        );
     }
 
     #[test]
