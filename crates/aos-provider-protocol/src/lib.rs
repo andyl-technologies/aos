@@ -29,8 +29,30 @@ pub const ADMISSION_SCHEMA: &str = "aos.primitive.command-handler-admission/v1";
 pub const RESULT_SCHEMA: &str = "aos.primitive.command-handler-result/v1";
 /// Identifies runtime-bound desired, realized, and provider-native context.
 pub const RESOURCE_CONTEXT_SCHEMA: &str = "aos.primitive.command-handler-resource-context/v1";
+/// Domain-separates one provider-native context digest.
+pub const NATIVE_CONTEXT_DIGEST_DOMAIN: &str = "aos.primitive.command-handler-context/v1";
+/// Domain-separates one ordered resource-context set digest.
+pub const RESOURCE_SET_DIGEST_DOMAIN: &str = "aos.primitive.command-handler-resource-set/v1";
 /// Bounds one handler result independently of the child process implementation.
 pub const MAX_HANDLER_RESULT_BYTES: usize = 256 * 1024;
+
+/// Computes the canonical digest of one provider-native context.
+///
+/// # Errors
+///
+/// Returns an error when the context cannot be encoded in canonical AOS JSON.
+pub fn native_context_digest(context: &AbilityValue) -> anyhow::Result<Sha256Digest> {
+    Sha256Digest::of_canonical(NATIVE_CONTEXT_DIGEST_DOMAIN, context)
+}
+
+/// Computes the canonical digest of one ordered resource-context set.
+///
+/// # Errors
+///
+/// Returns an error when the contexts cannot be encoded in canonical AOS JSON.
+pub fn resource_set_digest(resources: &[ResourceContext]) -> anyhow::Result<Sha256Digest> {
+    Sha256Digest::of_canonical(RESOURCE_SET_DIGEST_DOMAIN, &resources)
+}
 
 /// Carries the exact fixed-point resource specification authenticated for use.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -342,7 +364,7 @@ mod tests {
 
     use super::{
         AdmissionDisposition, AdmissionRevision, InvocationDisposition, InvocationPurpose,
-        RecoveryMethods, SupportedPurposes,
+        NATIVE_CONTEXT_DIGEST_DOMAIN, RecoveryMethods, SupportedPurposes, native_context_digest,
     };
 
     #[test]
@@ -436,6 +458,21 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&purposes).expect("purpose set serializes"),
             r#"["effect","reconcile","cancel","compensate","reconcile-compensation"]"#
+        );
+    }
+
+    #[test]
+    fn native_context_digest_uses_the_shared_domain() {
+        let context = aos_ability_model::AbilityValue::new(serde_json::json!({
+            "schema": "aos.test.native-context/v1",
+            "identity": "resource",
+        }))
+        .expect("context is canonical");
+
+        assert_eq!(
+            native_context_digest(&context).expect("context digest computes"),
+            Sha256Digest::of_canonical(NATIVE_CONTEXT_DIGEST_DOMAIN, &context)
+                .expect("reference digest computes")
         );
     }
 
