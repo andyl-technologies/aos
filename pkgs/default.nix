@@ -245,7 +245,10 @@
           ];
           inherit lib;
           pkgs = self;
-          specialArgs = {inherit packageName;};
+          specialArgs = {
+            inherit packageName;
+            packageVersion = args.version or "0";
+          };
         };
     localAbilityProjection =
       if abilityEvaluation == null

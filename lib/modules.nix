@@ -834,7 +834,7 @@
           )
           imports;
 
-      collectModules = provenance: importRoot: moduleOutputs: propagateToImports: mods:
+      collectModules = provenance: importRoot: moduleOutputs: packageIdentity: propagateToImports: mods:
         builtins.concatLists (
           builtins.map (
             mod: let
@@ -855,6 +855,14 @@
                       if moduleOutputs == null
                       then {}
                       else {outputs = moduleOutputs;}
+                    )
+                    // (
+                      if packageIdentity == null
+                      then {}
+                      else {
+                        packageName = packageIdentity.name;
+                        packageVersion = packageIdentity.version;
+                      }
                     );
                 }
                 mod;
@@ -877,6 +885,11 @@
               (
                 if propagateToImports
                 then moduleOutputs
+                else null
+              )
+              (
+                if propagateToImports
+                then packageIdentity
                 else null
               )
               propagateToImports
@@ -909,8 +922,11 @@
           !builtins.isAttrs record
           || !(keys
             == ["module" "name"]
+            || keys == ["module" "name" "version"]
             || keys == ["module" "name" "outputs"]
-            || keys == ["configRoot" "module" "name" "outputs"])
+            || keys == ["module" "name" "outputs" "version"]
+            || keys == ["configRoot" "module" "name" "outputs"]
+            || keys == ["configRoot" "module" "name" "outputs" "version"])
         then throw "evalModules: packageModules entries must contain module/name, optionally with outputs, or the resolver-authenticated configRoot/outputs form"
         else if !builtins.isString record.name || builtins.match "[a-z0-9][a-z0-9._+-]*" record.name == null
         then throw "evalModules: invalid resolver-supplied package provenance name"
@@ -923,7 +939,9 @@
         then throw "evalModules: package '${record.name}' module is not module.nix beneath its authenticated configRoot"
         else if record ? outputs && !validPackageOutputs record.outputs
         then throw "evalModules: package '${record.name}' has invalid resolver-supplied outputs"
-        else record // {inherit configRoot;} // {outputs = record.outputs or null;})
+        else if !builtins.isString (record.version or "0")
+        then throw "evalModules: package '${record.name}' has invalid resolver-supplied version"
+        else record // {inherit configRoot;} // {outputs = record.outputs or null;} // {version = record.version or "0";})
       packageModules;
 
       validatedProviderModules = builtins.map (record: let
@@ -969,22 +987,22 @@
           allOptionDecls));
 
       evaluatedPackageModules = builtins.concatLists (builtins.map (record:
-        collectModules "package:${record.name}" record.configRoot record.outputs true [record.module])
+        collectModules "package:${record.name}" record.configRoot record.outputs {inherit (record) name version;} true [record.module])
       validatedPackageModules);
 
       evaluatedProviderModules = builtins.concatLists (builtins.map (record:
-        collectModules "package:${record.name}" record.configRoot record.outputs true [record.module])
+        collectModules "package:${record.name}" record.configRoot record.outputs {inherit (record) name; version = record.version or "0";} true [record.module])
       validatedProviderModules);
 
       # Image modules carry `@base`; operator (host.nix) modules carry
       # `@host`. Appended last so their tier-75 defs also win any
       # `lastValue` tie at equal priority, matching "the operator overrides".
       evaluatedModules =
-        collectModules "@base" null null false ([internalModule] ++ modules)
+        collectModules "@base" null null null false ([internalModule] ++ modules)
         ++ evaluatedPackageModules
         ++ evaluatedProviderModules
-        ++ collectModules "@host" null null false operatorModules
-        ++ collectModules "@runtime" null null false runtimeModules;
+        ++ collectModules "@host" null null null false operatorModules
+        ++ collectModules "@runtime" null null null false runtimeModules;
 
       # Enumerate the concrete leaf paths authored by each package module.
       # Authority is derived from declarations in this graph, while imports
