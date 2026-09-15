@@ -634,14 +634,11 @@
     ];
   };
   projectAbilityConfig = packageName: evaluation:
-    ((import ../../lib/abilities/package-projection.nix {
-        inherit lib;
-        abilities = lib.abilities;
-      }) {
-        inherit packageName;
-        version = "1";
-        evaluated = evaluation.config.aos.abilities;
-      })
+    (lib.abilities.projectPackage {
+      inherit packageName;
+      version = "1";
+      evaluated = evaluation.config.aos.abilities;
+    })
     .value;
   missingGuaranteeReferenceEvaluation = lib.evalModules {
     modules = [lib.abilities.module];
