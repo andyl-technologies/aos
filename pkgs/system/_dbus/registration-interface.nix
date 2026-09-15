@@ -101,9 +101,9 @@
     scope = "provider-instance";
     key = "slot";
     rejectSlotCollisions = false;
-    mergeContract = "sha256:${builtins.hashString "sha256" (builtins.toJSON (
-      types.schemaOf "D-Bus system registration aggregate" aggregateRequest
-    ))}";
+    mergeContract = lib.abilities.descriptorFor "aos.ability.merge-contract/v1" {
+      schema = types.schemaOf "D-Bus system registration aggregate" aggregateRequest;
+    };
     controllerGroup = controllerAlias;
   };
   controllerDeclaration = declareInterface {
