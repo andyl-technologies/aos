@@ -531,6 +531,9 @@
   securityAuditNative = import ./security-audit-native.nix {
     inherit pkgs lib;
   };
+  securityEbpfLsmNative = import ./security-ebpf-lsm-native.nix {
+    inherit pkgs lib;
+  };
   securityPolkitNative = import ./security-polkit-native.nix {
     inherit pkgs lib;
   };
@@ -960,6 +963,7 @@ in
   assert baseNetworkingNative;
   assert baseHardeningNative;
   assert securityAuditNative;
+  assert securityEbpfLsmNative;
   assert securityPolkitNative;
   assert securitySshNative;
   assert systemdManagerWatchdog;
