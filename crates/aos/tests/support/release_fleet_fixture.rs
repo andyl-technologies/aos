@@ -3,13 +3,8 @@
 //! This binary is installed only in `pkgs.aos.testSupport`. It deliberately
 //! uses fixed private keys and must never be used outside an isolated test.
 
-mod ability_activation_fixture;
 mod artifact_consumption_fixture;
-mod foreground_process_fixture;
 mod initrd_contract_fixture;
-mod kubernetes_activation_fixture;
-mod provider_state_transfer_fixture;
-mod rollout_activation_fixture;
 
 use std::env;
 use std::fs::{self, File};
@@ -21,15 +16,6 @@ use anyhow::{Context as _, Result, bail};
 use aos_core::nar::cache::{
     NarCompression, NarInfoSigner, StaticNarInfoInput, render_static_narinfo,
 };
-use aos_package::config::ApmConfig;
-use aos_package::registry::release::{
-    CanonicalRegistryEntryAuthor, INTENT_SCHEMA, RegistryCommitIdentity, RegistryGitObjectKind,
-    RegistryGitSignature, RegistryGitSigningRequest, RegistryObjectSigner,
-    RegistryPackagePublication, RegistryReleaseEntry, RegistryReleaseIntent,
-};
-use aos_package::security::sign_payload_signature;
-use aos_package::types::ProfileScope;
-use aos_package::{DSSE_SIGNATURE_NAMESPACE, ProvenanceSignature, ProvenanceSigner};
 use aos_release::artifact::{
     ArtifactKind, ArtifactRecord, ArtifactRelation, ArtifactRelationship, BundlePath, Compression,
 };
@@ -87,25 +73,8 @@ async fn main() -> Result<()> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     match arguments.first().map(String::as_str) {
         Some("prepare") => prepare(&arguments[1..]),
-        Some("ability-registry") => ability_registry(&arguments[1..]).await,
-        Some("ability-activation") => ability_activation_fixture::generate(&arguments[1..]),
         Some("artifact-consumption-bundle") => {
             artifact_consumption_fixture::generate(&arguments[1..])
-        }
-        Some("foreground-process") => foreground_process_fixture::run(&arguments[1..]),
-        Some("kubernetes-activation") => kubernetes_activation_fixture::generate(&arguments[1..]),
-        Some("rollout-activation") => rollout_activation_fixture::generate(&arguments[1..]),
-        Some("rollout-foreign-map-audit") => {
-            rollout_activation_fixture::audit_foreign_map(&arguments[1..])
-        }
-        Some("ability-authority-provision") => {
-            ability_activation_fixture::provision_authority(&arguments[1..])
-        }
-        Some("kubernetes-authority-provision") => {
-            kubernetes_activation_fixture::provision_authority(&arguments[1..])
-        }
-        Some("provider-state-transfer-contract") => {
-            provider_state_transfer_fixture::inspect(&arguments[1..])
         }
         Some("initrd-contract") => initrd_contract_fixture::verify(&arguments[1..]),
         Some("image-assembly-contract") => {
@@ -120,177 +89,6 @@ async fn main() -> Result<()> {
         Some("maintainer-upstream-proxy") => maintainer_upstream_proxy(&arguments[1..]).await,
         None => qualification_executor().await,
         Some(command) => bail!("unknown release fleet fixture command: {command}"),
-    }
-}
-
-async fn ability_registry(arguments: &[String]) -> Result<()> {
-    const FIXED_ARGUMENTS: usize = 10;
-    const PACKAGE_ARGUMENTS: usize = 3;
-
-    if arguments.len() < FIXED_ARGUMENTS + PACKAGE_ARGUMENTS
-        || !(arguments.len() - FIXED_ARGUMENTS).is_multiple_of(PACKAGE_ARGUMENTS)
-    {
-        bail!(
-            "usage: aos-release-fleet-fixture ability-registry SOURCE OUTPUT REGISTRY REGISTRY_IDENTITY RELEASE PLAN_DIGEST BASE_COMMIT KEY_ID TRUST_KEY KEY_PATH NAME PRIMARY ABILITIES [NAME PRIMARY ABILITIES ...]"
-        );
-    }
-    let source = Path::new(&arguments[0]);
-    let output = Path::new(&arguments[1]);
-    let registry = &arguments[2];
-    let registry_identity = &arguments[3];
-    let release = &arguments[4];
-    let plan_digest = &arguments[5];
-    let base_commit = &arguments[6];
-    let key_id = &arguments[7];
-    let trust_key = &arguments[8];
-    let key_path = Path::new(&arguments[9]);
-    if output.exists() {
-        bail!("ability registry output must not already exist");
-    }
-
-    let mut entries = Vec::new();
-    let mut publications = std::collections::BTreeMap::new();
-    for package in arguments[FIXED_ARGUMENTS..].chunks_exact(PACKAGE_ARGUMENTS) {
-        let name = package[0].clone();
-        let primary = package[1].clone();
-        let abilities = package[2].clone();
-        let version = "1.0.0".to_string();
-        let platform = "x86_64-linux".to_string();
-
-        entries.push(RegistryReleaseEntry {
-            id: format!("package/{name}/out"),
-            name: name.clone(),
-            version: version.clone(),
-            platform: platform.clone(),
-            output: "out".to_string(),
-            store_path: primary,
-        });
-        entries.push(RegistryReleaseEntry {
-            id: format!("package/{name}/abilities"),
-            name: name.clone(),
-            version,
-            platform,
-            output: "abilities".to_string(),
-            store_path: abilities,
-        });
-        publications.insert(
-            name,
-            RegistryPackagePublication {
-                description: "Production reference ability package".to_string(),
-                homepage: None,
-                license_expression: "Apache-2.0".to_string(),
-                maintainers: vec!["Andyl, Inc.".to_string()],
-            },
-        );
-    }
-    entries.sort_by(|left, right| left.id.cmp(&right.id));
-
-    let intent = RegistryReleaseIntent {
-        schema: INTENT_SCHEMA.to_string(),
-        registry: registry_identity.clone(),
-        base_commit: base_commit.clone(),
-        release: release.clone(),
-        plan_digest: plan_digest.clone(),
-        entries,
-        support: None,
-    };
-    let config = ApmConfig::load(ProfileScope::User)?;
-    let mut signer = AbilityRegistrySigner {
-        registry: registry_identity.clone(),
-        release: release.clone(),
-        plan_digest: plan_digest.clone(),
-        key_id: key_id.clone(),
-        trust_key: trust_key.clone(),
-        key_path: key_path.to_path_buf(),
-        operation: 0,
-    };
-    let printer = aos_core::output::Printer::new(0, false, false);
-    let (transaction, prepared) = {
-        let mut author = CanonicalRegistryEntryAuthor::new(
-            &config,
-            registry,
-            &publications,
-            &mut signer,
-            &printer,
-        );
-        intent.prepare(source, output, &mut author).await?
-    };
-    if transaction.expected != prepared.surfaces {
-        bail!("prepared ability registry differs from its closed transaction");
-    }
-    let identity = RegistryCommitIdentity {
-        name: "AOS ability fleet fixture".to_string(),
-        email: "ability-fleet@example.test".to_string(),
-        unix_seconds: 1_788_796_800,
-        offset_minutes: 0,
-    };
-    let finalized = prepared.finalize(&identity, &mut signer).await?;
-    println!("{}", finalized.commit);
-    Ok(())
-}
-
-struct AbilityRegistrySigner {
-    registry: String,
-    release: String,
-    plan_digest: String,
-    key_id: String,
-    trust_key: String,
-    key_path: PathBuf,
-    operation: u64,
-}
-
-impl AbilityRegistrySigner {
-    fn next_operation(&mut self, kind: &str) -> String {
-        self.operation += 1;
-        format!("ability-fleet-{kind}-{}", self.operation)
-    }
-}
-
-#[async_trait::async_trait]
-impl ProvenanceSigner for AbilityRegistrySigner {
-    fn key_id(&self) -> &str {
-        &self.key_id
-    }
-
-    fn trusted_key_line(&self) -> Option<&str> {
-        Some(&self.trust_key)
-    }
-
-    async fn sign_provenance(&mut self, payload: &[u8]) -> Result<ProvenanceSignature> {
-        let armored_signature =
-            sign_payload_signature(&self.key_path, DSSE_SIGNATURE_NAMESPACE, payload)?;
-        Ok(ProvenanceSignature {
-            key_id: self.key_id.clone(),
-            provider_operation_id: self.next_operation("provenance"),
-            armored_signature,
-        })
-    }
-}
-
-#[async_trait::async_trait]
-impl RegistryObjectSigner for AbilityRegistrySigner {
-    async fn sign_git_object(
-        &mut self,
-        request: RegistryGitSigningRequest,
-    ) -> Result<RegistryGitSignature> {
-        if request.registry != self.registry
-            || request.release != self.release
-            || request.plan_digest != self.plan_digest
-        {
-            bail!("ability registry signing request differs from fixture authority");
-        }
-        let kind = match request.kind {
-            RegistryGitObjectKind::Commit => "commit",
-            RegistryGitObjectKind::Tag => "tag",
-        };
-        let armored_signature = sign_payload_signature(&self.key_path, "git", &request.payload)?;
-        Ok(RegistryGitSignature {
-            kind: request.kind,
-            payload_digest: request.payload_digest,
-            key_id: self.key_id.clone(),
-            provider_operation_id: self.next_operation(kind),
-            armored_signature,
-        })
     }
 }
 
@@ -925,14 +723,8 @@ fn fixture_evidence(
     nonce: Option<String>,
     finish: &str,
 ) -> Result<EvidenceRecord> {
-    use aos_release::qualification_evidence::{
-        CheckObservation, NATIVE_ADAPTER_MATRIX_OBSERVATION_V1, NATIVE_ADAPTER_MATRIX_REQUIREMENT,
-        NativeAdapterCellObservation, NativeAdapterMatrixComponentIdentity,
-        NativeAdapterMatrixEnvironment, NativeAdapterMatrixEnvironmentStatus,
-        NativeAdapterMatrixObservation, NativeAdapterPostconditionProbe, QualificationObservation,
-        native_adapter_matrix_check, native_adapter_matrix_spec_from_surface,
-        validate_native_adapter_matrix_observation,
-    };
+    use aos_release::qualification_evidence::{CheckObservation, QualificationObservation};
+
     let seconds = if case.phase == aos_release::qualification::QualificationPhase::Complete {
         14 * 24 * 60 * 60
     } else {
@@ -941,12 +733,12 @@ fn fixture_evidence(
     let finished = humantime::parse_rfc3339(finish)?;
     let environment = qualification_fixture::environment(case)?;
     let capabilities = qualification_fixture::capabilities(case)?;
-    let mut environment_digest = environment
+    let environment_digest = environment
         .as_ref()
         .map(|environment| environment.digest())
         .transpose()?
         .unwrap_or(digest("synthetic-protocol-environment"));
-    let mut checks = case
+    let checks = case
         .checks
         .iter()
         .map(|id| {
@@ -959,185 +751,17 @@ fn fixture_evidence(
             )
         })
         .collect();
-    let mut operations = if case.target.is_some() {
+    let operations = if case.target.is_some() {
         qualification_fixture::measurements()
     } else {
         std::collections::BTreeMap::from([("synthetic-requests".into(), 1)])
-    };
-    let native_adapter_matrix = if case.requirement_id == NATIVE_ADAPTER_MATRIX_REQUIREMENT {
-        let surface = native_adapter_surface_fixture()?;
-        let spec = native_adapter_matrix_spec_from_surface(surface)?;
-        let spec_digest = Sha256Digest::of_bytes(canonical::to_vec(&spec)?);
-        let component =
-            |name: &str, component_digest: Sha256Digest| NativeAdapterMatrixComponentIdentity {
-                name: name.into(),
-                version: "synthetic-protocol-v1".into(),
-                digest: component_digest,
-            };
-        let executor_digest = digest("synthetic-protocol-executor");
-        let matrix_environment = NativeAdapterMatrixEnvironment {
-            schema_version: "aos.release.native-adapter-matrix-environment/v1".into(),
-            status: NativeAdapterMatrixEnvironmentStatus::Production,
-            platform: Platform::X86_64Linux,
-            spec_digest,
-            scenario_registry_digest: executor_digest,
-            candidate_subjects_digest: case.subjects_digest,
-            predecessor_manifest_digest: case
-                .predecessor
-                .as_ref()
-                .context("matrix fixture case lacks its predecessor")?
-                .manifest_digest,
-            unqualified_reason: None,
-            cohort: Some("synthetic-protocol-cohort".into()),
-            qemu: Some(component("qemu", digest("synthetic-qemu"))),
-            firmware: Some(component("firmware", digest("synthetic-firmware"))),
-            guest_kernel: Some(component("guest-kernel", digest("synthetic-kernel"))),
-            fault_injection_tool: Some(component(
-                "fault-injection-tool",
-                digest("synthetic-fault-tool"),
-            )),
-            harness: Some(component(
-                "matrix-harness",
-                digest("synthetic-harness-closure"),
-            )),
-        };
-        environment_digest = Sha256Digest::of_bytes(canonical::to_vec(&matrix_environment)?);
-        let probe_kind = |postcondition: &str| -> Result<&'static str> {
-            Ok(match postcondition {
-                "durable-attempt-state-classified" => "journal-timeline",
-                "at-most-one-resource-owner" => "ownership-inventory",
-                "foreign-resources-unchanged" => "foreign-resource-snapshot",
-                "dependent-effects-not-executed" => "dependency-barrier",
-                "fresh-receiving-authority" => "authority-incarnation",
-                "compatible-state-adopted" => "state-adoption",
-                "exactly-one-resource-owner" => "exact-ownership-inventory",
-                "transfer-rejected-before-candidate-effect" => "transfer-rejection",
-                "predecessor-remains-sole-owner" => "predecessor-ownership",
-                "current-grants-reauthorized" => "authority-grants",
-                "retained-target-identity-preserved" => "target-identity",
-                "prerequisite-failure-recorded" => "prerequisite-failure",
-                "foreign-attempt-rejected-before-mutation" => "foreign-attempt-rejection",
-                _ => anyhow::bail!("synthetic matrix fixture has an unknown postcondition"),
-            })
-        };
-        let cells = aos_release::qualification_evidence::native_adapter_applicable_cells(&spec)
-            .into_iter()
-            .map(|cell| {
-                let cell_digest = Sha256Digest::of_bytes(canonical::to_vec(cell)?);
-                let disposition =
-                    aos_release::qualification_evidence::native_adapter_expected_disposition(cell)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("synthetic matrix fixture has an unknown scenario")
-                        })?;
-                let cohort_subject = serde_json::json!({
-                    "schema": "aos.release.native-adapter-cell-cohort-subject/v1",
-                    "cell_id": cell.id,
-                    "cell_digest": cell_digest,
-                    "boundary": cell.boundary,
-                    "failure": cell.failure,
-                    "candidate": cell.candidate,
-                    "predecessor": cell.predecessor,
-                    "subject": {
-                        "schema": "aos.test.native-adapter-cohort-subject/v1",
-                        "operation": cell.id,
-                    },
-                });
-                let cohort_subject_digest =
-                    Sha256Digest::of_bytes(canonical::to_vec(&cohort_subject)?);
-                let probes = cell
-                    .postconditions
-                    .iter()
-                    .map(|postcondition| {
-                        let observations = std::collections::BTreeMap::from([(
-                            "synthetic-protocol-observation".into(),
-                            serde_json::json!(format!("{}:{postcondition}", cell.id)),
-                        )]);
-                        let observation_digest =
-                            Sha256Digest::of_bytes(canonical::to_vec(&observations)?);
-                        Ok((
-                            postcondition.clone(),
-                            NativeAdapterPostconditionProbe {
-                                schema_version: "aos.release.native-adapter-postcondition-probe/v1"
-                                    .into(),
-                                kind: probe_kind(postcondition)?.into(),
-                                cell_id: cell.id.clone(),
-                                cell_digest,
-                                disposition: disposition.into(),
-                                subject_digest: case.subjects_digest,
-                                cohort_subject_digest,
-                                observation_digest,
-                                observations,
-                            },
-                        ))
-                    })
-                    .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
-                Ok(NativeAdapterCellObservation {
-                    id: cell.id.clone(),
-                    cell_digest,
-                    environment_digest,
-                    cohort_subject: Some(cohort_subject),
-                    postconditions: cell
-                        .postconditions
-                        .iter()
-                        .map(|postcondition| {
-                            (
-                                postcondition.clone(),
-                                CheckObservation {
-                                    passed: true,
-                                    detail: "Synthetic protocol fixture; no OS qualification claim"
-                                        .into(),
-                                },
-                            )
-                        })
-                        .collect(),
-                    probes,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let matrix = NativeAdapterMatrixObservation {
-            schema_version: NATIVE_ADAPTER_MATRIX_OBSERVATION_V1.into(),
-            spec,
-            spec_digest,
-            environment: matrix_environment,
-            cells,
-        };
-        let passed = validate_native_adapter_matrix_observation(
-            case,
-            environment_digest,
-            executor_digest,
-            &matrix,
-        )?;
-        checks = std::collections::BTreeMap::from([(
-            case.checks[0].clone(),
-            native_adapter_matrix_check(&matrix, passed)?,
-        )]);
-        operations = case
-            .measurements
-            .iter()
-            .map(|(name, bound)| (name.clone(), bound.minimum.max(1)))
-            .collect();
-        operations.insert(
-            "matrix_cells_reported".into(),
-            u64::try_from(matrix.cells.len())?,
-        );
-        operations.insert(
-            "matrix_postconditions_reported".into(),
-            matrix.cells.iter().try_fold(0_u64, |count, cell| {
-                Ok::<_, std::num::TryFromIntError>(
-                    count + u64::try_from(cell.postconditions.len())?,
-                )
-            })?,
-        );
-        Some(matrix)
-    } else {
-        None
     };
     Ok(EvidenceRecord {
         qualification: Some(QualificationObservation {
             environment,
             capabilities,
             assessment: qualification_fixture::assessment(case)?,
-            native_adapter_matrix,
+            native_adapter_matrix: None,
             case_digest: case.digest()?,
             executor_digest: digest("synthetic-protocol-executor"),
             environment_digest,
@@ -1159,90 +783,6 @@ fn fixture_evidence(
             .to_string(),
         finished_at: finish.into(),
     })
-}
-
-fn native_adapter_surface_fixture()
--> Result<aos_release::qualification_evidence::NativeAdapterSurfaceSpec> {
-    use aos_release::qualification_evidence::NativeAdapterSurfaceSpec;
-
-    let adapter = |name: &str, descriptor: &str| {
-        json!({
-            "adapter": name,
-            "conformance_families": ["durability-recovery"],
-            "interface_abi": 1,
-            "interface_descriptor": descriptor,
-            "interface_name": format!("aos.{name}-effects"),
-            "methods": [{"effect_class": "mutation", "method": "apply"}],
-            "provider_contract": {
-                "resource_lifetime": "persistent",
-                "state_format": digest(&format!("{name} state format")),
-            },
-            "provider_implementation": {
-                "contract": format!(
-                    "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-{name}-abilities"
-                ),
-                "implementation": format!("{name}-implementation"),
-                "observer": {
-                    "artifact": {
-                        "path": format!(
-                            "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-{name}-observer"
-                        ),
-                        "selector": {
-                            "_type": "aos-package-output-selector",
-                            "package": format!("{name}-observer"),
-                            "output": "out",
-                        },
-                    },
-                    "entry_point": "bin/fixture-observer",
-                    "arguments": {"kind": "record"},
-                    "result": {"kind": "record"},
-                },
-            },
-            "scope": "host-resource",
-        })
-    };
-    let scenario = |id: &str, boundary: &str, failure: &str| {
-        json!({
-            "boundary": boundary,
-            "candidate": "same",
-            "failure": failure,
-            "family": "durability-recovery",
-            "id": id,
-            "predecessor": "same",
-        })
-    };
-    let value = json!({
-        "adapters": [
-            adapter(
-                "fixture-a",
-                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            ),
-            adapter(
-                "fixture-z",
-                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-            ),
-        ],
-        "families": ["durability-recovery"],
-        "limits": {"max_adapters": 2, "max_methods": 2, "max_scenarios": 2},
-        "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
-        "scenarios": [
-            scenario(
-                "interrupt-before-acquisition",
-                "before-acquisition",
-                "injected-interruption"
-            ),
-            scenario(
-                "lose-external-result",
-                "after-external-return",
-                "lost-result"
-            ),
-        ],
-        "schema": "aos.qualification.native-adapter-surface/v1",
-        "subject_schema": "aos.qualification.native-adapter-subject/v1",
-    });
-
-    serde_json::from_value::<NativeAdapterSurfaceSpec>(value)
-        .context("construct native adapter surface fixture")
 }
 
 fn review(arguments: &[String]) -> Result<()> {

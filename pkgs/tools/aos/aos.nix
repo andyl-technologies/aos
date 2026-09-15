@@ -568,8 +568,6 @@ in
           ln -s \
             "$apm/bin/.aos-package-runtime-unwrapped" \
             "$packageRuntime/bin/.aos-package-runtime-unwrapped"
-          mv "$out/bin/aos-ability-authority-audit" "$packageRuntime/bin/"
-          mv "$out/bin/aos-ability-interruption-audit" "$packageRuntime/bin/"
           write_cli_wrapper \
             aos-package-runtime \
             "$packageRuntime" \
@@ -641,9 +639,7 @@ in
             "$out/bin/.aos-unwrapped" \
             "$apm/bin/.aos-package-runtime-unwrapped" \
             "$apr/bin/.apr-unwrapped" \
-            "$metadataRuntime/bin/.aos-metadata-runtime-unwrapped" \
-            "$packageRuntime/bin/aos-ability-authority-audit" \
-            "$packageRuntime/bin/aos-ability-interruption-audit"; do
+            "$metadataRuntime/bin/.aos-metadata-runtime-unwrapped"; do
             strip -s "$binary"
           done
 
@@ -655,9 +651,7 @@ in
             for binary in \
               "$apm/bin/.aos-package-runtime-unwrapped" \
               "$apr/bin/.apr-unwrapped" \
-              "$metadataRuntime/bin/.aos-metadata-runtime-unwrapped" \
-              "$packageRuntime/bin/aos-ability-authority-audit" \
-              "$packageRuntime/bin/aos-ability-interruption-audit"; do
+              "$metadataRuntime/bin/.aos-metadata-runtime-unwrapped"; do
               rpath=$(patchelf --print-rpath "$binary")
               rpath=$(printf '%s' "$rpath" | sed \
                 -e "s|$out/lib:||g" \
