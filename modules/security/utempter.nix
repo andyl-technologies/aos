@@ -13,8 +13,10 @@
 
   config = lib.mkIf config.aos.security.utempter.enable {
     aos.security.wrappers.utempter = {
-      source = "${pkgs.libutempter}/lib/utempter/utempter";
-      owner = "root";
+      source = {
+        artifact = lib.abilities.packageOutput {package = "libutempter";};
+        path = "lib/utempter/utempter";
+      };
       group = "utmp";
       mode = "2711";
     };
