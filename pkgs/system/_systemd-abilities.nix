@@ -9,6 +9,23 @@
   handlerArtifact = lib.abilities.packageOutput {
     package = "aos-systemd-provider";
   };
+  serviceEffectsQualification = {
+    adapter = "service-management";
+    observationKind = "systemd";
+    scope = "host-manager";
+    conformanceFamilies = [
+      "authority-revocation"
+      "dependent-effect"
+      "durability-recovery"
+      "foreign-resource"
+      "incarnation-replacement"
+      "provider-state-transfer"
+    ];
+    observer = lib.qualification.abilityObserver {
+      artifact = handlerArtifact;
+      entryPoint = "bin/aos-systemd-service-effects-observer";
+    };
+  };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceInterfaces = serviceManagement.interfaces;
   dbusRegistrationInterface = {
@@ -1278,6 +1295,7 @@ in {
           };
           desiredType = null;
           requiredFeatures = [];
+          qualification = serviceEffectsQualification;
         };
         systemd-packaged-unit = {
           description = "Activates authenticated packaged units and materializes bounded systemd drop-ins.";

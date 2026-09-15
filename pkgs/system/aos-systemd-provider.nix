@@ -37,6 +37,7 @@ in
         aos-systemd-runtime-entry-population-effects \
         aos-systemd-scheduled-activation-effects \
         aos-systemd-service-effects \
+        aos-systemd-service-effects-observer \
         aos-systemd-swap-effects \
         aos-systemd-system-milestone-readiness-effects
       do
