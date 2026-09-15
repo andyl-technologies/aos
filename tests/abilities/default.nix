@@ -430,6 +430,9 @@
   kernelModules = import ./kernel-modules.nix {
     inherit lib;
   };
+  postgresqlService = import ./postgresql-service.nix {
+    inherit lib pkgs;
+  };
   compositionDriver = import ./composition-driver.nix {
     inherit lib;
   };
@@ -862,6 +865,7 @@ in
   assert dockerService;
   assert containerdStaticProjection;
   assert kernelModules;
+  assert postgresqlService;
   assert (builtins.head smokePublishedInterfaces).document == smokeAbilityProjection.interfaces.default;
   assert fails (lib.abilities.effects.normalize [] effectFixture.missingReference);
   assert fails (lib.abilities.effects.normalize [] effectFixture.cycle);
