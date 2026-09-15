@@ -135,11 +135,6 @@
     inherit lib mkDerivation;
   };
 
-  projectPackageAbilities = import ../lib/abilities/package-projection.nix {
-    inherit lib;
-    abilities = lib.abilities;
-  };
-
   packageContractDocument = {
     packageName,
     version,
@@ -174,7 +169,7 @@
     version,
     packageProbe,
   }: let
-    projected = projectPackageAbilities {
+    projected = lib.abilities.projectPackage {
       inherit packageName version packageProbe;
       evaluated = {
         guarantees = {};
@@ -399,7 +394,7 @@
       else if builtins.elem "contract" existingOutputs
       then throw "mkDerivation package contract for '${packageName}' reserves the 'contract' output name"
       else
-        projectPackageAbilities {
+        lib.abilities.projectPackage {
           inherit packageName;
           version = args.version or "0";
           evaluated = projectedAbilities;

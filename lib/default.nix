@@ -152,11 +152,19 @@
     inherit types;
     inherit (modules) mkOption;
   };
-  abilities = import ./abilities {
+  abilityCore = import ./abilities {
     inherit types;
     inherit (modules) mkOption;
     evalModules = modules.evalModules;
   };
+  abilities =
+    abilityCore
+    // {
+      projectPackage = import ./abilities/package-projection.nix {
+        lib = finalLib;
+        inherit abilities;
+      };
+    };
   qualification = import ./qualification.nix {inherit abilities;};
 
   platformMod = import ./platform.nix;
