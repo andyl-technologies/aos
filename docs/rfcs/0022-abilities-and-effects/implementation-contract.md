@@ -135,6 +135,16 @@ orchestrator invokes restricted Nix evaluation for provider-authored
 constructors. Rust does not execute serialized Nix closures.
 
 Provider selection precedes evaluation of bindings that require that provider.
+Consumers declare provider-neutral symbolic interface selectors without
+importing or depending on an implementation package. Their request values use
+the generic structured option-value model. The final module fixed point selects
+the exact interface document and validates each request against its portable
+schema. Core provider-neutral interfaces have one shared canonical owning
+module, and provider packages declare their implementations. A provider package
+owns an interface declaration only for an intrinsically package- or
+backend-specific extension. There is no `abilityDeps` edge or duplicated
+consumer schema.
+
 The declaration pass can report unsatisfied named requirements as data, and
 pure composition can carry typed unresolved references until selection
 completes. Code that needs a concrete absent binding cannot run prematurely or
@@ -143,10 +153,12 @@ when conditional requirements add providers. Module `imports` remain fixed for
 each evaluation pass and independent of the final configuration fixed point.
 
 Runtime results flow through operation ports. A materialization operation can
-render a previously described template after acquiring an endpoint or resource.
-It uses a registered renderer and explicit inputs; it does not rerun arbitrary
-Nix with ambient host access. A runtime result that changes provider selection
-requires another admitted planning transaction.
+render a previously described template after acquiring a resource. It uses a
+registered renderer and explicit inputs; it does not rerun arbitrary Nix with
+ambient host access. Fixed endpoints are ordinary typed configuration. Dynamic
+endpoint allocation is unsupported until a provider can atomically transfer a
+persistent socket or service handle to its consumer. A runtime result that
+changes provider selection requires another admitted planning transaction.
 
 The source-build product is a checked desired-state contract, exact provider
 implementations, and deployment obligations. It may also contain a transition

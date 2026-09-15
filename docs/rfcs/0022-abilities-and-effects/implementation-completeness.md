@@ -100,8 +100,9 @@ proof that the effects occurred.
    credential requirement. Missing delivery fails admission. Candidate
    validation and actual service execution receive the same declared version
    through their proper views; secret bytes appear in neither plan nor debug
-   bundle. An endpoint allocated at runtime uses a typed materialization
-   operation rather than a future value in pure Nix.
+   bundle. Fixed endpoints are ordinary typed configuration. Dynamic endpoint
+   allocation remains unsupported until a provider can transfer a persistent
+   socket or service handle atomically to its consumer.
 5. **Failure before publication:** invalid candidate configuration fails
    validation; the old live target remains selected and functional. Candidate
    cleanup does not release resources still used by the old service.
