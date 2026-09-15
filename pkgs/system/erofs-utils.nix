@@ -22,6 +22,8 @@
   xz,
   zlib,
   zstd,
+  lib,
+  stdenv,
 }: let
   # v1.8.x is the last stable line whose `lib/Makefile.am` keeps the
   # optional import and compression dependencies gated behind configure
@@ -103,16 +105,22 @@ in
         # order, 16 MiB is a clean multiple of the 256 KiB pcluster so
         # boundaries don't shift the per-cluster compression, and `-T0 -U`
         # pin the remaining nondeterminism. Pulls in libpthread (glibc).
-        script = ''
-          ./configure \
-            --prefix=$out \
-            --disable-fuse \
-            --enable-lz4 \
-            --enable-lzma \
-            --with-zlib=yes \
-            --with-libzstd=yes \
-            --enable-multithreading
-        '';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # Compression tools are also build inputs. Prefer the declared
+            # target libraries over their native pkg-config metadata.
+            export PKG_CONFIG_PATH="${lib.makeSearchPath "lib/pkgconfig" [util-linux lz4 xz zlib zstd]}''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          ''
+          + ''
+            ./configure \
+              --prefix=$out \
+              --disable-fuse \
+              --enable-lz4 \
+              --enable-lzma \
+              --with-zlib=yes \
+              --with-libzstd=yes \
+              --enable-multithreading
+          '';
       }
       {
         name = "build";

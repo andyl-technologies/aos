@@ -6,6 +6,11 @@
   pkg-config,
   util-linux,
   bash,
+  coreutils,
+  diffutils,
+  gawk,
+  grep,
+  sed,
   stdenv,
   buildPackages,
 }: let
@@ -28,9 +33,19 @@ in
       pkg-config
     ];
     runtimeDeps =
-      if stdenv.hostPlatform.isDarwin
-      then [bash]
-      else [util-linux];
+      [
+        bash
+        coreutils
+        diffutils
+        gawk
+        grep
+        sed
+      ]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then []
+        else [util-linux]
+      );
     propagatedDeps =
       if stdenv.hostPlatform.isDarwin
       then []
@@ -42,6 +57,11 @@ in
         script = ''
           tar xf $src
           cd e2fsprogs-${version}
+
+          # This generator runs on the scheduler during cross builds.
+          sed -i \
+            's|/bin/echo|${buildPackages.coreutils}/bin/echo|g' \
+            config/parse-types.sh
         '';
       }
       {
@@ -108,31 +128,40 @@ in
       }
       {
         name = "install";
-        script =
-          if stdenv.hostPlatform.isDarwin
-          then ''
-            make install
-            make install-libs
-            for script in \
-              "$out/bin/compile_et" \
-              "$out/bin/mk_cmds" \
-              "$out/sbin/e2scrub" \
-              "$out/sbin/e2scrub_all"
-            do
-              [ -f "$script" ] || continue
-              sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$script"
-            done
-            # e2initrd_helper embeds a build-time gcc store path — a text
-            # reference that drags ~230 MB of compiler into e2fsprogs' closure.
-            rm -f "$out/lib/e2initrd_helper"
-          ''
-          else ''
-            make install
-            make install-libs
-            # e2initrd_helper embeds a build-time gcc store path — a text
-            # reference that drags ~230 MB of compiler into e2fsprogs' closure.
-            rm -f "$out/lib/e2initrd_helper"
-          '';
+        script = ''
+          make install
+          make install-libs
+
+          # Upstream installs host-global shell paths that do not exist on AOS.
+          for script in \
+            "$out/bin/compile_et" \
+            "$out/bin/mk_cmds" \
+            "$out/sbin/e2scrub" \
+            "$out/sbin/e2scrub_all"; do
+            [ -f "$script" ] || continue
+            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$script"
+          done
+
+          # The installed source generators must work from this package's
+          # closure instead of relying on ambient host utilities.
+          sed -i \
+            -e 's|^AWK=gawk$|AWK=${gawk}/bin/gawk|' \
+            -e 's|^SED=sed$|SED=${sed}/bin/sed|' \
+            -e 's| sed -e | ${sed}/bin/sed -e |' \
+            -e 's|`basename |`${coreutils}/bin/basename |' \
+            -e 's| cmp -s | ${diffutils}/bin/cmp -s |' \
+            -e 's|grep "|${grep}/bin/grep "|' \
+            -e 's|rm -f |${coreutils}/bin/rm -f |g' \
+            -e 's|rm "|${coreutils}/bin/rm "|g' \
+            -e 's|mv -f |${coreutils}/bin/mv -f |g' \
+            -e 's|chmod a-w |${coreutils}/bin/chmod a-w |g' \
+            "$out/bin/compile_et" \
+            "$out/bin/mk_cmds"
+
+          # e2initrd_helper embeds a build-time gcc store path — a text
+          # reference that drags ~230 MB of compiler into e2fsprogs' closure.
+          rm -f "$out/lib/e2initrd_helper"
+        '';
       }
     ];
 

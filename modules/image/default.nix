@@ -15,6 +15,10 @@
   pkgs,
   ...
 }: let
+  # Assembly and validation execute on the build machine; payloads stay target-specific.
+  buildPackages = pkgs.buildPackages or pkgs;
+  targetPlatform = pkgs.stdenv.hostPlatform;
+
   cfg = config.aos.image;
   externalFinalization = config.aos.boot.secureBoot.externalFinalization.enable;
   positiveMiB = default: description:
@@ -68,10 +72,10 @@
     mediaType,
     targets,
   }:
-    pkgs.mkDerivation {
+    buildPackages.mkDerivation {
       name = "aos-image-${config.aos.system.name}-${format}";
       src = null;
-      buildDeps = [pkgs.qemu pkgs.coreutils pkgs.jq pkgs.openssl pkgs.zstd];
+      buildDeps = [buildPackages.qemu buildPackages.coreutils buildPackages.jq buildPackages.openssl buildPackages.zstd];
       IMAGE_FORMAT = format;
       IMAGE_FILENAME = "aos-${config.aos.system.name}.${format}";
       IMAGE_MEDIA_TYPE = mediaType;
@@ -84,31 +88,33 @@
             zstd -d --no-progress \
               ${rawImage}/aos-${config.aos.system.name}.img.zst \
               -o image.raw
-            qemu-img convert -f raw -O ${formatFlag} \
+            # VHD defaults to CHS rounding, which would change GPT disk geometry.
+            qemu-img convert -f raw -O ${formatFlag} ${lib.optionalString (formatFlag == "vpc") "-o force_size=on"} \
               image.raw \
               $out/aos-${config.aos.system.name}.${format}
 
             filename="$IMAGE_FILENAME"
             byte_size=$(stat -c %s "$out/$filename")
-            max_download_mib=$(${pkgs.jq}/bin/jq -er '.artifactBudgetsMiB.download' ${rawImage}/image-info.json)
+            max_download_mib=${toString cfg.budgets.maxConvertedDownloadMiB}
             if [ "$byte_size" -gt $(( max_download_mib * 1048576 )) ]; then
-              echo "$IMAGE_FORMAT image exceeds its $max_download_mib MiB download contract" >&2
+              echo "$IMAGE_FORMAT image is $byte_size bytes and exceeds its $max_download_mib MiB download contract" >&2
               exit 1
             fi
             sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
-            virtual_size=$(${pkgs.qemu}/bin/qemu-img info --output=json "$out/$filename" \
-              | ${pkgs.jq}/bin/jq -er '.["virtual-size"]')
-            expected_virtual_size=$(${pkgs.jq}/bin/jq -er '.virtualSizeBytes' ${rawImage}/image-info.json)
+            virtual_size=$(${buildPackages.qemu}/bin/qemu-img info --output=json "$out/$filename" \
+              | ${buildPackages.jq}/bin/jq -er '.["virtual-size"]')
+            expected_virtual_size=$(${buildPackages.jq}/bin/jq -er '.virtualSizeBytes' ${rawImage}/image-info.json)
             if [ "$virtual_size" -ne "$expected_virtual_size" ]; then
               echo "converted image virtual size does not match the raw logical disk" >&2
               exit 1
             fi
-            ${pkgs.jq}/bin/jq -S \
+            ${buildPackages.jq}/bin/jq -S \
               --arg format "$IMAGE_FORMAT" \
               --arg filename "$filename" \
               --arg mediaType "$IMAGE_MEDIA_TYPE" \
               --arg sha256 "$sha256" \
               --argjson byteSize "$byte_size" \
+              --argjson maxDownloadMiB "$max_download_mib" \
               --argjson expectedVirtualSize "$expected_virtual_size" \
               --argjson compatibleTargets "$IMAGE_TARGETS_JSON" \
               '.format = $format
@@ -117,6 +123,7 @@
                | .mediaType = $mediaType
                | .compression = "none"
                | .byteSize = $byteSize
+               | .artifactBudgetsMiB.download = $maxDownloadMiB
                | .sha256 = $sha256
                | .compatibleTargets = $compatibleTargets
                | .virtualSizeBytes = $expectedVirtualSize' \
@@ -136,7 +143,7 @@
                 path=$2
                 size=$(stat -c %s "$out/$path")
                 digest=$(sha256sum "$out/$path" | cut -d ' ' -f1)
-                ${pkgs.jq}/bin/jq -n \
+                ${buildPackages.jq}/bin/jq -n \
                   --arg id "$id" --arg path "$path" \
                   --argjson byteSize "$size" --arg sha256 "$digest" \
                   '{id: $id, path: $path, byte_size: $byteSize, sha256: $sha256}'
@@ -153,13 +160,13 @@
                   component recovery-entry-a recovery-a.conf
                   component recovery-entry-b recovery-b.conf
                   component image-metadata image-info.json
-                } | ${pkgs.jq}/bin/jq -s .
+                } | ${buildPackages.jq}/bin/jq -s .
               )
-              ${pkgs.jq}/bin/jq -S -n \
+              ${buildPackages.jq}/bin/jq -S -n \
                 --arg schema aos.recovery-bundle/v1 \
                 --arg release ${lib.escapeShellArg config.aos.system.version} \
-                --arg architecture ${lib.escapeShellArg lib.platform.constraints.cpu} \
-                --arg platform ${lib.escapeShellArg lib.system} \
+                --arg architecture ${lib.escapeShellArg targetPlatform.constraints.cpu} \
+                --arg platform ${lib.escapeShellArg targetPlatform.system} \
                 --argjson module_abi ${toString config.aos.system.moduleAbi} \
                 --argjson recovery_abi ${toString config.aos.boot.recovery.abi} \
                 --argjson components "$components" \
@@ -167,7 +174,7 @@
                   platform: $platform, module_abi: $module_abi,
                   recovery_abi: $recovery_abi, components: $components}' \
                 > "$out/recovery-bundle.json"
-              ${pkgs.openssl}/bin/openssl dgst -sha256 \
+              ${buildPackages.openssl}/bin/openssl dgst -sha256 \
                 -sign ${config.aos.boot.secureBoot.dbKey} \
                 -out "$out/recovery-bundle.json.sig" \
                 "$out/recovery-bundle.json"
@@ -189,10 +196,10 @@
     source,
     description,
   }:
-    pkgs.mkDerivation {
+    buildPackages.mkDerivation {
       inherit name;
       src = null;
-      buildDeps = [pkgs.coreutils];
+      buildDeps = [buildPackages.coreutils];
       outputChecks.out = {};
       unsafeDiscardReferences.out = true;
       phases = [
@@ -311,12 +318,29 @@ in {
     budgets = {
       maxRootMiB = positiveMiB 512 "Maximum immutable root payload size.";
       maxVerityMiB = positiveMiB 16 "Maximum dm-verity tree size and capacity of each A/B hash partition.";
-      maxInitrdMiB = positiveMiB 128 "Maximum initrd artifact size before it is embedded in a UKI.";
-      maxUkiMiB = positiveMiB 160 "Maximum signed Unified Kernel Image size.";
-      maxEspMiB = positiveMiB 384 "EFI System Partition capacity, including two UKIs and update headroom.";
-      maxRuntimeClosureMiB = positiveMiB 768 "Maximum NAR size of the system toplevel runtime closure.";
+      # The recovery-capable runtime is 129 MiB after development-input pruning.
+      # Keep its measured allowance below the independent UKI and ESP budgets.
+      maxInitrdMiB = positiveMiB 132 "Maximum initrd artifact size before it is embedded in a UKI.";
+      # AArch64 carries an uncompressed kernel image, making its UKIs 183 MiB.
+      maxUkiMiB = positiveMiB (
+        if targetPlatform.constraints.cpu == "aarch64"
+        then 192
+        else 160
+      ) "Maximum signed Unified Kernel Image size.";
+      maxEspMiB = positiveMiB (
+        if targetPlatform.constraints.cpu == "aarch64"
+        then 416
+        else 384
+      ) "EFI System Partition capacity, including two UKIs and update headroom.";
+      # AArch64's kernel and system libraries bring the base closure to 833 MiB.
+      maxRuntimeClosureMiB = positiveMiB (
+        if targetPlatform.constraints.cpu == "aarch64"
+        then 896
+        else 768
+      ) "Maximum NAR size of the system toplevel runtime closure.";
       maxDevelopmentPayloadMiB = positiveMiB 48 "Maximum headers, static archives, and build metadata retained in the image runtime closure.";
-      maxDownloadMiB = positiveMiB 640 "Maximum directly downloadable disk-image object size.";
+      maxDownloadMiB = positiveMiB 640 "Maximum compressed raw disk-image object size.";
+      maxConvertedDownloadMiB = positiveMiB cfg.budgets.maxDownloadMiB "Maximum uncompressed qcow2, VMDK, or VHD disk-image object size.";
     };
   };
 

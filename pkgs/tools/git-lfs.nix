@@ -3,6 +3,8 @@
   mkGoPackage,
   fetchGoModules,
   fetchurl,
+  bash,
+  git,
 }: let
   version = "3.8.0";
   src = fetchurl {
@@ -21,6 +23,19 @@ in
     goOutput = "git-lfs";
     ldflags = "-s -w -X github.com/git-lfs/git-lfs/v3/config.Vendor=${version}";
     doCheck = false;
+    runtimeDeps = [bash git];
+    postInstall = ''
+      # LFS invokes Git for repository configuration and filter operations.
+      mkdir -p "$out/libexec"
+      mv "$out/bin/git-lfs" "$out/libexec/git-lfs"
+      cat > "$out/bin/git-lfs" <<EOF
+      #!${bash}/bin/bash
+      export PATH="${git}/bin\''${PATH:+:}\$PATH"
+      exec "$out/libexec/git-lfs" "\$@"
+      EOF
+      chmod +x "$out/bin/git-lfs"
+    '';
+
     checks = {
       testing,
       self,

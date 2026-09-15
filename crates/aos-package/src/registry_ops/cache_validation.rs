@@ -408,6 +408,25 @@ fn collect_cache_validation_entries_from_package(
                 store_hash: extract_hash(store_path).to_string(),
                 nar_hashes,
             });
+            if let Some(named_outputs) = entry.get("named_outputs").and_then(|v| v.as_table()) {
+                for named_store_path in named_outputs.values().filter_map(|v| v.as_str()) {
+                    let nar_hashes = store_graph
+                        .blessed_nars(extract_hash(named_store_path))
+                        .iter()
+                        .map(NarBytes::nar_hash)
+                        .collect::<Vec<_>>();
+                    if nar_hashes.is_empty() {
+                        continue;
+                    }
+                    entries.push(CacheValidationEntry {
+                        name: name.to_string(),
+                        platform: platform.to_string(),
+                        store_path: named_store_path.to_string(),
+                        store_hash: extract_hash(named_store_path).to_string(),
+                        nar_hashes,
+                    });
+                }
+            }
             if let Some(images) = entry.get("images").and_then(|v| v.as_array()) {
                 for image in images {
                     let Some(image_store_path) = image.get("store_path").and_then(|v| v.as_str())

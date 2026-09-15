@@ -93,6 +93,9 @@
           // {
             buildDeps = (args.buildDeps or []) ++ initialPath;
             system = args.system or system;
+            hostPlatform = args.hostPlatform or hostPlatform;
+            targetPlatform = args.targetPlatform or targetPlatform;
+            buildExecutionSystem = args.buildExecutionSystem or buildPlatform.system;
             shell = args.shell or shellPath;
             storeDir = args.storeDir or "/nix/store";
             defaultHardeningFlags = args.defaultHardeningFlags or [];
@@ -105,6 +108,9 @@
           // {
             buildDeps = (args.buildDeps or []) ++ initialPath;
             system = args.system or system;
+            hostPlatform = args.hostPlatform or hostPlatform;
+            targetPlatform = args.targetPlatform or targetPlatform;
+            buildExecutionSystem = args.buildExecutionSystem or buildPlatform.system;
             shell = args.shell or shellPath;
           }
         );
@@ -184,34 +190,42 @@
     gzip = scope.mkAutotoolsTool scope.manifest.gzip;
     patch = scope.mkAutotoolsTool scope.manifest.patch;
   };
-in {
-  inherit
-    (scope)
-    gcc
-    binutils
-    linuxHeaders
-    bash
-    coreutils
-    gnumake
-    sed
-    grep
-    gawk
-    findutils
-    diffutils
-    tar
-    gzip
-    patch
-    ;
-  glibc = scope.crossGlibc;
-
-  # Autotools pass-throughs from prev (x86_64 — used on the build machine)
-  m4 = prev.m4;
-  flex = prev.flex;
-  bison = prev.bison;
-  perl = prev.perl;
-  autoconf = prev.autoconf;
-  automake = prev.automake;
-  texinfo = prev.texinfo;
-  help2man = prev.help2man;
-  gperf = prev.gperf;
-}
+in
+  (import ../lib/finalize-cross.nix {
+    bootstrapPerl = true;
+    binutilsSource = ./binutils-export.nix;
+    # GCC's own runtime directory is searched independently of lib/lib64 layout.
+    gccBuildOverrides.installCxxRuntimeWithCompiler = true;
+    # Complete libc with the finished cross compiler and build-host generators.
+    libcBuildPerl = prev.perl;
+    libcBuildOverrides = {
+      crossGccStage1 = scope.crossGccStage2;
+      fixRiscvSyscallArguments = hostPlatform.constraints.cpu == "riscv64";
+    };
+    # Static NSS backends are already included in this libc.a.
+    perlNssLibraries = "";
+    # Configure runs build-host uname; CPAN must identify the target interpreter.
+    perlArchname = "${hostPlatform.constraints.cpu}-linux";
+    privateTools = scope;
+    buildTools = prev;
+    directory = ./.;
+  })
+  // {
+    # These helpers execute on the build machine while the next native tier
+    # constructs its own helpers. They are not target runtime exports.
+    buildTools = {
+      inherit
+        (prev)
+        m4
+        flex
+        bison
+        perl
+        autoconf
+        automake
+        texinfo
+        help2man
+        gperf
+        python3
+        ;
+    };
+  }

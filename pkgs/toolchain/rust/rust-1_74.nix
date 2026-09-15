@@ -60,6 +60,21 @@ in
       supportsSplitDebuginfo = false;
       description = "Rust 1.74.0 — Darwin-hosted bootstrap root built with native Rust 1.74";
     }
+  else if stdenv.isCross && stdenv.hostPlatform.isLinux
+  then
+    import ./_rust-linux-hosted.nix {
+      inherit mkDerivation version buildPackages stdenv curl openssl zlib;
+      pname = "rust-1_74";
+      src = rustcSrc;
+      changeId = 0;
+      configFileName = "config.toml";
+      nativeRust = buildPackages.rust-1_74;
+      nativeLlvm = buildPackages.llvm-17;
+      targetLlvm = llvm-17;
+      supportsChangeId = false;
+      supportsSplitDebuginfo = false;
+      description = "Rust 1.74.0 — Linux-hosted bootstrap root built with native Rust 1.74";
+    }
   else
     mkDerivation {
       pname = "rust-1_74";
@@ -85,6 +100,7 @@ in
         openssl
       ];
       runtimeDeps = [
+        bash
         curl
         zlib
         openssl
@@ -112,7 +128,7 @@ in
             # The Makefile uses $(shell git ...) to embed version metadata
             # into version.o — without .git these would fail.
             mkdir -p .fake-bin
-            printf '%s\n' '#!/bin/sh' \
+            printf '%s\n' '#!${bash}/bin/bash' \
               'case "$1" in' \
               'show)         echo "v${mrustcVersion}" ;;' \
               'symbolic-ref) echo "v${mrustcVersion}" ;;' \
@@ -247,17 +263,33 @@ in
                         if head -c4 "$f" | grep -q "ELF"; then
                           mv "$f" "$f.unwrapped"
                           cat > "$f" <<WRAP
-            #!/bin/sh
+            #!${bash}/bin/bash
             export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
             exec "$f.unwrapped" "\$@"
             WRAP
                           chmod +x "$f"
                         elif head -1 "$f" | grep -q '^#!'; then
-                          # Shell wrapper from run_rustc — fix LD_LIBRARY_PATH
-                          sed -i "s|LD_LIBRARY_PATH=\"[^\"]*\"|LD_LIBRARY_PATH=\"$LIB_PATH\"|" "$f"
+                          # The bootstrap wrappers must run from their own
+                          # closure without relying on /bin/sh or dirname.
+                          sed -i \
+                            -e "1s|^#!.*|#!${bash}/bin/bash|" \
+                            -e 's|^d=$(dirname $0)$|d='"$out"'/bin|' \
+                            -e "s|LD_LIBRARY_PATH=\"[^\"]*\"|LD_LIBRARY_PATH=\"$LIB_PATH\"|" \
+                            "$f"
                         fi
                       fi
                     done
+
+                    old_source_root="/build/mrustc-${mrustcVersion}"
+                    remapped_source_root="/rustc/${version}/mrustc"
+                    test "''${#old_source_root}" -eq "''${#remapped_source_root}"
+                    find "$out" -type f -exec sed -i \
+                      "s|$old_source_root|$remapped_source_root|g" {} +
+                    if find "$out" -type f -exec grep -a -l -m1 -F \
+                      "$old_source_root" {} + | grep -q .; then
+                      echo "Rust bootstrap output retains its mrustc source root" >&2
+                      exit 1
+                    fi
           '';
         }
       ];

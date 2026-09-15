@@ -21,6 +21,7 @@
   sourceDir = spec.sourceDir or "gcc-${version}";
   name = spec.name or "gcc-${version}";
   bootstrap = spec.bootstrap or false;
+  runtimeBinutils = spec.runtimeBinutils or prev.binutils;
 
   basePathDeps = [
     prev.coreutils
@@ -53,6 +54,20 @@
     or ''
       mkdir ${sourceDir} && (cd ${spec.src} && ${prev.tar}/bin/tar cf - .) | (cd ${sourceDir} && ${prev.tar}/bin/tar xf -)
     '';
+
+  sourceScriptFilter = spec.sourceScriptFilter or null;
+  sourceScriptFilterSetup = optionalString (sourceScriptFilter != null) ''
+    source_runtime_inputs="$TMPDIR/gcc-source-runtime-inputs"
+    mkdir "$source_runtime_inputs"
+    ${sourceScriptFilter}/bin/perl ${../../filter-runtime-scripts.pl} . "$source_runtime_inputs"
+  '';
+  sourceScriptRoot =
+    if sourceScriptFilter == null
+    then "."
+    else ''"$source_runtime_inputs"'';
+  sourceScriptFilterCleanup =
+    optionalString (sourceScriptFilter != null)
+    "\nrm -r \"$source_runtime_inputs\"";
 
   freezeAutotoolsDirs = spec.freezeAutotoolsDirs or (["."] ++ (map (dep: dep.name) inTreeDeps));
   freezeAutotoolsDirText = concat " " freezeAutotoolsDirs;
@@ -93,17 +108,24 @@
     then "bootstrap"
     else "";
   defaultBuildCommands = ''
-    make -j"$NIX_BUILD_CORES" ${bootstrapTarget} ${makeFlags} ${autotoolsVars}
+    make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" ${bootstrapTarget} ${makeFlags} ${autotoolsVars}
   '';
 
   installFlags = concat " " (spec.installFlags or []);
   defaultInstallCommands = ''
-    make install ${installFlags} ${autotoolsVars}
+    make SHELL="${prev.bash}/bin/bash" install ${installFlags} ${autotoolsVars}
   '';
 
   aliasCommands = optionalString (spec.createCcAliases or true) ''
     [ -f "$out/bin/gcc" ] && [ ! -f "$out/bin/cc" ] && ln -sf gcc "$out/bin/cc"
     [ -f "$out/bin/g++" ] && [ ! -f "$out/bin/c++" ] && ln -sf g++ "$out/bin/c++"
+  '';
+
+  runtimeLibraryLink = optionalString (spec.installRuntimeLibraryLink or false) ''
+    # RISC-V drivers search the target lib directory, while native runtime
+    # libraries are installed under the compiler prefix's lib directory.
+    mkdir -p "$out/${targetPlatform.config}"
+    ln -s ../lib "$out/${targetPlatform.config}/lib"
   '';
 
   finalMessage = spec.finalMessage or "GCC ${version} installed to $out";
@@ -129,6 +151,10 @@ in
 
         ${unpackInTreeDeps}
 
+        # Upstream helpers can be executed directly by configure or make.
+        ${sourceScriptFilterSetup}AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+          "$CONFIG_SHELL" ${../../runtime-scripts.sh} ${sourceScriptRoot}${sourceScriptFilterCleanup}
+
         ${spec.postUnpack or ""}
         ${freezeAutotoolsScript}
 
@@ -150,13 +176,31 @@ in
 
         ${aliasCommands}
 
-        ${spec.postInstall or ""}
+        ${runtimeLibraryLink}${spec.postInstall or ""}
+
+        # Pin every exported driver, including target-prefixed aliases, to
+        # the selected binutils. The final pass supplies this tier's binutils;
+        # the construction pass intentionally supplies its predecessor.
+        mkdir -p "$out/${targetPlatform.config}/bin"
+        for tool in as ld ar nm ranlib strip objcopy objdump; do
+          if [ -x "${runtimeBinutils}/bin/$tool" ]; then
+            ln -sf "${runtimeBinutils}/bin/$tool" "$out/${targetPlatform.config}/bin/$tool"
+          fi
+        done
 
         echo "${finalMessage}"
       ''
     ];
   }
   // {
+    passthru =
+      (spec.passthru or {})
+      // {
+        evidenceSources =
+          ((spec.passthru or {}).evidenceSources or [])
+          ++ [spec.src]
+          ++ map (dependency: dependency.src) inTreeDeps;
+      };
     meta =
       spec.meta
       or {

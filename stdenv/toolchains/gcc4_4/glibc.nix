@@ -9,7 +9,13 @@
   binutils,
   buildPlatform,
   hostPlatform,
+  runtimePerl ? null,
 }: let
+  perlCommand =
+    if runtimePerl == null
+    then "true"
+    else "${runtimePerl}/bin/perl";
+
   callPackage = path: overrides: let
     fn = import path;
     args = builtins.functionArgs fn;
@@ -104,6 +110,10 @@ in
         cd glibc-2.12.2
         chmod -R u+w .
 
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
+
         # glibc 2.12 still routes static x86_64 gettimeofday(2) and time(2)
         # through the fixed legacy vsyscall page. Current hardened kernels may
         # omit that mapping entirely, which makes statically linked compiler
@@ -166,17 +176,17 @@ in
         # Assembler wrapper: strip -mtune= (binutils 2.17 as doesn't support it,
         # but GCC 4.1.2 passes it through when assembling .S files)
         mkdir -p "$TMPDIR/aswrap"
-        cp ${builtins.toFile "as-wrapper" ''
-          #!/bin/sh
-          nargs=
-          for arg; do
-            case "$arg" in
-              -mtune=*) ;;
-              *) nargs="$nargs $arg" ;;
-            esac
-          done
-          exec REAL_AS $nargs
-        ''} "$TMPDIR/aswrap/as"
+        cat > "$TMPDIR/aswrap/as" <<'AOS_TOOL_WRAPPER'
+        #!${prev.bash}/bin/bash
+        nargs=
+        for arg; do
+          case "$arg" in
+            -mtune=*) ;;
+            *) nargs="$nargs $arg" ;;
+          esac
+        done
+        exec REAL_AS $nargs
+        AOS_TOOL_WRAPPER
         ${prev.sed}/bin/sed -i "s|REAL_AS|${binutils}/bin/as|g" "$TMPDIR/aswrap/as"
         chmod +x "$TMPDIR/aswrap/as"
 
@@ -203,13 +213,14 @@ in
           if isI686
           then " -B$TMPDIR/gcclib/"
           else ""
-        }" \
+        } -B${binutils}/bin/" \
         AR="${binutils}/bin/ar" \
         RANLIB="${binutils}/bin/ranlib" \
-        CFLAGS="-O2 -isystem ${prev.glibc}/include" \
+        CFLAGS="-O2" \
         CPPFLAGS="-isystem $TMPDIR/merged-headers" \
-        "$TMPDIR/glibc-2.12.2/configure" \
+        "${prev.bash}/bin/bash" "$TMPDIR/glibc-2.12.2/configure" \
           --prefix="$out" \
+          --with-binutils=${binutils}/bin \
           --build=${hostPlatform.config} \
           --host=${hostPlatform.config} \
           --with-headers="$TMPDIR/merged-headers" \
@@ -235,16 +246,15 @@ in
         # res_hconf.o, causing a multiple-definition error.  --disable-nscd
         # doesn't prevent the build in glibc 2.12.  Tolerate the failure —
         # core libraries (libc.a, libpthread.a, etc.) are already built.
-        make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true || true
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" PERL=${perlCommand} AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true || true
         test -f libc.a || { echo "FATAL: libc.a not built"; exit 1; }
 
         # -k: keep going past errors.  The manual subdirectory's install
         # fails because MAKEINFO=true generates no .info output.  Without
         # -k, make stops there and never installs nptl (libpthread), nss,
         # resolv, and other late subdirectories.
-        # PERL=true: prevents "no libm-err-tab.pl" error in manual build
-        # (configure set PERL=no since Perl isn't available).
-        make -k install PERL=true AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true || true
+        # Public libc supplies Perl for generated data and installed utilities.
+        make SHELL="${prev.bash}/bin/bash" -k install PERL=${perlCommand} AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true || true
         test -f "$out/lib/libc.a" || { echo "FATAL: libc.a not installed"; exit 1; }
         test -f "$out/include/stdio.h" || { echo "FATAL: headers not installed"; exit 1; }
 

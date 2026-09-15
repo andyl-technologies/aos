@@ -16,7 +16,7 @@
   probeProgram =
     if isDarwinCross
     then "${buildPackages.crucible-fleet-store}/bin/crucible-fleet-store"
-    else ''"$out/bin/crucible-fleet-store"'';
+    else ''"$TMPDIR/crucible-fleet-store-probe-bin"'';
 in
   mkCargoPackage {
     pname = "crucible-fleet-store";
@@ -39,6 +39,11 @@ in
 
     postInstall = ''
       test -x "$out/bin/crucible-fleet-store"
+      ${lib.optionalString (!isDarwinCross) ''
+        # Keep the inode rewritten by fixup separate from the executable used
+        # by the multi-threaded probe. The installed bytes are still tested.
+        cp "$out/bin/crucible-fleet-store" "$TMPDIR/crucible-fleet-store-probe-bin"
+      ''}
 
       probe_root="$TMPDIR/crucible-fleet-store-probe"
       ${probeProgram} probe "$probe_root" > "$TMPDIR/crucible-fleet-store.probe"

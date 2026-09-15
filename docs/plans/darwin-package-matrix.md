@@ -16,6 +16,11 @@ Linux-native test or bootstrap artifacts. `linux-only` roots implement Linux
 kernel, guest, service-manager, security or device interfaces and are never
 published under a Darwin platform key.
 
+The `blockers` on an eligible entry describe unfinished Darwin cross-build
+work. They apply only to Darwin publication cells. Linux build reproducibility
+and public package behavior are enforced by the release build and qualification
+contracts instead of being duplicated as package-inventory blockers.
+
 The selector filters publication roots only. It must not filter dependencies
 from a derivation. Cross builds use separate package sets so native code
 generators and build tools come from the Linux build package set while headers,

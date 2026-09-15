@@ -46,6 +46,20 @@
   # make the registry entry register as an upgrade target.
   aos.system.version = "test-2";
 
+  aos.image.budgets = {
+    # The Python HTTP fixture occupies 807 MiB on x86_64 and 899 MiB on AArch64.
+    maxRuntimeClosureMiB =
+      if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
+      then 928
+      else 832;
+
+    # The AArch64 VHD reaches 813 MiB with the generation-two fixture payload.
+    maxConvertedDownloadMiB =
+      lib.mkIf
+      (pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64")
+      832;
+  };
+
   # symlink mode (the default) → baked into the system EROFS metadata
   # image, not /var/etc. Surfaces at /etc/aos/upgrade-test/marker.conf
   # only on this generation, so its appearance after the upgrade (and

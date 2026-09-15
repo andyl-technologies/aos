@@ -27,8 +27,8 @@ in
 
         # Dummy lex/flex for configure checks
         mkdir -p "$TMPDIR/fakebin"
-        printf '#!/bin/sh\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/lex"
-        printf '#!/bin/sh\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/flex"
+        printf '#!${prev.bash}/bin/bash\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/lex"
+        printf '#!${prev.bash}/bin/bash\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/flex"
         chmod +x "$TMPDIR/fakebin/lex" "$TMPDIR/fakebin/flex"
         export PATH="$TMPDIR/fakebin:$PATH"
 
@@ -37,6 +37,10 @@ in
         # 'void *malloc(size_t)' from stdlib.h. Remove the K&R declarations.
         cp -r ${src} "$TMPDIR/src"
         chmod -R u+w "$TMPDIR/src"
+
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} "$TMPDIR/src"
         sed -i '/^char \*malloc ();$/d' "$TMPDIR/src/libiberty/regex.c"
         sed -i '/^char \*realloc ();$/d' "$TMPDIR/src/libiberty/regex.c"
 
@@ -67,7 +71,7 @@ in
         # Wrapper gcc that always links statically against our glibc.
         # Needed because libtool and bfd/doc sub-Makefiles drop LDFLAGS.
         mkdir -p "$TMPDIR/cc-wrapper"
-        printf '%s\n' '#!/bin/sh' \
+        printf '%s\n' '#!${prev.bash}/bin/bash' \
           "exec ${prev.gcc}/bin/gcc -L$TMPDIR/static-lib -static \"\$@\"" \
           > "$TMPDIR/cc-wrapper/gcc"
         chmod +x "$TMPDIR/cc-wrapper/gcc"
@@ -76,7 +80,7 @@ in
         CC="$TMPDIR/cc-wrapper/gcc" \
         CFLAGS="-O2 -I${prev.glibc}/include" \
         LDFLAGS="-L$TMPDIR/static-lib -static" \
-        "$TMPDIR/src/configure" \
+        "${prev.bash}/bin/bash" "$TMPDIR/src/configure" \
           --prefix="$out" \
           --build=${buildPlatform.config} \
           --host=${buildPlatform.config} \
@@ -85,8 +89,8 @@ in
           --disable-gdb --disable-gdbserver --disable-libdecnumber --disable-readline --disable-sim \
           --with-sysroot=/
 
-        make -j"$NIX_BUILD_CORES"
-        make install
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES"
+        make SHELL="${prev.bash}/bin/bash" install
 
         echo "Cross binutils 2.15 (${buildPlatform.config} → ${hostPlatform.config}) installed to $out"
       ''

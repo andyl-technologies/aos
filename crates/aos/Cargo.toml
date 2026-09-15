@@ -87,3 +87,4 @@ aos-registry-surface = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 uuid = { workspace = true }
+zstd = { workspace = true }

@@ -21,11 +21,12 @@
   aos.image.budgets = {
     maxRootMiB = 640;
     maxVerityMiB = 16;
-    maxInitrdMiB = 128;
-    maxUkiMiB = 160;
-    maxEspMiB = 384;
-    maxRuntimeClosureMiB = 768;
+    maxInitrdMiB = 132;
     maxDownloadMiB = 768;
+    # The AArch64 kernel leaves converted VHD objects above the raw limit.
+    maxConvertedDownloadMiB =
+      lib.mkIf
+      (pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64") (lib.mkDefault 800);
   };
 
   # The service modules retain backwards-compatible enabled defaults. Keep

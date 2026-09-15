@@ -32,6 +32,10 @@ in
         cd patchelf-0.18.0
         chmod -R u+w .
 
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
+
         export LIBRARY_PATH="${glibc}/lib"
         # No -isystem ${glibc.dev}/include here: the wrapped gcc already provides
         # glibc headers via -idirafter (see toolchains/gcc16/default.nix:50).
@@ -43,12 +47,12 @@ in
         CFLAGS="-O2" \
         CXXFLAGS="-O2" \
         LDFLAGS="-L${glibc.static}/lib -L${glibc}/lib -static -no-pie" \
-        ./configure \
+        "${prev.bash}/bin/bash" ./configure \
           --prefix="$out" \
           --build=${buildPlatform.config} --host=${hostPlatform.config}
 
-        make -j"$NIX_BUILD_CORES"
-        make install
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES"
+        make SHELL="${prev.bash}/bin/bash" install
 
         echo "patchelf 0.18.0 installed to $out"
       ''

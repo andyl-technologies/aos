@@ -57,6 +57,10 @@ in
         (cd ${mpcSrc} && tar cf - .) | (cd "$TMPDIR/gcc-4.8.5/mpc" && tar xf -)
         chmod -R u+w "$TMPDIR/gcc-4.8.5/mpc"
 
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} "$TMPDIR/gcc-4.8.5"
+
         SRC="$TMPDIR/gcc-4.8.5"
         cd "$SRC"
 
@@ -84,8 +88,10 @@ in
         mkdir -p "$TMPDIR/build"
         cd "$TMPDIR/build"
 
-        CC="${prev.gcc}/bin/gcc" \
-        CXX="${prev.gcc}/bin/g++" \
+        ${import ../lib/static-build-compiler.nix {tools = prev;}}
+
+        CC="$CC_FOR_BUILD" \
+        CXX="$CXX_FOR_BUILD" \
         CFLAGS="-O2 -isystem ${prev.glibc}/include" \
         CXXFLAGS="-O2 -isystem ${prev.glibc}/include" \
         LDFLAGS="-L${prev.glibc}/lib -static" \
@@ -104,7 +110,7 @@ in
 
         # Patch SYSTEM_HEADER_DIR to avoid /usr/include
         mkdir -p "$TMPDIR/empty-headers"
-        make configure-gcc
+        make SHELL="${prev.bash}/bin/bash" configure-gcc
         ${prev.sed}/bin/sed -i \
           "s|^SYSTEM_HEADER_DIR.*|SYSTEM_HEADER_DIR = $TMPDIR/empty-headers|" \
           gcc/Makefile
@@ -117,10 +123,10 @@ in
             "$out/${hostPlatform.config}/bin/$tool" 2>/dev/null || true
         done
 
-        make -j"$NIX_BUILD_CORES" all-gcc \
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" all-gcc \
           BOOT_CFLAGS="-O2"
 
-        make install-gcc
+        make SHELL="${prev.bash}/bin/bash" install-gcc
 
         # GCC's install for cross builds doesn't always create $target-gcc
         test -f "$out/bin/gcc" && test ! -f "$out/bin/${hostPlatform.config}-gcc" && \

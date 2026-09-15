@@ -10,12 +10,16 @@
   swig,
   python3,
   linux-headers,
+  lib,
+  stdenv,
 }: let
   version = "0.9.5";
 in
   mkDerivation {
     pname = "libcap-ng";
     inherit version;
+    # Preserve the bindings separately from the library used by boot tools.
+    outputs = ["out" "python"];
     src = fetchurl {
       urls = ["https://github.com/stevegrubb/libcap-ng/archive/refs/tags/v${version}.tar.gz"];
       hash = "sha256-orQhH1myMdYHxh6ioT6eyzj0Rv52m0ThLak51a9tl4o=";
@@ -43,17 +47,23 @@ in
       }
       {
         name = "configure";
-        script = ''
-          export ACLOCAL_PATH="${libtool}/share/aclocal:${pkg-config}/share/aclocal"
-          autoreconf -fiv
-          ./configure $configureFlags \
-            --prefix="$out" \
-            --with-python3 \
-            PYTHON=${python3}/bin/python3
-          sed -i \
-            's|/usr/include/linux/capability.h|${linux-headers}/include/linux/capability.h|g' \
-            bindings/python3/Makefile
-        '';
+        script =
+          lib.optionalString stdenv.isCross ''
+            # cap-ng uses kernel syscall numbers to find the current thread.
+            # Build-dependency splicing otherwise supplies native headers.
+            export C_INCLUDE_PATH="${linux-headers}/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
+          ''
+          + ''
+            export ACLOCAL_PATH="${libtool}/share/aclocal:${pkg-config}/share/aclocal"
+            autoreconf -fiv
+            ./configure $configureFlags \
+              --prefix="$out" \
+              --with-python3 \
+              PYTHON=${python3}/bin/python3
+            sed -i \
+              's|/usr/include/linux/capability.h|${linux-headers}/include/linux/capability.h|g' \
+              bindings/python3/Makefile
+          '';
       }
       {
         name = "build";
@@ -61,22 +71,43 @@ in
       }
       {
         name = "check";
-        script = ''
-          make -C src check
-          make -C utils check
-          (
-            cd bindings/python3/test
-            PYTHONPATH=..:../.libs \
-              LD_LIBRARY_PATH="$PWD/../../../src/.libs" \
-              ${python3}/bin/python3 capng-test.py
-          )
-        '';
+        script =
+          if stdenv.isCross
+          then ''
+            # Automake still builds every source test through check_PROGRAMS.
+            # Run the tests whose assertions are independent of the emulated
+            # process's kernel capability state; qemu-user cannot faithfully
+            # expose capget/capset state for the remaining three tests.
+            make -C src/test check TESTS="file_caps_test securebits_test"
+            make -C utils check
+            (
+              cd bindings/python3/test
+              PYTHONPATH=..:../.libs \
+                LD_LIBRARY_PATH="$PWD/../../../src/.libs" \
+                ${python3}/bin/python3 capng-test.py
+            )
+          ''
+          else ''
+            make -C src check
+            make -C utils check
+            (
+              cd bindings/python3/test
+              PYTHONPATH=..:../.libs \
+                LD_LIBRARY_PATH="$PWD/../../../src/.libs" \
+                ${python3}/bin/python3 capng-test.py
+            )
+          '';
       }
       {
         name = "install";
         script = ''
           make install
-          python_path=$(find "$out/lib" -type d -name site-packages -print -quit)
+          mkdir -p "$python/lib"
+          for bindings in "$out"/lib/python*; do
+            test -d "$bindings"
+            mv "$bindings" "$python/lib/"
+          done
+          python_path=$(find "$python/lib" -type d -name site-packages -print -quit)
           test -n "$python_path"
           PYTHONPATH="$python_path" ${python3}/bin/python3 -c 'import capng'
         '';

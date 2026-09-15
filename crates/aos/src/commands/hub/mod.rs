@@ -77,15 +77,6 @@ mod webhook;
 /// Returns an error if the hub URL is invalid, the hub is unreachable, or an
 /// RPC call fails.
 pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
-    if !matches!(
-        command,
-        HubCmd::Login { .. }
-            | HubCmd::Logout { .. }
-            | HubCmd::Topology { .. }
-            | HubCmd::Delivery { .. }
-    ) {
-        crate::commands::hub_auth::prepare_active_profile().await?;
-    }
     match command {
         HubCmd::Login {
             hub,
@@ -112,7 +103,7 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
             Ok(())
         }
         HubCmd::Whoami { access } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read(
                 printer,
                 &client,

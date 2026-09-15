@@ -1214,6 +1214,11 @@ fn collect_store_paths_from_package(value: &TomlValue, inventory: &mut CacheRoot
             if let Some(path) = platform.get("store_path").and_then(TomlValue::as_str) {
                 inventory.roots.insert(path.to_string());
             }
+            if let Some(outputs) = platform.get("named_outputs").and_then(TomlValue::as_table) {
+                for path in outputs.values().filter_map(TomlValue::as_str) {
+                    inventory.roots.insert(path.to_string());
+                }
+            }
             if let Some(path) = platform.get("source_drv").and_then(TomlValue::as_str)
                 && !path.is_empty()
             {
@@ -1676,6 +1681,10 @@ source_drv = "/nix/store/src111-kernel-source"
 source_nar_hash = "sha256:source"
 references = []
 
+[versions.platforms.x86_64-linux.named_outputs]
+dev = "/nix/store/dev111-kernel"
+tools = "/nix/store/tools111-kernel"
+
 [[versions.platforms.x86_64-linux.images]]
 format = "qcow2"
 store_path = "/nix/store/img111-system-image"
@@ -1721,6 +1730,7 @@ semantic_schema_sha256 = "sha256:semantic"
             inventory.roots.into_iter().collect::<Vec<_>>(),
             vec![
                 "/nix/store/cfg111-kernel-config".to_string(),
+                "/nix/store/dev111-kernel".to_string(),
                 "/nix/store/docs111-kernel-docs.json".to_string(),
                 "/nix/store/expose111-kernel-expose".to_string(),
                 "/nix/store/img111-system-image".to_string(),
@@ -1729,6 +1739,7 @@ semantic_schema_sha256 = "sha256:semantic"
                 "/nix/store/payload111-system-update-payload".to_string(),
                 "/nix/store/root111-kernel".to_string(),
                 "/nix/store/src111-kernel-source".to_string(),
+                "/nix/store/tools111-kernel".to_string(),
             ]
         );
         assert_eq!(

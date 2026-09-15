@@ -85,6 +85,10 @@ in
               --with-libgpg-error-prefix=${libgpg-error}
           ''
           else ''
+            # Recent libgpg-error releases provide gpgrt-config instead of
+            # gpg-error-config; runtime dependencies are not on the build PATH.
+            export GPGRT_CONFIG=${libgpg-error}/bin/gpgrt-config
+
             ./configure \
               $configureFlags \
               --prefix=$out \

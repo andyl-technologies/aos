@@ -34,10 +34,10 @@ in rec {
   inherit common;
   inherit mkReferenceGraph;
 
-  layerAbi = "aos.container.layer/v1";
+  layerAbi = "aos.container.layer/v2";
   archivePolicy = {
     tar = "GNU tar 1.35";
-    gzip = "gzip 1.13";
+    gzip = "gzip 1.14";
     timestamp = 1;
     owner = 0;
     group = 0;
