@@ -775,7 +775,7 @@ mod tests {
     fn package_request() -> Result<QualificationExecutorRequestV1> {
         let case = package_case();
         Ok(QualificationExecutorRequestV1 {
-            schema_version: "aos.release.qualification-executor-request/v2".into(),
+            schema_version: aos_release::evidence::QUALIFICATION_EXECUTOR_REQUEST_V1.into(),
             qualification_case: Some(case.clone()),
             registry: "andyl/testing".into(),
             release_id: "release-2026.9.0".into(),
