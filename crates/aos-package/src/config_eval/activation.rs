@@ -1319,10 +1319,9 @@ fn config_generation_record(
         .filter_map(|module| module.get("package").and_then(Value::as_str))
         .map(str::to_string)
         .collect::<Vec<_>>();
-    let config_module_closure = config_module_paths
-        .first()
-        .cloned()
-        .unwrap_or_else(|| crate::graph_compile::reproject::hash_cjson(package_modules));
+    let config_module_closure = config_module_paths.first().cloned().unwrap_or_else(|| {
+        crate::graph_compile::reproject::hash_cjson(&Value::Array(package_modules.clone()))
+    });
     Ok(ConfigGeneration {
         number,
         created_at: crate::metadata::now_rfc3339(),
