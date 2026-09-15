@@ -117,6 +117,8 @@ in
     # libgit2 still links zlib for compressed Git objects.
     runtimeDeps = [openssl sqlite zlib];
 
+    abilities = ./_aos-hub/module.nix;
+
     # The workspace test suite is exercised by the `aos` package's
     # `cargoTestFlags = "--workspace"`; this derivation only needs to compile
     # and install the hub binary, so it skips the (redundant) test run.
