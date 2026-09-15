@@ -145,15 +145,14 @@ pub fn checked_effect_plan() -> CheckedEffectPlan {
         .expect("static test plan must pass production validation")
 }
 
-/// Builds a checked start operation against the exact built-in systemd contract.
+/// Builds a checked start operation against a test-only lifecycle contract.
 ///
-/// The fixture uses the production built-in interface and provider descriptor,
-/// includes observation-based reconciliation, and requires the protected
-/// `active` result port on successful lifecycle completion.
+/// The fixture includes observation-based reconciliation and a terminal
+/// implementation without introducing a production interface catalog.
 ///
 /// # Panics
 ///
-/// Panics only when the built-in contract and this static effect fixture stop
+/// Panics only when the test contract and this static effect fixture stop
 /// satisfying the production validator.
 #[must_use]
 pub fn checked_systemd_manager_effect_plan() -> CheckedEffectPlan {
@@ -162,11 +161,11 @@ pub fn checked_systemd_manager_effect_plan() -> CheckedEffectPlan {
         .expect("built-in systemd fixture must pass production validation")
 }
 
-/// Builds mutable inputs for an exact host-local systemd manager plan.
+/// Builds mutable inputs for an exact host-local lifecycle-manager plan.
 ///
 /// # Panics
 ///
-/// Panics only when a built-in identity or static fixture value cannot be constructed.
+/// Panics only when a fixture identity or static value cannot be constructed.
 #[must_use]
 pub fn systemd_manager_plan_fixture() -> PlanFixture {
     let mut fixture = plan_fixture();
@@ -174,30 +173,21 @@ pub fn systemd_manager_plan_fixture() -> PlanFixture {
         .implementation
         .artifact
         .clone();
-    fixture.interfaces = vec![
-        builtin::systemd_manager_interface().expect("built-in systemd interface must construct"),
-    ];
+    fixture.interfaces = vec![test_manager_interface()];
     fixture.refresh_interface();
 
-    let provider = builtin::systemd_manager_provider(artifact.clone())
-        .expect("built-in systemd provider must construct");
+    let provider = test_manager_provider(artifact.clone());
     let implementation = ProviderImplementationReference {
         descriptor: provider
             .descriptor_digest()
             .expect("built-in systemd provider must have a digest"),
         artifact,
-        handler: Some(
-            builtin::systemd_manager_handler_key()
-                .expect("built-in systemd handler key must construct"),
-        ),
+        handler: Some(test_manager_handler_key()),
     };
     fixture.binding_inputs.environment.providers[0].implementation = implementation.clone();
     fixture.binding_plan.bindings[0].implementation = implementation;
 
-    let guarantees = vec![
-        builtin::local_systemd_manager_guarantee()
-            .expect("built-in local-manager guarantee must construct"),
-    ];
+    let guarantees = vec![test_manager_guarantee()];
     fixture.binding_inputs.environment.providers[0].guarantees = guarantees.clone();
     fixture.binding_inputs.desired_state.child_requests[0].guarantees = guarantees.clone();
     fixture.binding_plan.requests[0].guarantees = guarantees.clone();
@@ -1075,6 +1065,120 @@ fn interface_document() -> InterfaceDocument {
             },
             guarantees: Vec::new(),
         },
+    }
+}
+
+/// Builds a neutral lifecycle interface for validator tests.
+#[must_use]
+pub fn test_lifecycle_interface() -> InterfaceDocument {
+    let mut document = interface_document();
+    let interface_name = InterfaceName::new("test.lifecycle").expect("valid test interface");
+    let mut observe = document
+        .interface
+        .methods
+        .remove(&key("observe"))
+        .expect("observe method");
+    observe.target_resource = interface_name.clone();
+
+    let mut start = observe.clone();
+    start.semantics = MethodSemantics::ordinary(AccessMode::ExclusiveWrite);
+    start.permitted_operations = vec![key("start")];
+
+    let mut stop = start.clone();
+    stop.semantics = MethodSemantics::provider_stop();
+    stop.permitted_operations = vec![key("stop")];
+
+    document.interface.name = interface_name;
+    document.interface.methods = BTreeMap::from([
+        (key("observe"), observe),
+        (key("start"), start),
+        (key("stop"), stop),
+    ]);
+    document.interface.lifecycle.releases_ephemeral_on_disable = true;
+    document.interface.lifecycle.retains_persistent_by_default = false;
+    document
+}
+
+/// Builds the exact guarantee used by neutral manager fixtures.
+#[must_use]
+pub fn test_manager_guarantee() -> GuaranteeKey {
+    GuaranteeDeclaration {
+        name: InterfaceName::new("test.manager-guarantee").expect("valid guarantee name"),
+        version: NonZeroU32::new(1).expect("positive guarantee version"),
+        semantics: "the selected fixture provider controls the target lifecycle".to_string(),
+        description: "Supplies lifecycle control in tests.".to_string(),
+    }
+    .key()
+    .expect("test guarantee must have a canonical key")
+}
+
+/// Builds a lifecycle-manager interface used only by checked-plan fixtures.
+#[must_use]
+pub fn test_manager_interface() -> InterfaceDocument {
+    let mut document = test_lifecycle_interface();
+    let interface_name = InterfaceName::new("test.manager").expect("valid test interface");
+    let request = ValueSchema::Record {
+        fields: BTreeMap::from([(
+            key("unit"),
+            ValueSchema::String {
+                max_length: 256,
+                syntax: None,
+            },
+        )]),
+        optional_fields: Vec::new(),
+    };
+
+    document.interface.name = interface_name.clone();
+    document.interface.request = request.clone();
+    document.interface.guarantees = vec![test_manager_guarantee()];
+    document.interface.aggregation.controller_group = key("manager");
+    document.interface.methods.remove(&key("stop"));
+    for method in document.interface.methods.values_mut() {
+        method.target_resource = interface_name.clone();
+        method.parameters = request.clone();
+    }
+    document.interface.lifecycle.releases_ephemeral_on_disable = false;
+    document.interface.lifecycle.retains_persistent_by_default = true;
+    document
+}
+
+/// Returns the test-only terminal handler key.
+#[must_use]
+pub fn test_manager_handler_key() -> LocalKey {
+    key("test-manager-handler")
+}
+
+/// Builds a test-only terminal handler descriptor.
+#[must_use]
+pub fn test_manager_handler(artifact: ArtifactReference) -> HandlerDescriptor {
+    HandlerDescriptor {
+        artifact,
+        entry_point: "libexec/test-manager-handler".to_string(),
+        arguments: test_manager_interface().interface.request,
+        result: ValueSchema::Boolean,
+    }
+}
+
+/// Builds a test-only terminal provider descriptor.
+#[must_use]
+pub fn test_manager_provider(artifact: ArtifactReference) -> ProviderImplementation {
+    let interface = test_manager_interface()
+        .interface_key()
+        .expect("test manager interface must digest");
+    let handler = test_manager_handler_key();
+
+    ProviderImplementation {
+        name: handler.clone(),
+        description: "Controls the neutral test lifecycle resource.".to_string(),
+        interface: interface.clone(),
+        guarantees: Vec::new(),
+        artifact,
+        requirements: Vec::new(),
+        desired_schema: None,
+        provider_module: None,
+        handler: Some(handler),
+        owns_resource_kinds: vec![interface.name],
+        state_format: None,
     }
 }
 

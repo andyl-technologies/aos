@@ -1564,17 +1564,14 @@ fn lifecycle_upgrade_fixture(payload_only: bool) -> LifecycleUpgradeFixture {
         .expect("systemd interface catalog must validate");
     let source_binding = &source.binding_plan().bindings()[0];
     let terminal_artifact = source_binding.implementation.artifact.clone();
-    let terminal_provider = builtin::systemd_manager_provider(terminal_artifact.clone())
-        .expect("systemd provider contract must construct");
+    let terminal_provider =
+        aos_ability_validate::test_support::test_manager_provider(terminal_artifact.clone());
     let terminal_reference = ProviderImplementationReference {
         descriptor: terminal_provider
             .descriptor_digest()
             .expect("systemd provider descriptor must digest"),
         artifact: terminal_artifact.clone(),
-        handler: Some(
-            builtin::systemd_manager_handler_key()
-                .expect("systemd handler identity must construct"),
-        ),
+        handler: Some(aos_ability_validate::test_support::test_manager_handler_key()),
     };
     let terminal_package =
         terminal_package(&interface, terminal_provider, terminal_artifact.clone());
@@ -1846,10 +1843,8 @@ fn terminal_package(
     let descriptor = provider
         .descriptor_digest()
         .expect("terminal provider must digest");
-    let handler_key =
-        builtin::systemd_manager_handler_key().expect("systemd handler identity must construct");
-    let handler = builtin::systemd_manager_handler(artifact.clone())
-        .expect("systemd handler contract must construct");
+    let handler_key = aos_ability_validate::test_support::test_manager_handler_key();
+    let handler = aos_ability_validate::test_support::test_manager_handler(artifact.clone());
     PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
         required_features: Vec::new(),
@@ -1976,10 +1971,7 @@ fn lifecycle_planning_snapshot(
     operator_enabled: bool,
 ) -> VerifiedPlanningSnapshot {
     let interface = pure_package.implementation.providers[0].interface.clone();
-    let stage_guarantees = vec![
-        builtin::local_systemd_manager_guarantee()
-            .expect("systemd host-stage guarantee must construct"),
-    ];
+    let stage_guarantees = vec![aos_ability_validate::test_support::test_manager_guarantee()];
     let manager_alias = key("b-manager");
     if operator_enabled {
         let implementation = &mut pure_package.implementation.providers[0];
@@ -2015,10 +2007,7 @@ fn lifecycle_planning_snapshot(
             .descriptor_digest()
             .expect("terminal implementation must digest"),
         artifact: terminal_implementation.artifact.clone(),
-        handler: Some(
-            builtin::systemd_manager_handler_key()
-                .expect("systemd handler identity must construct"),
-        ),
+        handler: Some(aos_ability_validate::test_support::test_manager_handler_key()),
     };
     let service_request = BindingRequest {
         package: aos_ability_model::LocalKey::new("test-package")

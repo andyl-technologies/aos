@@ -542,6 +542,13 @@ pub fn lower_ab_rollout_fragment(
     };
     let merge_key = key("terminal")?;
     let state_output = LocalKey::new("rollout-state")?;
+    let state_descriptor = interface
+        .interface
+        .methods
+        .get(&LocalKey::new("hold")?)
+        .and_then(|method| method.outputs.get(&state_output))
+        .ok_or_else(|| anyhow::anyhow!("rollout hold method has no rollout-state output"))?
+        .clone();
     let merge = MergeNode {
         key: merge_key.clone(),
         decision: decision_key.clone(),
@@ -549,13 +556,7 @@ pub fn lower_ab_rollout_fragment(
         outputs: std::collections::BTreeMap::from([(
             state_output.clone(),
             MergedOutput {
-                descriptor: aos_ability_model::OutputDescriptor {
-                    description: "Describes this rollout output.".to_string(),
-                    schema: aos_ability_model::builtin::ab_image_rollout_observation_schema()?,
-                    phase: aos_ability_model::ValuePhase::Observation,
-                    visibility: aos_ability_model::ValueVisibility::Protected,
-                    lifetime: aos_ability_model::ResourceLifetime::Persistent,
-                },
+                descriptor: state_descriptor,
                 alternatives: std::collections::BTreeMap::from([
                     (
                         LocalKey::new("fallback")?,
