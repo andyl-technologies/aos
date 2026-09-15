@@ -42,7 +42,7 @@
       packageModules = [
         {
           name = "postgresql";
-          module = pkgs.postgresql.abilities.module;
+          module = pkgs.postgresql.abilities._module;
         }
       ];
     };
@@ -84,10 +84,6 @@
   standbyRequests = builtins.attrNames standbyAbilities.requests;
   mainStorage = standaloneAbilities.requests."postgresql:main-storage".parameters.mounts;
   serverSource = standbyAbilities.requests."postgresql:server-configuration".parameters.source;
-  qualifiedResultOf = request: output: {
-    _type = "aos-request-output-reference";
-    inherit request output;
-  };
   missingBootstrap = evaluate {enable = true;};
   missingStandby = evaluate {
     enable = true;
@@ -123,11 +119,10 @@ in
   assert builtins.elem "postgresql:credential-tls-ca" standbyRequests;
   assert serverSource.kind == "interpolated-text";
   assert builtins.any (fragment: fragment.kind == "execution-path") serverSource.fragments;
-  assert builtins.map (mount: mount.source) mainStorage
-  == [
-    (qualifiedResultOf "postgresql:state-storage" "planned-path")
-    (qualifiedResultOf "postgresql:runtime-storage" "planned-path")
-  ];
+  assert builtins.map (mount: mount.source.request) mainStorage
+  == ["postgresql:state-storage" "postgresql:runtime-storage"];
+  assert builtins.all (mount: mount.source._type == "aos-request-output-reference") mainStorage;
+  assert builtins.all (mount: mount.source.output == "planned-path") mainStorage;
   assert !(lib.hasInfix "POSTGRESQL_CONFIG_GENERATION" (builtins.toJSON standaloneAbilities.requests));
   assert !(lib.hasInfix "/etc/postgresql" (builtins.toJSON standaloneAbilities.requests));
   assert !(lib.hasInfix "/run/credentials" (builtins.toJSON standbyAbilities.requests)); true
