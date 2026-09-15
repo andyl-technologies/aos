@@ -12,33 +12,52 @@
 }: let
   cfg = config.nginx;
 
-  inherit (lib.serviceTypes) positiveInt nonNegativeInt;
   inherit (lib.abilities) pathWithin resultOf;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
   abilityTypes = lib.abilities.types;
-  size = lib.types.strMatching "[0-9]+[kKmMgG]?";
-  duration = lib.types.strMatching "[0-9]+(ms|s|m|h|d)";
-  token = lib.types.strMatching "[^{};[:space:]]+";
-  serverName = lib.types.strMatching "[^{};[:space:]]+";
-  upstreamAddress = lib.types.strMatching "[^{};[:space:]]+";
-  confinedDirectives = lib.types.strMatching "[^{}]*";
-  documentRoot = abilityTypes.relativePath;
-  secretRef = lib.types.submodule ({...}: {
-    config._module.strict = true;
-    options = {
-      resource = lib.mkOption {
-        type = abilityTypes.optional (abilityTypes.deferredResult abilityTypes.resourceReference);
-        default = null;
-        description = "Typed source resource for this delivered credential.";
-      };
-      encrypted = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Whether the credential requires encrypted delivery.";
-      };
+  positiveInt = abilityTypes.integer {
+    minimum = 1;
+    maximum = abilityTypes.limits.maxSafeInteger;
+  };
+  nonNegativeInt = abilityTypes.integer {
+    minimum = 0;
+    maximum = abilityTypes.limits.maxSafeInteger;
+  };
+  httpStatus = abilityTypes.integer {
+    minimum = 100;
+    maximum = 599;
+  };
+  port = abilityTypes.integer {
+    minimum = 1;
+    maximum = 65535;
+  };
+  boundedText = maximum:
+    abilityTypes.string {
+      maxLength = maximum;
+      syntax = null;
     };
-  });
+  checkedString = name: description: pattern: maximum:
+    abilityTypes.refined {
+      inherit name description;
+      type = boundedText maximum;
+      predicate = value: builtins.match pattern value != null;
+    };
+  size = checkedString "nginx size" "an nginx byte size" "[0-9]+[kKmMgG]?" 64;
+  duration = checkedString "nginx duration" "an nginx duration" "[0-9]+(ms|s|m|h|d)" 64;
+  token = checkedString "nginx token" "a whitespace-free nginx token" "[^{};[:space:]]+" 4096;
+  serverName = checkedString "nginx server name" "a whitespace-free nginx server name" "[^{};[:space:]]+" 253;
+  upstreamAddress = checkedString "nginx upstream address" "a whitespace-free nginx upstream address" "[^{};[:space:]]+" 4096;
+  upstreamUri = checkedString "nginx upstream URI" "an absolute upstream URI" "[A-Za-z][A-Za-z0-9+.-]*://[^;[:space:]]+" 4096;
+  confinedDirectives = checkedString "confined nginx directives" "nginx directives without braces" "[^{}]*" 1048576;
+  documentRoot = abilityTypes.relativePath;
+  secretRef = abilityTypes.record {
+    fields = {
+      resource = abilityTypes.optional (abilityTypes.deferredResult abilityTypes.resourceReference);
+      encrypted = abilityTypes.boolean;
+    };
+    optional = ["resource" "encrypted"];
+  };
 
   quote = value: ''"${builtins.replaceStrings ["\\" "\"" "\n" "\r"] ["\\\\" "\\\"" "\\n" ""] value}"'';
   indent = prefix: text:
@@ -72,170 +91,168 @@
       inherit relativePath;
     };
 
-  upstreamServerType = lib.types.submodule ({...}: {
-    config._module.strict = true;
-    options = {
-      address = lib.mkOption {
-        type = upstreamAddress;
-        description = "Host, address, or unix socket accepted by nginx's upstream server directive.";
-      };
-      weight = lib.mkOption {
-        type = lib.types.nullOr positiveInt;
-        default = null;
-        description = "Relative upstream selection weight.";
-      };
-      maxFails = lib.mkOption {
-        type = nonNegativeInt;
-        default = 1;
-        description = "Failures allowed during failTimeout before the server is considered unavailable.";
-      };
-      failTimeout = lib.mkOption {
-        type = duration;
-        default = "10s";
-        description = "Failure accounting and temporary-unavailability interval.";
-      };
-      backup = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = "Use this server only when primary upstreams are unavailable.";
-      };
-      down = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = "Administratively disable this upstream server.";
-      };
+  upstreamServerType = abilityTypes.record {
+    fields = {
+      address = upstreamAddress;
+      weight = positiveInt;
+      maxFails = nonNegativeInt;
+      failTimeout = duration;
+      backup = abilityTypes.boolean;
+      down = abilityTypes.boolean;
     };
-  });
+    optional = ["weight" "maxFails" "failTimeout" "backup" "down"];
+  };
+  upstreamServers = abilityTypes.list {
+    element = upstreamServerType;
+    maxItems = 1024;
+    unique = false;
+    canonicalOrder = false;
+  };
+  upstreamType = abilityTypes.record {
+    fields = {
+      servers = upstreamServers;
+      keepalive = positiveInt;
+      extraConfig = confinedDirectives;
+    };
+    optional = ["keepalive" "extraConfig"];
+  };
+  returnType = abilityTypes.record {
+    fields = {
+      code = httpStatus;
+      body = boundedText 65536;
+    };
+    optional = ["body"];
+  };
+  orderedTokens = abilityTypes.list {
+    element = token;
+    maxItems = 256;
+    unique = false;
+    canonicalOrder = false;
+  };
+  proxyHeaders = abilityTypes.map {
+    keyMaxLength = 256;
+    keySyntax = null;
+    maxEntries = 256;
+    value = boundedText 4096;
+  };
+  locationType = abilityTypes.record {
+    fields = {
+      proxyPass = upstreamUri;
+      root = documentRoot;
+      "return" = returnType;
+      tryFiles = orderedTokens;
+      proxySetHeaders = proxyHeaders;
+      extraConfig = confinedDirectives;
+    };
+    optional = ["proxyPass" "root" "return" "tryFiles" "proxySetHeaders" "extraConfig"];
+  };
+  locationMap = abilityTypes.map {
+    keyMaxLength = 1024;
+    keySyntax = null;
+    maxEntries = 1024;
+    value = locationType;
+  };
+  tlsProtocols = abilityTypes.list {
+    element = abilityTypes.enum ["TLSv1.2" "TLSv1.3"];
+    maxItems = 2;
+    unique = true;
+    canonicalOrder = true;
+  };
+  tlsType = abilityTypes.record {
+    fields = {
+      enable = abilityTypes.boolean;
+      protocols = tlsProtocols;
+    };
+    optional = ["enable" "protocols"];
+  };
+  listenPorts = abilityTypes.list {
+    element = port;
+    maxItems = 256;
+    unique = true;
+    canonicalOrder = true;
+  };
+  serverNames = abilityTypes.list {
+    element = serverName;
+    maxItems = 256;
+    unique = true;
+    canonicalOrder = true;
+  };
+  virtualHostType = abilityTypes.record {
+    fields = {
+      listen = listenPorts;
+      serverNames = serverNames;
+      root = documentRoot;
+      index = orderedTokens;
+      locations = locationMap;
+      tls = tlsType;
+      extraConfig = confinedDirectives;
+    };
+    optional = ["listen" "serverNames" "root" "index" "locations" "tls" "extraConfig"];
+  };
+  upstreamMap = abilityTypes.map {
+    keyMaxLength = 128;
+    keySyntax = null;
+    maxEntries = 256;
+    value = upstreamType;
+  };
+  virtualHostMap = abilityTypes.map {
+    keyMaxLength = 253;
+    keySyntax = null;
+    maxEntries = 1024;
+    value = virtualHostType;
+  };
 
-  upstreamType = lib.types.submodule ({...}: {
-    config._module.strict = true;
-    options = {
-      servers = lib.mkOption {
-        type = lib.types.listOf upstreamServerType;
-        default = [];
-        description = "Ordered upstream server pool.";
-      };
-      keepalive = lib.mkOption {
-        type = lib.types.nullOr positiveInt;
-        default = null;
-        description = "Maximum idle keepalive connections retained per worker.";
-      };
-      extraConfig = lib.mkOption {
-        type = confinedDirectives;
-        default = "";
-        description = "Nginx directives appended inside this upstream block; braces are forbidden.";
-      };
+  normalizeUpstreamServer = server: {
+    inherit (server) address;
+    weight = server.weight or null;
+    maxFails = server.maxFails or 1;
+    failTimeout = server.failTimeout or "10s";
+    backup = server.backup or false;
+    down = server.down or false;
+  };
+  normalizeUpstream = upstream: {
+    servers = builtins.map normalizeUpstreamServer upstream.servers;
+    keepalive = upstream.keepalive or null;
+    extraConfig = upstream.extraConfig or "";
+  };
+  normalizeReturn = response:
+    if response == null
+    then null
+    else {
+      inherit (response) code;
+      body = response.body or "";
     };
-  });
-
-  returnType = lib.types.submodule ({...}: {
-    config._module.strict = true;
-    options = {
-      code = lib.mkOption {
-        type = lib.types.addCheck lib.types.int (value: value >= 100 && value <= 599);
-        description = "HTTP response or redirect status code.";
-      };
-      body = lib.mkOption {
-        type = lib.types.str;
-        default = "";
-        description = "Literal response body or redirect URI.";
-      };
-    };
-  });
-
-  locationType = lib.types.submodule ({...}: {
-    config._module.strict = true;
-    options = {
-      proxyPass = lib.mkOption {
-        type = lib.types.nullOr (lib.types.strMatching "[A-Za-z][A-Za-z0-9+.-]*://[^;[:space:]]+");
-        default = null;
-        description = "Upstream URI passed to proxy_pass.";
-      };
-      root = lib.mkOption {
-        type = lib.types.nullOr documentRoot;
-        default = null;
-        description = "Relative document root within nginx's managed state storage.";
-      };
-      "return" = lib.mkOption {
-        type = lib.types.nullOr returnType;
-        default = null;
-        description = "Immediate HTTP response or redirect.";
-      };
-      tryFiles = lib.mkOption {
-        type = lib.types.listOf token;
-        default = [];
-        description = "Candidate paths passed to nginx's try_files directive.";
-      };
-      proxySetHeaders = lib.mkOption {
-        type = lib.types.attrsOf lib.types.str;
-        default = {};
-        description = "Request headers set before proxying.";
-      };
-      extraConfig = lib.mkOption {
-        type = confinedDirectives;
-        default = "";
-        description = "Nginx directives appended inside this location block; braces are forbidden.";
-      };
-    };
-  });
-
-  tlsType = lib.types.submodule ({...}: {
-    config._module.strict = true;
-    options = {
-      enable = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = "Enable TLS using nginx's opaque certificate and private-key credentials.";
-      };
-      protocols = lib.mkOption {
-        type = lib.types.listOf (lib.types.enum ["TLSv1.2" "TLSv1.3"]);
-        default = ["TLSv1.2" "TLSv1.3"];
-        description = "Allowed TLS protocol versions.";
-      };
-    };
-  });
-
-  virtualHostType = lib.types.submodule ({...}: {
-    config._module.strict = true;
-    options = {
-      listen = lib.mkOption {
-        type = lib.types.listOf lib.types.port;
-        default = [80];
-        description = "TCP ports on which this virtual host listens.";
-      };
-      serverNames = lib.mkOption {
-        type = lib.types.listOf serverName;
-        default = [];
-        description = "Host names matched by this virtual host.";
-      };
-      root = lib.mkOption {
-        type = documentRoot;
-        default = "www";
-        description = "Relative document root within nginx's managed state storage.";
-      };
-      index = lib.mkOption {
-        type = lib.types.listOf token;
-        default = ["index.html"];
-        description = "Default index file names.";
-      };
-      locations = lib.mkOption {
-        type = lib.types.attrsOf locationType;
-        default = {};
-        description = "Locations keyed by an nginx location expression.";
-        contributable = true;
-      };
-      tls = lib.mkOption {
-        type = tlsType;
-        default = {};
-        description = "TLS policy for this virtual host.";
-      };
-      extraConfig = lib.mkOption {
-        type = confinedDirectives;
-        default = "";
-        description = "Nginx directives appended inside this server block; braces are forbidden.";
-      };
-    };
-  });
+  normalizeLocation = location: {
+    proxyPass = location.proxyPass or null;
+    root = location.root or null;
+    "return" = normalizeReturn (location."return" or null);
+    tryFiles = location.tryFiles or [];
+    proxySetHeaders = location.proxySetHeaders or {};
+    extraConfig = location.extraConfig or "";
+  };
+  normalizeTls = tls: {
+    enable = tls.enable or false;
+    protocols = tls.protocols or ["TLSv1.2" "TLSv1.3"];
+  };
+  normalizeSecret = reference: {
+    resource = reference.resource or null;
+    encrypted = reference.encrypted or false;
+  };
+  normalizeVirtualHost = host: {
+    listen = host.listen or [80];
+    serverNames = host.serverNames or [];
+    root = host.root or "www";
+    index = host.index or ["index.html"];
+    locations = builtins.mapAttrs (_: normalizeLocation) (host.locations or {});
+    tls = normalizeTls (host.tls or {});
+    extraConfig = host.extraConfig or "";
+  };
+  upstreams = builtins.mapAttrs (_: normalizeUpstream) cfg.upstreams;
+  virtualHosts = builtins.mapAttrs (_: normalizeVirtualHost) cfg.virtualHosts;
+  tlsCredentials = {
+    certificate = normalizeSecret cfg.tlsCredentials.certificate;
+    privateKey = normalizeSecret cfg.tlsCredentials.privateKey;
+  };
 
   renderUpstreamServer = server:
     "server ${server.address}"
@@ -295,18 +312,18 @@
     ++ [(literal (indent "    " host.extraConfig))]
     ++ [(literal "  }\n")];
 
-  usesTls = builtins.any (host: host.tls.enable) (builtins.attrValues cfg.virtualHosts);
+  usesTls = builtins.any (host: host.tls.enable) (builtins.attrValues virtualHosts);
   validUpstreamNames =
     builtins.all
     (name: builtins.match "[A-Za-z0-9_-]+" name != null)
-    (builtins.attrNames cfg.upstreams);
+    (builtins.attrNames upstreams);
   validLocationExpressions =
     builtins.all
     (host:
       builtins.all
       (expression: builtins.match "[^{};\n\r]+" expression != null)
       (builtins.attrNames host.locations))
-    (builtins.attrValues cfg.virtualHosts);
+    (builtins.attrValues virtualHosts);
   validHeaderNames =
     builtins.all
     (host:
@@ -316,11 +333,11 @@
         (name: builtins.match "[A-Za-z0-9-]+" name != null)
         (builtins.attrNames location.proxySetHeaders))
       (builtins.attrValues host.locations))
-    (builtins.attrValues cfg.virtualHosts);
+    (builtins.attrValues virtualHosts);
   uniqueListenPorts =
     builtins.all
     (host: builtins.length host.listen == builtins.length (lib.unique host.listen))
-    (builtins.attrValues cfg.virtualHosts);
+    (builtins.attrValues virtualHosts);
   nginxConfigFragments =
     [
       (literal ''
@@ -402,10 +419,10 @@
         relativePath = "scgi";
       }))
       (literal ";\n\n")
-      (literal (indent "    " (builtins.concatStringsSep "" (lib.mapAttrsToList renderUpstream cfg.upstreams))))
+      (literal (indent "    " (builtins.concatStringsSep "" (lib.mapAttrsToList renderUpstream upstreams))))
       (literal (indent "    " cfg.extraHttpConfig))
     ]
-    ++ lib.concatLists (lib.mapAttrsToList renderVirtualHost cfg.virtualHosts)
+    ++ lib.concatLists (lib.mapAttrsToList renderVirtualHost virtualHosts)
     ++ [(literal "}\n")];
   command = arguments: {
     executable = {
@@ -450,11 +467,11 @@
   configuredCredentials = lib.optionals usesTls [
     {
       name = "tls-certificate";
-      inherit (cfg.tlsCredentials.certificate) resource encrypted;
+      inherit (tlsCredentials.certificate) resource encrypted;
     }
     {
       name = "tls-private-key";
-      inherit (cfg.tlsCredentials.privateKey) resource encrypted;
+      inherit (tlsCredentials.privateKey) resource encrypted;
     }
   ];
   credentialRequests = serviceManagement.forProducers {
@@ -491,13 +508,13 @@
         views = [
           {
             name = "tls-certificate";
-            inherit (cfg.tlsCredentials.certificate) encrypted;
+            inherit (tlsCredentials.certificate) encrypted;
             reference = resultOf "credential-tls-certificate" "credential-path";
             optional = false;
           }
           {
             name = "tls-private-key";
-            inherit (cfg.tlsCredentials.privateKey) encrypted;
+            inherit (tlsCredentials.privateKey) encrypted;
             reference = resultOf "credential-tls-private-key" "credential-path";
             optional = false;
           }
@@ -641,12 +658,12 @@
 in {
   options.nginx = {
     enable = lib.mkOption {
-      type = lib.types.bool;
+      type = abilityTypes.boolean;
       default = false;
       description = "Enable the nginx HTTP and reverse proxy service.";
     };
     workerProcesses = lib.mkOption {
-      type = lib.types.either positiveInt (lib.types.enum ["auto"]);
+      type = abilityTypes.disjointUnion [positiveInt (abilityTypes.enum ["auto"])];
       default = "auto";
       description = "Number of nginx worker processes, or `auto`.";
     };
@@ -661,34 +678,34 @@ in {
       description = "Maximum accepted HTTP request body size.";
     };
     gzip = lib.mkOption {
-      type = lib.types.bool;
+      type = abilityTypes.boolean;
       default = true;
       description = "Enable gzip response compression.";
     };
     accessLog = lib.mkOption {
-      type = lib.types.bool;
+      type = abilityTypes.boolean;
       default = true;
       description = "Write the HTTP access log to nginx's managed log directory.";
     };
     restartToken = lib.mkOption {
-      type = lib.types.nullOr serviceTypes.restartToken;
+      type = abilityTypes.optional serviceTypes.restartToken;
       default = null;
       description = "Operator-controlled token whose change requests a service restart.";
     };
     upstreams = lib.mkOption {
-      type = lib.types.attrsOf upstreamType;
+      type = upstreamMap;
       default = {};
       description = "Named reverse-proxy upstream pools.";
       contributable = true;
     };
     virtualHosts = lib.mkOption {
-      type = lib.types.attrsOf virtualHostType;
+      type = virtualHostMap;
       default = {};
       description = "Named HTTP virtual hosts.";
       contributable = true;
     };
     extraHttpConfig = lib.mkOption {
-      type = lib.types.lines;
+      type = confinedDirectives;
       default = "";
       description = "Trusted nginx directives appended to the global HTTP block.";
     };
@@ -718,11 +735,11 @@ in {
           message = "nginx.enable requires at least one nginx.virtualHosts entry";
         }
         {
-          assertion = !cfg.enable || !usesTls || cfg.tlsCredentials.certificate.resource != null;
+          assertion = !cfg.enable || !usesTls || tlsCredentials.certificate.resource != null;
           message = "TLS-enabled nginx virtual hosts require nginx.tlsCredentials.certificate.resource";
         }
         {
-          assertion = !cfg.enable || !usesTls || cfg.tlsCredentials.privateKey.resource != null;
+          assertion = !cfg.enable || !usesTls || tlsCredentials.privateKey.resource != null;
           message = "TLS-enabled nginx virtual hosts require nginx.tlsCredentials.privateKey.resource";
         }
         {
