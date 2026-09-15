@@ -10,7 +10,7 @@
     inherit src;
     name = "aos-systemd-provider-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-jTc7CFNFFB6IeOqV4gFFiugPN3G24mf3ZzYaqoM5wx4=";
+    hash = "sha256-kSUUcN2LDgkjDFmxI82pQcWy40YSJT/+Qhi9S1lGmiM=";
   };
 in
   mkCargoPackage {
