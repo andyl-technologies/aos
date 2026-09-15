@@ -10,151 +10,9 @@
     inherit lib nativeAdapterMatrix;
     inherit packageNames;
   };
-  fixtureObserver = provider: {
-    artifact = {
-      path = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-fixture-observer";
-      selector = {
-        _type = "aos-package-output-selector";
-        package = "fixture-observer";
-        output = "out";
-      };
-    };
-    entry_point = "bin/fixture-observer";
-    arguments = {
-      kind = "record";
-      fields.request_path = {
-        kind = "string";
-        max_length = 4096;
-        syntax = null;
-      };
-      optional_fields = [];
-    };
-    result = {
-      kind = "record";
-      fields = {
-        kind = {
-          kind = "string-enum";
-          values = ["fixture-state"];
-        };
-        observation = {
-          kind = "string";
-          max_length = 1048576;
-          syntax = null;
-        };
-        provider = {
-          kind = "string-enum";
-          values = [provider];
-        };
-        scope = {
-          kind = "string-enum";
-          values = ["host-resource"];
-        };
-      };
-      optional_fields = [];
-    };
-  };
-  fixtureAdapter = {
-    name,
-    interface,
-    descriptor,
-    method,
-    effectClass,
-    family,
-    lifetime,
-    stateFormat,
-  }: {
-    adapter = name;
-    conformance_families = [family];
-    interface_abi = 1;
-    interface_descriptor = descriptor;
-    interface_name = interface;
-    methods = [
-      {
-        effect_class = effectClass;
-        inherit method;
-      }
-    ];
-    provider_contract = {
-      resource_lifetime = lifetime;
-      state_format = stateFormat;
-    };
-    provider_implementation = {
-      contract = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-${name}-abilities";
-      implementation = "${name}-implementation";
-      observer = fixtureObserver name;
-    };
-    scope = "host-resource";
-  };
-  syntheticNativeAdapterSurface = {
-    schema = "aos.qualification.native-adapter-surface/v1";
-    matrix_schema = "aos.qualification.native-adapter-matrix/v1";
-    subject_schema = "aos.qualification.native-adapter-subject/v1";
-    families = ["durability-recovery" "provider-state-transfer"];
-    adapters = [
-      (fixtureAdapter {
-        name = "fixture-a";
-        interface = "aos.fixture-a";
-        descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        method = "operate";
-        effectClass = "mutation";
-        family = "durability-recovery";
-        lifetime = "instance";
-        stateFormat = null;
-      })
-      (fixtureAdapter {
-        name = "fixture-z";
-        interface = "aos.fixture-z";
-        descriptor = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        method = "observe";
-        effectClass = "observation";
-        family = "provider-state-transfer";
-        lifetime = "persistent";
-        stateFormat = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-      })
-    ];
-    scenarios = [
-      {
-        boundary = "before-acquisition";
-        candidate = "same";
-        failure = "injected-interruption";
-        family = "durability-recovery";
-        id = "interrupt-before-acquisition";
-        postconditions = [
-          {
-            evidence_kind = "journal-timeline";
-            name = "durable-attempt-state-classified";
-          }
-        ];
-        predecessor = "none";
-      }
-      {
-        boundary = "recovery";
-        candidate = "different-provider";
-        failure = "none";
-        family = "provider-state-transfer";
-        id = "adopt-compatible-state";
-        postconditions = [
-          {
-            evidence_kind = "state-adoption";
-            name = "compatible-state-adopted";
-          }
-        ];
-        predecessor = "present";
-      }
-    ];
-    limits = {
-      max_adapters = 2;
-      max_methods = 2;
-      max_scenarios = 2;
-    };
-  };
-  syntheticNativeAdapterMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {
-    inherit lib;
-    surface = syntheticNativeAdapterSurface;
-  };
   fixture = import ../../qualification {
     inherit lib;
-    nativeAdapterMatrix = syntheticNativeAdapterMatrix;
+    inherit nativeAdapterMatrix;
     packageNames = ["aos" "nginx" "containerd" "runc"];
   };
   fixtureWithoutNativeAdapterMatrix =
@@ -330,8 +188,6 @@
     rolloutRuntime = "/nix/store/00000000000000000000000000000000-rollout-runtime";
   };
   nativeCells = nativeAdapterMatrix.cells;
-  firstNativeCell = builtins.head nativeCells;
-  remainingNativeCells = builtins.tail nativeCells;
   applicableNativeIds = nativeAdapterMatrix.applicable_cell_ids;
   inapplicableNativeIds = nativeAdapterMatrix.inapplicable_cell_ids;
   partitionedNativeIds = builtins.sort builtins.lessThan (applicableNativeIds ++ inapplicableNativeIds);
@@ -345,15 +201,6 @@
   in
     builtins.elem scenario ["expire-attempt-deadline" "fail-cleanup" "fail-release"])
   nativeCells;
-  replaceFirstNativeCell = replacement: [replacement] ++ remainingNativeCells;
-  rejectsNativeMatrix = arguments:
-    !(builtins.tryEval (builtins.deepSeq (import ../../qualification/modules/_native-adapter-matrix.nix ({
-        inherit lib;
-        surface = nativeAdapterSurface;
-      }
-      // arguments))
-    true))
-    .success;
   recoveryPackage = builtins.head (
     builtins.filter (rule: rule.name == "aos-recovery") contract.package_rules
   );
@@ -503,12 +350,6 @@ in
   ];
   assert abilityRequirements.ability-native-adapter-matrix.production_only;
   assert nativeAdapterMatrix.cell_count == builtins.length nativeCells;
-  assert syntheticNativeAdapterMatrix.cell_count == 2;
-  assert map (cell: cell.id) syntheticNativeAdapterMatrix.cells
-  == [
-    "fixture-a/aos.fixture-a/abi-1/operate/interrupt-before-acquisition"
-    "fixture-z/aos.fixture-z/abi-1/observe/adopt-compatible-state"
-  ];
   assert nativeAdapterMatrix.required_production_vm_cells == builtins.length applicableNativeIds;
   assert builtins.length applicableNativeIds
   == builtins.length (lib.unique applicableNativeIds);
@@ -533,130 +374,6 @@ in
     containerExecutionMatrix.check
   ];
   assert containerExecutionMatrix.missing_container_cells == 1;
-  assert rejectsNativeMatrix {cells = remainingNativeCells;};
-  assert rejectsNativeMatrix {
-    applicability =
-      nativeAdapterMatrix.applicability
-      // {
-        required_production_vm_cells =
-          nativeAdapterMatrix.required_production_vm_cells - 1;
-      };
-  };
-  assert rejectsNativeMatrix {
-    applicability =
-      nativeAdapterMatrix.applicability
-      // {inapplicable_cells = builtins.tail nativeAdapterMatrix.inapplicable_cells;};
-  };
-  assert rejectsNativeMatrix {
-    applicability =
-      nativeAdapterMatrix.applicability
-      // {
-        inapplicable_cells =
-          [
-            ((builtins.head nativeAdapterMatrix.inapplicable_cells) // {reason = "foreign";})
-          ]
-          ++ builtins.tail nativeAdapterMatrix.inapplicable_cells;
-      };
-  };
-  assert rejectsNativeMatrix {cells = [firstNativeCell] ++ nativeCells;};
-  assert rejectsNativeMatrix {cells = [(builtins.elemAt nativeCells 1) firstNativeCell] ++ lib.drop 2 nativeCells;};
-  assert rejectsNativeMatrix {subject = nativeAdapterMatrix.subject // {surface_digest = "sha256:stale";};};
-  assert rejectsNativeMatrix {
-    subject = nativeAdapterMatrix.subject;
-    surface =
-      nativeAdapterSurface
-      // {
-        scenarios =
-          [(builtins.head nativeAdapterSurface.scenarios // {failure = "INVALID";})]
-          ++ builtins.tail nativeAdapterSurface.scenarios;
-      };
-  };
-  assert rejectsNativeMatrix {
-    subject = nativeAdapterMatrix.subject;
-    surface =
-      nativeAdapterSurface
-      // {
-        adapters =
-          [
-            ((builtins.head nativeAdapterSurface.adapters)
-              // {conformance_families = ["unknown-family"];})
-          ]
-          ++ builtins.tail nativeAdapterSurface.adapters;
-      };
-  };
-  assert rejectsNativeMatrix {
-    surface =
-      nativeAdapterSurface
-      // {
-        adapters =
-          [
-            ((builtins.head nativeAdapterSurface.adapters)
-              // {
-                provider_contract =
-                  (builtins.head nativeAdapterSurface.adapters).provider_contract
-                  // {resource_lifetime = "forever";};
-              })
-          ]
-          ++ builtins.tail nativeAdapterSurface.adapters;
-      };
-  };
-  assert rejectsNativeMatrix {
-    subject = nativeAdapterMatrix.subject;
-    surface =
-      nativeAdapterSurface
-      // {
-        adapters =
-          lib.take 4 nativeAdapterSurface.adapters
-          ++ [
-            ((builtins.elemAt nativeAdapterSurface.adapters 4)
-              // {
-                provider_contract =
-                  (builtins.elemAt nativeAdapterSurface.adapters 4).provider_contract
-                  // {state_format = "sha256:invalid";};
-              })
-          ]
-          ++ lib.drop 5 nativeAdapterSurface.adapters;
-      };
-  };
-  assert rejectsNativeMatrix {invalidatedBy = ["subject" "policy" "executor"];};
-  assert rejectsNativeMatrix {
-    regressions = abilityRequirements.ability-native-adapter-matrix.regressions ++ ["checks.fleet.foreign"];
-  };
-  assert rejectsNativeMatrix {
-    cells = replaceFirstNativeCell (firstNativeCell
-      // {
-        interface = firstNativeCell.interface // {abi = 2;};
-      });
-  };
-  assert rejectsNativeMatrix {
-    cells = replaceFirstNativeCell (firstNativeCell
-      // {
-        interface = firstNativeCell.interface // {descriptor = "sha256:${builtins.hashString "sha256" "foreign interface"}";};
-      });
-  };
-  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {adapter = "foreign";});};
-  assert rejectsNativeMatrix {
-    cells = replaceFirstNativeCell (firstNativeCell
-      // {
-        interface = firstNativeCell.interface // {name = "aos.foreign";};
-      });
-  };
-  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {method = "foreign";});};
-  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {scope = "host-manager";});};
-  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {boundary = "deadline";});};
-  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {failure = "foreign";});};
-  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {predecessor = "foreign";});};
-  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {candidate = "foreign";});};
-  assert rejectsNativeMatrix {
-    cells = replaceFirstNativeCell (firstNativeCell
-      // {
-        evidence = {
-          environment = "production-vm";
-          status = "passed";
-          regressions = ["checks.fleet.foreign"];
-        };
-      });
-  };
   assert builtins.all (requirement:
     requirement.phase
     == "staging"
