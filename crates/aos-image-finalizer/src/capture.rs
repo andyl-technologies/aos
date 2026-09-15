@@ -614,11 +614,8 @@ mod tests {
             Ok(format!("sha256:{}", "a".repeat(64)))
         })
         .expect_err("a host-stage contract cannot replace the initrd contract");
-        assert!(
-            error
-                .to_string()
-                .contains("wrong platform or execution stage")
-        );
+        let message = format!("{error:#}");
+        assert!(message.contains("wrong execution stage"), "{message}");
         Ok(())
     }
 
