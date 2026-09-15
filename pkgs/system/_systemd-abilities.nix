@@ -766,10 +766,6 @@
       inherit artifact;
       inherit (serviceInterfaces.devicePresence) methods;
       guarantees = [];
-      providerModule = {
-        inherit artifact;
-        path = "share/aos/providers/systemd.nix";
-      };
       handlerDescriptor = {
         artifact = handlerArtifact;
         entryPoint = "bin/aos-systemd-provider";

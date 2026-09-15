@@ -470,16 +470,21 @@ fn render(desired: &Desired) -> Result<RenderedService> {
             validate_absolute_path(&mount.destination, "mount destination")?;
             validate_lines(&mount.options, "mount option")?;
             let unit_name = path_unit_name(&mount.destination, "mount")?;
+            let source = quote_unit_value(&mount.source, "mount source")?;
+            let destination = quote_unit_value(&mount.destination, "mount destination")?;
             let mut document = format!(
                 "[Unit]\nDescription=AOS mount resource {}\n\n[Mount]\nWhat={}\nWhere={}\n",
-                mount.name, mount.source, mount.destination
+                mount.name, source, destination
             );
             if let Some(filesystem) = &mount.filesystem {
                 reject_line_break(filesystem, "mount filesystem")?;
                 document.push_str(&format!("Type={filesystem}\n"));
             }
             if !mount.options.is_empty() {
-                document.push_str(&format!("Options={}\n", mount.options.join(",")));
+                document.push_str(&format!(
+                    "Options={}\n",
+                    quote_unit_value(&mount.options.join(","), "mount options")?
+                ));
             }
             if let Some(timeout) = mount.timeout_millis {
                 document.push_str(&format!("TimeoutSec={}ms\n", timeout));
@@ -489,9 +494,10 @@ fn render(desired: &Desired) -> Result<RenderedService> {
         Desired::Swap(swap) => {
             validate_absolute_path(&swap.source, "swap source")?;
             let unit_name = path_unit_name(&swap.source, "swap")?;
+            let source = quote_unit_value(&swap.source, "swap source")?;
             let mut document = format!(
                 "[Unit]\nDescription=AOS swap resource {}\n\n[Swap]\nWhat={}\n",
-                swap.name, swap.source
+                swap.name, source
             );
             if let Some(priority) = swap.priority {
                 document.push_str(&format!("Priority={priority}\n"));
@@ -771,6 +777,17 @@ fn validate_absolute_path(path: &str, field: &str) -> Result<()> {
     reject_line_break(path, field)?;
     let path = Path::new(path);
     if !path.is_absolute()
+        || (path.as_os_str() != "/" && path.as_os_str().as_encoded_bytes().ends_with(b"/"))
+        || path
+            .as_os_str()
+            .as_encoded_bytes()
+            .windows(2)
+            .any(|pair| pair == b"//")
+        || path.to_str().is_some_and(|value| {
+            value
+                .split('/')
+                .any(|component| matches!(component, "." | ".."))
+        })
         || path
             .components()
             .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
@@ -795,6 +812,25 @@ fn reject_line_break(value: &str, field: &str) -> Result<()> {
         bail!("{field} contains a unit-document line break");
     }
     Ok(())
+}
+
+fn quote_unit_value(value: &str, field: &str) -> Result<String> {
+    reject_line_break(value, field)?;
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            '%' => quoted.push_str("%%"),
+            character if character.is_control() => {
+                bail!("{field} contains an unsupported control character");
+            }
+            character => quoted.push(character),
+        }
+    }
+    quoted.push('"');
+    Ok(quoted)
 }
 
 fn path_unit_name(path: &str, suffix: &str) -> Result<String> {
@@ -853,7 +889,7 @@ mod tests {
         assert_eq!(rendered.links[0].path, "local-fs.target.wants/boot.mount");
         assert_eq!(
             String::from_utf8(rendered.units[0].bytes.clone()).expect("unit is utf-8"),
-            "[Unit]\nDescription=AOS mount resource esp\n\n[Mount]\nWhat=/dev/disk/by-partlabel/ESP\nWhere=/boot\nType=vfat\nOptions=umask=0077\nTimeoutSec=30000ms\n"
+            "[Unit]\nDescription=AOS mount resource esp\n\n[Mount]\nWhat=\"/dev/disk/by-partlabel/ESP\"\nWhere=\"/boot\"\nType=vfat\nOptions=\"umask=0077\"\nTimeoutSec=30000ms\n"
         );
 
         let swap = Desired::Swap(SwapDesired {
@@ -866,7 +902,7 @@ mod tests {
         assert_eq!(rendered.primary_unit, "dev-zram0.swap");
         assert_eq!(
             String::from_utf8(rendered.units[0].bytes.clone()).expect("unit is utf-8"),
-            "[Unit]\nDescription=AOS swap resource main\n\n[Swap]\nWhat=/dev/zram0\nPriority=100\n"
+            "[Unit]\nDescription=AOS swap resource main\n\n[Swap]\nWhat=\"/dev/zram0\"\nPriority=100\n"
         );
     }
 

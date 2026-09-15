@@ -82,6 +82,3 @@ in
       name = kinds.${kind}.selected.alias;
       value = providerFor kind;
     }) (builtins.attrNames kinds))
-  // {
-    ${interfaces.devicePresence.alias}.provide = _: emptyProvision;
-  }
