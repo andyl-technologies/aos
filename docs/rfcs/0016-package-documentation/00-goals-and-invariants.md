@@ -55,8 +55,8 @@ between native SQL backends and Worker D1.
 ## Terminology
 
 **Documentation document**
-: The canonical JSON value describing one package version/platform's package,
-  options, runtime surface, integrity identity, and authored conceptual sections.
+: The canonical JSON value describing one package version/platform's metadata,
+  checked options and abilities, and integrity identity.
 
 **Documentation object**
 : The content-addressed Nix store regular-file object whose bytes are the
@@ -115,9 +115,9 @@ produce a new documentation object and signed release metadata. It must not
 change the runtime payload root digest, configuration binding measurement,
 service unit fingerprint, restart decision, or module ABI.
 
-Changing a path, structured type, ownership rule, contribution boundary,
-availability constraint, credential contract, or declared activation effect
-does change the semantic schema digest and is visible to compare and tooling.
+Changing a path, structured type, contribution boundary, or provided/consumed
+ability semantic changes the corresponding checked identity and is visible to
+compare and tooling. Concrete activation remains a deployment-plan fact.
 
 ### Offline fidelity
 

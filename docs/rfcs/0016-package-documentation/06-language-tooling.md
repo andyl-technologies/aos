@@ -97,8 +97,8 @@ Nix module merge algorithm and label that approximation authoritative.
 - `textDocument/documentLink` links package/option references to immutable docs.
 - code actions replace deprecated paths, insert a package into the desired set,
   create an opaque credential-reference skeleton, and invoke `apm config diff`.
-- workspace symbols search visible option paths, packages, services, and
-  capabilities.
+- workspace symbols search visible option paths, packages, interfaces,
+  implementations, requirements, and guarantees.
 - semantic tokens may distinguish package roots and option paths, but are not
   required for correctness.
 
@@ -128,7 +128,7 @@ completion endpoint in `apm`/`aos`, backed by the same local/remote schema:
 
 - package, registry, version, platform, release, and channel names;
 - option paths and enum values;
-- sections and service names;
+- interface, implementation, requirement, and guarantee aliases;
 - credential handle names (never secret values).
 
 Completion is fast, timeout-bounded, side-effect free, and returns no results

@@ -13,16 +13,16 @@ Documentation therefore joins package publication as a producer-side artifact.
 The flow is:
 
 ```text
-package/config/expose Nix declarations
+ordinary package module declarations
                  |
                  v
-restricted options/documentation evaluation
+canonical package ability projection
                  |
                  v
-closed pure Nix value
+resolved signed PackageDocument
                  |
                  v
-trusted publisher validates + canonicalizes
+shared package validator + documentation projection
                  |
                  v
 single-file Nix store documentation object
@@ -39,16 +39,16 @@ never regenerates the document itself.
 
 ## Restricted extraction
 
-The configuration publisher already performs an options-only evaluation to
-derive declared paths and stable type descriptions. RFC-0016 extends the
-restricted base library with documentation constructors and a pure export
-function. The export receives only:
+The package ability carrier evaluates the ordinary package module and emits one
+canonical projection. Documentation generation receives its checked signed
+`PackageDocument`, including:
 
-- the package's option declarations and their evaluated option metadata;
-- authenticated config/expose declarations;
-- package summary/license/homepage/source metadata;
-- package-authored structured sections expressed as pure data;
-- the exact platform and publication feature set.
+- mechanically derived option declarations, types, values, visibility, and
+  source provenance;
+- package-owned interfaces, methods, outputs, implementations, requirements,
+  and guarantees;
+- ordinary package summary, license, homepage, source, version, and platform
+  metadata.
 
 It does not receive ambient `pkgs`, host facts, secrets, environment variables,
 the network, arbitrary filesystem access, or builders. The evaluation may
@@ -56,11 +56,11 @@ discover documentation, but it does not create a store object through an
 untrusted `builtins.derivation`. It returns a closed Nix value to the trusted
 publisher.
 
-The publisher converts that value to the shared Rust document model, enforces
-limits and cross-artifact invariants, computes the semantic schema digest, and
-encodes canonical JSON. A trusted fixed builder or Nix store API then adds the
-single regular file to the store. Keeping materialization after validation
-preserves the current dummy-store/config-evaluation boundary.
+The publisher validates that package contract through the shared Rust package
+gate, derives the transient documentation view, enforces limits and
+cross-artifact invariants, and encodes canonical JSON. A trusted fixed builder
+or Nix store API then adds the single regular file to the store. Keeping
+materialization after validation preserves the evaluation boundary.
 
 ## Authoring API
 
@@ -75,32 +75,17 @@ options.etcd.listenClientUrls = lib.mkOption {
 };
 ```
 
-The implementation adds structured metadata only where `mkOption` cannot
-express it, for example:
-
-```nix
-documentation = {
-  summary = "Distributed, strongly consistent key-value service";
-  sections.operations = [
-    (lib.aosDoc.paragraph "Member identity is stable across restart.")
-  ];
-  options.etcd.listenClientUrls.activation = {
-    kind = "restart";
-    units = ["etcd.service"];
-  };
-};
-```
-
-The exact API is an implementation detail, but these constraints are
-normative:
+Ability descriptions live on the ordinary interface, method, output,
+implementation, requirement, and guarantee declarations in that same package
+module. Package summary and project metadata live on the package derivation.
+These constraints are normative:
 
 - option descriptions/defaults/examples have one declaration site;
-- runtime facts are derived from expose/config metadata whenever possible;
-- authored enrichment cannot override authenticated paths, types, ownership,
-  credentials, or runtime permissions;
-- prose is structured data, not embedded Markdown files;
-- shared constructors live in the injected AOS base library so package config
-  roots do not import an ambient helper package.
+- ability descriptions have one declaration site;
+- package reference data comes only from the checked signed package contract;
+- concrete effects and realizations come only from checked deployment plans and
+  provider observations;
+- no documentation enrichment map can override or supplement declarations.
 
 ## Signed metadata association
 
@@ -134,26 +119,19 @@ authority.
 
 ## Documentation versus module ABI and measurement
 
-The existing `declares` and `declaration_schema` remain the small resolver index
-used before fetching a documentation object. The documentation's rich option
-model must exactly refine that index. This avoids making resolution depend on a
-large optional presentation artifact.
-
-The semantic schema digest covers configuration meaning:
+The signed package's option declarations are the sole option schema used by
+resolution and documentation. The executable semantic identity covers
+configuration meaning:
 
 - declared paths and structured types;
-- ownership/contribution interfaces and ABI;
-- visibility, availability, deprecation/replacement;
-- credential contracts;
-- declared activation/runtime effects.
+- contribution rules;
+- visibility and deprecation/replacement;
+- provided and consumed ability semantics.
 
-Descriptions, explanatory sections, examples, source line numbers, formatting,
-and external links do not affect that digest. Neither the documentation object
-nor its prose digest is included in the runtime `root_digest`, config publish
-binding, unit fingerprint, or TPM measurement. A release can therefore correct
-documentation without causing a service restart. A semantic change remains
-visible and comparable, but the module ABI is changed only under its existing
-compatibility rules.
+Descriptions and formatting do not affect executable interface, guarantee, or
+provider identities. The signed documentation bytes can therefore change when
+prose changes without changing those runtime identities. A semantic change
+remains visible and comparable through the exact checked package declarations.
 
 ## NAR and cache rules
 
