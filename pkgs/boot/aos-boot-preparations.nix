@@ -23,6 +23,7 @@ in
     buildDeps = [rust];
     runtimeDeps = [packageRuntime erofs-utils util-linux];
     propagatedDeps = [];
+    abilities = ./_aos-boot-preparations/module.nix;
 
     phases = [
       {
