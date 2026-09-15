@@ -53,12 +53,8 @@
     };
   semanticImplementations = builtins.mapAttrs (_: semanticImplementation) evaluated.implementations;
 
-  interfaceDocuments = builtins.mapAttrs (name: declaration:
-    abilities.interfaceDocumentFromDeclaration (
-      if lib.hasPrefix packagePrefix name
-      then semanticInterface declaration
-      else declaration
-    ))
+  interfaceDocuments = builtins.mapAttrs (_: declaration:
+    abilities.interfaceDocumentFromDeclaration (semanticInterface declaration))
   evaluated.interfaces;
   ownedInterfaceDocuments =
     lib.filterAttrs (
