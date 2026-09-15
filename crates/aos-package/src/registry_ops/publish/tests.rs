@@ -16,12 +16,45 @@ use crate::registry_ops::release::ReleaseStorePublish;
 use crate::registry_ops::store_paths::introspect_store_path;
 use crate::registry_ops::test_support::{
     init_authoring_clone, inspect_test_image, test_provenance_signer, write_direct_image_output,
+    write_test_roster,
 };
 use crate::types::{ApmSettings, ProfileScope};
 use aos_core::output::Printer;
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
+
+#[tokio::test]
+async fn package_contract_publication_requires_the_committed_roster_binding() {
+    let registry = TempDir::new().unwrap();
+    init_authoring_clone(registry.path());
+    let mut signer = test_provenance_signer();
+    write_test_roster(
+        registry.path(),
+        signer.signer.key_id.as_str(),
+        &signer.trusted_key,
+        &[signer.signer.key_id.as_str()],
+    )
+    .unwrap();
+    crate::testutil::git(registry.path(), &["add", "keys.toml"]);
+    crate::testutil::git(registry.path(), &["commit", "-m", "revoke publisher"]);
+
+    let error = publish_canonical_ability_output(
+        registry.path(),
+        "test",
+        "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-demo-contract",
+        "demo",
+        "1.0.0",
+        "x86_64-linux",
+        &crate::registry_ops::AbilitySelectorRegistry::new(&[]),
+        &mut signer.signer,
+        &Printer::new(0, true, false),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(format!("{error:#}").contains("revoked in keys.toml"));
+}
 
 #[tokio::test]
 async fn ability_publication_accepts_a_transitive_self_referencing_closure() {
