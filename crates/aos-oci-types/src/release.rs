@@ -174,10 +174,7 @@ impl ContainerRelease {
         if self.media_type != expected_media_type {
             return Err(Error::invalid(
                 "container release mediaType",
-                format!(
-                    "expected {expected_media_type}, got {}",
-                    self.media_type
-                ),
+                format!("expected {expected_media_type}, got {}", self.media_type),
             ));
         }
         if self.schema_version == CONTAINER_RELEASE_SCHEMA_VERSION
@@ -2001,7 +1998,11 @@ mod tests {
         let mut abilities_in_legacy = legacy_release.clone();
         abilities_in_legacy.evidence.abilities = current_release.evidence.abilities.clone();
         assert!(abilities_in_legacy.validate().is_err());
-        assert!(current_input.validate_final_release(&legacy_release).is_err());
+        assert!(
+            current_input
+                .validate_final_release(&legacy_release)
+                .is_err()
+        );
     }
 
     #[test]
