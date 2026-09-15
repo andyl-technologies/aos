@@ -78,8 +78,7 @@ def adapter_from_cell(cell_id: str) -> str:
     """Returns the adapter component of one canonical matrix cell ID."""
 
     adapter = cell_id.split("/", 1)[0]
-    if adapter not in PROVIDER_ORACLES:
-        raise RuntimeError(f"no live-resource oracle for adapter {adapter!r}")
+    _adapter_claim(adapter)
     return adapter
 
 
@@ -92,8 +91,7 @@ def observe_resource(
 
     adapter = adapter_from_cell(cell_id)
     foreign_adapter = foreign_operation["adapter"]
-    if foreign_adapter not in PROVIDER_ORACLES:
-        raise RuntimeError(f"no foreign oracle for adapter {foreign_adapter!r}")
+    _adapter_claim(foreign_adapter)
     target = operation["target"]["resource"]
     foreign_target = foreign_operation["operation"]["target"]["resource"]
     if target == foreign_target:
@@ -115,8 +113,7 @@ def observe_resource(
 def ownership_inventory(adapter: str, resource: dict[str, Any]) -> dict[str, Any]:
     """Reads exact owner rows from the authoritative native resource ledger."""
 
-    if adapter not in PROVIDER_ORACLES:
-        raise RuntimeError(f"no ownership oracle for adapter {adapter!r}")
+    _adapter_claim(adapter)
     ledger = native_resource_ledger()
     owners = ledger["owners"]
 
@@ -219,6 +216,9 @@ def _package_observation(adapter: str, operation: dict[str, Any]) -> dict[str, A
     scope = adapter_claim.get("scope")
     if not isinstance(scope, str):
         raise RuntimeError("qualification claim does not select one scope")
+    observation_kind = adapter_claim.get("observation_kind")
+    if not isinstance(observation_kind, str):
+        raise RuntimeError("qualification claim does not select one observation kind")
     executable = str(PurePosixPath(artifact_path) / entry_point)
 
     request_path = f"/run/aos-native-adapter-observer-{hashlib.sha256(canonical(operation)).hexdigest()}.json"
@@ -238,7 +238,7 @@ def _package_observation(adapter: str, operation: dict[str, Any]) -> dict[str, A
         or set(result) != {"provider", "kind", "scope", "observation"}
         or result.get("provider") != adapter
         or result.get("scope") != scope
-        or result.get("kind") != PROVIDER_ORACLES[adapter]["live"]
+        or result.get("kind") != observation_kind
         or not isinstance(result.get("observation"), str)
     ):
         raise RuntimeError("package-owned observer returned another typed result")
