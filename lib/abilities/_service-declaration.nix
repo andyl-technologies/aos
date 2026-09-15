@@ -484,7 +484,12 @@
     declarationFields = ["guarantees" "interfaces" "implementations" "requirementTemplates"];
     declarations = builtins.listToAttrs (builtins.concatMap (name:
       if builtins.hasAttr name contribution
-      then [{inherit name; value = contribution.${name};}]
+      then [
+        {
+          inherit name;
+          value = contribution.${name};
+        }
+      ]
       else [])
     declarationFields);
   in {

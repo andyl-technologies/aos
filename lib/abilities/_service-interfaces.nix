@@ -200,14 +200,16 @@
 
   kernelModulesName = "aos.kernel.modules";
   kernelModulesMethods = {
-    load = retainingMethod
+    load =
+      retainingMethod
       serviceTypes.kernelModules
       serviceTypes.kernelModulesObservation
       kernelModulesName
       "load"
       "Loads the requested kernel modules and establishes their declared readiness policy."
       write;
-    observe = method
+    observe =
+      method
       serviceTypes.kernelModules
       serviceTypes.kernelModulesObservation
       kernelModulesName
@@ -722,10 +724,12 @@
         output "planning" "persistent"
         "Returns the deterministic path selected for this persistent storage resource before materialization."
         serviceTypes.storagePath;
-      lifecycle = lifecyclePolicy // {
-        releasesEphemeralOnDisable = false;
-        retainsPersistentByDefault = true;
-      };
+      lifecycle =
+        lifecyclePolicy
+        // {
+          releasesEphemeralOnDisable = false;
+          retainsPersistentByDefault = true;
+        };
       releaseDescription = "Detaches the exact active ownership of this persistent allocation while preserving its retained data.";
     };
     hostPathView = producer {

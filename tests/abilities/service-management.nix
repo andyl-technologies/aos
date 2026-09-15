@@ -39,7 +39,9 @@
           config.value = value;
         }
       ];
-    }).config.value;
+    })
+    .config
+    .value;
   succeedsAs = type: value:
     (builtins.tryEval (builtins.deepSeq (evaluateAs type value) true)).success;
   validates = declaration:
@@ -120,8 +122,8 @@
         automountResource
         swapResource
         activationGroup
-         ;
-     });
+        ;
+    });
   activationOutputsAreReferences =
     outputSchema "scheduledActivation" "realize" "activation-resource"
     == resourceReferenceSchema
@@ -197,7 +199,8 @@
           required = true;
         };
       })
-      true)).success;
+      true))
+    .success;
   resultOf = request: output: lib.abilities.resultOf request output;
   extendedService =
     minimalService
@@ -794,7 +797,8 @@ in
       consumerInstance = "openldap";
       declaration = protectedConfiguration // {mode = "0640";};
     })
-    true)).success;
+    true))
+  .success;
   assert !(builtins.tryEval (builtins.deepSeq (serviceManagement.forConfiguration {
       inherit serviceTypes;
       consumerInstance = "openldap";
@@ -814,7 +818,8 @@ in
             };
         };
     })
-    true)).success;
+    true))
+  .success;
   assert producerOutputsMatchConsumers;
   assert producerInterfacesReleaseEphemeralResources;
   assert activationOutputsAreReferences;
@@ -1026,5 +1031,6 @@ in
       consumerInstance = "consumer";
       declaration = invalidStructuredConfiguration;
     })
-    true)).success;
+    true))
+  .success;
   assert builtins.attrNames fixedPoint.config.aos.abilities.interfaces == declaredAliases; true
