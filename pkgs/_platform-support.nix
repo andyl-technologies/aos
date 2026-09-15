@@ -795,7 +795,6 @@ let
     "system/_dbus-conf-xsl/make-session-conf.xsl" = "target-independent-source";
     "system/_dbus-conf-xsl/make-system-conf.xsl" = "target-independent-source";
     "tests/_aos-registry-server-config/module.nix" = "linux-only-config-source";
-    "tests/_aos-test-agent-config/module.nix" = "linux-only-test-source";
     "tests/_config-module-smoke/module.nix" = "linux-only-test-source";
     "tests/_config-module-smoke/private.nix" = "linux-only-test-source";
     "tools/_conntrackd/module.nix" = "linux-only-config-source";
