@@ -20,18 +20,19 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 use crate::identity::{
-    AggregateId, EnvironmentId, IncarnationId, InstanceId, InterfaceKey, LocalKey, RelativePath,
-    RequestId, ResourceId, RevisionId, ScopePath, ScopedOperationKey, TransactionId,
+    AggregateId, EnvironmentId, IncarnationId, InstanceId, InterfaceKey, InterfaceName, LocalKey,
+    RelativePath, RequestId, ResourceId, RevisionId, ScopedOperationKey, TransactionId,
 };
 use crate::interface::{
-    ExportDeclaration, GuaranteeKey, InterfaceDescriptor, PackageImplementation,
-    ProviderImplementationReference, RequirementDeclaration,
+    ExportDeclaration, GuaranteeDeclaration, GuaranteeKey, InterfaceDescriptor,
+    PackageImplementation, ProviderImplementationReference, RequirementDeclaration,
 };
 use crate::limits::{ABILITY_LIMITS_V1, LimitProfile};
 use crate::plan::{
     Binding, BindingId, BindingRequest, ControllerAssignment, DecisionNode, DependencyEdge,
     DeploymentObligation, MergeNode, Operation, ResourceRevision,
 };
+use crate::schema::ValueSchema;
 use crate::value::{AbilityValue, ArtifactReference, ValueExpression};
 
 /// Identifies one required format semantic understood by a consumer.
@@ -371,14 +372,18 @@ pub struct PackageDocument {
     pub package: PackageSubject,
     /// Lists retained companion artifacts in canonical digest order.
     pub artifacts: Vec<ArtifactReference>,
+    /// Maps package-local interface declaration aliases to exact public identities.
+    pub interfaces: BTreeMap<LocalKey, InterfaceKey>,
+    /// Maps package-local guarantee aliases to their semantic declarations and prose.
+    pub guarantees: BTreeMap<LocalKey, GuaranteeDeclaration>,
+    /// Locates the package's executable ability/configuration module.
+    pub package_module: ModuleLocator,
     /// Lists public exports in canonical name order.
     pub exports: Vec<ExportDeclaration>,
     /// Lists declarative imports in canonical alias order.
     pub requirements: Vec<RequirementDeclaration>,
     /// Contains provider-specific implementations and handler declarations.
     pub implementation: PackageImplementation,
-    /// Names configuration/resource ownership roots in canonical order.
-    pub ownership: Vec<ScopePath>,
 }
 
 /// Locates one Nix provider module below an authenticated artifact root.
@@ -825,11 +830,150 @@ impl VersionedDocument for PackageDocument {
                 ensure_schema_depth(schema, limits)?;
             }
         }
+        for guarantee in self.guarantees.values() {
+            if guarantee.semantics.is_empty()
+                || guarantee.semantics.chars().any(char::is_control)
+                || guarantee.description.is_empty()
+                || guarantee.description.chars().any(char::is_control)
+            {
+                return Err(DocumentError::Decode {
+                    label: Self::SCHEMA.to_string(),
+                    source: anyhow::anyhow!(
+                        "package guarantee semantics and description must be non-empty and control-free"
+                    ),
+                });
+            }
+        }
         for handler in self.implementation.handlers.values() {
             ensure_schema_depth(&handler.arguments, limits)?;
             ensure_schema_depth(&handler.result, limits)?;
         }
         Ok(())
+    }
+
+    fn content_digest(&self) -> Result<Sha256Digest, DocumentError> {
+        #[derive(Serialize)]
+        struct SemanticGuarantee<'a> {
+            name: &'a InterfaceName,
+            version: std::num::NonZeroU32,
+            semantics: &'a str,
+        }
+
+        #[derive(Serialize)]
+        struct SemanticPackageSubject<'a> {
+            name: &'a LocalKey,
+            version: &'a str,
+            payload: crate::ArtifactIdentity,
+            source: crate::ArtifactIdentity,
+        }
+
+        #[derive(Serialize)]
+        struct SemanticModuleLocator<'a> {
+            artifact: crate::ArtifactIdentity,
+            path: &'a RelativePath,
+        }
+
+        #[derive(Serialize)]
+        struct SemanticHandler<'a> {
+            artifact: crate::ArtifactIdentity,
+            entry_point: &'a str,
+            arguments: &'a ValueSchema,
+            result: &'a ValueSchema,
+        }
+
+        #[derive(Serialize)]
+        struct SemanticPackageImplementation<'a> {
+            providers: Vec<Sha256Digest>,
+            handlers: BTreeMap<&'a LocalKey, SemanticHandler<'a>>,
+        }
+
+        #[derive(Serialize)]
+        struct SemanticPackage<'a> {
+            schema: &'a str,
+            required_features: &'a [RequiredFeature],
+            activation_mode: AbilityActivationMode,
+            package: SemanticPackageSubject<'a>,
+            artifacts: Vec<crate::ArtifactIdentity>,
+            interfaces: &'a BTreeMap<LocalKey, InterfaceKey>,
+            guarantees: BTreeMap<LocalKey, SemanticGuarantee<'a>>,
+            package_module: SemanticModuleLocator<'a>,
+            exports: &'a [ExportDeclaration],
+            requirements: &'a [RequirementDeclaration],
+            implementation: SemanticPackageImplementation<'a>,
+        }
+
+        let guarantees = self
+            .guarantees
+            .iter()
+            .map(|(alias, guarantee)| {
+                (
+                    alias.clone(),
+                    SemanticGuarantee {
+                        name: &guarantee.name,
+                        version: guarantee.version,
+                        semantics: &guarantee.semantics,
+                    },
+                )
+            })
+            .collect();
+        let providers = self
+            .implementation
+            .providers
+            .iter()
+            .map(|provider| provider.descriptor_digest())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| DocumentError::Decode {
+                label: Self::SCHEMA.to_string(),
+                source,
+            })?;
+        let handlers = self
+            .implementation
+            .handlers
+            .iter()
+            .map(|(name, handler)| {
+                (
+                    name,
+                    SemanticHandler {
+                        artifact: handler.artifact.identity(),
+                        entry_point: &handler.entry_point,
+                        arguments: &handler.arguments,
+                        result: &handler.result,
+                    },
+                )
+            })
+            .collect();
+        let semantic = SemanticPackage {
+            schema: &self.schema,
+            required_features: &self.required_features,
+            activation_mode: self.activation_mode,
+            package: SemanticPackageSubject {
+                name: &self.package.name,
+                version: &self.package.version,
+                payload: self.package.payload.identity(),
+                source: self.package.source.identity(),
+            },
+            artifacts: self.artifacts.iter().map(ArtifactReference::identity).collect(),
+            interfaces: &self.interfaces,
+            guarantees,
+            package_module: SemanticModuleLocator {
+                artifact: self.package_module.artifact.identity(),
+                path: &self.package_module.path,
+            },
+            exports: &self.exports,
+            requirements: &self.requirements,
+            implementation: SemanticPackageImplementation {
+                providers,
+                handlers,
+            },
+        };
+
+        let bytes =
+            aos_contract::canonical::to_vec(&semantic).map_err(|source| DocumentError::Decode {
+                label: Self::SCHEMA.to_string(),
+                source,
+            })?;
+
+        Ok(Sha256Digest::separated(Self::SCHEMA, bytes))
     }
 }
 

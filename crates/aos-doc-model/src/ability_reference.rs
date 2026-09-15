@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityActivationMode, AggregationContract, HandlerDescriptor,
     InterfaceDocument, LocalKey, PackageDocument, RequiredFeature, RequirementDeclaration,
-    ScopePath, ValueSchema, VersionedDocument, decode_canonical, encode_canonical,
+    ValueSchema, VersionedDocument, decode_canonical, encode_canonical,
 };
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
@@ -106,8 +106,6 @@ pub struct PackageAbilityReference {
     pub requirements: Vec<RequirementDeclaration>,
     /// Lists public handler argument/result schemas in canonical name order.
     pub handlers: Vec<AbilityHandlerReference>,
-    /// Names declared ownership roots without deployment assignments.
-    pub ownership: Vec<ScopePath>,
 }
 
 impl PackageAbilityReference {
@@ -205,7 +203,6 @@ impl PackageAbilityReference {
             exports,
             requirements: package.requirements.clone(),
             handlers,
-            ownership: package.ownership.clone(),
         };
         reference.validate()?;
         Ok(reference)
@@ -276,7 +273,6 @@ impl PackageAbilityReference {
         if self.exports.len() > max_items
             || self.requirements.len() > max_items
             || self.handlers.len() > max_items
-            || self.ownership.len() > max_items
         {
             return Err(invalid("ability reference exceeds its collection limit"));
         }
@@ -393,7 +389,6 @@ mod tests {
             exports: Vec::new(),
             requirements: Vec::new(),
             handlers: Vec::new(),
-            ownership: Vec::new(),
         }
     }
 

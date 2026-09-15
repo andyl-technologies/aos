@@ -2155,6 +2155,13 @@ mod tests {
                 source: artifact.clone(),
             },
             artifacts: vec![artifact.clone()],
+            interfaces: Default::default(),
+            guarantees: Default::default(),
+            package_module: aos_ability_model::ModuleLocator {
+                artifact: artifact.clone(),
+                path: aos_ability_model::RelativePath::new("module.nix")
+                    .expect("fixture package module path is valid"),
+            },
             exports: Vec::new(),
             requirements: Vec::new(),
             implementation: aos_ability_model::PackageImplementation {
@@ -2164,7 +2171,6 @@ mod tests {
                     systemd_manager_handler(artifact)?,
                 )]),
             },
-            ownership: Vec::new(),
         };
         let verified = seal_test_package(package.clone())?;
         let executable =
@@ -2238,13 +2244,19 @@ mod tests {
                 source: artifact.clone(),
             },
             artifacts: vec![artifact.clone()],
+            interfaces: Default::default(),
+            guarantees: Default::default(),
+            package_module: aos_ability_model::ModuleLocator {
+                artifact: artifact.clone(),
+                path: aos_ability_model::RelativePath::new("module.nix")
+                    .expect("fixture package module path is valid"),
+            },
             exports: Vec::new(),
             requirements: Vec::new(),
             implementation: aos_ability_model::PackageImplementation {
                 providers: vec![provider],
                 handlers: BTreeMap::from([(handler_key.clone(), handler)]),
             },
-            ownership: Vec::new(),
         };
 
         let verified = seal_test_package(package_document(provider.clone(), handler.clone()))?;

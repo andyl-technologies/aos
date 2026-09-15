@@ -1259,7 +1259,7 @@ mod tests {
     use super::*;
     use aos_ability_model::{
         ABILITY_LIMITS_V1, AbilityActivationMode, InterfaceDocument, LocalKey, RequiredFeature,
-        RequirementDeclaration, RequirementStrength, ScopePath, ValueSchema, decode_canonical,
+        RequirementDeclaration, RequirementStrength, ValueSchema, decode_canonical,
     };
     use aos_contract::Sha256Digest;
     use aos_doc_model::{
@@ -1378,7 +1378,6 @@ mod tests {
                 arguments: ValueSchema::Boolean,
                 result: ValueSchema::Boolean,
             }],
-            ownership: vec![ScopePath::new(vec![LocalKey::new("services").unwrap()]).unwrap()],
         }
     }
 

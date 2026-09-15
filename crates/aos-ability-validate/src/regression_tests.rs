@@ -480,17 +480,6 @@ fn exact_pure_provider_package_is_required() {
 }
 
 #[test]
-fn contracts_only_package_cannot_claim_resource_ownership() {
-    let mut fixture = plan_fixture();
-    pin_primary_binding_to_pure_package(&mut fixture);
-    fixture.binding_inputs.packages[0]
-        .ownership
-        .push(ScopePath::root());
-
-    assert_diagnostic(fixture, DiagnosticCode::ResourceScopeEscape);
-}
-
-#[test]
 fn contracts_only_package_cannot_catalog_a_terminal_handler() {
     let mut fixture = plan_fixture();
     pin_primary_binding_to_pure_package(&mut fixture);
@@ -1662,6 +1651,13 @@ fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
             source: artifact.clone(),
         },
         artifacts: vec![artifact.clone()],
+        interfaces: Default::default(),
+        guarantees: Default::default(),
+        package_module: aos_ability_model::ModuleLocator {
+            artifact: artifact.clone(),
+            path: aos_ability_model::RelativePath::new("module.nix")
+                .expect("fixture package module path is valid"),
+        },
         exports: vec![ExportDeclaration {
             name: key("provider"),
             interface: binding.interface.clone(),
@@ -1672,7 +1668,6 @@ fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
             providers: vec![implementation],
             handlers: BTreeMap::new(),
         },
-        ownership: Vec::new(),
     };
     binding.provider_package = Some(
         package

@@ -138,12 +138,6 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
         }
     }
 
-    if !reference.ownership.is_empty() {
-        output.push_str("\nDECLARED STRUCTURED EFFECT OWNERSHIP\n");
-        for path in &reference.ownership {
-            let _ = writeln!(output, "ownership root\t{}", scope_path(path));
-        }
-    }
     if !reference.handlers.is_empty() {
         output.push_str("\nDECLARED STRUCTURED EFFECT HANDLERS\n");
         for handler in &reference.handlers {
@@ -310,15 +304,6 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
         output.push_str("</ul>");
     }
 
-    if !reference.ownership.is_empty() {
-        output.push_str("<h3>Declared structured effect ownership</h3><ul>");
-        for path in &reference.ownership {
-            output.push_str("<li><code>");
-            escape_html_into(&scope_path(path), &mut output);
-            output.push_str("</code></li>");
-        }
-        output.push_str("</ul>");
-    }
     if !reference.handlers.is_empty() {
         output.push_str("<h3>Declared structured effect handlers</h3>");
         for handler in &reference.handlers {
@@ -463,17 +448,6 @@ fn scalar(value: &impl serde::Serialize) -> Result<String> {
     Ok(serde_json::to_string(value)?.trim_matches('"').to_string())
 }
 
-fn scope_path(path: &aos_ability_model::ScopePath) -> String {
-    if path.as_slice().is_empty() {
-        "/".to_string()
-    } else {
-        path.as_slice()
-            .iter()
-            .map(|component| component.as_str())
-            .collect::<Vec<_>>()
-            .join("/")
-    }
-}
 
 fn safe_plain_text(value: &str) -> String {
     let mut safe = String::with_capacity(value.len());

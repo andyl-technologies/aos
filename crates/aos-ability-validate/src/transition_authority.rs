@@ -1689,6 +1689,13 @@ mod tests {
                 source: artifact.clone(),
             },
             artifacts: vec![artifact.clone()],
+            interfaces: Default::default(),
+            guarantees: Default::default(),
+            package_module: aos_ability_model::ModuleLocator {
+                artifact: artifact.clone(),
+                path: aos_ability_model::RelativePath::new("module.nix")
+                    .expect("fixture package module path is valid"),
+            },
             exports: vec![
                 ExportDeclaration {
                     name: key("handler"),
@@ -1714,7 +1721,6 @@ mod tests {
                     },
                 )]),
             },
-            ownership: Vec::new(),
         };
         let package_digest = package.content_digest().expect("package digest");
         fixture.binding_plan.bindings[0].provider_package = Some(package_digest);

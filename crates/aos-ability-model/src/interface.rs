@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
+use std::num::NonZeroU32;
 
 use anyhow::bail;
 use aos_contract::Sha256Digest;
@@ -16,7 +17,7 @@ use crate::document::ModuleLocator;
 use crate::identity::{InterfaceKey, InterfaceName, LocalKey};
 use crate::plan::AccessMode;
 use crate::schema::ValueSchema;
-use crate::value::{AbilityValue, ArtifactReference, ResourceLifetime};
+use crate::value::{AbilityValue, ArtifactIdentity, ArtifactReference, ResourceLifetime};
 
 /// Names the version-1 package-level persistent-state format semantics.
 pub const PROVIDER_STATE_FORMAT_V1: &str = "provider-state-format-v1";
@@ -31,6 +32,71 @@ pub struct GuaranteeKey {
     pub version: std::num::NonZeroU32,
     /// Identifies the exact authenticated semantic descriptor.
     pub descriptor: Sha256Digest,
+}
+
+/// Retains one package-authored guarantee declaration and its documentation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuaranteeDeclaration {
+    /// Names the guarantee within its namespace.
+    pub name: InterfaceName,
+    /// Identifies the guarantee contract version.
+    pub version: NonZeroU32,
+    /// Defines the canonical semantic meaning used by the guarantee descriptor.
+    pub semantics: String,
+    /// Documents the guarantee without changing its semantic descriptor.
+    pub description: String,
+}
+
+impl GuaranteeDeclaration {
+    /// Derives the semantic guarantee key without including documentation prose.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the canonical descriptor envelope cannot be encoded.
+    pub fn key(&self) -> anyhow::Result<GuaranteeKey> {
+        Ok(GuaranteeKey {
+            name: self.name.clone(),
+            version: self.version,
+            descriptor: guarantee_descriptor(&self.name, self.version, &self.semantics)?,
+        })
+    }
+}
+
+/// Derives the canonical descriptor for one guarantee semantic declaration.
+///
+/// # Errors
+///
+/// Returns an error when the canonical descriptor envelope cannot be encoded.
+pub fn guarantee_descriptor(
+    name: &InterfaceName,
+    version: NonZeroU32,
+    semantics: &str,
+) -> anyhow::Result<Sha256Digest> {
+    #[derive(Serialize)]
+    struct GuaranteeDocument<'a> {
+        name: &'a InterfaceName,
+        version: NonZeroU32,
+        semantics: &'a str,
+    }
+
+    #[derive(Serialize)]
+    struct GuaranteeEnvelope<'a> {
+        domain: &'static str,
+        document: GuaranteeDocument<'a>,
+    }
+
+    let envelope = GuaranteeEnvelope {
+        domain: "aos.ability.execution-guarantee/v1",
+        document: GuaranteeDocument {
+            name,
+            version,
+            semantics,
+        },
+    };
+    Ok(Sha256Digest::of_bytes(aos_contract::canonical::to_vec(
+        &envelope,
+    )?))
 }
 
 /// Identifies when a value becomes available to a consumer.
@@ -313,7 +379,49 @@ impl ProviderImplementation {
     /// collection, string, or encoded-byte ceilings.
     pub fn descriptor_digest(&self) -> anyhow::Result<Sha256Digest> {
         validate_provider_implementation_limits(self)?;
-        Sha256Digest::of_canonical("aos.ability.provider-implementation/v1", self)
+
+        #[derive(Serialize)]
+        struct SemanticModuleLocator<'a> {
+            artifact: ArtifactIdentity,
+            path: &'a crate::RelativePath,
+        }
+
+        #[derive(Serialize)]
+        struct SemanticStateFormat {
+            descriptor: Sha256Digest,
+            artifact: ArtifactIdentity,
+        }
+
+        #[derive(Serialize)]
+        struct SemanticProviderImplementation<'a> {
+            interface: &'a InterfaceKey,
+            artifact: ArtifactIdentity,
+            requirements: &'a [RequirementDeclaration],
+            desired_schema: &'a Option<ValueSchema>,
+            provider_module: Option<SemanticModuleLocator<'a>>,
+            handler: &'a Option<LocalKey>,
+            owns_resource_kinds: &'a [InterfaceName],
+            state_format: Option<SemanticStateFormat>,
+        }
+
+        let semantic = SemanticProviderImplementation {
+            interface: &self.interface,
+            artifact: self.artifact.identity(),
+            requirements: &self.requirements,
+            desired_schema: &self.desired_schema,
+            provider_module: self.provider_module.as_ref().map(|locator| SemanticModuleLocator {
+                artifact: locator.artifact.identity(),
+                path: &locator.path,
+            }),
+            handler: &self.handler,
+            owns_resource_kinds: &self.owns_resource_kinds,
+            state_format: self.state_format.as_ref().map(|state| SemanticStateFormat {
+                descriptor: state.descriptor,
+                artifact: state.artifact.identity(),
+            }),
+        };
+
+        Sha256Digest::of_canonical("aos.ability.provider-implementation/v1", &semantic)
     }
 }
 
@@ -679,6 +787,53 @@ mod tests {
             serde_json::from_slice(expected).expect("stateless provider implementation decodes");
         assert_eq!(decoded, stateless);
         assert_eq!(decoded.state_format, None);
+    }
+
+    #[test]
+    fn provider_descriptor_excludes_locators_and_binds_semantic_closures() {
+        let mut original = provider_implementation();
+        original.provider_module = Some(crate::ModuleLocator {
+            artifact: original.artifact.clone(),
+            path: crate::RelativePath::new("module.nix").unwrap(),
+        });
+        let mut relocated = original.clone();
+        relocated.artifact.store_path = "/nix/store/relocated-provider".to_string();
+        let module = relocated.provider_module.as_mut().unwrap();
+        module.artifact.store_path = "/nix/store/relocated-module".to_string();
+
+        assert_eq!(
+            original.descriptor_digest().unwrap(),
+            relocated.descriptor_digest().unwrap()
+        );
+
+        let mut changed_closure = original.clone();
+        changed_closure.artifact.closure = digest(42);
+        assert_ne!(
+            original.descriptor_digest().unwrap(),
+            changed_closure.descriptor_digest().unwrap()
+        );
+
+        let mut changed_content = original.clone();
+        changed_content.artifact.content = digest(43);
+        assert_ne!(
+            original.descriptor_digest().unwrap(),
+            changed_content.descriptor_digest().unwrap()
+        );
+
+        let mut changed_nar = original.clone();
+        changed_nar.provider_module.as_mut().unwrap().artifact.nar_hash = digest(44);
+        assert_ne!(
+            original.descriptor_digest().unwrap(),
+            changed_nar.descriptor_digest().unwrap()
+        );
+
+        let mut changed_path = original.clone();
+        changed_path.provider_module.as_mut().unwrap().path =
+            crate::RelativePath::new("provider/module.nix").unwrap();
+        assert_ne!(
+            original.descriptor_digest().unwrap(),
+            changed_path.descriptor_digest().unwrap()
+        );
     }
 
     #[test]

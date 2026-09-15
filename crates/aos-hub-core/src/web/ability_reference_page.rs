@@ -252,22 +252,6 @@ pub fn section(
         html.push_str("</ul>");
     }
 
-    if !reference.ownership.is_empty() {
-        html.push_str("<h3>Structured effect ownership</h3><ul>");
-        for path in &reference.ownership {
-            let display = if path.as_slice().is_empty() {
-                "/".to_string()
-            } else {
-                path.as_slice()
-                    .iter()
-                    .map(|component| component.as_str())
-                    .collect::<Vec<_>>()
-                    .join("/")
-            };
-            let _ = write!(html, "<li><code>{}</code></li>", escape(&display));
-        }
-        html.push_str("</ul>");
-    }
 
     if !reference.handlers.is_empty() {
         html.push_str("<h3>Structured effect handlers</h3>");
@@ -445,7 +429,6 @@ mod tests {
         AbilityActivationMode, AggregationContract, AggregationScope, EnvironmentId,
         ExecutionStage, InstanceId, InterfaceDescriptor, InterfaceDocument, InterfaceName,
         LifecycleSemantics, LocalKey, PlanId, RequiredFeature, RequirementDeclaration, RevisionId,
-        ScopePath,
     };
     use aos_contract::Sha256Digest;
 
@@ -563,7 +546,6 @@ mod tests {
                 fallback: None,
             }],
             handlers: Vec::new(),
-            ownership: vec![ScopePath::new(vec![key("services")]).expect("scope")],
         };
         let canonical_json = reference.canonical_json().expect("canonical reference");
         PackageAbilityReferencePanel {

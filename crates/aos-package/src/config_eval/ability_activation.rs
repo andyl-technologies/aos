@@ -2522,6 +2522,13 @@ mod tests {
                 source: artifact.clone(),
             },
             artifacts: vec![artifact.clone()],
+            interfaces: Default::default(),
+            guarantees: Default::default(),
+            package_module: aos_ability_model::ModuleLocator {
+                artifact: artifact.clone(),
+                path: aos_ability_model::RelativePath::new("module.nix")
+                    .expect("fixture package module path is valid"),
+            },
             exports: vec![ExportDeclaration {
                 name: local("managed-configuration"),
                 interface: interface_key.clone(),
@@ -2540,7 +2547,6 @@ mod tests {
                     },
                 )]),
             },
-            ownership: vec![ScopePath::root()],
         };
         let owner_package = package
             .content_digest()
@@ -2727,7 +2733,6 @@ mod tests {
             providers: Vec::new(),
             handlers: BTreeMap::new(),
         };
-        package.ownership.clear();
         package
     }
 

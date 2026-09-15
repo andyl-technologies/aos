@@ -219,6 +219,13 @@ fn stateful_package() -> PackageDocument {
             source: artifact.clone(),
         },
         artifacts: vec![artifact.clone()],
+        interfaces: Default::default(),
+        guarantees: Default::default(),
+        package_module: aos_ability_model::ModuleLocator {
+            artifact: artifact.clone(),
+            path: aos_ability_model::RelativePath::new("module.nix")
+                .expect("fixture package module path is valid"),
+        },
         exports: vec![ExportDeclaration {
             name: LocalKey::new("stateful").unwrap(),
             interface,
@@ -229,7 +236,6 @@ fn stateful_package() -> PackageDocument {
             providers: vec![provider],
             handlers: BTreeMap::new(),
         },
-        ownership: Vec::new(),
     }
 }
 
@@ -269,13 +275,19 @@ impl TestFixture {
                 source: artifact.clone(),
             },
             artifacts: Vec::new(),
+            interfaces: Default::default(),
+            guarantees: Default::default(),
+            package_module: aos_ability_model::ModuleLocator {
+                artifact: artifact.clone(),
+                path: aos_ability_model::RelativePath::new("module.nix")
+                    .expect("fixture package module path is valid"),
+            },
             exports: Vec::new(),
             requirements: Vec::new(),
             implementation: PackageImplementation {
                 providers: Vec::new(),
                 handlers: BTreeMap::new(),
             },
-            ownership: Vec::new(),
         };
         let manifest_bytes = encode_canonical(&package).unwrap();
         let ability = AbilityPackageMeta {
