@@ -3,38 +3,8 @@
   lib,
   mkDerivation,
 }: let
-  selfReferentialDependency = mkDerivation {
-    pname = "ability-package-smoke-self-reference";
-    version = "1.0.0";
-    src = null;
-    dontNukeRefs = true;
-
-    phases = [
-      {
-        name = "install";
-        script = ''
-          mkdir -p "$out"
-          printf '%s\n' "$out" > "$out/self-reference"
-        '';
-      }
-    ];
-  };
-  providerArtifact = mkDerivation {
-    pname = "ability-package-smoke-provider";
-    version = "1.0.0";
-    src = null;
-    runtimeDeps = [selfReferentialDependency];
-
-    phases = [
-      {
-        name = "install";
-        script = ''
-          mkdir -p "$out"
-          cp ${./_ability-package-smoke}/default.nix "$out/default.nix"
-          printf '%s\n' '${selfReferentialDependency}' > "$out/transitive-dependency"
-        '';
-      }
-    ];
+  providerArtifact = import ./_ability-package-smoke-provider.nix {
+    inherit mkDerivation;
   };
 in
   mkDerivation {
