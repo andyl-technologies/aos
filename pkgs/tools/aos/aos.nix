@@ -580,6 +580,7 @@ in
           ${lib.optionalString (!isDarwinCross) ''
         mkdir -p "$packageRuntime/libexec"
         mv "$out/bin/aos-configuration-provider" "$packageRuntime/libexec/"
+        mv "$out/bin/aos-image-rollout-provider" "$packageRuntime/libexec/"
         mkdir -p "$packageRuntime/share/aos/providers"
         cp ${./_configuration-provider/provider.nix} \
           "$packageRuntime/share/aos/providers/configuration-materialization.nix"
@@ -608,6 +609,7 @@ in
         test "$(readlink "$packageRuntime/libexec/aos-setpriv")" = "${util-linux}/bin/setpriv"
         test "$(readlink "$packageRuntime/libexec/aos-socat")" = "${socat}/bin/socat"
         test -x "$packageRuntime/libexec/aos-configuration-provider"
+        test -x "$packageRuntime/libexec/aos-image-rollout-provider"
         test -s "$packageRuntime/share/aos/providers/configuration-materialization.nix"
       ''}
           ${lib.optionalString (!isDarwinCross) ''
