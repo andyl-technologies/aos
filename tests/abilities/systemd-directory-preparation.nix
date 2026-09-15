@@ -152,8 +152,14 @@
     includeFilesystemProvider = false;
   };
   pendingRequests = pendingEvaluation.config.aos.abilities.compositionPendingRequests;
-  childRequestKey = builtins.head (builtins.attrNames pendingRequests);
-  child = pendingRequests.${childRequestKey};
+  pendingChildren = builtins.attrValues pendingRequests;
+  child = builtins.head (builtins.filter
+    (candidate: candidate.requirement == "directory-preparation")
+    pendingChildren);
+  effectsChild = builtins.head (builtins.filter
+    (candidate: candidate.requirement == "service-effects")
+    pendingChildren);
+  childRequestKey = child.request;
   resolvedEvaluation = evaluate {
     includeFilesystemProvider = true;
     bindings =
@@ -164,6 +170,12 @@
           implementation = "aos-filesystem-provider:filesystem-entry";
           providerInstance = "aos-filesystem-provider:filesystem";
           slot = child.slot;
+        };
+        "test:service-effects" = {
+          request = effectsChild.request;
+          implementation = "systemd:systemd-service-effects";
+          providerInstance = "systemd:manager";
+          slot = effectsChild.slot;
         };
       };
   };
@@ -178,7 +190,7 @@
     (builtins.head serviceResource.realization.units).sections
   );
 in
-  assert builtins.length (builtins.attrNames pendingRequests) == 1;
+  assert builtins.length (builtins.attrNames pendingRequests) == 2;
   assert child.declaration.parameters.destination == "/var/lib/prepared/data";
   assert child.declaration.parameters.owner == "data-owner";
   assert child.declaration.parameters.group == "data-group";
