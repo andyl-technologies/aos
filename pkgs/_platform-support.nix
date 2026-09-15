@@ -773,8 +773,7 @@ let
     "containers/_containerd-tests/contract.nix" = "linux-only-test-source";
     "containers/_containerd-tests/lifecycle.nix" = "linux-only-test-source";
     "db/_etcd-config/module.nix" = "linux-only-config-source";
-    "kubernetes/_cilium-config/module.nix" = "linux-only-config-source";
-    "kubernetes/_cilium-package-module.nix" = "linux-only-config-source";
+    "kubernetes/_cilium-abilities/module.nix" = "linux-only-config-source";
     "kubernetes/_cloudcore-config/module.nix" = "linux-only-config-source";
     "kubernetes/_edgecore-config/module.nix" = "linux-only-config-source";
     "kubernetes/_k3s-ability-provider/default.nix" = "target-independent-source";

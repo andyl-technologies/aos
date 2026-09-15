@@ -968,7 +968,8 @@
   sharedGuarantee = {
     name = "aos.guarantee.test";
     version = 1;
-    descriptor = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+    semantics = "The selected provider preserves the shared test invariant.";
+    description = "Preserves the shared invariant used by the merge fixture.";
   };
   sharedRequirement = {
     description = "Exercises canonical merging of repeated service requirements.";
@@ -976,7 +977,7 @@
     abi = 1;
     descriptor = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
     methods = ["observe"];
-    guarantees = [sharedGuarantee];
+    guarantees = ["shared"];
     strength = "required";
     fallback = null;
   };
@@ -988,6 +989,7 @@
         name = "multi-service-guarantee";
         module = {
           config.aos.abilities = lib.mkMerge [
+            {guarantees.shared = sharedGuarantee;}
             {requirementTemplates.shared = sharedRequirement;}
             {requirementTemplates.shared = sharedRequirement;}
           ];
@@ -1167,7 +1169,7 @@ in
   assert builtins.attrNames multiServiceFixedPoint.config.aos.abilities.requests
   == ["multi-service:helper-lifecycle" "multi-service:main-lifecycle"];
   assert multiServiceGuaranteeFixedPoint.config.aos.abilities.requirementTemplates."multi-service-guarantee:shared".guarantees
-  == [sharedGuarantee];
+  == ["multi-service-guarantee:shared"];
   assert validates staticTemplateService;
   assert builtins.attrNames expandedStaticTemplate.requirementTemplates
   == ["service-instantiation" "service-template-definition"];

@@ -28,7 +28,7 @@ in
 
     # One module owns Cilium's configuration surface, k3s contributions, and
     # ability requirements. Its declarations are the write-authority source.
-    abilities = ./_cilium-package-module.nix;
+    abilities = ./_cilium-abilities;
 
     phases = [
       {

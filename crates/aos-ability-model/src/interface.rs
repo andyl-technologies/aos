@@ -14,7 +14,7 @@ use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
 use crate::document::ModuleLocator;
-use crate::identity::{InterfaceKey, InterfaceName, LocalKey};
+use crate::identity::{InterfaceKey, InterfaceName, InterfaceSelector, LocalKey};
 use crate::plan::AccessMode;
 use crate::schema::ValueSchema;
 use crate::value::{AbilityValue, ArtifactIdentity, ArtifactReference, ResourceLifetime};
@@ -308,8 +308,8 @@ pub enum RequirementStrength {
 pub struct RequirementDeclaration {
     /// Names the requirement inside the provider implementation.
     pub alias: LocalKey,
-    /// Lists exact accepted interface descriptors in canonical order.
-    pub accepted_interfaces: Vec<InterfaceKey>,
+    /// Lists provider-neutral accepted interface selectors in canonical order.
+    pub accepted_interfaces: Vec<InterfaceSelector>,
     /// Names required methods in canonical order.
     pub methods: Vec<LocalKey>,
     /// Names required guarantees in canonical order.
@@ -723,7 +723,7 @@ mod tests {
             },
             requirements: vec![RequirementDeclaration {
                 alias: LocalKey::new("lower").expect("valid requirement alias"),
-                accepted_interfaces: vec![accepted_interface],
+                accepted_interfaces: vec![accepted_interface.into()],
                 methods: vec![LocalKey::new("observe").expect("valid method name")],
                 guarantees: vec![guarantee],
                 strength: RequirementStrength::Advisory,

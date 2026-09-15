@@ -540,7 +540,7 @@ mod tests {
         let interface_key = interface.interface_key().expect("interface key");
         let requirement = RequirementDeclaration {
             alias: LocalKey::new("runtime").expect("requirement alias"),
-            accepted_interfaces: vec![interface_key.clone()],
+            accepted_interfaces: vec![interface_key.clone().into()],
             methods: Vec::new(),
             guarantees: Vec::new(),
             strength: RequirementStrength::Required,
