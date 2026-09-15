@@ -1485,7 +1485,7 @@ mod tests {
 
     struct WritesPackageEntry;
 
-    struct WritesAbilityPackageEntries;
+    struct WritesPackageContractEntries;
 
     #[derive(Default)]
     struct MockRegistrySigner {
@@ -1541,7 +1541,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl RegistryEntryAuthor for WritesAbilityPackageEntries {
+    impl RegistryEntryAuthor for WritesPackageContractEntries {
         async fn author_entry(
             &mut self,
             isolated_registry: &Path,
@@ -1795,7 +1795,7 @@ mod tests {
             source.to_str().context("test path encoding")?,
             &expected_clone,
         )?;
-        let mut expected_author = WritesAbilityPackageEntries;
+        let mut expected_author = WritesPackageContractEntries;
         for entry in &transaction.entries {
             expected_author.author_entry(&expected_clone, entry).await?;
         }
@@ -1804,7 +1804,7 @@ mod tests {
 
         let output = temporary.path().join("prepared");
         let report = transaction
-            .prepare(&source, &output, &mut WritesAbilityPackageEntries)
+            .prepare(&source, &output, &mut WritesPackageContractEntries)
             .await?;
 
         assert_eq!(report.entry_count, 2);
