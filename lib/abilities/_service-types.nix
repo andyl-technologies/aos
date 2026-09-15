@@ -1096,6 +1096,14 @@
         type = types.optional (types.deferredResult storagePath);
         optional = true;
       };
+      owner = {
+        type = types.optional (types.deferredResult principalName);
+        optional = true;
+      };
+      group = {
+        type = types.optional (types.deferredResult groupName);
+        optional = true;
+      };
     };
   };
   hostPathView = types.record {

@@ -89,7 +89,11 @@
     && outputSchema "rootDirectoryView" "materialize" "root-directory-path"
     == requestSchemas.isolation.fields.root_directory.value
     && outputSchema "groupResolution" "resolve" "group-name"
-    == requestSchemas.identity.fields.supplementary_groups.element;
+    == requestSchemas.identity.fields.supplementary_groups.element
+    && outputSchema "principalResolution" "resolve" "principal-name"
+    == requestSchemas.storageAllocation.fields.owner.value
+    && outputSchema "groupResolution" "resolve" "group-name"
+    == requestSchemas.storageAllocation.fields.group.value;
   activationOutputsAreReferences =
     outputSchema "scheduledActivation" "realize" "activation-resource"
     == resourceReferenceSchema
@@ -376,6 +380,15 @@
   invalidPlacedStorageAllocation =
     placedStorageAllocation
     // {requested_path = "relative/state";};
+  ownedStorageAllocation =
+    placedStorageAllocation
+    // {
+      owner = resultOf "service-principal" "principal-name";
+      group = resultOf "service-group" "group-name";
+    };
+  invalidOwnedStorageAllocation =
+    placedStorageAllocation
+    // {owner = "invalid/principal";};
   restrictedCapabilityBounds = {
     kind = "restricted";
     capabilities = ["CAP_NET_BIND_SERVICE"];
@@ -691,6 +704,8 @@ in
   assert interfaces.persistentStorageAllocation.document.interface.methods.allocate.outputs.retained-resource.lifetime == "persistent";
   assert succeedsAs serviceTypes.storageAllocation placedStorageAllocation;
   assert !succeedsAs serviceTypes.storageAllocation invalidPlacedStorageAllocation;
+  assert succeedsAs serviceTypes.storageAllocation ownedStorageAllocation;
+  assert !succeedsAs serviceTypes.storageAllocation invalidOwnedStorageAllocation;
   assert succeedsAs serviceTypes.capabilityBounds restrictedCapabilityBounds;
   assert succeedsAs serviceTypes.capabilityBounds unrestrictedCapabilityBounds;
   assert succeedsAs serviceTypes.resourceLimit maximumResourceLimit;
