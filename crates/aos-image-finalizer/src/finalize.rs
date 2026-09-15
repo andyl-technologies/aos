@@ -161,7 +161,7 @@ pub async fn prepare_filesystems(
     )
     .await?;
 
-    if assembly.schema_version == crate::assembly::UNSIGNED_IMAGE_ASSEMBLY_V4 {
+    if assembly.schema_version == crate::assembly::UNSIGNED_IMAGE_ASSEMBLY_V3 {
         verify_static_ability_contract_attachments(
             assembly_root,
             assembly,
@@ -234,9 +234,7 @@ pub async fn prepare_filesystems(
 
     let capabilities = if matches!(
         assembly.schema_version.as_str(),
-        crate::assembly::UNSIGNED_IMAGE_ASSEMBLY_V2
-            | crate::assembly::UNSIGNED_IMAGE_ASSEMBLY_V3
-            | crate::assembly::UNSIGNED_IMAGE_ASSEMBLY_V4
+        crate::assembly::UNSIGNED_IMAGE_ASSEMBLY_V2 | crate::assembly::UNSIGNED_IMAGE_ASSEMBLY_V3
     ) {
         let config = input.join("kernel.config");
         capture_copy(

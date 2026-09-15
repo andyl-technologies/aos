@@ -671,7 +671,7 @@ class Scenario:
         finalized_facts = {entry["id"]: entry for entry in finalized["artifacts"]}
         files = {entry["kind"]: entry for entry in assembly["files"]}
         if (
-            assembly["schema_version"] != "aos.image.unsigned-assembly/v4"
+            assembly["schema_version"] != "aos.image.unsigned-assembly/v3"
             or assembly["release_id"] != expected["release_id"]
             or assembly["platform"] != PLATFORM
             or assembly["system_variant"] != IMAGE_VARIANT
@@ -985,7 +985,7 @@ class Scenario:
 
     def _validate_image_controls(self) -> None:
         if (
-            self.assembly["schema_version"] != "aos.image.unsigned-assembly/v4"
+            self.assembly["schema_version"] != "aos.image.unsigned-assembly/v3"
             or self.assembly["release_id"] != self.request["release_id"]
             or self.assembly["platform"] != PLATFORM
             or self.assembly["system_variant"] != IMAGE_VARIANT
