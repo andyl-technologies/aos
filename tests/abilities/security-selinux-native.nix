@@ -66,6 +66,24 @@ in
   ];
   assert requests."refpolicy:selinux-config".parameters.destination == "/etc/selinux/config";
   assert requests."refpolicy:semanage-config".parameters.destination == "/etc/selinux/semanage.conf";
+  assert config.aos.contributions.kernelParameters.refpolicy
+  == [
+    "enforcing=0"
+    "security=selinux"
+    "selinux=1"
+  ];
+  assert config.aos.contributions.filesystemTrees
+  == [
+    {
+      target = "selinux/refpolicy/contexts";
+      source = {
+        artifact = lib.abilities.packageOutput {package = "refpolicy";};
+        path = "etc/selinux/refpolicy/contexts";
+      };
+    }
+  ];
+  assert config.aos.contributions.runtimeChecks.selinux.description == "SELinux checks";
+  assert lib.abilities.types.isPortableOptionTree evaluated.options.aos.contributions;
   assert config.systemd.services == {};
   assert !(config.environment.etc ? "selinux/config");
   assert !(config.environment.etc ? "selinux/semanage.conf"); true

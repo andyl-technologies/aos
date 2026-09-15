@@ -2,6 +2,7 @@
 {
   config,
   lib,
+  packageName,
   ...
 }: let
   cfg = config.aos.security.selinux;
@@ -394,6 +395,41 @@ in {
   config = lib.mkMerge [
     {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);}
     (lib.mkIf cfg.enable {
+      aos.contributions = {
+        kernelParameters.refpolicy = [
+          "enforcing=0"
+          "security=selinux"
+          "selinux=1"
+        ];
+        filesystemTrees = [
+          {
+            target = "selinux/${cfg.policy}/contexts";
+            source = {
+              artifact = lib.abilities.packageOutput {package = packageName;};
+              path = "etc/selinux/refpolicy/contexts";
+            };
+          }
+        ];
+        runtimeChecks.selinux = {
+          description = "SELinux checks";
+          checks = [
+            {
+              name = "selinuxfs";
+              description = "/sys/fs/selinux is present";
+              script = ''
+                vm.succeed("test -d /sys/fs/selinux")
+              '';
+            }
+            {
+              name = "enforce-file";
+              description = "SELinux enforce file exists";
+              script = ''
+                vm.succeed("test -f /sys/fs/selinux/enforce")
+              '';
+            }
+          ];
+        };
+      };
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}]
         ++ builtins.map (entry: entry.configured) contributions

@@ -75,6 +75,20 @@ in
   == "/etc/polkit-1/rules.d/10-aos.rules";
   assert requests."polkit:packaged-actions-file".parameters.destination
   == "/etc/polkit-1/actions/org.freedesktop.policykit.policy";
+  assert config.aos.contributions.pamServices."polkit-1"
+  == {
+    unixAuth = true;
+    startSession = false;
+    setLoginUid = false;
+  };
+  assert config.aos.contributions.wrappers.pkexec.source
+  == {
+    artifact = lib.abilities.packageOutput {package = "polkit";};
+    path = "bin/pkexec";
+  };
+  assert config.aos.contributions.runtimeChecks.polkit.description
+  == "polkit service and privilege checks";
+  assert lib.abilities.types.isPortableOptionTree evaluated.options.aos.contributions;
   assert config.systemd.services == {};
   assert !(config.environment.etc ? "polkit-1/rules.d/10-aos.rules");
   assert !(config.environment.etc ? "polkit-1/actions/org.freedesktop.policykit.policy");
