@@ -3,6 +3,8 @@ args @ {lib, ...}: let
   returnPending = args.returnPending or false;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   interfaces = serviceManagement.interfaces;
+  moduleDeclarationFor = interface:
+    serviceManagement.moduleDeclarations.${interface.alias};
   lifecycleDeclaration =
     interfaces.lifecycle.declaration
     // {
@@ -20,6 +22,11 @@ args @ {lib, ...}: let
         visibility = "protected";
         lifetime = "instance";
       };
+    };
+  lifecycleModuleDeclaration =
+    moduleDeclarationFor interfaces.lifecycle
+    // {
+      outputs = lifecycleDeclaration.outputs;
     };
   lifecycleInterface =
     interfaces.lifecycle
@@ -115,10 +122,10 @@ args @ {lib, ...}: let
   providerModule = {
     config.aos.abilities = {
       interfaces = {
-        service-instance = interfaces.serviceInstance.declaration;
-        service-lifecycle = lifecycleDeclaration;
-        service-dependencies = interfaces.dependencies.declaration;
-        network-readiness = interfaces.networkReadiness.declaration;
+        service-instance = moduleDeclarationFor interfaces.serviceInstance;
+        service-lifecycle = lifecycleModuleDeclaration;
+        service-dependencies = moduleDeclarationFor interfaces.dependencies;
+        network-readiness = moduleDeclarationFor interfaces.networkReadiness;
       };
       implementations = {
         service-lifecycle = {
