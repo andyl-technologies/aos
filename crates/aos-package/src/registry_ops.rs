@@ -44,6 +44,7 @@
 //! dumb-HTTP object store metadata is refreshed so plain-file origins stay
 //! cloneable.
 
+mod ability_artifacts;
 mod attestation;
 mod cache_validation;
 mod channels;
