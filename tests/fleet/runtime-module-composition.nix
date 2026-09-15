@@ -8,30 +8,49 @@
 ##! reboot consumes the retained immutable module set rather than the dirty
 ##! authoring worktree.
 {
+  lib,
   mkSystem,
   pkgs,
   systems,
+  observerForwardEndpoint ? null,
+  extraRuntimeModules ? [],
+  extraHostModule ? "",
+  additionalClosures ? [],
   ...
 }: let
-  runtimeSystem = mkSystem [
-    ../../systems/server-test.nix
-    {
-      aos.packages = {
-        nginx = {
-          package = pkgs.nginx;
-          bundle = true;
+  observerFixture = import ./_ability-execution-observer.nix {
+    inherit lib pkgs;
+    forwardEndpoint = observerForwardEndpoint;
+  };
+  runtimeSystem = mkSystem (
+    [
+      ../../systems/server-test.nix
+      {
+        aos.packages = {
+          nginx = {
+            package = pkgs.nginx;
+            bundle = true;
+          };
+          envoy = {
+            package = pkgs.envoy;
+            bundle = true;
+          };
+          k3s-worker = {
+            package = pkgs.k3s-worker;
+            bundle = true;
+          };
         };
-        envoy = {
-          package = pkgs.envoy;
-          bundle = true;
-        };
-        k3s-worker = {
-          package = pkgs.k3s-worker;
-          bundle = true;
-        };
-      };
-    }
-  ];
+
+        imports = [observerFixture.module];
+      }
+    ]
+    ++ extraRuntimeModules
+  );
+  bootInitrdIdentityModule = {config, ...}: {
+    environment.etc."aos/fleet-boot-initrd".text = ''
+      ${config.system.build.initrd}/initrd.img
+    '';
+  };
 in {
   name = "runtime-module-composition";
   timeout = 1800;
@@ -43,6 +62,7 @@ in {
 
   machines.runtime = {
     system = runtimeSystem;
+    extraModules = [bootInitrdIdentityModule];
     memoryMiB = 4096;
     varSizeMiB = 2048;
     packages = [
@@ -52,12 +72,19 @@ in {
     ];
     extraClosures = [
       pkgs.diffutils
+      pkgs.findutils
       pkgs.git
       pkgs.grep
       pkgs.nix
-    ];
+      pkgs.util-linux
+      observerFixture.package
+    ]
+    ++ additionalClosures;
     metadata."host.nix" = ''
-      {
+      { lib, ... }: {
+        ${observerFixture.hostModule}
+        ${extraHostModule}
+
         aos.networking.hostName = "runtime-modules";
 
         environment.etc."runtime-modules/platform.conf" = {
@@ -81,17 +108,42 @@ in {
     # python
     ''
       import base64
+      import hashlib
       import json
+      import shlex
       import textwrap
+      from pathlib import Path
 
       APM = "${pkgs.aos.apm}/bin/apm"
       APR = "${pkgs.aos.apr}/bin/apr"
       AOS = "${pkgs.aos}/bin/aos"
       CURL = "${pkgs.curl}/bin/curl"
+      COREUTILS = "${pkgs.coreutils}/bin"
+      FIND = "${pkgs.findutils}/bin/find"
+      FLOCK = "${pkgs.util-linux}/bin/flock"
       JQ = "${pkgs.jq}/bin/jq"
       NIX_STORE = "${pkgs.nix}/bin/nix-store"
       SHA256SUM = "${pkgs.coreutils}/bin/sha256sum"
+      SYSTEMCTL = "${pkgs.systemd}/bin/systemctl"
+      SYSTEMD_RUN = "${pkgs.systemd}/bin/systemd-run"
       XDG_CACHE_HOME = "/var/cache/aos-runtime-module-test"
+      BOUNDARY_ROOT = "/var/lib/aos/ability-boundary-test"
+      CONTINUE = f"{BOUNDARY_ROOT}/continue.json"
+      EVENTS = f"{BOUNDARY_ROOT}/events.jsonl"
+      HELD_EVENT = f"{BOUNDARY_ROOT}/held-event.json"
+      RESUMED_EVENT = f"{BOUNDARY_ROOT}/resumed-event.json"
+      TARGET = f"{BOUNDARY_ROOT}/target.json"
+      OBSERVER_CONTROLLER = (
+          "${observerFixture.controller}/bin/aos-ability-boundary-controller"
+      )
+      PACKAGE_RUNTIME = (
+          "${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped"
+      )
+      OBSERVER_FORWARD_ENABLED = ${
+        if observerForwardEndpoint == null
+        then "False"
+        else "True"
+      }
 
 
       def wait_for_activation():
@@ -117,6 +169,345 @@ in {
           runtime.succeed(
               f"printf '%s' '{encoded}' | base64 -d > '{path}'"
           )
+
+
+      def read_json(path):
+          return json.loads(runtime.succeed(
+              f"{COREUTILS}/cat {shlex.quote(path)}"
+          ))
+
+
+      def write_canonical(path, value):
+          payload = json.dumps(
+              value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+          ).encode()
+          runtime.succeed(
+              f"{OBSERVER_CONTROLLER} write-canonical {shlex.quote(path)} "
+              f"{payload.hex()}"
+          )
+
+
+      def operation_matches_selector(operation, selector):
+          resource = operation["target"]["resource"]
+          return (
+              operation["interface"]["name"] == selector["interface"]
+              and operation["method"] == selector["method"]
+              and resource["provider"]["key"] == selector["provider_key"]
+              and resource["key"] == selector["resource_key"]
+          )
+
+
+      def selector_for(operation):
+          resource = operation["target"]["resource"]
+          return {
+              "interface": operation["interface"]["name"],
+              "method": operation["method"],
+              "provider_key": resource["provider"]["key"],
+              "resource_key": resource["key"],
+          }
+
+
+      def activation_state(generation):
+          generation_root = f"/var/lib/profiles/system/gen-{generation}"
+          activation = read_json(f"{generation_root}/activation.json")
+          transaction = activation["native_ability_transaction"]
+          transaction_root = f"{generation_root}/ability-transactions/{transaction}"
+          bundle_path = f"{transaction_root}/plan-bundle.json"
+          bundle_bytes = runtime.succeed(
+              f"{COREUTILS}/cat {shlex.quote(bundle_path)}"
+          ).encode()
+          bundle = json.loads(bundle_bytes)
+          operations = bundle["transition"]["effect_document"]["operations"]
+          operation_by_key = {
+              json.dumps(operation["key"], sort_keys=True): (ordinal, operation)
+              for ordinal, operation in enumerate(operations)
+          }
+          pairs = []
+          for edge in bundle["transition"]["effect_document"]["edges"]:
+              if edge["kind"] != "required-success":
+                  continue
+              source = operation_by_key.get(
+                  json.dumps(edge["from"].get("key"), sort_keys=True)
+              )
+              target = operation_by_key.get(
+                  json.dumps(edge["to"].get("key"), sort_keys=True)
+              )
+              if source is None or target is None:
+                  continue
+              if source[1]["method"] == "materialize" and target[1]["method"] == "update":
+                  pairs.append((source, target, edge))
+          assert len(pairs) == 1, (pairs, bundle)
+          publish, dependent, edge = pairs[0]
+          return {
+              "activation": activation,
+              "bundle": bundle,
+              "bundle_bytes": bundle_bytes,
+              "dependent": dependent,
+              "edge": edge,
+              "generation": generation,
+              "plan": bundle["plan"],
+              "publish": publish,
+              "root": transaction_root,
+              "transaction": transaction,
+          }
+
+
+      def arm_boundary(sequence, selector):
+          runtime.succeed(
+              f"{COREUTILS}/rm -f {shlex.quote(HELD_EVENT)} "
+              f"{shlex.quote(RESUMED_EVENT)} {shlex.quote(CONTINUE)}"
+          )
+          write_canonical(TARGET, {
+              "action": "disconnect",
+              "boundary": "effect-returned",
+              "purpose": "effect",
+              "sequence": sequence,
+              **selector,
+          })
+
+
+      def held_boundary(sequence, selector):
+          runtime.wait_until_succeeds(
+              f"test -s {shlex.quote(HELD_EVENT)}", timeout=300
+          )
+          held = read_json(HELD_EVENT)
+          event = held["event"]
+          assert held["sequence"] == sequence, held
+          assert event["boundary"] == "effect-returned", held
+          assert event["purpose"] == "effect", held
+          assert event["cancelled"] is False, held
+          assert operation_matches_selector(
+              event["operation"]["operation"], selector
+          ), held
+          if OBSERVER_FORWARD_ENABLED:
+              assert held["forwarded_acknowledgement"] == {
+                  "action": "continue",
+                  "event_digest": held["event_digest"],
+                  "schema": "aos.ability-execution-boundary-ack/v1",
+              }, held
+          return held
+
+
+      def resumed_boundary(sequence, selector, transaction, plan):
+          runtime.wait_until_succeeds(
+              f"test -s {shlex.quote(RESUMED_EVENT)}", timeout=300
+          )
+          resumed = read_json(RESUMED_EVENT)
+          event = resumed["event"]
+          assert resumed["sequence"] == sequence, resumed
+          assert event["boundary"] == "reconciliation-returned", resumed
+          assert event["purpose"] == "reconcile", resumed
+          assert event["transaction"] == transaction, resumed
+          assert event["operation"]["plan"] == plan, resumed
+          assert operation_matches_selector(
+              event["operation"]["operation"], selector
+          ), resumed
+          if OBSERVER_FORWARD_ENABLED:
+              assert resumed["forwarded_acknowledgement"] == {
+                  "action": "continue",
+                  "event_digest": resumed["event_digest"],
+                  "schema": "aos.ability-execution-boundary-ack/v1",
+              }, resumed
+          return resumed
+
+
+      def release_reconciliation(sequence):
+          write_canonical(CONTINUE, {"sequence": sequence})
+
+
+      def start_apply(unit, eval_root):
+          runtime.succeed(
+              f"{SYSTEMCTL} reset-failed {shlex.quote(unit)} 2>/dev/null || true; "
+              f"{SYSTEMD_RUN} --quiet --unit={shlex.quote(unit)} "
+              "--property=Type=exec "
+              f"--setenv=XDG_CACHE_HOME={XDG_CACHE_HOME} "
+              f"{APM} config apply --eval-root {shlex.quote(eval_root)}"
+          )
+
+
+      def wait_apply(unit, success):
+          runtime.wait_until_succeeds(
+              f"state=$({SYSTEMCTL} show -p ActiveState --value "
+              f"{shlex.quote(unit)}); test \"$state\" = inactive -o \"$state\" = failed",
+              timeout=600,
+          )
+          status = runtime.succeed(
+              f"{SYSTEMCTL} show -p ExecMainStatus --value {shlex.quote(unit)}"
+          ).strip()
+          assert (status == "0") == success, (unit, status, runtime.succeed(
+              f"journalctl -u {shlex.quote(unit)} --no-pager 2>&1 || true"
+          ))
+
+
+      def kill_exact_activation_runtime():
+          killed = runtime.succeed(textwrap.dedent(f"""
+              set -eu
+              matches=""
+              for executable in /proc/[0-9]*/exe; do
+                target=$({COREUTILS}/readlink "$executable" 2>/dev/null || true)
+                [ "$target" = {shlex.quote(PACKAGE_RUNTIME)} ] || continue
+                process=''${{executable#/proc/}}
+                process=''${{process%/exe}}
+                command=$({COREUTILS}/tr '\\000' ' ' \
+                  < "/proc/$process/cmdline" 2>/dev/null || true)
+                case " $command " in
+                  *" __activate-config "*) matches="$matches $process" ;;
+                esac
+              done
+              set -- $matches
+              [ "$#" -eq 1 ]
+              kill -KILL "$1"
+              printf '%s\\n' "$1"
+          """))
+          assert killed.strip().isdigit(), killed
+
+
+      def disable_automatic_activation_recovery():
+          drop_in_directory = "/run/systemd/system/aos-activate.service.d"
+          drop_in = f"{drop_in_directory}/90-runtime-recovery-test.conf"
+          runtime.succeed(textwrap.dedent(f"""
+              set -eu
+              {COREUTILS}/mkdir -p {drop_in_directory}
+              {COREUTILS}/printf '%s\\n' '[Service]' 'Restart=no' > {drop_in}
+              {SYSTEMCTL} daemon-reload
+              test "$({SYSTEMCTL} show aos-activate.service -p Restart --value)" = no
+          """))
+          return drop_in
+
+
+      def resume_activation_recovery(drop_in):
+          runtime.succeed(textwrap.dedent(f"""
+              set -eu
+              {COREUTILS}/rm -f {shlex.quote(drop_in)}
+              {SYSTEMCTL} daemon-reload
+              {SYSTEMCTL} reset-failed aos-activate.service
+              {SYSTEMCTL} --no-block start aos-activate.service
+          """))
+
+
+      def current_authority(transaction, plan):
+          assert plan.startswith("sha256:"), plan
+          authority = (
+              f"/run/apm/ability-authority/{plan.removeprefix('sha256:')}/"
+              f"{transaction}.json"
+          )
+          runtime.wait_until_succeeds(
+              f"test -s {shlex.quote(authority)}", timeout=120
+          )
+          return read_json(authority)
+
+
+      def authority_assignment_key(assignment):
+          return json.dumps({
+              "implementation": assignment["implementation"],
+              "interface": assignment["interface"],
+              "provider": assignment["provider"],
+          }, separators=(",", ":"), sort_keys=True)
+
+
+      def assert_fresh_receiving_authority(before, after, plan):
+          for field in (
+              "schema", "policy_fence", "policy_revision", "resolution_policy",
+              "platform_policy", "transition_authority", "plan", "bindings",
+          ):
+              assert after[field] == before[field], (field, before, after)
+          assert after["plan"] == plan, after
+          before_assignments = {
+              authority_assignment_key(assignment): assignment
+              for assignment in before["provider_assignments"]
+          }
+          after_assignments = {
+              authority_assignment_key(assignment): assignment
+              for assignment in after["provider_assignments"]
+          }
+          assert after_assignments, after
+          assert after_assignments.keys() <= before_assignments.keys(), (
+              before_assignments, after_assignments,
+          )
+          for key, assignment in after_assignments.items():
+              assert assignment["incarnation"] != before_assignments[key]["incarnation"], (
+                  before_assignments[key], assignment,
+              )
+
+
+      def retained_path_inventory(generations):
+          inventory = {}
+          for generation in generations:
+              root = f"/var/lib/profiles/system/gen-{generation}"
+              inventory[root] = runtime.succeed(
+                  f"{FIND} {shlex.quote(root)} -xdev "
+                  f"-printf '%y\\t%p\\t%l\\n' | {COREUTILS}/sort"
+              )
+          return inventory
+
+
+      def collect_store_paths(value, paths):
+          if isinstance(value, dict):
+              for child in value.values():
+                  collect_store_paths(child, paths)
+          elif isinstance(value, list):
+              for child in value:
+                  collect_store_paths(child, paths)
+          elif isinstance(value, str) and value.startswith("/nix/store/"):
+              paths.add(value)
+
+
+      def retained_store_paths(generations, transaction_root):
+          paths = set()
+          for generation in generations:
+              collect_store_paths(read_json(
+                  f"/var/lib/profiles/system/gen-{generation}/manifest.json"
+              ), paths)
+          collect_store_paths(read_json(
+              f"{transaction_root}/plan-bundle.json"
+          ), paths)
+          assert paths, (generations, transaction_root)
+          return sorted(paths)
+
+
+      def retained_host_handoff(generation):
+          path = (
+              f"/var/lib/profiles/system/gen-{generation}/toplevel/initrd/"
+              "initrd-stage-contract.json"
+          )
+          contract_bytes = runtime.succeed(
+              f"{COREUTILS}/cat {shlex.quote(path)}"
+          ).encode()
+          contract = json.loads(contract_bytes)
+          handoff = contract["handoff"]
+          assert contract["schema_version"] == "aos.boot.initrd-stage-contract/v1"
+          assert contract["stage"] == "initrd"
+          assert handoff["to_stage"] == "host"
+          assert handoff["mechanism"] == "systemd-switch-root"
+          assert handoff["transferable_handles"] is False
+          assert handoff["receiving_stage_reauthorizes"] is True
+          assert handoff["receiving_stage_reacquires"] is True
+          assert {
+              "initrd_path": "/sysroot/var/lib/profiles/system",
+              "host_path": "/var/lib/profiles/system",
+          } in handoff["durable_state_roots"]
+          return contract_bytes
+
+
+      def actual_boot_initrd_identity(expected_path):
+          assert runtime.boot == "kernel", runtime.boot
+          assert runtime.initrd_path == expected_path, (
+              runtime.initrd_path, expected_path,
+          )
+          initrd_path = Path(runtime.initrd_path)
+          contract_path = initrd_path.parent / "initrd-stage-contract.json"
+          contract_bytes = contract_path.read_bytes()
+          contract = json.loads(contract_bytes)
+          digest = hashlib.sha256()
+          with initrd_path.open("rb") as initrd_file:
+              for chunk in iter(lambda: initrd_file.read(1024 * 1024), b""):
+                  digest.update(chunk)
+          assert contract["artifact"] == {
+              "path": "initrd.img",
+              "sha256": f"sha256:{digest.hexdigest()}",
+              "size_bytes": initrd_path.stat().st_size,
+          }, contract
+          return runtime.initrd_path, contract_bytes
 
 
       def apply_worktree(eval_root, dry_run=False):
@@ -185,7 +576,17 @@ in {
 
       wait_for_activation()
       runtime.succeed("systemctl is-active --quiet multi-user.target")
+      runtime.wait_for_unit(
+          "aos-ability-boundary-controller.service", timeout=180
+      )
+      runtime.succeed("test -S /run/aos-instrumentation/controller.sock")
       runtime.succeed(f"install -d -m 0700 {XDG_CACHE_HOME}")
+      expected_boot_initrd = runtime.succeed(
+          f"{COREUTILS}/cat /etc/aos/fleet-boot-initrd"
+      ).strip()
+      boot_initrd_identity_before = actual_boot_initrd_identity(
+          expected_boot_initrd
+      )
       platform_hash = runtime.succeed(
           f"{SHA256SUM} /run/aos-metadata/host.nix"
       ).split()[0]
@@ -574,6 +975,292 @@ in {
       assert runtime.succeed(
           f"{SHA256SUM} /run/aos-metadata/host.nix"
       ).split()[0] == platform_hash
+
+      # Select the production configuration publication from the checked plan,
+      # then interrupt that exact operation after its external result. No test
+      # catalog or copied provider identity participates in fault selection.
+      baseline_state = activation_state(configured)
+      publish_selector = selector_for(baseline_state["publish"][1])
+      process_services_module = services_module.replace(
+          'body = "nginx-runtime";',
+          'body = "nginx-runtime-process-loss";',
+      )
+      write_file(
+          "/run/runtime-module-fixtures/20-services-process-loss.nix",
+          process_services_module,
+      )
+      runtime.succeed(
+          f"{APM} config replace 20-services.nix "
+          "/run/runtime-module-fixtures/20-services-process-loss.nix"
+      )
+      recovery_drop_in = disable_automatic_activation_recovery()
+      arm_boundary("process-loss", publish_selector)
+      start_apply(
+          "runtime-module-process-loss.service",
+          "/run/runtime-module-composition-process-loss",
+      )
+
+      held_process = held_boundary("process-loss", publish_selector)
+      process_generation = current_generation()
+      assert process_generation != configured, (configured, process_generation)
+      process_state = activation_state(process_generation)
+      assert held_process["event"]["transaction"] == process_state["transaction"]
+      assert held_process["event"]["operation"]["plan"] == process_state["plan"]
+      assert operation_matches_selector(
+          process_state["publish"][1], publish_selector
+      )
+      process_handoff = retained_host_handoff(process_generation)
+      process_journal_before = runtime.succeed(
+          f"{COREUTILS}/cat {shlex.quote(process_state['root'] + '/execution.journal')}"
+      ).encode()
+      runtime.succeed("grep -q 'nginx-runtime-process-loss' /etc/nginx/nginx.conf")
+      assert runtime.succeed(
+          f"{CURL} --fail --silent http://127.0.0.1:18080/health"
+      ) == "nginx-runtime"
+
+      process_diagnostic_before = json.loads(runtime.succeed(
+          f"{AOS} --json ability diagnostic "
+          f"/var/lib/profiles/system/gen-{process_generation} "
+          f"{shlex.quote(process_state['transaction'])}"
+      ))
+      dependent_before = [
+          event for event in process_diagnostic_before["timeline"]["events"]
+          if event.get("node_ordinal") == process_state["dependent"][0]
+      ]
+      assert dependent_before == [], (dependent_before, process_diagnostic_before)
+
+      kill_exact_activation_runtime()
+      wait_apply("runtime-module-process-loss.service", False)
+      runtime.wait_until_succeeds(
+          f"{SYSTEMCTL} is-failed --quiet aos-activate.service", timeout=120
+      )
+      runtime.succeed(
+          f"{FLOCK} --exclusive --nonblock /run/apm/switch.lock {COREUTILS}/true"
+      )
+
+      unresolved_generations = [configured, process_generation]
+      inventory_before_gc = retained_path_inventory(unresolved_generations)
+      retained_paths = retained_store_paths(
+          unresolved_generations, process_state["root"]
+      )
+      clean_unresolved = json.loads(runtime.succeed(
+          f"{APM} --json clean --system --generations --keep 1", timeout=600
+      ))
+      generations_after_clean = clean_unresolved["configuration"][
+          "generations_after"
+      ]
+      assert configured in generations_after_clean, clean_unresolved
+      assert process_generation in generations_after_clean, clean_unresolved
+      runtime.succeed(f"{APM} gc", timeout=600)
+      assert retained_path_inventory(unresolved_generations) == inventory_before_gc
+      for path in retained_paths:
+          runtime.succeed(f"test -e {shlex.quote(path)}")
+      assert runtime.succeed(
+          f"{COREUTILS}/cat {shlex.quote(process_state['root'] + '/plan-bundle.json')}"
+      ).encode() == process_state["bundle_bytes"]
+      assert runtime.succeed(
+          f"{COREUTILS}/cat {shlex.quote(process_state['root'] + '/execution.journal')}"
+      ).encode() == process_journal_before
+      assert runtime.succeed(
+          f"{CURL} --fail --silent http://127.0.0.1:18080/health"
+      ) == "nginx-runtime"
+
+      resume_activation_recovery(recovery_drop_in)
+      resumed_process = resumed_boundary(
+          "process-loss",
+          publish_selector,
+          process_state["transaction"],
+          process_state["plan"],
+      )
+      process_diagnostic_reconciling = json.loads(runtime.succeed(
+          f"{AOS} --json ability diagnostic "
+          f"/var/lib/profiles/system/gen-{process_generation} "
+          f"{shlex.quote(process_state['transaction'])}"
+      ))
+      dependent_reconciling = [
+          event for event in process_diagnostic_reconciling["timeline"]["events"]
+          if event.get("node_ordinal") == process_state["dependent"][0]
+      ]
+      assert dependent_reconciling == [], (
+          dependent_reconciling, process_diagnostic_reconciling,
+      )
+      release_reconciliation("process-loss")
+      runtime.wait_until_succeeds(
+          f"{SYSTEMCTL} is-active --quiet aos-activate.service", timeout=600
+      )
+      assert current_generation() == process_generation
+      assert_package_configuration("nginx-runtime-process-loss")
+      assert retained_host_handoff(process_generation) == process_handoff
+
+      process_diagnostic = json.loads(runtime.succeed(
+          f"{AOS} --json ability diagnostic "
+          f"/var/lib/profiles/system/gen-{process_generation} "
+          f"{shlex.quote(process_state['transaction'])}"
+      ))
+      publish_timeline = [
+          event for event in process_diagnostic["timeline"]["events"]
+          if event.get("node_ordinal") == process_state["publish"][0]
+      ]
+      dependent_timeline = [
+          event for event in process_diagnostic["timeline"]["events"]
+          if event.get("node_ordinal") == process_state["dependent"][0]
+      ]
+      assert [
+          event["kind"] for event in publish_timeline
+          if event["kind"].startswith("reconciled-")
+      ] == ["reconciled-completed"], publish_timeline
+      assert [event["kind"] for event in dependent_timeline] == [
+          "operation-admitted", "effect-started", "effect-completed",
+      ], dependent_timeline
+      assert publish_timeline[-1]["sequence"] < dependent_timeline[0]["sequence"]
+      process_authority = current_authority(
+          process_state["transaction"], process_state["plan"]
+      )
+
+      # Repeat the same checked production operation and remove power from the
+      # guest. The retained disk must reopen the exact transaction under fresh
+      # receiving authority before its dependent service reload can execute.
+      power_services_module = services_module.replace(
+          'body = "nginx-runtime";',
+          'body = "nginx-runtime-power-loss";',
+      )
+      write_file(
+          "/run/runtime-module-fixtures/20-services-power-loss.nix",
+          power_services_module,
+      )
+      runtime.succeed(
+          f"{APM} config replace 20-services.nix "
+          "/run/runtime-module-fixtures/20-services-power-loss.nix"
+      )
+      arm_boundary("power-loss", publish_selector)
+      start_apply(
+          "runtime-module-power-loss.service",
+          "/run/runtime-module-composition-power-loss",
+      )
+
+      held_power = held_boundary("power-loss", publish_selector)
+      power_generation = current_generation()
+      assert power_generation != process_generation, (
+          process_generation, power_generation,
+      )
+      power_state = activation_state(power_generation)
+      assert held_power["event"]["transaction"] == power_state["transaction"]
+      assert held_power["event"]["operation"]["plan"] == power_state["plan"]
+      assert operation_matches_selector(
+          power_state["publish"][1], publish_selector
+      )
+      handoff_before_power_loss = retained_host_handoff(power_generation)
+      authority_before_power_loss = current_authority(
+          power_state["transaction"], power_state["plan"]
+      )
+      power_plan_before = runtime.succeed(
+          f"{COREUTILS}/cat {shlex.quote(power_state['root'] + '/plan-bundle.json')}"
+      ).encode()
+      power_journal_before = runtime.succeed(
+          f"{COREUTILS}/cat {shlex.quote(power_state['root'] + '/execution.journal')}"
+      ).encode()
+      runtime.succeed("grep -q 'nginx-runtime-power-loss' /etc/nginx/nginx.conf")
+      assert runtime.succeed(
+          f"{CURL} --fail --silent http://127.0.0.1:18080/health"
+      ) == "nginx-runtime-process-loss"
+      boot_id_before = runtime.succeed(
+          f"{COREUTILS}/cat /proc/sys/kernel/random/boot_id"
+      ).strip()
+      manager_id_before = runtime.succeed(
+          f"{SYSTEMCTL} show init.scope -p InvocationID --value"
+      ).strip()
+
+      runtime.power_cycle(timeout=600)
+      assert actual_boot_initrd_identity(expected_boot_initrd) == (
+          boot_initrd_identity_before
+      )
+      boot_id_after = runtime.succeed(
+          f"{COREUTILS}/cat /proc/sys/kernel/random/boot_id"
+      ).strip()
+      manager_id_after = runtime.succeed(
+          f"{SYSTEMCTL} show init.scope -p InvocationID --value"
+      ).strip()
+      assert boot_id_after != boot_id_before, (boot_id_before, boot_id_after)
+      assert manager_id_after and manager_id_after != manager_id_before, (
+          manager_id_before, manager_id_after,
+      )
+      assert retained_host_handoff(power_generation) == handoff_before_power_loss
+
+      resumed_power = resumed_boundary(
+          "power-loss",
+          publish_selector,
+          power_state["transaction"],
+          power_state["plan"],
+      )
+      authority_after_power_loss = current_authority(
+          power_state["transaction"], power_state["plan"]
+      )
+      assert_fresh_receiving_authority(
+          authority_before_power_loss,
+          authority_after_power_loss,
+          power_state["plan"],
+      )
+      release_reconciliation("power-loss")
+      runtime.wait_until_succeeds(
+          f"{SYSTEMCTL} is-active --quiet aos-activate.service", timeout=600
+      )
+      assert current_generation() == power_generation
+      assert_package_configuration("nginx-runtime-power-loss")
+      assert runtime.succeed(
+          f"{COREUTILS}/cat {shlex.quote(power_state['root'] + '/plan-bundle.json')}"
+      ).encode() == power_plan_before
+      assert power_journal_before in runtime.succeed(
+          f"{COREUTILS}/cat {shlex.quote(power_state['root'] + '/execution.journal')}"
+      ).encode()
+      power_diagnostic = json.loads(runtime.succeed(
+          f"{AOS} --json ability diagnostic "
+          f"/var/lib/profiles/system/gen-{power_generation} "
+          f"{shlex.quote(power_state['transaction'])}"
+      ))
+      power_publish_timeline = [
+          event for event in power_diagnostic["timeline"]["events"]
+          if event.get("node_ordinal") == power_state["publish"][0]
+      ]
+      assert [
+          event["kind"] for event in power_publish_timeline
+          if event["kind"].startswith("reconciled-")
+      ] == ["reconciled-completed"], power_publish_timeline
+      assert publish_timeline[-1]["sequence"] < power_publish_timeline[-1]["sequence"]
+      assert process_authority["plan"] == process_state["plan"]
+      assert resumed_process["event"]["transaction"] == process_state["transaction"]
+      assert resumed_power["event"]["transaction"] == power_state["transaction"]
+
+      clean_recovered = json.loads(runtime.succeed(
+          f"{APM} --json clean --system --generations --keep 1", timeout=600
+      ))
+      assert power_generation in clean_recovered["configuration"][
+          "generations_after"
+      ], clean_recovered
+      runtime.succeed(f"{APM} gc", timeout=600)
+      assert current_generation() == power_generation
+      assert retained_host_handoff(power_generation) == handoff_before_power_loss
+      assert runtime.succeed(
+          f"{COREUTILS}/cat {shlex.quote(power_state['root'] + '/plan-bundle.json')}"
+      ).encode() == power_plan_before
+      assert_package_configuration("nginx-runtime-power-loss")
+
+      write_file(
+          "/run/runtime-module-fixtures/20-services-recovery-restored.nix",
+          services_module,
+      )
+      runtime.succeed(
+          f"{APM} config replace 20-services.nix "
+          "/run/runtime-module-fixtures/20-services-recovery-restored.nix"
+      )
+      apply_worktree("/run/runtime-module-composition-recovery-restore")
+      configured = current_generation()
+      assert configured != power_generation, (power_generation, configured)
+      restored_manifest = read_json(
+          f"/var/lib/profiles/system/gen-{configured}/manifest.json"
+      )
+      assert restored_manifest["inputs"]["runtime_modules"] == runtime_input
+      assert_package_configuration()
+      assert_payloads_immutable()
 
       # Ordinary switch porcelain defaults to the active retained runtime set,
       # rather than silently dropping supplemental modules. Inspect the new
