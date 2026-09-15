@@ -190,6 +190,13 @@
     minimum = 1;
     maximum = abilityTypes.limits.maxU32;
   };
+  canonicalRequirementListType = element:
+    abilityTypes.list {
+      inherit element;
+      maxItems = abilityTypes.limits.maxCollectionItems;
+      unique = true;
+      canonicalOrder = true;
+    };
   stageType = abilityTypes.stage;
   valuePhaseType = abilityTypes.valuePhase;
   lifetimeType = abilityTypes.lifetime;
@@ -708,20 +715,16 @@
       )
     ));
 
-  guaranteeType = strictSubmodule {
-    name = mkOption {
-      type = qualifiedNameType;
-      description = "Provider-neutral guarantee name.";
-    };
-    version = mkOption {
-      type = positiveU32Type;
-      description = "Guarantee version.";
-    };
-    descriptor = mkOption {
-      type = digestType;
-      description = "Exact semantic guarantee descriptor.";
+  guaranteeType = abilityTypes.record {
+    fields = {
+      name = qualifiedNameType;
+      version = positiveU32Type;
+      descriptor = digestType;
     };
   };
+  requirementGuaranteesType = canonicalRequirementListType guaranteeType;
+  requirementGuaranteesSchema =
+    abilityTypes.schemaOf "requirement guarantees" requirementGuaranteesType;
 
   requirementBaseType = strictSubmodule {
     description = mkOption {
@@ -740,12 +743,12 @@
       description = "Exact accepted interface descriptor.";
     };
     methods = mkOption {
-      type = moduleTypes.listOf localKeyType;
+      type = canonicalRequirementListType localKeyType;
       default = [];
       description = "Interface methods the consumer may invoke.";
     };
     guarantees = mkOption {
-      type = moduleTypes.listOf guaranteeType;
+      type = requirementGuaranteesType;
       default = [];
       description = "Guarantees the selected implementation must provide.";
     };
@@ -765,33 +768,34 @@
       description = "Typed fallback outputs for an advisory requirement.";
     };
   };
-  requirementAccepted = requirement: let
-    matches = interfacesMatchingRequirement requirement;
-    fallbackAccepted = declaration:
-      requirement.fallback
+  requirementAccepted = requirement:
+    assert builtins.deepSeq requirementGuaranteesSchema true; let
+      matches = interfacesMatchingRequirement requirement;
+      fallbackAccepted = declaration:
+        requirement.fallback
+        == null
+        || builtins.all (
+          name:
+            builtins.hasAttr name declaration.outputs
+            && typeAccepts declaration.outputs.${name}.schema requirement.fallback.outputs.${name}
+        ) (builtins.attrNames requirement.fallback.outputs);
+      surfaceAccepted = declaration:
+        uniqueValues requirement.methods
+        && uniqueValues requirement.guarantees
+        && builtins.all (method: builtins.hasAttr method declaration.methods) requirement.methods
+        && builtins.all (guarantee: builtins.elem guarantee declaration.guarantees) requirement.guarantees;
+    in
+      config
       == null
-      || builtins.all (
-        name:
-          builtins.hasAttr name declaration.outputs
-          && typeAccepts declaration.outputs.${name}.schema requirement.fallback.outputs.${name}
-      ) (builtins.attrNames requirement.fallback.outputs);
-    surfaceAccepted = declaration:
-      uniqueValues requirement.methods
-      && uniqueValues requirement.guarantees
-      && builtins.all (method: builtins.hasAttr method declaration.methods) requirement.methods
-      && builtins.all (guarantee: builtins.elem guarantee declaration.guarantees) requirement.guarantees;
-  in
-    config
-    == null
-    || (
-      if matches == []
-      then config.aos.abilities.environment == null
-      else
-        builtins.length matches
-        == 1
-        && fallbackAccepted (builtins.head matches)
-        && surfaceAccepted (builtins.head matches)
-    );
+      || (
+        if matches == []
+        then config.aos.abilities.environment == null
+        else
+          builtins.length matches
+          == 1
+          && fallbackAccepted (builtins.head matches)
+          && surfaceAccepted (builtins.head matches)
+      );
 
   environmentType = abilityTypes.environmentId;
   derivedInstanceKey = declaration: "instance-${builtins.hashString "sha256" (builtins.toJSON {
