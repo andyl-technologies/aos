@@ -275,9 +275,11 @@ in
     propagatedDeps = [];
 
     abilities = {
-      config.aos.abilities.implementations.postgresql = {
-        definition = abilityContract.postgresqlExport abilityContract.compatibleStateFormat;
-        requiredFeatures = ["provider-state-format-v1"];
+      config.aos.abilities = lib.abilities.projectDefinitions {
+        postgresql = {
+          definition = abilityContract.postgresqlExport abilityContract.compatibleStateFormat;
+          requiredFeatures = ["provider-state-format-v1"];
+        };
       };
     };
 
@@ -834,7 +836,7 @@ in
               == "sha256:3f1ee821c852480fa2cc3160555bbb187668c1509f84345d4339306910487596"
             and .implementation.providers[0].state_format.artifact
               == .implementation.providers[0].artifact
-          ' ${self.abilityContract}/package.json >/dev/null
+          ' ${self.abilities.contract}/package.json >/dev/null
 
           mkdir -p "$out"
           echo PASS > "$out/result"

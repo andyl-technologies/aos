@@ -1,10 +1,5 @@
 ##! Pure graph author for real native systemd-manager matrix operations.
-let
-  systemdManager = {
-    name = "aos.systemd-manager";
-    abi = 1;
-    descriptor = "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3";
-  };
+{systemdManager}: let
   units = {
     primary = "aos-matrix-primary.service";
     secondary = "aos-matrix-secondary.service";

@@ -1,16 +1,9 @@
 ##! Pure K3s aggregate provider for the Kubernetes activation fixture.
-{bootstrapMatrix ? false}: let
-  systemdBootstrap = {
-    name = "aos.systemd-provider-bootstrap";
-    abi = 1;
-    descriptor = "sha256:833e92258892d87a1f1cb16f66bfd1629c47a97386a9853cd93ffa30037b82f1";
-  };
-  kubernetesEffects = {
-    name = "aos.kubernetes-object-effects";
-    abi = 1;
-    descriptor = "sha256:bbced9c501c3c41ab4b5f2a70a2945bde2128ef0a37ad900f6d9f1e2f110963e";
-  };
-
+{
+  bootstrapMatrix ? false,
+  systemdBootstrap,
+  kubernetesEffects,
+}: let
   childRequest = context: key: acceptedInterface: methods: {
     id = {
       consumer = context.provider;

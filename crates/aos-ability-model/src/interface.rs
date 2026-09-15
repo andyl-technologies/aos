@@ -153,6 +153,8 @@ pub struct InterfaceDescriptor {
     pub methods: BTreeMap<LocalKey, MethodDescriptor>,
     /// Defines interface-wide resource lifecycle behavior.
     pub lifecycle: LifecycleSemantics,
+    /// Defines provider-neutral contribution aggregation behavior.
+    pub aggregation: AggregationContract,
     /// Names interface-wide exact guarantees in canonical order.
     pub guarantees: Vec<GuaranteeKey>,
 }
@@ -436,7 +438,7 @@ pub struct ProviderImplementationReference {
     pub handler: Option<LocalKey>,
 }
 
-/// Declares one package export and its aggregation boundary.
+/// Declares one package export of a provider-neutral interface.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExportDeclaration {
@@ -444,8 +446,6 @@ pub struct ExportDeclaration {
     pub name: LocalKey,
     /// Identifies the exact public interface contract.
     pub interface: InterfaceKey,
-    /// Defines contribution aggregation, when the export accepts contributions.
-    pub aggregation: Option<AggregationContract>,
     /// Identifies the separate provider implementation.
     pub implementation: Sha256Digest,
 }

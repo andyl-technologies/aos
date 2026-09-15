@@ -4,7 +4,7 @@
   packageName,
   spec,
 }: let
-  inherit (lib.abilities) schemas;
+  inherit (lib.abilities) types;
   inherit (lib.abilities.interfaces) serviceManagement;
 
   defaultServices = [
@@ -34,48 +34,50 @@
     };
   };
 
-  restartToken = schemas.string {
+  restartToken = types.string {
     maxLength = 1024;
     syntax = null;
   };
   provider = (import ./_service-ability-provider/default.nix) {spec = serviceSpec;};
 in {
-  config.aos.abilities.implementations.service = {
-    definition = lib.abilities.define {
-      interface = serviceSpec.interface;
-      abi = 1;
-      requestSchema = schemas.boolean;
-      configurationSchema = schemas.record {
-        fields = {
-          enabled = schemas.boolean;
-          restart_token = restartToken;
+  config.aos.abilities = lib.abilities.projectDefinitions {
+    service = {
+      definition = lib.abilities.define {
+        interface = serviceSpec.interface;
+        abi = 1;
+        requestSchema = types.boolean;
+        configurationSchema = types.record {
+          fields = {
+            enabled = types.boolean;
+            restart_token = restartToken;
+          };
+          optional = ["restart_token"];
         };
-        optional = ["restart_token"];
+        outputs = {};
+        methods = {};
+        lifecycle = serviceManagement.lifecycle;
+        guarantees = [];
+        aggregation = {
+          scope = "provider-instance";
+          key = "slot";
+          rejectSlotCollisions = true;
+          mergeContract = null;
+          controllerGroup = "service";
+        };
+        requires.service-terminal = {
+          inherit (serviceManagement.interface) abi descriptor;
+          interface = serviceManagement.interface.name;
+          inherit (serviceSpec) methods;
+          guarantees = serviceManagement.featureGuarantees serviceSpec.features;
+          strength = "required";
+          fallback = null;
+        };
+        composeEntry = "compose";
+        transitionEntry = "transition";
+        ownsResourceKinds = [serviceManagement.interface.name];
+        compose = provider.compose;
+        transition = provider.transition;
       };
-      outputs = {};
-      methods = {};
-      lifecycle = serviceManagement.lifecycle;
-      guarantees = [];
-      aggregation = {
-        scope = "provider-instance";
-        key = "slot";
-        rejectSlotCollisions = true;
-        mergeContract = null;
-        controllerGroup = "service";
-      };
-      requires.service-terminal = {
-        inherit (serviceManagement.interface) abi descriptor;
-        interface = serviceManagement.interface.name;
-        inherit (serviceSpec) methods;
-        guarantees = serviceManagement.featureGuarantees serviceSpec.features;
-        strength = "required";
-        fallback = null;
-      };
-      composeEntry = "compose";
-      transitionEntry = "transition";
-      ownsResourceKinds = [serviceManagement.interface.name];
-      compose = provider.compose;
-      transition = provider.transition;
     };
   };
 }

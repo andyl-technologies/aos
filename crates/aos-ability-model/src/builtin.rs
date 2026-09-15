@@ -9,13 +9,15 @@ use std::num::NonZeroU32;
 
 use anyhow::Result;
 use aos_contract::Sha256Digest;
+use serde::Serialize;
 
 use crate::{
-    ArtifactReference, ExecutionStage, GuaranteeKey, HandlerDescriptor, ImplementationKind,
-    IndeterminateSemantics, InterfaceDescriptor, InterfaceDocument, InterfaceKey, InterfaceName,
-    KubernetesObjectAction, LifecycleSemantics, LocalKey, MethodDescriptor, OperationFamily,
-    OutcomeSemantics, OutputDescriptor, ProviderImplementation, ResourceLifetime, ServiceAction,
-    StringSyntax, ValuePhase, ValueSchema, ValueVisibility, VersionedDocument,
+    AggregationContract, AggregationScope, ArtifactReference, ExecutionStage, GuaranteeKey,
+    HandlerDescriptor, ImplementationKind, IndeterminateSemantics, InterfaceDescriptor,
+    InterfaceDocument, InterfaceKey, InterfaceName, KubernetesObjectAction, LifecycleSemantics,
+    LocalKey, MethodDescriptor, OperationFamily, OutcomeSemantics, OutputDescriptor,
+    ProviderImplementation, ResourceLifetime, ServiceAction, StringSyntax, ValuePhase, ValueSchema,
+    ValueVisibility, VersionedDocument,
 };
 
 mod resource;
@@ -25,6 +27,16 @@ mod service;
 pub use resource::*;
 pub use rollout::*;
 pub use service::*;
+
+fn aggregation(controller_group: &str) -> Result<AggregationContract> {
+    Ok(AggregationContract {
+        scope: AggregationScope::ProviderInstance,
+        key: LocalKey::new("slot")?,
+        controller_group: LocalKey::new(controller_group)?,
+        reject_slot_collisions: true,
+        merge_contract: None,
+    })
+}
 
 /// Names the native systemd manager interface.
 pub const SYSTEMD_MANAGER_INTERFACE_NAME: &str = "aos.systemd-manager";
@@ -340,6 +352,7 @@ pub fn kubernetes_object_interface() -> Result<InterfaceDocument> {
                 retains_persistent_by_default: true,
                 persistent_delete_method: Some(LocalKey::new("delete")?),
             },
+            aggregation: aggregation("kubernetes")?,
             guarantees: Vec::new(),
         },
     })
@@ -531,6 +544,7 @@ pub fn systemd_manager_interface() -> Result<InterfaceDocument> {
                 retains_persistent_by_default: true,
                 persistent_delete_method: None,
             },
+            aggregation: aggregation("systemd-manager")?,
             guarantees: vec![
                 local_systemd_manager_guarantee()?,
                 system_container_manager_delegation_guarantee()?,
@@ -613,6 +627,7 @@ pub fn foreground_process_interface() -> Result<InterfaceDocument> {
                 retains_persistent_by_default: false,
                 persistent_delete_method: None,
             },
+            aggregation: aggregation("foreground-process")?,
             guarantees: vec![foreground_process_supervision_guarantee()?],
         },
     })
@@ -756,6 +771,7 @@ pub fn systemd_provider_bootstrap_interface() -> Result<InterfaceDocument> {
                 retains_persistent_by_default: true,
                 persistent_delete_method: None,
             },
+            aggregation: aggregation("systemd-bootstrap")?,
             guarantees: Vec::new(),
         },
     })
@@ -814,10 +830,34 @@ pub fn systemd_manager_provider(artifact: ArtifactReference) -> Result<ProviderI
 }
 
 fn execution_guarantee(name: &str, semantics: &str) -> Result<GuaranteeKey> {
+    #[derive(Serialize)]
+    struct GuaranteeDocument<'a> {
+        name: &'a str,
+        version: u32,
+        semantics: &'a str,
+    }
+
+    #[derive(Serialize)]
+    struct GuaranteeEnvelope<'a> {
+        domain: &'static str,
+        document: GuaranteeDocument<'a>,
+    }
+
+    let document = GuaranteeDocument {
+        name,
+        version: 1,
+        semantics,
+    };
+    let envelope = GuaranteeEnvelope {
+        domain: "aos.ability.execution-guarantee/v1",
+        document,
+    };
+    let encoded = aos_contract::canonical::to_vec(&envelope)?;
+
     Ok(GuaranteeKey {
         name: InterfaceName::new(name)?,
         version: NonZeroU32::new(1).ok_or_else(|| anyhow::anyhow!("invalid built-in version"))?,
-        descriptor: Sha256Digest::separated("aos.ability.execution-guarantee/v1", semantics),
+        descriptor: Sha256Digest::of_bytes(encoded),
     })
 }
 

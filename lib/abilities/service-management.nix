@@ -1,70 +1,105 @@
-##! Canonical manager-neutral service lifecycle and feature identities.
+##! Canonical manager-neutral service lifecycle and feature declarations.
 {
-  schemas,
+  boolean,
+  declareInterface,
   guarantee,
+  interfaceDocumentFromDeclaration,
+  interfaceIdentity,
 }: let
+  feature = name: semantics:
+    guarantee {
+      inherit name semantics;
+      version = 1;
+    };
   features = {
-    configuration = guarantee {
-      name = "aos.service.feature.configuration";
-      version = 1;
-      descriptor = "sha256:795691e4da6ad4983fdcdee83ce3241f00b880a7a75e9f8c8c1292ed10d02728";
-    };
-    credentials = guarantee {
-      name = "aos.service.feature.credentials";
-      version = 1;
-      descriptor = "sha256:9b691f3825a27d582ab9d68848ef6733c8daff6591af5d5aefb1ed1b33ca5731";
-    };
-    dependencies = guarantee {
-      name = "aos.service.feature.dependencies";
-      version = 1;
-      descriptor = "sha256:d41d1c135639c9c64f9c2c3fd14f5155e27e69f815a50cc36070c46972ab5791";
-    };
-    identity = guarantee {
-      name = "aos.service.feature.identity";
-      version = 1;
-      descriptor = "sha256:428c991097b18a0e43ee19bc799ce735986567f7934f5c148d39c485efd1406c";
-    };
-    isolation = guarantee {
-      name = "aos.service.feature.isolation";
-      version = 1;
-      descriptor = "sha256:4890b6ca323060f281a98fd49f290ac081d9acefc9fc23e02c8981759ef3f86d";
-    };
-    readiness = guarantee {
-      name = "aos.service.feature.readiness";
-      version = 1;
-      descriptor = "sha256:8db2fc4868b442bf71a5658db9ccb181fa928029d26411d7aafa6d1cac77e3de";
-    };
-    reload = guarantee {
-      name = "aos.service.feature.reload";
-      version = 1;
-      descriptor = "sha256:1af6c5b5bef1339644a7ce8b02524728c6ed266fc634c3d62b5ebd1e695172a8";
-    };
-    storage = guarantee {
-      name = "aos.service.feature.storage";
-      version = 1;
-      descriptor = "sha256:b35dbbe867ce562df3efdaa7a17b7a61169df4fa0ef4dd19c76203b48b697704";
-    };
-    supervision = guarantee {
-      name = "aos.service.feature.supervision";
-      version = 1;
-      descriptor = "sha256:634cf62951642871683e93d7fc1df90b378610563955d13781d26b7a5fd91b9f";
-    };
+    configuration =
+      feature "aos.service.feature.configuration"
+      "the selected controller publishes the bound configuration revision before service convergence";
+    credentials =
+      feature "aos.service.feature.credentials"
+      "the selected controller attaches only bound opaque credential views before service execution";
+    dependencies =
+      feature "aos.service.feature.dependencies"
+      "the selected controller maintains declared ordering, readiness, conflict, and propagation relationships";
+    identity =
+      feature "aos.service.feature.identity"
+      "the selected controller runs the service under its declared stable runtime identity";
+    isolation =
+      feature "aos.service.feature.isolation"
+      "the selected controller enforces every isolation property required by the service contract";
+    readiness =
+      feature "aos.service.feature.readiness"
+      "the selected controller observes readiness for the exact desired service revision";
+    reload =
+      feature "aos.service.feature.reload"
+      "the selected controller invokes and observes the service's declared reload protocol";
+    storage =
+      feature "aos.service.feature.storage"
+      "the selected controller attaches only bound storage views with their declared lifetimes";
+    supervision =
+      feature "aos.service.feature.supervision"
+      "the selected controller continuously supervises the exact declared service process";
   };
-in {
-  interface = {
-    name = "aos.service-management";
-    abi = 1;
-    descriptor = "sha256:a51e8ccfbde3b8caa89120afdd033edfaa51f087ffc399c3aa3006f34e6c0dff";
-  };
-  inherit features;
-  featureNames = builtins.attrNames features;
-  featureGuarantees = names: builtins.map (name: features.${name}) names;
-  requestSchema = schemas.boolean;
-  methods = ["observe" "reload" "restart" "start" "stop"];
+
+  interfaceName = "aos.service-management";
   lifecycle = {
     stableResourceIdentity = true;
     releasesEphemeralOnDisable = true;
     retainsPersistentByDefault = false;
     persistentDeleteMethod = null;
   };
+  methodSemantics = name: {
+    requiredTargetAccess =
+      if builtins.elem name ["observe" "observe-boot" "observe-health" "validate" "verify"]
+      then "read"
+      else "exclusive-write";
+    stopsProvider = name == "stop";
+  };
+  method = name: {
+    description = "Performs the ${name} service lifecycle operation.";
+    semantics = methodSemantics name;
+    parameters = boolean;
+    targetResource = interfaceName;
+    outputs = {};
+    permittedOperations = [name];
+    guarantees = [];
+    outcome = {
+      completionEvidence = boolean;
+      observationEvidence = boolean;
+      supportsRejectedBeforeEffect = true;
+      indeterminate = "reconcile";
+    };
+  };
+  declaration = declareInterface {
+    name = interfaceName;
+    description = "Controls the lifecycle of a provider-neutral service instance.";
+    abi = 1;
+    requestType = boolean;
+    outputs = {};
+    methods = {
+      observe = method "observe";
+      reload = method "reload";
+      restart = method "restart";
+      start = method "start";
+      stop = method "stop";
+    };
+    inherit lifecycle;
+    guarantees = builtins.attrValues features;
+    aggregation = {
+      scope = "provider-instance";
+      key = "slot";
+      rejectSlotCollisions = true;
+      mergeContract = null;
+      controllerGroup = "service-management";
+    };
+  };
+  document = interfaceDocumentFromDeclaration declaration;
+in {
+  interface = interfaceIdentity document;
+  inherit declaration document features;
+  featureNames = builtins.attrNames features;
+  featureGuarantees = names: builtins.map (name: features.${name}) names;
+  requestType = boolean;
+  methods = builtins.attrNames declaration.methods;
+  inherit lifecycle;
 }

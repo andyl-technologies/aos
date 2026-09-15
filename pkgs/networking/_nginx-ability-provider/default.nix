@@ -1,114 +1,24 @@
 ##! Pure aggregate provider for the authenticated production nginx contract.
-let
-  interface = name: descriptor: {
-    inherit name descriptor;
-    abi = 1;
-  };
-
-  managedConfiguration =
-    interface
-    "aos.managed-configuration"
-    "sha256:fce7ea027ff0640e13116a3501b96fd356ac96d47d82d26aff193d6d2bc8780e";
-  credentialDelivery =
-    interface
-    "aos.credential-delivery"
-    "sha256:e8c5924bd71f8c018958430a91907c662e09af55221d2c94a758dc4a1377d44f";
-  serviceDefinition =
-    interface
-    "aos.service-definition"
-    "sha256:71b6dad75359531ccfc92bfbb5824fb3555afb097e697d994ee6f9f862ae46af";
-  nginxValidation =
-    interface
-    "aos.nginx-validation"
-    "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1";
-  httpBackend =
-    interface
-    "aos.http-backend"
-    "sha256:289893585ef1b59314c8adfb77c26e698d6db1333178e3b3d1e1e0c0b54754c0";
-  endpointEffects =
-    interface
-    "aos.network-endpoint-effects"
-    "sha256:6b4d345ab4350917a04b770f0ac4b82888ffe6ef7e647caa9fe94ccb9f9dac6a";
-  networkPolicyEffects =
-    interface
-    "aos.host-network-policy-effects"
-    "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e";
-  storageEffects =
-    interface
-    "aos.host-storage-effects"
-    "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8";
-  serviceManagement =
-    interface
-    "aos.service-management"
-    "sha256:a51e8ccfbde3b8caa89120afdd033edfaa51f087ffc399c3aa3006f34e6c0dff";
-  foregroundProcess =
-    interface
-    "aos.foreground-process"
-    "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb";
-
-  serviceFeatures = [
-    {
-      name = "aos.service.feature.configuration";
-      version = 1;
-      descriptor = "sha256:795691e4da6ad4983fdcdee83ce3241f00b880a7a75e9f8c8c1292ed10d02728";
-    }
-    {
-      name = "aos.service.feature.credentials";
-      version = 1;
-      descriptor = "sha256:9b691f3825a27d582ab9d68848ef6733c8daff6591af5d5aefb1ed1b33ca5731";
-    }
-    {
-      name = "aos.service.feature.dependencies";
-      version = 1;
-      descriptor = "sha256:d41d1c135639c9c64f9c2c3fd14f5155e27e69f815a50cc36070c46972ab5791";
-    }
-    {
-      name = "aos.service.feature.identity";
-      version = 1;
-      descriptor = "sha256:428c991097b18a0e43ee19bc799ce735986567f7934f5c148d39c485efd1406c";
-    }
-    {
-      name = "aos.service.feature.isolation";
-      version = 1;
-      descriptor = "sha256:4890b6ca323060f281a98fd49f290ac081d9acefc9fc23e02c8981759ef3f86d";
-    }
-    {
-      name = "aos.service.feature.readiness";
-      version = 1;
-      descriptor = "sha256:8db2fc4868b442bf71a5658db9ccb181fa928029d26411d7aafa6d1cac77e3de";
-    }
-    {
-      name = "aos.service.feature.reload";
-      version = 1;
-      descriptor = "sha256:1af6c5b5bef1339644a7ce8b02524728c6ed266fc634c3d62b5ebd1e695172a8";
-    }
-    {
-      name = "aos.service.feature.storage";
-      version = 1;
-      descriptor = "sha256:b35dbbe867ce562df3efdaa7a17b7a61169df4fa0ef4dd19c76203b48b697704";
-    }
-    {
-      name = "aos.service.feature.supervision";
-      version = 1;
-      descriptor = "sha256:634cf62951642871683e93d7fc1df90b378610563955d13781d26b7a5fd91b9f";
-    }
-  ];
-  foregroundProcessSupervisionGuarantee = {
-    name = "aos.foreground-process-supervision";
-    version = 1;
-    descriptor = "sha256:b213e3c6ef28e4930a1091296e28fbfddde9f539d2daeb0287edfe955047311a";
-  };
-
-  loopbackIngressGuarantee = {
-    name = "aos.guarantee.loopback-tcp-ingress-enforcement";
-    version = 1;
-    descriptor = "sha256:6b12b1c4db768f272434c6e43ca8c484887fc0fa3a51be2ae2784982325c2092";
-  };
-  loopbackEgressGuarantee = {
-    name = "aos.guarantee.loopback-tcp-egress-enforcement";
-    version = 1;
-    descriptor = "sha256:91fc94f9ff09a955256a2a86d1df6df00e1635c8fc035e2f68e262cbc29dcd53";
-  };
+{
+  interfaces,
+  serviceFeatures,
+  foregroundProcessSupervisionGuarantee,
+  loopbackIngressGuarantee,
+  loopbackEgressGuarantee,
+}: let
+  inherit
+    (interfaces)
+    credentialDelivery
+    endpointEffects
+    foregroundProcess
+    httpBackend
+    managedConfiguration
+    networkPolicyEffects
+    nginxValidation
+    serviceDefinition
+    serviceManagement
+    storageEffects
+    ;
 
   # Recovery conservatively charges a full interrupted call. Four call-sized
   # slices retain room for that attempt, reconciliation, a retry, and a final

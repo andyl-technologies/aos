@@ -155,6 +155,7 @@
   abilities = import ./abilities {
     inherit types;
     inherit (modules) mkOption;
+    evalModules = modules.evalModules;
   };
   aosDoc = import ./documentation.nix;
 

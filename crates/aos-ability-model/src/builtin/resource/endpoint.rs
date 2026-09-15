@@ -85,6 +85,7 @@ pub fn network_endpoint_interface() -> Result<InterfaceDocument> {
 
     interface_document(
         interface_name,
+        "network-endpoint",
         network_endpoint_request_schema()?,
         methods,
         LifecycleSemantics {

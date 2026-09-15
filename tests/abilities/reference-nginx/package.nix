@@ -11,10 +11,31 @@
   providerStateQualification ? false,
   transitionTransform ? transition: transition,
 }: let
-  inherit (lib.abilities) schemas;
+  inherit (lib.abilities) types;
+  schemas = lib.abilities.schemas;
 
   nginxArtifact = ../../../pkgs/networking/_nginx-ability-provider;
-  nginxProvider = import nginxArtifact;
+  nginxProvider = import nginxArtifact {
+    interfaces = {
+      inherit
+        credentialDelivery
+        endpointEffects
+        foregroundProcess
+        httpBackend
+        managedConfiguration
+        networkPolicyEffects
+        nginxValidation
+        serviceDefinition
+        serviceManagement
+        ;
+    };
+    serviceFeatures = builtins.attrValues serviceManagementContract.features;
+    inherit
+      foregroundProcessSupervisionGuarantee
+      loopbackIngressGuarantee
+      loopbackEgressGuarantee
+      ;
+  };
   managedConfigurationArtifact = ./providers/managed-configuration;
   httpBackendRegistryArtifact = ./providers/http-backend-registry;
   credentialArtifact = ./providers/credential;
@@ -67,10 +88,7 @@
     serviceRuntime;
   packageRuntimeSelector = selectorFor serviceRuntimeDependency;
   nginxRuntimeSelector = selectorFor nginxRuntimeDependency;
-  serviceManagementContract = import ../../../lib/abilities/service-management.nix {
-    inherit schemas;
-    inherit (lib.abilities) guarantee;
-  };
+  serviceManagementContract = lib.abilities.interfaces.serviceManagement;
 
   interface = name: descriptor: {
     inherit name descriptor;
@@ -132,12 +150,12 @@
   loopbackIngressGuarantee = lib.abilities.guarantee {
     name = "aos.guarantee.loopback-tcp-ingress-enforcement";
     version = 1;
-    descriptor = "sha256:6b12b1c4db768f272434c6e43ca8c484887fc0fa3a51be2ae2784982325c2092";
+    semantics = "successful application and observation prove loopback-only TCP ingress for the requested endpoint";
   };
   loopbackEgressGuarantee = lib.abilities.guarantee {
     name = "aos.guarantee.loopback-tcp-egress-enforcement";
     version = 1;
-    descriptor = "sha256:91fc94f9ff09a955256a2a86d1df6df00e1635c8fc035e2f68e262cbc29dcd53";
+    semantics = "successful application and observation prove loopback-only TCP egress for the requested endpoint";
   };
 
   lifecycle = {
@@ -170,6 +188,7 @@
   };
 
   requirement = selected: methods: strength: fallback: {
+    description = "Requires the ${selected.name} interface for the nginx reference composition.";
     inherit (selected) abi descriptor;
     interface = selected.name;
     inherit methods strength fallback;
@@ -192,29 +211,29 @@
     lifetime = "instance";
   };
 
-  string = schemas.string {
+  string = types.string {
     maxLength = 65536;
     syntax = null;
   };
 
-  revision = schemas.string {
+  revision = types.string {
     maxLength = 71;
     syntax = null;
   };
 
-  optionalRevision = schemas.optional revision;
+  optionalRevision = types.optional revision;
 
-  foregroundProcessRequest = schemas.record {
+  foregroundProcessRequest = types.record {
     fields = {
-      arguments = schemas.list {
-        element = schemas.string {
+      arguments = types.list {
+        element = types.string {
           maxLength = 4096;
           syntax = null;
         };
         maxItems = 128;
       };
-      artifact = schemas.artifactReference;
-      entry_point = schemas.string {
+      artifact = types.artifactReference;
+      entry_point = types.string {
         maxLength = 4096;
         syntax = null;
       };
@@ -222,67 +241,67 @@
     optional = [];
   };
 
-  foregroundProcessObservation = schemas.record {
+  foregroundProcessObservation = types.record {
     fields = {
-      process_identity = schemas.optional (schemas.string {
+      process_identity = types.optional (types.string {
         maxLength = 1024;
         syntax = null;
       });
-      running = schemas.boolean;
-      schema = schemas.enum ["aos.ability.foreground-process-observation/v1"];
+      running = types.boolean;
+      schema = types.enum ["aos.ability.foreground-process-observation/v1"];
     };
     optional = [];
   };
 
-  endpoint = schemas.record {
+  endpoint = types.record {
     fields = {
-      address = schemas.string {
+      address = types.string {
         maxLength = 15;
         syntax = null;
       };
-      port = schemas.integer {
+      port = types.integer {
         minimum = 1024;
         maximum = 65535;
       };
-      transport = schemas.enum ["tcp"];
+      transport = types.enum ["tcp"];
     };
     optional = [];
   };
 
-  backendEndpoints = schemas.optional (schemas.map {
+  backendEndpoints = types.optional (types.map {
     keyMaxLength = 128;
     keySyntax = "local-key-v1";
     maxEntries = 1024;
-    value = schemas.optional endpoint;
+    value = types.optional endpoint;
   });
 
-  endpointRequest = schemas.record {
+  endpointRequest = types.record {
     fields = {
-      address = schemas.enum ["127.0.0.1"];
-      port = schemas.integer {
+      address = types.enum ["127.0.0.1"];
+      port = types.integer {
         minimum = 0;
         maximum = 65535;
       };
-      transport = schemas.enum ["tcp"];
+      transport = types.enum ["tcp"];
     };
     optional = [];
   };
 
   networkPolicyRequest = requiredEndpoint:
-    schemas.record {
+    types.record {
       fields = {
-        direction = schemas.enum ["egress" "ingress"];
+        direction = types.enum ["egress" "ingress"];
         endpoint =
           if requiredEndpoint
           then endpoint
-          else schemas.optional endpoint;
-        protocol = schemas.enum ["tcp"];
+          else types.optional endpoint;
+        protocol = types.enum ["tcp"];
       };
       optional = [];
     };
 
   revisionedObservation = schema: fields:
-    schemas.record {
+    types.record {
       fields =
         fields
         // {
@@ -295,27 +314,27 @@
 
   endpointObservation =
     revisionedObservation
-    (schemas.enum ["aos.ability.network-endpoint-observation/v1"])
+    (types.enum ["aos.ability.network-endpoint-observation/v1"])
     {
-      endpoint = schemas.optional endpoint;
-      owned = schemas.boolean;
+      endpoint = types.optional endpoint;
+      owned = types.boolean;
     };
 
   networkPolicyObservation =
     revisionedObservation
-    (schemas.enum ["aos.ability.host-network-policy-observation/v1"])
+    (types.enum ["aos.ability.host-network-policy-observation/v1"])
     {
-      active = schemas.boolean;
-      endpoint = schemas.optional endpoint;
+      active = types.boolean;
+      endpoint = types.optional endpoint;
     };
 
-  credentialView = schemas.record {
+  credentialView = types.record {
     fields = {
-      path = schemas.string {
+      path = types.string {
         maxLength = 4096;
         syntax = null;
       };
-      version = schemas.string {
+      version = types.string {
         maxLength = 71;
         syntax = null;
       };
@@ -323,9 +342,9 @@
     optional = [];
   };
 
-  credentialRequest = schemas.record {
+  credentialRequest = types.record {
     fields = {
-      version = schemas.string {
+      version = types.string {
         maxLength = 71;
         syntax = null;
       };
@@ -334,24 +353,24 @@
     optional = [];
   };
 
-  credentialObservation = schemas.record {
+  credentialObservation = types.record {
     fields = {
-      delivered = schemas.boolean;
-      observed_version = schemas.optional (schemas.string {
+      delivered = types.boolean;
+      observed_version = types.optional (types.string {
         maxLength = 71;
         syntax = null;
       });
-      requested_version = schemas.string {
+      requested_version = types.string {
         maxLength = 71;
         syntax = null;
       };
-      schema = schemas.enum ["aos.ability.credential-delivery-observation/v1"];
+      schema = types.enum ["aos.ability.credential-delivery-observation/v1"];
       view = localKeyString;
     };
     optional = [];
   };
 
-  storagePaths = schemas.record {
+  storagePaths = types.record {
     fields = {
       logs = string;
       runtime = string;
@@ -360,12 +379,12 @@
     optional = [];
   };
 
-  runtimeStoragePath = schemas.string {
+  runtimeStoragePath = types.string {
     maxLength = 4096;
     syntax = null;
   };
 
-  runtimeStoragePaths = schemas.record {
+  runtimeStoragePaths = types.record {
     fields = {
       logs = runtimeStoragePath;
       runtime = runtimeStoragePath;
@@ -374,39 +393,39 @@
     optional = [];
   };
 
-  nginxValidationRequest = schemas.record {
+  nginxValidationRequest = types.record {
     fields = {
-      candidate = schemas.boolean;
-      credential_views = schemas.list {
+      candidate = types.boolean;
+      credential_views = types.list {
         element = credentialView;
         maxItems = 1024;
       };
-      storage_paths = schemas.optional runtimeStoragePaths;
+      storage_paths = types.optional runtimeStoragePaths;
     };
     optional = [];
   };
 
-  localKeyString = schemas.string {
+  localKeyString = types.string {
     maxLength = 128;
     syntax = "local-key-v1";
   };
 
-  consumerProbe = schemas.record {
+  consumerProbe = types.record {
     fields = {
-      address = schemas.string {
+      address = types.string {
         maxLength = 15;
         syntax = null;
       };
-      execution_strategy = schemas.enum ["foreground-process" "managed-service"];
-      port = schemas.integer {
+      execution_strategy = types.enum ["foreground-process" "managed-service"];
+      port = types.integer {
         minimum = 1024;
         maximum = 65535;
       };
-      tls_credential_path = schemas.string {
+      tls_credential_path = types.string {
         maxLength = 4096;
         syntax = null;
       };
-      tls_port = schemas.integer {
+      tls_port = types.integer {
         minimum = 1024;
         maximum = 65535;
       };
@@ -414,31 +433,31 @@
     optional = ["tls_credential_path" "tls_port"];
   };
 
-  resourceMap = schemas.map {
+  resourceMap = types.map {
     keyMaxLength = 128;
     keySyntax = "local-key-v1";
     maxEntries = 1024;
-    value = schemas.resourceReference;
+    value = types.resourceReference;
   };
 
-  stringMap = schemas.map {
+  stringMap = types.map {
     keyMaxLength = 128;
     keySyntax = "local-key-v1";
     maxEntries = 1024;
     value = string;
   };
 
-  virtualHost = schemas.record {
+  virtualHost = types.record {
     fields = {
       host = string;
-      response_content = schemas.string {
+      response_content = types.string {
         maxLength = 256;
         syntax = null;
       };
       response_identity = localKeyString;
-      proxy_backend = schemas.boolean;
-      tls = schemas.boolean;
-      credential_version = schemas.string {
+      proxy_backend = types.boolean;
+      tls = types.boolean;
+      credential_version = types.string {
         maxLength = 71;
         syntax = null;
       };
@@ -446,18 +465,18 @@
     optional = ["credential_version" "proxy_backend"];
   };
 
-  managedVirtualHost = schemas.record {
+  managedVirtualHost = types.record {
     fields = {
       backend_endpoint = endpoint;
       host = string;
-      response_content = schemas.string {
+      response_content = types.string {
         maxLength = 256;
         syntax = null;
       };
       response_identity = localKeyString;
-      proxy_backend = schemas.boolean;
-      tls = schemas.boolean;
-      credential_version = schemas.string {
+      proxy_backend = types.boolean;
+      tls = types.boolean;
+      credential_version = types.string {
         maxLength = 71;
         syntax = null;
       };
@@ -467,15 +486,23 @@
 
   recoverableMethods = ["acquire" "deliver" "observe" "prepare" "publish" "record" "release" "reload" "restart" "start" "stop" "validate"];
 
+  methodSemantics = name: {
+    requiredTargetAccess =
+      if builtins.elem name ["observe" "observe-boot" "observe-health" "validate" "verify"]
+      then "read"
+      else "exclusive-write";
+    stopsProvider = name == "stop";
+  };
   method = targetResource: operationFamily: name: {
-    inherit operationFamily targetResource;
-    parameters = schemas.boolean;
+    inherit targetResource;
+    semantics = methodSemantics name;
+    parameters = types.boolean;
     outputs = {};
     permittedOperations = [name];
     guarantees = [];
     outcome = {
-      completionEvidence = schemas.boolean;
-      observationEvidence = schemas.boolean;
+      completionEvidence = types.boolean;
+      observationEvidence = types.boolean;
       supportsRejectedBeforeEffect = true;
       indeterminate =
         if builtins.elem name recoverableMethods
@@ -516,7 +543,8 @@
 
   endpointEffectMethod = operationFamily: name: outputs: {
     targetResource = endpointEffects.name;
-    inherit operationFamily outputs;
+    inherit outputs;
+    semantics = methodSemantics name;
     parameters = endpointRequest;
     permittedOperations = [name];
     guarantees = [];
@@ -530,7 +558,8 @@
 
   networkPolicyEffectMethod = operationFamily: name: parameters: outputs: guarantees: {
     targetResource = networkPolicyEffects.name;
-    inherit operationFamily parameters outputs guarantees;
+    inherit parameters outputs guarantees;
+    semantics = methodSemantics name;
     permittedOperations = [name];
     outcome = {
       completionEvidence = networkPolicyObservation;
@@ -552,7 +581,7 @@
     group,
     handler,
     methods,
-    requestSchema ? schemas.boolean,
+    requestSchema ? types.boolean,
     selectedLifecycle ? lifecycle,
     guarantees ? [],
   }:
@@ -579,21 +608,21 @@
     runtimeArtifact = nginxRuntimeSelector;
     hostResourceRuntime = selectorFor hostResourceRuntimeDependency;
   };
-  baseNginxImplementations = baseNginxAbilityModule.config.aos.abilities.implementations;
+  baseNginxAbilities = baseNginxAbilityModule.config.aos.abilities;
+  baseNginxImplementations = baseNginxAbilities.implementations;
   nginxAbilityModule = {
-    config.aos.abilities.implementations =
-      baseNginxImplementations
-      // {
-        nginx =
-          baseNginxImplementations.nginx
-          // {
-            definition =
-              baseNginxImplementations.nginx.definition
-              // {
-                transition = transitionTransform baseNginxImplementations.nginx.definition.transition;
-              };
-          };
-      };
+    config.aos.abilities = {
+      inherit (baseNginxAbilities) interfaces;
+      implementations =
+        baseNginxImplementations
+        // {
+          nginx =
+            baseNginxImplementations.nginx
+            // {
+              transition = transitionTransform baseNginxImplementations.nginx.transition;
+            };
+        };
+    };
   };
 in let
   mkPackage = pname: src: runtimeDeps: abilities:
@@ -629,23 +658,25 @@ in {
   };
 
   backend-registry = mkPackage "ability-reference-http-backend-registry" httpBackendRegistryArtifact [] {
-    config.aos.abilities.implementations.http-backend = {
-      definition = lib.abilities.define {
-        interface = httpBackend.name;
-        abi = httpBackend.abi;
-        requestSchema = endpoint;
-        configurationSchema = null;
-        outputs.endpoints = output backendEndpoints;
-        methods = {};
-        inherit lifecycle;
-        guarantees = [];
-        aggregation = aggregation "backend";
-        requires = {};
-        composeEntry = "compose";
-        transitionEntry = "transition";
-        ownsResourceKinds = [];
-        compose = httpBackendRegistryProvider.compose;
-        transition = httpBackendRegistryProvider.transition;
+    config.aos.abilities = lib.abilities.projectDefinitions {
+      http-backend = {
+        definition = lib.abilities.define {
+          interface = httpBackend.name;
+          abi = httpBackend.abi;
+          requestSchema = endpoint;
+          configurationSchema = null;
+          outputs.endpoints = output backendEndpoints;
+          methods = {};
+          inherit lifecycle;
+          guarantees = [];
+          aggregation = aggregation "backend";
+          requires = {};
+          composeEntry = "compose";
+          transitionEntry = "transition";
+          ownsResourceKinds = [];
+          compose = httpBackendRegistryProvider.compose;
+          transition = httpBackendRegistryProvider.transition;
+        };
       };
     };
   };
@@ -653,14 +684,14 @@ in {
   nginx = mkPackage "ability-reference-nginx" nginxArtifact [nginxRuntimeDependency hostResourceRuntimeDependency] nginxAbilityModule;
 
   managed-configuration = mkPackage "ability-reference-managed-configuration" managedConfigurationArtifact [managedConfigurationRuntimeDependency] {
-    config.aos.abilities.implementations = {
+    config.aos.abilities = lib.abilities.projectDefinitions {
       managed-configuration = {
         definition = lib.abilities.define {
           interface = managedConfiguration.name;
           abi = managedConfiguration.abi;
-          requestSchema = schemas.record {
+          requestSchema = types.record {
             fields = {
-              virtualHosts = schemas.list {
+              virtualHosts = types.list {
                 element = managedVirtualHost;
                 maxItems = 1024;
               };
@@ -709,26 +740,26 @@ in {
         handler = {
           artifact = selectorFor managedConfigurationRuntimeDependency;
           entryPoint = "bin/.aos-package-runtime-unwrapped";
-          arguments = schemas.boolean;
-          result = schemas.boolean;
+          arguments = types.boolean;
+          result = types.boolean;
         };
       };
     };
   };
 
   credential = mkPackage "ability-reference-credential" credentialArtifact [credentialRuntimeDependency] {
-    config.aos.abilities.implementations = {
+    config.aos.abilities = lib.abilities.projectDefinitions {
       credential-delivery = {
         definition = lib.abilities.define {
           interface = credentialDelivery.name;
           abi = credentialDelivery.abi;
-          requestSchema = schemas.record {
+          requestSchema = types.record {
             fields = {
-              hosts = schemas.list {
+              hosts = types.list {
                 element = string;
                 maxItems = 1024;
               };
-              version = schemas.string {
+              version = types.string {
                 maxLength = 71;
                 syntax = null;
               };
@@ -791,7 +822,7 @@ in {
   };
 
   service = mkPackage "ability-reference-service" serviceArtifact [serviceRuntimeDependency] {
-    config.aos.abilities.implementations = {
+    config.aos.abilities = lib.abilities.projectDefinitions {
       foreground-process = {
         artifact = packageRuntimeSelector;
         definition = terminalExport {
@@ -824,12 +855,12 @@ in {
         definition = lib.abilities.define {
           interface = serviceDefinition.name;
           abi = serviceDefinition.abi;
-          requestSchema = schemas.record {
+          requestSchema = types.record {
             fields = {
               configuration_revision = string;
               consumer_endpoint = string;
               service = string;
-              virtual_host_count = schemas.integer {
+              virtual_host_count = types.integer {
                 minimum = 0;
                 maximum = 1024;
               };
@@ -881,8 +912,8 @@ in {
         handler = {
           artifact = packageRuntimeSelector;
           entryPoint = "bin/.aos-package-runtime-unwrapped";
-          arguments = schemas.boolean;
-          result = schemas.boolean;
+          arguments = types.boolean;
+          result = types.boolean;
         };
       };
     };

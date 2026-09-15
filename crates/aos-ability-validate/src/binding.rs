@@ -1197,7 +1197,7 @@ fn validate_binding(
 
     let planned_provider =
         validate_provider_evidence(binding, inputs, input_index, index, diagnostics);
-    let aggregation = binding_aggregation(inputs, input_index, binding);
+    let aggregation = Some(&interface.interface.aggregation);
 
     if binding.policy_revision != plan.policy_revision {
         push_diagnostic(
@@ -1790,7 +1790,9 @@ fn validate_contributions(
             continue;
         };
         let binding = &document.bindings[*binding_index];
-        let aggregation = binding_aggregation(inputs, input_index, binding);
+        let aggregation = context
+            .interface(&binding.interface)
+            .map(|document| &document.interface.aggregation);
         let authorized = binding.caller_grant.contributions.iter().any(|permission| {
             permission.aggregate == contribution.aggregate && permission.slot == contribution.slot
         });
@@ -1894,25 +1896,6 @@ fn insert_artifact(index: &mut ArtifactIndex, artifact: &aos_ability_model::Arti
     index
         .entry(artifact.content)
         .or_insert_with(|| artifact.clone());
-}
-
-fn binding_aggregation<'a>(
-    inputs: &'a BindingValidationInputs,
-    input_index: &BindingInputIndex,
-    binding: &Binding,
-) -> Option<&'a aos_ability_model::AggregationContract> {
-    let package = binding
-        .provider_package
-        .and_then(|digest| input_index.packages.get(&digest))
-        .map(|index| &inputs.packages[*index])?;
-    package
-        .exports
-        .iter()
-        .find(|export| {
-            export.interface == binding.interface
-                && export.implementation == binding.implementation.descriptor
-        })
-        .and_then(|export| export.aggregation.as_ref())
 }
 
 fn check_order_by<T>(

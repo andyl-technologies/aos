@@ -778,6 +778,26 @@ impl VersionedDocument for InterfaceDocument {
     fn validate_structure(&self, limits: &LimitProfile) -> Result<(), DocumentError> {
         validate_interface_depth(&self.interface, limits)
     }
+
+    fn content_digest(&self) -> Result<Sha256Digest, DocumentError> {
+        #[derive(Serialize)]
+        struct DescriptorEnvelope<'a> {
+            domain: &'static str,
+            document: &'a InterfaceDocument,
+        }
+
+        let envelope = DescriptorEnvelope {
+            domain: Self::SCHEMA,
+            document: self,
+        };
+        let bytes =
+            aos_contract::canonical::to_vec(&envelope).map_err(|source| DocumentError::Decode {
+                label: Self::SCHEMA.to_string(),
+                source,
+            })?;
+
+        Ok(Sha256Digest::of_bytes(bytes))
+    }
 }
 
 impl VersionedDocument for PackageDocument {
@@ -942,7 +962,9 @@ fn bounded_usize(value: u64) -> usize {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::interface::{LifecycleSemantics, ValueVisibility};
+    use crate::interface::{
+        AggregationContract, AggregationScope, LifecycleSemantics, ValueVisibility,
+    };
     use crate::schema::ValueSchema;
     use crate::value::ResourceLifetime;
 
@@ -971,6 +993,13 @@ mod tests {
                     releases_ephemeral_on_disable: true,
                     retains_persistent_by_default: true,
                     persistent_delete_method: None,
+                },
+                aggregation: AggregationContract {
+                    scope: AggregationScope::ProviderInstance,
+                    key: LocalKey::new("slot").expect("valid aggregation key"),
+                    controller_group: LocalKey::new("test").expect("valid controller group"),
+                    reject_slot_collisions: true,
+                    merge_contract: None,
                 },
                 guarantees: Vec::new(),
             },

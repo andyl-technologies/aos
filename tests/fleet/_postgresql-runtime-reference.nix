@@ -77,7 +77,7 @@
       package = packageSet.faultSuites.${faultPoint};
     }) (builtins.attrNames packageSet.faultSuites);
 
-  packageRoots = lib.concatMap (entry: [entry.package entry.package.abilityContract]) orderedPackages;
+  packageRoots = lib.concatMap (entry: [entry.package entry.package.abilities.contract]) orderedPackages;
 
   runtimeModules = [
     ../../systems/server-test.nix
@@ -123,7 +123,7 @@
   qualificationCandidateRuntimeCompanions = map (entry: {
     inherit (entry) name;
     primary = entry.package;
-    abilities = entry.package.abilityContract;
+    abilities = entry.package.abilities.contract;
     originalRuntime = pkgs.aos.packageRuntime;
   }) (builtins.filter (entry: entry.name != "ability-reference-postgresql-consumer") orderedPackages);
 in {
@@ -199,7 +199,7 @@ in {
       }${builtins.toJSON (map (entry: {
           inherit (entry) name;
           package = builtins.toString entry.package;
-          abilities = builtins.toString entry.package.abilityContract;
+          abilities = builtins.toString entry.package.abilities.contract;
         })
         orderedPackages)}${
         if guestTools

@@ -90,6 +90,7 @@ pub fn host_storage_interface() -> Result<InterfaceDocument> {
 
     interface_document(
         interface_name,
+        "storage",
         host_storage_request_schema()?,
         methods,
         LifecycleSemantics {

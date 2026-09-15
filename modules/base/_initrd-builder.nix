@@ -141,7 +141,7 @@
     packages =
       map (package: {
         payload = package;
-        manifest = package.abilityContract;
+        manifest = package.abilities.contract;
       })
       initrdAbilityPackages;
     runtimeRoots = uniqueInitrdPackages;

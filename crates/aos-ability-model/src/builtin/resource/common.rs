@@ -73,6 +73,7 @@ pub(crate) fn resource_method(
 
 pub(crate) fn interface_document(
     name: InterfaceName,
+    controller_group: &str,
     request: ValueSchema,
     methods: BTreeMap<LocalKey, MethodDescriptor>,
     lifecycle: LifecycleSemantics,
@@ -88,6 +89,7 @@ pub(crate) fn interface_document(
             outputs: BTreeMap::new(),
             methods,
             lifecycle,
+            aggregation: super::super::aggregation(controller_group)?,
             guarantees: Vec::new(),
         },
     })

@@ -8,7 +8,7 @@
   packageName ? "ability-reference-image-rollout",
   stateFormatOverride ? null,
 }: let
-  inherit (lib.abilities) schemas;
+  inherit (lib.abilities) types;
 
   providerArtifact =
     if qualificationCell
@@ -19,24 +19,17 @@
     then "sha256:${builtins.hashFile "sha256" ./state-format-v1.json}"
     else stateFormatOverride;
 
-  interface = name: descriptor: {
-    inherit name descriptor;
-    abi = 1;
-  };
-  rolloutEffects =
-    interface
-    "aos.ab-image-rollout-effects"
-    "sha256:5776469b1b825c017ced9db370a84d693631dad739b91961dee4ef14d8816c7c";
+  rolloutEffectsName = "aos.ab-image-rollout-effects";
 
-  storePath = schemas.string {
+  storePath = types.string {
     maxLength = 4096;
     syntax = null;
   };
-  stateFormat = schemas.string {
+  stateFormat = types.string {
     maxLength = 128;
     syntax = null;
   };
-  imageIdentity = schemas.record {
+  imageIdentity = types.record {
     fields = {
       executor = storePath;
       state-format = stateFormat;
@@ -45,25 +38,32 @@
     };
     optional = [];
   };
-  rolloutRequest = schemas.record {
+  rolloutRequest = types.record {
     fields = {
       candidate = imageIdentity;
-      concurrency = schemas.integer {
+      concurrency = types.integer {
         minimum = 1;
         maximum = 1;
       };
       predecessor = imageIdentity;
-      retention-expires-at-millis = schemas.integer {
+      retention-expires-at-millis = types.integer {
         minimum = 1;
         maximum = 9007199254740991;
       };
-      strategy = schemas.enum ["single-host-ab-v1"];
+      strategy = types.enum ["single-host-ab-v1"];
     };
     optional = [];
   };
-  qualificationRequest = schemas.record {
+  qualificationRequest = types.record {
     fields = {
-      method = schemas.enum [
+      methodSemantics = name: {
+        requiredTargetAccess =
+          if builtins.elem name ["observe" "observe-boot" "observe-health" "validate" "verify"]
+          then "read"
+          else "exclusive-write";
+        stopsProvider = name == "stop";
+      };
+      method = types.enum [
         "drain"
         "hold"
         "observe-boot"
@@ -79,17 +79,17 @@
     };
     optional = [];
   };
-  rolloutObservation = schemas.record {
+  rolloutObservation = types.record {
     fields = {
-      active-image = schemas.enum ["candidate" "predecessor"];
-      candidate-prepared = schemas.boolean;
-      drained = schemas.boolean;
-      healthy = schemas.optional schemas.boolean;
-      lease-expires-at-millis = schemas.optional (schemas.integer {
+      active-image = types.enum ["candidate" "predecessor"];
+      candidate-prepared = types.boolean;
+      drained = types.boolean;
+      healthy = types.optional types.boolean;
+      lease-expires-at-millis = types.optional (types.integer {
         minimum = 1;
         maximum = 9007199254740991;
       });
-      phase = schemas.enum [
+      phase = types.enum [
         "booted"
         "drained"
         "fallback-retained"
@@ -99,7 +99,7 @@
         "retired"
         "selected"
       ];
-      schema = schemas.enum ["aos.ability.ab-image-rollout-observation/v1"];
+      schema = types.enum ["aos.ability.ab-image-rollout-observation/v1"];
     };
     optional = [];
   };
@@ -126,6 +126,7 @@
     guarantees = [];
   };
   output = schema: phase: lifetime: {
+    description = "Reports rollout state produced by the selected action.";
     inherit schema phase lifetime;
     visibility = "protected";
   };
@@ -142,13 +143,11 @@
         rollout-state = output rolloutObservation "observation" lifetime;
       }
       // lib.optionalAttrs (action == "observe-health") {
-        healthy = output schemas.boolean "observation" "attempt";
+        healthy = output types.boolean "observation" "attempt";
       };
   in {
-    operationFamily = {
-      kind = "image-rollout";
-      inherit action;
-    };
+    description = "Performs the ${action} image-rollout operation.";
+    semantics = methodSemantics action;
     parameters = rolloutRequest;
     targetResource = rolloutEffects.name;
     inherit outputs;
@@ -161,25 +160,51 @@
       indeterminate = "reconcile";
     };
   };
-  rolloutProvider = import (providerArtifact + "/default.nix");
+  rolloutEffectsDeclaration = lib.abilities.declareInterface {
+    name = rolloutEffectsName;
+    description = "Executes provider effects required by an atomic image rollout.";
+    abi = 1;
+    requestType = rolloutRequest;
+    outputs = {};
+    methods = builtins.listToAttrs (builtins.map (action: {
+        name = action;
+        value = method action;
+      }) [
+        "drain"
+        "hold"
+        "observe-boot"
+        "observe-health"
+        "prepare"
+        "retain"
+        "retire"
+        "select"
+        "withdraw"
+      ]);
+    inherit lifecycle;
+    guarantees = [];
+    aggregation = aggregation "rollout-effects";
+  };
+  rolloutEffectsDocument = lib.abilities.interfaceDocumentFromDeclaration rolloutEffectsDeclaration;
+  rolloutEffects = lib.abilities.interfaceIdentity rolloutEffectsDocument;
+  rolloutProvider = import (providerArtifact + "/default.nix") {inherit rolloutEffects;};
   rolloutRuntimeSelector = lib.abilities.packageOutput {
     package = "aos";
     output = "packageRuntime";
   };
 
   abilities = {
-    config.aos.abilities.implementations = {
+    config.aos.abilities = lib.abilities.projectDefinitions {
       rollout = {
         requiredFeatures = ["ab-image-rollout-v1"];
         definition = lib.abilities.define {
           interface = "aos.ab-image-rollout";
           abi = 1;
-          requestSchema = schemas.boolean;
+          requestSchema = types.boolean;
           configurationSchema =
             if qualificationCell
             then qualificationRequest
             else rolloutRequest;
-          outputs.machine = output schemas.resourceReference "planning" "persistent";
+          outputs.machine = output types.resourceReference "planning" "persistent";
           methods = {};
           inherit lifecycle;
           guarantees = [];

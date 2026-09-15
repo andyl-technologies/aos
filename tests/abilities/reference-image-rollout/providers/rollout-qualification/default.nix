@@ -1,11 +1,5 @@
 ##! Exact-method A/B rollout strategy for release qualification.
-let
-  rolloutEffects = {
-    name = "aos.ab-image-rollout-effects";
-    abi = 1;
-    descriptor = "sha256:5776469b1b825c017ced9db370a84d693631dad739b91961dee4ef14d8816c7c";
-  };
-
+{rolloutEffects}: let
   resourceFor = provider: {
     inherit provider;
     key = "machine";

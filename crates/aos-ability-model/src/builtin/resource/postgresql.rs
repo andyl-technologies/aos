@@ -141,6 +141,7 @@ pub fn postgresql_effects_interface() -> Result<InterfaceDocument> {
 
     interface_document(
         interface_name,
+        "postgresql-terminal",
         request,
         methods,
         LifecycleSemantics {

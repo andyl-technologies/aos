@@ -92,7 +92,7 @@
     (lib.abilities.define {
       interface = "aos.test.ordering";
       abi = 1;
-      requestSchema = lib.abilities.schemas.boolean;
+      requestSchema = lib.abilities.types.boolean;
       outputs = {};
       methods = {};
       lifecycle = {
@@ -136,22 +136,29 @@
     })
     .guarantees;
 
-  methodFamilyInterface = operationFamily:
+  methodSemantics = name: {
+    requiredTargetAccess =
+      if builtins.elem name ["observe" "observe-boot" "observe-health" "validate" "verify"]
+      then "read"
+      else "exclusive-write";
+    stopsProvider = name == "stop";
+  };
+  methodSemanticsInterface = semantics:
     lib.abilities.define {
       interface = "aos.test.method-family";
       abi = 1;
-      requestSchema = lib.abilities.schemas.boolean;
+      requestSchema = lib.abilities.types.boolean;
       outputs = {};
       methods.run = {
-        inherit operationFamily;
-        parameters = lib.abilities.schemas.boolean;
+        inherit semantics;
+        parameters = lib.abilities.types.boolean;
         targetResource = "aos.test.method-family";
         outputs = {};
         permittedOperations = ["run"];
         guarantees = [];
         outcome = {
-          completionEvidence = lib.abilities.schemas.boolean;
-          observationEvidence = lib.abilities.schemas.boolean;
+          completionEvidence = lib.abilities.types.boolean;
+          observationEvidence = lib.abilities.types.boolean;
           supportsRejectedBeforeEffect = true;
           indeterminate = "reconcile";
         };
@@ -174,22 +181,22 @@
       ownsResourceKinds = ["aos.test.method-family"];
       handler = "method-family-handler";
     };
-  acceptedMethodImageFamily =
-    (methodFamilyInterface {
-      kind = "image-rollout";
-      action = "retain";
+  acceptedMethodSemantics =
+    (methodSemanticsInterface {
+      requiredTargetAccess = "exclusive-write";
+      stopsProvider = false;
     })
     .methods
     .run
-    .operation_family;
-  invalidMethodImageFamily = builtins.tryEval (builtins.deepSeq (
-      (methodFamilyInterface {
-        kind = "image-rollout";
-        action = "unknown";
+    .semantics;
+  invalidMethodSemantics = builtins.tryEval (builtins.deepSeq (
+      (methodSemanticsInterface {
+        requiredTargetAccess = "invalid";
+        stopsProvider = false;
       })
       .methods
       .run
-      .operation_family
+      .semantics
     )
     true);
 
@@ -197,7 +204,7 @@
     lib.abilities.define {
       interface = "aos.test.configuration";
       abi = 1;
-      requestSchema = lib.abilities.schemas.boolean;
+      requestSchema = lib.abilities.types.boolean;
       inherit configurationSchema;
       outputs = {};
       methods = {};
@@ -219,9 +226,9 @@
       ownsResourceKinds = [];
       handler = "configuration-handler";
     };
-  literalConfigurationSchema = lib.abilities.schemas.record {
-    fields.ports = lib.abilities.schemas.list {
-      element = lib.abilities.schemas.integer {
+  literalConfigurationType = lib.abilities.types.record {
+    fields.ports = lib.abilities.types.list {
+      element = lib.abilities.types.integer {
         minimum = 1024;
         maximum = 65535;
       };
@@ -241,7 +248,7 @@
     lib.abilities.define {
       interface = "aos.test.requirement";
       abi = 1;
-      requestSchema = lib.abilities.schemas.boolean;
+      requestSchema = lib.abilities.types.boolean;
       outputs = {};
       methods = {};
       lifecycle = {
@@ -322,9 +329,13 @@
   productionPackageAdoption = import ./production-package-adoption.nix {
     inherit pkgs lib;
   };
+  smokeAbilityProjection = pkgs.ability-package-smoke.abilities;
+  smokePublishedInterfaces = builtins.fromJSON (
+    builtins.unsafeDiscardStringContext pkgs.ability-package-smoke.abilities.contract.abilityInterfacesJson
+  );
   migratedServiceContracts =
     map (
-      name: pkgs.${name}.abilityContract
+      name: pkgs.${name}.abilities.contract
     )
     (import ../../qualification/package-activation-inventory.nix {
       inherit pkgs lib;
@@ -369,7 +380,7 @@
         phases = [];
         abilities = {};
       })
-      .abilityContract
+      .abilities.contract
       .outPath))
     .success;
   proseVariant = prose:
@@ -416,7 +427,7 @@ in
   # byte-identical across this prose-only edit.
   assert proseBefore.config.drvPath != proseAfter.config.drvPath;
   assert proseBefore.drvPath == proseAfter.drvPath;
-  assert proseBefore.abilityContract.drvPath == proseAfter.abilityContract.drvPath;
+  assert proseBefore.abilities.contract.drvPath == proseAfter.abilities.contract.drvPath;
   assert canonicalInterface == expectedInterface;
   assert interfaceDocument.schema == "aos.ability.interface/v1";
   assert interfaceDocument.interface.name == "aos.test.echo";
@@ -428,8 +439,8 @@ in
     values = [""];
   };
   assert builtins.attrValues asciiControlMap == [true];
-  assert (configurationExport literalConfigurationSchema).configuration_schema
-  == literalConfigurationSchema;
+  assert (configurationExport literalConfigurationType).configuration_schema
+  == lib.abilities.types.schemaOf "literal configuration" literalConfigurationType;
   assert !invalidConfigurationExport.success;
   assert fails (lib.abilities.schemas.checkValue (lib.abilities.schemas.map {
       keyMaxLength = 16;
@@ -538,13 +549,17 @@ in
     closure = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
   });
   assert guaranteeOrdering == ["aos.a:2" "aos.a:10" "aos.a.long:1" "aos.zz:1"];
-  assert acceptedMethodImageFamily
+  assert acceptedMethodSemantics
+  == {
+    required_target_access = "exclusive-write";
+    stops_provider = false;
+  };
+  assert acceptedEffectImageFamily
   == {
     kind = "image-rollout";
     action = "retain";
   };
-  assert acceptedEffectImageFamily == acceptedMethodImageFamily;
-  assert !invalidMethodImageFamily.success;
+  assert !invalidMethodSemantics.success;
   assert !invalidEffectImageFamily.success;
   assert advisoryRequirement.strength == "advisory";
   assert advisoryRequirement.fallback.outputs
@@ -603,13 +618,6 @@ in
       name = "aos.managed-configuration";
       abi = 1;
       descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    };
-    aggregation = {
-      scope = "provider-instance";
-      key = "authorized-slot";
-      controller_group = "configuration";
-      reject_slot_collisions = true;
-      merge_contract = null;
     };
     implementation = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
   };
@@ -721,6 +729,11 @@ in
   assert postgresqlReconciliation.reconcile_divergent == ["materialize" "observe" "restart" "stop"];
   assert productionKubernetes;
   assert productionPackageAdoption;
+  assert builtins.attrNames smokeAbilityProjection == ["contract" "documentation" "implementations" "interfaces" "module" "moduleOutputs" "optionSurface" "requirements"];
+  assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];
+  assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
+  assert builtins.attrNames smokeAbilityProjection.requirements == ["canonical-edge"];
+  assert (builtins.head smokePublishedInterfaces).document == smokeAbilityProjection.interfaces.default;
   assert fails (lib.abilities.effects.normalize [] effectFixture.missingReference);
   assert fails (lib.abilities.effects.normalize [] effectFixture.cycle);
   assert fails (lib.abilities.effects.normalize [] effectFixture.incompleteBoolean);
