@@ -122,7 +122,10 @@
         linux_isolation = {
           allow_privilege_escalation = false;
           ambient_capabilities = ["CAP_NET_ADMIN" "CAP_NET_RAW"];
-          bounding_capabilities = ["CAP_NET_ADMIN" "CAP_NET_RAW"];
+          capability_bounds = {
+            kind = "restricted";
+            capabilities = ["CAP_NET_ADMIN" "CAP_NET_RAW"];
+          };
           control_group_delegation = false;
           control_group_access = "host";
           device_namespace = "shared";

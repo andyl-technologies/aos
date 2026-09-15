@@ -353,13 +353,19 @@
           temporary_directory = "private";
           devices = [];
           host_paths = [];
-          maximum_open_files = 1048576;
           permit_core_dumps = false;
+        };
+        resources.open_files = {
+          kind = "maximum";
+          value = 1048576;
         };
         linux_isolation = {
           allow_privilege_escalation = false;
           ambient_capabilities = [];
-          bounding_capabilities = [];
+          capability_bounds = {
+            kind = "restricted";
+            capabilities = [];
+          };
           control_group_delegation = false;
           control_group_access = "read-only";
           device_namespace = "shared";

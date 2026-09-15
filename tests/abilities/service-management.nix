@@ -216,18 +216,18 @@
       };
       resources = {
         open_files = {
-          kind = "finite";
+          kind = "maximum";
           value = 1048576;
         };
         processes.kind = "unbounded";
         tasks.kind = "unbounded";
         locked_memory_bytes.kind = "unbounded";
         memory_high_bytes = {
-          kind = "finite";
+          kind = "maximum";
           value = 1073741824;
         };
         memory_max_bytes = {
-          kind = "finite";
+          kind = "maximum";
           value = 2147483648;
         };
       };
@@ -332,6 +332,56 @@
     options = ["nodev" "nosuid"];
     timeout_millis = 30000;
   };
+  placedStorageAllocation = {
+    name = "state";
+    purpose = "state";
+    mode = "0750";
+    requested_path = "/srv/state";
+  };
+  invalidPlacedStorageAllocation =
+    placedStorageAllocation
+    // {requested_path = "relative/state";};
+  restrictedCapabilityBounds = {
+    kind = "restricted";
+    capabilities = ["CAP_NET_BIND_SERVICE"];
+  };
+  unrestrictedCapabilityBounds.kind = "unrestricted";
+  maximumResourceLimit = {
+    kind = "maximum";
+    value = 4096;
+  };
+  unboundedResourceLimit.kind = "unbounded";
+  linuxIsolation = {
+    allow_privilege_escalation = false;
+    ambient_capabilities = ["CAP_NET_BIND_SERVICE"];
+    capability_bounds = restrictedCapabilityBounds;
+    control_group_delegation = false;
+    control_group_access = "read-only";
+    device_namespace = "shared";
+    kernel_clock_mutation = false;
+    kernel_hostname_mutation = false;
+    kernel_log_access = false;
+    kernel_module_access = false;
+    kernel_tunable_access = false;
+    lock_personality = true;
+    memory_write_execute = false;
+    namespace_isolation = [];
+    network_address_families = ["ipv4" "ipv6" "unix"];
+    oom_score_adjust = 0;
+    permit_realtime = false;
+    permit_suid_sgid = false;
+    process_visibility = "all";
+    syscall_architectures = [];
+    syscall_allow = [];
+    syscall_deny = [];
+    syscall_profile = "system-service";
+    user_namespace_ownership = "none";
+  };
+  invalidLinuxIsolation =
+    linuxIsolation
+    // {
+      ambient_capabilities = ["CAP_SYS_ADMIN"];
+    };
   credentialProducers =
     builtins.genList (index: {
       key = "credential-${builtins.toString index}";
@@ -547,6 +597,14 @@ in
   assert interfaces.storageAllocation.document.interface.methods.allocate.outputs.storage-path.lifetime == "instance";
   assert interfaces.persistentStorageAllocation.document.interface.methods.allocate.outputs.storage-path.lifetime == "persistent";
   assert interfaces.persistentStorageAllocation.document.interface.methods.allocate.outputs.retained-resource.lifetime == "persistent";
+  assert succeedsAs serviceTypes.storageAllocation placedStorageAllocation;
+  assert !succeedsAs serviceTypes.storageAllocation invalidPlacedStorageAllocation;
+  assert succeedsAs serviceTypes.capabilityBounds restrictedCapabilityBounds;
+  assert succeedsAs serviceTypes.capabilityBounds unrestrictedCapabilityBounds;
+  assert succeedsAs serviceTypes.resourceLimit maximumResourceLimit;
+  assert succeedsAs serviceTypes.resourceLimit unboundedResourceLimit;
+  assert validates (minimalService // {linux_isolation = linuxIsolation;});
+  assert !validates (minimalService // {linux_isolation = invalidLinuxIsolation;});
   assert builtins.attrNames expanded.requests == ["main-lifecycle"];
   assert builtins.attrNames expandedWithReload.requests == ["main-lifecycle" "main-reload"];
   assert expanded.requirementTemplates.service-lifecycle.methods == ["observe" "restart" "start" "stop"];
@@ -641,7 +699,7 @@ in
         extendedService.resources
         // {
           memory_high_bytes = {
-            kind = "finite";
+            kind = "maximum";
             value = 4294967296;
           };
         };
