@@ -186,6 +186,10 @@ fn retained_inputs(
     let facts_bytes = fs::read(facts_json).context("reading pinned observational facts")?;
     let facts: crate::metadata::fetcher::Facts =
         serde_json::from_slice(&facts_bytes).context("decoding observational instance facts")?;
+    ensure!(
+        crate::metadata::facts_render::canonicalize_host_facts(&facts)? == facts,
+        "authorized observational instance facts are not canonical"
+    );
     let normalized = crate::metadata::facts_render::normalize_host_facts(&facts);
     let normalized = serde_json::to_vec(&normalized)
         .context("encoding normalized observational instance facts")?;

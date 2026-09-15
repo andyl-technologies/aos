@@ -10,7 +10,7 @@ use std::path::Path;
 use tempfile::tempdir;
 
 use super::detect::{PlatformCapability, classify_dmi, detect, needs_network, platform_capability};
-use super::facts_render::render_host_facts_nix;
+use super::facts_render::{canonicalize_host_facts, render_host_facts_nix};
 use super::fetcher::{Facts, MacIface, PlatformFetcher, StaticNetwork, UserData};
 use super::http::{RecordedHttp, RecordedMethod};
 use super::mount::{CONFIG_DRIVE_LABELS, FakeProbe};
@@ -710,6 +710,12 @@ fn facts_hash_is_canonical_and_includes_static_network() {
     let network = reordered.network.as_mut().unwrap();
     network.addresses.reverse();
     network.dns.reverse();
+
+    assert_eq!(
+        canonicalize_host_facts(&first).expect("canonical first facts"),
+        canonicalize_host_facts(&reordered).expect("canonical reordered facts"),
+        "protected fact transport is independent of collection order"
+    );
 
     let first_dir = tempdir().unwrap();
     let second_dir = tempdir().unwrap();
