@@ -85,6 +85,10 @@
                 cfg.manifest
                 "--eval-root"
                 cfg.evalRoot
+                "--provisioning-state"
+                cfg.provisioningState
+                "--image-version"
+                cfg.imageVersion
               ];
             };
             ignore_failure = false;
@@ -281,6 +285,21 @@ in {
       default = "/run/aos-eval";
       internal = true;
       description = "Private evaluation scratch directory.";
+    };
+    provisioningState = lib.mkOption {
+      type = lib.abilities.types.executionPath;
+      default = "/var/lib/aos-provisioning";
+      internal = true;
+      description = "Durable provisioning evidence and last-known-good input directory.";
+    };
+    imageVersion = lib.mkOption {
+      type = lib.abilities.types.string {
+        maxLength = 256;
+        syntax = null;
+      };
+      default = "unknown";
+      internal = true;
+      description = "Immutable image version recorded with provisioning evidence.";
     };
   };
 
