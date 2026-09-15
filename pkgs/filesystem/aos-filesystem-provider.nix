@@ -10,7 +10,7 @@
     inherit src;
     name = "aos-filesystem-provider-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-4G8waM8fsmqSjIgkaitrG3HmPy2e6KShpDDJn7THqZc=";
+    hash = "sha256-fsil97v8HPfK0LpyIncDRarHQtA/7i9VG+ILTnY1gQA=";
   };
 in
   mkCargoPackage {
