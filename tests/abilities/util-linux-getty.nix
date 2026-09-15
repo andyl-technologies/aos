@@ -90,7 +90,6 @@ in
   assert portableOptionTree host.options.aos.services.getty.autologin;
   assert !invalidStage.success;
   assert builtins.attrNames host.config.aos.abilities.instances == ["util-linux:getty"];
-  assert builtins.length (builtins.attrNames hostRequests) == 10;
   assert (request hostRequests "startup-milestone").milestone == "interactive-console";
   assert (request hostRequests "user-sessions-milestone").milestone == "user-sessions-ready";
   assert hostVirtual.start
@@ -119,7 +118,8 @@ in
     start_when_idle = true;
     session_identifier = "tty1";
   };
-  assert builtins.length (builtins.attrNames initrdRequests) == 9;
+  assert builtins.attrNames (builtins.removeAttrs hostRequests ["util-linux:user-sessions-milestone"])
+  == builtins.attrNames initrdRequests;
   assert !(builtins.hasAttr "util-linux:user-sessions-milestone" initrdRequests);
   assert (request initrdRequests "startup-milestone").milestone == "early-system";
   assert (builtins.head initrdVirtual.start).executable.arguments == ["--noclear" "tty0" "linux"];
