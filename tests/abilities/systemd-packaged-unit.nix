@@ -90,16 +90,19 @@
           dependencyOwnersOfAttr = _: _: [];
           ownerOfListAttr = _: _: _: "@test";
         };
-        artifactLocatorFor = _: {
-          artifactReference = {
-            _type = "aos-artifact-reference";
-            content = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-            store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
-            nar_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-            closure = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        artifactLocatorFor = selector:
+          if (selector._type or null) != "aos-package-output-selector"
+          then throw "provider attempted to resolve a materialized artifact reference"
+          else {
+            artifactReference = {
+              _type = "aos-artifact-reference";
+              content = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+              store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
+              nar_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+              closure = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+            };
+            path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
           };
-          path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
-        };
       };
     };
 
@@ -131,6 +134,8 @@ in
   assert unit.overrideStrategy == "asDropin";
   assert unit.wantedBy == ["multi-user.target"];
   assert unit.text == desired.realization.drop_in_text;
+  assert !(lib.hasInfix "Documentation=" unit.text);
+  assert !(desired.realization ? revision_receipt);
   assert lib.hasInfix "SuccessExitStatus=0 2" desired.realization.drop_in_text;
   assert lib.hasInfix "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example/bin" unit.text;
   assert lib.hasInfix "SuccessExitStatus=0 2" rendered.text;

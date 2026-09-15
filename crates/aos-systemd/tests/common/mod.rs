@@ -67,8 +67,18 @@ pub struct FakeSystemd {
     state: FakeState,
 }
 
+pub const UNIT_PATH: &str = "/org/freedesktop/systemd1/unit/example_2eservice";
+
 #[zbus::interface(name = "org.freedesktop.systemd1.Manager")]
 impl FakeSystemd {
+    async fn get_unit(&self, _name: &str) -> OwnedObjectPath {
+        OwnedObjectPath::try_from(UNIT_PATH).expect("synthetic unit path is valid")
+    }
+
+    async fn load_unit(&self, _name: &str) -> OwnedObjectPath {
+        OwnedObjectPath::try_from(UNIT_PATH).expect("synthetic unit path is valid")
+    }
+
     async fn subscribe(&self) {
         self.record("subscribe");
         self.state.subscribed.store(true, Ordering::SeqCst);

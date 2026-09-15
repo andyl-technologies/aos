@@ -59,6 +59,13 @@ pub enum Error {
         actual: String,
     },
 
+    /// A canonical unit's loaded definition is stale relative to its files.
+    #[error("systemd unit {unit} requires a daemon reload")]
+    UnitNeedsDaemonReload {
+        /// Names the exact canonical unit requested by the caller.
+        unit: String,
+    },
+
     /// A loaded unit carries no single AOS revision marker.
     #[error("systemd unit {unit} has no unambiguous loaded AOS revision")]
     UnitRevisionUnknown {
@@ -87,6 +94,7 @@ impl Error {
             Self::ManagerIncarnationChanged
                 | Self::UnitAlias { .. }
                 | Self::UnitIdentityChanged { .. }
+                | Self::UnitNeedsDaemonReload { .. }
                 | Self::UnitRevisionUnknown { .. }
                 | Self::UnitRevisionChanged { .. }
         )
@@ -106,6 +114,7 @@ impl Error {
             | Self::ManagerIncarnationChanged
             | Self::UnitAlias { .. }
             | Self::UnitIdentityChanged { .. }
+            | Self::UnitNeedsDaemonReload { .. }
             | Self::UnitRevisionUnknown { .. }
             | Self::UnitRevisionChanged { .. } => false,
         }

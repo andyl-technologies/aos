@@ -125,9 +125,6 @@
 
   directive = name: values:
     lib.optionalString (values != []) "${name}=${builtins.concatStringsSep " " values}\n";
-  receiptPath = unitName: let
-    encodedName = builtins.replaceStrings ["%" "/" " "] ["%25" "%2F" "%20"] unitName;
-  in "/etc/aos/ability-revisions/${encodedName}/current";
 
   dropInText = parameters: let
     dependencies = parameters.dependencies;
@@ -144,7 +141,6 @@
       + lib.optionalString (searchPath != "") "Environment=\"PATH=${searchPath}\"\n";
   in
     "[Unit]\n"
-    + "Documentation=file:${receiptPath parameters.source.unit_name}\n"
     + directive "After" (concreteUnitNames dependencies.after)
     + directive "Before" (concreteUnitNames dependencies.before)
     + directive "Requires" (concreteUnitNames dependencies.requires)
@@ -163,7 +159,6 @@
     systemd_unit.unit_name = parameters.source.unit_name;
     inherit (parameters) activation;
     drop_in_text = dropInText parameters;
-    revision_receipt = receiptPath parameters.source.unit_name;
   };
 
   selectedResources = builtins.filter (resource:
@@ -171,13 +166,10 @@
     != null
     && config.aos.abilities.bindings.${resource.controller}.implementation == implementationName)
   (builtins.attrValues config.aos.abilities.resolvedResources);
-  staticSource = resource: let
-    realization = resource.realization;
-    locator = artifactLocatorFor resource.value.source.artifact;
-  in {
-    artifactRoot = locator.path;
-    unitFile = realization.source.unit_file;
-    unitName = realization.systemd_unit.unit_name;
+  staticSource = resource: {
+    artifactRoot = resource.realization.source.artifact.store_path;
+    unitFile = resource.realization.source.unit_file;
+    unitName = resource.realization.systemd_unit.unit_name;
     owner = resource.controller;
   };
   staticUnits = builtins.listToAttrs (builtins.map (resource: {
