@@ -81,6 +81,8 @@ in
     propagatedDeps = [];
     disallowedReferences = [buildPackages.go];
 
+    abilities = ./_docker-engine/module.nix;
+
     phases = [
       {
         name = "unpack";
