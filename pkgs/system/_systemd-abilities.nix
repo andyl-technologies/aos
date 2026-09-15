@@ -1132,6 +1132,7 @@
     serviceInterfaces.networkReadiness
     serviceInterfaces.filesystemReadiness
     serviceInterfaces.activationMilestone
+    serviceInterfaces.systemMilestoneReadiness
     serviceInterfaces.runtimeEntryPopulation
   ];
   readinessEffectsRequest = selected:

@@ -204,6 +204,8 @@
     interfaces.networkReadiness.document.interface.outputs.readiness-resource.schema
     == resourceReferenceSchema
     && interfaces.filesystemReadiness.document.interface.outputs.readiness-resource.schema
+    == resourceReferenceSchema
+    && interfaces.systemMilestoneReadiness.document.interface.outputs.readiness-resource.schema
     == resourceReferenceSchema;
   plannedServiceOutputsAreReferences =
     builtins.all
@@ -1393,6 +1395,8 @@ in
   assert succeedsAs serviceTypes.serviceDeclaration configurationDirectoryService;
   assert !succeedsAs serviceTypes.serviceDeclaration escapedDirectoryService;
   assert succeedsAs serviceTypes.filesystemReadiness {scope = "local-filesystems";};
+  assert succeedsAs serviceTypes.systemMilestoneReadiness {milestone = "root-device";};
+  assert !succeedsAs serviceTypes.systemMilestoneReadiness {milestone = "sysinit.target";};
   assert succeedsAs serviceTypes.namedCredential {
     name = "hub-jwt";
     scope = "system";
