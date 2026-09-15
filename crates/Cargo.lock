@@ -306,6 +306,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-block-storage-provider"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-ability-model",
+ "aos-contract",
+ "aos-provider-protocol",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "aos-boot-identity"
 version = "0.1.0"
 

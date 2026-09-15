@@ -461,12 +461,14 @@ let
     "aos-landlock"
     "aos-kubernetes-provider"
     "aos-kernel-tunable-provider"
+    "aos-cryptsetup-provider"
     "aos-nix-store-provider"
     "aos-recovery"
     "aos-registry-server"
     "aos-service-root"
     "aos-selinux-run"
     "aos-systemd-provider"
+    "aos-storage-format-provider"
     "aos-var-policy-migrate"
     "aos-verity-root-guard"
     "attr"
@@ -734,6 +736,9 @@ let
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
     "security/_polkit-dbus-registration.nix" = "linux-only-config-source";
+    "security/_aos-cryptsetup-provider-module.nix" = "target-independent-source";
+    "security/_encrypted-block-mapping-provider.nix" = "target-independent-source";
+    "security/_cryptsetup/module.nix" = "target-independent-source";
     "system/_kmod-abilities.nix" = "target-independent-source";
     "system/_kmod-provider.nix" = "target-independent-source";
     "system/_systemd-abilities.nix" = "target-independent-source";
@@ -759,8 +764,10 @@ let
     "toolchain/rust/_rust-bootstrap.nix" = "native-build-helper";
     "toolchain/rust/_rust-linux-hosted.nix" = "cross-build-helper";
     "tools/_aos-kernel-tunable-provider-module.nix" = "target-independent-source";
+    "tools/_aos-storage-format-provider-module.nix" = "target-independent-source";
     "tools/_aos-nix-store-provider-module.nix" = "target-independent-source";
     "tools/_kernel-tunable-provider.nix" = "target-independent-source";
+    "tools/_storage-format-provider.nix" = "target-independent-source";
     "tools/_nix-store-provider.nix" = "target-independent-source";
     "tools/aos/_tests.nix" = "native-test-helper";
     "tools/aos/_workspace-source.nix" = "target-independent-source";

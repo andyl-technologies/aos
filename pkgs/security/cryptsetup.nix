@@ -16,6 +16,7 @@
 in
   mkDerivation {
     pname = "cryptsetup";
+    abilities = ./_cryptsetup/module.nix;
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];

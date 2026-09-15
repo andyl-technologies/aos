@@ -294,59 +294,6 @@ in {
         };
       })
 
-      # Encrypted swap — plain dm-crypt keyed from /dev/urandom. The key
-      # is discarded on reboot so swap contents are not recoverable.
-      # The swap partition itself is created by systemd-repart on first boot.
-      {
-        "cryptswap" = {
-          description = "Set Up Encrypted Swap";
-          wantedBy = ["swap.target"];
-          before = ["swap.target"];
-          requires = ["dev-disk-by\\x2dpartlabel-swap.device"];
-          # Mount units wait for swap.target by default, so waiting for
-          # local-fs.target here would close a cycle through /tmp.mount.
-          after = ["dev-disk-by\\x2dpartlabel-swap.device"];
-          unitConfig = {
-            # The partition only exists after systemd-repart's first-boot run.
-            # ConditionPathExists makes the first pre-repart boot a
-            # no-op instead of a fatal service failure.
-            ConditionPathExists = "/dev/disk/by-partlabel/swap";
-            DefaultDependencies = "no";
-          };
-          serviceConfig = {
-            Type = "oneshot";
-            RemainAfterExit = true;
-          };
-          script = ''
-            set -euo pipefail
-            swap_dev=/dev/disk/by-partlabel/swap
-            dm_name=cryptswap
-
-            if [ -e /dev/mapper/$dm_name ]; then
-              exit 0
-            fi
-
-            ${pkgs.cryptsetup}/sbin/cryptsetup open --type=plain \
-              --cipher=aes-xts-plain64 \
-              --key-size=256 \
-              --key-file=/dev/urandom \
-              "$swap_dev" "$dm_name"
-
-            ${pkgs.util-linux}/sbin/mkswap /dev/mapper/$dm_name
-            ${pkgs.util-linux}/sbin/swapon /dev/mapper/$dm_name
-          '';
-          preStop = ''
-            set -eu
-            if ${pkgs.util-linux}/sbin/swapon --show=NAME --noheadings \
-                | grep -qx /dev/mapper/cryptswap; then
-              ${pkgs.util-linux}/sbin/swapoff /dev/mapper/cryptswap
-            fi
-            if [ -e /dev/mapper/cryptswap ]; then
-              ${pkgs.cryptsetup}/sbin/cryptsetup close cryptswap
-            fi
-          '';
-        };
-      }
     ];
   };
 }

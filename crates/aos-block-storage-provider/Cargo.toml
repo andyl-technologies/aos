@@ -1,0 +1,21 @@
+[package]
+name = "aos-block-storage-provider"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+aos-ability-model.workspace = true
+aos-contract.workspace = true
+aos-provider-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "aos-cryptsetup-provider"
+path = "src/bin/cryptsetup.rs"
+
+[[bin]]
+name = "aos-storage-format-provider"
+path = "src/bin/storage_format.rs"

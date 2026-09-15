@@ -43,6 +43,7 @@ members = [
     "aos-nix-store-provider",
     "aos-systemd-provider",
     "aos-boot-preparation-provider",
+    "aos-block-storage-provider",
     "crucible-cas",
     "crucible-sim",
     "crucible-assert",

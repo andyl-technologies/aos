@@ -1003,6 +1003,10 @@ in {
       # makes the four shared filesystem implementations available to the
       # final ability fixed point without adding commands to the login PATH.
       pkgs.aos-filesystem-provider
+      # Block-storage controllers and their terminal effects are selected
+      # through the packages that ship their authenticated provider modules.
+      pkgs.aos-cryptsetup-provider
+      pkgs.aos-storage-format-provider
       # Kernel-tunable effects are selected through the provider package that
       # ships both its authenticated module and handler.
       pkgs.aos-kernel-tunable-provider

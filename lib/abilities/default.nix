@@ -1609,6 +1609,10 @@ in rec {
       inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
       types = abilityTypes;
     };
+    blockStorage = import ./block-storage.nix {
+      inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
+      types = abilityTypes;
+    };
   };
   module = {config, ...}:
     import ./module.nix {
@@ -1630,7 +1634,8 @@ in rec {
         interfaces.serviceManagement.moduleDeclarations
         // interfaces.networkPolicy.declarations
         // interfaces.bootPreparation.declarations
-        // interfaces.kernelTunables.declarations;
+        // interfaces.kernelTunables.declarations
+        // interfaces.blockStorage.declarations;
       moduleTypes = moduleOptionTypes;
     };
 
