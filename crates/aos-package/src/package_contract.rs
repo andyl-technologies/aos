@@ -57,7 +57,7 @@ pub use retention::NativePackageContractRetentionVerifier;
 
 const RETENTION_DIGEST_DOMAIN: &str = "aos.contract.retention/v1";
 const STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
-const PREDICATE_TYPE: &str = "https://andyl.com/aos/ability-package-provenance/v1";
+const PREDICATE_TYPE: &str = "https://andyl.com/aos/package-contract-provenance/v1";
 const BUILD_TYPE: &str = "https://andyl.com/aos/apr-ability-publish/v1";
 
 fn artifact_semantic_key(

@@ -345,7 +345,7 @@ fn validate_statement_binding(
         .and_then(serde_json::Value::as_array)
         .context("package contract statement subject must be an array")?;
     let package_name = format!(
-        "aos:ability-package:{}:{}:{}",
+        "aos:package-contract:{}:{}:{}",
         entry.body.package, entry.body.version, entry.body.platform
     );
     let retention_name = format!(

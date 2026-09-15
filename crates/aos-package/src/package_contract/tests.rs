@@ -139,9 +139,10 @@ fn older_package_reader_rejects_encoded_state_format_semantics() {
 #[test]
 fn package_decoder_rejects_an_unknown_future_state_format_feature() {
     let mut package = stateful_package();
-    package
-        .required_features
-        .push(RequiredFeature::new("provider-state-format-v2").expect("valid future feature name"));
+    package.required_features.push(
+        RequiredFeature::new("unsupported-provider-state-format")
+            .expect("valid unsupported feature name"),
+    );
     let manifest = encode_canonical(&package).unwrap();
 
     let error = super::decode_package_manifest(&manifest)
