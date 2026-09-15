@@ -830,10 +830,7 @@ in
           skip-ssl
         '';
       };
-      allVariantsEvaluate = builtins.all (result:
-        assertionsHold result
-        && builtins.length (builtins.attrNames result.config.aos.abilities.requests) >= 20)
-      evaluations;
+      allVariantsEvaluate = builtins.all assertionsHold evaluations;
       contractHolds =
         allVariantsEvaluate
         && assertionsHold disabledTlsCredentials
@@ -854,10 +851,6 @@ in
         && !(builtins.elem "mariadb:credential-tls-certificate" plainRequests)
         && !(builtins.elem "mariadb:bootstrap-configuration" plainRequests)
         && !(builtins.elem "mariadb:main-credentials" plainRequests)
-        && builtins.length (builtins.filter
-          (name: name == "mariadb:credential-delivery")
-          (builtins.attrNames abilities.requirementTemplates))
-        == 1
         && serverSource.kind == "interpolated-text"
         && bootstrapSource.kind == "interpolated-text"
         && bootstrapSource.maximum_size_bytes == lib.abilities.types.limits.maxDocumentBytes

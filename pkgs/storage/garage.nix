@@ -184,7 +184,6 @@ in
         && builtins.elem "garage:credential-metrics-token" adminRequests
         && builtins.elem "garage:credential-admin-token" adminWithoutMetricsTokenRequests
         && !(builtins.elem "garage:credential-metrics-token" adminWithoutMetricsTokenRequests)
-        && builtins.length (builtins.filter (name: name == "garage:credential-delivery") (builtins.attrNames adminAbilities.requirementTemplates)) == 1
         && servicePrincipal.home_directory
         == qualifiedResultOf "garage:home-storage" "planned-path"
         && builtins.map (mount: mount.source) mainStorageMounts

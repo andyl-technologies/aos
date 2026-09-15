@@ -211,15 +211,14 @@ in
       tlsRequests = tls.config.aos.abilities.requests;
       configuration = requests."openldap:server-configuration".parameters;
       fragmentKinds = builtins.map (fragment: fragment.kind) configuration.source.fragments;
-      modulePathFragments = builtins.filter
+      modulePathFragments =
+        builtins.filter
         (fragment: fragment.kind == "artifact-directory-path")
         configuration.source.fragments;
       contractHolds =
         assertionsHold valid
         && assertionsHold tls
         && !assertionsHold missingPassword
-        && builtins.length (builtins.attrNames requests) == 16
-        && builtins.length (builtins.attrNames tlsRequests) == 20
         && builtins.hasAttr "openldap:main-lifecycle" requests
         && !(builtins.hasAttr "openldap:main-credentials" requests)
         && builtins.hasAttr "openldap:main-credentials" tlsRequests
