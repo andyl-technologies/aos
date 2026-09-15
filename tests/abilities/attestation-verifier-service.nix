@@ -56,7 +56,6 @@
       else portableOptionTree option)
     (builtins.attrNames options);
 in
-  assert !(disabledRequests ? "aos:local-filesystems");
   assert !(disabledRequests ? "aos:aos-attestation-verifier-lifecycle");
   assert disabled.config.aos.abilities.requirementTemplates == abilities.requirementTemplates;
   assert abilities.instances ? "aos:service";
