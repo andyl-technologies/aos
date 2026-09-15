@@ -67,9 +67,9 @@ use crate::resolve::{collect_unique_metas, resolve_multiple};
 use crate::store::filter_missing;
 use crate::types::{
     ConfigGeneration, ConfigGenerationState, CrossAbiReEvalInputs, ImageGeneration,
-    ImageGenerationState, ImageRollout, ImageSlot, ImageVerificationState, PackageMeta,
-    ProfileScope, ReactivationPlan, RecoveryPublication, RecoveryUkiEntry, RegistryRootConfig,
-    SysrootImageEntry, SysrootUkiEntry, UkiSlot,
+    ImageGenerationState, ImageRollout, ImageRolloutStatus, ImageSlot, ImageVerificationState,
+    PackageMeta, ProfileScope, ReactivationPlan, RecoveryPublication, RecoveryUkiEntry,
+    RegistryRootConfig, SysrootImageEntry, SysrootUkiEntry, UkiSlot,
 };
 use crate::unit_diff::{self, UnitDiff};
 use crate::verify::{verify_download_hash, verify_downloads};
@@ -875,6 +875,122 @@ pub fn reeval_active_config_for_boot(
         verbose,
         Some(state.current),
     )
+}
+
+/// Reconciles the running image transition before boot configuration evaluation.
+///
+/// This consumes the durable image-selection intent, advances an active
+/// qualified rollout to the phase proven by the image that actually booted,
+/// and publishes the runtime marker that selects retained configuration
+/// re-evaluation.
+///
+/// # Errors
+///
+/// Returns an error when image or configuration state is unavailable or
+/// malformed, a transition intent does not name the authenticated generation,
+/// or an active rollout is internally inconsistent.
+pub(crate) fn reconcile_image_boot_for_config_evaluation(
+    image_profile: &Path,
+    system_profile: &Path,
+    reevaluation_marker: &Path,
+) -> Result<()> {
+    let mut images = load_image_generation_state_pub(image_profile)?;
+    let configs = load_generation_state_readonly(system_profile)?;
+    let intent_path = image_profile.join(IMAGE_TRANSITION_INTENT);
+
+    if intent_path.is_file() {
+        let intent: ImageTransitionIntent = serde_json::from_slice(&std::fs::read(&intent_path)?)
+            .with_context(|| {
+            format!("parsing image transition intent {}", intent_path.display())
+        })?;
+        let matching = images
+            .generations
+            .iter()
+            .filter(|generation| generation.number == intent.target)
+            .collect::<Vec<_>>();
+        ensure!(
+            matching.len() == 1,
+            "image transition intent target {} is absent or ambiguous",
+            intent.target
+        );
+        let recorded_entry = Path::new(&matching[0].uki_path)
+            .file_name()
+            .and_then(|entry| entry.to_str())
+            .context("image transition generation has no UTF-8 UKI entry name")?;
+        ensure!(
+            stable_uki_entry_id(recorded_entry)? == stable_uki_entry_id(&intent.entry_id)?,
+            "image transition intent disagrees with authenticated generation {}",
+            intent.target
+        );
+
+        images.default = images.running;
+        write_atomic_durable(
+            &image_profile.join(IMAGE_STATE_FILE),
+            &serde_json::to_vec_pretty(&images)?,
+        )?;
+        remove_file_durable(&intent_path)?;
+    }
+
+    if let Some(rollout) = images.active_rollout.as_mut() {
+        ensure!(
+            rollout.schema == "aos.image-rollout/v1"
+                && rollout.candidate != rollout.prior
+                && !rollout.state_version.is_empty()
+                && images.pending == Some(rollout.candidate)
+                && matches!(
+                    rollout.status,
+                    ImageRolloutStatus::Staged
+                        | ImageRolloutStatus::CandidateBooted
+                        | ImageRolloutStatus::HealthFailed
+                ),
+            "qualified image rollout record is invalid"
+        );
+        for (role, number) in [("candidate", rollout.candidate), ("prior", rollout.prior)] {
+            let matching = images
+                .generations
+                .iter()
+                .filter(|generation| {
+                    generation.number == number && generation.state_version == rollout.state_version
+                })
+                .count();
+            ensure!(
+                matching == 1,
+                "qualified rollout {role} generation {number} is absent, ambiguous, or changed"
+            );
+        }
+
+        if images.running == rollout.candidate {
+            if rollout.status != ImageRolloutStatus::HealthFailed {
+                rollout.status = ImageRolloutStatus::CandidateBooted;
+            }
+        } else if images.running == rollout.prior {
+            rollout.status = ImageRolloutStatus::HealthFailed;
+        } else {
+            bail!("running image is outside the qualified rollout pair");
+        }
+        write_atomic_durable(
+            &image_profile.join(IMAGE_STATE_FILE),
+            &serde_json::to_vec_pretty(&images)?,
+        )?;
+    }
+
+    let image_parent = configs
+        .generations
+        .iter()
+        .find(|generation| generation.number == configs.current)
+        .map_or(0, |generation| generation.image_gen_parent);
+    if images.running != image_parent || images.pending.is_some() {
+        let parent = reevaluation_marker
+            .parent()
+            .context("image re-evaluation marker has no parent")?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+        std::fs::write(reevaluation_marker, format!("{}\n", images.running))
+            .with_context(|| format!("writing {}", reevaluation_marker.display()))?;
+    } else {
+        remove_file_durable(reevaluation_marker)?;
+    }
+    Ok(())
 }
 
 fn stage_retained_runtime(
@@ -2578,8 +2694,8 @@ fn replicate_boot_partitions(layout: &ImageSlotLayout) -> Result<()> {
 /// Selects an older A/B image generation durably with `bootctl set-default`.
 ///
 /// This changes only the next-boot image axis. The currently running image and
-/// config pointer remain untouched; after reboot `aos-firstboot-reeval`
-/// rebinds configuration to the image that actually booted.
+/// config pointer remain untouched; after reboot the compiled configuration
+/// evaluation service rebinds configuration to the image that actually booted.
 ///
 /// # Errors
 ///
@@ -6801,6 +6917,86 @@ mod tests {
         assert_eq!(state.default, 2);
         assert_eq!(state.pending, Some(2));
         assert!(!tmp.path().join(IMAGE_TRANSITION_INTENT).exists());
+    }
+
+    #[test]
+    fn boot_reconciliation_consumes_selection_intent_and_marks_reevaluation() {
+        let temporary = tempfile::TempDir::new().unwrap();
+        let image_profile = temporary.path().join("image");
+        let system_profile = temporary.path().join("system");
+        let marker = temporary.path().join("run/image-reeval-required");
+        std::fs::create_dir_all(&image_profile).unwrap();
+        std::fs::create_dir_all(&system_profile).unwrap();
+
+        let generation = |number| ImageGeneration {
+            number,
+            slot: if number == 1 {
+                ImageSlot::A
+            } else {
+                ImageSlot::B
+            },
+            uki_path: format!("EFI/Linux/aos-{number}+3.efi"),
+            uki_source_path: None,
+            toplevel: format!("/nix/store/top-{number}"),
+            package_name: "aos".into(),
+            version: number.to_string(),
+            state_version: "7".into(),
+            native_executor_ref: format!("/nix/store/executor-{number}"),
+            registry: "core".into(),
+            kernel_path: None,
+            evaluator_ref: format!("/nix/store/base-{number}"),
+            module_abi: 1,
+            baselib_digest: format!("sha256:base-{number}"),
+            root_verity_roothash: None,
+            expected_pcr11: None,
+            initrd_pcr11: None,
+            recovery: None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let images = ImageGenerationState {
+            running: 2,
+            default: 1,
+            pending: Some(2),
+            recovery_known_good: None,
+            recovery_pending: None,
+            active_rollout: Some(ImageRollout {
+                schema: "aos.image-rollout/v1".into(),
+                candidate: 2,
+                prior: 1,
+                state_version: "7".into(),
+                status: ImageRolloutStatus::Staged,
+            }),
+            last_rollout: None,
+            generations: vec![generation(1), generation(2)],
+        };
+        std::fs::write(
+            image_profile.join(IMAGE_STATE_FILE),
+            serde_json::to_vec(&images).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            image_profile.join(IMAGE_TRANSITION_INTENT),
+            serde_json::to_vec(&ImageTransitionIntent {
+                target: 2,
+                prior_default: 1,
+                entry_id: "aos-2+2-1.efi".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        save_generation_state(&system_profile, &generation_state_for_commit()).unwrap();
+
+        reconcile_image_boot_for_config_evaluation(&image_profile, &system_profile, &marker)
+            .unwrap();
+
+        let reconciled = load_image_generation_state_pub(&image_profile).unwrap();
+        assert_eq!(reconciled.default, 2);
+        assert_eq!(
+            reconciled.active_rollout.unwrap().status,
+            ImageRolloutStatus::CandidateBooted
+        );
+        assert!(!image_profile.join(IMAGE_TRANSITION_INTENT).exists());
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "2\n");
     }
 
     #[test]

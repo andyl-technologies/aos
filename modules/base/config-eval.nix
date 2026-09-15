@@ -287,126 +287,6 @@ in {
       '';
     };
 
-    # Records the reboot boundary that requires configuration to be rebound to
-    # the newly running image. The normal eval -> graph -> activate pipeline
-    # below performs the work; this early idempotent predicate makes the image
-    # transition explicit and auditable without a reboot-spanning transaction.
-    systemd.services.aos-firstboot-reeval = {
-      description = "Detect a running-image change requiring host re-evaluation";
-      wantedBy = ["multi-user.target"];
-      # aos-seed-profiles is a stage-1 unit and is deliberately absent after
-      # switch-root. Depend on the durable /var substrate it produced instead;
-      # requiring the vanished initrd unit causes systemd to drop this job and,
-      # through aos-eval's Requires= edge, silently skips host activation.
-      requires = ["local-fs.target"];
-      after = ["local-fs.target"];
-      before = [
-        "aos-eval.service"
-        "multi-user.target"
-      ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        RuntimeDirectory = "aos";
-      };
-      script = ''
-        set -eu
-        image_state=/var/lib/profiles/image/state.json
-        config_state=/var/lib/profiles/system/state.json
-        [ -s "$image_state" ] && [ -s "$config_state" ] || exit 1
-        running=$(${pkgs.jq}/bin/jq -er '.running' "$image_state")
-
-        # Reconcile the userspace-to-firmware selection journal before the
-        # evaluation graph can fail. A crash can leave this intent after the
-        # authenticated pending state or bootloader default was published. At
-        # this point aos-seed-profiles has authenticated the image that really
-        # booted, so the journal no longer needs to block an operator rollback.
-        stable_entry_id() {
-          name=$1
-          case "$name" in
-            */*|"") return 1 ;;
-            *.efi) ;;
-            *) return 1 ;;
-          esac
-          stem=''${name%.efi}
-          case "$stem" in
-            *+*)
-              suffix=''${stem##*+}
-              tries=''${suffix%%-*}
-              case "$tries" in ""|*[!0-9]*) printf '%s\n' "$name"; return 0 ;; esac
-              case "$suffix" in
-                *-*)
-                  completed=''${suffix#*-}
-                  case "$completed" in ""|*[!0-9]*|*-*) printf '%s\n' "$name"; return 0 ;; esac
-                  ;;
-              esac
-              printf '%s.efi\n' "''${stem%+*}"
-              ;;
-            *) printf '%s\n' "$name" ;;
-          esac
-        }
-        transition_intent=/var/lib/profiles/image/.transition-intent.json
-        if [ -s "$transition_intent" ]; then
-          target=$(${pkgs.jq}/bin/jq -er '.target | select(type == "number" and . >= 0 and floor == .)' "$transition_intent")
-          intent_entry=$(${pkgs.jq}/bin/jq -er '.entry_id | select(type == "string" and length > 0)' "$transition_intent")
-          recorded_entry=$(${pkgs.jq}/bin/jq -er \
-            --argjson target "$target" \
-            '.generations[] | select(.number == $target) | .uki_path' \
-            "$image_state")
-          recorded_entry=''${recorded_entry##*/}
-          recorded_stable=$(stable_entry_id "$recorded_entry")
-          intent_stable=$(stable_entry_id "$intent_entry")
-          if [ "$recorded_stable" != "$intent_stable" ]; then
-            echo "aos-firstboot-reeval: image transition intent disagrees with authenticated generation $target" >&2
-            exit 1
-          fi
-          # Authentication makes it safe to discard the selection journal,
-          # but only the delayed boot-commit service may complete the image
-          # transition. In particular, preserve a failed candidate as pending
-          # after automatic fallback so boot commit restores the known-good
-          # firmware default after host configuration has activated.
-          state_update='.default = $running'
-          ${pkgs.jq}/bin/jq --argjson running "$running" "$state_update" \
-            "$image_state" > "''${image_state}.new"
-          ${pkgs.coreutils}/bin/sync "''${image_state}.new"
-          mv "''${image_state}.new" "$image_state"
-          ${pkgs.coreutils}/bin/sync /var/lib/profiles/image
-          rm -f "$transition_intent"
-          ${pkgs.coreutils}/bin/sync /var/lib/profiles/image
-        fi
-
-        # A qualified rollout is created only by an explicit drained reboot
-        # after exact state-version admission. Carry its phase across boot so
-        # health failure and automatic fallback remain visible in durable
-        # image state even when activation never reaches its commit service.
-        rollout_schema=$(${pkgs.jq}/bin/jq -r '.active_rollout.schema // ""' "$image_state")
-        if [ -n "$rollout_schema" ]; then
-          if ! ${pkgs.jq}/bin/jq -e '${rolloutRecordValid}' "$image_state" >/dev/null; then
-            echo "aos-firstboot-reeval: qualified rollout record is invalid" >&2
-            exit 1
-          fi
-          if ! ${pkgs.jq}/bin/jq --argjson running "$running" \
-            '${observeRolloutBoot}' "$image_state" > "''${image_state}.new"; then
-            echo "aos-firstboot-reeval: running image is outside the qualified rollout pair" >&2
-            exit 1
-          fi
-          ${pkgs.coreutils}/bin/sync "''${image_state}.new"
-          mv "''${image_state}.new" "$image_state"
-          ${pkgs.coreutils}/bin/sync /var/lib/profiles/image
-        fi
-
-        parent=$(${pkgs.jq}/bin/jq -er \
-          '.current as $current | [.generations[] | select(.number == $current) | .image_gen_parent][0] // 0' \
-          "$config_state")
-        pending=$(${pkgs.jq}/bin/jq -er '.pending // 0' "$image_state")
-        if [ "$running" != "$parent" ] || [ "$pending" -ne 0 ]; then
-          printf '%s\n' "$running" > /run/aos/image-reeval-required
-        else
-          rm -f /run/aos/image-reeval-required
-        fi
-      '';
-    };
-
     systemd.services.aos-image-measurement-index = lib.mkIf config.aos.boot.secureBoot.measuredBoot.enable {
       description = "Import authenticated UKI PCR 11 measurement metadata";
       wantedBy = ["multi-user.target"];
@@ -563,7 +443,6 @@ in {
       wantedBy = ["multi-user.target"];
       after = [
         "aos-mount-esp.service"
-        "aos-firstboot-reeval.service"
         "aos-graph-compile.service"
         "aos-activate.service"
         "aos-config.target"
