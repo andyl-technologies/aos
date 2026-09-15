@@ -550,13 +550,11 @@ mod tests {
 
     #[test]
     fn hub_uses_the_cross_frontend_golden_graph_slice() -> Result<(), Box<dyn std::error::Error>> {
-        let input_bytes =
-            include_bytes!("../../../../tests/abilities/fixtures/reference-inspection-input.json");
-        let input = aos_ability_inspect::ReferenceInspectionInput::decode(input_bytes)?;
-        let reference = input.reference().clone();
+        let fixture = aos_ability_inspect::test_support::reference_inspection_fixture()?;
+        let reference = fixture.reference;
         let canonical_json = reference.canonical_json()?;
         let panel = PackageAbilityReferencePanel {
-            release: "golden".to_string(),
+            release: reference.version.clone(),
             indexed_commit: "b".repeat(64),
             platform: "x86_64-linux".to_string(),
             locator: crate::db::PackageAbilityReferenceLocator {
@@ -570,15 +568,11 @@ mod tests {
             },
             reference,
         };
-        let query = aos_ability_inspect::GraphQuery::decode(include_bytes!(
-            "../../../../tests/abilities/fixtures/reference-inspection-query.json"
-        ))?;
-        let expected =
-            include_bytes!("../../../../tests/abilities/fixtures/reference-inspection-slice.json");
+        let query = aos_ability_inspect::GraphQuery::decode(&fixture.query)?;
 
         let slice = super::super::ability_reference_inspection::checked_slice(&panel, &query)?;
 
-        assert_eq!(slice.canonical_bytes()?, expected);
+        assert_eq!(slice.canonical_bytes()?, fixture.slice);
         Ok(())
     }
 

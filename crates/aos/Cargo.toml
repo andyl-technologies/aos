@@ -101,6 +101,7 @@ ratatui = { workspace = true }
 crossterm = { workspace = true }
 
 [dev-dependencies]
+aos-ability-inspect = { workspace = true, features = ["test-support"] }
 aos-ability-plan = { workspace = true, features = ["test-support"] }
 aos-ability-model = { workspace = true }
 aos-ability-validate = { workspace = true, features = ["test-support"] }

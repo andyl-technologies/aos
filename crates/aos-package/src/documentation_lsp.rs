@@ -1083,14 +1083,9 @@ mod tests {
     #[test]
     fn editor_uses_the_cross_frontend_golden_graph_slice() -> Result<(), Box<dyn std::error::Error>>
     {
-        let input = aos_ability_inspect::ReferenceInspectionInput::decode(include_bytes!(
-            "../../../tests/abilities/fixtures/reference-inspection-input.json"
-        ))?;
-        let query = aos_ability_inspect::GraphQuery::decode(include_bytes!(
-            "../../../tests/abilities/fixtures/reference-inspection-query.json"
-        ))?;
-        let expected =
-            include_bytes!("../../../tests/abilities/fixtures/reference-inspection-slice.json");
+        let fixture = aos_ability_inspect::test_support::reference_inspection_fixture()?;
+        let input = aos_ability_inspect::ReferenceInspectionInput::decode(&fixture.input)?;
+        let query = aos_ability_inspect::GraphQuery::decode(&fixture.query)?;
         let mut loaded = loaded_document();
         loaded.document.package.name = input.reference().package.as_str().to_string();
         loaded.document.package.version = input.reference().version.clone();
@@ -1098,9 +1093,13 @@ mod tests {
         let documents = vec![loaded];
         let catalog = AbilityCatalog::new(&documents);
 
-        let slice = catalog.graph_slice("golden-service", "1.2.3", &query)?;
+        let slice = catalog.graph_slice(
+            input.reference().package.as_str(),
+            &input.reference().version,
+            &query,
+        )?;
 
-        assert_eq!(slice.canonical_bytes()?, expected);
+        assert_eq!(slice.canonical_bytes()?, fixture.slice);
         Ok(())
     }
 
