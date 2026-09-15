@@ -160,27 +160,32 @@ verification of the executed payload.
 
 ## Preserve configuration and secret boundaries
 
-Configuration must use the package's typed `configModule` and generated
-artifacts. Modules receive only explicitly declared output mappings; they must
-not import an ambient package set or evaluate arbitrary registry content.
+Configuration must use the package's typed, path-backed `abilities` module and
+its generated `package.module` artifact. The checked local `package.abilities`
+tree is the symbolic declaration surface; the derived `package.contract`
+retains exact option declarations, provider implementations, requirements,
+artifact selectors, and qualification claims for publication. Modules receive
+only explicitly declared output mappings; they must not import an ambient
+package set or evaluate arbitrary registry content.
 
 Secrets use opaque references and systemd credentials. Never place secret
 bytes in:
 
 - a package expression or source tree;
 - a Nix string, derivation input, output, or store-backed environment file;
-- the signed expose manifest; or
+- the signed package contract, desired values, or effect plan; or
 - a command line visible through process inspection.
 
-Declare which units consume a credential and whether it is required. A package
-may describe a secret interface; the deployment supplies the value.
+Declare credential consumption through the package's provider-neutral ability
+requests and mark whether each value is required. The deployment supplies the
+opaque reference, and the selected provider owns its backend realization.
 
 ## Preserve package attestation meaning
 
-For every explicitly activated machine-wide package with `expose` metadata,
-APM extends PCR 15 with a tuple binding the package name, version, root digest,
-and permission-manifest digest. Configuration activation also records its
-authenticated module inputs and running image relationship.
+For every explicitly activated machine-wide package, APM extends PCR 15 with a
+tuple binding the package name, version, root digest, and signed activation
+authority. Configuration activation also records its authenticated module
+inputs and running image relationship.
 
 The measurement does not cover:
 
@@ -195,21 +200,22 @@ verification without treating it as a trust-model and compatibility change.
 
 ## Run the package security review
 
-Before merging a new exposed package or a permission change:
+Before merging a new native package contract or a permission change:
 
 1. Build the exact package from fixed inputs.
-2. Inspect the payload and rendered expose manifest.
+2. Inspect the payload, checked `package.abilities` tree, and signed package
+   contract.
 3. Confirm that the computed confinement label matches the effective grants.
 4. Review every capability, device, host path, port, static identity, syscall
    profile, module, sysctl, and firewall side effect.
 5. Confirm that declared service commands survive Landlock wrapping and use
    absolute store paths.
-6. Check that configuration dependencies and credential consumers are
-   explicit.
+6. Check that package-contract artifact selectors, requirements, and credential
+   consumers are explicit.
 7. Test target start, stop, restart, failure, removal, and generation rollback.
 8. Add negative coverage for any new permission or parser behavior.
-9. Verify registry publication and re-consumption of the signed manifest when
-   its schema changes.
+9. Verify registry publication and re-consumption of the signed package
+   contract when its schema changes.
 10. Update operator documentation when a package gains a new privilege or
     changes its network or state contract.
 
@@ -218,7 +224,8 @@ gates include:
 
 ```sh
 nix-build -A checks.package-expose --no-out-link
-nix-build -A checks.package-expose-lifecycle --no-out-link
+nix-build -A checks.abilities --no-out-link
+nix-build -A checks.package-documentation --no-out-link
 nix-build -A checks.eval --no-out-link
 ```
 
