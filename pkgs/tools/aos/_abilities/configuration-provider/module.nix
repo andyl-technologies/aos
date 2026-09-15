@@ -180,6 +180,37 @@
     strength = "required";
     fallback = null;
   };
+  qualificationObserver = entryPoint: {
+    artifact = runtimeArtifact;
+    inherit entryPoint;
+    arguments = abilityTypes.record {
+      fields.request_path = abilityTypes.string {
+        maxLength = 4096;
+        syntax = null;
+      };
+      optional = [];
+    };
+    result = abilityTypes.record {
+      fields = {
+        provider = abilityTypes.localKey;
+        kind = abilityTypes.localKey;
+        scope = abilityTypes.localKey;
+        observation = abilityTypes.string {
+          maxLength = 1048576;
+          syntax = null;
+        };
+      };
+      optional = [];
+    };
+  };
+  conformanceFamilies = [
+    "authority-revocation"
+    "dependent-effect"
+    "durability-recovery"
+    "foreign-resource"
+    "incarnation-replacement"
+    "provider-state-transfer"
+  ];
 in {
   config.aos.abilities = {
     interfaces.configuration-materialization-terminal = configurationTerminalDeclaration;
@@ -202,6 +233,13 @@ in {
       };
       desiredType = realizationType;
       requiredFeatures = [];
+      qualification = {
+        adapter = "configuration-materialization";
+        observationKind = "filesystem";
+        scope = "host-resource";
+        inherit conformanceFamilies;
+        observer = qualificationObserver "libexec/aos-configuration-observer";
+      };
     };
     implementations.configuration-materialization-terminal = {
       description = "Executes checked configuration effects for the pure materialization controller.";
@@ -235,6 +273,13 @@ in {
       };
       desiredType = rolloutRealizationType;
       requiredFeatures = [];
+      qualification = {
+        adapter = "image-rollout";
+        observationKind = "rollout";
+        scope = "host-machine";
+        inherit conformanceFamilies;
+        observer = qualificationObserver "libexec/aos-image-rollout-observer";
+      };
     };
     implementations.image-rollout-terminal = {
       description = "Executes checked A/B image effects for the pure rollout controller.";

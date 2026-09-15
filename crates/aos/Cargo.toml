@@ -34,6 +34,10 @@ name = "aos-configuration-provider"
 path = "src/configuration_provider.rs"
 
 [[bin]]
+name = "aos-configuration-observer"
+path = "src/configuration_observer.rs"
+
+[[bin]]
 name = "aos-release-fleet-fixture"
 path = "tests/support/release_fleet_fixture.rs"
 required-features = ["release-fleet-fixture"]

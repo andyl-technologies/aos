@@ -17,7 +17,7 @@ use std::path::{Component, Path, PathBuf};
 
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, AccessMode, ArtifactReference, LocalKey, MethodSemantics,
-    ResourceId, ResourceReference, RevisionId,
+    Operation, ResourceId, ResourceReference, RevisionId,
 };
 use aos_contract::Sha256Digest;
 use aos_provider_protocol::{
@@ -39,6 +39,10 @@ const REALIZATION_SCHEMA: &str = "aos.configuration.materializer-realization/v1"
 const MARKER_SCHEMA: &str = "aos.configuration.materializer-state/v1";
 const MATERIALIZER_VERSION: &str = "aos-configuration-provider/1";
 const CONFIGURATION_ROOT: &str = "/run/aos/configurations";
+const QUALIFICATION_INTERFACE: &str = "aos.configuration.materialization";
+const QUALIFICATION_ADAPTER: &str = "configuration-materialization";
+const QUALIFICATION_OBSERVATION_KIND: &str = "filesystem";
+const QUALIFICATION_SCOPE: &str = "host-resource";
 
 /// Reports malformed requests, unauthorized inputs, and materialization failures.
 #[derive(Debug, Error)]
@@ -141,6 +145,44 @@ struct ResourceRevisionBinding {
     revision: RevisionId,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QualificationObserverArguments {
+    request_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QualificationObserverRequest {
+    adapter: LocalKey,
+    scope: LocalKey,
+    operation: Operation,
+}
+
+#[derive(Debug, Serialize)]
+struct QualificationObserverResult {
+    provider: LocalKey,
+    kind: LocalKey,
+    scope: LocalKey,
+    observation: String,
+}
+
+#[derive(Debug, Serialize)]
+struct QualificationFilesystemObservation {
+    kind: LocalKey,
+    resource: ResourceId,
+    entries: Vec<QualificationFilesystemEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct QualificationFilesystemEntry {
+    path: String,
+    marker: MaterializationMarker,
+    content_digest: Option<Sha256Digest>,
+    mode: Option<u32>,
+    owner: Option<u32>,
+}
+
 /// Runs one selected handler invocation from the process arguments and streams.
 ///
 /// # Errors
@@ -173,6 +215,169 @@ pub fn run_from_process() -> Result<(), ConfigurationProviderError> {
     };
     io::stdout().write_all(&output)?;
     Ok(())
+}
+
+/// Runs the package-owned, read-only qualification observer.
+///
+/// The observer reads the exact resource named by a checked operation from the
+/// configuration provider's authoritative marker directory. It does not read
+/// execution journals and never returns materialized content.
+///
+/// # Errors
+///
+/// Returns an error when the request is malformed, addresses another provider,
+/// or the provider state cannot be read within the configured bounds.
+pub fn run_observer_from_process() -> Result<(), ConfigurationProviderError> {
+    let arguments: QualificationObserverArguments = read_bounded_json(io::stdin())?;
+    let request_path = Path::new(&arguments.request_path);
+    if !request_path.is_absolute()
+        || request_path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(invalid(
+            "qualification observer request path is not absolute and normalized",
+        ));
+    }
+
+    let request: QualificationObserverRequest = serde_json::from_slice(&read_bounded(
+        request_path,
+        ABILITY_LIMITS_V1.max_document_bytes,
+    )?)?;
+    validate_qualification_request(&request)?;
+    let observation = qualification_observation(
+        Path::new(CONFIGURATION_ROOT),
+        &request.operation.target.resource,
+    )?;
+    let observation = String::from_utf8(
+        aos_contract::canonical::to_vec(&observation)
+            .map_err(|error| invalid(error.to_string()))?,
+    )
+    .map_err(|_| invalid("qualification observation is not UTF-8"))?;
+    let result = QualificationObserverResult {
+        provider: request.adapter,
+        kind: local_key(QUALIFICATION_OBSERVATION_KIND)?,
+        scope: request.scope,
+        observation,
+    };
+    let bytes =
+        aos_contract::canonical::to_vec(&result).map_err(|error| invalid(error.to_string()))?;
+    io::stdout().write_all(&bytes)?;
+    Ok(())
+}
+
+fn read_bounded_json(
+    input: impl Read,
+) -> Result<QualificationObserverArguments, ConfigurationProviderError> {
+    let mut bytes = Vec::new();
+    input
+        .take(ABILITY_LIMITS_V1.max_document_bytes + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > ABILITY_LIMITS_V1.max_document_bytes {
+        return Err(invalid(
+            "qualification observer input exceeds the document bound",
+        ));
+    }
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn validate_qualification_request(
+    request: &QualificationObserverRequest,
+) -> Result<(), ConfigurationProviderError> {
+    if request.adapter.as_str() != QUALIFICATION_ADAPTER
+        || request.scope.as_str() != QUALIFICATION_SCOPE
+        || request.operation.interface.name.as_str() != QUALIFICATION_INTERFACE
+        || request.operation.target.interface != request.operation.interface
+    {
+        return Err(invalid(
+            "qualification observer request does not address this provider",
+        ));
+    }
+    Ok(())
+}
+
+fn qualification_observation(
+    root: &Path,
+    resource: &ResourceId,
+) -> Result<QualificationFilesystemObservation, ConfigurationProviderError> {
+    let mut entries = Vec::new();
+    match fs::read_dir(root) {
+        Ok(directory) => {
+            for (index, entry) in directory
+                .take(ABILITY_LIMITS_V1.max_collection_items as usize + 1)
+                .enumerate()
+            {
+                if index as u64 >= ABILITY_LIMITS_V1.max_collection_items {
+                    return Err(invalid("configuration marker inventory exceeds its bound"));
+                }
+                let entry = entry?;
+                let path = entry.path();
+                if !entry.file_type()?.is_file()
+                    || !path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with(".aos-state.json"))
+                {
+                    continue;
+                }
+                let Some(marker) = read_marker(&path)? else {
+                    continue;
+                };
+                if marker.resource != *resource {
+                    continue;
+                }
+                let materialized = materialized_path(&path)?;
+                let metadata = fs::symlink_metadata(&materialized).ok();
+                let content_digest = match metadata.as_ref() {
+                    Some(metadata) if metadata.file_type().is_file() => {
+                        Some(Sha256Digest::of_bytes(&read_bounded(
+                            &materialized,
+                            ABILITY_LIMITS_V1.max_document_bytes,
+                        )?))
+                    }
+                    _ => None,
+                };
+                entries.push(QualificationFilesystemEntry {
+                    path: path_text(&materialized)?,
+                    marker,
+                    content_digest,
+                    mode: metadata
+                        .as_ref()
+                        .map(|value| value.permissions().mode() & 0o7777),
+                    owner: metadata.as_ref().map(MetadataExt::uid),
+                });
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    if entries.len() > 1 {
+        return Err(invalid(
+            "configuration resource has multiple authoritative markers",
+        ));
+    }
+    Ok(QualificationFilesystemObservation {
+        kind: local_key(QUALIFICATION_OBSERVATION_KIND)?,
+        resource: resource.clone(),
+        entries,
+    })
+}
+
+fn materialized_path(marker_path: &Path) -> Result<PathBuf, ConfigurationProviderError> {
+    let file_name = marker_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| invalid("configuration marker name is not UTF-8"))?;
+    let suffix = ".aos-state.json";
+    let name = file_name
+        .strip_suffix(suffix)
+        .ok_or_else(|| invalid("configuration marker has another suffix"))?;
+    Ok(marker_path.with_file_name(name))
+}
+
+fn local_key(value: &str) -> Result<LocalKey, ConfigurationProviderError> {
+    LocalKey::new(value).map_err(|error| invalid(error.to_string()))
 }
 
 fn admit(request: AdmissionRequest) -> Result<AdmissionResult, ConfigurationProviderError> {
@@ -1327,6 +1532,42 @@ mod tests {
         let marker_text = String::from_utf8(marker).expect("marker is UTF-8 JSON");
         assert!(!marker_text.contains("private-value"));
         assert!(marker_text.contains(MATERIALIZER_VERSION));
+    }
+
+    #[test]
+    fn qualification_observer_reads_only_the_exact_materialized_resource() {
+        let directory = tempfile::tempdir().expect("temporary directory is created");
+        let output = directory.path().join("service");
+        let request = ConfigurationRequest {
+            name: "service".into(),
+            source: ConfigurationSource::InlineText {
+                content: "enabled=true\n".into(),
+            },
+            mode: "0644".into(),
+            owner: None,
+        };
+        let resource = resource_reference().resource;
+        materialize(
+            &output,
+            &request,
+            b"enabled=true\n",
+            BTreeMap::new(),
+            resource.clone(),
+            RevisionId(digest('8')),
+        )
+        .expect("configuration is materialized");
+
+        let observation = qualification_observation(directory.path(), &resource)
+            .expect("exact provider state is observable");
+
+        assert_eq!(observation.resource, resource);
+        assert_eq!(observation.entries.len(), 1);
+        assert_eq!(observation.entries[0].path, path_text(&output).unwrap());
+        assert_eq!(
+            observation.entries[0].content_digest,
+            Some(Sha256Digest::of_bytes(b"enabled=true\n"))
+        );
+        assert_eq!(observation.entries[0].mode, Some(0o644));
     }
 
     #[test]
