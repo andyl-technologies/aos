@@ -1,5 +1,6 @@
 ##! GNU m4 — Macro processor
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -9,6 +10,49 @@
 in
   mkDerivation {
     pname = "m4";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "m4 emits the macro's exact value 42.";
+        "files" = {};
+        "input" = "An m4 macro definition and invocation.";
+        "operation" = "Expand the macro through the packaged processor.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/m4"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdin" = "define(`ANSWER', `42')dnl\nANSWER\n";
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "m4 rejects the unresolved include with a non-success status.";
+        "files" = {};
+        "input" = "An include directive for a file that is absent.";
+        "operation" = "Process the missing include with fatal warnings enabled.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/m4"
+              "--fatal-warnings"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdin" = "include(`missing-qualification-file')\n";
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

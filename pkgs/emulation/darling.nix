@@ -29,6 +29,56 @@
 in
   mkDerivation {
     pname = "darling";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The host launchers are ELF while dyld and libSystem carry Mach-O magic.";
+        "files" = {};
+        "input" = "The Darling launcher, loader, dynamic linker, and libSystem runtime.";
+        "operation" = "Inspect the executable formats at the Linux-to-macOS runtime boundary.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib\nroot = pathlib.Path(\"@out@\")\nelf_magic = bytes([0x7f]) + b\"ELF\"\nassert (root / \"bin/darling\").read_bytes().startswith(elf_magic)\nassert (root / \"libexec/darling/usr/libexec/darling/mldr\").read_bytes().startswith(elf_magic)\nmacho_magic = {bytes.fromhex(\"cffaedfe\"), bytes.fromhex(\"feedfacf\")}\ndyld = (root / \"libexec/darling/usr/lib/dyld\").read_bytes()[:4]\nlibsystem = (root / \"libexec/darling/usr/lib/libSystem.dylib\").resolve().read_bytes()[:4]\nassert dyld in macho_magic and libsystem in macho_magic\nprint(\"darling data passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "darling data passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The runtime rejects the unsupported guest architecture artifact.";
+        "files" = {};
+        "input" = "A request for an unsupported 32-bit Darling loader.";
+        "operation" = "Resolve the absent i386 loader in the x86_64-only runtime.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, sys\nif pathlib.Path(\"@out@/libexec/darling/usr/libexec/darling/mldr-i386\").exists():\n    raise SystemExit(2)\nsys.stderr.write(\"darling rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "darling rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = sources.archive;

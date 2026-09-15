@@ -1,5 +1,6 @@
 ##! bzip2 — Block-sorting file compressor
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -9,6 +10,69 @@
 in
   mkDerivation {
     pname = "bzip2";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The decompressed bytes exactly reproduce the original payload.";
+        "files" = {
+          "payload.txt" = "AOS qualification payload\n";
+        };
+        "input" = "A fixed text payload.";
+        "operation" = "Compress the payload, then decompress the resulting stream through bzip2.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/bzip2"
+              "@work@/primary/payload.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/bzip2"
+              "-d"
+              "-c"
+              "@work@/primary/payload.txt.bz2"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "AOS qualification payload\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The decoder rejects the malformed stream with a failure status.";
+        "files" = {
+          "invalid.bz2" = "not a compressed stream\n";
+        };
+        "input" = "A regular text file that is not a bzip2 stream.";
+        "operation" = "Ask bzip2 to decompress the invalid stream.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/bzip2"
+              "-d"
+              "-c"
+              "@work@/bad-input/invalid.bz2"
+            ];
+            "exit_code" = 2;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

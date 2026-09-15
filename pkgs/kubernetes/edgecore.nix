@@ -1,5 +1,6 @@
 ##! EdgeCore — KubeEdge edge-side agent
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -10,6 +11,56 @@ let
 in
 mkDerivation {
   pname = "edgecore";
+  qualification.packageProbe = lib.qualification.commandProbe {
+    "primary" = {
+      "artifacts" = [];
+      "expected" = "The command returns success and documents its invocation contract.";
+      "files" = {};
+      "input" = "The packaged edgecore command-line interface.";
+      "operation" = "Request its offline help text.";
+      "steps" = [
+        {
+          "argv" = [
+            "@python@"
+            "-c"
+            "import subprocess\nresult = subprocess.run([\"@out@/bin/edgecore\", \"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"usage\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nprint(\"edgecore operation passed\")\n"
+          ];
+          "exit_code" = 0;
+          "stderr" = {
+            "exact" = "";
+          };
+          "stdout" = {
+            "exact" = "edgecore operation passed\n";
+          };
+        }
+      ];
+    };
+    "badInput" = {
+      "artifacts" = [];
+      "expected" = "The command rejects the unsupported option before runtime initialization.";
+      "files" = {};
+      "input" = "A edgecore invocation containing an unsupported option.";
+      "operation" = "Parse the invalid option without starting the service.";
+      "steps" = [
+        {
+          "argv" = [
+            "@python@"
+            "-c"
+            "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/edgecore\", \"--aos-invalid-option\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"edgecore rejected invalid input\\n\")\nraise SystemExit(7)\n"
+          ];
+          "exit_code" = 7;
+          "observes_rejection" = true;
+          "stderr" = {
+            "exact" = "edgecore rejected invalid input\n";
+          };
+          "stdout" = {
+            "exact" = "";
+          };
+        }
+      ];
+    };
+  };
+
   inherit version;
   inherit src;
 

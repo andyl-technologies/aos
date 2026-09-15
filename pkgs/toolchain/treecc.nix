@@ -1,5 +1,6 @@
 ##! TreeCC - Aspect-oriented tree compiler generator
 {
+  lib,
   mkDerivation,
   fetchurl,
   bash,
@@ -11,6 +12,86 @@
 in
   mkDerivation {
     pname = "treecc";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "TreeCC's generated node constructor stores the supplied integer and the consumer prints 42.";
+        "files" = {
+          "main.c" = "#include <stdio.h>\n#include <stdlib.h>\n#include \"generated.h\"\n\nchar *yycurrfilename(void) {\n    return \"nodes.tc\";\n}\n\nlong yycurrlinenum(void) {\n    return 1;\n}\n\nvoid yynodefailed(void) {\n    abort();\n}\n\nint main(void) {\n    expression *value = number_create(42);\n    if (value == NULL) {\n        return 2;\n    }\n    printf(\"%d\\n\", ((number *)value)->value);\n    yynodeclear();\n    return 0;\n}\n";
+          "nodes.tc" = "%{\n#include \"generated.h\"\n%}\n\n%node expression %abstract %typedef\n%node number expression =\n{\n    int value;\n}\n";
+        };
+        "input" = "A TreeCC definition containing an abstract expression node and a concrete number node.";
+        "operation" = "Generate C source and a header, compile them with a small consumer, and execute it.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/treecc"
+              "-o"
+              "generated.c"
+              "-h"
+              "generated.h"
+              "nodes.tc"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@cc@"
+              "generated.c"
+              "main.c"
+              "-o"
+              "consumer"
+            ];
+            "exit_code" = 0;
+          }
+          {
+            "argv" = [
+              "@work@/primary/consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "TreeCC rejects the unknown directive with a failure status.";
+        "files" = {
+          "invalid.tc" = "%qualification-unknown\n";
+        };
+        "input" = "A TreeCC source containing an unknown directive.";
+        "operation" = "Attempt to generate C output from the malformed source.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/treecc"
+              "-o"
+              "invalid.c"
+              "-h"
+              "invalid.h"
+              "invalid.tc"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

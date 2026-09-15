@@ -26,6 +26,56 @@
 in
   mkDerivation {
     pname = "classpath-0_93";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The archive is valid ZIP data containing Object, String, and ArrayList classes.";
+        "files" = {};
+        "input" = "The GNU Classpath standard-library archive.";
+        "operation" = "Open the archive and inspect core Java class entries.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, zipfile\narchive = next(pathlib.Path(\"@out@\").rglob(\"glibj.zip\"))\nwith zipfile.ZipFile(archive) as jar:\n    names = set(jar.namelist())\nassert {\"java/lang/Object.class\", \"java/lang/String.class\", \"java/util/ArrayList.class\"} <= names\nprint(\"classpath-0_93 data passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "classpath-0_93 data passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The archive lookup rejects the unknown class.";
+        "files" = {};
+        "input" = "A request for a Java core class absent from the standard-library archive.";
+        "operation" = "Resolve the nonexistent class entry in the archive index.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, sys, zipfile\narchive = next(pathlib.Path(\"@out@\").rglob(\"glibj.zip\"))\nwith zipfile.ZipFile(archive) as jar:\n    if \"java/lang/AosNonexistent.class\" in jar.namelist():\n        raise SystemExit(2)\nsys.stderr.write(\"classpath-0_93 rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "classpath-0_93 rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

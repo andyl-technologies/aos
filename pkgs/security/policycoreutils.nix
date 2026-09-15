@@ -1,5 +1,6 @@
 ##! policycoreutils — SELinux core policy utilities
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -15,6 +16,56 @@
 in
   mkDerivation {
     pname = "policycoreutils";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Secon prints system_u exactly.";
+        "files" = {};
+        "input" = "The SELinux context system_u:system_r:init_t:s0.";
+        "operation" = "Extract its user component through secon.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/secon"
+              "-u"
+              "system_u:system_r:init_t:s0"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "system_u\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Secon rejects the malformed context with status 1.";
+        "files" = {};
+        "input" = "A security context containing only one field.";
+        "operation" = "Extract its user through secon.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/secon"
+              "-u"
+              "missing-fields"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "secon: Couldn't create context from: missing-fields\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

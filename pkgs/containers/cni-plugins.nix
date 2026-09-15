@@ -1,5 +1,6 @@
 ##! CNI Plugins — Container Networking Interface reference plugins
 {
+  lib,
   mkDerivation,
   fetchurl,
   fetchGoModules,
@@ -21,6 +22,56 @@
 in
   mkDerivation {
     pname = "cni-plugins";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The plugin returns a supportedVersions array containing CNI 1.0.0.";
+        "files" = {};
+        "input" = "A CNI VERSION request containing the current configuration version.";
+        "operation" = "Send the request to the packaged loopback plugin and parse its response.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import json, os, subprocess\nenvironment = os.environ.copy()\nenvironment[\"CNI_COMMAND\"] = \"VERSION\"\nresult = subprocess.run(\n    [\"@out@/bin/loopback\"],\n    env=environment,\n    input=b'{\"cniVersion\":\"1.0.0\"}',\n    capture_output=True,\n)\nassert result.returncode == 0\nresponse = json.loads(result.stdout)\nassert \"1.0.0\" in response[\"supportedVersions\"]\nprint(\"cni-plugins operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "cni-plugins operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The plugin rejects the request and returns a structured CNI error.";
+        "files" = {};
+        "input" = "An ADD request with all runtime coordinates but no CNI configuration version.";
+        "operation" = "Send the malformed request to the loopback plugin.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import json, os, subprocess, sys\nenvironment = os.environ.copy()\nenvironment.update({\n    \"CNI_COMMAND\": \"ADD\",\n    \"CNI_CONTAINERID\": \"qualification\",\n    \"CNI_NETNS\": \"/nonexistent\",\n    \"CNI_IFNAME\": \"lo\",\n    \"CNI_PATH\": \"@out@/bin\",\n})\nresult = subprocess.run([\"@out@/bin/loopback\"], env=environment, input=b'{}', capture_output=True)\nif result.returncode == 0:\n    raise SystemExit(2)\nresponse = json.loads(result.stdout)\nassert response[\"code\"] != 0 and response[\"msg\"]\nsys.stderr.write(\"cni-plugins rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "cni-plugins rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

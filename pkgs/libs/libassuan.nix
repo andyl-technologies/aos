@@ -1,5 +1,6 @@
 ##! libassuan — IPC library implementing the Assuan protocol used by GnuPG
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -11,6 +12,84 @@
 in
   mkDerivation {
     pname = "libassuan";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Libassuan returns a usable context without an error.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\n\nstatic int pass(void) {\n    return puts(\"libassuan primary passed\") == EOF;\n}\n\nstatic int reject(void) {\n    fputs(\"libassuan rejected invalid input\\n\", stderr);\n    return 7;\n}\n\n#include <assuan.h>\n\nint main(void) {\n    assuan_context_t context = NULL;\n    gpg_error_t status = assuan_new(&context);\n    int valid = status == 0 && context != NULL;\n    if (context != NULL) assuan_release(context);\n    return valid ? pass() : 2;\n}\n\n";
+        };
+        "input" = "A newly allocated Assuan context.";
+        "operation" = "Create and release it through the public context API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import json, os, pathlib, subprocess\nclosure = json.loads(os.environ[\"AOS_QUALIFICATION_PACKAGE_CLOSURE\"])\ncommand = [\"@cc@\", \"primary.c\"]\nfor root_text in closure:\n    root = pathlib.Path(root_text)\n    include = root / \"include\"\n    library = root / \"lib\"\n    if include.is_dir():\n        command.append(\"-I\" + str(include))\n    for nested in (root / \"include/glib-2.0\", root / \"lib/glib-2.0/include\"):\n        if nested.is_dir():\n            command.append(\"-I\" + str(nested))\n    if library.is_dir():\n        command.extend([\"-L\" + str(library), \"-Wl,-rpath,\" + str(library)])\ncommand.extend([\"-lassuan\",\"-lgpg-error\"] + [\"-o\", \"primary-check\"])\nresult = subprocess.run(command, capture_output=True, text=True)\nassert result.returncode == 0, (result.returncode, result.stdout, result.stderr)\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libassuan primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Libassuan returns an error instead of establishing a connection.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\n\nstatic int pass(void) {\n    return puts(\"libassuan primary passed\") == EOF;\n}\n\nstatic int reject(void) {\n    fputs(\"libassuan rejected invalid input\\n\", stderr);\n    return 7;\n}\n\n#include <assuan.h>\n\nint main(void) {\n    assuan_context_t context = NULL;\n    if (assuan_new(&context) != 0 || context == NULL) return 2;\n    gpg_error_t status = assuan_socket_connect(\n        context,\n        \"missing-qualification.sock\",\n        ASSUAN_INVALID_PID,\n        0\n    );\n    assuan_release(context);\n    return status != 0 ? reject() : 3;\n}\n\n";
+        };
+        "input" = "A request to connect to a Unix socket path that does not exist.";
+        "operation" = "Open the missing endpoint through assuan_socket_connect.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import json, os, pathlib, subprocess\nclosure = json.loads(os.environ[\"AOS_QUALIFICATION_PACKAGE_CLOSURE\"])\ncommand = [\"@cc@\", \"bad-input.c\"]\nfor root_text in closure:\n    root = pathlib.Path(root_text)\n    include = root / \"include\"\n    library = root / \"lib\"\n    if include.is_dir():\n        command.append(\"-I\" + str(include))\n    for nested in (root / \"include/glib-2.0\", root / \"lib/glib-2.0/include\"):\n        if nested.is_dir():\n            command.append(\"-I\" + str(nested))\n    if library.is_dir():\n        command.extend([\"-L\" + str(library), \"-Wl,-rpath,\" + str(library)])\ncommand.extend([\"-lassuan\",\"-lgpg-error\"] + [\"-o\", \"bad-input-check\"])\nresult = subprocess.run(command, capture_output=True, text=True)\nassert result.returncode == 0, (result.returncode, result.stdout, result.stderr)\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libassuan rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

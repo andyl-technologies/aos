@@ -1,4 +1,5 @@
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -18,6 +19,49 @@
 in
   mkDerivation {
     pname = "json-glib";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "JSON-GLib accepts the complete document.";
+        "files" = {
+          "answer.json" = "{\"answer\":42}\n";
+        };
+        "input" = "A JSON object mapping answer to the number 42.";
+        "operation" = "Parse and validate the document through json-glib-validate.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/json-glib-validate"
+              "answer.json"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "JSON-GLib rejects the syntax with status 1.";
+        "files" = {
+          "invalid.json" = "{answer:42\n";
+        };
+        "input" = "A JSON object with an unquoted member name and no closing brace.";
+        "operation" = "Parse and validate the malformed document through json-glib-validate.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/json-glib-validate"
+              "invalid.json"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

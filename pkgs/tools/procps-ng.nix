@@ -1,5 +1,6 @@
 ##! procps-ng — Process monitoring utilities (ps, top, free, vmstat, etc.)
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -10,6 +11,49 @@
 in
   mkDerivation {
     pname = "procps-ng";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The kernel reports the exact operating-system type Linux.";
+        "files" = {};
+        "input" = "The Linux kernel.ostype sysctl key.";
+        "operation" = "Read the value through procps-ng sysctl.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/sbin/sysctl"
+              "-n"
+              "kernel.ostype"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "Linux\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Sysctl rejects the key with status 1.";
+        "files" = {};
+        "input" = "A sysctl key absent from the kernel namespace.";
+        "operation" = "Read the unknown key through procps-ng sysctl.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/sbin/sysctl"
+              "qualification.key.does.not.exist"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

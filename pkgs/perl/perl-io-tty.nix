@@ -1,5 +1,6 @@
 ##! perl-io-tty — Pseudo-terminal support for Perl
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -10,6 +11,60 @@
 in
   mkDerivation {
     pname = "perl-io-tty";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "IO::Pty returns a master and a slave with a nonempty terminal path.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use IO::Pty;\nmy $master = IO::Pty->new;\nmy $slave = $master->slave;\ndie \"pseudo-terminal unavailable\" unless $master && $slave && $slave->ttyname;\n$slave->close; $master->close;\n";
+        };
+        "input" = "A request for a fresh pseudo-terminal pair.";
+        "operation" = "Allocate the pair with IO::Pty and inspect the slave terminal name.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import json, os, pathlib, subprocess\n\nclosure = json.loads(os.environ[\"AOS_QUALIFICATION_PACKAGE_CLOSURE\"])\ninterpreters = sorted({str(pathlib.Path(path) / \"bin/perl\") for path in closure if (pathlib.Path(path) / \"bin/perl\").is_file()})\nlibraries = sorted(str(pathlib.Path(path) / \"lib/perl5\") for path in closure if (pathlib.Path(path) / \"lib/perl5\").is_dir())\nassert interpreters and libraries\nenvironment = os.environ.copy()\nenvironment[\"PERL5LIB\"] = \":\".join(libraries)\nresult = subprocess.run([interpreters[0], \"probe.pl\"], env=environment, capture_output=True, text=True)\nassert result.returncode == 0, result.stderr\nassert result.stdout == \"\" and result.stderr == \"\"\nprint(\"perl-io-tty operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "perl-io-tty operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "IO::Tty declines the invalid descriptor.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use IO::Tty;\nmy $tty = eval { IO::Tty->new_from_fd(-1, \"r\") };\ndie \"invalid descriptor accepted\" if defined $tty;\n";
+        };
+        "input" = "A pseudo-terminal request using invalid file descriptor -1.";
+        "operation" = "Construct IO::Tty from the invalid descriptor.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import json, os, pathlib, subprocess\n\nclosure = json.loads(os.environ[\"AOS_QUALIFICATION_PACKAGE_CLOSURE\"])\ninterpreters = sorted({str(pathlib.Path(path) / \"bin/perl\") for path in closure if (pathlib.Path(path) / \"bin/perl\").is_file()})\nlibraries = sorted(str(pathlib.Path(path) / \"lib/perl5\") for path in closure if (pathlib.Path(path) / \"lib/perl5\").is_dir())\nassert interpreters and libraries\nenvironment = os.environ.copy()\nenvironment[\"PERL5LIB\"] = \":\".join(libraries)\nresult = subprocess.run([interpreters[0], \"probe.pl\"], env=environment, capture_output=True, text=True)\nassert result.returncode == 0, result.stderr\nassert result.stdout == \"\" and result.stderr == \"\"\nprint(\"perl-io-tty operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "perl-io-tty operation passed\n";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     src = fetchurl {
       urls = ["https://cpan.metacpan.org/authors/id/T/TO/TODDR/IO-Tty-${version}.tar.gz"];

@@ -1,5 +1,6 @@
 ##! direnv — Per-directory environment manager
 {
+  lib,
   mkGoPackage,
   fetchGoModules,
   fetchurl,
@@ -16,6 +17,68 @@
 in
   mkGoPackage {
     pname = "direnv";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Direnv executes the child with the exact declared environment value.";
+        "files" = {
+          ".envrc" = "export AOS_PROBE_VALUE=qualified\n";
+        };
+        "input" = "An approved .envrc exporting a fixed variable.";
+        "operation" = "Approve the file, load it with direnv exec, and read the exported value.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/direnv"
+              "allow"
+              "."
+            ];
+            "exit_code" = 0;
+          }
+          {
+            "argv" = [
+              "@out@/bin/direnv"
+              "exec"
+              "."
+              "@bash@"
+              "-c"
+              "printf \"%s\\n\" \"$AOS_PROBE_VALUE\""
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "qualified\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Direnv enforces its trust boundary and rejects the file with status 1.";
+        "files" = {
+          ".envrc" = "export AOS_PROBE_VALUE=unapproved\n";
+        };
+        "input" = "A valid .envrc that has not been explicitly approved.";
+        "operation" = "Attempt to load the unapproved environment with direnv exec.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/direnv"
+              "exec"
+              "."
+              "@bash@"
+              "-c"
+              "true"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src goModules;
     goPackage = ".";
     goOutput = "direnv";

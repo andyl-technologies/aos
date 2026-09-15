@@ -21,6 +21,56 @@
 in
   mkDerivation {
     pname = "zfs";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Zgenhostid writes the identifier as the four native-order bytes 78 56 34 12.";
+        "files" = {};
+        "input" = "The fixed host identifier 0x12345678 and a work-directory output path.";
+        "operation" = "Encode the host identifier with zgenhostid without loading a kernel module.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, subprocess\noutput = pathlib.Path(\"hostid\")\nresult = subprocess.run([\"@out@/sbin/zgenhostid\", \"-f\", \"-o\", str(output), \"12345678\"], capture_output=True)\nassert result.returncode == 0 and output.read_bytes() == bytes.fromhex(\"78563412\")\nprint(\"zfs operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "zfs operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Zgenhostid rejects the malformed identifier and creates no output.";
+        "files" = {};
+        "input" = "A host identifier containing non-hexadecimal characters.";
+        "operation" = "Validate the identifier before writing the hostid file.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport pathlib, subprocess\noutput = pathlib.Path(\"invalid-hostid\")\nresult = subprocess.run([\"@out@/sbin/zgenhostid\", \"-o\", str(output), \"not-hex\"], capture_output=True, text=True)\nassert result.returncode != 0 and not output.exists()\n\nsys.stderr.write(\"zfs rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "zfs rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

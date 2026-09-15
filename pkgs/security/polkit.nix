@@ -1,5 +1,6 @@
 ##! polkit — System service authorization framework
 {
+  lib,
   mkDerivation,
   fetchurl,
   meson,
@@ -31,6 +32,56 @@
 in
   mkDerivation {
     pname = "polkit";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Pkaction reports Polkit version 127.";
+        "files" = {};
+        "input" = "The pkaction command's compiled release identity.";
+        "operation" = "Request the version without contacting the authorization daemon.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/pkaction\", \"--version\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"127\" in (result.stdout + result.stderr), (result.returncode, result.stdout, result.stderr)\nprint(\"polkit operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "polkit operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Pkaction rejects the unsupported option.";
+        "files" = {};
+        "input" = "A pkaction invocation containing an unsupported option.";
+        "operation" = "Parse the invalid option without contacting the authorization daemon.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/pkaction\", \"--aos-invalid-option\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"polkit rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "polkit rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

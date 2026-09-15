@@ -1,5 +1,6 @@
 ##! ninja — Small build system with a focus on speed
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -8,6 +9,53 @@
 in
   mkDerivation {
     pname = "ninja";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [
+          {
+            "path" = "answer.txt";
+            "text" = "answer=42";
+          }
+        ];
+        "expected" = "Ninja creates the exact declared output artifact.";
+        "files" = {
+          "build.ninja" = "rule answer\n  command = @bash@ -c \"printf answer=42 > $out\"\nbuild answer.txt: answer\ndefault answer.txt\n";
+        };
+        "input" = "A Ninja graph whose sole rule writes answer=42.";
+        "operation" = "Execute the default edge through Ninja.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/ninja"
+              "-f"
+              "build.ninja"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Ninja rejects the graph with status 1.";
+        "files" = {
+          "build.ninja" = "build answer.txt answer\n";
+        };
+        "input" = "A Ninja build edge missing the colon after its output.";
+        "operation" = "Parse the malformed build graph through Ninja.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/ninja"
+              "-f"
+              "build.ninja"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

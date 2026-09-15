@@ -1,5 +1,6 @@
 ##! D-Bus — Message bus system
 {
+  lib,
   mkDerivation,
   fetchurl,
   meson,
@@ -17,6 +18,90 @@
 in
   mkDerivation {
     pname = "dbus";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The public API returns the expected result and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\n#include <string.h>\n#include <dbus/dbus.h>\n\nint main(void) {\n    DBusMessage *message = dbus_message_new_method_call(\n        \"org.aos.Qualification\", \"/org/aos/Qualification\",\n        \"org.aos.Qualification\", \"Probe\");\n    if (message == NULL\n        || strcmp(dbus_message_get_path(message), \"/org/aos/Qualification\") != 0\n        || strcmp(dbus_message_get_member(message), \"Probe\") != 0) {\n        if (message != NULL) dbus_message_unref(message);\n        return 2;\n    }\n    dbus_message_unref(message);\n    return puts(\"dbus api passed\") == EOF;\n}\n";
+        };
+        "input" = "A valid bus name, object path, interface, and method name.";
+        "operation" = "Construct a method-call message and read its routing metadata back.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include/dbus-1.0"
+              "-I@out@/lib/dbus-1.0/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-ldbus-1"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "dbus api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The public API reports rejection and the consumer returns the fixed rejection status.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\n#include <dbus/dbus.h>\n\nint main(void) {\n    DBusError error;\n    dbus_error_init(&error);\n    dbus_bool_t valid = dbus_validate_path(\"org/aos/invalid\", &error);\n    if (valid || !dbus_error_is_set(&error)) {\n        dbus_error_free(&error);\n        return 2;\n    }\n    dbus_error_free(&error);\n    fputs(\"dbus rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "An object path without the required leading slash.";
+        "operation" = "Validate the malformed path with dbus_validate_path.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include/dbus-1.0"
+              "-I@out@/lib/dbus-1.0/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-ldbus-1"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -25,6 +25,7 @@
   stdenv,
   buildPackages,
   pname ? "qemu",
+  qualification ? null,
   enablePlugins ? false,
   applyCruciblePatches ? false,
   testOnlyNonDistributable ? false,
@@ -328,7 +329,7 @@ in
   assert _testMutationPolicy == null;
     mkDerivation {
       inherit pname;
-      inherit version;
+      inherit version qualification;
 
       src = fetchurl {
         urls = [

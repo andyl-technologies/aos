@@ -1,5 +1,6 @@
 ##! libgit2 — C implementation of the Git core methods
 {
+  lib,
   mkDerivation,
   mkGithubUpstream,
   gnumake,
@@ -51,6 +52,88 @@
 in
   mkDerivation {
     pname = "libgit2";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The round-tripped hexadecimal object name is unchanged.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libgit2 primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libgit2 rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <string.h>\n#include <git2.h>\nint main(void) {\n    const char input[] = \"0123456789abcdef0123456789abcdef01234567\"; char output[GIT_OID_HEXSZ + 1]; git_oid oid;\n    if (git_libgit2_init() < 0 || git_oid_fromstr(&oid, input) < 0) return 2;\n    git_oid_tostr(output, sizeof(output), &oid); git_libgit2_shutdown();\n    return strcmp(input, output) == 0 ? pass() : 3;\n}\n\n";
+        };
+        "input" = "A forty-digit hexadecimal Git object identifier.";
+        "operation" = "Parse the full identifier and render it through libgit2.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lgit2"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libgit2 primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "libgit2 returns an error instead of an object identifier.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libgit2 primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libgit2 rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <git2.h>\nint main(void) {\n    git_oid oid; if (git_libgit2_init() < 0) return 2;\n    int status = git_oid_fromstr(&oid, \"g123456789abcdef0123456789abcdef01234567\"); git_libgit2_shutdown();\n    if (status >= 0) return 3;\n    return reject();\n}\n\n";
+        };
+        "input" = "A Git object identifier containing a non-hexadecimal letter.";
+        "operation" = "Parse the malformed identifier with git_oid_fromstr.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lgit2"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libgit2 rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = upstream.components.main.sources.source;

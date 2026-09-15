@@ -1,5 +1,6 @@
 ##! GNU Bison — Parser generator
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -11,6 +12,87 @@
 in
   mkDerivation {
     pname = "bison";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The generated parser accepts the input and prints its token count.";
+        "files" = {
+          "parser.y" = "%{\n#include <stdio.h>\nint count;\nint yylex(void) { int c = getchar(); return c == 'a' ? 'a' : 0; }\nvoid yyerror(const char *message) { (void)message; }\n%}\n%%\ninput: items { printf(\"parsed %d tokens\\n\", count); };\nitems: 'a' { count = 1; } | items 'a' { ++count; };\n%%\nint main(void) { return yyparse(); }\n";
+        };
+        "input" = "A grammar accepting a nonempty sequence of the token 'a'.";
+        "operation" = "Generate a C parser, compile it, and parse a valid token sequence.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/bison"
+              "-o"
+              "parser.c"
+              "parser.y"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@cc@"
+              "parser.c"
+              "-o"
+              "parser"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/parser"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdin" = "aaa";
+            "stdout" = {
+              "exact" = "parsed 3 tokens\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Bison rejects the grammar with status 1.";
+        "files" = {
+          "invalid.y" = "%token\n%%\ninput: ;\n%%\n";
+        };
+        "input" = "A grammar with a token declaration missing its identifier.";
+        "operation" = "Ask Bison to generate a parser from the malformed grammar.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/bison"
+              "-o"
+              "invalid.c"
+              "invalid.y"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

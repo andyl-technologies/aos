@@ -1,5 +1,6 @@
 ##! zlib — Lossless data compression library
 {
+  lib,
   mkDerivation,
   mkUpstream,
   gnumake,
@@ -79,6 +80,94 @@
 in
   mkDerivation {
     pname = "zlib";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The recovered bytes equal the original bytes and the consumer prints the fixed success line.";
+        "files" = {
+          "round-trip.c" = "#include <stdio.h>\n#include <string.h>\n#include <zlib.h>\n\nint main(void) {\n    const char input[] = \"AOS package qualification\";\n    unsigned char compressed[128];\n    unsigned char recovered[sizeof(input)];\n    uLongf compressed_size = sizeof(compressed);\n    uLongf recovered_size = sizeof(recovered);\n\n    if (compress(compressed, &compressed_size,\n                 (const Bytef *)input, sizeof(input)) != Z_OK) {\n        return 2;\n    }\n    if (uncompress(recovered, &recovered_size,\n                   compressed, compressed_size) != Z_OK) {\n        return 3;\n    }\n    if (recovered_size != sizeof(input)\n        || memcmp(recovered, input, sizeof(input)) != 0) {\n        return 4;\n    }\n\n    return puts(\"zlib round trip passed\") == EOF;\n}\n";
+        };
+        "input" = "A fixed byte string to compress and recover through the public zlib API.";
+        "operation" = "Compile and run a consumer that compresses and decompresses the input.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "round-trip.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lz"
+              "-o"
+              "zlib-round-trip"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/zlib-round-trip"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "zlib round trip passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The public API returns Z_DATA_ERROR and the consumer exits with the fixed rejection status and diagnostic.";
+        "files" = {
+          "reject-invalid.c" = "#include <stdio.h>\n#include <zlib.h>\n\nint main(void) {\n    const unsigned char invalid[] = \"not a zlib stream\";\n    unsigned char output[128];\n    uLongf output_size = sizeof(output);\n    int result = uncompress(output, &output_size, invalid, sizeof(invalid));\n\n    if (result != Z_DATA_ERROR) {\n        return 2;\n    }\n\n    fputs(\"zlib rejected invalid stream\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "A byte sequence that is not a zlib stream.";
+        "operation" = "Compile and run a consumer that passes the invalid stream to uncompress.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "reject-invalid.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lz"
+              "-o"
+              "zlib-reject-invalid"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/zlib-reject-invalid"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "zlib rejected invalid stream\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = upstream.components.main.sources.source;

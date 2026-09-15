@@ -6,6 +6,7 @@
 ##! that drifts from the crate version produces bindings that break at
 ##! runtime. Keep this in lockstep with the locked `wasm-bindgen` version.
 {
+  lib,
   mkCargoPackage,
   fetchurl,
   fetchCargoDeps,
@@ -26,6 +27,58 @@
 in
   mkCargoPackage {
     pname = "wasm-bindgen-cli";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Wasm2es6js emits JavaScript containing the encoded WebAssembly module.";
+        "files" = {};
+        "input" = "A minimal valid WebAssembly module containing only its header and version.";
+        "operation" = "Convert the module to an ES module with an inline base64 payload.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, subprocess\npathlib.Path(\"empty.wasm\").write_bytes(bytes.fromhex(\"0061736d01000000\"))\nresult = subprocess.run([\"@out@/bin/wasm2es6js\", \"--base64\", \"empty.wasm\", \"--output\", \"module.js\"], capture_output=True)\nassert result.returncode == 0, result.stderr\njavascript = pathlib.Path(\"module.js\").read_text()\nassert \"const base64\" in javascript and \"WebAssembly.instantiate\" in javascript\nprint(\"wasm-bindgen-cli operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "wasm-bindgen-cli operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Wasm2es6js rejects the malformed binary and emits no JavaScript module.";
+        "files" = {
+          "invalid.wasm" = "bad";
+        };
+        "input" = "A truncated file without the WebAssembly magic header.";
+        "operation" = "Attempt to convert the malformed module to JavaScript.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport pathlib, subprocess\nresult = subprocess.run([\"@out@/bin/wasm2es6js\", \"--base64\", \"invalid.wasm\", \"--output\", \"invalid.js\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"unexpected end-of-file\" in result.stderr\nassert not pathlib.Path(\"invalid.js\").exists()\n\nsys.stderr.write(\"wasm-bindgen-cli rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "wasm-bindgen-cli rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     cargoDeps = fetchCargoDeps {

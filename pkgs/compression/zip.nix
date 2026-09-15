@@ -1,5 +1,6 @@
 ##! zip — package and compress files into ZIP archives
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -9,6 +10,71 @@
 in
   mkDerivation {
     pname = "zip";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The archive contains one member whose bytes exactly match the source payload.";
+        "files" = {
+          "payload.txt" = "answer=42\n";
+          "verify.py" = "import zipfile\n\nwith zipfile.ZipFile(\"payload.zip\") as archive:\n    assert archive.namelist() == [\"payload.txt\"]\n    assert archive.read(\"payload.txt\") == b\"answer=42\\n\"\nprint(\"zip archive passed\")\n";
+        };
+        "input" = "A text file containing a fixed answer.";
+        "operation" = "Create a ZIP archive, then inspect its member through Python's independent ZIP reader.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/zip"
+              "-q"
+              "payload.zip"
+              "payload.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@python@"
+              "verify.py"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "zip archive passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Zip rejects the empty input set with its documented nothing-to-do status.";
+        "files" = {};
+        "input" = "A source path that does not exist.";
+        "operation" = "Attempt to add the missing file to a new archive.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/zip"
+              "-q"
+              "missing.zip"
+              "missing.txt"
+            ];
+            "exit_code" = 12;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

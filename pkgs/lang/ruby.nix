@@ -1,5 +1,6 @@
 ##! ruby — Ruby programming language
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -20,6 +21,53 @@
 in
   mkDerivation {
     pname = "ruby";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Ruby prints the exact integer result 42.";
+        "files" = {
+          "answer.rb" = "puts [19, 23].map { |value| value }.sum\n";
+        };
+        "input" = "A Ruby program that maps and sums two integers.";
+        "operation" = "Execute the program with the packaged Ruby interpreter.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/ruby"
+              "answer.rb"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Ruby rejects the program with its syntax-error status.";
+        "files" = {
+          "invalid.rb" = "def answer(\n  42\nend\n";
+        };
+        "input" = "A Ruby method definition with an unclosed parameter list.";
+        "operation" = "Ask Ruby to check the malformed program's syntax.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/ruby"
+              "-c"
+              "invalid.rb"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

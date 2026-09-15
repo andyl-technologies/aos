@@ -15,6 +15,59 @@
 in
   mkDerivation {
     pname = "rsync";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [
+          {
+            "path" = "destination.txt";
+            "text" = "answer=42\n";
+          }
+        ];
+        "expected" = "The destination contains the source bytes exactly.";
+        "files" = {
+          "source.txt" = "answer=42\n";
+        };
+        "input" = "A source file with a fixed payload.";
+        "operation" = "Copy the file locally through rsync's transfer engine.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/rsync"
+              "--quiet"
+              "source.txt"
+              "destination.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Rsync rejects the missing source with its partial-transfer status.";
+        "files" = {};
+        "input" = "A source path that does not exist.";
+        "operation" = "Attempt a local transfer from the missing source.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/rsync"
+              "--quiet"
+              "missing.txt"
+              "destination.txt"
+            ];
+            "exit_code" = 23;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

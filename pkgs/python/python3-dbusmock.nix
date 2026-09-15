@@ -1,5 +1,6 @@
 ##! python3-dbusmock — Mock D-Bus objects for service test suites
 {
+  lib,
   mkDerivation,
   fetchurl,
   python3,
@@ -11,6 +12,56 @@
 in
   mkDerivation {
     pname = "python3-dbusmock";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The private daemon accepts a connection and owns the standard D-Bus service name.";
+        "files" = {};
+        "input" = "A private session bus managed by python3-dbusmock.";
+        "operation" = "Start the bus, connect through its public BusType API, and inspect its registered names.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import json, os, pathlib, sys\nclosure = json.loads(os.environ[\"AOS_QUALIFICATION_PACKAGE_CLOSURE\"])\nsite_directories = []\nexecutable_directories = []\nfor root_text in closure:\n    root = pathlib.Path(root_text)\n    site = root / \"lib/python3.14/site-packages\"\n    binaries = root / \"bin\"\n    if site.is_dir():\n        site_directories.append(str(site))\n    if binaries.is_dir():\n        executable_directories.append(str(binaries))\nsys.path[:0] = site_directories\nos.environ[\"PATH\"] = os.pathsep.join(executable_directories)\n\nfrom dbusmock import BusType, PrivateDBus\nwith PrivateDBus(BusType.SESSION):\n    connection = BusType.SESSION.get_connection()\n    names = connection.list_names()\n    connection.close()\nassert \"org.freedesktop.DBus\" in names\nprint(\"python3-dbusmock operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "python3-dbusmock operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Python-dbusmock rejects the request without creating a service link.";
+        "files" = {};
+        "input" = "A request to enable a service absent from the configured D-Bus data directories.";
+        "operation" = "Resolve the missing service through PrivateDBus.enable_service.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import json, os, pathlib, sys\nclosure = json.loads(os.environ[\"AOS_QUALIFICATION_PACKAGE_CLOSURE\"])\nsite_directories = []\nexecutable_directories = []\nfor root_text in closure:\n    root = pathlib.Path(root_text)\n    site = root / \"lib/python3.14/site-packages\"\n    binaries = root / \"bin\"\n    if site.is_dir():\n        site_directories.append(str(site))\n    if binaries.is_dir():\n        executable_directories.append(str(binaries))\nsys.path[:0] = site_directories\nos.environ[\"PATH\"] = os.pathsep.join(executable_directories)\n\nimport pathlib, sys\nfrom dbusmock import BusType, PrivateDBus\nos.environ[\"XDG_DATA_DIRS\"] = str(pathlib.Path(\"empty-data\").resolve())\nbus = PrivateDBus(BusType.SESSION)\ntry:\n    bus.enable_service(\"org.example.QualificationMissing\")\nexcept AssertionError as error:\n    assert \"Service org.example.QualificationMissing not found\" in str(error)\nelse:\n    raise AssertionError(\"missing service was accepted\")\nfinally:\n    bus.stop()\nsys.stderr.write(\"python3-dbusmock rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "python3-dbusmock rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

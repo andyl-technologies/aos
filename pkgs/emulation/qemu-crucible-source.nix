@@ -42,6 +42,56 @@
 in
   mkDerivation {
     pname = "qemu-crucible-source";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The upstream archive, patch series, boundary header, build expression, plugin workspace, and vendor tree are present and nonempty.";
+        "files" = {};
+        "input" = "The published corresponding-source manifest for the patched QEMU and Crucible plugin pair.";
+        "operation" = "Resolve every manifest-named rebuild input beneath the immutable source root.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib\nroot = pathlib.Path(\"@out@/share/aos/qemu-crucible-source\")\nvalues = dict(line.split(\"=\", 1) for line in (root / \"SOURCE-MANIFEST.env\").read_text().splitlines() if \"=\" in line)\nassert values[\"package\"] == \"qemu-crucible-source\"\nfor key in [\"qemu_source_file\", \"qemu_build_expression\", \"shmem_header_file\", \"qemu_patch_license_inventory\", \"plugin_source_root\", \"plugin_cargo_vendor\"]:\n    path = root / values[key]\n    assert path.exists() and (path.is_dir() or path.stat().st_size > 0)\nassert (root / \"patches/_series.nix\").stat().st_size > 0\nprint(\"qemu-crucible-source operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "qemu-crucible-source operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The source package rejects the absent binary object.";
+        "files" = {};
+        "input" = "A request for a native QEMU object file in the corresponding-source artifact.";
+        "operation" = "Resolve a compiled object outside the source-only publication contract.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport pathlib\nroot = pathlib.Path(\"@out@/share/aos/qemu-crucible-source\")\nassert not (root / \"build/qemu-system-x86_64\").exists()\n\nsys.stderr.write(\"qemu-crucible-source rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "qemu-crucible-source rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

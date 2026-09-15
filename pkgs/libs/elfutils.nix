@@ -1,5 +1,6 @@
 ##! elfutils — ELF utilities and libelf
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -14,6 +15,94 @@
 in
   mkDerivation {
     pname = "elfutils";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The API returns the expected value and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\n#include <string.h>\n#include <elf.h>\n#include <libelf.h>\n\nint main(void) {\n    Elf64_Ehdr header = {0};\n    memcpy(header.e_ident, ELFMAG, SELFMAG);\n    header.e_ident[EI_CLASS] = ELFCLASS64;\n    header.e_ident[EI_DATA] = ELFDATA2LSB;\n    header.e_ident[EI_VERSION] = EV_CURRENT;\n    header.e_version = EV_CURRENT;\n    header.e_ehsize = sizeof(header);\n    if (elf_version(EV_CURRENT) == EV_NONE) {\n        return 2;\n    }\n    Elf *object = elf_memory((char *)&header, sizeof(header));\n    if (object == NULL || elf_kind(object) != ELF_K_ELF) {\n        if (object != NULL) elf_end(object);\n        return 3;\n    }\n    elf_end(object);\n    return puts(\"elfutils api passed\") == EOF;\n}\n";
+        };
+        "input" = "A complete in-memory ELF64 file header.";
+        "operation" = "Open the bytes with elf_memory and verify that libelf recognizes an ELF object.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lelf"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "elfutils api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The API reports rejection and the consumer emits the fixed diagnostic and rejection status.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\n#include <libelf.h>\n\nint main(void) {\n    char invalid[64] = \"not an ELF object\";\n    if (elf_version(EV_CURRENT) == EV_NONE) {\n        return 2;\n    }\n    Elf *object = elf_memory(invalid, sizeof(invalid));\n    if (object == NULL) {\n        fputs(\"elfutils rejected invalid input\\n\", stderr);\n        return 7;\n    }\n    Elf_Kind kind = elf_kind(object);\n    elf_end(object);\n    if (kind != ELF_K_NONE) {\n        return 3;\n    }\n    fputs(\"elfutils rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "A byte buffer without the ELF magic number.";
+        "operation" = "Open the malformed bytes with elf_memory and inspect their object kind.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lelf"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "elfutils rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

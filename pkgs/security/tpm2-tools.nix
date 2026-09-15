@@ -1,5 +1,6 @@
 ##! tpm2-tools — TPM 2.0 command-line tools.
 {
+  lib,
   mkDerivation,
   fetchurl,
   bash,
@@ -15,6 +16,56 @@
 in
   mkDerivation {
     pname = "tpm2-tools";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Tpm2-rc-decode identifies parameter one as an out-of-range value.";
+        "files" = {};
+        "input" = "The TPM response code 0x1c4.";
+        "operation" = "Decode the numeric response without opening a TPM device.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/tpm2_rc_decode\", \"0x1c4\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"parameter(1)\" in result.stdout and \"out of range\" in result.stdout\nprint(\"tpm2-tools operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "tpm2-tools operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Tpm2-rc-decode rejects the invalid numeric value.";
+        "files" = {};
+        "input" = "A response-code value wider than the supported integer representation.";
+        "operation" = "Decode the out-of-range response code.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport subprocess\nresult = subprocess.run([\"@out@/bin/tpm2_rc_decode\", \"0x100000000\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"invalid TSS2_RC\" in result.stderr\n\nsys.stderr.write(\"tpm2-tools rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "tpm2-tools rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

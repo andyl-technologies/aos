@@ -686,6 +686,54 @@
 in
   mkBazelPackage {
     pname = "envoy";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Envoy accepts the complete offline configuration.";
+        "files" = {
+          "envoy.yaml" = "static_resources:\n  listeners: []\n  clusters: []\n";
+        };
+        "input" = "An Envoy bootstrap configuration with empty static listener and cluster sets.";
+        "operation" = "Validate the bootstrap configuration without starting the proxy.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/envoy"
+              "--mode"
+              "validate"
+              "--config-path"
+              "envoy.yaml"
+            ];
+            "exit_code" = 0;
+            "timeout_seconds" = 120;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Envoy rejects the unknown field with status 1.";
+        "files" = {
+          "invalid.yaml" = "aos_unknown_field: 42\n";
+        };
+        "input" = "An Envoy bootstrap with an unknown top-level field.";
+        "operation" = "Validate the malformed bootstrap configuration.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/envoy"
+              "--mode"
+              "validate"
+              "--config-path"
+              "invalid.yaml"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "timeout_seconds" = 120;
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     bazel = buildBazel;

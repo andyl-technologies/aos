@@ -1,5 +1,6 @@
 ##! mtools — utilities for accessing MS-DOS disks
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -10,6 +11,101 @@
 in
   mkDerivation {
     pname = "mtools";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The FAT image preserves the file's exact contents.";
+        "files" = {
+          "answer.txt" = "answer=42\n";
+        };
+        "input" = "A blank 1.44 MiB disk image and a text file containing answer=42.";
+        "operation" = "Format the image as FAT, copy the file into it, and read the file back through mtools.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "open('disk.img', 'wb').truncate(1474560)"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/mformat"
+              "-i"
+              "disk.img"
+              "-f"
+              "1440"
+              "::"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/mcopy"
+              "-i"
+              "disk.img"
+              "answer.txt"
+              "::ANSWER.TXT"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/mtype"
+              "-i"
+              "disk.img"
+              "::ANSWER.TXT"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "answer=42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "mformat rejects the malformed numeric size with a non-success status.";
+        "files" = {};
+        "input" = "A floppy-size argument containing non-numeric text.";
+        "operation" = "Parse the malformed geometry through mformat.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/mformat"
+              "-f"
+              "not-a-number"
+              "::"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

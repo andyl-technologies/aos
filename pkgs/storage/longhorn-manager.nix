@@ -1,5 +1,6 @@
 ##! Longhorn Manager — Longhorn orchestration controller
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -10,6 +11,56 @@
 in
   mkDerivation {
     pname = "longhorn-manager";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The command describes its supported invocation contract.";
+        "files" = {};
+        "input" = "The packaged longhorn-manager command-line interface.";
+        "operation" = "Request its offline command inventory.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/longhorn-manager\"] + [\"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"longhorn manager\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nprint(\"longhorn-manager primary passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "longhorn-manager primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The command rejects the unsupported operation.";
+        "files" = {};
+        "input" = "A longhorn-manager invocation naming an unsupported command.";
+        "operation" = "Parse the unknown command without starting a service.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/longhorn-manager\"] + [\"aos-invalid-command\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"unrecognized command\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"longhorn-manager rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "longhorn-manager rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

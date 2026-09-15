@@ -225,6 +225,57 @@
 in
   mkDerivation {
     pname = "mariadb";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "MariaDB prints the two normalized command-line options in declaration order.";
+        "files" = {
+          "my.cnf" = "[client]\nuser=qualification\nport=4242\n";
+        };
+        "input" = "A client option group declaring a user and TCP port.";
+        "operation" = "Read the group through my_print_defaults.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/my_print_defaults"
+              "--defaults-file=@work@/primary/my.cnf"
+              "client"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "--user=qualification\n--port=4242\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "MariaDB rejects the group syntax with status 2.";
+        "files" = {
+          "my.cnf" = "[client\nuser=qualification\n";
+        };
+        "input" = "An option file with an unterminated client group header.";
+        "operation" = "Read the malformed option file through my_print_defaults.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/my_print_defaults"
+              "--defaults-file=@work@/bad-input/my.cnf"
+              "client"
+            ];
+            "exit_code" = 2;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = source;

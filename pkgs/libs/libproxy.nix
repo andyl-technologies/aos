@@ -1,5 +1,6 @@
 ##! libproxy — Automatic proxy configuration library
 {
+  lib,
   mkDerivation,
   fetchurl,
   meson,
@@ -17,6 +18,62 @@
 in
   mkDerivation {
     pname = "libproxy";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The configured proxy endpoint is returned exactly.";
+        "files" = {};
+        "input" = "An HTTP URL and an explicit environment proxy endpoint.";
+        "operation" = "Resolve the URL through the environment configuration backend.";
+        "steps" = [
+          {
+            "argv" = [
+              "@bash@"
+              "-c"
+              "unset no_proxy NO_PROXY PX_DEBUG G_MESSAGES_DEBUG\n# Resolve with the package's GIO modules, independent of the desktop session.\nunset GIO_EXTRA_MODULES GIO_MODULE_DIR\nexport PX_FORCE_CONFIG=config-env\nexport http_proxy=\"$1\"\nexec \"$2/bin/proxy\" http://qualification.example/resource\n"
+              "libproxy-qualification"
+              "http://127.0.0.1:3128"
+              "@out@"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "http://127.0.0.1:3128\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The invalid proxy is discarded and the documented direct connection fallback is returned.";
+        "files" = {};
+        "input" = "A proxy URI with an unterminated bracketed host.";
+        "operation" = "Resolve the same URL with the malformed proxy configuration.";
+        "steps" = [
+          {
+            "argv" = [
+              "@bash@"
+              "-c"
+              "unset no_proxy NO_PROXY PX_DEBUG G_MESSAGES_DEBUG\n# Resolve with the package's GIO modules, independent of the desktop session.\nunset GIO_EXTRA_MODULES GIO_MODULE_DIR\nexport PX_FORCE_CONFIG=config-env\nexport http_proxy=\"$1\"\nexec \"$2/bin/proxy\" http://qualification.example/resource\n"
+              "libproxy-qualification"
+              "http://[broken"
+              "@out@"
+            ];
+            "exit_code" = 0;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "direct://\n";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

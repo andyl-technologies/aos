@@ -1,5 +1,6 @@
 ##! checkpolicy — SELinux policy compiler and module compiler
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -12,6 +13,63 @@
 in
   mkDerivation {
     pname = "checkpolicy";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Checkmodule accepts the declarations and emits binary policy.";
+        "files" = {
+          "probe.te" = "module aos_probe 1.0;\n\nrequire {\n    type init_t;\n    class file read;\n}\n\nallow init_t init_t:file read;\n";
+        };
+        "input" = "A loadable SELinux policy module granting one file permission.";
+        "operation" = "Compile the module source with checkmodule.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/checkmodule"
+              "-M"
+              "-m"
+              "-o"
+              "probe.mod"
+              "probe.te"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Checkmodule rejects the syntax error with status 1.";
+        "files" = {
+          "invalid.te" = "module aos_bad 1.0;\nrequire { type init_t; class file read; }\nallow init_t init_t:file read\n";
+        };
+        "input" = "A policy module whose allow rule omits its terminating semicolon.";
+        "operation" = "Compile the malformed module source with checkmodule.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/checkmodule"
+              "-M"
+              "-m"
+              "-o"
+              "invalid.mod"
+              "invalid.te"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

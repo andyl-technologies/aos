@@ -1,5 +1,6 @@
 ##! tailscale — Mesh VPN client and coordination daemon
 {
+  lib,
   mkDerivation,
   fetchurl,
   fetchGoModules,
@@ -23,6 +24,56 @@
 in
   mkDerivation {
     pname = "tailscale";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The client reports a nonempty semantic release version and its Go toolchain.";
+        "files" = {};
+        "input" = "The installed Tailscale client build metadata.";
+        "operation" = "Read the client, long, and Go version tuple without contacting tailscaled.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/tailscale\", \"version\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"long version:\" in result.stdout and \"go version:\" in result.stdout\nprint(\"tailscale operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "tailscale operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The Tailscale client rejects the malformed boolean value.";
+        "files" = {};
+        "input" = "A status request with an invalid boolean value for JSON output.";
+        "operation" = "Parse the status flags before connecting to the daemon socket.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport subprocess\nresult = subprocess.run([\"@out@/bin/tailscale\", \"--socket\", \"missing.sock\", \"status\", \"--json=qualification-invalid\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"invalid boolean value\" in result.stderr\n\nsys.stderr.write(\"tailscale rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "tailscale rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     buildDeps = [buildPackages.go];

@@ -1,5 +1,6 @@
 ##! gdbm — GNU database manager
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -10,6 +11,94 @@
 in
   mkDerivation {
     pname = "gdbm";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The API returns the expected value and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <gdbm.h>\n\nint main(void) {\n    GDBM_FILE database = gdbm_open(\"probe.gdbm\", 0, GDBM_NEWDB, 0600, NULL);\n    datum key = {.dptr = \"answer\", .dsize = 6};\n    datum value = {.dptr = \"42\", .dsize = 2};\n    if (database == NULL || gdbm_store(database, key, value, GDBM_INSERT) != 0) {\n        return 2;\n    }\n    datum fetched = gdbm_fetch(database, key);\n    int failed = fetched.dptr == NULL || fetched.dsize != 2 || memcmp(fetched.dptr, \"42\", 2) != 0;\n    free(fetched.dptr);\n    gdbm_close(database);\n    if (failed) {\n        return 3;\n    }\n    return puts(\"gdbm api passed\") == EOF;\n}\n";
+        };
+        "input" = "A key and value to persist in a new GDBM database.";
+        "operation" = "Store the record, fetch it, and compare the returned bytes.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lgdbm"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "gdbm api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The API reports rejection and the consumer emits the fixed diagnostic and rejection status.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\n#include <gdbm.h>\n\nint main(void) {\n    GDBM_FILE database = gdbm_open(\"missing.gdbm\", 0, GDBM_READER, 0, NULL);\n    if (database != NULL) {\n        gdbm_close(database);\n        return 2;\n    }\n    fputs(\"gdbm rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "A request to open a nonexistent database read-only.";
+        "operation" = "Open the missing path with GDBM_READER.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lgdbm"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "gdbm rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -1,4 +1,5 @@
 {
+  lib,
   mkDerivation,
   fetchurl,
   m4,
@@ -16,6 +17,60 @@
 in
   mkDerivation {
     pname = "findutils";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Find emits only the matching file name.";
+        "files" = {
+          "tree/answer.txt" = "42\n";
+          "tree/ignored.log" = "no\n";
+        };
+        "input" = "A directory containing one matching and one nonmatching file.";
+        "operation" = "Select regular files with the .txt suffix and print only their base name.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/find"
+              "@work@/primary/tree"
+              "-type"
+              "f"
+              "-name"
+              "*.txt"
+              "-printf"
+              "%f\\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "answer.txt\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Find rejects the missing traversal root with status 1.";
+        "files" = {};
+        "input" = "A directory path that does not exist.";
+        "operation" = "Traverse the missing path.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/find"
+              "@work@/bad-input/missing"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

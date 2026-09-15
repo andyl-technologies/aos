@@ -59,6 +59,96 @@
 in
   mkDerivation {
     pname = "gc";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The public API returns the expected value and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\n#include <string.h>\n#include <gc.h>\n\nint main(void) {\n    GC_INIT();\n    char *buffer = GC_malloc(32);\n    if (buffer == NULL) {\n        return 2;\n    }\n    strcpy(buffer, \"managed allocation\");\n    if (GC_base(buffer + 4) != buffer || strcmp(buffer, \"managed allocation\") != 0) {\n        return 3;\n    }\n    return puts(\"gc api passed\") == EOF;\n}\n";
+        };
+        "input" = "A managed byte buffer containing a fixed string.";
+        "operation" = "Allocate the buffer with GC_malloc and recover its managed allocation base.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lgc"
+              "-pthread"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "gc api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The API reports the rejected boundary and the consumer returns the fixed rejection status.";
+        "files" = {
+          "bad-input.c" = "#include <stdint.h>\n#include <stdio.h>\n#include <gc.h>\n\nint main(void) {\n    GC_INIT();\n    if (GC_base((void *)(uintptr_t)42) != NULL) {\n        return 2;\n    }\n    fputs(\"gc rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "An address that does not belong to a garbage-collected allocation.";
+        "operation" = "Query the allocation base for the unmanaged address.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lgc"
+              "-pthread"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "gc rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = upstream.components.main.sources.source;

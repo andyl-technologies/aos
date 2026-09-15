@@ -6,6 +6,7 @@
 ##! the composefs dump script sees a `/nix/store/...` path rather than a
 ##! host path.
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -27,6 +28,58 @@
 in
   mkDerivation {
     pname = "tzdata";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The zone reports UTC-08:00 in January and UTC-07:00 in July.";
+        "files" = {
+          "probe.py" = "import glob\nimport sys\n\n\n\nfrom datetime import datetime, timezone, timedelta\nfrom zoneinfo import ZoneInfo, reset_tzpath\nreset_tzpath([\"@out@/share/zoneinfo\"])\nzone = ZoneInfo(\"America/Los_Angeles\")\nassert datetime(2026, 1, 15, tzinfo=timezone.utc).astimezone(zone).utcoffset() == timedelta(hours=-8)\nassert datetime(2026, 7, 15, tzinfo=timezone.utc).astimezone(zone).utcoffset() == timedelta(hours=-7)\n\n";
+        };
+        "input" = "The America/Los_Angeles zone and two UTC instants on opposite sides of the 2026 daylight transition.";
+        "operation" = "Load the packaged TZif data with Python zoneinfo and inspect both offsets.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "probe.py"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "ZoneInfo rejects the key with ZoneInfoNotFoundError.";
+        "files" = {
+          "probe.py" = "import glob\nimport sys\n\n\n\nfrom zoneinfo import ZoneInfo, ZoneInfoNotFoundError, reset_tzpath\nreset_tzpath([\"@out@/share/zoneinfo\"])\ntry:\n    ZoneInfo(\"Qualification/Zone-Does-Not-Exist\")\nexcept ZoneInfoNotFoundError:\n    pass\nelse:\n    raise RuntimeError(\"zoneinfo accepted a nonexistent zone\")\n\n";
+        };
+        "input" = "A time-zone key absent from the IANA database.";
+        "operation" = "Resolve the nonexistent key from the packaged TZif tree.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "probe.py"
+            ];
+            "exit_code" = 0;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     # IANA ships tzcode (the C source for zic) and tzdata (the zone

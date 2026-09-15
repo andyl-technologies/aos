@@ -1,5 +1,6 @@
 ##! strace — System call tracer for Linux
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -9,6 +10,77 @@
 in
   mkDerivation {
     pname = "strace";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Strace records the successful exit_group call.";
+        "files" = {
+          "verify.py" = "trace = open(\"trace.log\", encoding=\"utf-8\").read()\nassert \"exit_group(0)\" in trace\nprint(\"strace observation passed\")\n";
+        };
+        "input" = "A child shell that exits successfully without other work.";
+        "operation" = "Trace only the child's exit_group system call into a local trace file.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/strace"
+              "-qq"
+              "-e"
+              "trace=exit_group"
+              "-o"
+              "trace.log"
+              "@bash@"
+              "-c"
+              "exit 0"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@python@"
+              "verify.py"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "strace observation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Strace rejects the unknown syscall before starting the child.";
+        "files" = {};
+        "input" = "A syscall filter naming a syscall that does not exist.";
+        "operation" = "Parse the invalid trace expression.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/strace"
+              "-e"
+              "trace=qualification_missing_syscall"
+              "@bash@"
+              "-c"
+              "exit 0"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

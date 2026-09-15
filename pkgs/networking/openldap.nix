@@ -20,6 +20,90 @@
 in
   mkDerivation {
     pname = "openldap";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The parsed descriptor preserves the host, DN, scope, and filter.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"openldap primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"openldap rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <string.h>\n#include <ldap.h>\nint main(void) {\n    LDAPURLDesc *description = NULL;\n    int status = ldap_url_parse(\"ldap://example.test/dc=aos,dc=test??sub?(uid=42)\", &description);\n    int ok = status == LDAP_SUCCESS && description != NULL\n        && strcmp(description->lud_host, \"example.test\") == 0\n        && strcmp(description->lud_dn, \"dc=aos,dc=test\") == 0\n        && description->lud_scope == LDAP_SCOPE_SUBTREE\n        && strcmp(description->lud_filter, \"(uid=42)\") == 0;\n    if (description != NULL) ldap_free_urldesc(description);\n    return ok ? pass() : 2;\n}\n\n";
+        };
+        "input" = "An LDAP URL containing a base DN, subtree scope, and equality filter.";
+        "operation" = "Parse the URL through ldap_url_parse.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lldap"
+              "-llber"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "openldap primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "OpenLDAP returns LDAP_URL_ERR_BADSCOPE.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"openldap primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"openldap rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <ldap.h>\nint main(void) {\n    LDAPURLDesc *description = NULL;\n    int status = ldap_url_parse(\"ldap://example.test/dc=aos??qualification-scope\", &description);\n    if (description != NULL) ldap_free_urldesc(description);\n    if (status != LDAP_URL_ERR_BADSCOPE) return 2;\n    return reject();\n}\n\n";
+        };
+        "input" = "An LDAP URL containing an invalid scope token.";
+        "operation" = "Parse the malformed URL through ldap_url_parse.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lldap"
+              "-llber"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "openldap rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

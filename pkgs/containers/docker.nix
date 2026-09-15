@@ -1,5 +1,6 @@
 ##! docker — Docker-compatible container engine and CLI
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -13,6 +14,56 @@
 in
   mkDerivation {
     pname = "docker";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The Docker client returns success and reports its version.";
+        "files" = {};
+        "input" = "The packaged Docker client's release identity.";
+        "operation" = "Request its version without contacting a daemon.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/docker\", \"--version\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"Docker version\" in (result.stdout + result.stderr), (result.returncode, result.stdout, result.stderr)\nprint(\"docker operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "docker operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The Docker client rejects the unsupported option.";
+        "files" = {};
+        "input" = "A Docker invocation containing an unknown global option.";
+        "operation" = "Parse the invalid option before contacting a daemon.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/docker\", \"--aos-invalid-option\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"docker rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "docker rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

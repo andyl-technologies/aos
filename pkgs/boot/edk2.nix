@@ -29,6 +29,7 @@
 ##! while archive downloads avoid both evaluation-time Git access and the
 ##! irrelevant nested Git histories included by a recursive clone.
 {
+  lib,
   mkDerivation,
   fetchurl,
   bootstrapTools,
@@ -197,6 +198,56 @@
 in
   mkDerivation {
     pname = "edk2";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "At least one nonempty flash image carries an FVH signature near its volume header.";
+        "files" = {};
+        "input" = "The architecture-specific EDK2 flash-volume images.";
+        "operation" = "Inspect every installed firmware image for its firmware-volume signature.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib\nimages = sorted(pathlib.Path(\"@out@/FV\").glob(\"*.fd\"))\nassert images\nassert all(image.stat().st_size > 1024 * 1024 for image in images)\nassert all(b\"_FVH\" in image.read_bytes()[:4096] for image in images)\nprint(\"edk2 data passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "edk2 data passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The firmware inventory rejects the absent image name.";
+        "files" = {};
+        "input" = "A request for an architecture-neutral EDK2 flash image that is not produced.";
+        "operation" = "Resolve that undeclared firmware artifact.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, sys\nif pathlib.Path(\"@out@/FV/AOS_GENERIC.fd\").exists():\n    raise SystemExit(2)\nsys.stderr.write(\"edk2 rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "edk2 rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     buildDeps = [

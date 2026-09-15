@@ -1,5 +1,6 @@
 ##! file — determine file type using magic numbers
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -10,6 +11,60 @@
 in
   mkDerivation {
     pname = "file";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "File identifies the payload as ASCII text.";
+        "files" = {
+          "sample.txt" = "AOS text\n";
+        };
+        "input" = "A newline-terminated ASCII text file.";
+        "operation" = "Classify the file's contents without printing its path.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/file"
+              "--brief"
+              "@work@/primary/sample.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "ASCII text\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "File rejects the invalid magic rule with status 1.";
+        "files" = {
+          "invalid.magic" = "this is not a magic rule\n";
+          "sample.bin" = "x";
+        };
+        "input" = "A malformed magic database rule and a byte to classify.";
+        "operation" = "Classify the byte using only the malformed magic database.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/file"
+              "--brief"
+              "-m"
+              "@work@/bad-input/invalid.magic"
+              "@work@/bad-input/sample.bin"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

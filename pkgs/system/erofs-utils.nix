@@ -7,6 +7,7 @@
 ##! so the build is configured `--enable-zstd`. `fsck.erofs` sanity-checks
 ##! both at build time.
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -34,6 +35,54 @@
 in
   mkDerivation {
     pname = "erofs-utils";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The checker accepts the generated read-only filesystem.";
+        "files" = {
+          "tree/payload.txt" = "EROFS qualification payload\n";
+        };
+        "input" = "A directory tree containing a fixed text payload.";
+        "operation" = "Build an EROFS image and validate it with fsck.erofs.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/mkfs.erofs"
+              "filesystem.erofs"
+              "tree"
+            ];
+            "exit_code" = 0;
+          }
+          {
+            "argv" = [
+              "@out@/bin/fsck.erofs"
+              "filesystem.erofs"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The checker rejects the image with status 1.";
+        "files" = {
+          "invalid.erofs" = "not an EROFS filesystem\n";
+        };
+        "input" = "A text file without an EROFS superblock.";
+        "operation" = "Validate the malformed image with fsck.erofs.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/fsck.erofs"
+              "invalid.erofs"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     # kernel.org publishes git snapshots of the upstream tree; no

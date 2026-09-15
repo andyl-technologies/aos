@@ -1,5 +1,6 @@
 ##! perl-clone — Recursive Perl data cloning
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -11,6 +12,60 @@
 in
   mkDerivation {
     pname = "perl-clone";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The clone is independent and the source array remains unchanged.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use Clone qw(clone);\nmy $source = { values => [1, 2] };\nmy $copy = clone($source);\npush @{$copy->{values}}, 3;\ndie \"clone shares nested storage\" unless @{$source->{values}} == 2 && @{$copy->{values}} == 3;\n";
+        };
+        "input" = "A nested hash containing an array reference.";
+        "operation" = "Deep-clone the structure and mutate only the clone.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import json, os, pathlib, subprocess\n\nclosure = json.loads(os.environ[\"AOS_QUALIFICATION_PACKAGE_CLOSURE\"])\ninterpreters = sorted({str(pathlib.Path(path) / \"bin/perl\") for path in closure if (pathlib.Path(path) / \"bin/perl\").is_file()})\nlibraries = sorted(str(pathlib.Path(path) / \"lib/perl5\") for path in closure if (pathlib.Path(path) / \"lib/perl5\").is_dir())\nassert interpreters and libraries\nenvironment = os.environ.copy()\nenvironment[\"PERL5LIB\"] = \":\".join(libraries)\nresult = subprocess.run([interpreters[0], \"probe.pl\"], env=environment, capture_output=True, text=True)\nassert result.returncode == 0, result.stderr\nassert result.stdout == \"\" and result.stderr == \"\"\nprint(\"perl-clone operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "perl-clone operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Clone rejects the call for having too few arguments.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use Clone qw(clone);\neval q{ clone() };\ndie \"missing input accepted\" unless $@ =~ /Not enough arguments/;\n";
+        };
+        "input" = "A clone request with its required scalar argument omitted.";
+        "operation" = "Invoke Clone::clone without an input value.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import json, os, pathlib, subprocess\n\nclosure = json.loads(os.environ[\"AOS_QUALIFICATION_PACKAGE_CLOSURE\"])\ninterpreters = sorted({str(pathlib.Path(path) / \"bin/perl\") for path in closure if (pathlib.Path(path) / \"bin/perl\").is_file()})\nlibraries = sorted(str(pathlib.Path(path) / \"lib/perl5\") for path in closure if (pathlib.Path(path) / \"lib/perl5\").is_dir())\nassert interpreters and libraries\nenvironment = os.environ.copy()\nenvironment[\"PERL5LIB\"] = \":\".join(libraries)\nresult = subprocess.run([interpreters[0], \"probe.pl\"], env=environment, capture_output=True, text=True)\nassert result.returncode == 0, result.stderr\nassert result.stdout == \"\" and result.stderr == \"\"\nprint(\"perl-clone operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "perl-clone operation passed\n";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

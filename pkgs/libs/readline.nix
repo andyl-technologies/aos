@@ -1,5 +1,6 @@
 ##! readline — GNU Readline library
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -26,6 +27,94 @@
 in
   mkDerivation {
     pname = "readline";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The public API returns the expected value and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\n#include <string.h>\n#include <readline/readline.h>\n\nint main(void) {\n    if (rl_variable_bind(\"editing-mode\", \"vi\") != 0 ||\n        strcmp(rl_variable_value(\"editing-mode\"), \"vi\") != 0) {\n        return 2;\n    }\n    return puts(\"readline api passed\") == EOF;\n}\n";
+        };
+        "input" = "The documented vi value for Readline's editing-mode variable.";
+        "operation" = "Bind the variable through Readline's public API and read its normalized value.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lreadline"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "readline api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The public API reports rejection and the consumer exits with the fixed rejection status and diagnostic.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\n#include <readline/readline.h>\n\nint main(void) {\n    if (rl_variable_bind(\"editing-mode\", \"qualification-mode\") == 0) {\n        return 2;\n    }\n    fputs(\"readline rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "An editing-mode value that Readline does not support.";
+        "operation" = "Attempt to bind an unsupported editing mode through rl_variable_bind.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lreadline"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "readline: editing-mode: could not set value to `qualification-mode'\nreadline rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

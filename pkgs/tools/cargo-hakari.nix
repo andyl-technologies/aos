@@ -1,5 +1,6 @@
 ##! cargo-hakari — workspace-hack generator and validator.
 {
+  lib,
   mkCargoPackage,
   fetchurl,
   fetchCargoDeps,
@@ -14,6 +15,56 @@
 in
   mkCargoPackage {
     pname = "cargo-hakari";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Cargo-hakari returns success and lists workspace-hack operations.";
+        "files" = {};
+        "input" = "The cargo-hakari command-line interface.";
+        "operation" = "Request its offline help text.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/cargo-hakari\", \"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"workspace-hack\" in result.stdout\nprint(\"cargo-hakari operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "cargo-hakari operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Cargo-hakari rejects the operation without reading a workspace.";
+        "files" = {};
+        "input" = "A cargo-hakari invocation naming an unknown operation.";
+        "operation" = "Parse the unknown operation.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/cargo-hakari\", \"not-an-operation\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"cargo-hakari rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "cargo-hakari rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     cargoDeps = fetchCargoDeps {

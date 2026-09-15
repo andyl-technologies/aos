@@ -20,6 +20,48 @@
 in
   mkDerivation {
     pname = "dnsmasq";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Dnsmasq accepts the configuration without starting a daemon.";
+        "files" = {
+          "dnsmasq.conf" = "port=0\nno-dhcp-interface=*\nlog-facility=-\n";
+        };
+        "input" = "A self-contained dnsmasq configuration with DNS and DHCP disabled.";
+        "operation" = "Parse and validate the configuration with dnsmasq's test mode.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/sbin/dnsmasq"
+              "--test"
+              "--conf-file=dnsmasq.conf"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Dnsmasq rejects the unknown directive with status 1.";
+        "files" = {
+          "invalid.conf" = "aos-not-a-dnsmasq-option=42\n";
+        };
+        "input" = "A dnsmasq configuration containing an unknown directive.";
+        "operation" = "Parse the malformed configuration in test mode.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/sbin/dnsmasq"
+              "--test"
+              "--conf-file=invalid.conf"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

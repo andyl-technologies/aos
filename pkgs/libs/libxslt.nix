@@ -1,5 +1,6 @@
 ##! libxslt — XSLT processing library (includes xsltproc)
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -11,6 +12,63 @@
 in
   mkDerivation {
     pname = "libxslt";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [
+          {
+            "path" = "answer.txt";
+            "text" = "42\n";
+          }
+        ];
+        "expected" = "The output artifact contains the exact selected value 42.";
+        "files" = {
+          "input.xml" = "<root><answer>42</answer></root>\n";
+          "transform.xsl" = "<xsl:stylesheet version=\"1.0\"\n  xmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\">\n  <xsl:output method=\"text\"/>\n  <xsl:template match=\"/\"><xsl:value-of select=\"root/answer\"/><xsl:text>&#10;</xsl:text></xsl:template>\n</xsl:stylesheet>\n";
+        };
+        "input" = "An XML answer element and an XSLT stylesheet selecting its text.";
+        "operation" = "Transform the document into plain text through xsltproc.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/xsltproc"
+              "-o"
+              "answer.txt"
+              "transform.xsl"
+              "input.xml"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "xsltproc exits with its stylesheet parse-error status.";
+        "files" = {
+          "input.xml" = "<root/>\n";
+          "invalid.xsl" = "<xsl:stylesheet version=\"1.0\" xmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\">\n  <xsl:template match=\"/\">\n</xsl:stylesheet>\n";
+        };
+        "input" = "An XSLT stylesheet with an unclosed template element.";
+        "operation" = "Parse and apply the malformed stylesheet through xsltproc.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/xsltproc"
+              "invalid.xsl"
+              "input.xml"
+            ];
+            "exit_code" = 4;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

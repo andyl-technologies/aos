@@ -40,6 +40,56 @@
 in
   mkDerivation {
     pname = "etcd";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Etcd reports version 3.7.1 without opening a listener.";
+        "files" = {};
+        "input" = "The packaged etcd server and data-file utility suite.";
+        "operation" = "Request the server's version and confirm its semantic version.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/etcd\", \"--version\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"etcd Version: 3.7.1\" in result.stdout\nprint(\"etcd operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "etcd operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Etcdutl rejects the nonexistent snapshot.";
+        "files" = {};
+        "input" = "A path that is not an etcd snapshot database.";
+        "operation" = "Inspect the malformed path with etcdutl snapshot status.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/etcdutl\", \"snapshot\", \"status\", \"absent.db\"], capture_output=True)\nif result.returncode == 0:\n    raise SystemExit(2)\nsys.stderr.write(\"etcd rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "etcd rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     inherit src;
 

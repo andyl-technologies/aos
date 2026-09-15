@@ -1,5 +1,6 @@
 ##! pyrefly — Meta's fast type checker and IDE for Python (Rust)
 {
+  lib,
   mkCargoPackage,
   fetchurl,
   fetchCargoVendor,
@@ -59,6 +60,48 @@
 in
   mkCargoPackage {
     pname = "pyrefly";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Pyrefly accepts the consistent assignment.";
+        "files" = {
+          "answer.py" = "answer: int = 42\n";
+          "pyrefly.toml" = "python-version = \"3.14\"\nskip-interpreter-query = true\nproject-includes = [\"answer.py\"]\n";
+        };
+        "input" = "A Python module assigning an integer to an int annotation.";
+        "operation" = "Type-check the module with Pyrefly's bundled typeshed.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/pyrefly"
+              "check"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Pyrefly reports a type error and exits with status 1.";
+        "files" = {
+          "invalid.py" = "answer: int = \"forty-two\"\n";
+          "pyrefly.toml" = "python-version = \"3.14\"\nskip-interpreter-query = true\nproject-includes = [\"invalid.py\"]\n";
+        };
+        "input" = "A Python module assigning a string to an int annotation.";
+        "operation" = "Type-check the inconsistent assignment through Pyrefly.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/pyrefly"
+              "check"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     cargoDeps = fetchCargoVendor {

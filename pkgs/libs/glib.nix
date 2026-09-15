@@ -26,6 +26,96 @@
 in
   mkDerivation {
     pname = "glib";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The API returns the expected value and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\n#include <glib.h>\n\nint main(void) {\n    GError *error = NULL;\n    GRegex *regex = g_regex_new(\"^(alpha|beta)[0-9]+$\", 0, 0, &error);\n    if (regex == NULL || error != NULL || !g_regex_match(regex, \"beta42\", 0, NULL)) {\n        g_clear_error(&error);\n        if (regex != NULL) g_regex_unref(regex);\n        return 2;\n    }\n    g_regex_unref(regex);\n    return puts(\"glib api passed\") == EOF;\n}\n";
+        };
+        "input" = "A regular expression and a matching alphanumeric record.";
+        "operation" = "Compile the expression with GRegex and match the complete record.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@output:dev@/include/glib-2.0"
+              "-I@output:dev@/lib/glib-2.0/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lglib-2.0"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "glib api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The API reports rejection and the consumer emits the fixed diagnostic and rejection status.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\n#include <glib.h>\n\nint main(void) {\n    GError *error = NULL;\n    GRegex *regex = g_regex_new(\"(\", 0, 0, &error);\n    if (regex != NULL || error == NULL) {\n        if (regex != NULL) g_regex_unref(regex);\n        g_clear_error(&error);\n        return 2;\n    }\n    g_clear_error(&error);\n    fputs(\"glib rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "A regular expression with an unmatched opening parenthesis.";
+        "operation" = "Compile the malformed expression with GRegex.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@output:dev@/include/glib-2.0"
+              "-I@output:dev@/lib/glib-2.0/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lglib-2.0"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "glib rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     outputs = ["out" "dev" "tools"];
 

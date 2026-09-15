@@ -5,6 +5,7 @@
 ##! by the VM test harness and bare-metal operators via IPMI virtual
 ##! media.
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -18,6 +19,88 @@
 in
   mkDerivation {
     pname = "libisofs";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Libisofs returns an image with the requested volume identifier.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libisofs primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libisofs rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <sys/types.h>\n#include <stdint.h>\n#include <string.h>\n#include <libisofs/libisofs.h>\nint main(void) {\n    IsoImage *image = NULL;\n    if (iso_init() <= 0) return 2;\n    int status = iso_image_new(\"qualification\", &image);\n    int valid = status > 0 && image != NULL\n        && strcmp(iso_image_get_volume_id(image), \"qualification\") == 0;\n    if (image != NULL) iso_image_unref(image);\n    iso_finish();\n    return valid ? pass() : 3;\n}\n\n";
+        };
+        "input" = "An in-memory ISO image named qualification.";
+        "operation" = "Initialize libisofs and create the image through iso_image_new.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lisofs"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libisofs primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Libisofs returns a negative name-validation error and no node.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libisofs primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libisofs rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <sys/types.h>\n#include <stdint.h>\n#include <libisofs/libisofs.h>\nint main(void) {\n    IsoImage *image = NULL;\n    IsoDir *directory = NULL;\n    if (iso_init() <= 0 || iso_image_new(\"qualification\", &image) <= 0) return 2;\n    int status = iso_tree_add_new_dir(iso_image_get_root(image), \"bad/name\", &directory);\n    iso_image_unref(image);\n    iso_finish();\n    return status < 0 && directory == NULL ? reject() : 3;\n}\n\n";
+        };
+        "input" = "A directory node name containing a slash.";
+        "operation" = "Add the invalid child name through iso_tree_add_new_dir.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lisofs"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libisofs rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

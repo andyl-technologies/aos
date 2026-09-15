@@ -47,6 +47,56 @@
 in
   mkDerivation {
     pname = "zram-generator";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The generator emits the zram setup drop-in, swap unit, and swap target link.";
+        "files" = {};
+        "input" = "A synthetic host root with one 64 MB zram swap definition.";
+        "operation" = "Run the systemd generator against the synthetic configuration and memory inventory.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import os, pathlib, subprocess\nroot = pathlib.Path(\"root\").resolve()\n(root / \"etc/systemd\").mkdir(parents=True)\n(root / \"proc\").mkdir()\n(root / \"output\").mkdir()\n(root / \"etc/systemd/zram-generator.conf\").write_text(\"[zram0]\\nzram-size = 64M\\nswap-priority = 100\\n\")\n(root / \"proc/cmdline\").write_text(\"\\n\")\n(root / \"proc/meminfo\").write_text(\"MemTotal:       1048576 kB\\n\")\nenvironment = os.environ.copy()\nenvironment[\"ZRAM_GENERATOR_ROOT\"] = str(root)\nresult = subprocess.run([\"@out@/bin/zram-generator\", str(root / \"output\")], env=environment, capture_output=True)\nassert result.returncode == 0, result.stderr\noutput = root / \"output\"\nassert (output / \"dev-zram0.swap\").is_file()\nassert (output / \"systemd-zram-setup@zram0.service.d/bindings.conf\").is_file()\nassert (output / \"swap.target.wants/dev-zram0.swap\").is_symlink()\nprint(\"zram-generator operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "zram-generator operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The generator rejects the undefined expression and emits no swap unit.";
+        "files" = {};
+        "input" = "A synthetic host root whose zram-size expression is undefined.";
+        "operation" = "Run the generator against the malformed size expression.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport os, pathlib, subprocess\nroot = pathlib.Path(\"root\").resolve()\n(root / \"etc/systemd\").mkdir(parents=True)\n(root / \"proc\").mkdir()\n(root / \"output\").mkdir()\n(root / \"etc/systemd/zram-generator.conf\").write_text(\"[zram0]\\nzram-size = qualification-invalid\\n\")\n(root / \"proc/cmdline\").write_text(\"\\n\")\n(root / \"proc/meminfo\").write_text(\"MemTotal:       1048576 kB\\n\")\nenvironment = os.environ.copy()\nenvironment[\"ZRAM_GENERATOR_ROOT\"] = str(root)\nresult = subprocess.run([\"@out@/bin/zram-generator\", str(root / \"output\")], env=environment, capture_output=True, text=True)\nassert result.returncode != 0 and \"Undefined\" in result.stderr\nassert not (root / \"output/dev-zram0.swap\").exists()\n\nsys.stderr.write(\"zram-generator rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "zram-generator rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     buildDeps = [rust jq pkg-config lowdown];

@@ -30,6 +30,48 @@
 in
   mkDerivation {
     pname = "bind";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "BIND accepts the zone and its serial and record relationships.";
+        "files" = {
+          "example.zone" = "$ORIGIN example.test.\n@ 3600 IN SOA ns.example.test. hostmaster.example.test. (\n  1 3600 600 86400 60\n)\n@   IN NS ns.example.test.\nns  IN A  192.0.2.53\nwww IN A  192.0.2.42\n";
+        };
+        "input" = "A complete authoritative DNS zone with SOA, NS, and address records.";
+        "operation" = "Load and validate the zone with named-checkzone.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/named-checkzone"
+              "example.test"
+              "example.zone"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "BIND rejects the invalid address with status 1.";
+        "files" = {
+          "invalid.zone" = "$ORIGIN example.test.\n@ 3600 IN SOA ns.example.test. hostmaster.example.test. (1 3600 600 86400 60)\n@  IN NS ns.example.test.\nns IN A 999.0.2.53\n";
+        };
+        "input" = "A DNS zone containing an IPv4 octet outside the valid range.";
+        "operation" = "Load the malformed zone with named-checkzone.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/named-checkzone"
+              "example.test"
+              "invalid.zone"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
     outputs = ["out" "dnsutils"];
 

@@ -1,5 +1,6 @@
 ##! e2fsprogs — Utilities for ext2/ext3/ext4 filesystems
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -19,6 +20,61 @@
 in
   mkDerivation {
     pname = "e2fsprogs";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "E2fsprogs creates a consistent filesystem image.";
+        "files" = {};
+        "input" = "A request for a 4 MiB ext2 filesystem image.";
+        "operation" = "Create the filesystem and check it read-only with e2fsck.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/sbin/mke2fs"
+              "-q"
+              "-t"
+              "ext2"
+              "-F"
+              "filesystem.img"
+              "4096"
+            ];
+            "exit_code" = 0;
+          }
+          {
+            "argv" = [
+              "@out@/sbin/e2fsck"
+              "-f"
+              "-n"
+              "filesystem.img"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Mke2fs rejects the invalid geometry with status 1.";
+        "files" = {};
+        "input" = "A request for an ext2 filesystem containing only one block.";
+        "operation" = "Attempt to construct the undersized filesystem.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/sbin/mke2fs"
+              "-q"
+              "-t"
+              "ext2"
+              "-F"
+              "undersized.img"
+              "1"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

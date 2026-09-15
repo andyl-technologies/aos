@@ -1,5 +1,6 @@
 ##! sudo — Delegated privilege execution and auditing
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -16,6 +17,50 @@
 in
   mkDerivation {
     pname = "sudo";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Visudo accepts the syntactically valid policy.";
+        "files" = {
+          "sudoers" = "root ALL=(ALL:ALL) /bin/true\n";
+        };
+        "input" = "A sudoers policy granting root one explicit command.";
+        "operation" = "Check the policy with visudo's noninteractive parser.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/sbin/visudo"
+              "-c"
+              "-f"
+              "sudoers"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Visudo rejects the syntax error with a failure status.";
+        "files" = {
+          "sudoers" = "root ALL=(ALL: /bin/true\n";
+        };
+        "input" = "A sudoers policy with an unterminated run-as group.";
+        "operation" = "Check the malformed policy with visudo.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/sbin/visudo"
+              "-c"
+              "-f"
+              "sudoers"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

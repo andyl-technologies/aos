@@ -1,5 +1,6 @@
 ##! systemd — System and service manager
 {
+  lib,
   mkDerivation,
   stdenv,
   fetchurl,
@@ -72,6 +73,53 @@
 in
   mkDerivation {
     pname = "systemd";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "systemd-escape emits the canonical escaped path.";
+        "files" = {};
+        "input" = "An absolute filesystem path.";
+        "operation" = "Escape the path as a systemd unit-name component.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/systemd-escape"
+              "--path"
+              "/var/lib/aos"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "var-lib-aos\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "systemd-escape rejects the relative path.";
+        "files" = {};
+        "input" = "A relative path, which is outside --path's accepted input domain.";
+        "operation" = "Attempt to escape the relative value as an absolute path.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/systemd-escape"
+              "--path"
+              "relative/path"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     abilities = ./_systemd-abilities.nix;
 

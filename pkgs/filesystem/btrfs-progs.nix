@@ -1,5 +1,6 @@
 ##! btrfs-progs — Btrfs filesystem utilities and library
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -18,6 +19,81 @@
 in
   mkDerivation {
     pname = "btrfs-progs";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Mkfs writes a valid filesystem that dump-super can decode.";
+        "files" = {};
+        "input" = "A sparse 128 MiB regular file.";
+        "operation" = "Create a Btrfs filesystem and inspect its superblock.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "with open('filesystem.img', 'wb') as image: image.truncate(128 * 1024 * 1024)"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/mkfs.btrfs"
+              "--force"
+              "filesystem.img"
+            ];
+            "exit_code" = 0;
+          }
+          {
+            "argv" = [
+              "@out@/bin/btrfs"
+              "inspect-internal"
+              "dump-super"
+              "filesystem.img"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Mkfs rejects the device size with status 1.";
+        "files" = {};
+        "input" = "A sparse one MiB file, below Btrfs's minimum device size.";
+        "operation" = "Attempt to create a Btrfs filesystem on the undersized file.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "with open('undersized.img', 'wb') as image: image.truncate(1024 * 1024)"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/mkfs.btrfs"
+              "--force"
+              "undersized.img"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -1,5 +1,6 @@
 ##! moreutils — Additional Unix command-line tools
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -18,6 +19,55 @@
 in
   mkDerivation {
     pname = "moreutils";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [
+          {
+            "path" = "answer.txt";
+            "text" = "answer=42\n";
+          }
+        ];
+        "expected" = "sponge writes the exact input after reaching end of stream.";
+        "files" = {};
+        "input" = "A fixed byte stream and an output pathname.";
+        "operation" = "Consume the stream into the file through sponge.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/sponge"
+              "answer.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdin" = "answer=42\n";
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "sponge rejects the inaccessible destination with a non-success status.";
+        "files" = {};
+        "input" = "An output pathname beneath a directory that does not exist.";
+        "operation" = "Attempt to write the stream through sponge.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/sponge"
+              "missing-directory/answer.txt"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdin" = "answer=42\n";
+          }
+        ];
+      };
+    };
+
     inherit version;
     src = fetchurl {
       urls = ["https://deb.debian.org/debian/pool/main/m/moreutils/moreutils_${version}.orig.tar.xz"];
