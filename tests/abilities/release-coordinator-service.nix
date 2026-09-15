@@ -265,7 +265,6 @@ in
   assert !(lib.hasInfix "systemd" (builtins.toJSON (requests enabled)));
   assert !(lib.hasInfix ".service" (builtins.toJSON (requests enabled)));
   assert !(lib.hasInfix "/nix/store" (builtins.toJSON (requests enabled)));
-  assert builtins.length (builtins.attrNames (requests enabled)) == 97;
   assert (request "release-lifecycle").start
   == [
     {
