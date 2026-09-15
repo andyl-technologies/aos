@@ -50,11 +50,13 @@
       packageModules = [
         {
           name = "zram-generator";
-          module.imports = [../../pkgs/system/_zram-generator/module.nix];
+          inherit (pkgs.zram-generator) version;
+          module = pkgs.zram-generator.module + "/module.nix";
         }
         {
           name = "systemd";
-          module.imports = [../../pkgs/system/_systemd-abilities.nix];
+          inherit (pkgs.systemd) version;
+          module = pkgs.systemd.module + "/module.nix";
         }
       ];
     };

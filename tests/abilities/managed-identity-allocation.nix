@@ -1,5 +1,8 @@
 ##! Checks managed service identities in one package-module fixed point.
-{lib}: let
+{
+  lib,
+  pkgs,
+}: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   environmentId = lib.abilities.environmentId {
     authority = "deployment";
@@ -24,6 +27,11 @@
     artifact = lib.abilities.packageOutput {};
     entry_point = "bin/${name}";
     arguments = [];
+  };
+  packageModule = package: {
+    inherit (package) version;
+    name = package.pname;
+    module = package.module + "/module.nix";
   };
 
   fixedPoint = lib.evalModules {
@@ -71,35 +79,14 @@
         };
       }
     ];
-    packageModules = [
-      {
-        name = "aos";
-        module.imports = [../../pkgs/tools/aos/_abilities/module.nix];
-      }
-      {
-        name = "chrony";
-        module.imports = [../../pkgs/networking/_chrony-abilities/module.nix];
-      }
-      {
-        name = "openldap";
-        module.imports = [../../pkgs/networking/_openldap/module.nix];
-      }
-      {
-        name = "aos-hub";
-        module.imports = [../../pkgs/tools/aos-hub/_aos-hub/module.nix];
-      }
-      {
-        name = "mariadb";
-        module.imports = [../../pkgs/storage/_mariadb/module.nix];
-      }
-      {
-        name = "garage";
-        module.imports = [../../pkgs/storage/_garage-config/module.nix];
-      }
-      {
-        name = "krb5";
-        module.imports = [../../pkgs/security/_krb5-kdc/module.nix];
-      }
+    packageModules = builtins.map packageModule [
+      pkgs.aos
+      pkgs.chrony
+      pkgs.openldap
+      pkgs.aos-hub
+      pkgs.mariadb
+      pkgs.garage
+      pkgs.krb5
     ];
   };
   requests = fixedPoint.config.aos.abilities.requests;
