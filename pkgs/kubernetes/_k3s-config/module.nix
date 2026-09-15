@@ -178,7 +178,7 @@
       guarantees = [];
       handlerDescriptor = {
         artifact = objectArtifact;
-        entryPoint = "libexec/aos-kubernetes-provider";
+        entryPoint = "libexec/aos-kubernetes-object-effects";
         arguments = objectControllerContract.requestType;
         result = objectControllerContract.observationType;
       };
@@ -225,7 +225,7 @@
       guarantees = [];
       handlerDescriptor = {
         artifact = objectArtifact;
-        entryPoint = "libexec/aos-kubernetes-provider";
+        entryPoint = "libexec/aos-k3s-configuration-effects";
         arguments = configurationControllerContract.requestType;
         result = configurationControllerContract.observationType;
       };

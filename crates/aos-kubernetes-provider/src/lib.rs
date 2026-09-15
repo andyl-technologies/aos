@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -33,7 +34,6 @@ use thiserror::Error;
 
 mod configuration;
 
-const EFFECTS_INTERFACE_NAME: &str = "aos.k3s.kubernetes-object-effects";
 const OBSERVATION_SCHEMA: &str = "aos.ability.kubernetes-object-set-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.kubernetes.object-set-context/v1";
 const REALIZATION_SCHEMA: &str = "aos.kubernetes.object-set-realization/v1";
@@ -42,6 +42,35 @@ const OWNER_ANNOTATION: &str = "aos.andyl.com/object-set-owner";
 const REVISION_ANNOTATION: &str = "aos.andyl.com/object-revision";
 const STATE_ROOT: &str = "/var/lib/aos/ability-runtime/kubernetes-object-set";
 const MAX_KUBECONFIG_BYTES: u64 = 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HandlerRole {
+    Configuration,
+    ObjectSet,
+}
+
+impl HandlerRole {
+    fn from_process() -> Result<Self, KubernetesProviderError> {
+        let executable = std::env::args_os()
+            .next()
+            .ok_or_else(|| invalid("provider process has no executable name"))?;
+        Self::from_entry_point(&executable)
+    }
+
+    fn from_entry_point(executable: &OsStr) -> Result<Self, KubernetesProviderError> {
+        let name = Path::new(executable)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| invalid("provider executable name is not valid UTF-8"))?;
+        match name {
+            "aos-k3s-configuration-effects" => Ok(Self::Configuration),
+            "aos-kubernetes-object-effects" => Ok(Self::ObjectSet),
+            _ => Err(invalid(
+                "provider entry point does not select a checked role",
+            )),
+        }
+    }
+}
 
 /// Reports invalid contracts, unavailable Kubernetes operations, and state I/O failures.
 #[derive(Debug, Error)]
@@ -181,6 +210,7 @@ struct ObjectObservation {
 /// Returns an error when the command ABI, checked resource context, Kubernetes
 /// response, or provider receipt is invalid.
 pub fn run_from_process() -> Result<(), KubernetesProviderError> {
+    let role = HandlerRole::from_process()?;
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     if arguments.len() != 2 || arguments[0] != HANDLER_ABI_ARGUMENT {
         return Err(invalid("expected --aos-primitive-v1 and one purpose"));
@@ -197,10 +227,10 @@ pub fn run_from_process() -> Result<(), KubernetesProviderError> {
     }
 
     let output = match arguments[1].as_str() {
-        "admit" => serde_json::to_vec(&admit(serde_json::from_slice(&input)?)?)?,
+        "admit" => serde_json::to_vec(&admit(role, serde_json::from_slice(&input)?)?)?,
         "effect" | "reconcile" | "cancel" | "compensate" | "reconcile-compensation" => {
             let invocation = serde_json::from_slice(&input)?;
-            serde_json::to_vec(&invoke(invocation, &arguments[1])?)?
+            serde_json::to_vec(&invoke(role, invocation, &arguments[1])?)?
         }
         _ => return Err(invalid("unsupported provider purpose")),
     };
@@ -208,20 +238,19 @@ pub fn run_from_process() -> Result<(), KubernetesProviderError> {
     Ok(())
 }
 
-fn admit(request: AdmissionRequest) -> Result<AdmissionResult, KubernetesProviderError> {
+fn admit(
+    role: HandlerRole,
+    request: AdmissionRequest,
+) -> Result<AdmissionResult, KubernetesProviderError> {
     if request.schema != ADMISSION_REQUEST_SCHEMA {
         return Err(invalid("admission schema differs from the selected ABI"));
     }
     validate_admission_resource(&request).map_err(|error| invalid(error.to_string()))?;
     validate_contexts(&request.resources)?;
-    if configuration::handles_interface(request.method.interface.name.as_str()) {
+    if role == HandlerRole::Configuration {
         return configuration::admit(request);
     }
-    validate_method(
-        request.method.interface.name.as_str(),
-        request.method.method.as_str(),
-        &request.semantics,
-    )?;
+    validate_method(request.method.method.as_str(), &request.semantics)?;
     let desired: AggregateRequest = decode(&request.resource_spec.value)?;
     let realization: Realization = decode(&request.resource_spec.realization)?;
     validate_desired(&desired)?;
@@ -263,6 +292,7 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult, KubernetesProvide
 }
 
 fn invoke(
+    role: HandlerRole,
     invocation: Invocation,
     selected_purpose: &str,
 ) -> Result<InvocationResult, KubernetesProviderError> {
@@ -290,23 +320,15 @@ fn invoke(
             "resource contexts differ from their authenticated digest",
         ));
     }
-    if configuration::handles_interface(invocation.method.interface.name.as_str()) {
+    if role == HandlerRole::Configuration {
         return configuration::invoke(invocation);
     }
-    validate_method(
-        invocation.method.interface.name.as_str(),
-        invocation.method.method.as_str(),
-        &invocation.semantics,
-    )?;
+    validate_method(invocation.method.method.as_str(), &invocation.semantics)?;
     let (desired, realization, provider_context) = target_context(&invocation)?;
     validate_desired(&desired)?;
     validate_object_prerequisites(&invocation.request.resources, &desired)?;
     validate_realization(&realization)?;
-    validate_selected_inputs(
-        invocation.method.interface.name.as_str(),
-        &invocation.request.inputs,
-        &desired,
-    )?;
+    validate_selected_inputs(&invocation.request.inputs, &desired)?;
     if provider_context.schema != PROVIDER_CONTEXT_SCHEMA
         || provider_context.owner != canonical_owner(&invocation.request.target)?
     {
@@ -541,7 +563,6 @@ fn validate_desired(desired: &AggregateRequest) -> Result<(), KubernetesProvider
 }
 
 fn validate_selected_inputs(
-    _interface: &str,
     inputs: &AbilityValue,
     desired: &AggregateRequest,
 ) -> Result<(), KubernetesProviderError> {
@@ -599,12 +620,10 @@ fn validate_realization(realization: &Realization) -> Result<(), KubernetesProvi
 }
 
 fn validate_method(
-    interface: &str,
     method: &str,
     semantics: &MethodSemantics,
 ) -> Result<(), KubernetesProviderError> {
-    let method_allowed =
-        interface == EFFECTS_INTERFACE_NAME && matches!(method, "apply" | "observe" | "release");
+    let method_allowed = matches!(method, "apply" | "observe" | "release");
     if !method_allowed {
         return Err(invalid(
             "method does not belong to Kubernetes object-set management",
@@ -1378,12 +1397,22 @@ mod tests {
     }
 
     #[test]
-    fn handler_accepts_only_the_package_owned_terminal_interface() {
+    fn handler_accepts_only_object_methods_with_exact_semantics() {
         let apply = MethodSemantics::ordinary(AccessMode::ExclusiveWrite);
 
-        assert!(validate_method(EFFECTS_INTERFACE_NAME, "apply", &apply).is_ok());
-        assert!(validate_method("aos.kubernetes.object-set", "apply", &apply).is_err());
-        assert!(validate_method("aos.kubernetes.objects", "apply", &apply).is_err());
+        assert!(validate_method("apply", &apply).is_ok());
+        assert!(validate_method("unknown", &apply).is_err());
+        assert_eq!(
+            HandlerRole::from_entry_point(OsStr::new("aos-kubernetes-object-effects"))
+                .expect("object role parses"),
+            HandlerRole::ObjectSet,
+        );
+        assert_eq!(
+            HandlerRole::from_entry_point(OsStr::new("aos-k3s-configuration-effects"))
+                .expect("configuration role parses"),
+            HandlerRole::Configuration,
+        );
+        assert!(HandlerRole::from_entry_point(OsStr::new("aos-kubernetes-provider")).is_err());
     }
 
     #[test]
