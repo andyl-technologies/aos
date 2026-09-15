@@ -253,12 +253,13 @@ pub fn artifact_closure_identity(
             });
         }
     }
-    let root_identity = identities
-        .get(root)
-        .copied()
-        .ok_or_else(|| ArtifactClosureError::MissingRoot {
-            root: root.to_string(),
-        })?;
+    let root_identity =
+        identities
+            .get(root)
+            .copied()
+            .ok_or_else(|| ArtifactClosureError::MissingRoot {
+                root: root.to_string(),
+            })?;
 
     let mut normalized = Vec::with_capacity(members.len());
     for member in members {
