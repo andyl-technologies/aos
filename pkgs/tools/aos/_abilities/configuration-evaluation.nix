@@ -21,6 +21,9 @@
   localFilesystems = producer "local-filesystems" interfaces.filesystemReadiness {
     scope = "local-filesystems";
   };
+  runtimeEntryPopulation = producer "runtime-entry-population" interfaces.runtimeEntryPopulation {
+    scope = "runtime-entries";
+  };
   networkReadiness = producer "network-readiness" interfaces.networkReadiness {
     scope = "configured-connectivity";
     address_families = ["ipv4" "ipv6"];
@@ -226,6 +229,7 @@
     enabled,
     conditions ? null,
     failurePolicy ? null,
+    searchPath ? [],
   }:
     serviceManagement.forService {
       inherit serviceTypes consumerInstance;
@@ -260,6 +264,10 @@
             signal_scope = "none";
             timeout_millis = 300000;
           };
+          environment = {
+            variables = {};
+            search_path = searchPath;
+          };
         }
         // lib.optionalAttrs (conditions != null) {inherit conditions;}
         // lib.optionalAttrs (failurePolicy != null) {failure_policy = failurePolicy;};
@@ -273,6 +281,8 @@
   activation = resultOf "aos-activate-lifecycle" "service-resource";
   configurationReady = resultOf "aos-config" "activation-resource";
   multiUserReadiness = resultOf "multi-user" "readiness-resource";
+  runtimeEntriesReady = resultOf "runtime-entry-population" "lifecycle-resource";
+  evaluationReady = resultOf "configuration-evaluation-lifecycle" "service-resource";
   fallback = oneshot {
     serviceName = "image-rollout-fallback";
     managerName = "aos-image-rollout-fallback";
@@ -282,6 +292,7 @@
       after = [(resultOf "image-boot-commit-lifecycle" "service-resource")];
     };
     enabled = false;
+    searchPath = [(lib.abilities.packageOutput {package = "systemd";})];
   };
   bootCommit = oneshot {
     serviceName = "image-boot-commit";
@@ -289,7 +300,7 @@
     description = "Commit a successful image transition";
     command = packageRuntimeCommand (
       ["commit"]
-      ++ lib.optional cfg.requireAttestationQuote "--require-attestation-quote"
+      ++ lib.optional cfg.measuredBoot "--require-attestation-quote"
     );
     serviceDependencies = dependencies {
       after = [mountEsp graphCompile activation configurationReady];
@@ -316,6 +327,28 @@
       handlers = [(resultOf "image-rollout-fallback-lifecycle" "service-resource")];
       dispatch = "replace-active-goal";
     };
+    searchPath = builtins.map lib.abilities.packageOutput [
+      {package = "aos-boot-storage";}
+      {package = "systemd";}
+      {package = "util-linux";}
+    ];
+  };
+  imageMeasurement = oneshot {
+    serviceName = "image-measurement-index";
+    managerName = "aos-image-measurement-index";
+    description = "Import authenticated UKI PCR 11 measurement metadata";
+    command = packageRuntimeCommand (
+      ["measurement-index"]
+      ++ lib.optionals (cfg.pcrPublicKey != null) ["--pcr-public-key" cfg.pcrPublicKey]
+    );
+    serviceDependencies = dependencies {
+      after = [mountEsp (resultOf "local-filesystems" "readiness-resource") runtimeEntriesReady];
+      before = [evaluationReady multiUserReadiness];
+      requires = [mountEsp (resultOf "local-filesystems" "readiness-resource") runtimeEntriesReady];
+      wantedBy = [multiUserReadiness];
+    };
+    enabled = true;
+    searchPath = [(lib.abilities.packageOutput {package = "openssl";})];
   };
   service = serviceManagement.forService {
     inherit serviceTypes consumerInstance;
@@ -503,7 +536,7 @@
       };
     };
   };
-  baseFragments = [
+  coreFragments = [
     localFilesystems
     networkReadiness
     userSessions
@@ -513,10 +546,18 @@
     fallback
     bootCommit
   ];
-  baseContributions = builtins.map serviceManagement.splitContribution baseFragments;
+  measurementFragments = [runtimeEntryPopulation imageMeasurement];
+  declaredFragments = coreFragments ++ measurementFragments;
+  configuredFragments =
+    coreFragments
+    ++ lib.optionals cfg.measuredBoot (
+      if cfg.pcrPublicKey == null
+      then throw "measured boot requires aos.packageRuntime.configurationEvaluation.pcrPublicKey"
+      else measurementFragments
+    );
+  baseContributions = builtins.map serviceManagement.splitContribution declaredFragments;
   storeDatabaseContribution = serviceManagement.splitContribution storeDatabase;
-  fragments = baseFragments ++ [storeDatabase];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  contributions = builtins.map serviceManagement.splitContribution (configuredFragments ++ [storeDatabase]);
 in {
   options.aos.packageRuntime.configurationEvaluation = {
     enable = lib.mkOption {
@@ -576,11 +617,17 @@ in {
       internal = true;
       description = "Immutable image version recorded with provisioning evidence.";
     };
-    requireAttestationQuote = lib.mkOption {
+    measuredBoot = lib.mkOption {
       type = lib.abilities.types.boolean;
       default = false;
       internal = true;
-      description = "Whether boot finalization requires a verified measured-boot quote.";
+      description = "Whether boot finalization imports and verifies measured-boot evidence.";
+    };
+    pcrPublicKey = lib.mkOption {
+      type = lib.abilities.types.optional lib.abilities.types.executionPath;
+      default = null;
+      internal = true;
+      description = "Authoritative PCR policy public key used to verify image measurement metadata.";
     };
   };
 

@@ -6,13 +6,15 @@
 //! image state. The failure entry point preserves the pre-ability fallback for
 //! image transitions that do not carry a checked native ability plan.
 
-use std::path::{Path, PathBuf};
+use std::io::Read as _;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{LocalKey, TransactionId};
 use aos_ability_runtime::execution::TerminalResult;
 use aos_ability_runtime::journal::JournalLimits;
+use sha2::{Digest as _, Sha256};
 
 use super::{NativeAbRolloutBackend, authenticate_single_image_rollout_fragment};
 use crate::attestation::{EVAL_MODE_PURE, GEN_ATTESTATION_SCHEMA, GenAttestation};
@@ -26,6 +28,13 @@ const BOOT_ROOT: &str = "/boot";
 const IMAGE_STATE_FILE: &str = "state.json";
 const TRANSITION_INTENT_FILE: &str = ".transition-intent.json";
 const REEVALUATION_MARKER: &str = "/run/aos/image-reeval-required";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum BootCommand {
+    Commit { require_attestation_quote: bool },
+    Fallback,
+    MeasurementIndex { pcr_public_key: PathBuf },
+}
 
 #[derive(Clone, Debug)]
 struct BootCommitPaths {
@@ -54,15 +63,41 @@ impl Default for BootCommitPaths {
 /// authenticated and committed.
 pub fn run_from_process() -> Result<()> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    match arguments.as_slice() {
-        [command] if command == "commit" => commit(&BootCommitPaths::default(), false),
+    match parse_command(&arguments)? {
+        BootCommand::Commit {
+            require_attestation_quote,
+        } => commit(&BootCommitPaths::default(), require_attestation_quote),
+        BootCommand::Fallback => fallback(&BootCommitPaths::default()),
+        BootCommand::MeasurementIndex { pcr_public_key } => {
+            import_measurement(&BootCommitPaths::default(), &pcr_public_key)
+        }
+    }
+}
+
+fn parse_command(arguments: &[String]) -> Result<BootCommand> {
+    match arguments {
+        [command] if command == "commit" => Ok(BootCommand::Commit {
+            require_attestation_quote: false,
+        }),
         [command, flag] if command == "commit" && flag == "--require-attestation-quote" => {
-            commit(&BootCommitPaths::default(), true)
+            Ok(BootCommand::Commit {
+                require_attestation_quote: true,
+            })
         }
-        [command] if command == "fallback" => fallback(&BootCommitPaths::default()),
-        _ => {
-            bail!("usage: aos-image-rollout-boot <commit [--require-attestation-quote] | fallback>")
+        [command] if command == "fallback" => Ok(BootCommand::Fallback),
+        [command, flag, pcr_public_key]
+            if command == "measurement-index" && flag == "--pcr-public-key" =>
+        {
+            let pcr_public_key = PathBuf::from(pcr_public_key);
+            ensure!(
+                pcr_public_key.is_absolute(),
+                "PCR public key path must be absolute"
+            );
+            Ok(BootCommand::MeasurementIndex { pcr_public_key })
         }
+        _ => bail!(
+            "usage: aos-image-rollout-boot <commit [--require-attestation-quote] | fallback | measurement-index --pcr-public-key PATH>"
+        ),
     }
 }
 
@@ -83,6 +118,208 @@ pub(crate) fn verify_rollout_boot_commit(
         running,
         &BootCommitPaths::default(),
     )
+}
+
+fn import_measurement(paths: &BootCommitPaths, pcr_public_key: &Path) -> Result<()> {
+    let layout = crate::sysroot::ImageSlotLayout::from_running_toplevel()?;
+    crate::sysroot::validate_boot_esp_mount(
+        &paths.boot_root,
+        Path::new("/proc/self/mountinfo"),
+        &layout.esp_devices,
+        true,
+    )?;
+
+    let state_path = paths.image_profile.join(IMAGE_STATE_FILE);
+    let mut images = read_json::<ImageGenerationState>(&state_path)?;
+    let matching = images
+        .generations
+        .iter()
+        .filter(|generation| generation.number == images.running)
+        .collect::<Vec<_>>();
+    let [running] = matching.as_slice() else {
+        bail!("running image generation is absent or ambiguous");
+    };
+    if running.registry != "seed" {
+        ensure!(
+            running
+                .expected_pcr11
+                .as_deref()
+                .is_some_and(|digest| !digest.is_empty()),
+            "registry image has no authenticated PCR 11 expectation"
+        );
+        return Ok(());
+    }
+
+    let recorded_relative = safe_uki_path(&running.uki_path)?;
+    let recorded_uki = paths.boot_root.join(&recorded_relative);
+    let live_uki = resolve_unique_live_uki(&paths.boot_root, &recorded_relative)?;
+    let measurement = PathBuf::from(format!("{}.measurement", recorded_uki.display()));
+    let signature = PathBuf::from(format!("{}.sig", measurement.display()));
+    for required in [
+        live_uki.as_path(),
+        measurement.as_path(),
+        signature.as_path(),
+        pcr_public_key,
+    ] {
+        ensure!(
+            required.is_file(),
+            "required file is missing: {}",
+            required.display()
+        );
+    }
+
+    run(
+        Command::new("openssl")
+            .args(["dgst", "-sha256", "-verify"])
+            .arg(pcr_public_key)
+            .arg("-signature")
+            .arg(&signature)
+            .arg(&measurement),
+        "verifying signed UKI measurement metadata",
+    )?;
+    let metadata = std::fs::read_to_string(&measurement)
+        .with_context(|| format!("reading {}", measurement.display()))?;
+    let parsed = parse_measurement(&metadata)?;
+    ensure!(
+        sha256_file(&live_uki)? == parsed.uki_sha256,
+        "measurement metadata belongs to a different UKI"
+    );
+
+    if let Some(recorded) = running.expected_pcr11.as_deref() {
+        ensure!(
+            recorded == parsed.expected_pcr11,
+            "catalog and signed UKI PCR 11 disagree"
+        );
+        return Ok(());
+    }
+    images
+        .generations
+        .iter_mut()
+        .find(|generation| generation.number == images.running)
+        .context("running image generation disappeared")?
+        .expected_pcr11 = Some(parsed.expected_pcr11);
+    crate::sysroot::write_atomic_durable(&state_path, &serde_json::to_vec_pretty(&images)?)
+}
+
+struct UkiMeasurement {
+    uki_sha256: String,
+    expected_pcr11: String,
+}
+
+fn parse_measurement(document: &str) -> Result<UkiMeasurement> {
+    let lines = document.lines().collect::<Vec<_>>();
+    let [schema, uki, expected] = lines.as_slice() else {
+        bail!("measurement metadata must contain exactly three lines");
+    };
+    ensure!(
+        *schema == "aos.uki-measurement/v1",
+        "unsupported measurement schema"
+    );
+    let uki_sha256 = uki
+        .strip_prefix("uki_sha256=")
+        .context("measurement metadata has no UKI digest")?;
+    let expected_pcr11 = expected
+        .strip_prefix("expected_pcr11=sha256:")
+        .context("measurement metadata has no PCR 11 digest")?;
+    ensure!(
+        is_lower_hex_digest(uki_sha256),
+        "UKI digest is not canonical SHA-256"
+    );
+    ensure!(
+        is_lower_hex_digest(expected_pcr11),
+        "PCR 11 digest is not canonical SHA-256"
+    );
+    Ok(UkiMeasurement {
+        uki_sha256: uki_sha256.to_string(),
+        expected_pcr11: format!("sha256:{expected_pcr11}"),
+    })
+}
+
+fn is_lower_hex_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn safe_uki_path(recorded: &str) -> Result<PathBuf> {
+    let path = Path::new(recorded);
+    let components = path.components().collect::<Vec<_>>();
+    let [
+        Component::Normal(efi),
+        Component::Normal(linux),
+        Component::Normal(file),
+    ] = components.as_slice()
+    else {
+        bail!("unsafe recorded UKI path {recorded:?}");
+    };
+    ensure!(
+        *efi == "EFI" && *linux == "Linux",
+        "UKI is outside EFI/Linux"
+    );
+    let file = file.to_str().context("UKI filename is not UTF-8")?;
+    ensure!(
+        file.ends_with(".efi") && file.len() > 4,
+        "invalid UKI filename"
+    );
+    Ok(path.to_path_buf())
+}
+
+fn resolve_unique_live_uki(boot_root: &Path, recorded: &Path) -> Result<PathBuf> {
+    let exact = boot_root.join(recorded);
+    if exact.is_file() {
+        return Ok(exact);
+    }
+    let filename = recorded
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("recorded UKI has no UTF-8 filename")?;
+    let stem = filename
+        .strip_suffix(".efi")
+        .context("recorded UKI has no .efi suffix")?;
+    if let Some((base, remaining_tries)) = stem.rsplit_once('+') {
+        ensure!(
+            !base.is_empty()
+                && !remaining_tries.is_empty()
+                && remaining_tries.bytes().all(|byte| byte.is_ascii_digit()),
+            "recorded UKI has an invalid terminal boot count"
+        );
+    }
+    let stable = crate::sysroot::stable_uki_entry_id(filename)?;
+    let stable_stem = stable
+        .strip_suffix(".efi")
+        .context("stable UKI has no .efi suffix")?;
+    let directory = boot_root.join("EFI/Linux");
+    let mut matching = std::fs::read_dir(&directory)
+        .with_context(|| format!("reading {}", directory.display()))?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_file())
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            (name == stable
+                || (name.starts_with(&format!("{stable_stem}+")) && name.ends_with(".efi")))
+            .then(|| entry.path())
+        })
+        .collect::<Vec<_>>();
+    ensure!(matching.len() == 1, "live UKI is missing or ambiguous");
+    Ok(matching.remove(0))
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn commit(paths: &BootCommitPaths, require_attestation_quote: bool) -> Result<()> {
@@ -412,6 +649,47 @@ mod tests {
         let mut images = state(2, ImageRolloutStatus::CandidateBooted);
         images.generations.push(images.generations[1].clone());
         assert!(validate_boot_rollout(&images).is_err());
+    }
+
+    #[test]
+    fn measurement_metadata_is_strict_and_canonical() {
+        let parsed = parse_measurement(&format!(
+            "aos.uki-measurement/v1\nuki_sha256={}\nexpected_pcr11=sha256:{}\n",
+            "a".repeat(64),
+            "b".repeat(64)
+        ))
+        .unwrap();
+        assert_eq!(parsed.uki_sha256, "a".repeat(64));
+        assert_eq!(parsed.expected_pcr11, format!("sha256:{}", "b".repeat(64)));
+
+        assert!(parse_measurement("aos.uki-measurement/v1\nuki_sha256=AA\n").is_err());
+        assert!(safe_uki_path("EFI/Linux/aos-generation+3.efi").is_ok());
+        assert!(safe_uki_path("../EFI/Linux/aos-generation+3.efi").is_err());
+    }
+
+    #[test]
+    fn measurement_command_requires_an_explicit_absolute_key() {
+        let command = parse_command(&[
+            "measurement-index".to_string(),
+            "--pcr-public-key".to_string(),
+            "/nix/store/pcr-key/pcr.pem".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(
+            command,
+            BootCommand::MeasurementIndex {
+                pcr_public_key: PathBuf::from("/nix/store/pcr-key/pcr.pem")
+            }
+        );
+        assert!(parse_command(&["measurement-index".to_string()]).is_err());
+        assert!(
+            parse_command(&[
+                "measurement-index".to_string(),
+                "--pcr-public-key".to_string(),
+                "relative.pem".to_string(),
+            ])
+            .is_err()
+        );
     }
 
     fn state(running: u32, status: ImageRolloutStatus) -> ImageGenerationState {
