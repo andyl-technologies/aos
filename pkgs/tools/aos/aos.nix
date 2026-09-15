@@ -295,6 +295,8 @@ in
 
     outputs = ["out" "apm" "apr" "packageRuntime" "metadataRuntime" "testSupport"];
 
+    abilities = ./_configuration-provider/module.nix;
+
     # Enforce command-surface separation after fixup and reference scrubbing.
     # Cross-linkers can leave build-environment paths in intermediate binaries;
     # the scrub phase removes those paths before Nix applies these checks.
@@ -668,6 +670,10 @@ in
 
           ${lib.optionalString (!isDarwinCross) ''
         mkdir -p "$packageRuntime/libexec"
+        mv "$out/bin/aos-configuration-provider" "$packageRuntime/libexec/"
+        mkdir -p "$packageRuntime/share/aos/providers"
+        cp ${./_configuration-provider/provider.nix} \
+          "$packageRuntime/share/aos/providers/configuration-materialization.nix"
         ln -s ${coreutils}/bin/env "$packageRuntime/libexec/aos-env"
         ln -s ${nftables}/bin/nft "$packageRuntime/libexec/aos-nft"
         ln -s ${util-linux}/bin/setpriv "$packageRuntime/libexec/aos-setpriv"
@@ -692,6 +698,8 @@ in
         test "$(readlink "$packageRuntime/libexec/aos-nft")" = "${nftables}/bin/nft"
         test "$(readlink "$packageRuntime/libexec/aos-setpriv")" = "${util-linux}/bin/setpriv"
         test "$(readlink "$packageRuntime/libexec/aos-socat")" = "${socat}/bin/socat"
+        test -x "$packageRuntime/libexec/aos-configuration-provider"
+        test -s "$packageRuntime/share/aos/providers/configuration-materialization.nix"
       ''}
           ${lib.optionalString (!isDarwinCross) ''
         grep -Fqx 'export AOS_PRLIMIT="${util-linux}/bin/prlimit"' "$packageRuntime/bin/aos-package-runtime"

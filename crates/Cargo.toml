@@ -36,6 +36,7 @@ members = [
     "aos-profile",
     "aos-systemd",
     "aos-provider-protocol",
+    "aos-configuration-provider",
     "crucible-cas",
     "crucible-sim",
     "crucible-assert",
@@ -229,6 +230,7 @@ aos-remote = { path = "aos-remote" }
 aos-doc = { path = "aos-doc" }
 aos-doc-model = { path = "aos-doc-model" }
 aos-package = { path = "aos-package" }
+aos-configuration-provider = { path = "aos-configuration-provider" }
 aos-hub-console-contract = { path = "aos-hub-console-contract" }
 aos-hub-core = { path = "aos-hub-core" }
 aos-hub = { path = "aos-hub" }

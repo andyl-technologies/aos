@@ -160,6 +160,7 @@ dependencies = [
  "aos-ability-runtime",
  "aos-ability-validate",
  "aos-cache",
+ "aos-configuration-provider",
  "aos-contract",
  "aos-core",
  "aos-doc",
@@ -328,6 +329,22 @@ dependencies = [
  "tokio-util",
  "url",
  "zstd",
+]
+
+[[package]]
+name = "aos-configuration-provider"
+version = "0.1.0"
+dependencies = [
+ "aos-ability-model",
+ "aos-contract",
+ "aos-provider-protocol",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml 0.8.23",
 ]
 
 [[package]]
