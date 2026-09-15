@@ -66,10 +66,10 @@
     requires = [];
     wants = [];
   };
-  isolatedService = readWritePaths: {
+  isolatedService = homeAccess: readWritePaths: {
     privilege = "privileged";
     filesystem = "read-only-system";
-    home_access = "inaccessible";
+    home_access = homeAccess;
     network = "host";
     process_visibility = "host";
     termination_scope = "all-processes";
@@ -79,9 +79,12 @@
       inherit source;
       mode = "read-write";
     }) readWritePaths;
-    permit_core_dumps = false;
+    permit_core_dumps = true;
   };
-  linuxIsolation = addressFamilies: {
+  linuxIsolation = {
+    addressFamilies,
+    hardenKernel,
+  }: {
     allow_privilege_escalation = false;
     ambient_capabilities = [];
     capability_bounds = {
@@ -89,13 +92,16 @@
       capabilities = [];
     };
     control_group_delegation = false;
-    control_group_access = "read-only";
+    control_group_access =
+      if hardenKernel
+      then "read-only"
+      else "host";
     device_namespace = "shared";
     kernel_clock_mutation = true;
     kernel_hostname_mutation = true;
     kernel_log_access = true;
-    kernel_module_access = false;
-    kernel_tunable_access = false;
+    kernel_module_access = !hardenKernel;
+    kernel_tunable_access = !hardenKernel;
     lock_personality = false;
     memory_write_execute = true;
     namespace_isolation = [];
@@ -180,8 +186,11 @@
       rate_interval_millis = 120000;
       rate_burst = 5;
     };
-    isolation = isolatedService ["/nix" "/run/aos" "/var/lib/apm"];
-    linux_isolation = linuxIsolation ["ipv4" "ipv6" "unix"];
+    isolation = isolatedService "host" ["/nix" "/run/aos" "/var/lib/apm"];
+    linux_isolation = linuxIsolation {
+      addressFamilies = ["ipv4" "ipv6" "unix"];
+      hardenKernel = false;
+    };
   };
   renderTemplate = service {
     service = "aos-pkg-install";
@@ -205,8 +214,11 @@
     inherit (defaultDependencies) after before requires wants;
     readiness = readiness 60000;
     identity = identity "0077";
-    isolation = isolatedService ["/run/aos"];
-    linux_isolation = linuxIsolation ["unix"];
+    isolation = isolatedService "inaccessible" ["/run/aos"];
+    linux_isolation = linuxIsolation {
+      addressFamilies = ["unix"];
+      hardenKernel = true;
+    };
   };
   graphCompile = service {
     service = "aos-graph-compile";
@@ -227,7 +239,7 @@
       restart = "never";
       restartDelayMillis = 0;
       remainAfterExit = true;
-      timeoutMillis = 300000;
+      timeoutMillis = 90000;
     };
     dependencies = defaultDependencies // {
       before = [(resultOf "aos-preset-lifecycle" "service-resource")];
@@ -243,10 +255,13 @@
         negated = false;
       }
     ];
-    readiness = readiness 300000;
+    readiness = readiness 90000;
     identity = identity "0077";
-    isolation = isolatedService ["/run/aos" "/run/systemd/system"];
-    linux_isolation = linuxIsolation ["unix"];
+    isolation = isolatedService "inaccessible" ["/run/aos" "/run/systemd/system"];
+    linux_isolation = linuxIsolation {
+      addressFamilies = ["unix"];
+      hardenKernel = true;
+    };
   };
   activationScript = ''
     set +e
