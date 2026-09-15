@@ -5,10 +5,7 @@
   alias = "execution-observer-endpoint";
   interfaceName = "aos.execution.observation-endpoint";
   requestType = types.record {
-    fields = {
-      service_resource = types.deferredResult types.resourceReference;
-      socket_path = types.deferredResult types.executionPath;
-    };
+    fields.endpoint = types.enum ["default"];
   };
   observationType = types.record {
     fields = {
@@ -23,7 +20,7 @@
   };
   declaration = declareInterface {
     name = interfaceName;
-    description = "Publishes one protected local endpoint for observing ability execution boundaries.";
+    description = "Discovers the provider-owned protected endpoint for observing ability execution boundaries.";
     abi = 1;
     inherit requestType;
     methods.observe = {

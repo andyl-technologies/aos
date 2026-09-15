@@ -20,11 +20,7 @@
   };
   base = import ./runtime-module-composition.nix {
     inherit lib mkSystem pkgs qualificationImage;
-    observerForwardEndpoint = {
-      request = "aos-ability-crucible:observer-endpoint";
-      resourceOutput = "retained-resource";
-      socketOutput = "socket-path";
-    };
+    forwardObserverToCrucible = true;
     extraRuntimeModules = [crucibleModule];
     extraHostModule = crucibleHostModule;
     additionalClosures = [pkgs.aos-ability-crucible];
@@ -36,8 +32,7 @@
   adapterPath = toString pkgs.aos-ability-crucible;
   disabledPackages = map toString disabledConfig.environment.systemPackages;
   enabledPackages = map toString enabledConfig.environment.systemPackages;
-  evaluationContract =
-    assert !(builtins.elem adapterPath disabledPackages);
+  evaluationContract = assert !(builtins.elem adapterPath disabledPackages);
   assert builtins.elem adapterPath enabledPackages;
   assert enabledConfig.aos.abilities.executionObserver
   == {
@@ -45,7 +40,8 @@
     resourceOutput = "retained-resource";
     socketOutput = "socket-path";
   };
-  assert enabledConfig.aos.abilities.requests."aos-ability-crucible:observer-endpoint".parameters.socket_path == adapterSocket;
+  assert enabledConfig.aos.abilities.requests."aos-ability-crucible:observer-endpoint".parameters.endpoint == "default";
+  assert enabledConfig.aos.abilities.requests."aos-ability-boundary-observer:forward-endpoint".parameters.endpoint == "default";
   assert enabledConfig.aos.abilities.requests."aos-ability-boundary-observer:endpoint".parameters.socket_path == executorSocket; true;
 in
   assert evaluationContract;

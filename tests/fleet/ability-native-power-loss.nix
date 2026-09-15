@@ -4,7 +4,7 @@
   mkSystem,
   pkgs,
   qualificationImage ? false,
-  observerForwardEndpoint ? null,
+  forwardObserverToCrucible ? false,
   extraRuntimeModules ? [],
   extraHostModule ? "",
   additionalClosures ? [],
@@ -67,7 +67,7 @@
 
   observerFixture = import ./_ability-execution-observer.nix {
     inherit lib pkgs;
-    forwardEndpoint = observerForwardEndpoint;
+    forwardToCrucible = forwardObserverToCrucible;
   };
   observerController = observerFixture.controller;
   observerModule = observerFixture.module;
@@ -148,9 +148,9 @@ in {
       REFERENCE_ATTEMPT_TIMEOUT_MILLIS = 300_000
       REFERENCE_TOTAL_RECOVERY_MILLIS = 1_200_000
       OBSERVER_FORWARD_ENABLED = ${
-        if observerForwardEndpoint == null
-        then "False"
-        else "True"
+        if forwardObserverToCrucible
+        then "True"
+        else "False"
       }
 
 

@@ -856,6 +856,7 @@ let
     "tools/_aos-ability-crucible/endpoint-interface.nix" = "target-independent-source";
     "tools/_aos-ability-crucible/endpoint-provider.nix" = "target-independent-source";
     "tools/_aos-ability-crucible/module.nix" = "linux-only-config-source";
+    "tools/_aos-ability-crucible/settings.nix" = "target-independent-source";
     "tools/_conntrackd/module.nix" = "linux-only-config-source";
     "tools/_smartmontools/module.nix" = "linux-only-config-source";
     "tools/aos/_abilities/configuration-provider/module.nix" = "target-independent-source";

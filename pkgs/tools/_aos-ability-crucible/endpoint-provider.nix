@@ -7,6 +7,9 @@
 }: let
   alias = "execution-observer-endpoint";
   declaration = config.aos.abilities.interfaces."${packageName}:${alias}";
+  settings = import ./settings.nix {
+    socketName = config.aos.services.abilityCrucible.socketName;
+  };
   identity = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration declaration
   );
@@ -21,22 +24,14 @@
         (builtins.attrValues context.bindings);
     })
     (builtins.attrNames context.requests);
-  checkedEntry = context: let
-    entries = entriesFor context;
-    entry =
-      if builtins.length entries == 1
-      then builtins.head entries
-      else throw "the Ability Crucible endpoint requires exactly one request";
-    binding =
-      if builtins.length entry.bindings == 1
-      then builtins.head entry.bindings
-      else throw "the Ability Crucible endpoint request requires exactly one selected binding";
-  in
-    if binding.slot == "observer"
+  checkedEntry = entry:
+    if builtins.length entry.bindings != 1
+    then throw "the Ability Crucible endpoint request requires exactly one selected binding"
+    else if entry.request.parameters.endpoint == "default"
     then entry
-    else throw "the Ability Crucible endpoint accepts only its canonical observer slot";
+    else throw "the Ability Crucible endpoint request selects an unknown endpoint";
   provide = context: let
-    entry = checkedEntry context;
+    entries = builtins.map checkedEntry (entriesFor context);
     reference = {
       interface = identity;
       resource = {
@@ -49,10 +44,14 @@
   in {
     requests = {};
     resourceFragments = {};
-    outputs.${entry.requestName} = {
-      retained-resource = reference;
-      socket-path = entry.request.parameters.socket_path;
-    };
+    outputs = builtins.listToAttrs (builtins.map (entry: {
+        name = entry.requestName;
+        value = {
+          retained-resource = reference;
+          socket-path = settings.socketPath;
+        };
+      })
+      entries);
   };
 in {
   config.aos.abilities.implementations.${alias} = {inherit provide;};

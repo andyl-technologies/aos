@@ -4,8 +4,9 @@
   pkgs,
 }: let
   package = pkgs.aos-ability-boundary-observer;
-  packageModule = {
-    name = "aos-ability-boundary-observer";
+  cruciblePackage = pkgs.aos-ability-crucible;
+  packageModule = name: package: {
+    inherit name;
     version = package.version;
     module = package.module + "/module.nix";
     outputs = {
@@ -24,14 +25,21 @@
             key = "boundary-observer";
             stage = "host";
           };
+          aos.services.abilityCrucible.enable = false;
         }
         module
       ];
-      packageModules = [packageModule];
+      packageModules = [
+        (packageModule "aos-ability-boundary-observer" package)
+        (packageModule "aos-ability-crucible" cruciblePackage)
+      ];
     };
   managed = evaluate {};
   external = evaluate {
     aos.tests.executionObserver.mode = "external-test-mount";
+  };
+  forwarded = evaluate {
+    aos.tests.executionObserver.forwardToSelectedEndpoint = true;
   };
   disabled = evaluate {
     aos.tests.executionObserver.enable = false;
@@ -56,6 +64,8 @@
     _type = "aos-request-output-reference";
     inherit request output;
   };
+  forwardedAbilities = forwarded.config.aos.abilities;
+  forwardReference = outputReference "aos-ability-boundary-observer:forward-endpoint";
   portableOptionTree = options:
     builtins.all
     (name: let
@@ -82,6 +92,25 @@ in
     socket_path = "/run/aos-instrumentation/controller.sock";
   };
   assert !(external.config.aos.abilities.requests ? "aos-ability-boundary-observer:controller-lifecycle");
+  assert forwardedAbilities.requirementTemplates."aos-ability-boundary-observer:forward-endpoint"
+  == {
+    description = "Discovers the selected protected execution observer endpoint.";
+    interface = "aos.execution.observation-endpoint";
+    abi = 1;
+    descriptor = null;
+    methods = ["observe"];
+    guarantees = [];
+    strength = "required";
+    fallback = null;
+  };
+  assert forwardedAbilities.requests."aos-ability-boundary-observer:forward-endpoint".parameters
+  == {endpoint = "default";};
+  assert forwardedAbilities.requests."aos-ability-boundary-observer:controller-dependencies".parameters.after
+  == [(forwardReference "retained-resource")];
+  assert forwardedAbilities.requests."aos-ability-boundary-observer:controller-dependencies".parameters.requires
+  == [(forwardReference "retained-resource")];
+  assert forwardedAbilities.requests."aos-ability-boundary-observer:controller-environment".parameters.variables.AOS_ABILITY_FORWARD_SOCKET
+  == forwardReference "socket-path";
   assert lifecycle.start
   == [
     {
