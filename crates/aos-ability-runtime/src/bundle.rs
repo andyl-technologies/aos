@@ -572,9 +572,10 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let (planning, transition) = verified_stateful_planning_transition_plan();
         let mut bundle = ReloadablePlanBundle::from_verified(&planning, None, None, &transition)?;
-        bundle.desired.packages[0]
-            .required_features
-            .push(RequiredFeature::new("provider-state-format-v2").expect("valid future feature"));
+        bundle.desired.packages[0].required_features.push(
+            RequiredFeature::new("provider-state-format-future").expect("valid future feature"),
+        );
+        bundle.desired.packages[0].required_features.sort();
         let bytes = bundle.canonical_bytes()?;
         let decoded = ReloadablePlanBundle::decode(&bytes)?;
 

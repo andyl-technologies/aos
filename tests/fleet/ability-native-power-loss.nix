@@ -1909,11 +1909,11 @@ in {
           foreign_resource_cell: negative_dependency[3],
           blocked_dependent_cell: negative_dependency[3],
       })
-      NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLES = {
+      NATIVE_ADAPTER_MATRIX_COHORT_EVIDENCE = {
           matrix_cell_prefix + scenario: result["state"][4]
           for scenario, result in crash_results.items()
       }
-      NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLES.update({
+      NATIVE_ADAPTER_MATRIX_COHORT_EVIDENCE.update({
           foreign_resource_cell: negative_state[4],
           blocked_dependent_cell: negative_state[4],
       })

@@ -238,7 +238,7 @@ in {
       ROLLOUT_EFFECT.run_rollout_cell(cohort_cells[0], evidence_builder)
       (
           NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS,
-          NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLES,
+          NATIVE_ADAPTER_MATRIX_COHORT_EVIDENCE,
           NATIVE_ADAPTER_MATRIX_PROBES,
       ) = evidence_builder.finish()
     '';

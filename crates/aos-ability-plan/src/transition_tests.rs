@@ -1606,10 +1606,10 @@ fn lifecycle_upgrade_fixture(payload_only: bool) -> LifecycleUpgradeFixture {
     let new_module = if payload_only {
         old_module.clone()
     } else {
-        distinct_artifact(&terminal_artifact, 0x92, "service-module-v2")
+        distinct_artifact(&terminal_artifact, 0x92, "service-module-updated")
     };
-    let old_payload = distinct_artifact(&terminal_artifact, 0x93, "service-payload-v1");
-    let new_payload = distinct_artifact(&terminal_artifact, 0x94, "service-payload-v2");
+    let old_payload = distinct_artifact(&terminal_artifact, 0x93, "service-payload-original");
+    let new_payload = distinct_artifact(&terminal_artifact, 0x94, "service-payload-updated");
     let old_pure_package =
         pure_service_package(&interface, "1.0.0", old_module, old_payload.clone());
     let new_pure_package =

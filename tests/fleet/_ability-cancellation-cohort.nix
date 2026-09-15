@@ -34,7 +34,7 @@ import ./_ability-effect-boundary-cohort.nix {
   evidenceFinish = ''
     (
         NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS,
-        NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLES,
+        NATIVE_ADAPTER_MATRIX_COHORT_EVIDENCE,
         NATIVE_ADAPTER_MATRIX_PROBES,
     ) = CANCELLATION_BUILDER.finish()
   '';
