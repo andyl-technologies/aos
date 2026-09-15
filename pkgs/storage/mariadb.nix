@@ -819,24 +819,24 @@ in
       disabledIncompleteTls = evaluate {
         tls.enable = true;
       };
-      abilities = evaluated.config.aos.abilities;
-      plainAbilities = plainEvaluated.config.aos.abilities;
-      disabledAbilities = disabled.config.aos.abilities;
-      requests = builtins.attrNames abilities.requests;
-      plainRequests = builtins.attrNames plainAbilities.requests;
-      disabledRequirements = builtins.attrNames disabledAbilities.requirementTemplates;
-      serverSource = abilities.requests."mariadb:server-configuration".parameters.source;
-      bootstrapSource = abilities.requests."mariadb:bootstrap-configuration".parameters.source;
+      enabledAbilityConfig = evaluated.config.aos.abilities;
+      plainAbilityConfig = plainEvaluated.config.aos.abilities;
+      disabledAbilityConfig = disabled.config.aos.abilities;
+      requests = builtins.attrNames enabledAbilityConfig.requests;
+      plainRequests = builtins.attrNames plainAbilityConfig.requests;
+      disabledRequirements = builtins.attrNames disabledAbilityConfig.requirementTemplates;
+      serverSource = enabledAbilityConfig.requests."mariadb:server-configuration".parameters.source;
+      bootstrapSource = enabledAbilityConfig.requests."mariadb:bootstrap-configuration".parameters.source;
       serverLiteralText = lib.concatStringsSep "" (builtins.map
         (fragment:
           if fragment.kind == "literal"
           then fragment.text
           else "")
         serverSource.fragments);
-      mainLifecycle = abilities.requests."mariadb:main-lifecycle".parameters;
-      mainDependencies = abilities.requests."mariadb:main-dependencies".parameters;
-      mainStorage = abilities.requests."mariadb:main-storage".parameters;
-      servicePrincipal = abilities.requests."mariadb:service-principal".parameters;
+      mainLifecycle = enabledAbilityConfig.requests."mariadb:main-lifecycle".parameters;
+      mainDependencies = enabledAbilityConfig.requests."mariadb:main-dependencies".parameters;
+      mainStorage = enabledAbilityConfig.requests."mariadb:main-storage".parameters;
+      servicePrincipal = enabledAbilityConfig.requests."mariadb:service-principal".parameters;
       configurationPathOutput = request:
         (builtins.head (builtins.filter
           (fragment:
@@ -877,8 +877,8 @@ in
         && assertionsHold disabledTlsCredentials
         && assertionsHold disabledIncompleteTls
         && !assertionsHold invalidTls
-        && ownedValues disabledAbilities.instances == {}
-        && ownedValues disabledAbilities.requests == {}
+        && ownedValues disabledAbilityConfig.instances == {}
+        && ownedValues disabledAbilityConfig.requests == {}
         && builtins.elem "mariadb:credential-delivery" disabledRequirements
         && builtins.elem "mariadb:service-credentials" disabledRequirements
         && builtins.elem "mariadb:service-lifecycle" disabledRequirements
@@ -902,7 +902,7 @@ in
         && lib.hasInfix "ssl-ca=" serverLiteralText
         && !(lib.hasInfix "/etc/" (builtins.toJSON serverSource))
         && !(lib.hasInfix "/var/lib/" (builtins.toJSON serverSource))
-        && !(lib.hasInfix "MARIADB_CONFIG_GENERATION" (builtins.toJSON abilities.requests))
+        && !(lib.hasInfix "MARIADB_CONFIG_GENERATION" (builtins.toJSON enabledAbilityConfig.requests))
         && mainLifecycle.restart == "on-failure"
         && mainLifecycle.configuration_change_action == "restart"
         && servicePrincipal.home_directory.output == "planned-path"
@@ -912,8 +912,8 @@ in
         && configurationPathOutput "mariadb:log-storage" == "planned-path"
         && (builtins.elemAt mainLifecycle.start 0).executable.entry_point == "bin/mariadb-control"
         && (builtins.elemAt mainDependencies.after 0).request == "mariadb:initialize-lifecycle"
-        && !(abilities.requests."mariadb:service-group".parameters ? requested_id)
-        && !(abilities.requests."mariadb:service-principal".parameters ? requested_id);
+        && !(enabledAbilityConfig.requests."mariadb:service-group".parameters ? requested_id)
+        && !(enabledAbilityConfig.requests."mariadb:service-principal".parameters ? requested_id);
     in {
       version = testing.mkToolCheck {
         pname = "storage-mariadb";

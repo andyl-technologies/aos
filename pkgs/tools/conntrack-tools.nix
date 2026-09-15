@@ -207,8 +207,7 @@ in
         == [
           (qualifiedResultOf "conntrack-tools:runtime-storage" "planned-path")
           (qualifiedResultOf "conntrack-tools:log-storage" "planned-path")
-        ]
-        && !(self ? expose);
+        ];
     in {
       config =
         if contractHolds

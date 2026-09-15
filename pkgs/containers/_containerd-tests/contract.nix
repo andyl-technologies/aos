@@ -70,17 +70,17 @@
     .config
     .containerd
     .state);
-  abilities = evaluated.config.aos.abilities;
-  registryAbilities = evaluatedWithRegistry.config.aos.abilities;
-  requests = builtins.attrNames abilities.requests;
-  registryRequests = builtins.attrNames registryAbilities.requests;
-  configurationSource = abilities.requests."containerd:server-configuration".parameters.source;
+  enabledAbilityConfig = evaluated.config.aos.abilities;
+  registryAbilityConfig = evaluatedWithRegistry.config.aos.abilities;
+  requests = builtins.attrNames enabledAbilityConfig.requests;
+  registryRequests = builtins.attrNames registryAbilityConfig.requests;
+  configurationSource = enabledAbilityConfig.requests."containerd:server-configuration".parameters.source;
   configurationJson = builtins.toJSON configurationSource;
-  kernelRequest = abilities.requests."containerd:kernel-modules".parameters;
-  socketView = abilities.requests."containerd:grpc-socket-view".parameters;
-  lifecycleRequest = abilities.requests."containerd:main-lifecycle".parameters;
-  storageRequest = abilities.requests."containerd:main-storage".parameters;
-  registryIsolation = registryAbilities.requests."containerd:main-isolation".parameters;
+  kernelRequest = enabledAbilityConfig.requests."containerd:kernel-modules".parameters;
+  socketView = enabledAbilityConfig.requests."containerd:grpc-socket-view".parameters;
+  lifecycleRequest = enabledAbilityConfig.requests."containerd:main-lifecycle".parameters;
+  storageRequest = enabledAbilityConfig.requests."containerd:main-storage".parameters;
+  registryIsolation = registryAbilityConfig.requests."containerd:main-isolation".parameters;
   plannedPath = request: {
     _type = "aos-request-output-reference";
     request = "containerd:${request}";
