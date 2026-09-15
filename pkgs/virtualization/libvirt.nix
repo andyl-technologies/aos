@@ -424,40 +424,27 @@ in
       testing,
       self,
       pkgs,
+      mkSystem,
       ...
     }: let
-      packageModule = package: {
-        inherit (package) version;
-        name = package.pname;
-        module = package.module + "/module.nix";
-        outputs = {
-          self = builtins.toString package;
-          dependencies = {};
-        };
-      };
-      evaluated = lib.evalModules {
-        inherit lib;
+      evaluated = mkSystem {
+        systemName = "libvirt-package-check";
         modules = [
-          lib.abilities.module
           {
-            aos.abilities.environment = {
-              authority = "deployment";
-              key = "libvirt-test";
-              stage = "host";
-            };
+            environment.systemPackages = [pkgs.dbus self];
             aos.services.libvirt = {
               enable = true;
               allowedUsers = ["operator"];
             };
           }
         ];
-        packageModules = builtins.map packageModule [pkgs.dbus self];
       };
       requests = evaluated.config.aos.abilities.requests;
       sockets = requests."libvirt:libvirtd-socket_activation".parameters.sockets;
       socketDependencies =
         requests."libvirt:libvirtd-socket_activation".parameters.service_dependencies;
-      requestsHaveAutomaticIdentities = builtins.all
+      requestsHaveAutomaticIdentities =
+        builtins.all
         (request: !(request.parameters ? requested_id))
         (builtins.attrValues requests);
       contractHolds =
