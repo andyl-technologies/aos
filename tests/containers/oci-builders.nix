@@ -545,6 +545,9 @@
   );
   accepts = validator: value: (builtins.tryEval (validator "test vector" value)).success;
   evalContracts = assert validStickyMode.success;
+  assert !(builtins.elem
+    (builtins.toString abilityPackageSmokeProvider)
+    amd64AbilityContract.passthru.runtimeRootPaths);
   assert !invalidMode.success;
   assert !unsafePath.success;
   assert !symlinkParent.success;
@@ -809,7 +812,7 @@ in
           assert_compact_sorted_json ${multiPlatform}/layout/index.json
           assert_compact_sorted_json ${multiPlatform}/static-ability-contract.json
           ability_contract_hex=$(sha256sum ${multiPlatform}/static-ability-contract.json | cut -d ' ' -f 1)
-          jq -e '
+          jq -e --arg provider ${lib.escapeShellArg (builtins.toString abilityPackageSmokeProvider)} '
             .schema == "aos.container.static-abilities/v1"
             and .runtime_grants == []
             and (.platforms | length) == 2
@@ -819,6 +822,7 @@ in
                 and ($platform.abilities | length) == 1
                 and $platform.abilities[0].export == "default"
                 and $platform.abilities[0].interface.name == "aos.test.package-smoke"
+                and $platform.abilities[0].implementation_artifact.store_path == $provider
                 and $platform.abilities[0].availability == "unresolved-at-launch"
                 and any($platform.unresolved_launch_obligations[];
                   .kind == "implementation-artifact"

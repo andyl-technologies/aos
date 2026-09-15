@@ -32,9 +32,9 @@ in {
       guarantees = [];
       compose = context: context;
       transition = context: context;
-      artifacts = [
-        (lib.abilities.packageOutput {package = "ability-package-smoke-provider";})
-      ];
+      artifact = lib.abilities.packageOutput {
+        package = "ability-package-smoke-provider";
+      };
       providerModule = {
         artifact = lib.abilities.packageOutput {};
         path = "share/ability-package-smoke/provider.nix";
