@@ -33,9 +33,11 @@
     if artifactClass == "container"
     then "application/vnd.aos.container.static-abilities.v1+json"
     else "application/vnd.aos.boot.static-abilities.v1+json";
-  contractPackageRoots = builtins.filter (
-    package: builtins.isAttrs package && package ? contract
-  ) packageRoots;
+  contractPackageRoots =
+    builtins.filter (
+      package: builtins.isAttrs package && package ? contract
+    )
+    packageRoots;
   selectedPackages = map (package:
     if package ? contract
     then {
@@ -73,7 +75,7 @@
     else if selector.output == "out"
     then package.out or package
     else builtins.getAttr selector.output package;
-  contractPaths = map builtins.toString contracts;
+  contractPaths = map (contract: builtins.toString contract.artifact) contracts;
   platformMode = platform != null && contracts == [];
   combinedMode = platform == null && selectedPackages == [] && runtimeRoots == [] && contracts != [];
   checkedArtifactClass =
@@ -150,7 +152,8 @@
   resolvedPackageContracts = builtins.genList (packageIndex: let
     entry = builtins.elemAt selectedPackages packageIndex;
     resolution = builtins.elemAt packageResolutions packageIndex;
-    resolutionSpec = builtins.toFile
+    resolutionSpec =
+      builtins.toFile
       "${pname}-selector-resolution-${toString packageIndex}.json"
       (builtins.unsafeDiscardStringContext (builtins.toJSON resolution.resolution));
   in
@@ -185,16 +188,17 @@
     if
       lib.all (contract:
         builtins.isAttrs contract
-        && (contract.passthru.ociStaticAbilityContract or false)
-        && contract.passthru.artifactClass == checkedArtifactClass
-        && contract.passthru.executionStage == checkedExecutionStage)
+        && (contract._type or null) == "aos-oci-static-ability-contract"
+        && builtins.isAttrs (contract.artifact or null)
+        && contract.artifactClass == checkedArtifactClass
+        && contract.executionStage == checkedExecutionStage)
       contracts
     then contractPaths
     else common.fail "static ability contract inputs must be produced by mkStaticAbilityContract";
   packageAbilityContracts =
     if platformMode
     then resolvedPackageContracts
-    else lib.unique (lib.concatMap (contract: contract.passthru.packageAbilityContracts) contracts);
+    else lib.unique (lib.concatMap (contract: contract.packageAbilityContracts) contracts);
   runtimeRootPaths = map builtins.toString runtimeRoots;
   checkedRuntimeRoots =
     if
@@ -222,7 +226,8 @@
     payload = builtins.toString (builtins.elemAt selectedPackages index).payload;
     manifest = builtins.toString (builtins.elemAt resolvedPackageContracts index);
   }) (builtins.length selectedPackages);
-  assemblySpec = builtins.toFile
+  assemblySpec =
+    builtins.toFile
     "${pname}-static-ability-assembly.json"
     (builtins.unsafeDiscardStringContext (builtins.toJSON {
       inherit schema artifactClass executionStage;
@@ -231,12 +236,14 @@
       packages = assemblyPackages;
       contracts = checkedContracts;
     }));
-in
-  builtins.deepSeq validated (mkDerivation {
+  contractArtifact = mkDerivation {
     inherit pname;
     version = "1";
     src = null;
-    buildDeps = [abilityContractValidator] ++ packageAbilityContracts ++ contracts;
+    buildDeps =
+      [abilityContractValidator]
+      ++ packageAbilityContracts
+      ++ map (contract: contract.artifact) contracts;
     exportReferencesGraph.staticAbilityRuntime = checkedRuntimeRoots;
 
     outputChecks.out = {};
@@ -257,13 +264,15 @@ in
       }
     ];
 
-    passthru = {
-      ociStaticAbilityContract = true;
+    meta.description = "Closed static ability contract for an AOS OCI artifact";
+  };
+in
+  builtins.deepSeq validated (contractArtifact
+    // {
+      _type = "aos-oci-static-ability-contract";
+      artifact = contractArtifact;
       inherit mediaType schema artifactClass executionStage checkedPlatform runtimeRootPaths;
       inherit packageAbilityContracts;
       inputContractPaths = contractPaths;
       selectedPayloadPaths = payloadPaths;
-    };
-
-    meta.description = "Closed static ability contract for an AOS OCI artifact";
-  })
+    })

@@ -143,7 +143,7 @@
     };
   amd64AbilityContract = abilityContractFor {architecture = "amd64";};
   resolvedSmokePackageDocument =
-    builtins.head amd64AbilityContract.passthru.packageAbilityContracts;
+    builtins.head amd64AbilityContract.packageAbilityContracts;
   changedAmd64AbilityContract = abilityContractFor {
     architecture = "amd64";
     applicationRoot = changedApplication;
@@ -155,27 +155,31 @@
   };
   # Recompute the descriptor after mutation so only semantic validation can
   # reject these otherwise self-consistent forged contracts.
-  rewriteStaticAbilityContract = pname: sourceContract: filter:
-    pkgs.runCommand pname {
-      buildDeps = [pkgs.coreutils pkgs.jq];
-      passthru = sourceContract.passthru;
-    } ''
-      mkdir -p "$out"
-      jq -cS ${lib.escapeShellArg filter} \
-        ${sourceContract}/contract.json > "$out/contract.with-newline.json"
-      size=$(stat -c %s "$out/contract.with-newline.json")
-      truncate -s "$((size - 1))" "$out/contract.with-newline.json"
-      mv "$out/contract.with-newline.json" "$out/contract.json"
+  rewriteStaticAbilityContract = pname: sourceContract: filter: let
+    rewrittenArtifact =
+      pkgs.runCommand pname {
+        buildDeps = [pkgs.coreutils pkgs.jq];
+      } ''
+        mkdir -p "$out"
+        jq -cS ${lib.escapeShellArg filter} \
+          ${sourceContract}/contract.json > "$out/contract.with-newline.json"
+        size=$(stat -c %s "$out/contract.with-newline.json")
+        truncate -s "$((size - 1))" "$out/contract.with-newline.json"
+        mv "$out/contract.with-newline.json" "$out/contract.json"
 
-      contract_size=$(stat -c %s "$out/contract.json")
-      contract_hex=$(sha256sum "$out/contract.json" | cut -d ' ' -f 1)
-      jq -cS -n \
-        --arg mediaType ${lib.escapeShellArg sourceContract.passthru.mediaType} \
-        --arg digest "sha256:$contract_hex" \
-        --argjson size "$contract_size" \
-        '{mediaType: $mediaType, digest: $digest, size: $size}' \
-        > "$out/descriptor.json"
-    '';
+        contract_size=$(stat -c %s "$out/contract.json")
+        contract_hex=$(sha256sum "$out/contract.json" | cut -d ' ' -f 1)
+        jq -cS -n \
+          --arg mediaType ${lib.escapeShellArg sourceContract.mediaType} \
+          --arg digest "sha256:$contract_hex" \
+          --argjson size "$contract_size" \
+          '{mediaType: $mediaType, digest: $digest, size: $size}' \
+          > "$out/descriptor.json"
+      '';
+  in
+    sourceContract
+    // rewrittenArtifact
+    // {artifact = rewrittenArtifact;};
   forgeStaticAbilityContract = pname: sourceContract:
     rewriteStaticAbilityContract
     pname
@@ -185,18 +189,16 @@
     forgeStaticAbilityContract
     "oci-fixture-forged-platform-static-abilities"
     amd64AbilityContract;
-  forgedAggregateAbilityContract = (forgeStaticAbilityContract
-    "oci-fixture-forged-aggregate-static-abilities"
-    multiPlatformAbilityContract).overrideAttrs (_: {
-    passthru =
-      multiPlatformAbilityContract.passthru
-      // {
-        inputContractPaths = map builtins.toString [
-          arm64AbilityContract
-          forgedPlatformAbilityContract
-        ];
-      };
-  });
+  forgedAggregateAbilityContract =
+    (forgeStaticAbilityContract
+      "oci-fixture-forged-aggregate-static-abilities"
+      multiPlatformAbilityContract)
+    // {
+      inputContractPaths = map builtins.toString [
+        arm64AbilityContract
+        forgedPlatformAbilityContract
+      ];
+    };
   reorderedPlatformAbilityContract =
     rewriteStaticAbilityContract
     "oci-fixture-reordered-platform-static-abilities"
@@ -354,42 +356,45 @@
     abilityContract = changedAmd64AbilityContract;
   };
   arm64Image = mkPlatformImage {architecture = "arm64";};
-  forgedAmd64Image =
-    pkgs.runCommand "oci-fixture-forged-amd64-image" {
-      buildDeps = [pkgs.coreutils pkgs.jq];
-      passthru =
-        amd64Image.passthru
-        // {
-          checkedAbilityContract = forgedPlatformAbilityContract;
-        };
-    } ''
-      cp -a ${amd64Image}/. "$out"
-      chmod -R u+w "$out"
-      cp ${forgedPlatformAbilityContract}/contract.json "$out/static-ability-contract.json"
-      cp ${forgedPlatformAbilityContract}/descriptor.json \
-        "$out/static-ability-contract.descriptor.json"
+  forgedAmd64Image = let
+    forgedArtifact =
+      pkgs.runCommand "oci-fixture-forged-amd64-image" {
+        buildDeps = [pkgs.coreutils pkgs.jq];
+      } ''
+        cp -a ${amd64Image}/. "$out"
+        chmod -R u+w "$out"
+        cp ${forgedPlatformAbilityContract}/contract.json "$out/static-ability-contract.json"
+        cp ${forgedPlatformAbilityContract}/descriptor.json \
+          "$out/static-ability-contract.descriptor.json"
 
-      contract_digest=$(jq -r .digest ${forgedPlatformAbilityContract}/descriptor.json)
-      jq -cS \
-        --arg digest "$contract_digest" \
-        '.annotations."dev.andyl.aos.ability-contract.digest" = $digest' \
-        ${amd64Image}/manifest.json > "$out/manifest.with-newline.json"
-      manifest_size=$(stat -c %s "$out/manifest.with-newline.json")
-      truncate -s "$((manifest_size - 1))" "$out/manifest.with-newline.json"
-      mv "$out/manifest.with-newline.json" "$out/manifest.json"
+        contract_digest=$(jq -r .digest ${forgedPlatformAbilityContract}/descriptor.json)
+        jq -cS \
+          --arg digest "$contract_digest" \
+          '.annotations."dev.andyl.aos.ability-contract.digest" = $digest' \
+          ${amd64Image}/manifest.json > "$out/manifest.with-newline.json"
+        manifest_size=$(stat -c %s "$out/manifest.with-newline.json")
+        truncate -s "$((manifest_size - 1))" "$out/manifest.with-newline.json"
+        mv "$out/manifest.with-newline.json" "$out/manifest.json"
 
-      manifest_size=$(stat -c %s "$out/manifest.json")
-      manifest_hex=$(sha256sum "$out/manifest.json" | cut -d ' ' -f 1)
-      cp "$out/manifest.json" "$out/layout/blobs/sha256/$manifest_hex"
-      jq -cS \
-        --arg digest "sha256:$manifest_hex" \
-        --argjson size "$manifest_size" \
-        '.digest = $digest | .size = $size' \
-        ${amd64Image}/manifest-descriptor.json > "$out/manifest-descriptor.with-newline.json"
-      descriptor_size=$(stat -c %s "$out/manifest-descriptor.with-newline.json")
-      truncate -s "$((descriptor_size - 1))" "$out/manifest-descriptor.with-newline.json"
-      mv "$out/manifest-descriptor.with-newline.json" "$out/manifest-descriptor.json"
-    '';
+        manifest_size=$(stat -c %s "$out/manifest.json")
+        manifest_hex=$(sha256sum "$out/manifest.json" | cut -d ' ' -f 1)
+        cp "$out/manifest.json" "$out/layout/blobs/sha256/$manifest_hex"
+        jq -cS \
+          --arg digest "sha256:$manifest_hex" \
+          --argjson size "$manifest_size" \
+          '.digest = $digest | .size = $size' \
+          ${amd64Image}/manifest-descriptor.json > "$out/manifest-descriptor.with-newline.json"
+        descriptor_size=$(stat -c %s "$out/manifest-descriptor.with-newline.json")
+        truncate -s "$((descriptor_size - 1))" "$out/manifest-descriptor.with-newline.json"
+        mv "$out/manifest-descriptor.with-newline.json" "$out/manifest-descriptor.json"
+      '';
+  in
+    amd64Image
+    // forgedArtifact
+    // {
+      artifact = forgedArtifact;
+      checkedAbilityContract = forgedPlatformAbilityContract;
+    };
   forgedMarkerImageProbe = probeOci.mkImageLayout {
     pname = "oci-fixture-forged-marker-image-probe";
     layers = [baseLayerA applicationDelta abilityLayer metadata];
@@ -547,7 +552,7 @@
   evalContracts = assert validStickyMode.success;
   assert !(builtins.elem
     (builtins.toString abilityPackageSmokeProvider)
-    amd64AbilityContract.passthru.runtimeRootPaths);
+    amd64AbilityContract.runtimeRootPaths);
   assert !invalidMode.success;
   assert !unsafePath.success;
   assert !symlinkParent.success;

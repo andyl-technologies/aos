@@ -44,15 +44,20 @@
     then definitionAttribute
     else common.fail "definitionAttribute is not a canonical dotted Nix attribute";
   checkedImage =
-    if builtins.isAttrs image && (image.passthru.ociImageIndex or false)
+    if builtins.isAttrs image && (image._type or null) == "aos-oci-image-index"
     then image
     else common.fail "image must be produced by mkMultiPlatformIndex";
   checkedAbilityContract =
-    if builtins.isAttrs abilityContract && (abilityContract.passthru.ociStaticAbilityContract or false)
+    if
+      builtins.isAttrs abilityContract
+      && (abilityContract._type or null) == "aos-oci-static-ability-contract"
+      && builtins.isAttrs (abilityContract.artifact or null)
     then abilityContract
     else common.fail "abilityContract must be produced by mkStaticAbilityContract";
   subjectAbilityContractCheck =
-    if builtins.toString checkedImage.passthru.checkedAbilityContract == builtins.toString checkedAbilityContract
+    if
+      builtins.toString checkedImage.checkedAbilityContract.artifact
+      == builtins.toString checkedAbilityContract.artifact
     then true
     else common.fail "abilityContract must be the exact contract bound to the subject image";
   checkedReferenceGraph =
@@ -90,7 +95,7 @@
     packageCatalog = checkedCatalog;
     abilityContract = {
       path = builtins.unsafeDiscardStringContext (builtins.toString checkedAbilityContract);
-      mediaType = checkedAbilityContract.passthru.mediaType;
+      mediaType = checkedAbilityContract.mediaType;
       schema = "aos.container.static-abilities/v1";
     };
   };

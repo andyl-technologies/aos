@@ -25,7 +25,7 @@
   imagePaths = map builtins.toString images;
   imageAbilityContractPaths =
     lib.sort builtins.lessThan
-    (map (image: builtins.toString image.passthru.checkedAbilityContract) images);
+    (map (image: builtins.toString image.checkedAbilityContract.artifact) images);
   validateAnnotations = values: let
     checked =
       if builtins.isAttrs values
@@ -77,7 +77,10 @@
       "annotations org.opencontainers.image.ref.name conflicts with referenceName"
     else checkedAnnotations // referenceAnnotations;
   checkedAbilityContract =
-    if builtins.isAttrs abilityContract && (abilityContract.passthru.ociStaticAbilityContract or false)
+    if
+      builtins.isAttrs abilityContract
+      && (abilityContract._type or null) == "aos-oci-static-ability-contract"
+      && builtins.isAttrs (abilityContract.artifact or null)
     then abilityContract
     else common.fail "abilityContract must be produced by mkStaticAbilityContract";
   validated =
@@ -89,7 +92,7 @@
     then common.fail "a multi-platform index may contain at most 256 platforms"
     else if builtins.length imagePaths != builtins.length (lib.unique imagePaths)
     then common.fail "images contains the same derivation more than once"
-    else if !lib.all (image: builtins.isAttrs image && (image.passthru.ociImage or false)) images
+    else if !lib.all (image: builtins.isAttrs image && (image._type or null) == "aos-oci-image") images
     then common.fail "every input must be produced by mkImageLayout"
     else if authoredAbilityAnnotations != []
     then common.fail "static ability contract annotations are builder-owned"
@@ -97,8 +100,8 @@
       !(
         (builtins.length images
           == 1
-          && builtins.toString checkedAbilityContract == builtins.head imageAbilityContractPaths)
-        || (lib.sort builtins.lessThan checkedAbilityContract.passthru.inputContractPaths
+          && builtins.toString checkedAbilityContract.artifact == builtins.head imageAbilityContractPaths)
+        || (lib.sort builtins.lessThan checkedAbilityContract.inputContractPaths
           == imageAbilityContractPaths)
       )
     then common.fail "abilityContract must be the exact aggregate of the input image contracts"
@@ -112,14 +115,13 @@
       add_image ${lib.escapeShellArg (builtins.toString image)}
     '')
     images;
-in
-  builtins.deepSeq validated (mkDerivation {
+  indexArtifact = mkDerivation {
     inherit pname;
     version = "1";
     src = null;
     buildDeps =
       [abilityContractValidator coreutils findutils gzip jq tar]
-      ++ checkedAbilityContract.passthru.packageAbilityContracts;
+      ++ checkedAbilityContract.packageAbilityContracts;
 
     outputChecks.out = {};
     inherit indexSpec;
@@ -341,11 +343,13 @@ in
       }
     ];
 
-    passthru = {
-      ociImageIndex = true;
+    meta.description = "Self-contained deterministic multi-platform OCI image index";
+  };
+in
+  builtins.deepSeq validated (indexArtifact
+    // {
+      _type = "aos-oci-image-index";
+      artifact = indexArtifact;
       inherit checkedAbilityContract;
       mediaType = common.indexMediaType;
-    };
-
-    meta.description = "Self-contained deterministic multi-platform OCI image index";
-  })
+    })

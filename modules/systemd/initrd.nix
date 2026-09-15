@@ -359,6 +359,6 @@ in {
     };
 
     system.build.initrdStaticAbilityContract =
-      config.system.build.initrd.passthru.staticAbilityContract;
+      config.system.build.initrd.staticAbilityContract;
   };
 }
