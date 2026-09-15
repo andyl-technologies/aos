@@ -153,6 +153,7 @@ in {
     + rollout.testPrelude
     + # python
     ''
+      import sys
       import types
       from pathlib import Path
 
@@ -227,6 +228,28 @@ in {
           ),
           ROLLOUT_EFFECT.__dict__,
       )
+      PROVIDER_STATE_COMMON = types.ModuleType("native_adapter_evidence_common")
+      sys.modules[PROVIDER_STATE_COMMON.__name__] = PROVIDER_STATE_COMMON
+      exec(
+          compile(
+              ${builtins.toJSON (builtins.readFile ../../qualification/providers/native_adapter_evidence_common.py)},
+              "native_adapter_evidence_common.py",
+              "exec",
+          ),
+          PROVIDER_STATE_COMMON.__dict__,
+      )
+      PROVIDER_STATE_VALIDATOR = types.ModuleType(
+          "native_adapter_provider_state_evidence"
+      )
+      sys.modules[PROVIDER_STATE_VALIDATOR.__name__] = PROVIDER_STATE_VALIDATOR
+      exec(
+          compile(
+              ${builtins.toJSON (builtins.readFile ../../qualification/providers/native_adapter_provider_state_evidence.py)},
+              "native_adapter_provider_state_evidence.py",
+              "exec",
+          ),
+          PROVIDER_STATE_VALIDATOR.__dict__,
+      )
       PROVIDER_STATE_EVIDENCE = types.ModuleType("ability_provider_state_evidence")
       exec(
           compile(
@@ -273,7 +296,7 @@ in {
       cohort_cells = json.loads(Path(COHORT_CELLS_PATH).read_text())
       assert cohort_cells == [${builtins.toJSON cellId}], cohort_cells
       state_builder = PROVIDER_STATE_EVIDENCE.ProviderStateEvidence(
-          matrix_spec, cohort_cells
+          matrix_spec, cohort_cells, PROVIDER_STATE_VALIDATOR
       )
       PROVIDER_STATE_ROLLOUT.run_rollout_state_cell(
           cohort_cells[0], state_builder

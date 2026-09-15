@@ -18,6 +18,36 @@ MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
+QUALIFICATION_VERIFIER = None
+if len(sys.argv) == 2:
+    verifier_path = Path(sys.argv[1])
+    sys.path.insert(0, str(verifier_path.parent))
+    verifier_spec = importlib.util.spec_from_file_location(
+        "provider_state_qualification_verifier", verifier_path
+    )
+    assert verifier_spec is not None and verifier_spec.loader is not None
+    QUALIFICATION_VERIFIER = importlib.util.module_from_spec(verifier_spec)
+    sys.modules[verifier_spec.name] = QUALIFICATION_VERIFIER
+    verifier_spec.loader.exec_module(QUALIFICATION_VERIFIER)
+    PROVIDER_VALIDATOR = (
+        QUALIFICATION_VERIFIER.provider_evidence.native_adapter_provider_state_evidence
+    )
+else:
+    provider_module_path = (
+        MODULE_PATH.parents[2]
+        / "qualification"
+        / "providers"
+        / "native_adapter_provider_state_evidence.py"
+    )
+    sys.path.insert(0, str(provider_module_path.parent))
+    provider_spec = importlib.util.spec_from_file_location(
+        "native_adapter_provider_state_evidence", provider_module_path
+    )
+    assert provider_spec is not None and provider_spec.loader is not None
+    PROVIDER_VALIDATOR = importlib.util.module_from_spec(provider_spec)
+    sys.modules[provider_spec.name] = PROVIDER_VALIDATOR
+    provider_spec.loader.exec_module(PROVIDER_VALIDATOR)
+
 INTERFACE = {"abi": 1, "descriptor": "sha256:" + "11" * 32, "name": "test.effects"}
 RESOURCE = {"key": "resource", "provider": {"key": "provider", "package": "test"}}
 IMPLEMENTATION = {
@@ -549,17 +579,10 @@ def verify_shared_consumer(
 ) -> None:
     """Exercises the release verifier against the producer's exact output."""
 
-    if len(sys.argv) != 2:
+    if QUALIFICATION_VERIFIER is None:
         return
 
-    verifier_path = Path(sys.argv[1])
-    verifier_spec = importlib.util.spec_from_file_location(
-        "provider_state_qualification_verifier", verifier_path
-    )
-    assert verifier_spec is not None and verifier_spec.loader is not None
-    verifier = importlib.util.module_from_spec(verifier_spec)
-    sys.modules[verifier_spec.name] = verifier
-    verifier_spec.loader.exec_module(verifier)
+    verifier = QUALIFICATION_VERIFIER
 
     subjects, evidence, probes = builder.finish()
     cell_id = cell_document["id"]
@@ -598,14 +621,18 @@ def verify_shared_consumer(
     )
 
 
-retained_builder = MODULE.ProviderStateEvidence(MATRIX, [RETAINED_CELL["id"]])
+retained_builder = MODULE.ProviderStateEvidence(
+    MATRIX, [RETAINED_CELL["id"]], PROVIDER_VALIDATOR
+)
 retained_builder.retain_retained_target(
     RETAINED_CELL["id"], BUNDLE, retained_observation()
 )
 assert set(retained_builder.finish()[2]) == {RETAINED_CELL["id"]}
 verify_shared_consumer(retained_builder, RETAINED_CELL)
 
-unsupported_builder = MODULE.ProviderStateEvidence(MATRIX, [UNSUPPORTED_CELL["id"]])
+unsupported_builder = MODULE.ProviderStateEvidence(
+    MATRIX, [UNSUPPORTED_CELL["id"]], PROVIDER_VALIDATOR
+)
 unsupported_builder.retain_unsupported_transfer(
     UNSUPPORTED_CELL["id"], BUNDLE, unsupported_contract(), unsupported_observation()
 )
@@ -613,7 +640,7 @@ assert set(unsupported_builder.finish()[2]) == {UNSUPPORTED_CELL["id"]}
 verify_shared_consumer(unsupported_builder, UNSUPPORTED_CELL)
 
 compatible_builder = MODULE.ProviderStateEvidence(
-    COMPATIBLE_MATRIX, [COMPATIBLE_CELL["id"]]
+    COMPATIBLE_MATRIX, [COMPATIBLE_CELL["id"]], PROVIDER_VALIDATOR
 )
 compatible_builder.retain_compatible_adoption(
     COMPATIBLE_CELL["id"],
@@ -625,7 +652,9 @@ assert set(compatible_builder.finish()[2]) == {COMPATIBLE_CELL["id"]}
 verify_shared_consumer(compatible_builder, COMPATIBLE_CELL, COMPATIBLE_MATRIX)
 
 incompatible_builder = MODULE.ProviderStateEvidence(
-    COMPATIBLE_MATRIX, [PERSISTENT_UNSUPPORTED_CELL["id"]]
+    COMPATIBLE_MATRIX,
+    [PERSISTENT_UNSUPPORTED_CELL["id"]],
+    PROVIDER_VALIDATOR,
 )
 incompatible_builder.retain_incompatible_transfer(
     PERSISTENT_UNSUPPORTED_CELL["id"],
@@ -641,7 +670,9 @@ verify_shared_consumer(
 
 wrong_generation = replace(retained_observation(), activated_generation=2)
 must_reject(
-    lambda: MODULE.ProviderStateEvidence(MATRIX, [RETAINED_CELL["id"]]).retain_retained_target(
+    lambda: MODULE.ProviderStateEvidence(
+        MATRIX, [RETAINED_CELL["id"]], PROVIDER_VALIDATOR
+    ).retain_retained_target(
         RETAINED_CELL["id"], BUNDLE, wrong_generation
     )
 )
@@ -650,7 +681,7 @@ reused_incarnation = copy.deepcopy(unsupported_observation())
 reused_incarnation.candidate_authority["provider_assignments"][0]["incarnation"] = "source"
 must_reject(
     lambda: MODULE.ProviderStateEvidence(
-        MATRIX, [UNSUPPORTED_CELL["id"]]
+        MATRIX, [UNSUPPORTED_CELL["id"]], PROVIDER_VALIDATOR
     ).retain_unsupported_transfer(
         UNSUPPORTED_CELL["id"], BUNDLE, unsupported_contract(), reused_incarnation
     )
@@ -660,7 +691,7 @@ missing_owner = copy.deepcopy(unsupported_observation())
 missing_owner.ledger_before["consumers"] = []
 must_reject(
     lambda: MODULE.ProviderStateEvidence(
-        MATRIX, [UNSUPPORTED_CELL["id"]]
+        MATRIX, [UNSUPPORTED_CELL["id"]], PROVIDER_VALIDATOR
     ).retain_unsupported_transfer(
         UNSUPPORTED_CELL["id"], BUNDLE, unsupported_contract(), missing_owner
     )
@@ -670,7 +701,7 @@ forged_contract = bytearray(unsupported_contract())
 forged_contract[-2] = ord(" ")
 must_reject(
     lambda: MODULE.ProviderStateEvidence(
-        MATRIX, [UNSUPPORTED_CELL["id"]]
+        MATRIX, [UNSUPPORTED_CELL["id"]], PROVIDER_VALIDATOR
     ).retain_unsupported_transfer(
         UNSUPPORTED_CELL["id"], BUNDLE, bytes(forged_contract), unsupported_observation()
     )
@@ -680,7 +711,7 @@ lifetime_drift = json.loads(unsupported_contract())
 lifetime_drift["disposition"]["rejection"]["request_lifetime"] = "persistent"
 must_reject(
     lambda: MODULE.ProviderStateEvidence(
-        MATRIX, [UNSUPPORTED_CELL["id"]]
+        MATRIX, [UNSUPPORTED_CELL["id"]], PROVIDER_VALIDATOR
     ).retain_unsupported_transfer(
         UNSUPPORTED_CELL["id"],
         BUNDLE,

@@ -1,4 +1,4 @@
-"""Validates provider-state transfer and adoption evidence."""
+"""Validates and projects provider-state transfer and adoption evidence."""
 
 from __future__ import annotations
 
@@ -50,6 +50,8 @@ PROVIDER_STATE_EVIDENCE_SCHEMA = (
 PROVIDER_STATE_TRANSFER_CONTRACT_SCHEMA = (
     "aos.ability.provider-state-transfer-contract/v1"
 )
+
+MAX_RETAINED_ENTRIES = 65_536
 
 def _cancellation_oracle_kinds(spec: dict[str, Any]) -> set[str]:
     """Returns live-state kinds from package-owned observer descriptors."""
@@ -289,12 +291,33 @@ def _validate_provider_state_subject(
         raise RuntimeError("provider-state evidence lacks its provider-specific oracle")
 
     source = _provider_state_authority(evidence["source-authority"])
-    source_assignment = _provider_state_assignment(source, operation_document)
+    source_binding, source_assignment = _provider_state_route(
+        source, operation_document
+    )
     if scenario == "activate-retained-target":
         before = _provider_state_authority(evidence["authority-before"])
         after = _provider_state_authority(evidence["authority-after"])
-        before_assignment = _provider_state_assignment(before, operation_document)
-        after_assignment = _provider_state_assignment(after, operation_document)
+        before_binding, before_assignment = _provider_state_route(
+            before, operation_document
+        )
+        after_binding, after_assignment = _provider_state_route(
+            after, operation_document
+        )
+        retained_ledgers = (
+            evidence["ledger-before"],
+            evidence["ledger-unsettled"],
+            evidence["ledger-after"],
+        )
+        for ledger, binding, assignment in zip(
+            retained_ledgers,
+            (before_binding, before_binding, after_binding),
+            (before_assignment, before_assignment, after_assignment),
+        ):
+            _provider_state_claim_matches_route(
+                ledger, operation["target"]["resource"], binding, assignment
+            )
+        _provider_state_resource_observation(before, operation_document)
+        _provider_state_resource_observation(after, operation_document)
         if (
             set(generations) != {"retained", "predecessor", "activated"}
             or generations["retained"] <= 0
@@ -303,7 +326,19 @@ def _validate_provider_state_subject(
             or source["sequence"] >= before["sequence"]
             or before["sequence"] >= after["sequence"]
             or source_assignment["incarnation"] == before_assignment["incarnation"]
+            or _provider_state_assignment_core(source_assignment)
+            != _provider_state_assignment_core(before_assignment)
+            or before_binding != after_binding
             or before_assignment != after_assignment
+            or before.get("plan") != bundle["plan"]
+            or after.get("plan") != bundle["plan"]
+            or before.get("transaction") != subject["transaction"]
+            or after.get("transaction") != subject["transaction"]
+            or _provider_state_scope(source) == _provider_state_scope(before)
+            or source["observed_at_restart_millis"]
+            > before["observed_at_restart_millis"]
+            or before["observed_at_restart_millis"]
+            > after["observed_at_restart_millis"]
             or not (
                 _provider_state_ledger_claim(
                     evidence["ledger-before"], operation["target"]["resource"]
@@ -321,7 +356,7 @@ def _validate_provider_state_subject(
             raise RuntimeError("retained-target authority or ownership is not monotonic")
     elif scenario == "adopt-compatible-state":
         candidate = _provider_state_authority(evidence["candidate-authority"])
-        candidate_assignment = _provider_state_assignment(
+        candidate_binding, candidate_assignment = _provider_state_route(
             candidate, operation_document
         )
         contract = evidence["transfer-contract"]
@@ -349,11 +384,29 @@ def _validate_provider_state_subject(
         owner_after = _provider_state_ledger_claim(
             evidence["ledger-after"], operation["target"]["resource"]
         )
+        _provider_state_claim_matches_route(
+            evidence["ledger-before"],
+            operation["target"]["resource"],
+            source_binding,
+            source_assignment,
+        )
+        for ledger in (evidence["ledger-unsettled"], evidence["ledger-after"]):
+            _provider_state_claim_matches_route(
+                ledger,
+                operation["target"]["resource"],
+                candidate_binding,
+                candidate_assignment,
+            )
         if (
             set(generations) != {"source", "candidate"}
             or generations["source"] <= 0
             or generations["candidate"] <= generations["source"]
             or source["sequence"] >= candidate["sequence"]
+            or candidate.get("plan") != bundle["plan"]
+            or candidate.get("transaction") != subject["transaction"]
+            or _provider_state_scope(source) == _provider_state_scope(candidate)
+            or source["observed_at_restart_millis"]
+            > candidate["observed_at_restart_millis"]
             or source_assignment["incarnation"]
             == candidate_assignment["incarnation"]
             or expected_lifetime != "persistent"
@@ -396,6 +449,12 @@ def _validate_provider_state_subject(
         candidate_endpoint = adoption.get("candidate", {})
         source_format = source_endpoint.get("state_format", {})
         candidate_format = candidate_endpoint.get("state_format", {})
+        _provider_state_claim_matches_route(
+            evidence["ledger-before"], resource, source_binding, source_assignment
+        )
+        _provider_state_claim_matches_route(
+            evidence["ledger-after"], resource, source_binding, source_assignment
+        )
         if (
             policy.get("schema") != "aos.ability.authenticated-policy-set/v1"
             or authority.get("current_planning")
@@ -404,6 +463,8 @@ def _validate_provider_state_subject(
             set(generations) != {"source", "candidate"}
             or generations["source"] <= 0
             or generations["candidate"] != generations["source"]
+            or source.get("plan") != bundle["plan"]
+            or source.get("transaction") != subject["transaction"]
             or expected_lifetime != "persistent"
             or provider_contract.get("state_format")
             != source_format.get("descriptor")
@@ -435,7 +496,23 @@ def _validate_provider_state_subject(
             )
         )
         candidate = _provider_state_authority(evidence["candidate-authority"])
-        candidate_assignment = _provider_state_assignment(candidate, operation_document)
+        _, candidate_assignment = _provider_state_route(candidate, operation_document)
+        _provider_state_resource_observation(
+            source, operation_document, require_present=True
+        )
+        _provider_state_resource_observation(candidate, operation_document)
+        _provider_state_claim_matches_route(
+            evidence["ledger-before"],
+            operation["target"]["resource"],
+            source_binding,
+            source_assignment,
+        )
+        _provider_state_claim_matches_route(
+            evidence["ledger-after"],
+            operation["target"]["resource"],
+            source_binding,
+            source_assignment,
+        )
         contract = evidence["transfer-contract"]
         rejection = contract.get("disposition", {}).get("rejection", {})
         if (
@@ -443,6 +520,11 @@ def _validate_provider_state_subject(
             or generations["source"] <= 0
             or generations["candidate"] <= generations["source"]
             or source["sequence"] >= candidate["sequence"]
+            or candidate.get("plan") != bundle["plan"]
+            or candidate.get("transaction") != subject["transaction"]
+            or _provider_state_scope(source) == _provider_state_scope(candidate)
+            or source["observed_at_restart_millis"]
+            > candidate["observed_at_restart_millis"]
             or source_assignment["incarnation"] == candidate_assignment["incarnation"]
             or contract.get("schema") != PROVIDER_STATE_TRANSFER_CONTRACT_SCHEMA
             or contract.get("plan") != bundle.get("plan")
@@ -474,7 +556,12 @@ def _provider_state_authority(value: Any) -> dict[str, Any]:
 
     required = {
         "schema",
+        "authority_epoch",
+        "policy_fence",
+        "policy_revision",
+        "resolution_policy",
         "sequence",
+        "observed_at_restart_millis",
         "plan",
         "bindings",
         "provider_assignments",
@@ -486,19 +573,26 @@ def _provider_state_authority(value: Any) -> dict[str, Any]:
         or value.get("schema") != "aos.ability.current-authority/v1"
         or not _is_nonnegative_int(value.get("sequence"))
         or value["sequence"] == 0
-        or any(not isinstance(value.get(field), list) for field in (
-            "bindings",
-            "provider_assignments",
-            "resource_observations",
-        ))
+        or not _is_nonnegative_int(value.get("authority_epoch"))
+        or value["authority_epoch"] == 0
+        or not _is_nonnegative_int(value.get("observed_at_restart_millis"))
+        or any(
+            not isinstance(value.get(field), list)
+            or len(value[field]) > MAX_RETAINED_ENTRIES
+            for field in (
+                "bindings",
+                "provider_assignments",
+                "resource_observations",
+            )
+        )
     ):
         raise RuntimeError("provider-state current authority is malformed")
     return value
 
-def _provider_state_assignment(
+def _provider_state_route(
     authority: dict[str, Any], operation: dict[str, Any]
-) -> dict[str, Any]:
-    """Selects the unique authenticated assignment for an exact operation route."""
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Selects the unique binding and assignment for an exact operation route."""
 
     route_bindings = [
         binding
@@ -511,8 +605,8 @@ def _provider_state_assignment(
             for permission in binding.get("caller_grant", {}).get("resources", [])
         )
     ]
-    assignments = [
-        assignment
+    routes = [
+        (binding, assignment)
         for binding in route_bindings
         for assignment in authority["provider_assignments"]
         if assignment.get("provider") == binding.get("provider")
@@ -521,9 +615,58 @@ def _provider_state_assignment(
         and isinstance(assignment.get("incarnation"), str)
         and assignment["incarnation"]
     ]
-    if len(assignments) != 1:
+    if len(routes) != 1:
         raise RuntimeError("provider-state authority lacks one exact assignment")
-    return assignments[0]
+    return routes[0]
+
+
+def _provider_state_assignment(
+    authority: dict[str, Any], operation: dict[str, Any]
+) -> dict[str, Any]:
+    """Selects the unique authenticated assignment for an exact operation route."""
+
+    return _provider_state_route(authority, operation)[1]
+
+
+def _provider_state_assignment_core(assignment: dict[str, Any]) -> dict[str, Any]:
+    """Projects the stable provider route independently of its incarnation."""
+
+    return {
+        "provider": assignment.get("provider"),
+        "interface": assignment.get("interface"),
+        "implementation": assignment.get("implementation"),
+    }
+
+
+def _provider_state_scope(authority: dict[str, Any]) -> tuple[Any, Any]:
+    """Projects the plan and transaction scope of one authority document."""
+
+    return authority.get("plan"), authority.get("transaction")
+
+
+def _provider_state_resource_observation(
+    authority: dict[str, Any],
+    operation: dict[str, Any],
+    *,
+    require_present: bool = False,
+) -> None:
+    """Validates the sole authority observation for an operation resource."""
+
+    resource = operation["target"]["resource"]
+    matches = [
+        observation
+        for observation in authority["resource_observations"]
+        if observation.get("resource") == resource
+    ]
+    allowed_states = (
+        {"present"} if require_present else {"absent", "present", "stopped"}
+    )
+    if (
+        len(matches) != 1
+        or not isinstance(matches[0].get("state"), dict)
+        or matches[0]["state"].get("state") not in allowed_states
+    ):
+        raise RuntimeError("provider-state authority lacks its exact resource observation")
 
 def _provider_state_ledger_claim(ledger: Any, resource: dict[str, Any]) -> Any:
     """Returns one stable physical ownership identity from the production ledger."""
@@ -533,6 +676,8 @@ def _provider_state_ledger_claim(ledger: Any, resource: dict[str, Any]) -> Any:
         or ledger.get("schema") != "aos.ability.native-resource-ledger/v1"
         or not isinstance(ledger.get("owners"), list)
         or not isinstance(ledger.get("consumers"), list)
+        or len(ledger["owners"]) > MAX_RETAINED_ENTRIES
+        or len(ledger["consumers"]) > MAX_RETAINED_ENTRIES
     ):
         raise RuntimeError("provider-state ownership ledger is malformed")
     owners = [owner for owner in ledger["owners"] if owner.get("resource") == resource]
@@ -582,6 +727,38 @@ def _provider_state_claim_core(claim: Any) -> Any:
     if claim.get("kind") == "terminal-consumer":
         return {"kind": claim["kind"], "identity": claim.get("identity")}
     return claim
+
+
+def _provider_state_claim_matches_route(
+    ledger: dict[str, Any],
+    resource: dict[str, Any],
+    binding: dict[str, Any],
+    assignment: dict[str, Any],
+) -> None:
+    """Binds a durable resource claim to its authenticated provider route."""
+
+    claim = _provider_state_ledger_claim(ledger, resource)
+    if claim["kind"] == "consumer":
+        matching_consumers = [
+            consumer
+            for consumer in ledger["consumers"]
+            if consumer.get("logical") == resource
+            and consumer.get("binding") == binding.get("id")
+            and consumer.get("provider") == assignment.get("provider")
+        ]
+        if matching_consumers:
+            return
+    elif claim["kind"] == "owner":
+        expected_handler = {
+            "package": binding.get("provider_package"),
+            "provider": assignment.get("provider"),
+            "interface": assignment.get("interface"),
+            "implementation": assignment.get("implementation"),
+        }
+        if claim.get("handler") == expected_handler:
+            return
+
+    raise RuntimeError("provider-state ownership names another provider route")
 
 def _provider_state_oracle_snapshot(
     matrix_spec: dict[str, Any], adapter: str, value: Any
@@ -1004,3 +1181,63 @@ def validate_probe(
     _validate_provider_state_probe_facts(
         postcondition, observations, subject, cell, matrix_spec
     )
+
+
+def validate_collection(
+    cell: dict[str, Any],
+    subject: dict[str, Any],
+    evidence_bytes: bytes,
+    probes: dict[str, Any],
+    matrix_spec: dict[str, Any],
+) -> None:
+    """Validates one complete provider-state producer record.
+
+    The production flight calls this before exposing a record to the generic
+    qualification aggregator. This keeps the subject and postcondition
+    acceptance semantics in the same module that the release verifier uses.
+    """
+
+    validate_subject(cell, subject, evidence_bytes, matrix_spec, [])
+
+    expected_postconditions = set(cell.get("postconditions", []))
+    if set(probes) != expected_postconditions:
+        raise RuntimeError("provider-state probes differ from matrix postconditions")
+
+    for postcondition, record in probes.items():
+        if not isinstance(record, dict) or not isinstance(
+            record.get("observations"), dict
+        ):
+            raise RuntimeError("provider-state producer probe is malformed")
+        validate_probe(
+            postcondition,
+            record["observations"],
+            subject,
+            cell,
+            matrix_spec,
+        )
+
+
+def authority(value: Any) -> dict[str, Any]:
+    """Returns the canonical bounded provider-state authority projection."""
+
+    return _provider_state_authority(value)
+
+
+def route(
+    authority_document: dict[str, Any], operation: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Returns the canonical binding and assignment for an observed route."""
+
+    return _provider_state_route(authority_document, operation)
+
+
+def ledger_claim(ledger: Any, resource: dict[str, Any]) -> Any:
+    """Returns the canonical physical claim from an observed provider ledger."""
+
+    return _provider_state_ledger_claim(ledger, resource)
+
+
+def claim_core(claim: Any) -> Any:
+    """Returns the canonical stable identity of a provider-state claim."""
+
+    return _provider_state_claim_core(claim)
