@@ -282,6 +282,20 @@
   } [];
   conditions = request conditionsFeature;
 
+  linuxCapabilityCondition = types.record {
+    fields = {
+      capability = types.capabilityName;
+      available = types.boolean;
+    };
+  };
+  linuxConditionsFeature = feature {
+    capabilities = types.list {
+      element = linuxCapabilityCondition;
+      maxItems = 256;
+    };
+  } [];
+  linuxConditions = request linuxConditionsFeature;
+
   instantiationFeature = feature {
     kind = types.enum ["singleton" "template" "instance"];
     template = {
@@ -599,7 +613,7 @@
   };
   isolationFeature = feature {
     privilege = types.enum ["privileged" "unprivileged"];
-    filesystem = types.enum ["host" "private" "read-only-system"];
+    filesystem = types.enum ["host" "private" "read-only-software" "read-only-system"];
     network = types.enum ["host" "none" "private"];
     process_visibility = types.enum ["host" "private"];
     termination_scope = types.enum ["all-processes" "main-process" "mixed"];
@@ -634,9 +648,17 @@
     kernel_tunable_access = types.boolean;
     lock_personality = types.boolean;
     memory_write_execute = types.boolean;
+    remove_ipc = {
+      type = types.boolean;
+      default = false;
+    };
     namespace_isolation = types.list {
       element = types.enum ["cgroup" "ipc" "mount" "network" "pid" "time" "user" "uts"];
       maxItems = 8;
+    };
+    namespace_creation = {
+      type = types.enum ["allowed" "denied"];
+      default = "allowed";
     };
     network_address_families = types.list {
       element = types.enum ["ipv4" "ipv6" "netlink" "packet" "unix"];
@@ -662,10 +684,62 @@
       element = boundedString 128;
       maxItems = 256;
     };
+    syscall_denial_action = {
+      type = types.enum ["kill-process" "return-permission-denied"];
+      default = "kill-process";
+    };
     syscall_profile = types.enum ["privileged" "restricted" "system-service"];
     user_namespace_ownership = types.enum ["full" "identity" "none" "self"];
   } [];
   linuxIsolation = request linuxIsolationFeature;
+
+  linuxDeviceClass = types.record {
+    fields = {
+      kind = types.enum ["class"];
+      device_type = types.enum ["block" "character"];
+      class = localKey;
+    };
+  };
+  linuxDeviceNumber = types.record {
+    fields = {
+      kind = types.enum ["number"];
+      device_type = types.enum ["block" "character"];
+      major = types.integer {
+        minimum = 0;
+        maximum = 4294967295;
+      };
+      minor = {
+        type = types.optional (types.integer {
+          minimum = 0;
+          maximum = 4294967295;
+        });
+        optional = true;
+      };
+    };
+  };
+  linuxDeviceSelector = types.taggedUnion {
+    tag = "kind";
+    variants = {
+      class = linuxDeviceClass;
+      number = linuxDeviceNumber;
+    };
+  };
+  linuxDeviceRule = types.record {
+    fields = {
+      selector = linuxDeviceSelector;
+      read = types.boolean;
+      write = types.boolean;
+      create_node = types.boolean;
+    };
+  };
+  linuxDevicePolicyFeature = feature {
+    baseline_access = types.enum ["standard-runtime-devices" "declared-devices-only"];
+    rules = types.list {
+      element = linuxDeviceRule;
+      maxItems = 256;
+    };
+  } [];
+  linuxDevicePolicy = request linuxDevicePolicyFeature;
 
   inlineConfigurationSource = types.record {
     fields = {
@@ -941,7 +1015,6 @@
       state = types.enum ["configuring" "degraded" "failed" "ready" "unknown"];
     };
   };
-
   kernelModuleNames = types.list {
     element = localKey;
     maxItems = 256;
@@ -1080,6 +1153,12 @@
     name = localKey;
     source = types.deferredResult types.resourceReference;
   };
+  namedCredential = types.record {
+    fields = {
+      name = localKey;
+      scope = types.enum ["system" "user"];
+    };
+  };
   credentialDelivery = types.record {
     fields =
       referencedViewFields
@@ -1187,6 +1266,11 @@
       };
     };
   producerObservations = {
+    namedCredential =
+      producerObservation
+      (types.enum ["aos.ability.named-credential-observation/v1"])
+      namedCredential
+      types.resourceReference;
     credentialDelivery =
       producerObservation
       (types.enum ["aos.ability.credential-delivery-observation/v1"])
@@ -1277,6 +1361,10 @@
           type = types.optional conditionsFeature;
           optional = true;
         };
+        linux_conditions = {
+          type = types.optional linuxConditionsFeature;
+          optional = true;
+        };
         instantiation = {
           type = types.optional instantiationFeature;
           optional = true;
@@ -1361,6 +1449,10 @@
           type = types.optional linuxIsolationFeature;
           optional = true;
         };
+        linux_device_policy = {
+          type = types.optional linuxDevicePolicyFeature;
+          optional = true;
+        };
       };
   };
   serviceResourceSchema = types.schemaOf "service resource" serviceDeclaration;
@@ -1394,6 +1486,7 @@
     };
     dependencies = observationFor "dependencies" dependencies featureState {};
     conditions = observationFor "conditions" conditions featureState {};
+    linuxConditions = observationFor "linux-conditions" linuxConditions featureState {};
     instantiation = observationFor "instantiation" instantiation featureState {};
     supervision = observationFor "supervision" supervision featureState {};
     readiness = observationFor "readiness" readiness lifecycleState {};
@@ -1415,6 +1508,7 @@
     identity = observationFor "identity" identity featureState {};
     isolation = observationFor "isolation" isolation featureState {};
     linuxIsolation = observationFor "linux-isolation" linuxIsolation featureState {};
+    linuxDevicePolicy = observationFor "linux-device-policy" linuxDevicePolicy featureState {};
   };
 in {
   inherit
@@ -1442,6 +1536,7 @@ in {
     filesystemReadinessObservation
     kernelModules
     kernelModulesObservation
+    namedCredential
     credentialDelivery
     storageView
     storageAllocation
@@ -1463,6 +1558,7 @@ in {
     lifecycle
     dependencies
     conditions
+    linuxConditions
     instantiation
     supervision
     readiness
@@ -1484,6 +1580,7 @@ in {
     identity
     isolation
     linuxIsolation
+    linuxDevicePolicy
     observations
     ;
   resourceReference = types.resourceReference;

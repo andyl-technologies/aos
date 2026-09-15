@@ -239,6 +239,39 @@
   };
   kernelModulesDocument = interfaceDocumentFromDeclaration kernelModulesDeclaration;
 
+  namedCredentialName = "aos.credential.named-resolution";
+  namedCredentialMethods = {
+    observe =
+      method
+      serviceTypes.namedCredential
+      serviceTypes.producerObservations.namedCredential
+      namedCredentialName
+      "observe"
+      "Observes whether the exact named credential resource is available."
+      read;
+  };
+  namedCredentialDeclaration = declareInterface {
+    name = namedCredentialName;
+    description = "Resolves one credential name in a provider-owned scope to an exact credential resource.";
+    abi = 1;
+    requestType = serviceTypes.namedCredential;
+    outputs.credential-resource =
+      output "planning" "instance"
+      "References the exact resolved credential resource without exposing its bytes."
+      serviceTypes.resourceReference;
+    methods = namedCredentialMethods;
+    lifecycle = lifecyclePolicy // { releasesEphemeralOnDisable = false; };
+    guarantees = [];
+    aggregation = {
+      scope = "provider-instance";
+      key = "slot";
+      rejectSlotCollisions = true;
+      mergeContract = null;
+      controllerGroup = "named-credential-resolution";
+    };
+  };
+  namedCredentialDocument = interfaceDocumentFromDeclaration namedCredentialDeclaration;
+
   producer = {
     alias,
     name,
@@ -395,6 +428,17 @@
         observe =
           method serviceTypes.conditions serviceTypes.observations.conditions targetResource "observe"
           "Observes the service's exact environment conditions."
+          read;
+      });
+    linuxConditions =
+      canonical "linux-service-conditions" "aos.platform.linux.service-conditions"
+      "Contributes Linux capability-availability conditions to a service resource."
+      serviceTypes.linuxConditions
+      serviceTypes.observations.linuxConditions
+      (targetResource: {
+        observe =
+          method serviceTypes.linuxConditions serviceTypes.observations.linuxConditions targetResource "observe"
+          "Observes the Linux capability conditions applied to the service."
           read;
       });
     instantiation =
@@ -628,6 +672,17 @@
           "Observes the Linux kernel isolation policy enforced for the service."
           read;
       });
+    linuxDevicePolicy =
+      canonical "linux-service-device-policy" "aos.platform.linux.service-device-policy"
+      "Contributes Linux cgroup device-class and device-number access policy to a service resource."
+      serviceTypes.linuxDevicePolicy
+      serviceTypes.observations.linuxDevicePolicy
+      (targetResource: {
+        observe =
+          method serviceTypes.linuxDevicePolicy serviceTypes.observations.linuxDevicePolicy targetResource "observe"
+          "Observes the Linux device access policy enforced for the service."
+          read;
+      });
     managedConfiguration = {
       alias = "configuration-materialization";
       declaration = managedConfigurationDeclaration;
@@ -663,6 +718,15 @@
       methods = builtins.attrNames kernelModulesMethods;
       requestType = serviceTypes.kernelModules;
       observationType = serviceTypes.kernelModulesObservation;
+    };
+    namedCredential = {
+      alias = "named-credential-resolution";
+      declaration = namedCredentialDeclaration;
+      document = namedCredentialDocument;
+      identity = interfaceIdentity namedCredentialDocument;
+      methods = builtins.attrNames namedCredentialMethods;
+      requestType = serviceTypes.namedCredential;
+      observationType = serviceTypes.producerObservations.namedCredential;
     };
     credentialDelivery = producer {
       alias = "credential-delivery";
