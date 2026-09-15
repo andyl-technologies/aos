@@ -26,7 +26,7 @@ use aos_ability_runtime::execution::{
 use aos_ability_runtime::journal::{JournalLimits, JournalRecord};
 use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
-use aos_package::config_eval::ability_store::RetainedAbilityDiagnosticSource;
+use aos_package::config_eval::RetainedAbilityDiagnosticSource;
 
 use crate::cli::{
     AbilityArtifactConsumptionArgs, AbilityCommand, AbilityCompareArgs, AbilityDiagnosticArgs,
