@@ -434,6 +434,9 @@
   aosPackageRuntimeServices = import ./aos-package-runtime-services.nix {
     inherit lib pkgs;
   };
+  configurationEvaluationService = import ./configuration-evaluation-service.nix {
+    inherit lib pkgs;
+  };
   abilityCrucibleService = import ./ability-crucible-service.nix {
     inherit lib pkgs;
   };
@@ -971,6 +974,7 @@ in
   assert k3sControllerTerminal;
   assert attestationVerifierService;
   assert aosPackageRuntimeServices;
+  assert configurationEvaluationService;
   assert abilityCrucibleService;
   assert abilityBoundaryObserverService;
   assert zfstoolsService;

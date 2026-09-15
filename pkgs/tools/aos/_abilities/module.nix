@@ -2,6 +2,7 @@
 {
   imports = [
     ./attestation-verifier.nix
+    ./configuration-evaluation.nix
     ./configuration-provider/module.nix
     ./credential-recovery.nix
     ./ebpf-lsm-policy-loader.nix
