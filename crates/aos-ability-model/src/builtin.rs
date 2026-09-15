@@ -8,15 +8,14 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
 use anyhow::Result;
-use aos_contract::Sha256Digest;
-use serde::Serialize;
 
 use crate::{
     AccessMode, AggregationContract, AggregationScope, ArtifactReference, ExecutionStage,
     GuaranteeKey, HandlerDescriptor, IndeterminateSemantics, InterfaceDescriptor,
-    InterfaceDocument, InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey,
-    MethodDescriptor, MethodSemantics, OutcomeSemantics, OutputDescriptor, ProviderImplementation,
-    ResourceLifetime, StringSyntax, ValuePhase, ValueSchema, ValueVisibility, VersionedDocument,
+    InterfaceDocument, InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey, MethodDescriptor,
+    MethodSemantics, OutcomeSemantics, OutputDescriptor, ProviderImplementation, ResourceLifetime,
+    StringSyntax, ValuePhase, ValueSchema, ValueVisibility, VersionedDocument,
+    guarantee_descriptor,
 };
 
 mod resource;
@@ -818,34 +817,13 @@ pub fn systemd_manager_provider(artifact: ArtifactReference) -> Result<ProviderI
 }
 
 fn execution_guarantee(name: &str, semantics: &str) -> Result<GuaranteeKey> {
-    #[derive(Serialize)]
-    struct GuaranteeDocument<'a> {
-        name: &'a str,
-        version: u32,
-        semantics: &'a str,
-    }
-
-    #[derive(Serialize)]
-    struct GuaranteeEnvelope<'a> {
-        domain: &'static str,
-        document: GuaranteeDocument<'a>,
-    }
-
-    let document = GuaranteeDocument {
-        name,
-        version: 1,
-        semantics,
-    };
-    let envelope = GuaranteeEnvelope {
-        domain: "aos.ability.execution-guarantee/v1",
-        document,
-    };
-    let encoded = aos_contract::canonical::to_vec(&envelope)?;
+    let name = InterfaceName::new(name)?;
+    let version = NonZeroU32::new(1).ok_or_else(|| anyhow::anyhow!("invalid built-in version"))?;
 
     Ok(GuaranteeKey {
-        name: InterfaceName::new(name)?,
-        version: NonZeroU32::new(1).ok_or_else(|| anyhow::anyhow!("invalid built-in version"))?,
-        descriptor: Sha256Digest::of_bytes(encoded),
+        descriptor: guarantee_descriptor(&name, version, semantics)?,
+        name,
+        version,
     })
 }
 

@@ -4179,7 +4179,6 @@ mod tests {
                     .expect("foreground handler is valid"),
             )]),
         };
-        package.ownership = vec![ScopePath::root()];
         let verified = crate::ability_package::seal_test_package(package)
             .expect("foreground package must seal");
         let owner_package = verified.package_digest();

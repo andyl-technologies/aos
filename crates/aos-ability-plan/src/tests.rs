@@ -1272,6 +1272,13 @@ fn planner_fixture_with_contract(
             source: artifact.clone(),
         },
         artifacts: vec![artifact.clone()],
+        interfaces: Default::default(),
+        guarantees: Default::default(),
+        package_module: aos_ability_model::ModuleLocator {
+            artifact: artifact.clone(),
+            path: aos_ability_model::RelativePath::new("module.nix")
+                .expect("fixture package module path is valid"),
+        },
         exports: vec![ExportDeclaration {
             name: key("provider"),
             interface: interface.clone(),
@@ -1282,7 +1289,6 @@ fn planner_fixture_with_contract(
             providers: vec![provider_implementation],
             handlers: BTreeMap::new(),
         },
-        ownership: Vec::new(),
     };
     let package_digest = package
         .content_digest()

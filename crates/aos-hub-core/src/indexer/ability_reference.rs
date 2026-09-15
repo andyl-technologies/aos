@@ -332,6 +332,13 @@ mod tests {
                 source: artifact.clone(),
             },
             artifacts: Vec::new(),
+            interfaces: Default::default(),
+            guarantees: Default::default(),
+            package_module: aos_ability_model::ModuleLocator {
+                artifact: artifact.clone(),
+                path: aos_ability_model::RelativePath::new("module.nix")
+                    .expect("fixture package module path is valid"),
+            },
             exports: vec![
                 ExportDeclaration {
                     name: aos_ability_model::LocalKey::new("echo").expect("valid export"),
@@ -350,7 +357,6 @@ mod tests {
                 providers: vec![provider],
                 handlers: BTreeMap::new(),
             },
-            ownership: Vec::new(),
         };
         let package_bytes = encode_canonical(&package).expect("encode package");
         let interface_name = format!("{}.json", interface_key.descriptor.hex());

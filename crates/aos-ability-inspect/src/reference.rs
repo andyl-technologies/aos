@@ -705,7 +705,6 @@ mod tests {
             }],
             requirements: Vec::new(),
             handlers: Vec::new(),
-            ownership: Vec::new(),
         }
     }
 }

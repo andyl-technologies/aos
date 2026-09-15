@@ -156,6 +156,12 @@ fn install_package_with_feature(
             source: artifact.clone(),
         },
         artifacts: vec![artifact.clone()],
+        interfaces: Default::default(),
+        guarantees: Default::default(),
+        package_module: aos_ability_model::ModuleLocator {
+            artifact: artifact.clone(),
+            path: aos_ability_model::RelativePath::new("module.nix")?,
+        },
         exports,
         requirements: Vec::new(),
         implementation: PackageImplementation {
@@ -170,7 +176,6 @@ fn install_package_with_feature(
                 },
             )]),
         },
-        ownership: Vec::new(),
     };
     binding.provider_package = Some(package.content_digest()?);
     for request in &mut fixture.binding_plan.requests {

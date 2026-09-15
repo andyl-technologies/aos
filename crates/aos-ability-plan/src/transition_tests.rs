@@ -1812,6 +1812,13 @@ fn pure_service_package(
             source: payload,
         },
         artifacts,
+        interfaces: Default::default(),
+        guarantees: Default::default(),
+        package_module: aos_ability_model::ModuleLocator {
+            artifact: module.clone(),
+            path: aos_ability_model::RelativePath::new("module.nix")
+                .expect("fixture package module path is valid"),
+        },
         exports: vec![ExportDeclaration {
             name: key("service"),
             interface: interface.clone(),
@@ -1822,7 +1829,6 @@ fn pure_service_package(
             providers: vec![implementation],
             handlers: BTreeMap::new(),
         },
-        ownership: Vec::new(),
     }
 }
 
@@ -1848,7 +1854,14 @@ fn terminal_package(
             payload: artifact.clone(),
             source: artifact.clone(),
         },
-        artifacts: vec![artifact],
+        artifacts: vec![artifact.clone()],
+        interfaces: Default::default(),
+        guarantees: Default::default(),
+        package_module: aos_ability_model::ModuleLocator {
+            artifact: artifact.clone(),
+            path: aos_ability_model::RelativePath::new("module.nix")
+                .expect("fixture package module path is valid"),
+        },
         exports: vec![ExportDeclaration {
             name: key("manager"),
             interface: interface.clone(),
@@ -1859,7 +1872,6 @@ fn terminal_package(
             providers: vec![provider],
             handlers: BTreeMap::from([(handler_key, handler)]),
         },
-        ownership: Vec::new(),
     }
 }
 
@@ -2598,6 +2610,13 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
             source: artifact.clone(),
         },
         artifacts: vec![artifact.clone()],
+        interfaces: Default::default(),
+        guarantees: Default::default(),
+        package_module: aos_ability_model::ModuleLocator {
+            artifact: artifact.clone(),
+            path: aos_ability_model::RelativePath::new("module.nix")
+                .expect("fixture package module path is valid"),
+        },
         exports: vec![ExportDeclaration {
             name: key("provider"),
             interface: interface.clone(),
@@ -2608,7 +2627,6 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
             providers: vec![pure_implementation],
             handlers: BTreeMap::new(),
         },
-        ownership: Vec::new(),
     };
     let pure_package_digest = pure_package
         .content_digest()
@@ -2644,6 +2662,13 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
             source: terminal_source.clone(),
         },
         artifacts: vec![artifact.clone()],
+        interfaces: Default::default(),
+        guarantees: Default::default(),
+        package_module: aos_ability_model::ModuleLocator {
+            artifact: artifact.clone(),
+            path: aos_ability_model::RelativePath::new("module.nix")
+                .expect("fixture package module path is valid"),
+        },
         exports: vec![ExportDeclaration {
             name: key("provider"),
             interface: interface.clone(),
@@ -2662,7 +2687,6 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
                 },
             )]),
         },
-        ownership: Vec::new(),
     };
     let terminal_package_digest = terminal_package
         .content_digest()

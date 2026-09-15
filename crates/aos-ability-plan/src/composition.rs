@@ -916,7 +916,9 @@ fn index_packages(
                 limit: "package input aggregate byte",
             });
         }
-        let digest = Sha256Digest::separated(PackageDocument::SCHEMA, bytes);
+        let digest = package
+            .content_digest()
+            .map_err(|error| CompositionError::Encoding(error.to_string()))?;
         if index.insert(digest, position).is_some() {
             return Err(CompositionError::Encoding(
                 "duplicate exact package input".to_string(),
