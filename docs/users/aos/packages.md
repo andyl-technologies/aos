@@ -12,11 +12,11 @@ Before installing a package, configure and verify its source as described in
 signed store graph authenticate the publisher and exact closure bytes; they do
 not establish that a program is benign.
 
-For packages that activate services, inspect the signed permissions and local
-policy described in [Understand the package sandbox](package-sandbox.md). On
-measured-boot systems, [Secure Boot and package trust](secure-boot.md) explains
-how the image-baked registry anchors and PCR 15 measurements connect package
-admission to the boot chain.
+For packages that contribute services, inspect the signed package contract and
+selected resources described in [Understand native package runtime
+policy](package-sandbox.md). [Secure Boot and package trust](secure-boot.md)
+explains how image-baked registry anchors connect package admission to the boot
+chain.
 
 ## Manage user packages
 

@@ -256,13 +256,12 @@ image or generation according to a procedure tested for that release.
 
 ## Recover an application package
 
-Inspect installed package generations and the package target. This example
+Inspect installed package generations and the selected service unit. This example
 uses the `acme-agent` package from the [configuration guide](configuration.md);
 replace it with the affected package and unit:
 
 ```sh
 apm list --installed --system
-systemctl status aos-pkg-acme-agent.target
 systemctl status acme-agent.service
 journalctl -u acme-agent.service -b
 ```

@@ -8,8 +8,8 @@ configuration.
 
 This guide explains that complete chain and its operational limits. Registry
 configuration is covered in [Configure package registries](registries.md), and
-runtime confinement is covered in [Understand the package
-sandbox](package-sandbox.md).
+package-owned runtime resources are covered in [Understand native package
+runtime policy](package-sandbox.md).
 
 The checked-in Secure Boot and measured-boot variants use public test keys.
 They demonstrate and test the mechanisms but provide no production identity.
@@ -30,7 +30,6 @@ deployment-owned UEFI PK and KEK authorize the firmware db
   -> those anchors verify registry history, TUF metadata, and the catalog
   -> the signed store graph authorizes every NAR in a selected closure
   -> APM verifies and imports those bytes into /nix/store
-  -> activation extends PCR 15 for exposed package roots and permission manifests
 ```
 
 Secure Boot alone verifies executable PE binaries. It does not hash every disk
@@ -148,35 +147,9 @@ different bytes satisfy the signed graph. A separate narinfo signature supports
 stock Nix substitution and does not replace registry verification.
 
 Registry signatures prove which registry owner authorized exact content. They
-do not prove that the package is harmless. Inspect the package's permissions
-and local policy as described in [Understand the package
-sandbox](package-sandbox.md).
-
-## Connect active packages to measured boot
-
-Packages installed after image construction are not retroactively measured in
-PCR 11. When APM activates a machine-wide package with `expose` metadata, it
-extends PCR 15 with the package name, version, root digest, and permission-
-manifest digest. Configuration generation activation also records its exact
-authenticated inputs and running image relationship.
-
-A remote quote over PCRs 7, 11, 12, and 15 can therefore bind:
-
-- enforcing Secure Boot policy;
-- the selected UKI and boot phases;
-- external boot input;
-- explicitly activated exposed packages and their privilege declarations; and
-- the active configuration generation.
-
-The verifier must replay the CEL event log and compare it with signed registry
-and image policy. PCR values alone do not identify the events that produced
-them.
-
-PCR 15 does not measure user-profile packages, inactive downloads, every
-dependency as an independent identity, or arbitrary Nix store content. The
-signed realization graph authenticates those closure bytes. Only a signed
-dm-verity package `RootImage=` supplies block-level verification while an
-exposed workload executes.
+do not prove that the package is harmless. Inspect its signed contract and the
+selected native resources as described in [Understand native package runtime
+policy](package-sandbox.md).
 
 ## Validate an image before installation
 

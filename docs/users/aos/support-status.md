@@ -20,7 +20,7 @@ promise.
 | DHCP and single-address static networking | Implemented |
 | MTU, VLAN, and bond high-level options | Incomplete rendering |
 | APM machine-wide packages | Add/remove reconciliation implemented; upgrade and rollback incomplete |
-| [Exposed APM service confinement](package-sandbox.md) | Implemented, early preview |
+| [Typed package runtime policy](package-sandbox.md) | Implemented through native ability providers |
 | Stock unprivileged user package profile | Not provisioned |
 | Configuration generation rollback | Implemented |
 | Durable image, kernel, and UKI upgrade | Early-preview A/B path implemented with boot counting and redundant ESP synchronization |
@@ -29,7 +29,7 @@ promise.
 | System-package/configuration generation pruning | Implemented |
 | A/B image-generation pruning | Not implemented |
 | [Secure Boot, lockdown, measured boot, dm-verity](secure-boot.md) | Fleet-test fixtures implemented |
-| Package supply-chain and runtime attestation | Fleet-test implementation for exposed system packages |
+| Package supply-chain attestation | Fleet-test implementation for signed system packages |
 | SELinux module | Present, not enabled by presets |
 | Audit, firewall, kernel hardening | Implemented in server baseline |
 | Encrypted ZFS bare-metal storage | Early-preview installer and boot path implemented |

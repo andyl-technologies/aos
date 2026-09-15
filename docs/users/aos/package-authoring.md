@@ -4,7 +4,7 @@ An AOS package is a Nix derivation built from source with the AOS package set.
 Adding an application normally has three parts:
 
 1. define the package under `pkgs/`;
-2. expose its runtime interface when `apm` must activate it;
+2. declare its typed package module when it contributes runtime behavior;
 3. include it in a system variant or publish it to a registry.
 
 This guide builds a small service package called `acme-health-agent`. The
@@ -12,9 +12,9 @@ example is deliberately self-contained so it can be evaluated and built
 without a separate source repository.
 
 Use [Review package security](../../maintainers/package-security.md) while
-choosing dependencies, permissions, and an `expose` contract. The corresponding
-operator-visible boundary is documented in [Understand the package
-sandbox](package-sandbox.md).
+choosing dependencies and native ability requests. The corresponding
+operator-visible boundary is documented in [Understand native package runtime
+policy](package-sandbox.md).
 
 ## Define the package
 
@@ -56,27 +56,6 @@ mkDerivation {
       '';
     }
   ];
-
-  expose = {
-    units."acme-health-agent.service" = {
-      description = "Acme host health agent";
-      serviceConfig = {
-        Type = "simple";
-        ExecStart = "${agent}/bin/acme-health-agent";
-        Restart = "on-failure";
-        RestartSec = "5s";
-      };
-    };
-
-    permissions = {
-      network = "private";
-      tcp-bind = [];
-      capabilities = [];
-      devices = [];
-      host-paths = [];
-      syscalls = "restricted";
-    };
-  };
 
   meta = {
     description = "Acme host health agent";
@@ -214,7 +193,7 @@ hostname already used by the dependency closure instead of widening its
 network-origin set.
 
 Leave Bazel action placement to the system Bazel configuration when its local
-default works in the package sandbox. Do not add a global
+default works in the build sandbox. Do not add a global
 `--spawn_strategy=standalone` package flag: command-line package flags override
 the system configuration and prevent an available remote executor from
 receiving actions. When nested Bazel sandboxing is unavailable and a package
