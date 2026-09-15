@@ -22,18 +22,24 @@ use crate::materialize::{
     ServicePaths, materialize_service, remove_service, service_is_absent, service_matches,
     service_paths_for,
 };
-use crate::model::{PROVIDER_CONTEXT_SCHEMA, ProviderContext};
+use crate::model::{PROVIDER_CONTEXT_SCHEMA, ProviderContext, ServiceUnitIdentity};
 use crate::render::{RenderedService, RenderedServiceLink, RenderedServiceUnit};
+use crate::semantic::resolve_unit_identity;
 use crate::{decode_value, empty_outputs, provider_context, target_context, value};
 
 const ETC_ROOT: &str = "/etc";
 const MOUNT_EFFECTS_INTERFACE: &str = "aos.systemd.mount-effects";
+const SCHEDULED_ACTIVATION_EFFECTS_INTERFACE: &str =
+    "aos.systemd.scheduled-activation-effects";
 const SWAP_EFFECTS_INTERFACE: &str = "aos.systemd.swap-effects";
 const DEVICE_PRESENCE_INTERFACE: &str = "aos.device.presence";
 const MOUNT_RESOURCE_KIND: &str = "aos.filesystem.mount";
+const SCHEDULED_ACTIVATION_RESOURCE_KIND: &str = "aos.activation.schedule";
 const SWAP_RESOURCE_KIND: &str = "aos.memory.swap";
 const REALIZATION_SCHEMA: &str = "aos.systemd.native-resource-realization/v1";
 const MOUNT_OBSERVATION_SCHEMA: &str = "aos.ability.mount-resource-observation/v1";
+const SCHEDULED_ACTIVATION_OBSERVATION_SCHEMA: &str =
+    "aos.ability.scheduled-activation-observation/v1";
 const SWAP_OBSERVATION_SCHEMA: &str = "aos.ability.swap-resource-observation/v1";
 const DEVICE_OBSERVATION_SCHEMA: &str = "aos.ability.device-presence-observation/v1";
 
@@ -65,6 +71,29 @@ struct SwapDesired {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+enum Schedule {
+    Calendar {
+        expression: String,
+    },
+    Interval {
+        initial_delay_millis: u64,
+        interval_millis: u64,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ScheduledActivationDesired {
+    name: String,
+    enabled: bool,
+    schedule: Schedule,
+    persistent: bool,
+    accuracy_millis: u64,
+    randomized_delay_millis: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct DeviceDesired {
     name: String,
@@ -73,17 +102,19 @@ struct DeviceDesired {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-enum NativeBackend {
-    MountUnit,
-    SwapUnit,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct NativeRealization {
-    schema: String,
-    backend: NativeBackend,
+#[serde(tag = "backend", rename_all = "kebab-case", deny_unknown_fields)]
+enum NativeRealization {
+    MountUnit {
+        schema: String,
+    },
+    SwapUnit {
+        schema: String,
+    },
+    TimerUnit {
+        schema: String,
+        systemd_unit: crate::model::SystemdUnitIdentity,
+        target: ServiceUnitIdentity,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -97,6 +128,7 @@ pub(crate) struct StaticNativeResource {
 
 enum Desired {
     Mount(MountDesired),
+    ScheduledActivation(ScheduledActivationDesired),
     Swap(SwapDesired),
 }
 
@@ -104,6 +136,7 @@ impl Desired {
     fn enabled(&self) -> bool {
         match self {
             Self::Mount(desired) => desired.enabled,
+            Self::ScheduledActivation(desired) => desired.enabled,
             Self::Swap(desired) => desired.enabled,
         }
     }
@@ -111,6 +144,7 @@ impl Desired {
     fn resource_kind(&self) -> &'static str {
         match self {
             Self::Mount(_) => MOUNT_RESOURCE_KIND,
+            Self::ScheduledActivation(_) => SCHEDULED_ACTIVATION_RESOURCE_KIND,
             Self::Swap(_) => SWAP_RESOURCE_KIND,
         }
     }
@@ -118,6 +152,7 @@ impl Desired {
     fn observation_schema(&self) -> &'static str {
         match self {
             Self::Mount(_) => MOUNT_OBSERVATION_SCHEMA,
+            Self::ScheduledActivation(_) => SCHEDULED_ACTIVATION_OBSERVATION_SCHEMA,
             Self::Swap(_) => SWAP_OBSERVATION_SCHEMA,
         }
     }
@@ -126,7 +161,10 @@ impl Desired {
 pub(crate) fn supports(method: &MethodReference) -> bool {
     matches!(
         method.interface.name.as_str(),
-        MOUNT_EFFECTS_INTERFACE | SWAP_EFFECTS_INTERFACE | DEVICE_PRESENCE_INTERFACE
+        MOUNT_EFFECTS_INTERFACE
+            | SCHEDULED_ACTIVATION_EFFECTS_INTERFACE
+            | SWAP_EFFECTS_INTERFACE
+            | DEVICE_PRESENCE_INTERFACE
     )
 }
 
@@ -147,7 +185,7 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     if request.resource_spec.kind.as_str() != desired.resource_kind() {
         bail!("native-resource desired value differs from its resource kind");
     }
-    let rendered = render(&desired)?;
+    let rendered = render(&desired, &request.resource_spec.realization)?;
     let paths = service_paths_for(
         Path::new(ETC_ROOT),
         &rendered.primary_unit,
@@ -225,7 +263,7 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
         bail!("unsupported native-resource provider context schema");
     }
 
-    let rendered = render(&desired)?;
+    let rendered = render(&desired, &bound.resource_spec.realization)?;
     let paths = service_paths_for(
         Path::new(ETC_ROOT),
         &rendered.primary_unit,
@@ -418,6 +456,9 @@ fn require_method(method: &MethodReference, semantics: &MethodSemantics) -> Resu
 fn desired_from_value(method: &MethodReference, value: &AbilityValue) -> Result<Desired> {
     match method.interface.name.as_str() {
         MOUNT_EFFECTS_INTERFACE => Ok(Desired::Mount(decode_value(value)?)),
+        SCHEDULED_ACTIVATION_EFFECTS_INTERFACE => {
+            Ok(Desired::ScheduledActivation(decode_value(value)?))
+        }
         SWAP_EFFECTS_INTERFACE => Ok(Desired::Swap(decode_value(value)?)),
         _ => bail!("native-resource effect selects an unsupported desired value"),
     }
@@ -427,6 +468,9 @@ fn require_inputs(desired: &Desired, inputs: &AbilityValue) -> Result<()> {
     let matches = match desired {
         Desired::Mount(value) => {
             decode_value::<EffectRequest<MountDesired>>(inputs)?.desired == *value
+        }
+        Desired::ScheduledActivation(value) => {
+            decode_value::<EffectRequest<ScheduledActivationDesired>>(inputs)?.desired == *value
         }
         Desired::Swap(value) => {
             decode_value::<EffectRequest<SwapDesired>>(inputs)?.desired == *value
@@ -440,11 +484,18 @@ fn require_inputs(desired: &Desired, inputs: &AbilityValue) -> Result<()> {
 
 fn require_realization(desired: &Desired, value: &AbilityValue) -> Result<()> {
     let realization: NativeRealization = decode_value(value)?;
-    let expected = match desired {
-        Desired::Mount(_) => NativeBackend::MountUnit,
-        Desired::Swap(_) => NativeBackend::SwapUnit,
+    let matches = match (desired, realization) {
+        (Desired::Mount(_), NativeRealization::MountUnit { schema })
+        | (Desired::Swap(_), NativeRealization::SwapUnit { schema }) => {
+            schema == REALIZATION_SCHEMA
+        }
+        (
+            Desired::ScheduledActivation(_),
+            NativeRealization::TimerUnit { schema, .. },
+        ) => schema == REALIZATION_SCHEMA,
+        _ => false,
     };
-    if realization.schema != REALIZATION_SCHEMA || realization.backend != expected {
+    if !matches {
         bail!("native resource uses an unsupported realization");
     }
     Ok(())
@@ -456,14 +507,17 @@ pub(crate) fn render_static(input: StaticNativeResource) -> Result<RenderedServi
     }
     let desired = match input.kind.as_str() {
         MOUNT_RESOURCE_KIND => Desired::Mount(decode_value(&input.desired)?),
+        SCHEDULED_ACTIVATION_RESOURCE_KIND => {
+            Desired::ScheduledActivation(decode_value(&input.desired)?)
+        }
         SWAP_RESOURCE_KIND => Desired::Swap(decode_value(&input.desired)?),
         _ => bail!("static native-resource input selects an unsupported resource kind"),
     };
     require_realization(&desired, &input.realization)?;
-    render(&desired)
+    render(&desired, &input.realization)
 }
 
-fn render(desired: &Desired) -> Result<RenderedService> {
+fn render(desired: &Desired, realization: &AbilityValue) -> Result<RenderedService> {
     let (unit_name, bytes, target) = match desired {
         Desired::Mount(mount) => {
             validate_absolute_path(&mount.source, "mount source")?;
@@ -490,6 +544,57 @@ fn render(desired: &Desired) -> Result<RenderedService> {
                 document.push_str(&format!("TimeoutSec={}ms\n", timeout));
             }
             (unit_name, document.into_bytes(), "local-fs.target")
+        }
+        Desired::ScheduledActivation(activation) => {
+            reject_line_break(&activation.name, "scheduled activation name")?;
+            if activation.accuracy_millis == 0 {
+                bail!("scheduled activation accuracy must be positive");
+            }
+            let NativeRealization::TimerUnit {
+                systemd_unit,
+                target,
+                ..
+            } = decode_value(realization)?
+            else {
+                bail!("scheduled activation requires a timer-unit realization");
+            };
+            crate::render::validate_unit_name(&systemd_unit.unit_name)?;
+            if !systemd_unit.unit_name.ends_with(".timer") {
+                bail!("scheduled activation realization does not name a timer unit");
+            }
+            let (target_unit, _) = resolve_unit_identity(&target)?;
+            let schedule = match &activation.schedule {
+                Schedule::Calendar { expression } => format!(
+                    "OnCalendar={}\n",
+                    quote_unit_value(expression, "calendar expression")?
+                ),
+                Schedule::Interval {
+                    initial_delay_millis,
+                    interval_millis,
+                } => {
+                    if *interval_millis == 0 {
+                        bail!("scheduled activation interval must be positive");
+                    }
+                    format!(
+                        "OnBootSec={initial_delay_millis}ms\nOnUnitActiveSec={interval_millis}ms\n"
+                    )
+                }
+            };
+            let description = quote_unit_value(
+                &format!("AOS scheduled activation {}", activation.name),
+                "scheduled activation description",
+            )?;
+            let document = format!(
+                "[Unit]\nDescription={description}\n\n[Timer]\nUnit={target_unit}\n{schedule}Persistent={}\nAccuracySec={}ms\nRandomizedDelaySec={}ms\n",
+                yes_no(activation.persistent),
+                activation.accuracy_millis,
+                activation.randomized_delay_millis,
+            );
+            (
+                systemd_unit.unit_name,
+                document.into_bytes(),
+                "timers.target",
+            )
         }
         Desired::Swap(swap) => {
             validate_absolute_path(&swap.source, "swap source")?;
@@ -814,6 +919,10 @@ fn reject_line_break(value: &str, field: &str) -> Result<()> {
     Ok(())
 }
 
+const fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
 fn quote_unit_value(value: &str, field: &str) -> Result<String> {
     reject_line_break(value, field)?;
     let mut quoted = String::with_capacity(value.len() + 2);
@@ -860,7 +969,17 @@ fn path_unit_name(path: &str, suffix: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Desired, MountDesired, SwapDesired, path_unit_name, render};
+    use super::{
+        Desired, MountDesired, REALIZATION_SCHEMA, SwapDesired, path_unit_name, render, value,
+    };
+
+    fn realization(backend: &str) -> aos_ability_model::AbilityValue {
+        value(&serde_json::json!({
+            "schema": REALIZATION_SCHEMA,
+            "backend": backend,
+        }))
+        .expect("realization is valid")
+    }
 
     #[test]
     fn path_unit_names_follow_systemd_path_escaping() {
@@ -884,7 +1003,7 @@ mod tests {
             options: vec!["umask=0077".to_string()],
             timeout_millis: Some(30_000),
         });
-        let rendered = render(&mount).expect("mount renders");
+        let rendered = render(&mount, &realization("mount-unit")).expect("mount renders");
         assert_eq!(rendered.primary_unit, "boot.mount");
         assert_eq!(rendered.links[0].path, "local-fs.target.wants/boot.mount");
         assert_eq!(
@@ -898,7 +1017,7 @@ mod tests {
             source: "/dev/zram0".to_string(),
             priority: Some(100),
         });
-        let rendered = render(&swap).expect("swap renders");
+        let rendered = render(&swap, &realization("swap-unit")).expect("swap renders");
         assert_eq!(rendered.primary_unit, "dev-zram0.swap");
         assert_eq!(
             String::from_utf8(rendered.units[0].bytes.clone()).expect("unit is utf-8"),
@@ -917,6 +1036,6 @@ mod tests {
             options: vec!["rw\nExecStart=/wrong".to_string()],
             timeout_millis: None,
         });
-        assert!(render(&mount).is_err());
+        assert!(render(&mount, &realization("mount-unit")).is_err());
     }
 }

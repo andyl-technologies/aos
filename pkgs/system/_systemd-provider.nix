@@ -55,6 +55,7 @@
   filesystemReadinessAlias = serviceInterfaces.filesystemReadiness.alias;
   nativeResourceInterfaces = [
     serviceInterfaces.mountResource
+    serviceInterfaces.scheduledActivation
     serviceInterfaces.swapResource
   ];
   nativeResourceImplementationNames = builtins.map (
