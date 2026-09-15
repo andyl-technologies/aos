@@ -22,7 +22,6 @@
 //! }
 //! ```
 
-use std::collections::BTreeSet;
 use std::io::{self, Write};
 
 use aos_ability_model::{
@@ -30,7 +29,10 @@ use aos_ability_model::{
     DesiredStateDocument, EffectPlanDocument, EnvironmentDocument, InterfaceDocument,
     PackageDocument, PlanId, RequiredFeature,
 };
-use aos_ability_validate::{BindingValidationInputs, CheckedEffectPlan, ValidationContext};
+use aos_ability_validate::{
+    BindingValidationInputs, CheckedEffectPlan, ValidationContext,
+    package_source_supported_features,
+};
 use aos_contract::Sha256Digest;
 use aos_contract::limits::JsonLimits;
 use serde::{Deserialize, Serialize};
@@ -259,15 +261,12 @@ impl InspectionBundle {
         validate_artifact_consumption_edges(&self.artifact_consumption_edges)?;
 
         // This reader-owned set cannot be widened by bundle-authored input.
-        let supported_features = [
-            "abilities-v1",
-            "ability-effects-v1",
-            aos_ability_model::PROVIDER_STATE_FORMAT_V1,
-        ]
-        .into_iter()
-        .map(RequiredFeature::new)
-        .collect::<Result<BTreeSet<_>, _>>()
-        .map_err(|error| InspectionBundleError::Encode(error.into()))?;
+        let mut supported_features = package_source_supported_features()
+            .map_err(|error| InspectionBundleError::Encode(error.into()))?;
+        supported_features.insert(
+            RequiredFeature::new("ability-effects-v1")
+                .map_err(|error| InspectionBundleError::Encode(error.into()))?,
+        );
         let context = ValidationContext::new(supported_features, self.interfaces.clone())
             .map_err(InspectionBundleError::Validation)?;
         let binding = context

@@ -1,6 +1,5 @@
 //! Checked ability reconstruction, rendering, and loopback operator browsing.
 
-use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{Read as _, Take};
 use std::num::NonZeroU64;
@@ -18,7 +17,7 @@ use aos_ability_inspect::{
     TimelineEventKind, TimelineProvenance, TimelineTiming, ViewAnchor, render, render_projection,
     render_reference, render_reference_slice, render_slice,
 };
-use aos_ability_model::{LocalKey, PlanNodeKey, RequiredFeature, TransactionId};
+use aos_ability_model::{LocalKey, PlanNodeKey, TransactionId};
 use aos_ability_runtime::execution::{
     CancellationResult, CheckedExecutionJournalSnapshot, DispatchAbortReason, ExecutionEventKind,
     OperationInterventionReason, ReconciliationResult,
@@ -26,7 +25,9 @@ use aos_ability_runtime::execution::{
 use aos_ability_runtime::journal::{JournalLimits, JournalRecord};
 use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
-use aos_package::config_eval::RetainedAbilityDiagnosticSource;
+use aos_package::config_eval::{
+    RetainedAbilityDiagnosticSource, supported_native_ability_features,
+};
 
 use crate::cli::{
     AbilityArtifactConsumptionArgs, AbilityCommand, AbilityCompareArgs, AbilityDiagnosticArgs,
@@ -293,15 +294,8 @@ fn diagnostic(args: &AbilityDiagnosticArgs, printer: &Printer) -> Result<()> {
     let transaction = TransactionId(
         LocalKey::new(args.transaction.clone()).context("parsing ability transaction identity")?,
     );
-    let supported_features = [
-        "abilities-v1",
-        aos_ability_model::PROVIDER_STATE_FORMAT_V1,
-        aos_ability_model::PROVIDER_STATE_ADOPTION_V1,
-    ]
-    .into_iter()
-    .map(RequiredFeature::new)
-    .collect::<std::result::Result<BTreeSet<_>, _>>()
-    .context("constructing ability feature set")?;
+    let supported_features = supported_native_ability_features()
+        .context("constructing native runtime implementation feature set")?;
     let source =
         RetainedAbilityDiagnosticSource::load(&args.generation, &transaction, supported_features)
             .context("loading retained ability transaction")?;
