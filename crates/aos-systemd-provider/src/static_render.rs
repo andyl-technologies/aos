@@ -12,7 +12,10 @@ use crate::model::{
     STATIC_MANIFEST_SCHEMA, ServiceRealization, ServiceUnitIdentity, StaticPrimaryUnit,
     StaticUnitManifest, StaticUnitManifestEntry,
 };
+use crate::native_resource::StaticNativeResource;
 use crate::render::{DROP_IN_FILE, render, render_service};
+
+const NATIVE_STATIC_INPUT_SCHEMA: &str = "aos.systemd.native-resource-static-input/v1";
 
 pub(crate) fn run() -> Result<()> {
     let input_path = env::var("realizationPath").context("render input path is not set")?;
@@ -28,14 +31,34 @@ pub(crate) fn run() -> Result<()> {
     match schema {
         REALIZATION_SCHEMA => render_packaged_unit(value, Path::new(&output_path)),
         SERVICE_REALIZATION_SCHEMA => render_service_unit(value, Path::new(&output_path)),
+        NATIVE_STATIC_INPUT_SCHEMA => render_native_resource(value, Path::new(&output_path)),
         _ => bail!("static systemd realization uses an unsupported schema"),
     }
+}
+
+fn render_native_resource(value: serde_json::Value, output: &Path) -> Result<()> {
+    let input: StaticNativeResource =
+        serde_json::from_value(value).context("decoding static native-resource input")?;
+    let rendered = crate::native_resource::render_static(input)?;
+    write_rendered_service(rendered, None, output)
 }
 
 fn render_service_unit(value: serde_json::Value, output: &Path) -> Result<()> {
     let realization: ServiceRealization =
         serde_json::from_value(value).context("decoding service realization")?;
     let rendered = render_service(&realization)?;
+    let logical_instance = match &realization.systemd_unit {
+        ServiceUnitIdentity::Unit { .. } => None,
+        ServiceUnitIdentity::TemplateInstance { instance, .. } => Some(instance.clone()),
+    };
+    write_rendered_service(rendered, logical_instance, output)
+}
+
+fn write_rendered_service(
+    rendered: crate::render::RenderedService,
+    logical_instance: Option<String>,
+    output: &Path,
+) -> Result<()> {
     let systemd_root = output.join("lib/systemd/system");
     fs::create_dir_all(&systemd_root).context("creating static systemd output")?;
 
@@ -64,10 +87,6 @@ fn render_service_unit(value: serde_json::Value, output: &Path) -> Result<()> {
     }
 
     entries.sort_by(|left, right| manifest_path(left).cmp(manifest_path(right)));
-    let logical_instance = match &realization.systemd_unit {
-        ServiceUnitIdentity::Unit { .. } => None,
-        ServiceUnitIdentity::TemplateInstance { instance, .. } => Some(instance.clone()),
-    };
     write_manifest(
         output,
         StaticUnitManifest {

@@ -8,6 +8,7 @@
 mod identity;
 mod materialize;
 mod model;
+mod native_resource;
 mod readiness;
 mod render;
 mod semantic;
@@ -100,6 +101,8 @@ async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
         identity::admit(request).await
     } else if readiness::supports(&request.method) {
         readiness::admit(request).await
+    } else if native_resource::supports(&request.method) {
+        native_resource::admit(request).await
     } else {
         service::admit(request).await
     }
@@ -170,6 +173,8 @@ async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
         identity::invoke(invocation).await
     } else if readiness::supports(&invocation.method) {
         readiness::invoke(invocation).await
+    } else if native_resource::supports(&invocation.method) {
+        native_resource::invoke(invocation).await
     } else {
         service::invoke(invocation).await
     }

@@ -513,6 +513,9 @@
   systemdIdentityRealization = import ./systemd-identity-realization.nix {
     inherit pkgs lib;
   };
+  systemdNativeResources = import ./systemd-native-resources.nix {
+    inherit pkgs lib;
+  };
   systemdReadiness = import ./systemd-readiness.nix {
     inherit pkgs lib;
   };
