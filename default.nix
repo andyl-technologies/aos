@@ -777,7 +777,7 @@
     ability-native-recovery =
       mkNativeAbilityScenario
       "ability-native-recovery"
-      ./tests/fleet/ability-native-power-loss.nix;
+      ./tests/fleet/runtime-module-composition.nix;
   };
   recoveryPackageScenario =
     if hostPlatform.isLinux

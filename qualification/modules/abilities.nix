@@ -77,7 +77,7 @@
     ability-native-recovery = [
       "checks.fleet.ability-initrd-activation"
       "checks.fleet.ability-initrd-handoff-fail-closed"
-      "checks.fleet.ability-native-power-loss"
+      "checks.fleet.runtime-module-composition"
     ];
     ability-crucible-baseline = ["checks.fleet.ability-crucible-baseline"];
     ability-native-adapter-matrix = nativeAdapterMatrix.requirement.regressions;
