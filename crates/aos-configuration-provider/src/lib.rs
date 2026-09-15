@@ -24,7 +24,7 @@ use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
     AdmissionResult, AdmissionRevision, HANDLER_ABI_ARGUMENT, INVOCATION_SCHEMA, Invocation,
     InvocationDisposition, InvocationPurpose, InvocationResult, RESULT_SCHEMA, ResourceContext,
-    SupportedPurposes,
+    SupportedPurposes, native_context_digest, resource_set_digest,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -179,6 +179,7 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult, ConfigurationProv
         request.method.method.as_str(),
         &request.semantics,
     )?;
+    validate_resource_contexts(&request.resources)?;
 
     let desired: ConfigurationRequest = decode_value(&request.resource_spec.value)?;
     let realization: ConfigurationRealization = decode_value(&request.resource_spec.realization)?;
@@ -240,6 +241,14 @@ fn invoke(
     if !invocation.method_is_bound() {
         return Err(invalid(
             "invocation method is not bound to the durable recovery contract",
+        ));
+    }
+    validate_resource_contexts(&invocation.request.resources)?;
+    let resources_digest = resource_set_digest(&invocation.request.resources)
+        .map_err(|error| invalid(error.to_string()))?;
+    if resources_digest != invocation.request.native_context_digest {
+        return Err(invalid(
+            "resource contexts differ from their authenticated set digest",
         ));
     }
     validate_method(
@@ -328,6 +337,21 @@ fn validate_method(
         return Err(invalid(
             "method semantics differ from configuration materialization",
         ));
+    }
+    Ok(())
+}
+
+fn validate_resource_contexts(
+    resources: &[ResourceContext],
+) -> Result<(), ConfigurationProviderError> {
+    for context in resources {
+        let digest = native_context_digest(&context.native_context)
+            .map_err(|error| invalid(error.to_string()))?;
+        if digest != context.native_context_digest {
+            return Err(invalid(
+                "resource native context differs from its authenticated digest",
+            ));
+        }
     }
     Ok(())
 }
