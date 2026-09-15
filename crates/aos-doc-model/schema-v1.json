@@ -2,17 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aos.dev/schemas/package-documentation/v1.json",
   "title": "AOS package documentation v1",
-  "description": "Closed, evaluator-free package option and runtime reference. Semantic validation additionally enforces canonical ordering, digest binding, size limits, safe source paths, and absence of Nix store references.",
+  "description": "Closed, evaluator-free package option reference. Semantic validation additionally enforces canonical ordering, digest binding, size limits, safe source paths, and absence of Nix store references.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "package", "identity", "runtime"],
+  "required": ["schema", "package", "identity"],
   "properties": {
     "schema": {"const": "aos.package-documentation/v1"},
     "package": {"$ref": "#/$defs/package"},
     "identity": {"$ref": "#/$defs/identity"},
     "sections": {"type": "array", "items": {"$ref": "#/$defs/section"}, "maxItems": 256},
-    "options": {"type": "array", "items": {"$ref": "#/$defs/option"}, "maxItems": 16384},
-    "runtime": {"$ref": "#/$defs/runtime"}
+    "options": {"type": "array", "items": {"$ref": "#/$defs/option"}, "maxItems": 16384}
   },
   "$defs": {
     "token": {"type": "string", "minLength": 1, "maxLength": 255},
@@ -269,57 +268,6 @@
         "contributable": {"type": "boolean"},
         "activation": {"$ref": "#/$defs/activation"},
         "source": {"$ref": "#/$defs/source"}
-      }
-    },
-    "runtimeUnit": {
-      "type": "object", "additionalProperties": false,
-      "required": ["name", "kind"],
-      "properties": {"name": {"$ref": "#/$defs/token"}, "kind": {"$ref": "#/$defs/token"}, "summary": {"$ref": "#/$defs/text"}, "requires": {"type": "array", "items": {"$ref": "#/$defs/token"}}}
-    },
-    "runtimeListener": {
-      "type": "object", "additionalProperties": false,
-      "required": ["unit", "protocol", "network_mode"],
-      "properties": {"unit": {"$ref": "#/$defs/token"}, "protocol": {"$ref": "#/$defs/token"}, "port": {"type": "integer", "minimum": 0, "maximum": 65535}, "network_mode": {"$ref": "#/$defs/token"}}
-    },
-    "managedPath": {
-      "type": "object", "additionalProperties": false,
-      "required": ["path", "purpose", "writable"],
-      "properties": {"path": {"$ref": "#/$defs/text"}, "purpose": {"$ref": "#/$defs/token"}, "writable": {"type": "boolean"}}
-    },
-    "configArtifact": {
-      "type": "object", "additionalProperties": false,
-      "required": ["name", "destination", "format"],
-      "properties": {"name": {"$ref": "#/$defs/token"}, "destination": {"$ref": "#/$defs/text"}, "format": {"$ref": "#/$defs/token"}, "activation": {"$ref": "#/$defs/activation"}}
-    },
-    "credential": {
-      "type": "object", "additionalProperties": false,
-      "required": ["name", "purpose", "destination", "accepted_kinds", "required", "mode"],
-      "properties": {
-        "name": {"$ref": "#/$defs/token"}, "purpose": {"$ref": "#/$defs/text"}, "destination": {"$ref": "#/$defs/text"},
-        "accepted_kinds": {"type": "array", "items": {"$ref": "#/$defs/token"}}, "required": {"type": "boolean"},
-        "mode": {"type": "integer", "minimum": 0, "maximum": 4294967295}, "activation": {"$ref": "#/$defs/activation"}
-      }
-    },
-    "capability": {
-      "type": "object", "additionalProperties": false,
-      "required": ["name", "direction"],
-      "properties": {"name": {"$ref": "#/$defs/token"}, "direction": {"enum": ["provides", "uses"]}}
-    },
-    "confinement": {
-      "type": "object", "additionalProperties": false,
-      "required": ["class", "network", "private_root"],
-      "properties": {"class": {"$ref": "#/$defs/token"}, "network": {"$ref": "#/$defs/token"}, "private_root": {"type": "boolean"}}
-    },
-    "runtime": {
-      "type": "object", "additionalProperties": false,
-      "properties": {
-        "units": {"type": "array", "maxItems": 8192, "items": {"$ref": "#/$defs/runtimeUnit"}},
-        "listeners": {"type": "array", "maxItems": 8192, "items": {"$ref": "#/$defs/runtimeListener"}},
-        "managed_paths": {"type": "array", "maxItems": 8192, "items": {"$ref": "#/$defs/managedPath"}},
-        "config_artifacts": {"type": "array", "maxItems": 8192, "items": {"$ref": "#/$defs/configArtifact"}},
-        "credentials": {"type": "array", "maxItems": 8192, "items": {"$ref": "#/$defs/credential"}},
-        "capabilities": {"type": "array", "maxItems": 8192, "items": {"$ref": "#/$defs/capability"}},
-        "confinement": {"$ref": "#/$defs/confinement"}
       }
     }
   }

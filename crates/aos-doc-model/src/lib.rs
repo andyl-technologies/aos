@@ -72,7 +72,6 @@ pub const MAX_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
 
 const MAX_OPTIONS: usize = 16_384;
 const MAX_SECTIONS: usize = 256;
-const MAX_RUNTIME_ITEMS: usize = 8_192;
 const MAX_TEXT_BYTES: usize = 256 * 1024;
 const MAX_LITERAL_DEPTH: usize = 32;
 const MAX_LITERAL_ITEMS: usize = 16_384;
@@ -107,9 +106,6 @@ pub struct PackageDocumentation {
     /// Mechanically extracted option reference.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<OptionDocument>,
-    /// Mechanically derived runtime surface.
-    #[serde(default)]
-    pub runtime: RuntimeSurface,
 }
 
 /// Package identity and short catalog metadata embedded in a document.
@@ -537,140 +533,11 @@ pub struct OptionDocument {
     pub source: Option<SourceLocator>,
 }
 
-/// Runtime interface derived from expose/config package metadata.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeSurface {
-    /// Authenticated unit inventory.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub units: Vec<RuntimeUnit>,
-    /// Declared network listeners.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub listeners: Vec<RuntimeListener>,
-    /// State/cache/log/runtime/config paths.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub managed_paths: Vec<ManagedPath>,
-    /// Typed rendered configuration artifacts.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub config_artifacts: Vec<RuntimeConfigArtifact>,
-    /// Credential contracts without secret values.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub credentials: Vec<CredentialContract>,
-    /// Provided/used capability tokens.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub capabilities: Vec<RuntimeCapability>,
-    /// Workload confinement summary.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub confinement: Option<ConfinementSummary>,
-}
-
-/// One systemd runtime unit.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeUnit {
-    /// Exact unit name.
-    pub name: String,
-    /// Unit kind.
-    pub kind: String,
-    /// Human summary.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub summary: String,
-    /// Units required before this unit.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub requires: Vec<String>,
-}
-
-/// One declared network listener.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeListener {
-    /// Owning unit.
-    pub unit: String,
-    /// Transport protocol.
-    pub protocol: String,
-    /// Optional port when statically known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub port: Option<u16>,
-    /// Declared network mode.
-    pub network_mode: String,
-}
-
-/// One managed runtime path.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ManagedPath {
-    /// Absolute path without store identity.
-    pub path: String,
-    /// State, cache, log, runtime, or configuration.
-    pub purpose: String,
-    /// Whether the workload may write the path.
-    pub writable: bool,
-}
-
-/// One rendered configuration artifact.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeConfigArtifact {
-    /// Signed artifact handle.
-    pub name: String,
-    /// Destination path.
-    pub destination: String,
-    /// Stable format name.
-    pub format: String,
-    /// Reload or restart action.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activation: Option<ActivationEffect>,
-}
-
-/// One credential declaration without secret material.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CredentialContract {
-    /// Signed credential handle.
-    pub name: String,
-    /// Human purpose.
-    pub purpose: String,
-    /// Volatile workload destination.
-    pub destination: String,
-    /// Accepted opaque-reference source kinds.
-    pub accepted_kinds: Vec<String>,
-    /// Whether configuration requires the credential.
-    pub required: bool,
-    /// File mode delivered to the workload.
-    pub mode: u32,
-    /// Live action after rotation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activation: Option<ActivationEffect>,
-}
-
-/// One provided or consumed typed capability.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeCapability {
-    /// Capability token.
-    pub name: String,
-    /// `provides` or `uses`.
-    pub direction: String,
-}
-
-/// High-level confinement information suitable for reference docs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfinementSummary {
-    /// Confinement class.
-    pub class: String,
-    /// Network confinement mode.
-    pub network: String,
-    /// Whether the workload has a private root.
-    pub private_root: bool,
-}
-
 /// One deterministic search row derived from a canonical document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SearchDocument {
-    /// Result kind (`package`, `option`, `service`, `credential`, or
-    /// `capability`).
+    /// Result kind (`package` or `option`).
     pub kind: String,
     /// Stable document-local key.
     pub key: String,
@@ -694,8 +561,6 @@ pub struct DocumentationComparison {
     pub to_version: String,
     /// Whether the semantic schema digest changed.
     pub semantic_changed: bool,
-    /// Whether the authenticated runtime contract changed.
-    pub runtime_changed: bool,
     /// Sorted option additions, removals, and semantic modifications.
     pub option_changes: Vec<OptionChange>,
 }
@@ -812,8 +677,6 @@ impl PackageDocumentation {
                 )));
             }
         }
-        validate_runtime(&self.runtime)?;
-
         let canonical = serde_json::to_vec(self)?;
         if canonical.len() > MAX_DOCUMENT_BYTES {
             return Err(invalid("canonical document exceeds the 4 MiB limit"));
@@ -873,7 +736,7 @@ impl PackageDocumentation {
 
     /// Derives deterministic bounded search rows.
     pub fn search_documents(&self) -> Vec<SearchDocument> {
-        let mut rows = Vec::with_capacity(1 + self.options.len() + self.runtime.units.len());
+        let mut rows = Vec::with_capacity(1 + self.options.len());
         rows.push(search_row(
             "package",
             &self.package.name,
@@ -893,33 +756,6 @@ impl PackageDocumentation {
                     (option.type_signature.as_str(), 40),
                     (summary.as_str(), 20),
                 ],
-            ));
-        }
-        for unit in &self.runtime.units {
-            rows.push(search_row(
-                "service",
-                &unit.name,
-                &unit.name,
-                &unit.summary,
-                [(&unit.name, 100), (&unit.summary, 20)],
-            ));
-        }
-        for credential in &self.runtime.credentials {
-            rows.push(search_row(
-                "credential",
-                &credential.name,
-                &credential.name,
-                &credential.purpose,
-                [(&credential.name, 100), (&credential.purpose, 30)],
-            ));
-        }
-        for capability in &self.runtime.capabilities {
-            rows.push(search_row(
-                "capability",
-                &capability.name,
-                &capability.name,
-                &capability.direction,
-                [(&capability.name, 100), (&capability.direction, 20)],
             ));
         }
         rows
@@ -1001,7 +837,6 @@ impl PackageDocumentation {
             to_version: other.package.version.clone(),
             semantic_changed: self.identity.semantic_schema_sha256
                 != other.identity.semantic_schema_sha256,
-            runtime_changed: self.runtime != other.runtime,
             option_changes,
         })
     }
@@ -1031,7 +866,6 @@ impl PackageDocumentation {
                 ));
             }
         }
-        render_runtime_plain(&self.runtime, &mut output);
         output
     }
 
@@ -1096,7 +930,6 @@ impl PackageDocumentation {
             }
             output.push_str("</dl></section>");
         }
-        render_runtime_html(&self.runtime, output);
         output.push_str("</main>");
     }
 
@@ -1131,13 +964,6 @@ impl PackageDocumentation {
                 output.push('\n');
             }
         }
-        let mut runtime = String::new();
-        render_runtime_plain(&self.runtime, &mut runtime);
-        if !runtime.is_empty() {
-            output.push_str(".SH RUNTIME\n");
-            escape_roff_into(runtime.trim(), &mut output);
-            output.push('\n');
-        }
         output
     }
 
@@ -1148,216 +974,11 @@ impl PackageDocumentation {
     }
 }
 
-fn runtime_is_empty(runtime: &RuntimeSurface) -> bool {
-    runtime.units.is_empty()
-        && runtime.listeners.is_empty()
-        && runtime.managed_paths.is_empty()
-        && runtime.config_artifacts.is_empty()
-        && runtime.credentials.is_empty()
-        && runtime.capabilities.is_empty()
-        && runtime.confinement.is_none()
-}
-
-fn render_runtime_plain(runtime: &RuntimeSurface, output: &mut String) {
-    if runtime_is_empty(runtime) {
-        return;
-    }
-    output.push_str("\nRUNTIME\n-------\n");
-    for unit in &runtime.units {
-        output.push_str(&format!("unit\t{}\t{}", unit.name, unit.kind));
-        if !unit.summary.is_empty() {
-            output.push_str(&format!("\t{}", unit.summary));
-        }
-        output.push('\n');
-    }
-    for listener in &runtime.listeners {
-        let port = listener
-            .port
-            .map(|port| port.to_string())
-            .unwrap_or_else(|| "dynamic".to_string());
-        output.push_str(&format!(
-            "listener\t{}\t{}/{}\t{}\n",
-            listener.unit, listener.protocol, port, listener.network_mode
-        ));
-    }
-    for path in &runtime.managed_paths {
-        output.push_str(&format!(
-            "path\t{}\t{}\t{}\n",
-            path.path,
-            path.purpose,
-            if path.writable {
-                "writable"
-            } else {
-                "read-only"
-            }
-        ));
-    }
-    for artifact in &runtime.config_artifacts {
-        output.push_str(&format!(
-            "configuration\t{}\t{}\t{}\n",
-            artifact.name, artifact.destination, artifact.format
-        ));
-    }
-    for credential in &runtime.credentials {
-        output.push_str(&format!(
-            "credential\t{}\t{}\t{}\n",
-            credential.name,
-            credential.destination,
-            if credential.required {
-                "required"
-            } else {
-                "optional"
-            }
-        ));
-    }
-    for capability in &runtime.capabilities {
-        output.push_str(&format!(
-            "capability\t{}\t{}\n",
-            capability.name, capability.direction
-        ));
-    }
-    if let Some(confinement) = &runtime.confinement {
-        output.push_str(&format!(
-            "confinement\t{}\tnetwork={}\tprivate-root={}\n",
-            confinement.class, confinement.network, confinement.private_root
-        ));
-    }
-}
-
-fn render_runtime_html(runtime: &RuntimeSurface, output: &mut String) {
-    if runtime_is_empty(runtime) {
-        return;
-    }
-    output.push_str("<section id=\"runtime\"><h2>Runtime</h2>");
-    if !runtime.units.is_empty() {
-        output.push_str("<h3>Services</h3><dl>");
-        for unit in &runtime.units {
-            output.push_str("<dt id=\"");
-            output.push_str(&documentation_anchor("service", &unit.name));
-            output.push_str("\"><code>");
-            escape_html_into(&unit.name, output);
-            output.push_str("</code></dt><dd>");
-            escape_html_into(&unit.kind, output);
-            if !unit.summary.is_empty() {
-                output.push_str(" — ");
-                escape_html_into(&unit.summary, output);
-            }
-            output.push_str("</dd>");
-        }
-        output.push_str("</dl>");
-    }
-    if !runtime.listeners.is_empty() {
-        output.push_str("<h3>Listeners</h3><ul>");
-        for listener in &runtime.listeners {
-            output.push_str("<li><code>");
-            escape_html_into(&listener.unit, output);
-            output.push_str("</code> ");
-            escape_html_into(&listener.protocol, output);
-            output.push(':');
-            escape_html_into(
-                &listener
-                    .port
-                    .map(|port| port.to_string())
-                    .unwrap_or_else(|| "dynamic".to_string()),
-                output,
-            );
-            output.push_str(" · ");
-            escape_html_into(&listener.network_mode, output);
-            output.push_str("</li>");
-        }
-        output.push_str("</ul>");
-    }
-    if !runtime.managed_paths.is_empty() {
-        output.push_str("<h3>Managed paths</h3><ul>");
-        for path in &runtime.managed_paths {
-            output.push_str("<li><code>");
-            escape_html_into(&path.path, output);
-            output.push_str("</code> · ");
-            escape_html_into(&path.purpose, output);
-            output.push_str(if path.writable {
-                " · writable"
-            } else {
-                " · read-only"
-            });
-            output.push_str("</li>");
-        }
-        output.push_str("</ul>");
-    }
-    if !runtime.config_artifacts.is_empty() {
-        output.push_str("<h3>Configuration artifacts</h3><ul>");
-        for artifact in &runtime.config_artifacts {
-            output.push_str("<li><strong>");
-            escape_html_into(&artifact.name, output);
-            output.push_str("</strong> <code>");
-            escape_html_into(&artifact.destination, output);
-            output.push_str("</code> · ");
-            escape_html_into(&artifact.format, output);
-            output.push_str("</li>");
-        }
-        output.push_str("</ul>");
-    }
-    if !runtime.credentials.is_empty() {
-        output.push_str("<h3>Credentials</h3><ul>");
-        for credential in &runtime.credentials {
-            output.push_str("<li id=\"");
-            output.push_str(&documentation_anchor("credential", &credential.name));
-            output.push_str("\"><strong>");
-            escape_html_into(&credential.name, output);
-            output.push_str("</strong> — ");
-            escape_html_into(&credential.purpose, output);
-            output.push_str(" · <code>");
-            escape_html_into(&credential.destination, output);
-            output.push_str("</code>");
-            output.push_str(if credential.required {
-                " · required"
-            } else {
-                " · optional"
-            });
-            output.push_str("</li>");
-        }
-        output.push_str("</ul>");
-    }
-    if !runtime.capabilities.is_empty() {
-        output.push_str("<h3>Capabilities</h3><ul>");
-        // A capability may appear in both directions. Search keys identify its
-        // name, so the first entry owns the anchor shared by those results.
-        let mut anchored_names = BTreeSet::new();
-        for capability in &runtime.capabilities {
-            output.push_str("<li");
-            if anchored_names.insert(capability.name.as_str()) {
-                output.push_str(" id=\"");
-                output.push_str(&documentation_anchor("capability", &capability.name));
-                output.push('"');
-            }
-            output.push_str("><code>");
-            escape_html_into(&capability.name, output);
-            output.push_str("</code> · ");
-            escape_html_into(&capability.direction, output);
-            output.push_str("</li>");
-        }
-        output.push_str("</ul>");
-    }
-    if let Some(confinement) = &runtime.confinement {
-        output.push_str("<h3>Confinement</h3><p>");
-        escape_html_into(&confinement.class, output);
-        output.push_str(" · network ");
-        escape_html_into(&confinement.network, output);
-        output.push_str(if confinement.private_root {
-            " · private root"
-        } else {
-            " · shared root"
-        });
-        output.push_str("</p>");
-    }
-    output.push_str("</section>");
-}
-
 #[derive(Serialize)]
 struct SemanticProjection<'a> {
     package: &'a str,
     platform: &'a str,
     options: Vec<SemanticOption<'a>>,
-    runtime: &'a RuntimeSurface,
 }
 
 #[derive(PartialEq, Eq, Serialize)]
@@ -1395,7 +1016,6 @@ impl<'a> From<&'a PackageDocumentation> for SemanticProjection<'a> {
                     activation: &option.activation,
                 })
                 .collect(),
-            runtime: &document.runtime,
         }
     }
 }
@@ -1631,48 +1251,6 @@ fn validate_inline(span: &InlineSpan) -> Result<()> {
             }
         }
     }
-}
-
-fn validate_runtime(runtime: &RuntimeSurface) -> Result<()> {
-    let total = runtime.units.len()
-        + runtime.listeners.len()
-        + runtime.managed_paths.len()
-        + runtime.config_artifacts.len()
-        + runtime.credentials.len()
-        + runtime.capabilities.len();
-    if total > MAX_RUNTIME_ITEMS {
-        return Err(invalid("runtime surface contains too many items"));
-    }
-    validate_unique_by(
-        "runtime unit",
-        runtime.units.iter().map(|unit| unit.name.as_str()),
-    )?;
-    validate_unique_by(
-        "config artifact",
-        runtime
-            .config_artifacts
-            .iter()
-            .map(|artifact| artifact.name.as_str()),
-    )?;
-    validate_unique_by(
-        "credential",
-        runtime
-            .credentials
-            .iter()
-            .map(|credential| credential.name.as_str()),
-    )?;
-    Ok(())
-}
-
-fn validate_unique_by<'a>(label: &str, values: impl Iterator<Item = &'a str>) -> Result<()> {
-    let mut seen = BTreeSet::new();
-    for value in values {
-        validate_text(label, value)?;
-        if !seen.insert(value) {
-            return Err(invalid(format!("duplicate {label} '{value}'")));
-        }
-    }
-    Ok(())
 }
 
 fn validate_sorted_unique(label: &str, values: &[String]) -> Result<()> {
@@ -2128,7 +1706,6 @@ mod tests {
                     line: None,
                 }),
             }],
-            runtime: RuntimeSurface::default(),
         };
         document.identity.semantic_schema_sha256 = document
             .computed_semantic_schema_sha256()
@@ -2257,59 +1834,6 @@ mod tests {
     }
 
     #[test]
-    fn renderers_include_the_complete_runtime_surface() {
-        let mut document = fixture();
-        document.runtime.units.push(RuntimeUnit {
-            name: "nginx.service".into(),
-            kind: "service".into(),
-            summary: "HTTP proxy".into(),
-            requires: Vec::new(),
-        });
-        document.runtime.listeners.push(RuntimeListener {
-            unit: "nginx.service".into(),
-            protocol: "tcp".into(),
-            port: Some(8080),
-            network_mode: "private".into(),
-        });
-        document.runtime.credentials.push(CredentialContract {
-            name: "tls-key".into(),
-            purpose: "TLS private key".into(),
-            destination: "/run/credentials/nginx.service/tls-key".into(),
-            accepted_kinds: vec!["system-credential".into()],
-            required: false,
-            mode: 0o400,
-            activation: None,
-        });
-
-        document.runtime.capabilities.push(RuntimeCapability {
-            name: "http-server".into(),
-            direction: "provides".into(),
-        });
-        document.runtime.capabilities.push(RuntimeCapability {
-            name: "http-server".into(),
-            direction: "uses".into(),
-        });
-        let html = document.render_html_fragment();
-        for row in document.search_documents() {
-            let id = format!("id=\"{}\"", documentation_anchor(&row.kind, &row.key));
-            assert_eq!(html.matches(&id).count(), 1, "missing or ambiguous {id}");
-        }
-        assert!(html.contains("nginx.virtualHosts.&lt;name&gt;.listenPort"));
-
-        let plain = document.render_plain();
-        assert!(plain.contains("RUNTIME"));
-        assert!(plain.contains("nginx.service"));
-        assert!(plain.contains("tls-key"));
-        let html = document.render_html_fragment();
-        assert!(html.contains("id=\"runtime\""));
-        assert!(html.contains("tcp:8080"));
-        assert!(html.contains("TLS private key"));
-        let roff = document.render_roff();
-        assert!(roff.contains(".SH RUNTIME"));
-        assert!(roff.contains("nginx.service"));
-    }
-
-    #[test]
     fn documentation_anchors_preserve_punctuation_and_kind_boundaries() {
         assert_eq!(
             documentation_anchor("option", "a.<b>"),
@@ -2363,24 +1887,9 @@ mod tests {
                 .map(Vec::len),
             Some(17)
         );
-        for runtime_field in [
-            "units",
-            "listeners",
-            "managed_paths",
-            "config_artifacts",
-            "credentials",
-            "capabilities",
-            "confinement",
-        ] {
-            assert!(
-                schema
-                    .pointer(&format!("/$defs/runtime/properties/{runtime_field}"))
-                    .is_some()
-            );
-        }
         assert_eq!(
             schema
-                .pointer("/$defs/runtime/additionalProperties")
+                .pointer("/additionalProperties")
                 .and_then(Value::as_bool),
             Some(false)
         );

@@ -1076,7 +1076,7 @@ fn legacy_host_selection_cannot_activate_a_structured_package_without_owned_inpu
 fn documentation_prose_changes_only_document_identity_not_activation_inputs() {
     use aos_doc_model::{
         DOCUMENT_SCHEMA, DocumentationIdentity, DocumentedPackage, InlineSpan,
-        PackageDocumentation, ProseBlock, RuntimeSurface, Section,
+        PackageDocumentation, ProseBlock, Section,
     };
 
     use super::runtime::{
@@ -1116,7 +1116,6 @@ fn documentation_prose_changes_only_document_identity_not_activation_inputs() {
                 }],
             }],
             options: Vec::new(),
-            runtime: RuntimeSurface::default(),
         };
         document.identity.semantic_schema_sha256 =
             document.computed_semantic_schema_sha256().unwrap();

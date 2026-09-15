@@ -3024,7 +3024,6 @@ mod tests {
             },
             sections: Vec::new(),
             options: Vec::new(),
-            runtime: aos_doc_model::RuntimeSurface::default(),
         };
         document.identity.semantic_schema_sha256 = document
             .computed_semantic_schema_sha256()

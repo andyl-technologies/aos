@@ -330,12 +330,11 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
                 printer.json(&serde_json::to_value(&comparison)?);
             } else {
                 println!(
-                    "{} {} -> {} (schema changed: {}, runtime changed: {})",
+                    "{} {} -> {} (schema changed: {})",
                     comparison.package,
                     comparison.from_version,
                     comparison.to_version,
-                    comparison.semantic_changed,
-                    comparison.runtime_changed
+                    comparison.semantic_changed
                 );
                 for change in comparison.option_changes {
                     println!("{:?}\t{}", change.kind, change.path);
@@ -1264,9 +1263,9 @@ mod tests {
     };
     use aos_contract::Sha256Digest;
     use aos_doc_model::{
-        AbilityExportReference, AbilityHandlerReference, ConfinementSummary, DocumentationIdentity,
-        DocumentedPackage, InlineSpan, OptionDocument, OptionOwner, OptionType,
-        PackageAbilityReference, ProseBlock, RuntimeSurface, SourceLocator, Visibility,
+        AbilityExportReference, AbilityHandlerReference, DocumentationIdentity, DocumentedPackage,
+        InlineSpan, OptionDocument, OptionOwner, OptionType, PackageAbilityReference, ProseBlock,
+        SourceLocator, Visibility,
     };
     use tempfile::TempDir;
 
@@ -1326,14 +1325,6 @@ mod tests {
                     line: Some(1),
                 }),
             }],
-            runtime: RuntimeSurface {
-                confinement: Some(ConfinementSummary {
-                    class: "standard".to_string(),
-                    network: "private".to_string(),
-                    private_root: true,
-                }),
-                ..RuntimeSurface::default()
-            },
         };
         document.identity.semantic_schema_sha256 =
             document.computed_semantic_schema_sha256().unwrap();
