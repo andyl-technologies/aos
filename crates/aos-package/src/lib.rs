@@ -44,15 +44,6 @@
 pub mod attestation;
 pub mod clean;
 pub mod config;
-pub mod package_contract;
-// `pub` (not `pub(crate)`) so the `golden_config_artifact` integration test —
-// which lives in a separate crate and can only reach `pub` items — can import
-// `render_package_config` through it. The module is otherwise internal
-// (`#[doc(hidden)]`); this widens visibility without changing behavior.
-#[doc(hidden)]
-pub mod config_artifact;
-#[doc(hidden)]
-pub use config_artifact::render_package_config;
 pub mod config_eval;
 pub mod config_trust;
 pub(crate) mod credential;
@@ -64,7 +55,6 @@ mod documentation_lsp;
 pub mod download;
 pub(crate) mod ebpf_lsm;
 pub mod environment;
-pub(crate) mod exposed_units;
 /// Test-only helpers that shell out to the host `git` to set up fixtures; the
 /// production registry paths use libgit2 ([`registry::repo`],
 /// [`registry::porcelain`]) and never exec `git`.
@@ -76,6 +66,7 @@ pub mod images;
 pub mod install;
 pub mod metadata;
 pub(crate) mod package_attestation;
+pub mod package_contract;
 /// Target-platform naming shared by package consumer and producer commands.
 ///
 /// AOS registry manifests use Nix system names such as `x86_64-linux` and
@@ -374,9 +365,6 @@ pub enum PackageCommand {
         /// Show package from this registry
         #[arg(long)]
         registry: Option<String>,
-        /// Show permission metadata only
-        #[arg(long)]
-        permissions: bool,
         /// Query the system scope instead of the user scope
         #[arg(long)]
         system: bool,
@@ -583,13 +571,6 @@ pub enum PackageCommand {
         /// The systemd client operation to exercise
         #[command(subcommand)]
         op: TestSystemdClientOp,
-    },
-    /// Hidden: reconcile exposed package units from the package profile.
-    #[command(name = "_test-reconcile-exposed-units", hide = true)]
-    TestReconcileExposedUnits {
-        /// Use the system package profile
-        #[arg(long)]
-        system: bool,
     },
     /// Hidden: verify an RFC-0001 package attestation event log.
     #[command(name = "_test-verify-package-attestation", hide = true)]
@@ -821,9 +802,9 @@ pub enum PackageCommand {
     /// Render one package's configuration artifacts into the staging area.
     ///
     /// Backs the `aos-pkg-install@.service` template's `ExecStart=`. Validates
-    /// the package's `config`/`credentials` blocks against its signed
-    /// `expose.config` metadata, stages the artifacts (never touching live
-    /// `/etc`), and writes `/run/aos/render/<pkg>.ok`. Exits 2 on a config error.
+    /// the package's typed configuration and credential declarations, stages
+    /// the artifacts (never touching live `/etc`), and writes
+    /// `/run/aos/render/<pkg>.ok`. Exits 2 on a config error.
     #[command(name = "render-one", hide = true)]
     RenderOne {
         /// Package whose config to render
@@ -1203,7 +1184,7 @@ pub enum RuntimeConfigCommand {
 /// Package credential helper operations.
 #[derive(Subcommand)]
 pub enum CredentialCommand {
-    /// Encrypt plaintext for inline expose credential metadata
+    /// Encrypt plaintext for a typed configuration credential declaration.
     Encrypt {
         /// systemd credential name
         name: String,
@@ -1215,12 +1196,6 @@ pub enum CredentialCommand {
         /// Signed PCR public key
         #[arg(long = "pcr-public-key")]
         pcr_public_key: Option<PathBuf>,
-        /// Print a Nix expose.config.credentials entry
-        #[arg(long)]
-        expose_nix: bool,
-        /// Service unit that consumes the credential
-        #[arg(long = "unit")]
-        units: Vec<String>,
     },
 }
 
@@ -1299,7 +1274,6 @@ impl PackageCommand {
                 | PackageCommand::ActivateRestoreRoutedSources { .. }
                 | PackageCommand::RecoverCredentialTransactions
                 | PackageCommand::TestSystemdClient { .. }
-                | PackageCommand::TestReconcileExposedUnits { .. }
                 | PackageCommand::TestVerifyPackageAttestation { .. }
                 | PackageCommand::TestProducePackageAttestationQuote { .. }
                 | PackageCommand::AttestService
@@ -1381,7 +1355,6 @@ impl PackageCommand {
             | PackageCommand::Credential(..)
             | PackageCommand::Registry { .. }
             | PackageCommand::TestSystemdClient { .. }
-            | PackageCommand::TestReconcileExposedUnits { .. }
             | PackageCommand::TestVerifyPackageAttestation { .. }
             | PackageCommand::TestProducePackageAttestationQuote { .. }
             | PackageCommand::AttestService
@@ -1418,7 +1391,6 @@ impl PackageCommand {
             PackageCommand::Held { system, .. } => *system,
             PackageCommand::Orphans { system, .. } => *system,
             PackageCommand::Clean { system, .. } => *system,
-            PackageCommand::TestReconcileExposedUnits { system } => *system,
             PackageCommand::TestVerifyPackageAttestation { system, .. } => *system,
             PackageCommand::Schema { system, .. } => *system,
             _ => false,
@@ -1829,9 +1801,6 @@ pub enum RegistryCommand {
         /// Exact UKI file for each image artifact group
         #[arg(long = "image-uki")]
         image_ukis: Vec<String>,
-        /// Expose manifest.json to publish with package metadata
-        #[arg(long = "expose-manifest")]
-        expose_manifest: Option<String>,
         /// Bless additional content for paths already recorded with different
         /// bits in the store/ graph instead of failing
         #[arg(long)]
@@ -4206,11 +4175,8 @@ pub async fn run(
             package, registry, ..
         } => query::show(&config, package, registry.as_deref(), printer).await,
         PackageCommand::Info {
-            package,
-            registry,
-            permissions,
-            ..
-        } => query::info(&config, package, registry.as_deref(), *permissions, printer).await,
+            package, registry, ..
+        } => query::show(&config, package, registry.as_deref(), printer).await,
         PackageCommand::List {
             installed,
             upgradable,
@@ -4351,9 +4317,6 @@ pub async fn run(
         }
         PackageCommand::Registry { command, .. } => {
             run_apm_registry(&config, command, printer).await
-        }
-        PackageCommand::TestReconcileExposedUnits { .. } => {
-            exposed_units::reconcile_system_profile(&config, printer).await
         }
         PackageCommand::TestVerifyPackageAttestation {
             event_log,
@@ -5685,7 +5648,6 @@ async fn run_registry(
             image_infos,
             image_formats,
             image_ukis,
-            expose_manifest,
             bless,
             no_ca,
             no_commit,
@@ -5712,7 +5674,6 @@ async fn run_registry(
                 image_infos,
                 image_formats,
                 image_ukis,
-                expose_manifest.as_deref(),
                 *bless,
                 *no_ca,
                 *no_commit,
@@ -6931,8 +6892,7 @@ mod tests {
     use super::*;
     use crate::config::ApmConfig;
     use crate::types::{
-        ApmSettings, AttestationMeta, PACKAGE_META_FORMAT, PackageMeta, PermissionsMeta,
-        RegistryConfig,
+        ApmSettings, AttestationMeta, PACKAGE_META_FORMAT, PackageMeta, RegistryConfig,
     };
     use tempfile::TempDir;
 
@@ -7171,11 +7131,8 @@ mod tests {
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
             requires_features: vec!["attestation-v1".into()],
-            expose: None,
-            expose_artifact: None,
             documentation: None,
             contract: None,
-            permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {
                 root_digest: Some(root_digest.into()),

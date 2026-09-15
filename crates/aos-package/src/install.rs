@@ -23,8 +23,7 @@
 //!
 //! Image/sysroot installs (`apm install --system`) are handled by
 //! [`crate::sysroot`]. Profile installs handled here can still target the
-//! system profile; when an installed root exposes systemd units, this module
-//! persists and applies the corresponding preset policy.
+//! system profile.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::OpenOptions;
@@ -41,12 +40,7 @@ use super::download::{
     fetch_narinfos, order_resolved_downloads, reference_store_path, resolve_mirror_chain,
     resolved_downloads_json, split_mirror_chain,
 };
-use super::exposed_units::{
-    rebuild_generation_expose_image_roots, rebuild_generation_expose_roots,
-    reconcile_system_profile, validate_generation_exposed_units,
-};
 use super::platform::native_platform;
-use super::policy::admit_package_roots;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
 use super::profile::meta::{
@@ -127,37 +121,6 @@ pub async fn run(
         yes,
         ignore_lock,
         printer,
-        true,
-    )
-    .await
-}
-
-pub(crate) async fn run_deferred_expose_reconcile(
-    config: &ApmConfig,
-    packages: &[String],
-    registry_filter: Option<&str>,
-    reinstall: bool,
-    require_installed: bool,
-    download_only: bool,
-    no_deps: bool,
-    dry_run: bool,
-    yes: bool,
-    ignore_lock: &IgnoreSysrootLock,
-    printer: &Printer,
-) -> Result<()> {
-    run_inner(
-        config,
-        packages,
-        registry_filter,
-        reinstall,
-        require_installed,
-        download_only,
-        no_deps,
-        dry_run,
-        yes,
-        ignore_lock,
-        printer,
-        false,
     )
     .await
 }
@@ -174,7 +137,6 @@ async fn run_inner(
     yes: bool,
     ignore_lock: &IgnoreSysrootLock,
     printer: &Printer,
-    reconcile_exposed_units: bool,
 ) -> Result<()> {
     let json_mode = printer.mode() == OutputMode::Json;
     if packages.is_empty() {
@@ -213,12 +175,11 @@ async fn run_inner(
         ensure_skipped_dependencies_present(&closures).await?;
         prune_dependency_members(&mut closures);
     }
-    admit_package_roots(closures.iter().flat_map(|closure| closure.closure.iter()))?;
     let all_metas = collect_unique_metas(&closures);
-    let expose_artifacts = collect_expose_artifacts(&closures)?;
+    let secondary_artifacts = collect_secondary_artifacts(&closures)?;
     let mut store_paths: Vec<String> = all_metas.iter().map(|m| m.store_path.clone()).collect();
     store_paths.extend(
-        expose_artifacts
+        secondary_artifacts
             .iter()
             .map(|artifact| artifact.store_path.clone()),
     );
@@ -247,9 +208,6 @@ async fn run_inner(
                 0,
                 None,
             ));
-        }
-        if reconcile_exposed_units {
-            reconcile_system_profile(config, printer).await?;
         }
         printer.info("All requested packages are already installed. No changes made.");
         return Ok(());
@@ -334,7 +292,7 @@ async fn run_inner(
             )
         })
         .chain(
-            expose_artifacts
+            secondary_artifacts
                 .iter()
                 .filter(|artifact| artifact.trust_graph_root)
                 .map(|artifact| {
@@ -351,9 +309,9 @@ async fn run_inner(
     // Step 5: Fetch narinfo for each missing path so the summary can show
     // real compressed sizes and the download can use the cache's URL/hash.
     let mut requests = build_download_requests(&closures, &to_download, config)?;
-    requests.extend(build_expose_artifact_download_requests(
+    requests.extend(build_secondary_artifact_download_requests(
         &registries,
-        &expose_artifacts,
+        &secondary_artifacts,
         &missing,
         reinstall,
         config,
@@ -440,7 +398,7 @@ async fn run_inner(
         // registries. Closure totality was already enforced above.
         printer.step(4, 7, "Verifying downloads...");
         verify_downloads(&results, &trust_ctx, printer)?;
-        verify_secondary_artifact_downloads(&results, &expose_artifacts)?;
+        verify_secondary_artifact_downloads(&results, &secondary_artifacts)?;
 
         if download_only {
             if json_mode {
@@ -594,11 +552,8 @@ async fn run_inner(
                     held: existing_flags.held,
                     source_drv: meta.source_drv.clone(),
                     source_nar_hash: meta.source_nar_hash.clone(),
-                    expose: meta.expose.clone(),
-                    expose_artifact: meta.expose_artifact.clone(),
                     documentation: meta.documentation.clone(),
                     contract: meta.contract.clone(),
-                    permissions: meta.permissions.clone(),
                     bpf_lsm: meta.bpf_lsm.clone(),
                     attestation: meta.attestation.clone(),
                 }),
@@ -608,20 +563,11 @@ async fn run_inner(
         }
     }
     snapshot_profile_meta_to_generation(&profile, &new_gen)?;
-    let future_installed = list_meta(&profile)?;
-    rebuild_generation_expose_roots(&new_gen, &future_installed)?;
-    rebuild_generation_expose_image_roots(&new_gen, &future_installed)?;
-    validate_generation_exposed_units(&new_gen, &future_installed)?;
-
     // Build FHS tree for the new generation.
     build_generation_fhs_tree(&new_gen, printer)?;
 
     // Atomic switch to the new generation.
     profile.switch_to(&new_gen)?;
-    if reconcile_exposed_units {
-        reconcile_system_profile(config, printer).await?;
-    }
-
     printer.step(7, 7, "Done!");
     let verb = if reinstall {
         "Reinstalled"
@@ -755,7 +701,7 @@ pub(crate) fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
 }
 
 /// Collect authenticated secondary artifacts needed by the resolved closure.
-fn collect_expose_artifacts(
+fn collect_secondary_artifacts(
     closures: &[ResolvedClosure],
 ) -> Result<Vec<SecondaryArtifactDownload>> {
     let mut artifacts = Vec::new();
@@ -796,35 +742,6 @@ fn collect_expose_artifacts(
                     )?;
                 }
             }
-        }
-        let Some(expose) = closure.root.expose.as_ref() else {
-            continue;
-        };
-        let Some(artifact) = closure.root.expose_artifact.as_ref() else {
-            anyhow::bail!(
-                "package '{}' exposes systemd units but does not record an expose artifact",
-                closure.root.name
-            );
-        };
-        push_secondary_artifact(
-            &mut artifacts,
-            &mut seen,
-            &closure.registry_name,
-            &artifact.store_path,
-            &artifact.nar_hash,
-            true,
-            false,
-        )?;
-        for image in &expose.images {
-            push_secondary_artifact(
-                &mut artifacts,
-                &mut seen,
-                &closure.registry_name,
-                &image.store_path,
-                &image.nar_hash,
-                false,
-                true,
-            )?;
         }
     }
 
@@ -1321,8 +1238,8 @@ fn ensure_safe_provenance_ref(path: &str) -> Result<()> {
     validate_attestation_provenance_ref(path)
 }
 
-/// Build NAR download requests for missing expose artifacts.
-fn build_expose_artifact_download_requests(
+/// Build NAR download requests for missing secondary artifacts.
+fn build_secondary_artifact_download_requests(
     registries: &RegistrySet,
     artifacts: &[SecondaryArtifactDownload],
     missing_store_paths: &[String],
@@ -2045,7 +1962,7 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::profile::Generation;
-    use crate::types::{AttestationMeta, ExposeArtifactMeta, ExposeMeta, SysrootImageEntry};
+    use crate::types::AttestationMeta;
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
 
@@ -2109,11 +2026,8 @@ mod tests {
             images: Vec::new(),
             min_format: None,
             requires_features: Vec::new(),
-            expose: None,
-            expose_artifact: None,
             documentation: None,
             contract: None,
-            permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),
         }
@@ -2178,11 +2092,8 @@ mod tests {
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
-                expose: None,
-                expose_artifact: None,
                 documentation: None,
                 contract: None,
-                permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
             }),
@@ -2231,36 +2142,15 @@ mod tests {
             total_nar_size: 1,
         }
     }
-
-    fn sample_expose_image(store_path: &str, nar_hash: &str) -> SysrootImageEntry {
-        SysrootImageEntry {
-            format: "dir".to_string(),
-            store_path: store_path.to_string(),
-            nar_hash: nar_hash.to_string(),
-            nar_size: 1,
-            delivery: crate::types::test_image_delivery("raw"),
-            sb_signer_cert_sha256: None,
-            sbat: Vec::new(),
-            expected_pcr11: None,
-            ukis: Vec::new(),
-            recovery_ukis: Vec::new(),
-            recovery_bundle: None,
-            root_image: None,
-            root_verity: None,
-            root_hash: None,
-            root_hash_sig: None,
-        }
-    }
-
     fn attested_sample_package() -> PackageMeta {
         let root_hash = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-        let manifest_digest =
+        let binding_digest =
             "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
         let measurement = crate::package_attestation::package_measurement_digest(
             "web",
             "1.0.0",
             root_hash,
-            manifest_digest,
+            binding_digest,
         );
         let measurement_hex = measurement.trim_start_matches("sha256:");
         let mut meta = sample_package("web", "1.0.0", "/nix/store/abc123-web-1.0.0");
@@ -2302,7 +2192,7 @@ mod tests {
         let root_hash_sig = meta.attestation.root_hash_sig.as_deref().unwrap();
         let provenance = meta.attestation.provenance.as_deref().unwrap();
         let measurement = meta.attestation.measurement.as_deref().unwrap();
-        let manifest_digest =
+        let binding_digest =
             "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
         let source_uri = format!("nix:{}", meta.source_drv);
         let statement = serde_json::json!({
@@ -2314,10 +2204,10 @@ mod tests {
                 },
                 {
                     "name": format!(
-                        "aos:permissions-manifest:{}:{}:{}",
+                        "aos:package-runtime-binding:{}:{}:{}",
                         meta.name, meta.version, meta.platform
                     ),
-                    "digest": crate::provenance::digest_map(manifest_digest),
+                    "digest": crate::provenance::digest_map(binding_digest),
                 },
                 {
                     "name": format!(
@@ -2461,52 +2351,6 @@ mod tests {
         let digest = Sha256::digest(bytes);
         digest.iter().map(|byte| format!("{byte:02x}")).collect()
     }
-
-    #[test]
-    fn collect_expose_artifacts_includes_expose_images() {
-        let mut root = sample_package("web", "1.0.0", "/var/lib/store/root-web");
-        root.expose = Some(ExposeMeta {
-            target: "web.target".to_string(),
-            units: vec!["web.service".to_string()],
-            images: vec![sample_expose_image(
-                "/var/lib/store/image-web",
-                "sha256:image",
-            )],
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        });
-        root.expose_artifact = Some(ExposeArtifactMeta {
-            store_path: "/var/lib/store/expose-web".to_string(),
-            nar_hash: "sha256:expose".to_string(),
-            nar_size: 1,
-        });
-
-        let artifacts = collect_expose_artifacts(&[sample_closure(root.clone(), vec![root])])
-            .expect("collect expose artifacts");
-
-        assert_eq!(
-            artifacts,
-            vec![
-                SecondaryArtifactDownload {
-                    registry_name: "test-reg".to_string(),
-                    store_path: "/var/lib/store/expose-web".to_string(),
-                    nar_hash: "sha256:expose".to_string(),
-                    trust_graph_root: true,
-                    requires_empty_references: false,
-                },
-                SecondaryArtifactDownload {
-                    registry_name: "test-reg".to_string(),
-                    store_path: "/var/lib/store/image-web".to_string(),
-                    nar_hash: "sha256:image".to_string(),
-                    trust_graph_root: false,
-                    requires_empty_references: true,
-                },
-            ]
-        );
-    }
-
     #[test]
     fn verify_install_provenance_from_cache_reads_registry_artifact() {
         let tmp = TempDir::new().unwrap();
@@ -2620,72 +2464,6 @@ mod tests {
 
         assert!(err.to_string().contains("must not contain symlinks"));
     }
-
-    #[test]
-    fn verify_install_provenance_from_cache_rejects_exposed_without_provenance() {
-        let mut meta = sample_package("web", "1.0.0", "/var/lib/store/root-web");
-        meta.expose = Some(ExposeMeta {
-            target: "web.target".to_string(),
-            units: vec!["web.service".to_string()],
-            images: Vec::new(),
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        });
-
-        let err = verify_install_provenance_from_cache(
-            TempDir::new().unwrap().path(),
-            &[sample_closure(meta.clone(), vec![meta])],
-        )
-        .unwrap_err();
-
-        assert!(format!("{err:#}").contains("does not declare provenance"));
-    }
-
-    #[test]
-    fn collect_expose_artifacts_rejects_incompatible_duplicate_roles() {
-        let shared_path = "/var/lib/store/shared-secondary";
-        let mut image_root = sample_package("web", "1.0.0", "/var/lib/store/root-web");
-        image_root.expose = Some(ExposeMeta {
-            target: "web.target".to_string(),
-            units: vec!["web.service".to_string()],
-            images: vec![sample_expose_image(shared_path, "sha256:shared")],
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        });
-        image_root.expose_artifact = Some(ExposeArtifactMeta {
-            store_path: "/var/lib/store/expose-web".to_string(),
-            nar_hash: "sha256:web-expose".to_string(),
-            nar_size: 1,
-        });
-        let mut artifact_root = sample_package("api", "1.0.0", "/var/lib/store/root-api");
-        artifact_root.expose = Some(ExposeMeta {
-            target: "api.target".to_string(),
-            units: vec!["api.service".to_string()],
-            images: Vec::new(),
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        });
-        artifact_root.expose_artifact = Some(ExposeArtifactMeta {
-            store_path: shared_path.to_string(),
-            nar_hash: "sha256:shared".to_string(),
-            nar_size: 1,
-        });
-
-        let err = collect_expose_artifacts(&[
-            sample_closure(image_root.clone(), vec![image_root]),
-            sample_closure(artifact_root.clone(), vec![artifact_root]),
-        ])
-        .expect_err("duplicate image/artifact path should be rejected");
-
-        assert!(err.to_string().contains("incompatible roles"));
-    }
-
     #[test]
     fn verify_secondary_artifact_downloads_rejects_image_references() {
         let result = crate::download::DownloadResult {

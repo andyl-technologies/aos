@@ -7,25 +7,23 @@ use crate::provenance::sign_statement_dsse_jsonl;
 use crate::registry::keys::{KeysToml, RevokedKey, RosterKey};
 use crate::registry::store::{DepEdge, NarBytes, Realisation};
 use crate::registry::{keys, store};
+use crate::registry_ops::attestation::package_nar_root_digest;
 use crate::registry_ops::git::git;
 use crate::registry_ops::images::files::{
     open_stable_regular_file_with_links, sha256_open_file, verify_stable_regular_file,
 };
 use crate::registry_ops::images::{PublishedImage, inspect_published_image_with};
-use crate::registry_ops::mac::{
-    PublishExposeManifest, compile_publish_selinux_profile, expected_publish_selinux_profile,
-    publish_selinux_identifier_for_label,
-};
 use crate::registry_ops::provenance::{
-    LocalPackageProvenanceSigner, PublishProvenanceArtifact, publish_provenance_artifact,
+    LocalPackageProvenanceSigner, PublishProvenanceArtifact, publish_provenance_ref,
+    publish_provenance_statement,
 };
 use crate::registry_ops::release::ReleaseTreeOptions;
 use crate::registry_ops::store_paths::{RELEASE_POLICY_RELATIVE_PATH, StorePathInfo, extract_hash};
 use crate::registry_ops::uki::SbFacts;
 use crate::testutil;
 use crate::types::{
-    ApmSettings, ExposeMeta, PermissionsMeta, ProfileScope, RegistryConfig,
-    RegistryUploadAuthConfig, SigningKeySource,
+    ApmSettings, AttestationMeta, ProfileScope, RegistryConfig, RegistryUploadAuthConfig,
+    SigningKeySource,
 };
 use anyhow::{Context, Result};
 use aos_cache::AuthOptions;
@@ -373,60 +371,6 @@ pub(in crate::registry_ops) fn write_internal_release_policy(path: &Path, identi
     .unwrap();
 }
 
-pub(in crate::registry_ops) fn write_publish_selinux_artifacts(root: &Path, label: &str) {
-    let module_name = publish_selinux_identifier_for_label(label);
-    let source_text = expected_publish_selinux_profile(label);
-    let compiled = compile_publish_selinux_profile(&source_text, &module_name).unwrap();
-    let profile_path = root.join(format!("mac/selinux/{module_name}.pp"));
-    fs::create_dir_all(profile_path.parent().unwrap()).unwrap();
-    fs::write(&profile_path, compiled.profile).unwrap();
-    fs::write(
-        root.join(format!("mac/selinux/{module_name}.mod")),
-        compiled.module,
-    )
-    .unwrap();
-    fs::write(
-        root.join(format!("mac/selinux/{module_name}.te")),
-        source_text,
-    )
-    .unwrap();
-}
-
-pub(in crate::registry_ops) fn verity_expose_manifest(root_hash: &str) -> PublishExposeManifest {
-    PublishExposeManifest {
-        expose: ExposeMeta {
-            target: "aos-pkg-webapp.target".into(),
-            units: vec!["webapp.service".into()],
-            images: vec![crate::types::SysrootImageEntry {
-                format: "ext4-verity".into(),
-                store_path: "/nix/store/imagehash111-webapp-root".into(),
-                nar_hash: "sha256:image".into(),
-                nar_size: 4096,
-                delivery: crate::types::test_image_delivery("raw"),
-                sb_signer_cert_sha256: None,
-                sbat: Vec::new(),
-                expected_pcr11: None,
-                ukis: Vec::new(),
-                recovery_ukis: Vec::new(),
-                recovery_bundle: None,
-                root_image: Some("root.img".into()),
-                root_verity: Some("root.verity".into()),
-                root_hash: Some(root_hash.into()),
-                root_hash_sig: Some("root.roothash.p7s".into()),
-            }],
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        },
-        permissions: PermissionsMeta::default(),
-        mac: None,
-        _kernel: None,
-        _firewall: None,
-        _confinement: None,
-    }
-}
-
 pub(crate) fn synthetic_pe_section(name: &[u8], virtual_size: u32, raw: &[u8]) -> Vec<u8> {
     assert!(name.len() <= 8);
     let pe_offset = 0x40_usize;
@@ -449,7 +393,6 @@ pub(crate) fn synthetic_pe_section(name: &[u8], virtual_size: u32, raw: &[u8]) -
     pe
 }
 
-/// Wrap a DER value in a SEQUENCE/SET/context tag with a short length.
 pub(in crate::registry_ops) fn der_wrap(tag: u8, value: &[u8]) -> Vec<u8> {
     assert!(value.len() < 0x80, "test helper only handles short form");
     let mut out = vec![tag, value.len() as u8];
@@ -646,23 +589,44 @@ pub(in crate::registry_ops) fn sample_transparency_provenance()
         references: vec![],
         closure_size: 4096,
     };
-    let root_hash = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-    let manifest = verity_expose_manifest(root_hash);
-    let manifest_digest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    let root_digest = package_nar_root_digest(&info.nar_hash);
+    let binding_digest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    let measurement = crate::package_attestation::package_measurement_digest(
+        "webapp",
+        "1.0.0",
+        &root_digest,
+        binding_digest,
+    );
+    let provenance = publish_provenance_ref("webapp", "x86_64-linux", &measurement).unwrap();
+    let attestation = AttestationMeta {
+        root_digest: Some(root_digest),
+        provenance: Some(provenance.clone()),
+        measurement: Some(measurement),
+        ..AttestationMeta::default()
+    };
     let signer = test_provenance_signer();
-    let artifact = publish_provenance_artifact(
+    let statement = publish_provenance_statement(
         TEST_PROVENANCE_REGISTRY,
         "webapp",
         "1.0.0",
         "x86_64-linux",
         &info,
         Some(&source),
-        &manifest,
-        manifest_digest,
-        &signer.signer,
+        binding_digest,
+        &attestation,
+        &signer.signer.key_id,
     )
-    .unwrap()
     .unwrap();
+    let artifact = PublishProvenanceArtifact {
+        path: provenance,
+        jsonl: sign_statement_dsse_jsonl(
+            &statement,
+            TEST_PROVENANCE_KEY_ID,
+            signer.signer.key_path.as_path(),
+        )
+        .unwrap(),
+        attestation,
+    };
     (info, source, artifact)
 }
 

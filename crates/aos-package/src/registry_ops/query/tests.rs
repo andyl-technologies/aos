@@ -30,10 +30,7 @@ fn commit_registry_paths_rejects_rfc0001_package_without_provenance() {
          store_path = \"/nix/store/abc123-webapp-1.0.0\"\n\
          closure_size = 1\n\
          source_drv = \"\"\n\
-         source_nar_hash = \"\"\n\
-         \n\
-         [versions.platforms.x86_64-linux.expose]\n\
-         target = \"aos-pkg-webapp.target\"\n",
+         source_nar_hash = \"\"\n",
     )
     .unwrap();
 

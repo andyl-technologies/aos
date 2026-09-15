@@ -8,9 +8,9 @@
 //!   paths the manifest pinned) into the local store via the configured
 //!   substituters, then writes the completion marker `/run/aos/fetch/<pkg>.ok`.
 //!   It does not switch generations, render config, or activate.
-//! - **`render-one <pkg>`** renders that package's config artifact(s) +
-//!   credential handles into the staging area against the signed `expose.config`
-//!   metadata, then writes `/run/aos/render/<pkg>.ok`. It does not touch live
+//! - **`render-one <pkg>`** renders that package's config artifact(s) and
+//!   credential handles from the typed configuration manifest, then writes
+//!   `/run/aos/render/<pkg>.ok`. It does not touch live
 //!   `/etc` (the atomic commit is `aos-activate`'s job).
 //!
 //! # Markers

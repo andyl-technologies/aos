@@ -1550,8 +1550,7 @@ CREATE TABLE registry_catalog_artifacts(
   PRIMARY KEY(registry_id, source_revision, package_name, package_version,
 platform, artifact_kind, store_hash),
   CHECK(artifact_kind IN(
-    'output', 'image', 'source_derivation', 'expose', 'config',
-    'evaluation_base_lib', 'documentation'
+    'output', 'image', 'source_derivation', 'documentation'
   ))
 );
 
@@ -3513,8 +3512,7 @@ CREATE TABLE release_artifacts(
   store_hash KEYTEXT64 NOT NULL,
   metadata_digest KEYTEXT128 NOT NULL,
   CHECK(artifact_kind IN(
-    'output', 'image', 'source_derivation', 'expose', 'config',
-    'evaluation_base_lib', 'documentation'
+    'output', 'image', 'source_derivation', 'documentation'
   )),
   PRIMARY KEY(snapshot_id, package_name, package_version, platform,
 artifact_kind, store_hash),

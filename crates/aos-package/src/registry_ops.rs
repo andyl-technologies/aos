@@ -56,7 +56,6 @@ mod documentation;
 mod git;
 mod images;
 mod lifecycle;
-mod mac;
 mod metadata;
 mod package_contract;
 mod package_contract_transparency;

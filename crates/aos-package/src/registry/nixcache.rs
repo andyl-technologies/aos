@@ -1249,13 +1249,6 @@ fn collect_store_paths_from_package(value: &TomlValue, inventory: &mut CacheRoot
                     }
                 }
             }
-            if let Some(expose_artifact) = platform.get("expose_artifact")
-                && let Some(path) = expose_artifact
-                    .get("store_path")
-                    .and_then(TomlValue::as_str)
-            {
-                inventory.roots.insert(path.to_string());
-            }
             if let Some(documentation) = platform.get("documentation")
                 && let Some(path) = documentation.get("store_path").and_then(TomlValue::as_str)
             {
@@ -1694,11 +1687,6 @@ store_path = "/nix/store/info111-system-image-info"
 [versions.platforms.x86_64-linux.images.delivery.update_payload]
 store_path = "/nix/store/payload111-system-update-payload"
 
-[versions.platforms.x86_64-linux.expose_artifact]
-store_path = "/nix/store/expose111-kernel-expose"
-nar_hash = "sha256:expose"
-nar_size = 5
-
 [versions.platforms.x86_64-linux.documentation]
 format = "aos.package-documentation/v1+json"
 store_path = "/nix/store/docs111-kernel-docs.json"
@@ -1721,7 +1709,6 @@ store_path = "/nix/store/ability111-kernel-abilities"
                 "/nix/store/cfg111-kernel-config".to_string(),
                 "/nix/store/dev111-kernel".to_string(),
                 "/nix/store/docs111-kernel-docs.json".to_string(),
-                "/nix/store/expose111-kernel-expose".to_string(),
                 "/nix/store/img111-system-image".to_string(),
                 "/nix/store/info111-system-image-info".to_string(),
                 "/nix/store/lib111-config-base-lib".to_string(),

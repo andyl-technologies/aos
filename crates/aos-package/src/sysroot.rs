@@ -61,7 +61,6 @@ use crate::download::{
     fetch_narinfos, resolve_mirror_chain, split_mirror_chain,
 };
 use crate::platform::native_platform;
-use crate::policy::admit_package_roots;
 use crate::registry::sb_certs::{self, SbCertsToml};
 use crate::registry::{RegistrySet, store_path_hash};
 use crate::resolve::{collect_unique_metas, resolve_multiple};
@@ -570,7 +569,6 @@ pub async fn install_system(
     printer.step(1, 8, "Loading registries...");
     let registries = load_registries(config)?;
     let closures = resolve_multiple(&registries, packages, registry_filter)?;
-    admit_package_roots(closures.iter().flat_map(|closure| closure.closure.iter()))?;
 
     if closures.is_empty() {
         bail!("package '{pkg_name}' not found");

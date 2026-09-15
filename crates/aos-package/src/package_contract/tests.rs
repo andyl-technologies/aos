@@ -27,7 +27,7 @@ use super::{
 use crate::provenance::{TrustedProvenanceKey, sign_statement_dsse_jsonl};
 use crate::types::{
     AttestationMeta, PackageContractArtifactMeta, PackageContractClosureMemberMeta,
-    PackageContractMeta, PackageContractSelectorMeta, PackageMeta, PermissionsMeta,
+    PackageContractMeta, PackageContractSelectorMeta, PackageMeta,
 };
 
 const STORE_ROOT: &str = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-ability-artifact";
@@ -371,11 +371,8 @@ impl TestFixture {
             images: Vec::new(),
             min_format: None,
             requires_features: Vec::new(),
-            expose: None,
-            expose_artifact: None,
             documentation: None,
             contract: Some(ability),
-            permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta::default(),
         };

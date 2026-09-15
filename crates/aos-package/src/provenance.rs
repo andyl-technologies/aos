@@ -340,23 +340,23 @@ pub(crate) fn verify_package_statement(
         .with_context(|| format!("locating package NAR subject for '{}'", meta.name))?;
     ensure_digest_matches("package NAR", &package_subject.digest, &meta.nar_hash)?;
 
-    let manifest_subject_name = format!(
-        "aos:permissions-manifest:{}:{}:{}",
+    let binding_subject_name = format!(
+        "aos:package-runtime-binding:{}:{}:{}",
         meta.name, meta.version, meta.platform
     );
-    let manifest_subject = subject_named(&statement, &manifest_subject_name)
-        .with_context(|| format!("locating permissions manifest subject for '{}'", meta.name))?;
-    let manifest_digest = sha256_digest_from_map("permissions manifest", &manifest_subject.digest)?;
+    let binding_subject = subject_named(&statement, &binding_subject_name)
+        .with_context(|| format!("locating runtime binding subject for '{}'", meta.name))?;
+    let binding_digest = sha256_digest_from_map("runtime binding", &binding_subject.digest)?;
 
     let expected_measurement = crate::package_attestation::package_measurement_digest(
         &meta.name,
         &meta.version,
         root_digest,
-        &manifest_digest,
+        &binding_digest,
     );
     if expected_measurement != measurement {
         bail!(
-            "package '{}' provenance manifest digest does not match registry measurement",
+            "package '{}' provenance runtime binding digest does not match registry measurement",
             meta.name
         );
     }
@@ -1085,11 +1085,8 @@ mod tests {
             images: Vec::new(),
             min_format: None,
             requires_features: Vec::new(),
-            expose: None,
-            expose_artifact: None,
             documentation: None,
             contract: None,
-            permissions: Default::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {
                 root_digest: Some(ROOT_HASH.to_string()),
@@ -1120,7 +1117,7 @@ mod tests {
                 },
                 {
                     "name": format!(
-                        "aos:permissions-manifest:{}:{}:{}",
+                        "aos:package-runtime-binding:{}:{}:{}",
                         meta.name, meta.version, meta.platform
                     ),
                     "digest": digest_map(MANIFEST_DIGEST),
@@ -1199,7 +1196,7 @@ mod tests {
                 },
                 {
                     "name": format!(
-                        "aos:permissions-manifest:{}:{}:{}",
+                        "aos:package-runtime-binding:{}:{}:{}",
                         meta.name, meta.version, meta.platform
                     ),
                     "digest": digest_map(MANIFEST_DIGEST),

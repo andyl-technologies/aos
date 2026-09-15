@@ -12,9 +12,8 @@
 //!
 //! # The type (build-spec §2.1)
 //!
-//! A [`SecretRef`] is a [`CredentialMeta`](crate::types::CredentialMeta) plus an
-//! optional [`ResolverKind`] discriminator. Its only inhabitants are stable
-//! identifiers:
+//! A [`SecretRef`] carries stable credential identifiers and an optional
+//! [`ResolverKind`] discriminator:
 //!
 //! ```text
 //! name      : str            # systemd credential id (the handle)
@@ -48,7 +47,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{CredentialMeta, validate_credential_name};
+use crate::types::validate_credential_name;
 
 /// The resolver backend that supplies a [`SecretRef`]'s bytes (build-spec §2.1).
 ///
@@ -74,10 +73,8 @@ pub enum ResolverKind {
 /// An opaque reference to secret material the evaluator may produce
 /// (build-spec §2.1).
 ///
-/// Serialize-compatible with [`CredentialMeta`]: the credential-bearing fields
-/// serialize identically, so the manifest schema is unchanged. The optional
-/// `ref` is a resolver hint; when absent the resolver is inferred exactly as
-/// `credential_artifact.rs` does today.
+/// The optional `ref` is a resolver hint; when absent the resolver is inferred
+/// from the reference's stable source fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecretRef {
@@ -95,7 +92,7 @@ pub struct SecretRef {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub units: Vec<String>,
     /// Whether the credential is TPM2/systemd encrypted at rest (default true at
-    /// the module layer; serialized only when set, mirroring [`CredentialMeta`]).
+    /// the module layer; serialized only when set.
     #[serde(default, skip_serializing_if = "is_false")]
     pub encrypted: bool,
     /// Optional resolver discriminator. Absent ⇒ inferred (build-spec §2.1).
@@ -103,40 +100,9 @@ pub struct SecretRef {
     pub resolver: Option<String>,
 }
 
-/// `skip_serializing_if` helper mirroring [`CredentialMeta`]'s.
+/// `skip_serializing_if` helper for boolean defaults.
 fn is_false(value: &bool) -> bool {
     !*value
-}
-
-impl From<&CredentialMeta> for SecretRef {
-    /// Lift an existing [`CredentialMeta`] into a [`SecretRef`] with no explicit
-    /// resolver (the resolver is inferred from `source`/`ciphertext`).
-    fn from(meta: &CredentialMeta) -> Self {
-        Self {
-            name: meta.name.clone(),
-            source: meta.source.clone(),
-            ciphertext: meta.ciphertext.clone(),
-            units: meta.units.clone(),
-            encrypted: meta.encrypted,
-            resolver: None,
-        }
-    }
-}
-
-impl From<&SecretRef> for CredentialMeta {
-    /// Project a [`SecretRef`] back to the manifest's [`CredentialMeta`],
-    /// dropping the resolver hint. The credential-bearing bytes are identical,
-    /// so the manifest schema is unchanged (build-spec §2.1).
-    fn from(sr: &SecretRef) -> Self {
-        Self {
-            name: sr.name.clone(),
-            source: sr.source.clone(),
-            ciphertext: sr.ciphertext.clone(),
-            units: sr.units.clone(),
-            encrypted: sr.encrypted,
-            optional: false,
-        }
-    }
 }
 
 impl SecretRef {
@@ -298,9 +264,8 @@ pub fn resolve_secret_ref(
 
     // Step 3: validate writable destinations. Image-sealed references already
     // live in the immutable/generated credstore and are intentionally a no-op.
-    let meta = CredentialMeta::from(sr);
     if kind != ResolverKind::Tpm2Credstore {
-        crate::credential_artifact::validate_provisionable_source(package, &meta, source)?;
+        crate::credential_artifact::validate_provisionable_source(package, sr, source)?;
     }
 
     // Step 4: obtain plaintext by resolver. tpm2-credstore is already present.
@@ -445,26 +410,6 @@ mod tests {
         assert!(serde_json::from_str::<SecretRef>(with_value).is_err());
         let with_text = r#"{"name":"t","text":"hunter2"}"#;
         assert!(serde_json::from_str::<SecretRef>(with_text).is_err());
-    }
-
-    #[test]
-    fn manifest_projection_drops_only_the_resolver_hint() {
-        let sr = SecretRef {
-            resolver: Some("desired-toml".to_string()),
-            ..secret(
-                "join-token",
-                Some("/etc/credstore.encrypted/web/join-token"),
-            )
-        };
-        let meta = CredentialMeta::from(&sr);
-        // The credential-bearing fields round-trip identically (no schema change).
-        assert_eq!(meta.name, sr.name);
-        assert_eq!(meta.source, sr.source);
-        assert_eq!(meta.units, sr.units);
-        assert_eq!(meta.encrypted, sr.encrypted);
-        // And the lifted SecretRef has no resolver (inferred).
-        let lifted = SecretRef::from(&meta);
-        assert_eq!(lifted.resolver, None);
     }
 
     #[test]

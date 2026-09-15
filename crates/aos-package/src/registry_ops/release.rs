@@ -467,7 +467,6 @@ async fn publish_release_store_path(
         &publish_opts.image_info_paths,
         &publish_opts.image_formats,
         &publish_opts.image_uki_paths,
-        None,
         publish_opts.bless,
         false,
         false,

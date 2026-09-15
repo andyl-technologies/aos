@@ -5,22 +5,16 @@ use super::{
     record_package_contract,
 };
 use crate::registry_ops::attestation::package_nar_root_digest;
-use crate::registry_ops::mac::{PublishExposeManifest, PublishMacProfileManifest};
 use crate::registry_ops::provenance::{bind_documentation_provenance, publish_provenance_ref};
 use crate::registry_ops::store_paths::StorePathInfo;
 use crate::registry_ops::test_support::{
-    inspect_test_image, rewrite_test_image_parent, verity_expose_manifest,
-    write_direct_image_output,
+    inspect_test_image, rewrite_test_image_parent, write_direct_image_output,
 };
 use crate::types::{
-    AttestationMeta, DocumentationArtifactMeta, ExposeMeta, FEATURE_ABILITIES_V1,
-    FEATURE_ABILITY_EFFECTS_V1, FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1,
-    FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
-    FEATURE_MAC_PROFILE_V1, FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_NETWORK_POLICY_V1,
-    FEATURE_PACKAGE_DOCUMENTATION_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1,
-    FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT, PackageContractArtifactMeta,
-    PackageContractClosureMemberMeta, PackageContractDocumentMeta, PackageContractMeta,
-    PermissionsMeta, RecoveryUkiEntry, SbatEntry, UkiSlot,
+    AttestationMeta, DocumentationArtifactMeta, FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1,
+    FEATURE_ATTESTATION_V1, FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_PACKAGE_DOCUMENTATION_V1,
+    PACKAGE_META_FORMAT, PackageContractArtifactMeta, PackageContractClosureMemberMeta,
+    PackageContractDocumentMeta, PackageContractMeta, RecoveryUkiEntry, SbatEntry, UkiSlot,
 };
 use aos_ability_model::document::PackageSubject;
 use aos_ability_model::{
@@ -55,9 +49,6 @@ fn sysroot_publication_emits_structural_native_rollout_gate() {
         true,
         None,
         &[],
-        None,
-        None,
-        None,
         None,
     )
     .expect("build sysroot metadata");
@@ -98,9 +89,6 @@ fn record_ability_preserves_stronger_format_and_feature_gates() {
         false,
         None,
         &[],
-        None,
-        None,
-        None,
         None,
     )
     .expect("build package metadata");
@@ -276,9 +264,6 @@ fn build_package_toml_binds_documentation_as_a_signed_platform_artifact() {
         None,
         &[],
         None,
-        None,
-        None,
-        None,
         Some(&documentation),
         Some(&attestation),
     )
@@ -332,9 +317,6 @@ fn build_package_toml_new() {
         false,
         None,
         &[],
-        None,
-        None,
-        None,
         None,
     )
     .unwrap();
@@ -440,9 +422,6 @@ source_nar_hash = ""
         None,
         &[],
         None,
-        None,
-        None,
-        None,
     )
     .unwrap();
 
@@ -486,620 +465,11 @@ fn build_package_toml_records_source_deriver() {
         None,
         &[],
         Some(&source_info),
-        None,
-        None,
-        None,
     )
     .unwrap();
     assert!(content.contains("source_drv = \"/nix/store/drv123-curl-8.5.0.drv\""));
     assert!(content.contains("source_nar_hash = \"sha256:source\""));
 }
-
-#[test]
-fn build_package_toml_records_expose_manifest_metadata() {
-    let info = StorePathInfo {
-        path: "/nix/store/abc123-webapp-1.0.0".into(),
-        nar_hash: "sha256:deadbeef".into(),
-        nar_size: 1048576,
-        references: vec![],
-        closure_size: 5242880,
-    };
-    let artifact = StorePathInfo {
-        path: "/nix/store/artifacthash111-expose-webapp".into(),
-        nar_hash: "sha256:artifact".into(),
-        nar_size: 2048,
-        references: vec![],
-        closure_size: 2048,
-    };
-    let mut permissions = PermissionsMeta {
-        network: Some(crate::types::NetworkPermission::PrivateOutbound),
-        tcp_bind: vec![8080],
-        tcp_connect: vec![443],
-        capabilities: vec!["CAP_NET_BIND_SERVICE".into()],
-        ..PermissionsMeta::default()
-    };
-    permissions.confinement = Some(permissions.computed_confinement());
-    let manifest = PublishExposeManifest {
-        expose: ExposeMeta {
-            target: "aos-pkg-webapp.target".into(),
-            units: vec![
-                "webapp.service".into(),
-                "aos-pkg-webapp.slice".into(),
-                "aos-pkg-webapp-mac.service".into(),
-                "aos-pkg-webapp-ebpf.service".into(),
-            ],
-            images: Vec::new(),
-            requires: vec!["zlib".into()],
-            config: crate::types::ExposeConfigMeta {
-                artifacts: vec![crate::types::ConfigArtifactMeta {
-                    name: "env".into(),
-                    path: "/etc/aos/packages/webapp/config.env".into(),
-                    format: crate::types::ConfigArtifactFormat::Env,
-                    required: vec!["TOKEN".into()],
-                    optional: Vec::new(),
-                    units: vec!["webapp.service".into()],
-                    reload: crate::types::ConfigReloadPolicy::Reload,
-                }],
-                credentials: Vec::new(),
-            },
-            provides: vec![crate::types::ProvidedCapabilityMeta {
-                name: "data".into(),
-                kind: crate::types::CapabilityKind::Directory,
-                path: Some("/var/lib/webapp/data".into()),
-                unit: None,
-            }],
-            uses: vec![crate::types::RequiredCapabilityMeta {
-                provider: "zlib".into(),
-                name: "headers".into(),
-                kind: crate::types::CapabilityKind::Directory,
-                unit: "webapp.service".into(),
-            }],
-        },
-        permissions,
-        mac: Some(PublishMacProfileManifest {
-            version: 1,
-            package: "webapp".into(),
-            backend: "selinux".into(),
-            security_label: "aos-pkg-webapp".into(),
-            default_deny: true,
-            profile_path: Some("mac/selinux/aos_x2dpkg_x2dwebapp.pp".into()),
-        }),
-        _kernel: None,
-        _firewall: None,
-        _confinement: None,
-    };
-    let manifest_digest = crate::package_attestation::package_manifest_digest_bytes(
-        br#"{"expose":{"target":"aos-pkg-webapp.target","units":["webapp.service"]},"permissions":{}}"#,
-    );
-    let expected_root_digest = package_nar_root_digest(&info.nar_hash);
-    let expected_measurement = crate::package_attestation::package_measurement_digest(
-        "webapp",
-        "1.0.0",
-        &expected_root_digest,
-        &manifest_digest,
-    );
-
-    let content = build_package_toml(
-        "",
-        "webapp",
-        "1.0.0",
-        "x86_64-linux",
-        &info,
-        Some("Web application"),
-        None,
-        Some("MIT"),
-        Some("aos-team"),
-        false,
-        None,
-        &[],
-        None,
-        Some(&manifest),
-        Some(&artifact),
-        Some(&manifest_digest),
-    )
-    .unwrap();
-
-    let rendered: toml::Value = toml::from_str(&content).unwrap();
-    let platform = rendered
-        .get("versions")
-        .and_then(|versions| versions.as_array())
-        .and_then(|versions| versions.first())
-        .and_then(|version| version.get("platforms"))
-        .and_then(|platforms| platforms.get("x86_64-linux"))
-        .unwrap();
-    assert_eq!(
-        platform.get("min-format").and_then(toml::Value::as_integer),
-        Some(i64::from(PACKAGE_META_FORMAT))
-    );
-    assert_eq!(
-        platform
-            .get("requires-features")
-            .and_then(toml::Value::as_array)
-            .map(|features| {
-                features
-                    .iter()
-                    .filter_map(toml::Value::as_str)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap(),
-        vec![
-            FEATURE_EXPOSE_V1,
-            FEATURE_EXPOSE_ARTIFACT_V1,
-            FEATURE_PERMISSIONS_V1,
-            FEATURE_NETWORK_POLICY_V1,
-            FEATURE_REQUIRES_V1,
-            FEATURE_CONFIG_V1,
-            FEATURE_RELOAD_V1,
-            FEATURE_CAPABILITY_ROUTES_V1,
-            FEATURE_EBPF_NET_POLICY_V1,
-            FEATURE_MAC_PROFILE_V1,
-            FEATURE_ATTESTATION_V1,
-        ]
-    );
-    assert_eq!(
-        platform.get("root_digest").and_then(toml::Value::as_str),
-        Some(expected_root_digest.as_str())
-    );
-    assert_eq!(
-        platform.get("measurement").and_then(toml::Value::as_str),
-        Some(expected_measurement.as_str())
-    );
-    assert_eq!(
-        platform
-            .get("references")
-            .and_then(|references| references.get("min-format"))
-            .and_then(toml::Value::as_integer),
-        Some(i64::from(PACKAGE_META_FORMAT))
-    );
-    assert_eq!(
-        platform
-            .get("expose")
-            .and_then(|expose| expose.get("target"))
-            .and_then(toml::Value::as_str),
-        Some("aos-pkg-webapp.target")
-    );
-    assert_eq!(
-        platform
-            .get("expose_artifact")
-            .and_then(|artifact| artifact.get("store_path"))
-            .and_then(toml::Value::as_str),
-        Some("/nix/store/artifacthash111-expose-webapp")
-    );
-    assert_eq!(
-        platform
-            .get("permissions")
-            .and_then(|permissions| permissions.get("network"))
-            .and_then(toml::Value::as_str),
-        Some("private-outbound")
-    );
-    assert_eq!(
-        platform
-            .get("permissions")
-            .and_then(|permissions| permissions.get("tcp-bind"))
-            .and_then(toml::Value::as_array)
-            .map(|ports| {
-                ports
-                    .iter()
-                    .filter_map(toml::Value::as_integer)
-                    .collect::<Vec<_>>()
-            }),
-        Some(vec![8080])
-    );
-    assert_eq!(
-        platform
-            .get("permissions")
-            .and_then(|permissions| permissions.get("tcp-connect"))
-            .and_then(toml::Value::as_array)
-            .map(|ports| {
-                ports
-                    .iter()
-                    .filter_map(toml::Value::as_integer)
-                    .collect::<Vec<_>>()
-            }),
-        Some(vec![443])
-    );
-    assert_eq!(
-        platform
-            .get("permissions")
-            .and_then(|permissions| permissions.get("confinement"))
-            .and_then(|confinement| confinement.get("label"))
-            .and_then(toml::Value::as_str),
-        Some(
-            "sandboxed-with-holes (network:private-outbound, tcp-bind:8080, tcp-connect:443, capability:CAP_NET_BIND_SERVICE)",
-        )
-    );
-
-    let parsed = crate::registry::parse::parse_package_toml(&content, "x86_64-linux")
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        parsed.expose.as_ref().map(|expose| expose.target.as_str()),
-        Some("aos-pkg-webapp.target")
-    );
-    assert_eq!(
-        parsed
-            .expose_artifact
-            .as_ref()
-            .map(|artifact| artifact.store_path.as_str()),
-        Some("/nix/store/artifacthash111-expose-webapp")
-    );
-    assert_eq!(
-        parsed.permissions.network,
-        Some(crate::types::NetworkPermission::PrivateOutbound)
-    );
-    assert_eq!(parsed.permissions.tcp_bind, vec![8080]);
-    assert_eq!(parsed.permissions.tcp_connect, vec![443]);
-}
-
-#[test]
-fn build_package_toml_detects_ebpf_feature_from_package_name() {
-    let info = StorePathInfo {
-        path: "/nix/store/abc123-webapp-1.0.0".into(),
-        nar_hash: "sha256:deadbeef".into(),
-        nar_size: 1048576,
-        references: vec![],
-        closure_size: 5242880,
-    };
-    let artifact = StorePathInfo {
-        path: "/nix/store/artifacthash111-expose-webapp".into(),
-        nar_hash: "sha256:artifact".into(),
-        nar_size: 2048,
-        references: vec![],
-        closure_size: 2048,
-    };
-    let manifest = PublishExposeManifest {
-        expose: ExposeMeta {
-            target: "aos-pkg-webapp.target".into(),
-            units: vec![
-                "webapp.service".into(),
-                "aos-pkg-webapp.slice".into(),
-                "aos-pkg-webapp-ebpf.service".into(),
-            ],
-            images: Vec::new(),
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        },
-        permissions: PermissionsMeta::default(),
-        mac: None,
-        _kernel: None,
-        _firewall: None,
-        _confinement: None,
-    };
-    let manifest_digest = crate::package_attestation::package_manifest_digest_bytes(
-        br#"{"expose":{"target":"aos-pkg-webapp.target","units":["webapp.service"]},"permissions":{}}"#,
-    );
-
-    let content = build_package_toml(
-        "",
-        "webapp",
-        "1.0.0",
-        "x86_64-linux",
-        &info,
-        Some("Web application"),
-        None,
-        Some("MIT"),
-        Some("aos-team"),
-        false,
-        None,
-        &[],
-        None,
-        Some(&manifest),
-        Some(&artifact),
-        Some(&manifest_digest),
-    )
-    .unwrap();
-
-    let rendered: toml::Value = toml::from_str(&content).unwrap();
-    let features = rendered
-        .get("versions")
-        .and_then(|versions| versions.as_array())
-        .and_then(|versions| versions.first())
-        .and_then(|version| version.get("platforms"))
-        .and_then(|platforms| platforms.get("x86_64-linux"))
-        .and_then(|platform| platform.get("requires-features"))
-        .and_then(toml::Value::as_array)
-        .map(|features| {
-            features
-                .iter()
-                .filter_map(toml::Value::as_str)
-                .collect::<Vec<_>>()
-        })
-        .unwrap();
-    assert!(features.contains(&FEATURE_EBPF_NET_POLICY_V1));
-}
-
-#[test]
-fn build_package_toml_rejects_expose_manifest_without_artifact() {
-    let info = StorePathInfo {
-        path: "/nix/store/abc123-webapp-1.0.0".into(),
-        nar_hash: "sha256:deadbeef".into(),
-        nar_size: 1048576,
-        references: vec![],
-        closure_size: 5242880,
-    };
-    let manifest = PublishExposeManifest {
-        expose: ExposeMeta {
-            target: "aos-pkg-webapp.target".into(),
-            units: vec!["webapp.service".into()],
-            images: Vec::new(),
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        },
-        permissions: PermissionsMeta::default(),
-        mac: None,
-        _kernel: None,
-        _firewall: None,
-        _confinement: None,
-    };
-
-    let err = build_package_toml(
-        "",
-        "webapp",
-        "1.0.0",
-        "x86_64-linux",
-        &info,
-        Some("Web application"),
-        None,
-        Some("MIT"),
-        Some("aos-team"),
-        false,
-        None,
-        &[],
-        None,
-        Some(&manifest),
-        None,
-        None,
-    )
-    .unwrap_err();
-
-    assert!(format!("{err:#}").contains("requires rendered expose artifact"));
-}
-
-#[test]
-fn build_package_toml_records_expose_artifact_metadata() {
-    let info = StorePathInfo {
-        path: "/nix/store/abc123-webapp-1.0.0".into(),
-        nar_hash: "sha256:deadbeef".into(),
-        nar_size: 1048576,
-        references: vec![],
-        closure_size: 5242880,
-    };
-    let artifact = StorePathInfo {
-        path: "/nix/store/artifacthash111-expose-webapp".into(),
-        nar_hash: "sha256:artifact".into(),
-        nar_size: 2048,
-        references: vec![],
-        closure_size: 2048,
-    };
-    let manifest = PublishExposeManifest {
-        expose: ExposeMeta {
-            target: "aos-pkg-webapp.target".into(),
-            units: vec!["webapp.service".into()],
-            images: Vec::new(),
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        },
-        permissions: PermissionsMeta::default(),
-        mac: None,
-        _kernel: None,
-        _firewall: None,
-        _confinement: None,
-    };
-    let manifest_digest = crate::package_attestation::package_manifest_digest_bytes(
-        br#"{"expose":{"target":"aos-pkg-webapp.target","units":["webapp.service"]},"permissions":{}}"#,
-    );
-    let expected_root_digest = package_nar_root_digest(&info.nar_hash);
-    let expected_measurement = crate::package_attestation::package_measurement_digest(
-        "webapp",
-        "1.0.0",
-        &expected_root_digest,
-        &manifest_digest,
-    );
-
-    let content = build_package_toml(
-        "",
-        "webapp",
-        "1.0.0",
-        "x86_64-linux",
-        &info,
-        Some("Web application"),
-        None,
-        Some("MIT"),
-        Some("aos-team"),
-        false,
-        None,
-        &[],
-        None,
-        Some(&manifest),
-        Some(&artifact),
-        Some(&manifest_digest),
-    )
-    .unwrap();
-
-    let rendered: toml::Value = toml::from_str(&content).unwrap();
-    let platform = rendered
-        .get("versions")
-        .and_then(|versions| versions.as_array())
-        .and_then(|versions| versions.first())
-        .and_then(|version| version.get("platforms"))
-        .and_then(|platforms| platforms.get("x86_64-linux"))
-        .unwrap();
-    let features = platform
-        .get("requires-features")
-        .and_then(toml::Value::as_array)
-        .map(|features| {
-            features
-                .iter()
-                .filter_map(toml::Value::as_str)
-                .collect::<Vec<_>>()
-        })
-        .unwrap();
-    assert!(features.contains(&FEATURE_EXPOSE_ARTIFACT_V1));
-    assert!(features.contains(&FEATURE_NETWORK_POLICY_V1));
-    assert!(features.contains(&FEATURE_ATTESTATION_V1));
-    assert_eq!(
-        platform
-            .get("expose_artifact")
-            .and_then(|artifact| artifact.get("store_path"))
-            .and_then(toml::Value::as_str),
-        Some("/nix/store/artifacthash111-expose-webapp")
-    );
-    assert_eq!(
-        platform.get("root_digest").and_then(toml::Value::as_str),
-        Some(expected_root_digest.as_str())
-    );
-    assert_eq!(platform.get("root_hash"), None);
-    assert_eq!(platform.get("root_hash_sig"), None);
-    let expected_provenance =
-        publish_provenance_ref("webapp", "x86_64-linux", &expected_measurement).unwrap();
-    assert_eq!(
-        platform.get("provenance").and_then(toml::Value::as_str),
-        Some(expected_provenance.as_str())
-    );
-    assert_eq!(
-        platform.get("measurement").and_then(toml::Value::as_str),
-        Some(expected_measurement.as_str())
-    );
-
-    let parsed = crate::registry::parse::parse_package_toml(&content, "x86_64-linux")
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        parsed
-            .expose_artifact
-            .as_ref()
-            .map(|artifact| artifact.store_path.as_str()),
-        Some("/nix/store/artifacthash111-expose-webapp")
-    );
-    assert_eq!(
-        parsed.attestation.root_digest.as_deref(),
-        Some(expected_root_digest.as_str())
-    );
-    assert_eq!(
-        parsed.attestation.provenance.as_deref(),
-        Some(expected_provenance.as_str())
-    );
-    assert_eq!(
-        parsed.attestation.measurement.as_deref(),
-        Some(expected_measurement.as_str())
-    );
-}
-
-#[test]
-fn build_package_toml_records_package_attestation_measurement() {
-    let info = StorePathInfo {
-        path: "/nix/store/abc123-webapp-1.0.0".into(),
-        nar_hash: "sha256:deadbeef".into(),
-        nar_size: 1048576,
-        references: vec![],
-        closure_size: 5242880,
-    };
-    let artifact = StorePathInfo {
-        path: "/nix/store/artifacthash111-expose-webapp".into(),
-        nar_hash: "sha256:artifact".into(),
-        nar_size: 2048,
-        references: vec![],
-        closure_size: 2048,
-    };
-    let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let manifest = verity_expose_manifest(root_hash);
-    let manifest_digest = crate::package_attestation::package_manifest_digest_bytes(
-        br#"{"expose":{"target":"aos-pkg-webapp.target"},"permissions":{}}"#,
-    );
-    let expected_measurement = crate::package_attestation::package_measurement_digest(
-        "webapp",
-        "1.0.0",
-        root_hash,
-        &manifest_digest,
-    );
-
-    let content = build_package_toml(
-        "",
-        "webapp",
-        "1.0.0",
-        "x86_64-linux",
-        &info,
-        Some("Web application"),
-        None,
-        Some("MIT"),
-        Some("aos-team"),
-        false,
-        None,
-        &[],
-        None,
-        Some(&manifest),
-        Some(&artifact),
-        Some(&manifest_digest),
-    )
-    .unwrap();
-
-    let rendered: toml::Value = toml::from_str(&content).unwrap();
-    let platform = rendered
-        .get("versions")
-        .and_then(|versions| versions.as_array())
-        .and_then(|versions| versions.first())
-        .and_then(|version| version.get("platforms"))
-        .and_then(|platforms| platforms.get("x86_64-linux"))
-        .unwrap();
-    let features = platform
-        .get("requires-features")
-        .and_then(toml::Value::as_array)
-        .map(|features| {
-            features
-                .iter()
-                .filter_map(toml::Value::as_str)
-                .collect::<Vec<_>>()
-        })
-        .unwrap();
-    assert!(features.contains(&FEATURE_ATTESTATION_V1));
-    assert_eq!(
-        platform.get("root_digest").and_then(toml::Value::as_str),
-        Some(root_hash)
-    );
-    assert_eq!(
-        platform.get("root_hash").and_then(toml::Value::as_str),
-        Some(root_hash)
-    );
-    assert_eq!(
-        platform.get("root_hash_sig").and_then(toml::Value::as_str),
-        Some("root.roothash.p7s")
-    );
-    let expected_provenance =
-        publish_provenance_ref("webapp", "x86_64-linux", &expected_measurement).unwrap();
-    assert_eq!(
-        platform.get("provenance").and_then(toml::Value::as_str),
-        Some(expected_provenance.as_str())
-    );
-    assert_eq!(
-        platform.get("measurement").and_then(toml::Value::as_str),
-        Some(expected_measurement.as_str())
-    );
-
-    let parsed = crate::registry::parse::parse_package_toml(&content, "x86_64-linux")
-        .unwrap()
-        .unwrap();
-    assert_eq!(parsed.attestation.root_digest.as_deref(), Some(root_hash));
-    assert_eq!(parsed.attestation.root_hash.as_deref(), Some(root_hash));
-    assert_eq!(
-        parsed.attestation.root_hash_sig.as_deref(),
-        Some("root.roothash.p7s")
-    );
-    assert_eq!(
-        parsed.attestation.provenance.as_deref(),
-        Some(expected_provenance.as_str())
-    );
-    assert_eq!(
-        parsed.attestation.measurement.as_deref(),
-        Some(expected_measurement.as_str())
-    );
-}
-
 #[test]
 fn build_package_toml_update_existing() {
     let existing = r#"[package]
@@ -1140,9 +510,6 @@ references = []
         false,
         None,
         &[],
-        None,
-        None,
-        None,
         None,
     )
     .unwrap();
@@ -1186,9 +553,6 @@ fn build_package_toml_with_sysroot() {
         true,
         Some("2026.03"),
         &[image],
-        None,
-        None,
-        None,
         None,
     )
     .unwrap();
@@ -1239,9 +603,6 @@ fn build_package_toml_keeps_disk_image_verity_sidecars_out_of_catalog() {
         true,
         None,
         &[image],
-        None,
-        None,
-        None,
         None,
     )
     .unwrap();
@@ -1306,9 +667,6 @@ fn build_package_toml_catalogs_verity_for_raw_recovery_image() {
         None,
         &[image],
         None,
-        None,
-        None,
-        None,
     )
     .unwrap();
 
@@ -1349,9 +707,6 @@ fn build_package_toml_escapes_maintainer_metadata() {
         false,
         Some("0.9.0+build\"meta"),
         &[image],
-        None,
-        None,
-        None,
         None,
     )
     .unwrap();

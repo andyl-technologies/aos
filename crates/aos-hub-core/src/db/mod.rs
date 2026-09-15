@@ -4315,9 +4315,6 @@ impl Database {
                             }
                         }
                     }
-                    if let Some(expose) = &entry.expose_artifact {
-                        catalog_artifacts.push(("expose", expose.store_path.as_str()));
-                    }
                     if let Some(documentation) = &entry.documentation {
                         catalog_artifacts
                             .push(("documentation", documentation.store_path.as_str()));
@@ -27774,7 +27771,7 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
-        for artifact_kind in ["config", "evaluation_base_lib", "expose", "image"] {
+        for artifact_kind in ["image"] {
             db.backend
                 .execute(
                     "INSERT INTO registry_catalog_artifacts
@@ -27804,10 +27801,7 @@ source_nar_hash = ""
                 .map(|artifact| artifact.artifact_kind.as_str())
                 .collect::<Vec<_>>(),
             [
-                "config",
                 "documentation",
-                "evaluation_base_lib",
-                "expose",
                 "image",
                 "output",
                 "output",

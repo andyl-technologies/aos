@@ -304,7 +304,7 @@ fn ebpf_lsm_pin_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::{EbpfLsmPolicyRef, EbpfLsmPolicySet, PolicyAllow};
+    use crate::policy::{EbpfLsmPolicyRef, EbpfLsmPolicySet};
     use crate::types::{ApmMeta, BpfLsmPolicyArtifactMeta, BpfLsmPolicyMeta};
     use tempfile::TempDir;
 
@@ -326,11 +326,8 @@ mod tests {
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
-                expose: None,
-                expose_artifact: None,
                 documentation: None,
                 contract: None,
-                permissions: Default::default(),
                 bpf_lsm: Some(BpfLsmPolicyMeta {
                     policies: vec![BpfLsmPolicyArtifactMeta {
                         name: "aos-lsm-task-audit".into(),
@@ -346,10 +343,6 @@ mod tests {
 
     fn host_policy() -> HostPolicy {
         HostPolicy {
-            tier: Default::default(),
-            allow: PolicyAllow::default(),
-            kernel_modules: Vec::new(),
-            systemd_security_threshold: None,
             ebpf_lsm: EbpfLsmPolicySet {
                 policies: vec![EbpfLsmPolicyRef {
                     name: "aos-lsm-task-audit".into(),
