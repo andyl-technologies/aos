@@ -198,6 +198,45 @@
   };
   filesystemReadinessDocument = interfaceDocumentFromDeclaration filesystemReadinessDeclaration;
 
+  kernelModulesName = "aos.kernel.modules";
+  kernelModulesMethods = {
+    load = retainingMethod
+      serviceTypes.kernelModules
+      serviceTypes.kernelModulesObservation
+      kernelModulesName
+      "load"
+      "Loads the requested kernel modules and establishes their declared readiness policy."
+      write;
+    observe = method
+      serviceTypes.kernelModules
+      serviceTypes.kernelModulesObservation
+      kernelModulesName
+      "observe"
+      "Observes which requested kernel modules are loaded without changing kernel state."
+      read;
+  };
+  kernelModulesDeclaration = declareInterface {
+    name = kernelModulesName;
+    description = "Loads and observes a bounded provider-neutral set of kernel modules.";
+    abi = 1;
+    requestType = serviceTypes.kernelModules;
+    outputs.readiness-resource =
+      output "planning" "instance"
+      "References the exact kernel-module set whose readiness gates dependent resources."
+      serviceTypes.resourceReference;
+    methods = kernelModulesMethods;
+    lifecycle = lifecyclePolicy // {releasesEphemeralOnDisable = false;};
+    guarantees = [];
+    aggregation = {
+      scope = "provider-instance";
+      key = "slot";
+      rejectSlotCollisions = true;
+      mergeContract = null;
+      controllerGroup = "kernel-modules";
+    };
+  };
+  kernelModulesDocument = interfaceDocumentFromDeclaration kernelModulesDeclaration;
+
   producer = {
     alias,
     name,
@@ -606,6 +645,15 @@
       methods = builtins.attrNames filesystemReadinessMethods;
       requestType = serviceTypes.filesystemReadiness;
       observationType = serviceTypes.filesystemReadinessObservation;
+    };
+    kernelModules = {
+      alias = "kernel-modules";
+      declaration = kernelModulesDeclaration;
+      document = kernelModulesDocument;
+      identity = interfaceIdentity kernelModulesDocument;
+      methods = builtins.attrNames kernelModulesMethods;
+      requestType = serviceTypes.kernelModules;
+      observationType = serviceTypes.kernelModulesObservation;
     };
     credentialDelivery = producer {
       alias = "credential-delivery";
