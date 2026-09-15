@@ -6,25 +6,23 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 #[cfg(test)]
 use aos_ability_inspect::ReferenceGraphSlice;
 use aos_ability_inspect::{
     GraphQuery, InspectionNode, NodeKey, ReferenceInspectionInput, ReferenceInspectionView,
 };
-#[cfg(test)]
-use aos_ability_model::ValueSchema;
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase,
-    InterfaceKey, ValueExpression,
+    AbilityValue, Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase, InterfaceKey,
+    LocalKey, ValueExpression, ValueSchema, ABILITY_LIMITS_V1,
 };
 use aos_ability_validate::validate_value;
 use aos_doc_model::{AbilityExportReference, PackageAbilityReference};
-use rnix::StrPart;
 use rnix::types::{
     Apply, AttrSet, EntryHolder as _, Ident, KeyValue, List, Str, TokenWrapper as _, TypedNode as _,
 };
-use serde_json::{Value, json};
+use rnix::StrPart;
+use serde_json::{json, Value};
 
 use crate::documentation::LoadedDocumentation;
 
@@ -41,56 +39,6 @@ const COMPATIBILITY_LIMITATIONS: [&str; 4] = [
     "authorization-not-evaluated",
     "runtime-availability-not-observed",
 ];
-const DEFINE_FIELDS: &[&str] = &[
-    "interface",
-    "abi",
-    "requestSchema",
-    "configurationSchema",
-    "outputs",
-    "methods",
-    "lifecycle",
-    "guarantees",
-    "aggregation",
-    "requires",
-    "composeEntry",
-    "transitionEntry",
-    "ownsResourceKinds",
-    "stateFormat",
-    "compose",
-    "transition",
-    "handler",
-    "provide",
-];
-
-const CONSTRUCTOR_FIELDS: &[(&str, &[&str])] = &[
-    ("interfaceKey", &["name", "abi", "descriptor"]),
-    ("request", &["interface", "abi", "descriptor", "request"]),
-    (
-        "bindingReference",
-        &[
-            "binding",
-            "requirement",
-            "providerKey",
-            "provider",
-            "interface",
-        ],
-    ),
-    ("environmentId", &["authority", "key", "stage"]),
-    ("instanceId", &["environment", "key"]),
-    ("requestId", &["consumer", "scope", "key"]),
-    ("instance", &["id", "values"]),
-    ("contribution", &["request", "slot", "grant", "value"]),
-    (
-        "resourceReference",
-        &["interface", "resource", "operations", "lifetime"],
-    ),
-    (
-        "artifactReference",
-        &["content", "storePath", "narHash", "closure"],
-    ),
-    ("pinInterface", &["export", "descriptor"]),
-];
-
 /// Provides editor projections over references already authenticated by the loader.
 pub(super) struct AbilityCatalog<'a> {
     references: Vec<CheckedCatalogReference<'a>>,
@@ -126,13 +74,12 @@ impl<'a> AbilityCatalog<'a> {
                 .exports
                 .iter()
                 .filter(|export| {
-                    export.interface.interface_key().is_ok_and(|key| {
-                        entry.view.nodes().iter().any(|node| {
-                            matches!(
-                                node,
-                                InspectionNode::Interface { key: checked, .. } if checked == &key
-                            )
-                        })
+                    entry.view.nodes().iter().any(|node| {
+                        matches!(
+                            node,
+                            InspectionNode::Interface { key: checked, .. }
+                                if checked == &export.interface
+                        )
                     })
                 })
                 .map(move |export| (entry.reference, export))
@@ -220,28 +167,41 @@ impl<'a> AbilityCatalog<'a> {
             .filter_map(ability_call)
             .filter(|(_, set)| range_contains(set.node().text_range(), cursor))
             .min_by_key(|(_, set)| set.node().text_range().len())?;
-        let fields = constructor_fields(&operation)?;
+        if operation != "request" {
+            return None;
+        }
         let entries = simple_entries(&set);
-        if entries.iter().any(|entry| {
+        let request = entries.iter().find(|entry| entry.name == "request")?;
+        let request_set = AttrSet::cast(request.value.clone())?;
+        if !range_contains(request_set.node().text_range(), cursor) {
+            return None;
+        }
+
+        let request_entries = simple_entries(&request_set);
+        if request_entries.iter().any(|entry| {
             range_contains(entry.value_range, cursor) && !range_contains(entry.key_range, cursor)
         }) {
             return None;
         }
-        let present = entries
+        let ValueSchema::Record { fields, .. } = self.exact_request_schema(&entries)? else {
+            return None;
+        };
+        let present = request_entries
             .into_iter()
             .map(|entry| entry.name)
             .collect::<BTreeSet<_>>();
         let prefix = word_at_position(text, line, character, true).unwrap_or_default();
         let items = fields
-            .iter()
-            .filter(|field| field.starts_with(&prefix) && !present.contains(**field))
+            .keys()
+            .map(LocalKey::as_str)
+            .filter(|field| field.starts_with(&prefix) && !present.contains(*field))
             .map(|field| {
                 json!({
                     "label": field,
                     "kind": 5,
-                    "detail": format!("lib.abilities.{operation} field"),
+                    "detail": "authenticated ability request field",
                     "insertText": format!("{field} = "),
-                    "data": { "aosAbilityField": { "constructor": operation, "field": field } }
+                    "data": { "aosAbilityRequestField": field }
                 })
             })
             .collect();
@@ -253,10 +213,10 @@ impl<'a> AbilityCatalog<'a> {
         self.abilities()
             .filter(|(_, export)| {
                 export.name.as_str().starts_with(prefix)
-                    || export.interface.interface.name.as_str().starts_with(prefix)
+                    || export.interface.name.as_str().starts_with(prefix)
             })
             .filter_map(|(reference, export)| {
-                let key = export.interface.interface_key().ok()?;
+                let key = export.interface.clone();
                 let selected = selector(reference, export, &key);
                 seen.insert(selected.to_string()).then(|| {
                     json!({
@@ -304,7 +264,7 @@ impl<'a> AbilityCatalog<'a> {
         let matches = self
             .abilities()
             .filter(|(_, export)| {
-                export.name.as_str() == word || export.interface.interface.name.as_str() == word
+                export.name.as_str() == word || export.interface.name.as_str() == word
             })
             .take(MAX_RESULTS + 1)
             .collect::<Vec<_>>();
@@ -318,13 +278,13 @@ impl<'a> AbilityCatalog<'a> {
 
     pub(super) fn definition(&self, word: &str) -> Option<Value> {
         let mut matches = self.abilities().filter(|(_, export)| {
-            export.name.as_str() == word || export.interface.interface.name.as_str() == word
+            export.name.as_str() == word || export.interface.name.as_str() == word
         });
         let (reference, export) = matches.next()?;
         if matches.next().is_some() {
             return None;
         }
-        let key = export.interface.interface_key().ok()?;
+        let key = export.interface.clone();
         Some(location(reference, export, &key))
     }
 
@@ -332,9 +292,7 @@ impl<'a> AbilityCatalog<'a> {
         let mut links = Vec::new();
         for (line_number, line) in text.lines().enumerate() {
             for (reference, export) in self.abilities() {
-                let Ok(key) = export.interface.interface_key() else {
-                    continue;
-                };
+                let key = export.interface.clone();
                 for candidate in [export.name.as_str(), key.name.as_str()] {
                     let Some(start) = line.find(candidate) else {
                         continue;
@@ -360,7 +318,7 @@ impl<'a> AbilityCatalog<'a> {
         let normalized = query.to_ascii_lowercase();
         self.abilities()
             .filter_map(|(reference, export)| {
-                let key = export.interface.interface_key().ok()?;
+                let key = export.interface.clone();
                 let searchable = format!(
                     "{} {} {}",
                     reference.package.as_str(),
@@ -394,10 +352,11 @@ impl<'a> AbilityCatalog<'a> {
                 })
                 .filter(|(_, export)| {
                     export.name.as_str().starts_with(prefix)
-                        || export.interface.interface.name.as_str().starts_with(prefix)
+                        || export.interface.name.as_str().starts_with(prefix)
                 })
                 .filter_map(|(reference, export)| {
-                    let key = export.interface.interface_key().ok()?;
+                    let key = export.interface.clone();
+                    let interface = &reference.interface_for_export(export).ok()?.interface;
                     Some(json!({
                         "package": reference.package.as_str(),
                         "version": reference.version,
@@ -405,15 +364,15 @@ impl<'a> AbilityCatalog<'a> {
                         "interface": key.name.as_str(),
                         "abi": key.abi,
                         "descriptor": key.descriptor,
-                        "methods": export.interface.interface.methods.keys().map(|name| name.as_str()).collect::<Vec<_>>(),
-                        "guarantees": export.interface.interface.guarantees,
-                        "configuration": export.interface.interface.configuration,
+                        "methods": interface.methods.keys().map(|name| name.as_str()).collect::<Vec<_>>(),
+                        "guarantees": interface.guarantees,
+                        "configuration": interface.configuration,
                         "manifestSha256": reference.manifest_sha256,
                         "packageDigest": reference.package_digest,
                         "implementation": export.implementation,
                         "selector": selector(reference, export, &key),
-                        "interfaceDocument": export.interface,
-                        "aggregation": export.aggregation,
+                        "interfaceDocument": reference.interface_for_export(export).ok()?,
+                        "aggregation": interface.aggregation,
                         "limitations": COMPATIBILITY_LIMITATIONS,
                         "inspectionDiagnostics": self.inspection_diagnostics(reference)
                     }))
@@ -452,7 +411,7 @@ impl<'a> AbilityCatalog<'a> {
     pub(super) fn virtual_document(&self, params: &Value) -> Option<Value> {
         let requested_uri = params.get("uri").and_then(Value::as_str)?;
         self.abilities().find_map(|(reference, export)| {
-            let key = export.interface.interface_key().ok()?;
+            let key = export.interface.clone();
             let uri = ability_uri(reference, export, &key);
             (uri == requested_uri).then(|| {
                 json!({
@@ -482,26 +441,7 @@ impl<'a> AbilityCatalog<'a> {
             if diagnostics.len() >= MAX_RESULTS {
                 break;
             }
-            let Some(allowed) = constructor_fields(&operation) else {
-                continue;
-            };
             let entries = simple_entries(&set);
-            for entry in &entries {
-                if !allowed.contains(&entry.name.as_str()) {
-                    diagnostics.push(lsp_diagnostic(
-                        text,
-                        entry.key_range,
-                        "aos-ability-unsupported-field",
-                        DiagnosticCode::ValueTypeMismatch,
-                        DiagnosticClass::InvalidContract,
-                        vec![operation.clone(), entry.name.clone()],
-                        format!(
-                            "lib.abilities.{operation} does not accept field '{}'",
-                            entry.name
-                        ),
-                    ));
-                }
-            }
             if matches!(operation.as_str(), "request" | "interfaceKey") {
                 self.validate_exact_interface(text, &operation, &entries, &mut diagnostics);
             }
@@ -562,7 +502,7 @@ impl<'a> AbilityCatalog<'a> {
         };
         let candidates = self
             .abilities()
-            .filter_map(|(_, export)| export.interface.interface_key().ok())
+            .map(|(_, export)| export.interface.clone())
             .filter(|key| key.name.as_str() == name)
             .collect::<Vec<_>>();
         if candidates.is_empty() {
@@ -635,9 +575,13 @@ impl<'a> AbilityCatalog<'a> {
         let exact_key = matching_keys[0];
         let schemas = self
             .abilities()
-            .filter_map(|(_, export)| {
-                (export.interface.interface_key().ok().as_ref() == Some(exact_key))
-                    .then_some(&export.interface.interface.request)
+            .filter_map(|(reference, export)| {
+                (&export.interface == exact_key).then(|| {
+                    reference
+                        .interface_for_export(export)
+                        .ok()
+                        .map(|document| &document.interface.request)
+                })?
             })
             .collect::<Vec<_>>();
         let Some(schema) = schemas.first().copied() else {
@@ -677,9 +621,40 @@ impl<'a> AbilityCatalog<'a> {
         InterfaceKey,
     )> {
         self.abilities().find_map(|(reference, export)| {
-            let key = export.interface.interface_key().ok()?;
+            let key = export.interface.clone();
             selector_matches(selected, reference, export, &key).then_some((reference, export, key))
         })
+    }
+
+    fn exact_request_schema(&self, entries: &[SimpleEntry]) -> Option<&ValueSchema> {
+        let fields = entries
+            .iter()
+            .map(|entry| (entry.name.as_str(), entry))
+            .collect::<BTreeMap<_, _>>();
+        let interface = string_literal(&fields.get("interface")?.value)?;
+        let abi = integer_literal(&fields.get("abi")?.value)
+            .and_then(|value| u32::try_from(value).ok())?;
+        let descriptor = string_literal(&fields.get("descriptor")?.value)?;
+
+        let schemas = self
+            .abilities()
+            .filter_map(|(reference, export)| {
+                (export.interface.name.as_str() == interface
+                    && export.interface.abi.get() == abi
+                    && export.interface.descriptor.to_string() == descriptor)
+                    .then(|| {
+                        reference
+                            .interface_for_export(export)
+                            .ok()
+                            .map(|document| &document.interface.request)
+                    })?
+            })
+            .collect::<Vec<_>>();
+        let schema = schemas.first().copied()?;
+        schemas
+            .iter()
+            .all(|candidate| *candidate == schema)
+            .then_some(schema)
     }
 }
 
@@ -689,15 +664,6 @@ struct SimpleEntry {
     key_range: rnix::TextRange,
     value_range: rnix::TextRange,
     value: rnix::SyntaxNode,
-}
-
-fn constructor_fields(operation: &str) -> Option<&'static [&'static str]> {
-    if operation == "define" {
-        return Some(DEFINE_FIELDS);
-    }
-    CONSTRUCTOR_FIELDS
-        .iter()
-        .find_map(|(name, fields)| (*name == operation).then_some(*fields))
 }
 
 fn ability_call(apply: Apply) -> Option<(String, AttrSet)> {
@@ -994,11 +960,9 @@ mod tests {
             .expect("fully literal Nix value");
         let errors = validate_value(&schema, &expression).expect_err("syntax must be rejected");
 
-        assert!(
-            errors
-                .diagnostics()
-                .iter()
-                .any(|diagnostic| diagnostic.code == DiagnosticCode::ValueTypeMismatch)
-        );
+        assert!(errors
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::ValueTypeMismatch));
     }
 }

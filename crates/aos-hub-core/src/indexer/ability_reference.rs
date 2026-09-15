@@ -4,6 +4,9 @@ use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
 use aos_ability_model::VersionedDocument as _;
+use aos_ability_validate::{
+    AbilityContractData, CheckedAbilityContract, validate_ability_contract,
+};
 use sha2::{Digest, Sha256};
 
 use crate::db::IndexedPackageAbilityReference;
@@ -104,12 +107,16 @@ pub async fn fetch_package_ability_reference(
                 == aos_registry_surface::store::canonical_digest_hex(&ability.manifest_sha256)?,
         "package ability manifest identity mismatch"
     );
-    let supported_features = aos_doc_model::ability_reference_supported_features()?;
-    let package = aos_ability_model::decode_canonical::<aos_ability_model::PackageDocument>(
-        &documents.package,
-        aos_ability_model::ABILITY_LIMITS_V1,
-        &supported_features,
-    )?;
+    let retained_interfaces = documents.interfaces.values().cloned().collect::<Vec<_>>();
+    let checked = validate_ability_contract(AbilityContractData::PackageSource {
+        manifest: &documents.package,
+        retained_interfaces: &retained_interfaces,
+    })
+    .context("checking authenticated package ability companion")?;
+    let CheckedAbilityContract::PackageSource(checked) = checked else {
+        anyhow::bail!("package source validation returned another contract family");
+    };
+    let package = checked.package();
     let primary_nar_hash = format!(
         "sha256:{}",
         aos_registry_surface::store::canonical_digest_hex(primary_nar_hash)?
@@ -132,15 +139,14 @@ pub async fn fetch_package_ability_reference(
     );
 
     let expected_interface_files = package
-        .exports
-        .iter()
-        .map(|export| format!("{}.json", export.interface.descriptor.hex()))
+        .interfaces
+        .values()
+        .map(|interface| format!("{}.json", interface.descriptor.hex()))
         .collect::<BTreeSet<_>>();
     anyhow::ensure!(
         expected_interface_files == documents.interfaces.keys().cloned().collect(),
-        "package ability companion interface inventory does not exactly match its exports"
+        "package ability companion interface inventory does not exactly match its package-owned declarations"
     );
-    let mut interfaces = Vec::with_capacity(expected_interface_files.len());
     for file_name in expected_interface_files {
         let bytes = documents
             .interfaces
@@ -149,15 +155,14 @@ pub async fn fetch_package_ability_reference(
         let interface = aos_ability_model::decode_canonical::<aos_ability_model::InterfaceDocument>(
             bytes,
             aos_ability_model::ABILITY_LIMITS_V1,
-            &supported_features,
+            checked.validation_context().supported_features(),
         )?;
         anyhow::ensure!(
             format!("{}.json", interface.interface_key()?.descriptor.hex()) == file_name,
             "package ability interface identity mismatch"
         );
-        interfaces.push(interface);
     }
-    aos_doc_model::PackageAbilityReference::from_documents(&package, &interfaces)
+    aos_doc_model::PackageAbilityReference::from_checked_contract(&checked)
         .context("generating authenticated package ability reference")
 }
 
@@ -332,7 +337,10 @@ mod tests {
                 source: artifact.clone(),
             },
             artifacts: Vec::new(),
-            interfaces: Default::default(),
+            interfaces: BTreeMap::from([(
+                aos_ability_model::LocalKey::new("echo-interface").expect("valid interface alias"),
+                interface_key.clone(),
+            )]),
             guarantees: Default::default(),
             package_module: aos_ability_model::ModuleLocator {
                 artifact: artifact.clone(),
@@ -420,10 +428,7 @@ mod tests {
         );
         assert_eq!(reference.package_digest.to_string(), ability.package_digest);
         assert_eq!(reference.exports.len(), 2);
-        assert_eq!(
-            reference.exports[0].interface.content_digest().unwrap(),
-            interface_digest
-        );
+        assert_eq!(reference.exports[0].interface.descriptor, interface_digest);
     }
 
     #[tokio::test]

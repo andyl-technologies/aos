@@ -745,8 +745,7 @@ mod tests {
                 document_sha256: format!("sha256:{}", "b".repeat(64)),
                 document_size: 2048,
                 semantic_schema_sha256: "c".repeat(64),
-                system_module_nar_hash: None,
-                references: Vec::new(),
+                    references: Vec::new(),
             },
             search: options
                 .iter()

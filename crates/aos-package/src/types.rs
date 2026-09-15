@@ -1182,9 +1182,6 @@ pub fn validate_documentation_artifact_meta(
         "documentation semantic_schema_sha256",
         &documentation.semantic_schema_sha256,
     )?;
-    if let Some(digest) = documentation.system_module_nar_hash.as_deref() {
-        validate_sha256_digest("documentation system_module_nar_hash", digest)?;
-    }
     if !documentation.references.is_empty() {
         bail!(
             "documentation '{}' must have an empty reference set",
@@ -6398,7 +6395,6 @@ provenance = "provenance/firewall.jsonl"
             semantic_schema_sha256:
                 "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                     .to_string(),
-            system_module_nar_hash: None,
             references: Vec::new(),
         }
     }

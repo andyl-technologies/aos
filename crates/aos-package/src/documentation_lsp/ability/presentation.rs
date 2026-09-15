@@ -2,7 +2,7 @@
 
 use aos_ability_model::{InterfaceKey, ValueSchema};
 use aos_doc_model::{AbilityExportReference, PackageAbilityReference};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::super::markdown_code_span;
 
@@ -49,8 +49,11 @@ pub(super) fn ability_markdown(
     reference: &PackageAbilityReference,
     export: &AbilityExportReference,
 ) -> String {
-    let interface = &export.interface.interface;
-    let key = export.interface.interface_key().ok();
+    let Ok(interface_document) = reference.interface_for_export(export) else {
+        return "The authenticated package reference does not retain this interface document."
+            .to_string();
+    };
+    let interface = &interface_document.interface;
     let methods = interface
         .methods
         .keys()
@@ -89,10 +92,7 @@ pub(super) fn ability_markdown(
         markdown_code_span(export.name.as_str()),
         markdown_code_span(reference.package.as_str()),
         markdown_code_span(&reference.version),
-        markdown_code_span(
-            &key.map(|value| value.descriptor.to_string())
-                .unwrap_or_else(|| "invalid descriptor".to_string())
-        ),
+        markdown_code_span(&export.interface.descriptor.to_string()),
         request,
         configuration,
         if outputs.is_empty() { "none" } else { &outputs },
@@ -115,19 +115,13 @@ pub(super) fn ambiguity_markdown(
         "Multiple authenticated ability contracts match this name. Select a package, version, export, ABI, and descriptor:\n",
     );
     for (reference, export) in matches {
-        let interface = &export.interface.interface;
-        let descriptor = export
-            .interface
-            .interface_key()
-            .map(|key| key.descriptor.to_string())
-            .unwrap_or_else(|_| "invalid descriptor".to_string());
         markdown.push_str(&format!(
             "\n- package {} {}, export {}, ABI {}, descriptor {}",
             markdown_code_span(reference.package.as_str()),
             markdown_code_span(&reference.version),
             markdown_code_span(export.name.as_str()),
-            interface.abi,
-            markdown_code_span(&descriptor),
+            export.interface.abi,
+            markdown_code_span(&export.interface.descriptor.to_string()),
         ));
     }
     markdown

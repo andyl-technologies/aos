@@ -124,7 +124,13 @@ pub fn section(
         html.push_str("<p class=\"dim\">This package publishes no provider interfaces.</p>");
     }
     for export in &reference.exports {
-        let interface = &export.interface.interface;
+        let Ok(interface_document) = reference.interface_for_export(export) else {
+            html.push_str(
+                "<p class=\"warn\">The authenticated export has no retained interface document.</p>",
+            );
+            continue;
+        };
+        let interface = &interface_document.interface;
         let anchor = format!("ability-export-{}", export.name.as_str());
         let _ = write!(
             html,
@@ -134,13 +140,7 @@ pub fn section(
             escape(interface.name.as_str()),
             escape(&anchor),
             interface.abi,
-            hash_value(
-                &export
-                    .interface
-                    .interface_key()
-                    .map(|key| key.descriptor.to_string())
-                    .unwrap_or_else(|_| "invalid".into())
-            ),
+            hash_value(&export.interface.descriptor.to_string()),
             hash_value(&export.implementation.to_string()),
         );
         html.push_str("<h5>Request or contribution schema</h5>");
@@ -212,19 +212,18 @@ pub fn section(
         }
         html.push_str("</ul>");
 
-        if let Some(aggregation) = &export.aggregation {
-            let _ = write!(
-                html,
-                "<h5>Contribution consumption</h5><p>Scoped per provider instance with key <code>{}</code> and controller group <code>{}</code>. Slot collisions are {}.</p>",
-                escape(aggregation.key.as_str()),
-                escape(aggregation.controller_group.as_str()),
-                if aggregation.reject_slot_collisions {
-                    "rejected"
-                } else {
-                    "allowed"
-                },
-            );
-        }
+        let aggregation = &interface.aggregation;
+        let _ = write!(
+            html,
+            "<h5>Contribution consumption</h5><p>Scoped per provider instance with key <code>{}</code> and controller group <code>{}</code>. Slot collisions are {}.</p>",
+            escape(aggregation.key.as_str()),
+            escape(aggregation.controller_group.as_str()),
+            if aggregation.reject_slot_collisions {
+                "rejected"
+            } else {
+                "allowed"
+            },
+        );
         html.push_str("</article>");
     }
 
@@ -251,7 +250,6 @@ pub fn section(
         }
         html.push_str("</ul>");
     }
-
 
     if !reference.handlers.is_empty() {
         html.push_str("<h3>Structured effect handlers</h3>");
@@ -418,7 +416,11 @@ fn scalar(value: &impl serde::Serialize) -> String {
 }
 
 const fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
 }
 
 #[cfg(test)]
@@ -486,13 +488,6 @@ mod tests {
             interface: InterfaceDescriptor {
                 name: InterfaceName::new("aos.test.service").expect("interface name"),
                 abi: std::num::NonZeroU32::new(1).expect("nonzero ABI"),
-                aggregation: aos_ability_model::AggregationContract {
-                    scope: aos_ability_model::AggregationScope::ProviderInstance,
-                    key: key("resource"),
-                    controller_group: key("reference"),
-                    reject_slot_collisions: true,
-                    merge_contract: None,
-                },
                 request: ValueSchema::Boolean,
                 configuration: Some(ValueSchema::String {
                     max_length: 64,
@@ -523,10 +518,11 @@ mod tests {
             manifest_sha256: Sha256Digest::of_bytes(b"manifest"),
             package_digest: Sha256Digest::of_bytes(b"package"),
             activation_mode: AbilityActivationMode::StructuredEffects,
+            interfaces: BTreeMap::from([(key("service-interface"), interface)]),
+            guarantees: BTreeMap::new(),
             exports: vec![aos_doc_model::AbilityExportReference {
                 name: key("server"),
-                interface,
-                aggregation: Some(aggregation),
+                interface: interface_key.clone(),
                 implementation: Sha256Digest::of_bytes(b"implementation"),
                 requirements: vec![RequirementDeclaration {
                     alias: key("service-runtime"),
@@ -576,7 +572,7 @@ mod tests {
             key: key("demo-east"),
         };
         let export = &reference.reference.exports[0];
-        let interface = export.interface.interface_key().expect("interface key");
+        let interface = export.interface.clone();
         let revision = RevisionId(Sha256Digest::of_bytes(b"revision"));
 
         PackageAbilityDeploymentPanel {
@@ -643,7 +639,6 @@ mod tests {
         assert!(html.contains("<strong>network</strong>"));
         assert!(html.contains("<strong>service-runtime</strong>"));
         assert!(html.contains("consumed by <code>export server</code>"));
-        assert!(html.contains("Structured effect ownership"));
         assert!(html.contains("signed package contract"));
         assert!(html.contains("public schemas only, never deployed instance values"));
         assert!(html.contains("observed runtime state belong to deployment views"));
@@ -695,7 +690,14 @@ mod tests {
     #[test]
     fn states_when_an_interface_declares_no_operator_configuration() {
         let mut panel = panel();
-        panel.reference.exports[0].interface.interface.configuration = None;
+        let interface = panel
+            .reference
+            .interfaces
+            .values_mut()
+            .next()
+            .expect("retained interface");
+        interface.interface.configuration = None;
+        panel.reference.exports[0].interface = interface.interface_key().expect("interface key");
         panel.locator.canonical_json = panel
             .reference
             .canonical_json()

@@ -9,7 +9,7 @@
 use super::browse::BrowseQuery;
 use super::browse_pages::{registry_crumbs, state_line};
 use super::console_render::{page_with_session, urlencode, SessionIndicator};
-use super::documentation_content::{node_href, option, prose};
+use super::documentation_content::{node_href, option};
 use super::release_browse::ReleaseContext;
 use super::render::escape;
 use crate::clock::Instant;
@@ -262,7 +262,7 @@ pub(super) fn page(
     }
     html.push_str("</aside><div class=\"doc-reader\" data-doc-reader>");
     if let Some((entry, document)) = package_guide {
-        html.push_str(&guide_html(entry, document, slug, release));
+        html.push_str(&guide_html(entry, document));
     }
     if let Some(results) = results {
         let _ = write!(
@@ -341,7 +341,7 @@ pub(super) fn page(
                 html.push_str(&option(found, slug, release));
             }
         } else if package_guide.is_none() {
-            html.push_str(&guide_html(entry, document, slug, release));
+            html.push_str(&guide_html(entry, document));
         }
     }
     // A branch always lists what lies beneath it, even under a submodule
@@ -380,8 +380,6 @@ pub(super) fn page(
 fn guide_html(
     entry: &DocumentationTreeEntry,
     document: &PackageDocumentation,
-    slug: &str,
-    release: &str,
 ) -> String {
     let mut html = String::new();
     let _ = write!(
@@ -394,17 +392,7 @@ fn guide_html(
     // browser must never emit the entire release option reference.
     let mut guide = document.clone();
     guide.options.clear();
-    guide.sections.clear();
     html.push_str(&guide.render_html_fragment());
-    for section in &document.sections {
-        let _ = write!(
-            html,
-            "<section id=\"{}\"><h3>{}</h3>{}</section>",
-            escape(&section.id),
-            escape(&section.title),
-            prose(&section.blocks, slug, release)
-        );
-    }
     html.push_str("</article>");
     html
 }

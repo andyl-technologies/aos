@@ -409,7 +409,7 @@ fn extend_release_documentation_inserts(
     snapshot_id: &str,
     rows: &[Vec<Value>],
 ) -> Result<()> {
-    const ROW_COLUMNS: usize = 13;
+    const ROW_COLUMNS: usize = 12;
     anyhow::ensure!(
         rows.iter().all(|row| row.len() == ROW_COLUMNS),
         "release documentation insert has an inconsistent row width"
@@ -436,21 +436,19 @@ fn extend_release_documentation_inserts(
                 "WITH input(package_name, package_version, platform, store_hash,
                             format, store_path, nar_hash, nar_size,
                             document_sha256, document_size,
-                            semantic_schema_sha256, system_module_nar_hash,
-                            metadata_digest) AS
+                            semantic_schema_sha256, metadata_digest) AS
                    (VALUES {})
                  INSERT INTO release_package_documentation
                    (snapshot_id, release_id, registry_id, package_name,
                     package_version, platform, store_hash, format, store_path,
                     nar_hash, nar_size, document_sha256, document_size,
-                    semantic_schema_sha256, system_module_nar_hash,
-                    metadata_digest)
+                    semantic_schema_sha256, metadata_digest)
                  SELECT ?1, ras.release_id, ras.registry_id, input.package_name,
                         input.package_version, input.platform, input.store_hash,
                         input.format, input.store_path, input.nar_hash,
                         input.nar_size, input.document_sha256,
                         input.document_size, input.semantic_schema_sha256,
-                        input.system_module_nar_hash, input.metadata_digest
+                        input.metadata_digest
                    FROM release_artifact_snapshots ras CROSS JOIN input
                  WHERE ras.snapshot_id = ?1
                     AND ras.state IN ('building', 'complete')
@@ -467,8 +465,6 @@ fn extend_release_documentation_inserts(
                       AND release_package_documentation.document_sha256 = excluded.document_sha256
                       AND release_package_documentation.document_size = excluded.document_size
                       AND release_package_documentation.semantic_schema_sha256 = excluded.semantic_schema_sha256
-                      AND COALESCE(release_package_documentation.system_module_nar_hash, '') =
-                          COALESCE(excluded.system_module_nar_hash, '')
                       AND release_package_documentation.metadata_digest = excluded.metadata_digest
                      THEN release_package_documentation.metadata_digest
                      ELSE NULL
@@ -4388,7 +4384,6 @@ impl Database {
                 artifact.document_sha256,
                 artifact.document_size,
                 artifact.semantic_schema_sha256,
-                artifact.system_module_nar_hash,
             ]);
             for search in &documentation.search {
                 documentation_search_rows.push(vals![
@@ -4409,7 +4404,7 @@ impl Database {
             "INSERT INTO package_documentation
              (registry_id, indexed_commit, package_name, package_version, platform,
               format, store_path, nar_hash, nar_size, document_sha256, document_size,
-              semantic_schema_sha256, system_module_nar_hash)",
+              semantic_schema_sha256)",
             &documentation_rows,
             "",
         )?;
@@ -4865,7 +4860,6 @@ impl Database {
                     artifact.document_sha256,
                     artifact.document_size,
                     artifact.semantic_schema_sha256,
-                    artifact.system_module_nar_hash,
                     metadata_digest,
                 ]);
             }
@@ -13756,8 +13750,7 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT indexed_commit, format, store_path, nar_hash, nar_size,
-                        document_sha256, document_size, semantic_schema_sha256,
-                        system_module_nar_hash
+                        document_sha256, document_size, semantic_schema_sha256
                  FROM package_documentation
                  WHERE registry_id = ?1 AND package_name = ?2
                    AND package_version = ?3 AND platform = ?4",
@@ -13780,7 +13773,6 @@ impl Database {
                 document_sha256: row.get(5)?,
                 document_size: row.get(6)?,
                 semantic_schema_sha256: row.get(7)?,
-                system_module_nar_hash: row.get(8)?,
                 references: Vec::new(),
             },
             release: None,
@@ -13810,7 +13802,7 @@ impl Database {
                 "SELECT d.indexed_commit, d.package_version, d.platform,
                         d.format, d.store_path, d.nar_hash, d.nar_size,
                         d.document_sha256, d.document_size,
-                        d.semantic_schema_sha256, d.system_module_nar_hash
+                        d.semantic_schema_sha256
                  FROM package_documentation d
                  JOIN packages p ON p.registry_id = d.registry_id
                                 AND p.name = d.package_name
@@ -13840,7 +13832,6 @@ impl Database {
                 document_sha256: row.get(7)?,
                 document_size: row.get(8)?,
                 semantic_schema_sha256: row.get(9)?,
-                system_module_nar_hash: row.get(10)?,
                 references: Vec::new(),
             },
             release: None,
@@ -13864,7 +13855,7 @@ impl Database {
             .query_opt(
                 "SELECT indexed_commit, package_name, package_version, platform,
                         format, store_path, nar_hash, nar_size, document_size,
-                        semantic_schema_sha256, system_module_nar_hash
+                        semantic_schema_sha256
                  FROM package_documentation
                  WHERE registry_id = ?1 AND document_sha256 = ?2
                  ORDER BY package_name, package_version, platform LIMIT 1",
@@ -13885,7 +13876,6 @@ impl Database {
                     document_sha256: document_sha256.to_string(),
                     document_size: row.get(8)?,
                     semantic_schema_sha256: row.get(9)?,
-                    system_module_nar_hash: row.get(10)?,
                     references: Vec::new(),
                 },
                 release: None,
@@ -13902,8 +13892,7 @@ impl Database {
                         documentation.format, documentation.store_path,
                         documentation.nar_hash, documentation.nar_size,
                         documentation.document_size,
-                        documentation.semantic_schema_sha256,
-                        documentation.system_module_nar_hash, rel.semver,
+                        documentation.semantic_schema_sha256, rel.semver,
                         ras.verified_tag_oid, ras.snapshot_id,
                         documentation.metadata_digest
                  FROM release_package_documentation documentation
@@ -13953,7 +13942,6 @@ impl Database {
             document_sha256: document_sha256.to_string(),
             document_size: row.get(8)?,
             semantic_schema_sha256: row.get(9)?,
-            system_module_nar_hash: row.get(10)?,
             references: Vec::new(),
         };
         let projection = ReleasePackageDocumentation {
@@ -13963,7 +13951,7 @@ impl Database {
             artifact: artifact.clone(),
         };
         let expected_digest = hex::encode(sha2::Sha256::digest(serde_json::to_vec(&projection)?));
-        let stored_digest: String = row.get(14)?;
+        let stored_digest: String = row.get(13)?;
         if stored_digest != expected_digest {
             bail!("release documentation metadata digest does not match its locator");
         }
@@ -13973,9 +13961,9 @@ impl Database {
             package_version,
             platform,
             artifact,
-            release: Some(row.get(11)?),
-            verified_tag_oid: Some(row.get(12)?),
-            release_snapshot_id: Some(row.get(13)?),
+            release: Some(row.get(10)?),
+            verified_tag_oid: Some(row.get(11)?),
+            release_snapshot_id: Some(row.get(12)?),
         }))
     }
 
@@ -15338,7 +15326,6 @@ impl Database {
                         documentation.document_sha256,
                         documentation.document_size,
                         documentation.semantic_schema_sha256,
-                        documentation.system_module_nar_hash,
                         documentation.metadata_digest
                  FROM release_package_documentation documentation
                  JOIN release_artifacts artifact
@@ -15386,13 +15373,12 @@ impl Database {
                     document_sha256: row.get(8)?,
                     document_size: row.get(9)?,
                     semantic_schema_sha256: row.get(10)?,
-                    system_module_nar_hash: row.get(11)?,
                     references: Vec::new(),
                 },
             };
             let expected_digest =
                 hex::encode(sha2::Sha256::digest(serde_json::to_vec(&documentation)?));
-            let stored_digest: String = row.get(12)?;
+            let stored_digest: String = row.get(11)?;
             if stored_digest != expected_digest {
                 bail!("release documentation metadata digest does not match its locator");
             }
@@ -27508,7 +27494,7 @@ source_nar_hash = ""
     }
 
     #[test]
-    fn production_baseline_keeps_portable_recovery_and_documentation_columns() {
+    fn production_baseline_keeps_portable_recovery_columns() {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(MIGRATIONS[0]).unwrap();
 
@@ -27521,8 +27507,6 @@ source_nar_hash = ""
             .unwrap();
         assert_eq!(cursor, crate::cache_scan::CACHE_WRITE_RECOVERY_CURSOR_START);
         for (table, column) in [
-            ("package_documentation", "system_module_nar_hash"),
-            ("release_package_documentation", "system_module_nar_hash"),
             ("registry_index", "documentation_projection_generation"),
             ("object_placements", "catalog_object_resource_version"),
         ] {
@@ -27681,8 +27665,7 @@ source_nar_hash = ""
                 document_sha256: "b".repeat(64),
                 document_size: 2048,
                 semantic_schema_sha256: "c".repeat(64),
-                system_module_nar_hash: None,
-                references: Vec::new(),
+                    references: Vec::new(),
             },
             search: vec![aos_doc_model::SearchDocument {
                 kind: "option".into(),

@@ -29,8 +29,7 @@ impl Database {
                         documentation.format, documentation.store_path,
                         documentation.nar_hash, documentation.nar_size,
                         documentation.document_size,
-                        documentation.semantic_schema_sha256,
-                        documentation.system_module_nar_hash, rel.semver,
+                        documentation.semantic_schema_sha256, rel.semver,
                         ras.verified_tag_oid, ras.snapshot_id,
                         documentation.metadata_digest, documentation.document_sha256
                  FROM release_package_documentation documentation
@@ -78,7 +77,7 @@ impl Database {
         let Some(row) = row else {
             return Ok(None);
         };
-        let document_sha256: String = row.get(15)?;
+        let document_sha256: String = row.get(14)?;
         let package_name: String = row.get(1)?;
         let package_version: String = row.get(2)?;
         let platform: String = row.get(3)?;
@@ -90,7 +89,6 @@ impl Database {
             document_sha256: document_sha256.to_string(),
             document_size: row.get(8)?,
             semantic_schema_sha256: row.get(9)?,
-            system_module_nar_hash: row.get(10)?,
             references: Vec::new(),
         };
         let projection = ReleasePackageDocumentation {
@@ -100,7 +98,7 @@ impl Database {
             artifact: artifact.clone(),
         };
         let expected_digest = hex::encode(sha2::Sha256::digest(serde_json::to_vec(&projection)?));
-        let stored_digest: String = row.get(14)?;
+        let stored_digest: String = row.get(13)?;
         if stored_digest != expected_digest {
             bail!("release documentation metadata digest does not match its locator");
         }
@@ -110,9 +108,9 @@ impl Database {
             package_version,
             platform,
             artifact,
-            release: Some(row.get(11)?),
-            verified_tag_oid: Some(row.get(12)?),
-            release_snapshot_id: Some(row.get(13)?),
+            release: Some(row.get(10)?),
+            verified_tag_oid: Some(row.get(11)?),
+            release_snapshot_id: Some(row.get(12)?),
         }))
     }
 }
@@ -137,7 +135,6 @@ mod tests {
             document_sha256: "b".repeat(64),
             document_size: 2048,
             semantic_schema_sha256: "c".repeat(64),
-            system_module_nar_hash: None,
             references: Vec::new(),
         };
         let documentation = ReleasePackageDocumentation {

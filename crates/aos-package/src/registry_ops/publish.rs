@@ -22,9 +22,7 @@ use crate::registry_ops::config::{
 use crate::registry_ops::config_modules::{
     parse_config_dependency_outputs, read_publish_config_module,
 };
-use crate::registry_ops::documentation::{
-    derive_system_documentation, publish_package_documentation,
-};
+use crate::registry_ops::documentation::publish_package_documentation;
 use crate::registry_ops::git::{
     commit_registry_paths, current_git_head, refresh_registry_object_store,
 };
@@ -89,10 +87,6 @@ use std::path::{Path, PathBuf};
 /// library used by the restricted, no-IFD options-only evaluation. The signed
 /// provenance binds the payload, config output, base lib, and (when present)
 /// expose manifest in one statement.
-/// `--documentation-base-lib` additionally extracts image-owned service
-/// options selected by the base library's canonical Nix service catalog. It
-/// changes documentation only and never grants package configuration authority.
-///
 /// # Errors
 ///
 /// Fails when required package distribution metadata is missing, empty, or a
@@ -130,7 +124,6 @@ pub async fn publish(
     expose_manifest_path: Option<&str>,
     config_module_path: Option<&str>,
     config_base_lib_path: Option<&str>,
-    documentation_base_lib_path: Option<&str>,
     config_dependencies: &[String],
     bless: bool,
     no_ca: bool,
@@ -167,7 +160,6 @@ pub async fn publish(
         expose_manifest_path,
         config_module_path,
         config_base_lib_path,
-        documentation_base_lib_path,
         config_dependencies,
         bless,
         no_ca,
@@ -211,7 +203,6 @@ pub(crate) async fn publish_to_registry_directory(
     expose_manifest_path: Option<&str>,
     config_module_path: Option<&str>,
     config_base_lib_path: Option<&str>,
-    documentation_base_lib_path: Option<&str>,
     config_dependencies: &[String],
     bless: bool,
     no_ca: bool,
@@ -291,10 +282,6 @@ pub(crate) async fn publish_to_registry_directory(
         .map(introspect_store_path)
         .transpose()
         .context("introspecting config base-lib")?;
-    let documentation_base_lib_info = documentation_base_lib_path
-        .map(introspect_store_path)
-        .transpose()
-        .context("introspecting documentation base-lib")?;
     let config_dependency_outputs = parse_config_dependency_outputs(config_dependencies, &info)?;
     let config_module_bundle = match (config_module_info.as_ref(), config_base_lib_info.as_ref()) {
         (Some(output), Some(base_lib)) => Some(read_publish_config_module(
@@ -308,10 +295,6 @@ pub(crate) async fn publish_to_registry_directory(
         _ => bail!("--config-module and --config-base-lib must be specified together"),
     };
     let config_module = config_module_bundle.as_ref().map(|bundle| &bundle.metadata);
-    let system_documentation = documentation_base_lib_info
-        .map(|base_lib| derive_system_documentation(base_lib, pkg_name))
-        .transpose()?
-        .flatten();
     // Bind the exact disk, canonical per-format metadata, and paired UKI
     // before catalog construction. Committed Secure Boot policy is enforced
     // below.
@@ -359,12 +342,6 @@ pub(crate) async fn publish_to_registry_directory(
         .as_ref()
         .into_iter()
         .flat_map(|bundle| bundle.declarations.iter().cloned())
-        .chain(
-            system_documentation
-                .as_ref()
-                .into_iter()
-                .flat_map(|surface| surface.declarations.iter().cloned()),
-        )
         .collect::<Vec<_>>();
     let documentation = publish_package_documentation(
         pkg_name,
@@ -377,7 +354,6 @@ pub(crate) async fn publish_to_registry_directory(
         source_info.as_ref(),
         config_module,
         config_module_bundle.as_ref().map(|bundle| &bundle.authored),
-        system_documentation.as_ref(),
         expose_manifest.as_ref(),
         expose_artifact_info.as_ref(),
         &documentation_declarations,
@@ -817,7 +793,6 @@ pub(crate) async fn publish_canonical_release_entry(
         &[],
         &[],
         &[],
-        None,
         None,
         None,
         None,

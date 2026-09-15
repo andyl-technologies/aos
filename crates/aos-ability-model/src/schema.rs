@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::identity::LocalKey;
@@ -47,7 +48,7 @@ impl JsonValueKind {
 }
 
 /// Names a closed, cross-consumer string grammar.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StringSyntax {
     /// Uses the version-1 local-key grammar `[A-Za-z0-9._-]+`.
@@ -59,7 +60,7 @@ pub enum StringSyntax {
 }
 
 /// Constrains strings used as values or map keys.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct StringConstraint {
     /// Sets the maximum UTF-8 byte length.

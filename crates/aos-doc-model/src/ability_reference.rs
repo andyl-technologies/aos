@@ -4,13 +4,14 @@
 //! Its identity follows the signed ability manifest, while package-authored
 //! prose retains the documentation object's independent byte identity.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityActivationMode, AggregationContract, HandlerDescriptor,
-    InterfaceDocument, LocalKey, PackageDocument, RequiredFeature, RequirementDeclaration,
+    ABILITY_LIMITS_V1, AbilityActivationMode, GuaranteeDeclaration, HandlerDescriptor,
+    InterfaceDocument, InterfaceKey, LocalKey, RequiredFeature, RequirementDeclaration,
     ValueSchema, VersionedDocument, decode_canonical, encode_canonical,
 };
+use aos_ability_validate::{CheckedPackageContract, package_source_supported_features};
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
@@ -33,31 +34,24 @@ pub const MAX_ABILITY_REFERENCE_BYTES: usize = 4 * 1024 * 1024;
 ///
 /// # Errors
 ///
-/// Returns an error if a built-in feature identifier is invalid.
+/// Returns an error if the package reader or reference-specific feature set
+/// cannot be constructed.
 pub fn ability_reference_supported_features() -> Result<BTreeSet<RequiredFeature>> {
-    [
-        aos_ability_model::builtin::AB_IMAGE_ROLLOUT_FEATURE,
-        "abilities-v1",
-        "ability-effects-v1",
-        ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1,
-        aos_ability_model::PROVIDER_STATE_FORMAT_V1,
-    ]
-    .into_iter()
-    .map(|feature| RequiredFeature::new(feature).map_err(invalid_model))
-    .collect()
+    let mut supported = package_source_supported_features().map_err(invalid_model)?;
+    supported.insert(
+        RequiredFeature::new(ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1).map_err(invalid_model)?,
+    );
+    Ok(supported)
 }
 
-/// One public export and the exact interface document it implements.
+/// One public export and the exact interface identity it implements.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AbilityExportReference {
     /// Names the export inside the package.
     pub name: LocalKey,
-    /// Retains the complete public request, operator configuration, result,
-    /// method, and guarantee contract.
-    pub interface: InterfaceDocument,
-    /// Defines contribution aggregation when the export accepts contributions.
-    pub aggregation: Option<AggregationContract>,
+    /// Identifies the public interface retained in the package interface map.
+    pub interface: InterfaceKey,
     /// Identifies the separately authenticated provider implementation.
     pub implementation: Sha256Digest,
     /// Lists abilities consumed by this export's provider implementation.
@@ -100,6 +94,10 @@ pub struct PackageAbilityReference {
     pub package_digest: Sha256Digest,
     /// States whether the package may author structured activation effects.
     pub activation_mode: AbilityActivationMode,
+    /// Maps every package-local interface alias to its exact retained document.
+    pub interfaces: BTreeMap<LocalKey, InterfaceDocument>,
+    /// Retains every package-authored guarantee semantic and description once.
+    pub guarantees: BTreeMap<LocalKey, GuaranteeDeclaration>,
     /// Lists public exports in canonical package order.
     pub exports: Vec<AbilityExportReference>,
     /// Lists declarative lower-interface requirements in canonical alias order.
@@ -109,20 +107,18 @@ pub struct PackageAbilityReference {
 }
 
 impl PackageAbilityReference {
-    /// Generates public reference data from structurally checked companion documents.
+    /// Generates public reference data from one shared checked package contract.
     ///
-    /// This constructor derives and retains exact document identities, but it
-    /// does not authenticate a release signature or establish that the caller
-    /// obtained the documents from the signed companion named by a release.
+    /// This constructor derives and retains exact document identities. Its input
+    /// has already passed the shared package and retained-interface semantic gate,
+    /// but the caller remains responsible for authenticating the enclosing release.
     ///
     /// # Errors
     ///
-    /// Returns an error when an export's exact interface document is absent,
-    /// duplicated, or inconsistent, or when the generated reference is invalid.
-    pub fn from_documents(
-        package: &PackageDocument,
-        interfaces: &[InterfaceDocument],
-    ) -> Result<Self> {
+    /// Returns an error when the checked contract cannot be projected into a
+    /// bounded, internally consistent public reference.
+    pub fn from_checked_contract(checked: &CheckedPackageContract) -> Result<Self> {
+        let package = checked.package();
         let manifest = encode_canonical(package).map_err(invalid_model)?;
         let manifest_sha256 = Sha256Digest::of_bytes(&manifest);
         let package_digest = package.content_digest().map_err(invalid_model)?;
@@ -130,24 +126,35 @@ impl PackageAbilityReference {
             RequiredFeature::new(ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1)
                 .map_err(invalid_model)?;
 
+        let interfaces = package
+            .interfaces
+            .iter()
+            .map(|(alias, expected_key)| {
+                let document = checked.retained_interface(alias).ok_or_else(|| {
+                    invalid(format!(
+                        "package interface alias '{}' has no retained document",
+                        alias.as_str()
+                    ))
+                })?;
+                let actual_key = document.interface_key().map_err(invalid_model)?;
+                if &actual_key != expected_key {
+                    return Err(invalid(format!(
+                        "package interface alias '{}' resolves to a different interface identity",
+                        alias.as_str()
+                    )));
+                }
+
+                Ok((alias.clone(), document.clone()))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
         let mut exports = Vec::with_capacity(package.exports.len());
         for export in &package.exports {
-            let mut matching = interfaces.iter().filter_map(|document| {
-                document
-                    .interface_key()
-                    .ok()
-                    .filter(|key| key == &export.interface)
-                    .map(|_| document)
-            });
-            let interface = matching.next().ok_or_else(|| {
-                invalid(format!(
-                    "export '{}' has no exact public interface document",
-                    export.name.as_str()
-                ))
-            })?;
-            if matching.next().is_some() {
+            if !interfaces
+                .values()
+                .any(|document| document.interface_key().ok().as_ref() == Some(&export.interface))
+            {
                 return Err(invalid(format!(
-                    "export '{}' repeats its public interface document",
+                    "export '{}' has no exact public interface document",
                     export.name.as_str()
                 )));
             }
@@ -173,8 +180,7 @@ impl PackageAbilityReference {
 
             exports.push(AbilityExportReference {
                 name: export.name.clone(),
-                interface: interface.clone(),
-                aggregation: Some(interface.interface.aggregation.clone()),
+                interface: export.interface.clone(),
                 implementation: export.implementation,
                 requirements: provider.requirements.clone(),
             });
@@ -200,12 +206,35 @@ impl PackageAbilityReference {
             manifest_sha256,
             package_digest,
             activation_mode: package.activation_mode,
+            interfaces,
+            guarantees: package.guarantees.clone(),
             exports,
             requirements: package.requirements.clone(),
             handlers,
         };
         reference.validate()?;
         Ok(reference)
+    }
+
+    /// Resolves the exact retained interface document for an export.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the export names an interface outside the checked
+    /// package-local interface map.
+    pub fn interface_for_export(
+        &self,
+        export: &AbilityExportReference,
+    ) -> Result<&InterfaceDocument> {
+        self.interfaces
+            .values()
+            .find(|document| document.interface_key().ok().as_ref() == Some(&export.interface))
+            .ok_or_else(|| {
+                invalid(format!(
+                    "export '{}' has no retained interface document",
+                    export.name.as_str()
+                ))
+            })
     }
 
     /// Decodes exact canonical reference JSON under the version-1 bounds.
@@ -223,8 +252,8 @@ impl PackageAbilityReference {
         let reference: Self = decode_canonical(bytes, ABILITY_LIMITS_V1, supported_features)
             .map_err(invalid_model)?;
         reference.validate()?;
-        for export in &reference.exports {
-            let interface_bytes = encode_canonical(&export.interface).map_err(invalid_model)?;
+        for interface in reference.interfaces.values() {
+            let interface_bytes = encode_canonical(interface).map_err(invalid_model)?;
             decode_canonical::<InterfaceDocument>(
                 &interface_bytes,
                 ABILITY_LIMITS_V1,
@@ -270,11 +299,38 @@ impl PackageAbilityReference {
             return Err(invalid("ability reference has an invalid package version"));
         }
         let max_items = ABILITY_LIMITS_V1.max_collection_items as usize;
-        if self.exports.len() > max_items
+        if self.interfaces.len() > max_items
+            || self.guarantees.len() > max_items
+            || self.exports.len() > max_items
             || self.requirements.len() > max_items
             || self.handlers.len() > max_items
         {
             return Err(invalid("ability reference exceeds its collection limit"));
+        }
+
+        let mut interface_identities = BTreeMap::new();
+        for (alias, interface) in &self.interfaces {
+            let identity = interface.interface_key().map_err(invalid_model)?;
+            if let Some(previous) = interface_identities.insert(identity, alias) {
+                // Multiple aliases may intentionally name one declaration, but
+                // the exact document must remain identical under those aliases.
+                if self.interfaces.get(previous) != Some(interface) {
+                    return Err(invalid(
+                        "ability interface aliases resolve to inconsistent documents",
+                    ));
+                }
+            }
+        }
+        for guarantee in self.guarantees.values() {
+            guarantee.key().map_err(invalid_model)?;
+            for text in [&guarantee.semantics, &guarantee.description] {
+                if text.is_empty()
+                    || text.len() as u64 > ABILITY_LIMITS_V1.max_string_bytes
+                    || text.chars().any(char::is_control)
+                {
+                    return Err(invalid("ability guarantee contains invalid text"));
+                }
+            }
         }
 
         let mut export_names = BTreeSet::new();
@@ -303,7 +359,11 @@ impl PackageAbilityReference {
                 }
                 previous_requirement = Some(&requirement.alias);
             }
-            export.interface.content_digest().map_err(invalid_model)?;
+            if !interface_identities.contains_key(&export.interface) {
+                return Err(invalid(
+                    "ability export references an interface outside the package declarations",
+                ));
+            }
             previous_export = Some(&export.name);
         }
         if self
@@ -386,6 +446,8 @@ mod tests {
             manifest_sha256: Sha256Digest::of_bytes("manifest"),
             package_digest: Sha256Digest::of_bytes("package"),
             activation_mode: AbilityActivationMode::ContractsOnly,
+            interfaces: BTreeMap::new(),
+            guarantees: BTreeMap::new(),
             exports: Vec::new(),
             requirements: Vec::new(),
             handlers: Vec::new(),
@@ -450,11 +512,14 @@ mod tests {
         interface.required_features.push(
             RequiredFeature::new("future-interface-semantics").expect("valid future feature"),
         );
+        let interface_key = interface.interface_key().expect("interface key");
         let mut reference = reference();
+        reference
+            .interfaces
+            .insert(LocalKey::new("echo").expect("interface alias"), interface);
         reference.exports.push(AbilityExportReference {
             name: LocalKey::new("echo").expect("valid export name"),
-            interface,
-            aggregation: None,
+            interface: interface_key,
             implementation: Sha256Digest::of_bytes("implementation"),
             requirements: Vec::new(),
         });
@@ -475,7 +540,7 @@ mod tests {
         let interface_key = interface.interface_key().expect("interface key");
         let requirement = RequirementDeclaration {
             alias: LocalKey::new("runtime").expect("requirement alias"),
-            accepted_interfaces: vec![interface_key],
+            accepted_interfaces: vec![interface_key.clone()],
             methods: Vec::new(),
             guarantees: Vec::new(),
             strength: RequirementStrength::Required,
@@ -487,10 +552,12 @@ mod tests {
                 .expect("provider requirements feature"),
         );
         reference.required_features.sort();
+        reference
+            .interfaces
+            .insert(LocalKey::new("echo").expect("interface alias"), interface);
         reference.exports.push(AbilityExportReference {
             name: LocalKey::new("echo").expect("export name"),
-            interface,
-            aggregation: None,
+            interface: interface_key,
             implementation: Sha256Digest::of_bytes("implementation"),
             requirements: vec![requirement],
         });

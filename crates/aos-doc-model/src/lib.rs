@@ -20,6 +20,11 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub use aos_ability_model::{
+    AbilityValue, DocumentedValue, OptionEnumValue as EnumValue, OptionSource as SourceLocator,
+    OptionType, OptionVisibility as Visibility, RelativePath,
+};
+
 mod ability_deployment;
 mod ability_nar;
 mod ability_reference;
@@ -96,7 +101,6 @@ pub fn document_json_schema() -> Result<Vec<u8>> {
 pub const MAX_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
 
 const MAX_OPTIONS: usize = 16_384;
-const MAX_SECTIONS: usize = 256;
 const MAX_TEXT_BYTES: usize = 256 * 1024;
 const MAX_LITERAL_DEPTH: usize = 32;
 const MAX_LITERAL_ITEMS: usize = 16_384;
@@ -125,9 +129,6 @@ pub struct PackageDocumentation {
     pub package: DocumentedPackage,
     /// Content and cross-artifact identities without store paths.
     pub identity: DocumentationIdentity,
-    /// Package-authored structured explanatory sections.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sections: Vec<Section>,
     /// Mechanically extracted option reference.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<OptionDocument>,
@@ -163,26 +164,11 @@ pub struct DocumentationIdentity {
     /// Optional config-module NAR hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_module_nar_hash: Option<String>,
-    /// Optional image base-module NAR hash for system-owned options.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub system_module_nar_hash: Option<String>,
     /// Optional expose-artifact NAR hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose_artifact_nar_hash: Option<String>,
     /// Source derivation closure NAR hash.
     pub source_nar_hash: String,
-}
-
-/// One package-authored conceptual section.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Section {
-    /// Stable document-local identifier.
-    pub id: String,
-    /// Human section title.
-    pub title: String,
-    /// Structured prose blocks.
-    pub blocks: Vec<ProseBlock>,
 }
 
 /// Closed structured-prose block understood by every renderer.
@@ -259,11 +245,6 @@ pub enum LinkTarget {
         /// Option path.
         path: Vec<PathSegment>,
     },
-    /// A section in the current document.
-    Section {
-        /// Section identifier.
-        id: String,
-    },
     /// A repository-relative source locator.
     Source {
         /// Repository-relative path.
@@ -323,141 +304,6 @@ impl PathSegment {
     }
 }
 
-/// Closed rich option type algebra.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum OptionType {
-    /// Boolean value.
-    Bool,
-    /// Signed integer value.
-    Integer {
-        /// Inclusive lower bound.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        min: Option<i64>,
-        /// Inclusive upper bound.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max: Option<i64>,
-    },
-    /// Unsigned integer value.
-    Unsigned {
-        /// Inclusive lower bound.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        min: Option<u64>,
-        /// Inclusive upper bound.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max: Option<u64>,
-    },
-    /// String with optional constraints.
-    String {
-        /// Optional regular-expression description.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pattern: Option<String>,
-        /// Optional maximum byte length.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_length: Option<u64>,
-    },
-    /// TCP/UDP port number.
-    Port,
-    /// Filesystem path.
-    Path,
-    /// Duration value.
-    Duration,
-    /// CIDR network prefix.
-    Cidr,
-    /// Opaque credential or secret reference.
-    OpaqueReference,
-    /// Enumerated string values.
-    Enum {
-        /// Admitted values and their optional descriptions.
-        values: Vec<EnumValue>,
-    },
-    /// Ordered list.
-    List {
-        /// Element type.
-        element: Box<OptionType>,
-        /// Whether duplicate values are forbidden.
-        #[serde(default)]
-        unique: bool,
-        /// Whether values use ascending canonical JSON order.
-        #[serde(default)]
-        canonical_order: bool,
-    },
-    /// Unordered semantic set.
-    Set {
-        /// Element type.
-        element: Box<OptionType>,
-    },
-    /// Attribute map with dynamic keys.
-    AttrsOf {
-        /// Value type.
-        value: Box<OptionType>,
-        /// Dynamic segment placeholder.
-        placeholder: String,
-    },
-    /// Fixed-field record.
-    Submodule {
-        /// Sorted fixed fields.
-        fields: BTreeMap<String, OptionType>,
-        /// Whether unknown additional attributes are admitted.
-        #[serde(default)]
-        open: bool,
-    },
-    /// Nullable value.
-    Nullable {
-        /// Non-null value type.
-        value: Box<OptionType>,
-    },
-    /// Bounded union.
-    OneOf {
-        /// Alternative types.
-        alternatives: Vec<OptionType>,
-    },
-    /// Stable fallback for an AOS type that has not yet gained a rich variant.
-    Opaque {
-        /// Stable type signature.
-        signature: String,
-    },
-}
-
-/// One enum value and its structured description.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct EnumValue {
-    /// Literal value.
-    pub value: String,
-    /// Structured value description.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub description: Vec<ProseBlock>,
-}
-
-/// A safe option default or example.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum DocumentedValue {
-    /// Bounded JSON-compatible literal.
-    Literal {
-        /// Literal value; floats are rejected during validation.
-        value: Value,
-    },
-    /// Human text for a computed value that must not be forced.
-    Text {
-        /// Stable explanatory text.
-        text: String,
-    },
-}
-
-/// Public visibility of an option or runtime fact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-pub enum Visibility {
-    /// Public user-facing interface.
-    Public,
-    /// Internal interface available to authenticated tooling.
-    Internal,
-    /// Hidden implementation plumbing.
-    Hidden,
-}
-
 /// Authenticated owner of an option path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -469,51 +315,6 @@ pub struct OptionOwner {
     /// Root interface ABI when the root is shared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interface_abi: Option<u32>,
-}
-
-/// Effect expected when an option changes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ActivationEffect {
-    /// Activation action.
-    pub kind: ActivationKind,
-    /// Exact affected systemd units.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub units: Vec<String>,
-}
-
-/// Closed activation action vocabulary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-pub enum ActivationKind {
-    /// No live action.
-    None,
-    /// Re-evaluate configuration only.
-    Reevaluate,
-    /// Reload live service state.
-    Reload,
-    /// Restart affected services.
-    Restart,
-    /// Recreate runtime resources.
-    Recreate,
-    /// Reboot the system.
-    Reboot,
-    /// Package-specific lifecycle operation.
-    PackageOperation,
-}
-
-/// Repository-relative declaration locator.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SourceLocator {
-    /// Repository-relative source path.
-    pub path: String,
-    /// Optional stable attribute locator.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attribute: Option<String>,
-    /// Optional one-based source line.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub line: Option<u32>,
 }
 
 /// One mechanically extracted option document.
@@ -553,9 +354,6 @@ pub struct OptionDocument {
     /// Whether non-owner packages may contribute below this option.
     #[serde(default)]
     pub contributable: bool,
-    /// Expected live activation effect.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activation: Option<ActivationEffect>,
     /// Declaration source locator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceLocator>,
@@ -670,27 +468,10 @@ impl PackageDocumentation {
             self.identity.config_module_nar_hash.as_deref(),
         )?;
         validate_optional_digest(
-            "system-module NAR hash",
-            self.identity.system_module_nar_hash.as_deref(),
-        )?;
-        validate_optional_digest(
             "expose-artifact NAR hash",
             self.identity.expose_artifact_nar_hash.as_deref(),
         )?;
         validate_digest("source NAR hash", &self.identity.source_nar_hash)?;
-
-        if self.sections.len() > MAX_SECTIONS {
-            return Err(invalid("too many package sections"));
-        }
-        let mut section_ids = BTreeSet::new();
-        for section in &self.sections {
-            validate_token("section id", &section.id)?;
-            validate_text("section title", &section.title)?;
-            if !section_ids.insert(section.id.as_str()) {
-                return Err(invalid(format!("duplicate section '{}'", section.id)));
-            }
-            validate_blocks(&section.blocks, 0)?;
-        }
 
         if self.options.len() > MAX_OPTIONS {
             return Err(invalid("too many options"));
@@ -875,14 +656,6 @@ impl PackageDocumentation {
             "{} {} ({})\n{}\n",
             self.package.name, self.package.version, self.package.platform, self.package.summary
         );
-        for section in &self.sections {
-            output.push_str(&format!(
-                "\n{}\n{}\n",
-                section.title,
-                "-".repeat(section.title.len())
-            ));
-            render_blocks_plain(&section.blocks, &mut output, 0);
-        }
         if !self.options.is_empty() {
             output.push_str("\nOPTIONS\n-------\n");
             for option in &self.options {
@@ -934,15 +707,6 @@ impl PackageDocumentation {
         output.push_str(" · ");
         escape_html_into(&self.package.platform, output);
         output.push_str("</code></p></header>");
-        for section in &self.sections {
-            output.push_str("<section id=\"");
-            escape_html_into(&section.id, output);
-            output.push_str("\"><h2>");
-            escape_html_into(&section.title, output);
-            output.push_str("</h2>");
-            render_blocks_html(&section.blocks, output);
-            output.push_str("</section>");
-        }
         if !self.options.is_empty() {
             output.push_str("<section id=\"options\"><h2>Options</h2><dl>");
             for option in &self.options {
@@ -974,12 +738,6 @@ impl PackageDocumentation {
         output.push_str(" for ");
         escape_roff_into(&self.package.platform, &mut output);
         output.push('\n');
-        for section in &self.sections {
-            output.push_str(".SH \"");
-            escape_roff_into(&section.title.to_uppercase(), &mut output);
-            output.push_str("\"\n");
-            render_blocks_roff(&section.blocks, &mut output);
-        }
         if !self.options.is_empty() {
             output.push_str(".SH OPTIONS\n");
             for option in &self.options {
@@ -1020,7 +778,6 @@ struct SemanticOption<'a> {
     replacement: &'a Option<Vec<PathSegment>>,
     owner: &'a OptionOwner,
     contributable: bool,
-    activation: &'a Option<ActivationEffect>,
 }
 
 impl<'a> From<&'a PackageDocumentation> for SemanticProjection<'a> {
@@ -1041,7 +798,6 @@ impl<'a> From<&'a PackageDocumentation> for SemanticProjection<'a> {
                     replacement: &option.replacement,
                     owner: &option.owner,
                     contributable: option.contributable,
-                    activation: &option.activation,
                 })
                 .collect(),
         }
@@ -1059,7 +815,6 @@ fn semantic_option(option: &OptionDocument) -> SemanticOption<'_> {
         replacement: &option.replacement,
         owner: &option.owner,
         contributable: option.contributable,
-        activation: &option.activation,
     }
 }
 
@@ -1086,7 +841,7 @@ fn validate_option(option: &OptionDocument) -> Result<()> {
         )));
     }
     validate_nonempty("option type signature", &option.type_signature)?;
-    validate_option_type(&option.option_type, 0)?;
+    validate_option_type(&option.option_type)?;
     validate_blocks(&option.description, 0)?;
     if option.visibility == Visibility::Public && prose_plain_text(&option.description).is_empty() {
         return Err(invalid(format!(
@@ -1103,85 +858,16 @@ fn validate_option(option: &OptionDocument) -> Result<()> {
     validate_token("option owner package", &option.owner.package)?;
     validate_token("option owner root", &option.owner.root)?;
     if let Some(source) = &option.source {
-        validate_relative_source_path(&source.path)?;
-    }
-    if let Some(activation) = &option.activation {
-        validate_sorted_unique("activation units", &activation.units)?;
+        validate_relative_source_path(source.path.as_str())?;
     }
     Ok(())
 }
 
-fn validate_option_type(option_type: &OptionType, depth: usize) -> Result<()> {
-    if depth > 32 {
-        return Err(invalid("option type nesting exceeds 32"));
-    }
-    match option_type {
-        OptionType::Integer { min, max } if min.zip(*max).is_some_and(|(a, b)| a > b) => {
-            Err(invalid("integer type range is inverted"))
-        }
-        OptionType::Unsigned { min, max } if min.zip(*max).is_some_and(|(a, b)| a > b) => {
-            Err(invalid("unsigned type range is inverted"))
-        }
-        OptionType::String {
-            pattern,
-            max_length,
-        } => {
-            if let Some(pattern) = pattern {
-                validate_text("string constraint pattern", pattern)?;
-            }
-            if max_length.is_some_and(|length| length > MAX_TEXT_BYTES as u64) {
-                return Err(invalid("string maximum exceeds document text limit"));
-            }
-            Ok(())
-        }
-        OptionType::Enum { values } => {
-            if values.is_empty() || values.len() > 4096 {
-                return Err(invalid("enum must contain 1..=4096 values"));
-            }
-            let mut seen = BTreeSet::new();
-            for value in values {
-                validate_text("enum value", &value.value)?;
-                validate_blocks(&value.description, 0)?;
-                if !seen.insert(value.value.as_str()) {
-                    return Err(invalid(format!("duplicate enum value '{}'", value.value)));
-                }
-            }
-            Ok(())
-        }
-        OptionType::List {
-            element,
-            unique,
-            canonical_order,
-        } => {
-            if *canonical_order && !*unique {
-                return Err(invalid("canonical list ordering requires unique values"));
-            }
-            validate_option_type(element, depth + 1)
-        }
-        OptionType::Set { element }
-        | OptionType::AttrsOf { value: element, .. }
-        | OptionType::Nullable { value: element } => validate_option_type(element, depth + 1),
-        OptionType::Submodule { fields, .. } => {
-            if fields.len() > 4096 {
-                return Err(invalid("submodule has too many fields"));
-            }
-            for (name, field_type) in fields {
-                validate_document_key("submodule field", name)?;
-                validate_option_type(field_type, depth + 1)?;
-            }
-            Ok(())
-        }
-        OptionType::OneOf { alternatives } => {
-            if alternatives.is_empty() || alternatives.len() > 32 {
-                return Err(invalid("one-of must contain 1..=32 alternatives"));
-            }
-            for alternative in alternatives {
-                validate_option_type(alternative, depth + 1)?;
-            }
-            Ok(())
-        }
-        OptionType::Opaque { signature } => validate_nonempty("opaque type signature", signature),
-        _ => Ok(()),
+fn validate_option_type(option_type: &OptionType) -> Result<()> {
+    if option_type.is_within_limits(&aos_ability_model::ABILITY_LIMITS_V1) {
+        Ok(())
+    } else {
+        Err(invalid("option type exceeds the canonical ability limits"))
     }
 }
 
@@ -1189,7 +875,7 @@ fn validate_documented_value(value: &DocumentedValue) -> Result<()> {
     match value {
         DocumentedValue::Literal { value } => {
             let mut items = 0;
-            validate_literal(value, 0, &mut items)
+            validate_literal(value.as_json(), 0, &mut items)
         }
         DocumentedValue::Text { text } => validate_text("documented value text", text),
     }
@@ -1282,22 +968,11 @@ fn validate_inline(span: &InlineSpan) -> Result<()> {
                     }
                     Ok(())
                 }
-                LinkTarget::Section { id } => validate_token("linked section", id),
                 LinkTarget::Source { path } => validate_relative_source_path(path),
                 LinkTarget::Https { url } => validate_https(url),
             }
         }
     }
-}
-
-fn validate_sorted_unique(label: &str, values: &[String]) -> Result<()> {
-    for value in values {
-        validate_text(label, value)?;
-    }
-    if values.windows(2).any(|pair| pair[0] >= pair[1]) {
-        return Err(invalid(format!("{label} must be sorted and unique")));
-    }
-    Ok(())
 }
 
 fn validate_token(label: &str, value: &str) -> Result<()> {
@@ -1312,20 +987,6 @@ fn validate_token(label: &str, value: &str) -> Result<()> {
             .is_some_and(u8::is_ascii_alphanumeric)
     {
         return Err(invalid(format!("{label} '{value}' is not a safe token")));
-    }
-    Ok(())
-}
-
-fn validate_document_key(label: &str, value: &str) -> Result<()> {
-    validate_nonempty(label, value)?;
-    if value.len() > 512
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_graphic() || byte == b' ')
-    {
-        return Err(invalid(format!(
-            "{label} '{value}' is not a bounded printable document key"
-        )));
     }
     Ok(())
 }
@@ -1593,7 +1254,6 @@ fn link_href(target: &LinkTarget) -> String {
                 .collect::<Vec<_>>()
                 .join(".")
         ),
-        LinkTarget::Section { id } => format!("#{id}"),
         LinkTarget::Source { path } => format!("./source/{path}"),
         LinkTarget::Https { url } => url.clone(),
     }
@@ -1608,51 +1268,6 @@ fn escape_html_into(input: &str, output: &mut String) {
             '"' => output.push_str("&quot;"),
             '\'' => output.push_str("&#39;"),
             _ => output.push(character),
-        }
-    }
-}
-
-fn render_blocks_roff(blocks: &[ProseBlock], output: &mut String) {
-    for block in blocks {
-        match block {
-            ProseBlock::Paragraph { spans } => {
-                output.push_str(".PP\n");
-                let mut plain = String::new();
-                render_spans_plain(spans, &mut plain);
-                escape_roff_into(&plain, output);
-                output.push('\n');
-            }
-            ProseBlock::List { ordered, items } => {
-                for (index, item) in items.iter().enumerate() {
-                    output.push_str(".IP \"");
-                    if *ordered {
-                        output.push_str(&format!("{}.", index + 1));
-                    } else {
-                        output.push_str("\\[bu]");
-                    }
-                    output.push_str("\" 2\n");
-                    render_blocks_roff(item, output);
-                }
-            }
-            ProseBlock::Code { text, .. } => {
-                output.push_str(".nf\n");
-                escape_roff_into(text, output);
-                output.push_str("\n.fi\n");
-            }
-            ProseBlock::Note { severity, blocks } => {
-                output.push_str(".SS \"");
-                output.push_str(&format!("{:?}", severity).to_uppercase());
-                output.push_str("\"\n");
-                render_blocks_roff(blocks, output);
-            }
-            ProseBlock::Definitions { entries } => {
-                for entry in entries {
-                    output.push_str(".TP\n.B \"");
-                    escape_roff_into(&entry.term, output);
-                    output.push_str("\"\n");
-                    render_blocks_roff(&entry.body, output);
-                }
-            }
         }
     }
 }
@@ -1703,15 +1318,9 @@ mod tests {
                 semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
                 runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
                 config_module_nar_hash: Some(format!("sha256:{}", "2".repeat(64))),
-                system_module_nar_hash: None,
                 expose_artifact_nar_hash: Some(format!("sha256:{}", "3".repeat(64))),
                 source_nar_hash: format!("sha256:{}", "4".repeat(64)),
             },
-            sections: vec![Section {
-                id: "overview".to_string(),
-                title: "Overview".to_string(),
-                blocks: vec![paragraph("Configure virtual hosts and upstreams.")],
-            }],
             options: vec![OptionDocument {
                 path: vec![
                     PathSegment::Literal {
@@ -1732,10 +1341,12 @@ mod tests {
                 type_signature: "unsigned 16-bit TCP port".to_string(),
                 description: vec![paragraph("Port on which this virtual host listens.")],
                 default: Some(DocumentedValue::Literal {
-                    value: Value::from(80),
+                    value: aos_ability_model::AbilityValue::new(Value::from(80))
+                        .expect("valid default"),
                 }),
                 example: Some(DocumentedValue::Literal {
-                    value: Value::from(8080),
+                    value: aos_ability_model::AbilityValue::new(Value::from(8080))
+                        .expect("valid example"),
                 }),
                 visibility: Visibility::Public,
                 read_only: false,
@@ -1747,14 +1358,11 @@ mod tests {
                     interface_abi: Some(1),
                 },
                 contributable: true,
-                activation: Some(ActivationEffect {
-                    kind: ActivationKind::Reload,
-                    units: vec!["nginx.service".to_string()],
-                }),
                 source: Some(SourceLocator {
-                    path: "pkgs/networking/_nginx-config/module.nix".to_string(),
-                    attribute: None,
-                    line: None,
+                    path: aos_ability_model::RelativePath::new(
+                        "pkgs/networking/_nginx-config/module.nix",
+                    )
+                    .expect("valid source path"),
                 }),
             }],
         };
@@ -1778,7 +1386,10 @@ mod tests {
     fn literal_values_preserve_empty_strings_and_attribute_names() {
         let mut document = fixture();
         document.options[0].default = Some(DocumentedValue::Literal {
-            value: serde_json::json!({"": "", "nested": [""]}),
+            value: aos_ability_model::AbilityValue::new(
+                serde_json::json!({"": "", "nested": [""]}),
+            )
+            .expect("valid literal"),
         });
         document.identity.semantic_schema_sha256 = document
             .computed_semantic_schema_sha256()
@@ -1795,7 +1406,6 @@ mod tests {
         let before = document
             .computed_semantic_schema_sha256()
             .expect("digest before");
-        document.sections[0].blocks = vec![paragraph("Corrected explanation.")];
         document.options[0].description = vec![paragraph("Corrected option prose.")];
         let after = document
             .computed_semantic_schema_sha256()
@@ -1829,7 +1439,7 @@ mod tests {
         let before = fixture();
         let mut prose_only = before.clone();
         prose_only.package.version = "2.0.0".to_string();
-        prose_only.sections[0].title = "New prose".to_string();
+        prose_only.package.summary = "New prose".to_string();
         prose_only.identity.semantic_schema_sha256 = prose_only
             .computed_semantic_schema_sha256()
             .expect("semantic digest");
@@ -1876,7 +1486,7 @@ mod tests {
     fn renderers_escape_untrusted_content() {
         let mut document = fixture();
         document.package.summary = "<script>alert('x')</script>".into();
-        document.sections[0].blocks = vec![paragraph(".danger \\ macro")];
+        document.options[0].description = vec![paragraph(".danger \\ macro")];
         let html = document.render_html();
         assert!(!html.contains("<script>"));
         assert!(html.contains("&lt;script&gt;"));
@@ -1931,6 +1541,7 @@ mod tests {
                 max_length: Some(16),
                 pattern: None,
             }),
+            max_items: Some(8),
             unique: true,
             canonical_order: true,
         };
@@ -1938,18 +1549,19 @@ mod tests {
 
         assert_eq!(canonical_list_json["unique"], true);
         assert_eq!(canonical_list_json["canonical_order"], true);
-        validate_option_type(&canonical_list, 0).expect("valid canonical list");
+        validate_option_type(&canonical_list).expect("valid canonical list");
 
-        let document_record = OptionType::Submodule {
+        let document_record = OptionType::DocumentRecord {
+            key_max_length: 64,
             fields: BTreeMap::from([("@type".to_string(), OptionType::Bool)]),
-            open: false,
+            optional_fields: Vec::new(),
         };
         let document_record_json =
             serde_json::to_value(&document_record).expect("serialize document record");
 
-        assert_eq!(document_record_json["open"], false);
+        assert_eq!(document_record_json["key_max_length"], 64);
         assert!(document_record_json["fields"].get("@type").is_some());
-        validate_option_type(&document_record, 0).expect("valid document record");
+        validate_option_type(&document_record).expect("valid document record");
     }
 
     #[test]
@@ -1971,13 +1583,7 @@ mod tests {
                 .and_then(Value::as_str),
             Some(DOCUMENT_SCHEMA)
         );
-        assert_eq!(
-            schema
-                .pointer("/$defs/OptionType/oneOf")
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(17)
-        );
+        assert!(schema.pointer("/$defs/OptionType").is_some());
         assert_eq!(
             schema
                 .pointer("/additionalProperties")
