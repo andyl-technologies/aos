@@ -36,6 +36,29 @@
       "checks.fleet.ability-native-power-loss"
     ];
   };
+  adapterByName = name: let
+    matches = builtins.filter (adapter: adapter.adapter == name) authorityMatrix.spec.surface.adapters;
+  in
+    if builtins.length matches == 1
+    then builtins.head matches
+    else throw "native power-loss subject adapter '${name}' must resolve exactly once";
+  interfaceForAdapter = adapter: {
+    name = adapter.interface_name;
+    abi = adapter.interface_abi;
+    descriptor = adapter.interface_descriptor;
+  };
+  methodByName = adapter: name: let
+    matches = builtins.filter (method: method.method == name) adapter.methods;
+  in
+    if builtins.length matches == 1
+    then builtins.head matches
+    else throw "native power-loss subject method '${adapter.adapter}:${name}' must resolve exactly once";
+  managedConfigurationAdapter = adapterByName "managed-configuration";
+  serviceManagementAdapter = adapterByName "service-management";
+  managedConfigurationInterface = interfaceForAdapter managedConfigurationAdapter;
+  serviceManagementInterface = interfaceForAdapter serviceManagementAdapter;
+  publishMethod = methodByName managedConfigurationAdapter "publish";
+  reloadMethod = methodByName serviceManagementAdapter "reload";
   authorityMatrixSpec = pkgs.writeTextFile {
     name = "aos-authority-revocation-matrix-spec";
     destination = "/matrix-spec.json";
@@ -108,21 +131,19 @@ in {
       SYSTEMCTL = "${pkgs.systemd}/bin/systemctl"
       SYSTEMD_RUN = "${pkgs.systemd}/bin/systemd-run"
       FLOCK = "${pkgs.util-linux}/bin/flock"
-      PUBLISH_OPERATION = "publish-nginx-secondary-configuration"
       FIXTURE_ENVIRONMENT = {
           "authority": "reference",
           "key": "host",
           "stage": "host",
       }
-      MANAGED_CONFIGURATION_INTERFACE = {
-          "name": "aos.managed-configuration-effects",
-          "abi": 1,
-          "descriptor": "sha256:682ee08aadd9d0198b409146a373bf38d901ba530b74180400c9087616a41dab",
-      }
-      SYSTEMD_SERVICE_INTERFACE = {
-          "name": "aos.service-management",
-          "abi": 1,
-          "descriptor": "sha256:a51e8ccfbde3b8caa89120afdd033edfaa51f087ffc399c3aa3006f34e6c0dff",
+      MANAGED_CONFIGURATION_INTERFACE = ${builtins.toJSON managedConfigurationInterface}
+      SYSTEMD_SERVICE_INTERFACE = ${builtins.toJSON serviceManagementInterface}
+      RELOAD_METHOD = ${builtins.toJSON reloadMethod.method}
+      PUBLISH_SELECTOR = {
+          "interface": MANAGED_CONFIGURATION_INTERFACE["name"],
+          "method": ${builtins.toJSON publishMethod.method},
+          "provider_key": "shared-configuration",
+          "resource_key": "nginx-secondary-configuration",
       }
       REFERENCE_ATTEMPT_TIMEOUT_MILLIS = 300_000
       REFERENCE_TOTAL_RECOVERY_MILLIS = 1_200_000
@@ -159,6 +180,16 @@ in {
           return json.loads(runtime.succeed(
               f"{COREUTILS}/cat {shlex.quote(path)}"
           ))
+
+
+      def operation_matches_selector(operation, selector):
+          resource = operation["target"]["resource"]
+          return (
+              operation["interface"]["name"] == selector["interface"]
+              and operation["method"] == selector["method"]
+              and resource["provider"]["key"] == selector["provider_key"]
+              and resource["key"] == selector["resource_key"]
+          )
 
 
       def retained_path_inventory(generations):
@@ -380,8 +411,7 @@ in {
                   sort_keys=True,
               ): assignment
               for assignment in authority["provider_assignments"]
-              if assignment["interface"]["name"]
-              == "aos.service-management"
+              if assignment["interface"] == SYSTEMD_SERVICE_INTERFACE
           }
 
 
@@ -408,13 +438,13 @@ in {
           write_canonical(TARGET, {
               "action": "disconnect",
               "boundary": boundary,
-              "operation_key": PUBLISH_OPERATION,
               "purpose": purpose,
               "sequence": sequence,
+              **PUBLISH_SELECTOR,
           })
 
 
-      def arm_pause(sequence, operation_key, boundary="effect-intent-durable"):
+      def arm_pause(sequence, selector, boundary="effect-intent-durable"):
           runtime.succeed(
               f"{COREUTILS}/rm -f {shlex.quote(HELD_EVENT)} "
               f"{shlex.quote(RESUMED_EVENT)} {shlex.quote(CONTINUE)}"
@@ -422,9 +452,9 @@ in {
           write_canonical(TARGET, {
               "action": "pause",
               "boundary": boundary,
-              "operation_key": operation_key,
               "purpose": "effect",
               "sequence": sequence,
+              **selector,
           })
 
 
@@ -490,7 +520,7 @@ in {
       def held_boundary(
           sequence,
           expected_boundary="effect-returned",
-          expected_operation=PUBLISH_OPERATION,
+          expected_selector=PUBLISH_SELECTOR,
           expected_purpose="effect",
       ):
           runtime.wait_until_succeeds(
@@ -501,7 +531,9 @@ in {
           assert held["sequence"] == sequence, held
           assert event["boundary"] == expected_boundary, held
           assert event["purpose"] == expected_purpose, held
-          assert event["operation"]["operation"]["key"] == expected_operation, held
+          assert operation_matches_selector(
+              event["operation"]["operation"], expected_selector
+          ), held
           assert event["cancelled"] is False, held
           if OBSERVER_FORWARD_ENABLED:
               assert held["forwarded_acknowledgement"] == {
@@ -523,7 +555,9 @@ in {
           assert event["purpose"] == "reconcile", resumed
           assert event["transaction"] == transaction, resumed
           assert event["operation"]["plan"] == plan, resumed
-          assert event["operation"]["operation"]["key"] == PUBLISH_OPERATION, resumed
+          assert operation_matches_selector(
+              event["operation"]["operation"], PUBLISH_SELECTOR
+          ), resumed
           if OBSERVER_FORWARD_ENABLED:
               assert resumed["forwarded_acknowledgement"] == {
                   "action": "continue",
@@ -551,18 +585,12 @@ in {
               for ordinal, operation in enumerate(
                   bundle["transition"]["effect_document"]["operations"]
               )
-              if operation["key"]["key"] == PUBLISH_OPERATION
+              if operation_matches_selector(operation, PUBLISH_SELECTOR)
           ]
           assert len(matching) == 1, matching
           ordinal, operation = matching[0]
-          assert operation["interface"]["name"] == (
-              "aos.managed-configuration-effects"
-          ), operation
-          assert operation["interface"]["abi"] == 1, operation
-          assert operation["interface"]["descriptor"] == (
-              "sha256:682ee08aadd9d0198b409146a373bf38d901ba530b74180400c9087616a41dab"
-          ), operation
-          assert operation["method"] == "publish", operation
+          assert operation["interface"] == MANAGED_CONFIGURATION_INTERFACE, operation
+          assert operation["method"] == PUBLISH_SELECTOR["method"], operation
           assert operation["deadline"] == {
               "attempt_timeout_millis": REFERENCE_ATTEMPT_TIMEOUT_MILLIS,
               "total_recovery_millis": REFERENCE_TOTAL_RECOVERY_MILLIS,
@@ -608,7 +636,6 @@ in {
           operations = effect["operations"]
           assert bundle["schema"] == "aos.ability.plan-bundle/v1", bundle
           assert transition["schema"] == "aos.ability.transition-snapshot/v1", transition
-          assert publish_ordinal == 5, publish_ordinal
           publish = operations[publish_ordinal]
 
           def author(provider_key):
@@ -636,31 +663,15 @@ in {
 
           publish_author = author("shared-configuration")
           dependent_author = author("nginx-secondary")
-          expected_publish = {
+          publish_identity = {
               "key": {
-                  "scope": [
-                      "shared-configuration",
-                      publish_author["implementation-descriptor"].removeprefix(
-                          "sha256:"
-                      ),
-                  ],
-                  "key": "publish-nginx-secondary-configuration",
+                  "scope": publish["key"]["scope"],
+                  "key": publish["key"]["key"],
               },
-              "ordinal": 5,
+              "ordinal": publish_ordinal,
               "interface": MANAGED_CONFIGURATION_INTERFACE,
-              "method": "publish",
-              "target": {
-                  "interface": MANAGED_CONFIGURATION_INTERFACE,
-                  "resource": {
-                      "provider": {
-                          "environment": FIXTURE_ENVIRONMENT,
-                          "key": "shared-configuration",
-                      },
-                      "key": "nginx-secondary-configuration",
-                  },
-                  "operations": ["publish"],
-                  "lifetime": "instance",
-              },
+              "method": PUBLISH_SELECTOR["method"],
+              "target": publish["target"],
           }
           assert {
               "key": publish["key"],
@@ -668,7 +679,24 @@ in {
               "interface": publish["interface"],
               "method": publish["method"],
               "target": publish["target"],
-          } == expected_publish, publish
+          } == publish_identity, publish
+          assert publish["key"]["scope"] == [
+              PUBLISH_SELECTOR["provider_key"],
+              publish_author["implementation-descriptor"].removeprefix("sha256:"),
+          ], publish
+          assert operation_matches_selector(publish, PUBLISH_SELECTOR), publish
+          assert publish["target"] == {
+              "interface": MANAGED_CONFIGURATION_INTERFACE,
+              "resource": {
+                  "provider": {
+                      "environment": FIXTURE_ENVIRONMENT,
+                      "key": PUBLISH_SELECTOR["provider_key"],
+                  },
+                  "key": PUBLISH_SELECTOR["resource_key"],
+              },
+              "operations": [PUBLISH_SELECTOR["method"]],
+              "lifetime": "instance",
+          }, publish
 
           publish_node = {"kind": "operation", "key": publish["key"]}
           outgoing = [
@@ -687,31 +715,12 @@ in {
           ]
           assert len(matching) == 1, (edge, matching)
           ordinal, operation = matching[0]
-          expected_dependent = {
-              "key": {
-                  "scope": [
-                      "nginx-secondary",
-                      dependent_author["implementation-descriptor"].removeprefix(
-                          "sha256:"
-                      ),
-                  ],
-                  "key": "reload-nginx-secondary-service",
-              },
-              "ordinal": 2,
+          dependent_identity = {
+              "key": operation["key"],
+              "ordinal": ordinal,
               "interface": SYSTEMD_SERVICE_INTERFACE,
-              "method": "reload",
-              "target": {
-                  "interface": SYSTEMD_SERVICE_INTERFACE,
-                  "resource": {
-                      "provider": {
-                          "environment": FIXTURE_ENVIRONMENT,
-                          "key": "shared-service",
-                      },
-                      "key": "nginx-secondary-service",
-                  },
-                  "operations": ["reload"],
-                  "lifetime": "instance",
-              },
+              "method": RELOAD_METHOD,
+              "target": operation["target"],
           }
           actual_dependent = {
               "key": operation["key"],
@@ -720,7 +729,23 @@ in {
               "method": operation["method"],
               "target": operation["target"],
           }
-          assert actual_dependent == expected_dependent, operation
+          assert actual_dependent == dependent_identity, operation
+          assert operation["key"]["scope"] == [
+              "nginx-secondary",
+              dependent_author["implementation-descriptor"].removeprefix("sha256:"),
+          ], operation
+          assert operation["target"] == {
+              "interface": SYSTEMD_SERVICE_INTERFACE,
+              "resource": {
+                  "provider": {
+                      "environment": FIXTURE_ENVIRONMENT,
+                      "key": "shared-service",
+                  },
+                  "key": "nginx-secondary-service",
+              },
+              "operations": [RELOAD_METHOD],
+              "lifetime": "instance",
+          }, operation
           return (
               ordinal,
               actual_dependent,
@@ -735,8 +760,8 @@ in {
                       "publish": publish_author,
                       "dependent": dependent_author,
                   },
-                  "publish-operation": expected_publish,
-                  "dependent-operation": expected_dependent,
+                  "publish-operation": publish_identity,
+                  "dependent-operation": dependent_identity,
               },
           )
 
@@ -764,7 +789,7 @@ in {
           assert killed.strip().isdigit(), killed
 
 
-      def boundary_events(transaction, plan, operation_key=PUBLISH_OPERATION):
+      def boundary_events(transaction, plan, operation_selector=PUBLISH_SELECTOR):
           events = [
               (position, json.loads(line))
               for position, line in enumerate(runtime.succeed(
@@ -775,9 +800,11 @@ in {
 
           def matches_operation(event):
               observed = event["operation"]["operation"]
-              if isinstance(operation_key, dict):
-                  return observed == operation_key
-              return observed["key"] == operation_key
+              if isinstance(operation_selector, dict) and "provider_key" in operation_selector:
+                  return operation_matches_selector(observed, operation_selector)
+              if isinstance(operation_selector, dict):
+                  return observed == operation_selector
+              return observed["key"] == operation_selector
 
           return [
               {**event, "transcript-position": position}
@@ -851,7 +878,9 @@ in {
           assert kinds == expected_kinds, (kinds, diagnostic)
           sequences = [event["sequence"] for event in target_events]
           assert sequences == sorted(set(sequences)), target_events
-          assert operation_identity["method"] == "publish", operation_identity
+          assert operation_identity["method"] == PUBLISH_SELECTOR["method"], (
+              operation_identity
+          )
 
           observed = boundary_events(transaction, plan)
           observed_boundaries = [
@@ -952,7 +981,7 @@ in {
           "-p MainPID --value"
       ).strip()
       assert secondary_service_pid_before not in {"", "0"}
-      arm_pause("foreign-resource", PUBLISH_OPERATION)
+      arm_pause("foreign-resource", PUBLISH_SELECTOR)
       start_switch("ability-boundary-negative.service", host_negative, "negative")
 
       held_negative = held_boundary(
@@ -1835,17 +1864,34 @@ in {
           }
 
 
-      matrix_cell_prefix = (
-          "managed-configuration/aos.managed-configuration-effects/abi-1/"
-          "publish/"
+      matrix_spec = read_json(RUNTIME_AUDIT_MATRIX_SPEC)
+
+      def matrix_cell_id(interface, method, scenario):
+          matches = [
+              cell["id"] for cell in matrix_spec["cells"]
+              if cell["interface"] == interface
+              and cell["method"] == method
+              and cell["id"].endswith("/" + scenario)
+          ]
+          assert len(matches) == 1, (interface, method, scenario, matches)
+          return matches[0]
+
+      foreign_resource_cell = matrix_cell_id(
+          MANAGED_CONFIGURATION_INTERFACE,
+          PUBLISH_SELECTOR["method"],
+          "reject-foreign-resource-mutation",
       )
-      foreign_resource_cell = matrix_cell_prefix + "reject-foreign-resource-mutation"
-      blocked_dependent_cell = (
-          "service-management/aos.service-management/abi-1/"
-          "reload/block-dependent-effect"
+      blocked_dependent_cell = matrix_cell_id(
+          SYSTEMD_SERVICE_INTERFACE,
+          RELOAD_METHOD,
+          "block-dependent-effect",
       )
       NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS = {
-          matrix_cell_prefix + scenario: result["dependency"][3]
+          matrix_cell_id(
+              MANAGED_CONFIGURATION_INTERFACE,
+              PUBLISH_SELECTOR["method"],
+              scenario,
+          ): result["dependency"][3]
           for scenario, result in crash_results.items()
       }
       NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS.update({
@@ -1853,7 +1899,11 @@ in {
           blocked_dependent_cell: negative_dependency[3],
       })
       NATIVE_ADAPTER_MATRIX_COHORT_EVIDENCE = {
-          matrix_cell_prefix + scenario: result["state"][4]
+          matrix_cell_id(
+              MANAGED_CONFIGURATION_INTERFACE,
+              PUBLISH_SELECTOR["method"],
+              scenario,
+          ): result["state"][4]
           for scenario, result in crash_results.items()
       }
       NATIVE_ADAPTER_MATRIX_COHORT_EVIDENCE.update({
@@ -1861,7 +1911,11 @@ in {
           blocked_dependent_cell: negative_state[4],
       })
       NATIVE_ADAPTER_MATRIX_PROBES = {
-          matrix_cell_prefix + scenario: crash_probes(scenario, result)
+          matrix_cell_id(
+              MANAGED_CONFIGURATION_INTERFACE,
+              PUBLISH_SELECTOR["method"],
+              scenario,
+          ): crash_probes(scenario, result)
           for scenario, result in crash_results.items()
       }
       NATIVE_ADAPTER_MATRIX_PROBES.update({
