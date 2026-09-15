@@ -52,7 +52,7 @@ pub fn validate_provider_owned_path(
     roots: &[&Path],
 ) -> Result<(), FilesystemPathError> {
     checked_absolute_path(path, "requested storage")?;
-    if roots.iter().any(|root| path == *root) {
+    if roots.contains(&path) {
         return Err(invalid(
             "requested storage cannot claim a shared mutable root",
         ));
