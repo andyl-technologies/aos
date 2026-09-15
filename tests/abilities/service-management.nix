@@ -161,16 +161,16 @@
   };
   invalidProducerMethods = methods:
     !(builtins.tryEval (builtins.deepSeq (serviceManagement.forProducer {
-          consumerInstance = "consumer";
-          key = "kernel-modules";
-          interface = interfaces.kernelModules;
-          inherit methods;
-          parameters = {
-            modules = ["overlay"];
-            required = true;
-          };
-        })
-        true)).success;
+        consumerInstance = "consumer";
+        key = "kernel-modules";
+        interface = interfaces.kernelModules;
+        inherit methods;
+        parameters = {
+          modules = ["overlay"];
+          required = true;
+        };
+      })
+      true)).success;
   resultOf = request: output: lib.abilities.resultOf request output;
   extendedService =
     minimalService
@@ -483,6 +483,11 @@
     interface = interfaces.credentialDelivery;
     producers = credentialProducers;
   };
+  emptyCredentialBatch = serviceManagement.forProducers {
+    consumerInstance = "consumer";
+    interface = interfaces.credentialDelivery;
+    producers = [];
+  };
   systemCredentialBatch = serviceManagement.forProducers {
     consumerInstance = "system:secrets";
     interface = interfaces.credentialDelivery;
@@ -594,6 +599,25 @@
     };
     value.optional = null;
   };
+  projectedDocumentRecord = serviceManagement.structuredSource {
+    format = "json";
+    valueType = lib.abilities.types.documentRecord {
+      keyMaxLength = 64;
+      fields = {
+        "@type" = lib.abilities.types.runtimeString;
+        enabled = lib.abilities.types.boolean;
+        attempts = lib.abilities.types.integer {
+          minimum = 0;
+          maximum = 16;
+        };
+      };
+    };
+    value = {
+      "@type" = "type.googleapis.com/aos.test.v1.Document";
+      enabled = true;
+      attempts = 3;
+    };
+  };
   invalidStructuredConfiguration =
     structuredConfiguration
     // {
@@ -700,25 +724,31 @@ in
   assert materializedPathSchema == executionPathSchema;
   assert protectedRequest.requests.protected.parameters == protectedConfiguration;
   assert !(builtins.tryEval (builtins.deepSeq (serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "openldap";
-    declaration = protectedConfiguration // {mode = "0640";};
-  }) true)).success;
+      inherit serviceTypes;
+      consumerInstance = "openldap";
+      declaration = protectedConfiguration // {mode = "0640";};
+    })
+    true)).success;
   assert !(builtins.tryEval (builtins.deepSeq (serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "openldap";
-    declaration = protectedConfiguration // {
-      source = protectedConfiguration.source // {
-        fragments = [
-          {
-            kind = "credential-content";
-            resource = lib.abilities.resultOf "first" "retained-resource";
-            path = lib.abilities.resultOf "second" "credential-path";
-          }
-        ];
-      };
-    };
-  }) true)).success;
+      inherit serviceTypes;
+      consumerInstance = "openldap";
+      declaration =
+        protectedConfiguration
+        // {
+          source =
+            protectedConfiguration.source
+            // {
+              fragments = [
+                {
+                  kind = "credential-content";
+                  resource = lib.abilities.resultOf "first" "retained-resource";
+                  path = lib.abilities.resultOf "second" "credential-path";
+                }
+              ];
+            };
+        };
+    })
+    true)).success;
   assert producerOutputsMatchConsumers;
   assert activationOutputsAreReferences;
   assert readinessOutputsAreReferences;
@@ -864,6 +894,8 @@ in
   assert expanded.requests.main-lifecycle.consumer == "consumer";
   assert builtins.attrNames credentialBatch.requirementTemplates == ["credential-delivery"];
   assert builtins.length (builtins.attrNames credentialBatch.requests) == 6;
+  assert builtins.attrNames emptyCredentialBatch.requirementTemplates == ["credential-delivery"];
+  assert emptyCredentialBatch.requests == {};
   assert builtins.attrNames systemCredentialBatch.requirementTemplates == ["system:credential-delivery"];
   assert builtins.length (builtins.attrNames systemCredentialBatch.requests) == 6;
   assert systemCredentialBatch.requests."system:credential-0".consumer == "system:secrets";
@@ -877,6 +909,34 @@ in
     {
       kind = "object";
       path = [];
+    }
+  ];
+  assert builtins.all
+  (expected:
+    builtins.any
+    (node:
+      node.kind
+      == expected.kind
+      && node.path
+      == [
+        {
+          kind = "key";
+          value = expected.key;
+        }
+      ])
+    projectedDocumentRecord.document)
+  [
+    {
+      key = "@type";
+      kind = "string";
+    }
+    {
+      key = "enabled";
+      kind = "boolean";
+    }
+    {
+      key = "attempts";
+      kind = "integer";
     }
   ];
   assert !succeedsAs serviceTypes.structuredConfigurationSource invalidStructuredConfiguration.source;
