@@ -395,6 +395,7 @@ impl TestFixture {
             key_id: KEY_ID.to_string(),
             key: keypair.trust_key_line(REGISTRY),
             retired_before_sequence: None,
+            package_contract_retired_before_sequence: None,
         }];
         let mut fixture = Self {
             _key_dir: key_dir,
