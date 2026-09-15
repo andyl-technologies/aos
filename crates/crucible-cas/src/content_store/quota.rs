@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
 
+use super::admin::PhysicalRepairAuthority;
 use super::directory::{create_dir_all_durable, sync_directory};
 use super::{
     BackendCapabilities, BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary,
@@ -375,6 +376,18 @@ impl BlobInventoryFence for LogicalQuotaInventoryFence<'_> {
         self.state.dirty = false;
         self.store.persist_state(self.state)?;
         Ok(disposition)
+    }
+
+    fn repair_put_if_absent(
+        &mut self,
+        authority: &PhysicalRepairAuthority,
+        id: ContentId,
+        source: &BlobHandle,
+    ) -> Result<PutReceipt, StoreError> {
+        self.store.dirty_state(self.state)?;
+        let receipt = self.child.repair_put_if_absent(authority, id, source)?;
+        self.recover_state_from_fenced_child()?;
+        Ok(self.store.rewrite_receipt(receipt))
     }
 }
 

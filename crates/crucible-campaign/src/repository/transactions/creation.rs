@@ -311,11 +311,10 @@ impl CampaignRepository {
     ///
     /// The source ref is never mutated. The derived ref begins with one audited
     /// derivation transition whose parent is the exact requested source
-    /// snapshot. A compatible supplied policy becomes active atomically with
-    /// ref creation. Strict and streaming policies may migrate between those
-    /// modes; statistical policies preserve their exact active revision.
-    /// Omitting a policy preserves the source policy. Exact retries are resolved
-    /// from the derived history even after later mutations.
+    /// snapshot. A supplied policy with the source's exact mode becomes active
+    /// atomically with ref creation. Statistical policies preserve their exact
+    /// active revision. Omitting a policy preserves the source policy. Exact
+    /// retries are resolved from the derived history even after later mutations.
     ///
     /// # Errors
     ///
@@ -351,7 +350,7 @@ impl CampaignRepository {
             Some(next) => {
                 let next_id = next.id()?;
                 if next.scenario() != lineage.scenario()
-                    || !derivation_modes_are_compatible(prior_mode, next.mode())
+                    || prior_mode != next.mode()
                     || (prior_mode == CampaignMode::Statistical
                         && next_id != source.snapshot.active_policy())
                 {
@@ -398,15 +397,6 @@ impl CampaignRepository {
         let fact = CampaignFact::CampaignDerived(derivation);
         let transition_content = self.put_fact(&fact)?;
         let mut roots = source.snapshot.roots();
-        let active_mode = policy.map_or(prior_mode, CampaignPolicy::mode);
-        if is_streaming_to_strict_migration(prior_mode, active_mode) {
-            let anchor =
-                self.strict_migration_sequence_anchor(roots.accounting, transition_content)?;
-            roots.accounting = self
-                .merkle
-                .insert(roots.accounting, observation_sequence_key(), anchor)?
-                .content_id();
-        }
         roots.coordination = self.coordination_with_parent_result(source_content, &source)?;
         let next = self.budgeted_successor(
             source_snapshot,

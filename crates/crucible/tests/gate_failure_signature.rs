@@ -50,13 +50,12 @@ fn failure_triage_replay_evidence_round_trips_and_enforces_bounds() -> Result<()
         vec![b"retained transport frame".to_vec()],
     )?;
     let bytes = evidence.to_compact_binary()?;
-    let historical_v1 = include_bytes!("fixtures/failure-triage-replay-evidence-v1.bin");
-    assert_eq!(bytes.as_slice(), historical_v1);
-    let decoded = FailureTriageReplayEvidence::from_compact_binary(finding.clone(), historical_v1)?;
+    let decoded = FailureTriageReplayEvidence::from_compact_binary(finding.clone(), &bytes)?;
 
     assert_eq!(decoded, evidence);
-    assert_eq!(decoded.schema_version(), 1);
-    assert!(FailureTriageReplayEvidence::supports_schema(1));
+    assert_eq!(decoded.schema_version(), 2);
+    assert!(FailureTriageReplayEvidence::supports_schema(2));
+    assert!(!FailureTriageReplayEvidence::supports_schema(1));
     assert_eq!(decoded.to_compact_binary()?, bytes);
     assert_eq!(decoded.finding(), &finding);
     assert_eq!(decoded.failure(), &failure);
@@ -67,6 +66,18 @@ fn failure_triage_replay_evidence_round_trips_and_enforces_bounds() -> Result<()
         [b"retained transport frame".to_vec()]
     );
     assert_eq!(decoded.signature(), evidence.signature());
+
+    let mut wrong_schema = bytes.clone();
+    let schema_index = wrong_schema
+        .iter()
+        .position(|byte| *byte == 0)
+        .ok_or("evidence magic has no schema separator")?
+        + 1;
+    wrong_schema[schema_index] = 1;
+    assert!(
+        FailureTriageReplayEvidence::from_compact_binary(finding.clone(), &wrong_schema).is_err(),
+        "a noncurrent replay-evidence schema must be rejected"
+    );
 
     let wrong_finding = finding_artifact(
         &scenario,

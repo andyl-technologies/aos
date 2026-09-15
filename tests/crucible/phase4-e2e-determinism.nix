@@ -4,14 +4,21 @@
   attrPath ? "checks.crucible.phase4.gates.e2eDeterminism",
   taskIds ? ["T-ASRT-16" "T-DET-26" "T-HARN-23"],
   dependencies ? [],
+  campaignComposition ? null,
+  testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  fleetRunner = import ./_fleet-runner.nix {inherit pkgs lib;};
+  fleetRunner = import ./_fleet-runner.nix {inherit pkgs lib testing;};
   nginxCurlGuest = import ./_nginx-curl-http-200-guest.nix {inherit pkgs;};
-  representativeScenario = ./fixtures/e2e-determinism.scenario.toml;
-  nativeRunner = ./_e2e-determinism-native-runner.sh;
+  representativeScenarioPackage = pkgs.writeTextFile {
+    name = "crucible-e2e-determinism-scenario";
+    text = builtins.readFile ./fixtures/e2e-determinism.scenario.toml;
+    destination = "/share/crucible/e2e-determinism.scenario.toml";
+  };
+  representativeScenario = "${representativeScenarioPackage}/share/crucible/e2e-determinism.scenario.toml";
+  nativeRunner = fleetRunner.e2eNativeRunner;
 
   harnessLib = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
-  nativeRunnerSource = builtins.readFile nativeRunner;
+  nativeRunnerSource = builtins.readFile ./_e2e-determinism-native-runner.sh;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   assertionsDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
@@ -107,7 +114,10 @@ in
       name = "crucible-e2e-determinism";
       checkPath = attrPath;
       gateResults = dependencies;
-      extraClosure = [nginxCurlGuest];
+      extraClosure = [nginxCurlGuest representativeScenarioPackage];
+      inherit campaignComposition;
+      gateName = "gate:e2e-determinism";
+      authoritativeAttr = attrPath;
       runPhaseScript = ''
         set -eu
 
@@ -132,6 +142,7 @@ in
         cp -R "$native_evidence"/. "$out/evidence"/
       '';
       resultLines = [
+        "gate=gate:e2e-determinism"
         "component=gate:e2e-determinism/native-qemu-acceptance"
         "canonical_gate=gate:e2e-determinism"
         "canonical_gate_status=satisfied"

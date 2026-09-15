@@ -69,7 +69,8 @@ use crate::{
     LocalExecutorWorkerPool, MAX_PREPARED_SEMANTIC_RESULT_BYTES,
     ManagedQemuHotForkAuthenticatedAdmissionError, ManagedQemuHotForkAuthenticatedAdmissionFailure,
     ManagedQemuHotForkSourceWorldAdmissionError, ManagedQemuHotForkSourceWorldPool,
-    ManagedQemuHotForkSourceWorldPoolConstructionError, ProductionBakedGenesisCaptureError,
+    ManagedQemuHotForkSourceWorldPoolConstructionError, PreparedResultJournalError,
+    PreparedResultJournalNamespace, ProductionBakedGenesisCaptureError,
     ProductionBakedGenesisCheckpoint, ProductionBakedGenesisReplayCatalogError,
     ProductionBakedGenesisReplayCatalogFactory, ProductionCheckpointPromotionWorker,
     ProductionQemuHotForkSourceCaptureError, ProductionQemuHotForkSourceFactory,
@@ -127,6 +128,22 @@ use status::{
 /// acquires the shared Linux host-resource owner. This bound therefore limits
 /// both hostile immutable-store work and retained decoded scenario state.
 pub const MAX_PACKAGED_SCENARIO_CATALOG_BYTES: usize = 128 * 1024 * 1024;
+
+pub(crate) fn packaged_finding_replay_runner<F>(
+    lifecycle: ProductionVmLifecycleConfig,
+    lifecycles: F,
+) -> QemuFreshExecutionRunner<QemuObservedFreshAttemptLifecycleFactory<F>, QemuFreshModeledDriver> {
+    let (lifecycles, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(lifecycles);
+    let capture = crate::automatic_finding_runner::QemuFindingReplayCaptureProducer::new(
+        lifecycle,
+        evidence,
+        crucible_campaign::MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES,
+    );
+
+    QemuFreshExecutionRunner::new(lifecycles, QemuFreshModeledDriver)
+        .with_finding_replay_capture(capture)
+}
 
 /// Explicit process-wide policy for packaged retained source worlds.
 ///
@@ -1152,8 +1169,11 @@ where
     reconcile_packaged_native_catalogs(config.lifecycle.run_state_root())?;
     let prepared_result_root =
         prepare_packaged_prepared_result_namespace(config.lifecycle.run_state_root())?;
-    let prepared_results =
-        PreparedResultJournalConfig::new(prepared_result_root, MAX_PREPARED_SEMANTIC_RESULT_BYTES);
+    let prepared_result_namespace = PreparedResultJournalNamespace::open(prepared_result_root)?;
+    let prepared_results = PreparedResultJournalConfig::new(
+        prepared_result_namespace,
+        MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+    );
     reconcile_stable_prepared_result_journals(
         &ledger,
         &admission,
@@ -1288,11 +1308,11 @@ where
                 ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
             );
             let finding_replay_lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
-                finding_replay_lifecycle,
+                finding_replay_lifecycle.clone(),
                 finding_replay_resources,
             );
             let finding_replay =
-                QemuFreshExecutionRunner::new(finding_replay_lifecycles, QemuFreshModeledDriver);
+                packaged_finding_replay_runner(finding_replay_lifecycle, finding_replay_lifecycles);
 
             let lifecycle = config
                 .lifecycle
@@ -1768,6 +1788,9 @@ pub enum PackagedQemuExecutorError {
     /// Durable assignment-ledger acquisition failed.
     #[error(transparent)]
     Ledger(#[from] AssignmentLedgerError),
+    /// Durable prepared-result journal namespace acquisition failed.
+    #[error(transparent)]
+    PreparedResults(#[from] PreparedResultJournalError),
     /// Pending finding incorporation could not be resumed safely.
     #[error("reconcile pending finding candidates after packaged executor restart")]
     FindingRestart(#[source] crate::FindingCandidateRestartError<AssignmentLedgerError>),

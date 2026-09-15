@@ -163,7 +163,7 @@ impl CampaignGcPreparedPlan {
         self.unreachable_candidates
     }
 
-    /// Returns reachable read-through cache placements authorized by v2 policy.
+    /// Returns reachable cache placements authorized by current policy.
     #[must_use]
     pub const fn reachable_cache_candidates(&self) -> u64 {
         self.reachable_cache_candidates
@@ -190,8 +190,8 @@ impl CampaignGcPreparedPlan {
 /// exact pin must resolve to a journal selection bound to its latest pin fact.
 /// The repository then authenticates the union of those logical closures.
 /// Finally each physical leaf is inventoried under its own fence. Unreachable
-/// placements enter every candidate manifest. A reachable read-through cache
-/// placement enters a v2 manifest only when a physically independent required
+/// placements enter every candidate manifest. A reachable cache
+/// placement enters the manifest only when a physically independent required
 /// copy is authenticated to EOF between matching inventory generations.
 /// `store_graph` supplies both the exact canonical graph identity and its
 /// construction-time physical capabilities, so those bases cannot be mixed.
@@ -447,7 +447,26 @@ where
     let reachable_objects = u64::try_from(reachable.len())
         .map_err(|_| CampaignGcPlanningError::Manifest(CampaignGcManifestError::EntryLimit))?;
 
-    let planned = plan_physical(physical, &reachable)?;
+    let mut planned = plan_physical(physical, &reachable)?;
+    planned.candidates.retain(|candidate| {
+        !matches!(
+            candidate.reason(),
+            CampaignGcCandidateReason::ReachableCache { .. }
+        ) || !roots.pending_write_back.contains(&candidate.id())
+    });
+    planned.reachable_cache_candidates = u64::try_from(
+        planned
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                matches!(
+                    candidate.reason(),
+                    CampaignGcCandidateReason::ReachableCache { .. }
+                )
+            })
+            .count(),
+    )
+    .map_err(|_| CampaignGcPlanningError::Manifest(CampaignGcManifestError::EntryLimit))?;
     let candidate_manifest = CampaignGcCandidateManifest::new(planned.candidates)?;
     let plan = CampaignGcPlan::new(
         store_graph,
@@ -655,7 +674,7 @@ where
             .get(&(cache.identity, cache.record.id().kind()))
             .copied()
             .unwrap_or(StoreGraphPhysicalRetention::Required);
-        if cache_role != StoreGraphPhysicalRetention::ReadThroughCache
+        if cache_role != StoreGraphPhysicalRetention::Cache
             || aliases.get(&cache.identity).copied() != Some(1)
         {
             continue;
@@ -678,7 +697,7 @@ where
                 CampaignGcManifestError::EntryLimit,
             ));
         }
-        candidates.push(CampaignGcCandidate::new_reachable_read_through_cache(
+        candidates.push(CampaignGcCandidate::new_reachable_cache(
             physical[cache.target].backend(),
             cache.record.id(),
             cache.record.logical_length(),
@@ -968,7 +987,7 @@ where
             // may be an internal Merkle node whose ancestor path, and thus
             // root-relative depth, is intentionally absent here.
             roots
-                .insert_direct(root.id())
+                .insert_pending_write_back(root.id())
                 .map_err(|()| StoreError::Quota)
         })
         .map_err(CampaignGcPlanningError::WriteBack)?;

@@ -30,15 +30,14 @@ pub use closed::*;
 mod search;
 pub use search::*;
 
-const PLANNER_REQUEST_SCHEMA_VERSION: u32 = 2;
-const SMC_PLANNER_REQUEST_SCHEMA_VERSION: u32 = 3;
+const PLANNER_REQUEST_SCHEMA_VERSION: u32 = 3;
 const PLANNER_RESPONSE_SCHEMA_VERSION: u32 = 1;
 /// Maximum canonical request or response size at the planner wire boundary.
 pub const MAX_PLANNER_COMPONENT_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 /// Maximum canonical request body retained by the initial coordinator store.
 ///
 /// This narrower admission bound leaves deterministic room for content-envelope
-/// framing without changing the version-1 component wire contract.
+/// framing within the current component wire contract.
 pub const MAX_RETAINED_PLANNER_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PLANNING_BUNDLE_OBJECTS: usize = 65_536;
 const RETAINED_PLANNER_REQUEST_FIXED_CHILDREN: usize = 7;
@@ -677,10 +676,6 @@ impl CampaignPlanningBundle {
                 reason: "beam and PUCT capabilities are mutually exclusive",
             });
         }
-        let budget_aware = request
-            .engine
-            .capabilities()
-            .contains(CANONICAL_FRONTIER_BUDGET_CAPABILITY);
         let mut continuations = BTreeMap::new();
         let mut offers = BTreeMap::new();
         let mut guidance = BTreeMap::new();
@@ -767,11 +762,6 @@ impl CampaignPlanningBundle {
             .filter_map(|(position, projection)| {
                 (projection.state() == ContinuationState::Ready).then_some(*position)
             })
-            .take(if puct || budget_aware || search_order {
-                usize::MAX
-            } else {
-                1
-            })
             .collect::<BTreeSet<_>>();
         if offers.keys().copied().collect::<BTreeSet<_>>() != expected_offers {
             return Err(CampaignCodecError::InvalidValue {
@@ -785,9 +775,7 @@ impl CampaignPlanningBundle {
                 reason: "planner candidate guidance disagrees with offered continuations",
             });
         }
-        if (budget_aware && budgets.keys().copied().collect::<BTreeSet<_>>() != expected_offers)
-            || (!budget_aware && !budgets.is_empty())
-        {
+        if budgets.keys().copied().collect::<BTreeSet<_>>() != expected_offers {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "planner candidate budgets disagree with offered continuations",
             });
@@ -1343,7 +1331,6 @@ impl Canonical for CampaignPlanningBundle {
 /// Complete bounded input to one pure planner transition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlannerRequest {
-    schema_version: u32,
     expected_snapshot: CampaignSnapshotId,
     invocation: PlannerInvocation,
     engine: PlannerEngine,
@@ -1376,8 +1363,7 @@ impl PlannerRequest {
         input_view: CampaignPlanningView,
         input_bundle: CampaignPlanningBundle,
     ) -> Result<Self, CampaignCodecError> {
-        Self::new_for_schema(
-            PLANNER_REQUEST_SCHEMA_VERSION,
+        Self::new_validated(
             expected_snapshot,
             invocation,
             engine,
@@ -1404,8 +1390,7 @@ impl PlannerRequest {
         statistical_request_basis: Option<StatisticalRequestBasis>,
         input_bundle: CampaignPlanningBundle,
     ) -> Result<Self, CampaignCodecError> {
-        Self::new_for_schema(
-            PLANNER_REQUEST_SCHEMA_VERSION,
+        Self::new_validated(
             expected_snapshot,
             invocation,
             engine,
@@ -1432,8 +1417,7 @@ impl PlannerRequest {
         smc_request_basis: Option<SmcRequestBasis>,
         input_bundle: CampaignPlanningBundle,
     ) -> Result<Self, CampaignCodecError> {
-        Self::new_for_schema(
-            SMC_PLANNER_REQUEST_SCHEMA_VERSION,
+        Self::new_validated(
             expected_snapshot,
             invocation,
             engine,
@@ -1447,10 +1431,9 @@ impl PlannerRequest {
         )
     }
 
-    // crucible-lint: allow rust-allow -- one schema-gated constructor validates every versioned planner-request field.
+    // crucible-lint: allow rust-allow -- one constructor validates every planner-request field.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_for_schema(
-        schema_version: u32,
+    fn new_validated(
         expected_snapshot: CampaignSnapshotId,
         invocation: PlannerInvocation,
         engine: PlannerEngine,
@@ -1462,11 +1445,7 @@ impl PlannerRequest {
         smc_request_basis: Option<SmcRequestBasis>,
         input_bundle: CampaignPlanningBundle,
     ) -> Result<Self, CampaignCodecError> {
-        if !matches!(
-            schema_version,
-            PLANNER_REQUEST_SCHEMA_VERSION | SMC_PLANNER_REQUEST_SCHEMA_VERSION
-        ) || (schema_version < SMC_PLANNER_REQUEST_SCHEMA_VERSION && smc_request_basis.is_some())
-            || (statistical_request_basis.is_some() && smc_request_basis.is_some())
+        if (statistical_request_basis.is_some() && smc_request_basis.is_some())
             || (smc_request_basis.is_some() && engine.implementation_version() < 8)
         {
             return Err(CampaignCodecError::InvalidValue {
@@ -1486,7 +1465,6 @@ impl PlannerRequest {
             });
         }
         let request = Self {
-            schema_version,
             expected_snapshot,
             invocation,
             engine,
@@ -1738,7 +1716,7 @@ impl PlannerRequest {
 
 impl Canonical for PlannerRequest {
     fn encode(&self, encoder: &mut Encoder) {
-        self.schema_version.encode(encoder);
+        PLANNER_REQUEST_SCHEMA_VERSION.encode(encoder);
         self.expected_snapshot.encode(encoder);
         self.invocation.encode(encoder);
         self.engine.encode(encoder);
@@ -1746,27 +1724,18 @@ impl Canonical for PlannerRequest {
         self.policy.encode(encoder);
         self.planner_state.encode(encoder);
         self.input_view.encode(encoder);
-        if self.schema_version >= PLANNER_REQUEST_SCHEMA_VERSION {
-            self.statistical_request_basis.encode(encoder);
-        }
-        if self.schema_version >= SMC_PLANNER_REQUEST_SCHEMA_VERSION {
-            self.smc_request_basis.encode(encoder);
-        }
+        self.statistical_request_basis.encode(encoder);
+        self.smc_request_basis.encode(encoder);
         self.input_bundle.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        let schema_version = u32::decode(decoder)?;
-        if !matches!(
-            schema_version,
-            PLANNER_REQUEST_SCHEMA_VERSION | SMC_PLANNER_REQUEST_SCHEMA_VERSION
-        ) {
+        if u32::decode(decoder)? != PLANNER_REQUEST_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported planner request schema version",
             });
         }
-        Self::new_for_schema(
-            schema_version,
+        Self::new_validated(
             CampaignSnapshotId::decode(decoder)?,
             PlannerInvocation::decode(decoder)?,
             PlannerEngine::decode(decoder)?,
@@ -1774,16 +1743,8 @@ impl Canonical for PlannerRequest {
             CampaignPolicy::decode(decoder)?,
             PlannerState::decode(decoder)?,
             CampaignPlanningView::decode(decoder)?,
-            if schema_version >= PLANNER_REQUEST_SCHEMA_VERSION {
-                Option::decode(decoder)?
-            } else {
-                None
-            },
-            if schema_version >= SMC_PLANNER_REQUEST_SCHEMA_VERSION {
-                Option::decode(decoder)?
-            } else {
-                None
-            },
+            Option::decode(decoder)?,
+            Option::decode(decoder)?,
             CampaignPlanningBundle::decode(decoder)?,
         )
     }
@@ -2012,7 +1973,7 @@ mod tests {
         );
         assert_eq!(
             encode_hex(blake3::hash(&bytes).as_bytes()),
-            "21d5a7d3743d8075b6c475ba6a6becc96cb744b6386f7d1fb96254d2c095d0d3"
+            "7e4fe96a82d9573e035d6aaf103334fa277183884a03e41c70c13676c0b87b8e"
         );
         let retained = ObjectEnvelope::for_record(
             crate::CampaignRecordKind::RetainedPlannerRequest,
@@ -2053,7 +2014,7 @@ mod tests {
         );
         assert_eq!(
             encode_hex(blake3::hash(&response_bytes).as_bytes()),
-            "27e8d95161ed687bf77a01d4ffc317ce5396fe10d06f6e63443f3891c0a5c99c"
+            "de4992d317ab869d23b90497de4256e8d970b68e7f0c4dc40962d1a7ad6e0881"
         );
 
         let mut wrong_version = bytes.clone();

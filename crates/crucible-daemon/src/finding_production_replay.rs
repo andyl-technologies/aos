@@ -36,6 +36,7 @@ use thiserror::Error;
 
 use crate::qemu_campaign_lifecycle::{
     GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
+    QemuAttemptExecutionEvidenceSnapshot,
 };
 
 mod capture;
@@ -250,6 +251,84 @@ pub struct FindingProductionReplayExecutionSide {
 }
 
 impl FindingProductionReplayExecutionSide {
+    /// Copies a complete process-local snapshot with its retained event prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FindingProductionReplayCaptureError`] when the combined log
+    /// is incomplete, invalid, or exceeds `limits`.
+    pub fn from_snapshot(
+        outcome: FindingProductionReplayTerminalOutcome,
+        event_log_prefix: &[SchedulerEventLogEntry],
+        snapshot: &QemuAttemptExecutionEvidenceSnapshot,
+        limits: FindingProductionReplayCaptureLimits,
+    ) -> Result<FindingProductionReplayCaptureOutcome<Self>, FindingProductionReplayCaptureError>
+    {
+        if event_log_prefix.is_empty()
+            && snapshot
+                .event_log_entries()
+                .first()
+                .is_some_and(|entry| entry.sequence() != 0)
+        {
+            return Ok(FindingProductionReplayCaptureOutcome::Incomplete(
+                FindingProductionReplayIncomplete::MissingEventLogPrefix,
+            ));
+        }
+        validate_event_log_parts(
+            event_log_prefix,
+            snapshot.event_log_entries(),
+            snapshot.frontier(),
+        )?;
+        let Some(terminal_fingerprints) = snapshot.terminal_fingerprints() else {
+            return Ok(FindingProductionReplayCaptureOutcome::Incomplete(
+                FindingProductionReplayIncomplete::MissingTerminalFingerprints,
+            ));
+        };
+        let event_count = event_log_prefix
+            .len()
+            .checked_add(snapshot.event_log_entries().len())
+            .ok_or(FindingProductionReplayCaptureError::LimitExceeded {
+                limit: "finding-production-replay-event-count",
+            })?;
+        if event_count > limits.max_events_per_side {
+            return Err(FindingProductionReplayCaptureError::LimitExceeded {
+                limit: "finding-production-replay-event-count",
+            });
+        }
+        let event_bytes = event_log_prefix
+            .iter()
+            .chain(snapshot.event_log_entries())
+            .try_fold(0_usize, |total, entry| {
+                total.checked_add(entry.canonical_material_len()).ok_or(
+                    FindingProductionReplayCaptureError::LimitExceeded {
+                        limit: "finding-production-replay-event-bytes",
+                    },
+                )
+            })?;
+        if event_bytes > limits.max_event_bytes_per_side {
+            return Err(FindingProductionReplayCaptureError::LimitExceeded {
+                limit: "finding-production-replay-event-bytes",
+            });
+        }
+        let mut event_log = Vec::new();
+        event_log.try_reserve_exact(event_count).map_err(|_| {
+            FindingProductionReplayCaptureError::LimitExceeded {
+                limit: "finding-production-replay-event-count",
+            }
+        })?;
+        event_log.extend_from_slice(event_log_prefix);
+        event_log.extend_from_slice(snapshot.event_log_entries());
+
+        Ok(FindingProductionReplayCaptureOutcome::Complete(Self {
+            outcome,
+            completed_quanta: snapshot.quanta(),
+            frontier: snapshot.frontier(),
+            event_log,
+            terminal_fingerprints: terminal_fingerprints.to_vec(),
+            resolved_effect_trace: snapshot.resolved_effect_trace().map(ToOwned::to_owned),
+        }))
+    }
+
     /// Returns the observed terminal result.
     #[must_use]
     pub const fn outcome(&self) -> FindingProductionReplayTerminalOutcome {
@@ -455,7 +534,7 @@ impl FindingProductionReplayCaptureMaterial {
     ///
     /// Returns [`FindingProductionReplayCaptureError`] when the side set is
     /// inconsistent with `finding_kind`, the shared context, or `limits`.
-    fn from_shared_context(
+    pub(crate) fn from_shared_context(
         finding: &FindingReproductionArtifact,
         finding_kind: FindingKind,
         shared_context: Arc<FindingProductionReplaySharedContext>,
@@ -723,6 +802,23 @@ impl FindingProductionReplayCapture {
             return Err(FindingProductionReplayCaptureError::Encode(error));
         }
         Ok(writer.finish())
+    }
+
+    /// Reauthenticates the durable campaign identities bound into this capture.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FindingProductionReplayCaptureError::CaptureBinding`] when
+    /// either durable identity differs from the capture.
+    pub fn validate_binding(
+        &self,
+        reproduction: ReproductionArtifactId,
+        observed_signature: &FindingSignature,
+    ) -> Result<(), FindingProductionReplayCaptureError> {
+        if self.reproduction != reproduction || self.observed_signature != *observed_signature {
+            return Err(FindingProductionReplayCaptureError::CaptureBinding);
+        }
+        Ok(())
     }
 
     /// Returns the embedded model reproduction artifact bytes.

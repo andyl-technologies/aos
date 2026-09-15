@@ -42,7 +42,7 @@ use crucible_qemu::{
 use tempfile::tempdir;
 
 use crate::{
-    AllowAllAttemptAdmission, AttachCampaignRuntimeRequest, CampaignRuntimeAttachmentDisposition,
+    AttachCampaignRuntimeRequest, CampaignRuntimeAttachmentDisposition,
     CanonicalPlannerProcessConfig, DirectoryHotCheckpointFallbackRetentionStore, ExecutorCapacity,
     ExecutorLoopbackEndpointConfig, ExecutorLoopbackServerConfig,
     HotCheckpointFallbackRetentionStore, HotCheckpointPoolKey, LocalExecutorCapabilityService,
@@ -55,6 +55,7 @@ use crate::{
 };
 
 use super::*;
+use crate::executor_supervisor::AllowAllAttemptAdmission;
 
 #[derive(Debug)]
 struct UnusedPackagedHostFactory;

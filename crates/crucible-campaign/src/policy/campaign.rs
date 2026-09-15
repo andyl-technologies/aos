@@ -182,7 +182,6 @@ impl Canonical for RetentionPolicy {
 /// Complete immutable campaign policy revision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignPolicy {
-    schema_version: u32,
     scenario: ScenarioDefId,
     campaign_seed: CampaignSeed,
     mode: CampaignMode,
@@ -293,7 +292,7 @@ impl Canonical for InterventionLearningPolicy {
 }
 
 impl CampaignPolicy {
-    /// Builds a validated version-one policy with canonical map/set ordering.
+    /// Builds a validated current policy with canonical map/set ordering.
     ///
     /// Operator- and debugger-initiated attempts are retained but excluded
     /// from adaptive guidance unless [`Self::with_intervention_learning_policy`]
@@ -346,8 +345,7 @@ impl CampaignPolicy {
         identity: CampaignPolicyIdentity,
         rules: CampaignPolicyRules,
     ) -> Result<Self, CampaignCodecError> {
-        Self::new_for_schema(
-            BASE_CAMPAIGN_POLICY_SCHEMA_VERSION,
+        Self::new_current(
             identity,
             rules,
             InterventionLearningPolicy::Exclude,
@@ -356,8 +354,7 @@ impl CampaignPolicy {
         )
     }
 
-    fn new_for_schema(
-        schema_version: u32,
+    fn new_current(
         identity: CampaignPolicyIdentity,
         rules: CampaignPolicyRules,
         intervention_learning: InterventionLearningPolicy,
@@ -381,22 +378,14 @@ impl CampaignPolicy {
         } = rules;
 
         explorer.validate()?;
-        let statistical_shape_is_valid = match schema_version {
-            BASE_CAMPAIGN_POLICY_SCHEMA_VERSION | INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION => {
-                statistical_sampling.is_none() && sequential_monte_carlo.is_none()
-            }
-            FINITE_STATISTICAL_CAMPAIGN_POLICY_SCHEMA_VERSION => {
-                statistical_sampling.is_some()
-                    && sequential_monte_carlo.is_none()
-                    && mode == CampaignMode::Statistical
+        let statistical_shape_is_valid = match (&statistical_sampling, &sequential_monte_carlo) {
+            (None, None) => true,
+            (Some(_), None) => {
+                mode == CampaignMode::Statistical
                     && matches!(explorer, ExplorerPolicy::Exhaustive { .. })
             }
-            CAMPAIGN_POLICY_SCHEMA_VERSION => {
-                statistical_sampling.is_some()
-                    && sequential_monte_carlo.is_some()
-                    && mode == CampaignMode::Statistical
-            }
-            _ => false,
+            (Some(_), Some(_)) => mode == CampaignMode::Statistical,
+            (None, Some(_)) => false,
         };
         if !statistical_shape_is_valid {
             return Err(CampaignCodecError::InvalidValue {
@@ -462,7 +451,6 @@ impl CampaignPolicy {
             validate_identifier(stop, "stop-condition identifier is invalid")?;
         }
         let policy = Self {
-            schema_version,
             scenario,
             campaign_seed,
             mode,
@@ -486,22 +474,19 @@ impl CampaignPolicy {
         Ok(policy)
     }
 
-    /// Returns a version-two policy with an explicit intervention-learning rule.
+    /// Returns a current policy with an explicit intervention-learning rule.
     ///
     /// This setting affects adaptive guidance only. It does not make
     /// intervention observations eligible for statistical estimators.
     ///
     /// # Errors
     ///
-    /// Returns [`CampaignCodecError::LimitExceeded`] if the version-two
-    /// representation exceeds the campaign-policy size bound.
+    /// Returns [`CampaignCodecError::LimitExceeded`] if the representation
+    /// exceeds the campaign-policy size bound.
     pub fn with_intervention_learning_policy(
         mut self,
         intervention_learning: InterventionLearningPolicy,
     ) -> Result<Self, CampaignCodecError> {
-        self.schema_version = self
-            .schema_version
-            .max(INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION);
         self.intervention_learning = intervention_learning;
         codec::ensure_encoded_size(
             &self,
@@ -511,7 +496,7 @@ impl CampaignPolicy {
         Ok(self)
     }
 
-    /// Returns a version-three statistical policy with one pinned finite design.
+    /// Returns a current statistical policy with one pinned finite design.
     ///
     /// The initial implementation admits only the static exhaustive engine;
     /// adaptive Beam and PUCT designs require separately declared resampling
@@ -533,7 +518,6 @@ impl CampaignPolicy {
                 reason: "statistical sampling design requires static exhaustive policy",
             });
         }
-        self.schema_version = FINITE_STATISTICAL_CAMPAIGN_POLICY_SCHEMA_VERSION;
         self.statistical_sampling = Some(design);
         codec::ensure_encoded_size(
             &self,
@@ -543,7 +527,7 @@ impl CampaignPolicy {
         Ok(self)
     }
 
-    /// Returns a version-four policy with a bounded SMC extension.
+    /// Returns a current policy with a bounded SMC extension.
     ///
     /// The finite design supplies the complete stage-zero particle flight. The
     /// SMC design predeclares all later selector/model contexts and deterministic
@@ -561,11 +545,9 @@ impl CampaignPolicy {
         initial_sampling: StatisticalSamplingDesign,
         sequential_monte_carlo: SequentialMonteCarloDesign,
     ) -> Result<Self, CampaignCodecError> {
-        self.schema_version = CAMPAIGN_POLICY_SCHEMA_VERSION;
         self.statistical_sampling = Some(initial_sampling);
         self.sequential_monte_carlo = Some(sequential_monte_carlo);
-        Self::new_for_schema(
-            self.schema_version,
+        Self::new_current(
             Self::identity(self.scenario, self.campaign_seed, self.mode, self.explorer),
             Self::rules(
                 self.choice_policies,
@@ -677,7 +659,7 @@ impl CampaignPolicy {
     }
 
     pub(crate) const fn schema_version(&self) -> u32 {
-        self.schema_version
+        CAMPAIGN_POLICY_SCHEMA_VERSION
     }
 
     pub(crate) fn content_children(&self) -> Vec<(String, ContentId)> {
@@ -740,7 +722,7 @@ impl CampaignPolicy {
 
 impl Canonical for CampaignPolicy {
     fn encode(&self, encoder: &mut Encoder) {
-        self.schema_version.encode(encoder);
+        CAMPAIGN_POLICY_SCHEMA_VERSION.encode(encoder);
         self.scenario.encode(encoder);
         self.campaign_seed.encode(encoder);
         self.mode.encode(encoder);
@@ -752,26 +734,14 @@ impl Canonical for CampaignPolicy {
         self.fairness.encode(encoder);
         self.retention.encode(encoder);
         self.admit_scenario_defaults.encode(encoder);
-        if self.schema_version >= INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION {
-            self.intervention_learning.encode(encoder);
-        }
-        if self.schema_version >= FINITE_STATISTICAL_CAMPAIGN_POLICY_SCHEMA_VERSION {
-            self.statistical_sampling.encode(encoder);
-        }
-        if self.schema_version >= CAMPAIGN_POLICY_SCHEMA_VERSION {
-            self.sequential_monte_carlo.encode(encoder);
-        }
+        self.intervention_learning.encode(encoder);
+        self.statistical_sampling.encode(encoder);
+        self.sequential_monte_carlo.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
-        if !matches!(
-            schema_version,
-            BASE_CAMPAIGN_POLICY_SCHEMA_VERSION
-                | INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION
-                | FINITE_STATISTICAL_CAMPAIGN_POLICY_SCHEMA_VERSION
-                | CAMPAIGN_POLICY_SCHEMA_VERSION
-        ) {
+        if schema_version != CAMPAIGN_POLICY_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported campaign-policy schema version",
             });
@@ -806,37 +776,10 @@ impl Canonical for CampaignPolicy {
         let fairness = FairnessPolicy::decode(decoder)?;
         let retention = RetentionPolicy::decode(decoder)?;
         let admit_scenario_defaults = bool::decode(decoder)?;
-        let intervention_learning = if schema_version >= INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION
-        {
-            InterventionLearningPolicy::decode(decoder)?
-        } else {
-            InterventionLearningPolicy::Exclude
-        };
-        let statistical_sampling =
-            if schema_version >= FINITE_STATISTICAL_CAMPAIGN_POLICY_SCHEMA_VERSION {
-                Option::decode(decoder)?
-            } else {
-                None
-            };
-        let sequential_monte_carlo = if schema_version >= CAMPAIGN_POLICY_SCHEMA_VERSION {
-            Option::decode(decoder)?
-        } else {
-            None
-        };
-        if statistical_sampling.is_some()
-            != matches!(
-                schema_version,
-                FINITE_STATISTICAL_CAMPAIGN_POLICY_SCHEMA_VERSION | CAMPAIGN_POLICY_SCHEMA_VERSION
-            )
-            || sequential_monte_carlo.is_some()
-                != (schema_version == CAMPAIGN_POLICY_SCHEMA_VERSION)
-        {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "campaign-policy statistical design disagrees with schema",
-            });
-        }
-        Self::new_for_schema(
-            schema_version,
+        let intervention_learning = InterventionLearningPolicy::decode(decoder)?;
+        let statistical_sampling = Option::decode(decoder)?;
+        let sequential_monte_carlo = Option::decode(decoder)?;
+        Self::new_current(
             Self::identity(scenario, campaign_seed, mode, explorer),
             Self::rules(
                 choice_policies,

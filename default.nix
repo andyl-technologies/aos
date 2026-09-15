@@ -412,7 +412,7 @@
       fleetFiles
     );
 
-  crucibleChecksBase = import ./tests/crucible {inherit pkgs lib;};
+  crucibleChecksBase = import ./tests/crucible {inherit pkgs lib mkSystem testing;};
 
   # T-PKG-15: the shared Crucible VM/fleet check substrate. It assembles the
   # whole Crucible closure (patched QEMU + plugin + CLI + kernel + fixtures) as

@@ -141,7 +141,7 @@ fn choice_objects() -> (SelectableDeclaration, ChoiceDomain, ChoiceOpportunity) 
 fn finding(label: &str, occurrence_root: ContentId) -> Finding {
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        1,
+        12,
         format!("{label}-observation").as_bytes(),
     ))
     .expect("observation id");
@@ -228,7 +228,7 @@ fn graph_pages_are_canonical_bounded_snapshot_and_cursor_bound() {
         .expect("lineage"),
         CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
-            1,
+            4,
             b"query-policy",
         ))
         .expect("policy"),
@@ -282,8 +282,8 @@ fn graph_pages_are_canonical_bounded_snapshot_and_cursor_bound() {
                 .to_string(),
         ],
         [
-            String::from("60695dd8c9e86f73ca7ca374af7ab9389b339f09e5094ebab1942fbb90f2993b"),
-            String::from("81cb0d70c16de9fccc5e2f540401fdba722415f9c97b8d2373c3b73f41310946"),
+            String::from("e7d4216f6d55773dc493ab56273e9059c09659ce9092cba41f9acd2e535ca5a0"),
+            String::from("88ad0020ccbda0e0151d2c050e6d53344bca245e044360de6cf3a400e66ff9af"),
         ]
     );
 
@@ -436,7 +436,7 @@ fn finding_pages_authenticate_complete_bodies_order_and_exact_eof() {
         .expect("lineage"),
         CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
-            1,
+            4,
             b"finding-query-policy",
         ))
         .expect("policy"),
@@ -533,7 +533,7 @@ fn finding_object_reads_authenticate_exact_child_kind_and_identity() {
     let observation = Observation::new(
         AttemptId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignFact,
-            1,
+            8,
             b"finding-object-attempt",
         ))
         .expect("attempt ID"),
@@ -631,7 +631,7 @@ fn finding_object_reads_authenticate_exact_child_kind_and_identity() {
         .expect("lineage"),
         CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
-            1,
+            4,
             b"finding-object-policy",
         ))
         .expect("policy"),
@@ -745,7 +745,7 @@ fn attempt_explanations_authenticate_execution_proposal_selection_and_completion
         value,
         CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
-            1,
+            4,
             b"attempt-policy",
         ))
         .expect("attempt policy ID"),
@@ -926,7 +926,7 @@ fn attempt_explanations_authenticate_execution_proposal_selection_and_completion
         .expect("attempt lineage ID"),
         CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
-            1,
+            4,
             b"attempt-explanation-snapshot-policy",
         ))
         .expect("attempt snapshot policy ID"),
@@ -1078,7 +1078,7 @@ fn discovery_attempt_explanations_authenticate_absent_branch_and_completion_stat
     let attempt_id = attempt.id().expect("discovery attempt ID");
     let discovery_policy = CampaignPolicyId::from_content_id(ContentId::for_bytes(
         ObjectKind::Policy,
-        1,
+        4,
         b"discovery-explanation-policy",
     ))
     .expect("discovery policy ID");
@@ -1125,7 +1125,7 @@ fn discovery_attempt_explanations_authenticate_absent_branch_and_completion_stat
         .expect("discovery lineage ID"),
         CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
-            1,
+            4,
             b"discovery-explanation-active-policy",
         ))
         .expect("discovery active policy ID"),
@@ -1214,7 +1214,7 @@ fn graph_object_response_authenticates_snapshot_key_and_exact_envelope() {
         .expect("lineage"),
         CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
-            1,
+            4,
             b"graph-object-policy",
         ))
         .expect("policy"),
@@ -1311,7 +1311,7 @@ fn choice_pages_authenticate_the_nested_index_and_exact_eof() {
         .expect("lineage"),
         CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
-            1,
+            4,
             b"choice-query-policy",
         ))
         .expect("policy"),
@@ -1370,8 +1370,8 @@ fn choice_pages_authenticate_the_nested_index_and_exact_eof() {
                 .to_string(),
         ],
         [
-            String::from("4cab59b2bc7a6c4c63b954a899655cf0178b1ad347d19823104a9311236801f7"),
-            String::from("0232d8315aef88d88b828b505a37cf4386f9b42a04bcc788f7668feed64478d6"),
+            String::from("6c206977b30806857abcf115c31bdc606652a35fcc7018407625a487a9d80fdc"),
+            String::from("a9ffb9304c61d4c82854e03fa5f8bd1f90646cafade76d4cd08c057ef7f3b933"),
         ]
     );
 
@@ -1462,7 +1462,7 @@ fn frontier_pages_authenticate_projection_bodies_and_exact_eof() {
         .expect("lineage"),
         CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
-            1,
+            4,
             b"frontier-query-policy",
         ))
         .expect("policy"),
@@ -1523,8 +1523,8 @@ fn frontier_pages_authenticate_projection_bodies_and_exact_eof() {
                 .to_string(),
         ],
         [
-            String::from("50c34188bbfc7f2f75598274dfbf19358b4f6ec4ac1c55d9a604a4f2e46c60a2"),
-            String::from("10b2f67ac2aa2863f551c0c1070522f7fa640e96b8a997da26de8aad6a638720"),
+            String::from("ed1a34903d1922ba56e6f703ba6c9adef94e0e8454e99e5c9f6b879087a2cf55"),
+            String::from("814a9a081751a285f31c480e6b8df424a0e75da7b6d1d81a0bc57353f42cd1ac"),
         ]
     );
 
@@ -1572,7 +1572,7 @@ fn frontier_object_reads_authenticate_exact_request_membership() {
         .expect("lineage"),
         CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
-            1,
+            4,
             b"frontier-object-policy",
         ))
         .expect("policy"),
@@ -1632,8 +1632,8 @@ fn frontier_object_reads_authenticate_exact_request_membership() {
                 .to_string(),
         ],
         [
-            String::from("56f6c92e13e61fc53541b9e2f3cae7a2a71972f4e8f3d2b461629306626bc799"),
-            String::from("159e843869517e6d156ee9e4b47d42233f11f9b623432479b89ee23ea4e41ecc"),
+            String::from("db9874574da2fd3ea6bbf0a6ea6978acd3fdbeb438658ebbad650dffb8bef1e5"),
+            String::from("1c75ef113a06cd4e334c2800c524896df206b1f05bd19458a0569f53301b06ad"),
         ]
     );
 
@@ -1683,7 +1683,7 @@ fn choice_object_reads_authenticate_exact_opportunity_dependencies() {
         .expect("lineage"),
         CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
-            1,
+            4,
             b"choice-object-policy",
         ))
         .expect("policy"),
@@ -1764,8 +1764,8 @@ fn choice_object_reads_authenticate_exact_opportunity_dependencies() {
                 .to_string(),
         ],
         [
-            String::from("5749125328934994e3bd1742872ff7725d97ceb8d97c52364299ae7b8f415157"),
-            String::from("13271a838705a79cc0e914033247b6f940315537893b587656b6eabe1c3e4e0b"),
+            String::from("2b6b5da3d5bf82dcb01f5924fe9925e8c40863d4963ab9fa2977f4ecf9c1b7fc"),
+            String::from("1d525866545f1929f8e62fddbbdd5630660efa4f585192e064490ae4dfcff615"),
         ]
     );
 }

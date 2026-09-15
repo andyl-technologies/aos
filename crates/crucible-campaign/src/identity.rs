@@ -1,6 +1,6 @@
 //! Domain-separated campaign hashes and strongly typed identifiers.
 //!
-//! Stored-record wrappers validate the broad storage kind and supported schema
+//! Stored-record wrappers validate the broad storage kind and current schema
 //! version present in a [`ContentId`]. Records sharing a broad kind (for
 //! example policy and planner artifacts) are distinguished by the authenticated
 //! envelope schema when dereferenced; repositories never trust the wrapper
@@ -212,15 +212,12 @@ macro_rules! semantic_id {
 
 macro_rules! content_object_id {
     ($name:ident, $kind:expr, $type_tag:literal, $doc:literal) => {
-        content_object_id!(@impl $name, $kind, [1], $type_tag, $doc);
+        content_object_id!(@impl $name, $kind, 1, $type_tag, $doc);
     };
     ($name:ident, $kind:expr, $schema_version:literal, $type_tag:literal, $doc:literal) => {
-        content_object_id!(@impl $name, $kind, [$schema_version], $type_tag, $doc);
+        content_object_id!(@impl $name, $kind, $schema_version, $type_tag, $doc);
     };
-    ($name:ident, $kind:expr, [$($schema_version:literal),+ $(,)?], $type_tag:literal, $doc:literal) => {
-        content_object_id!(@impl $name, $kind, [$($schema_version),+], $type_tag, $doc);
-    };
-    (@impl $name:ident, $kind:expr, [$($schema_version:literal),+], $type_tag:literal, $doc:literal) => {
+    (@impl $name:ident, $kind:expr, $schema_version:literal, $type_tag:literal, $doc:literal) => {
         #[doc = $doc]
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(ContentId);
@@ -235,15 +232,10 @@ macro_rules! content_object_id {
             ///
             /// # Errors
             ///
-            /// Returns [`CampaignCodecError::InvalidValue`] for the wrong kind.
-            // Schema compatibility is an explicit set even when its current
-            // members happen to form a contiguous numeric range.
-            // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
-            #[allow(clippy::manual_range_patterns)]
+            /// Returns [`CampaignCodecError::InvalidValue`] for the wrong kind
+            /// or a schema version other than the current registry version.
             pub(crate) fn from_content_id(value: ContentId) -> Result<Self, CampaignCodecError> {
-                if value.kind() != $kind
-                    || !matches!(value.schema_version(), $($schema_version)|+)
-                {
+                if value.kind() != $kind || value.schema_version() != $schema_version {
                     return Err(CampaignCodecError::InvalidValue {
                         reason: "content identity has the wrong object kind or schema version",
                     });
@@ -261,7 +253,8 @@ macro_rules! content_object_id {
             ///
             /// # Errors
             ///
-            /// Returns [`CampaignCodecError`] for malformed text or wrong kind.
+            /// Returns [`CampaignCodecError`] for malformed text, wrong kind,
+            /// or a schema version other than the current registry version.
             pub fn parse(value: &str) -> Result<Self, CampaignCodecError> {
                 let (tag, encoded_content) =
                     value
@@ -413,7 +406,7 @@ content_object_id!(
 content_object_id!(
     CampaignPolicyId,
     ObjectKind::Policy,
-    [1, 2, 3, 4],
+    4,
     "crucible.campaign.policy",
     "Identifies one immutable campaign policy revision."
 );
@@ -471,9 +464,9 @@ content_object_id!(
 content_object_id!(
     CampaignFactId,
     ObjectKind::CampaignFact,
-    [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+    14,
     "crucible.campaign.fact",
-    "Identifies one immutable campaign fact across its currently emitted semantic variants."
+    "Identifies one immutable current campaign fact."
 );
 semantic_id!(
     CampaignCommandId,
@@ -549,7 +542,7 @@ semantic_id!(
 content_object_id!(
     BranchRequestId,
     ObjectKind::CampaignFact,
-    [9],
+    9,
     "crucible.campaign.branch-request",
     "Identifies one bounded branch request whose schema records its source, cause, and stop semantics."
 );
@@ -562,7 +555,7 @@ content_object_id!(
 content_object_id!(
     ProposalId,
     ObjectKind::CampaignFact,
-    [2],
+    2,
     "crucible.campaign.proposal",
     "Identifies one proposed value and its campaign provenance."
 );
@@ -580,9 +573,9 @@ content_object_id!(
 content_object_id!(
     AttemptId,
     ObjectKind::CampaignFact,
-    [1, 2, 3, 4, 7, 8],
+    8,
     "crucible.campaign.attempt",
-    "Identifies one immutable attempt whose schema records its start, stop, and modeled continuation input."
+    "Identifies one current immutable attempt with its start, stop, and modeled continuation input."
 );
 content_object_id!(
     AttemptAdmissionId,
@@ -594,21 +587,21 @@ content_object_id!(
 content_object_id!(
     ObservationId,
     ObjectKind::Observation,
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    12,
     "crucible.campaign.observation",
-    "Identifies one canonical observation whose schema records its stop and produced-selection semantics."
+    "Identifies one current canonical observation with its stop and produced-selection semantics."
 );
 content_object_id!(
     ObjectiveEvaluationId,
     ObjectKind::Observation,
-    [1, 2],
+    2,
     "crucible.campaign.objective-evaluation",
     "Identifies one policy-bound exact objective evaluation, including its scenario-failure shape."
 );
 content_object_id!(
     RankingExplanationId,
     ObjectKind::Projection,
-    [1, 2],
+    2,
     "crucible.campaign.ranking-explanation",
     "Identifies one deterministic ranking explanation, including its scenario-failure shape."
 );
@@ -621,28 +614,46 @@ content_object_id!(
 content_object_id!(
     FindingId,
     ObjectKind::Finding,
-    [4],
+    4,
     "crucible.campaign.finding",
     "Identifies one current campaign finding with authenticated candidate occurrences."
 );
 content_object_id!(
     FindingCandidateBundleId,
     ObjectKind::Finding,
-    [5],
+    6,
     "crucible.campaign.finding-candidate-bundle",
     "Identifies one current durable finding candidate handoff with optional evidence and retention."
 );
 content_object_id!(
+    FindingReplayCaptureEvidenceId,
+    ObjectKind::ExactManifest,
+    "crucible.campaign.finding-replay-capture-evidence",
+    "Identifies one manifest-rooted portable production replay capture."
+);
+
+impl FindingReplayCaptureEvidenceId {
+    /// Claims a version-one finding replay capture manifest identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError::InvalidValue`] when `value` has another
+    /// object kind or schema version.
+    pub fn from_manifest_content_id(value: ContentId) -> Result<Self, CampaignCodecError> {
+        Self::from_content_id(value)
+    }
+}
+content_object_id!(
     FindingTriageReplayEvidenceId,
     ObjectKind::Finding,
-    [1, 2],
+    2,
     "crucible.campaign.finding-triage-replay-evidence",
     "Identifies one exact replay and observed signature in either inline or manifest-backed form."
 );
 content_object_id!(
     ReproductionArtifactId,
     ObjectKind::Finding,
-    [1, 2],
+    2,
     "crucible.campaign.reproduction-artifact",
     "Identifies one verifier-backed self-contained finding reproduction."
 );
@@ -695,7 +706,7 @@ content_object_id!(
 content_object_id!(
     PlannerBeamCandidateId,
     ObjectKind::Projection,
-    [1, 2],
+    2,
     "crucible.campaign.planner-beam-candidate",
     "Identifies one snapshot-bound Beam candidate and survivor-decision binding."
 );

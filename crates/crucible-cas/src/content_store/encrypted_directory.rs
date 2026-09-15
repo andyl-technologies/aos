@@ -53,7 +53,10 @@ use compressed::{
     compress_and_encrypt_source, compressed_header_authenticator, maximum_compressed_length,
 };
 
-use super::admin::{InventoryCounter, persistent_inventory_generation, physical_storage_identity};
+use super::admin::{
+    InventoryCounter, PhysicalRepairAuthority, persistent_inventory_generation,
+    physical_storage_identity,
+};
 use super::directory::{
     DirectoryBlobBackend, DirectoryInventoryState, create_dir_all_durable, directory_receipt,
     inventory_directory_entry, is_lower_hex, path_name, read_directory_entries, require_directory,
@@ -488,43 +491,18 @@ impl EncryptedDirectoryBlobBackend {
     }
 }
 
-impl ImmutableBlobBackend for EncryptedDirectoryBlobBackend {
-    fn name(&self) -> &str {
-        self.directory.name()
-    }
-
-    fn capabilities(&self) -> BackendCapabilities {
-        BackendCapabilities {
-            durable: true,
-            deferred_write: false,
-            range_read: true,
-            streaming_read: true,
-            conditional_create: true,
-            streaming_put: true,
-            repair_inventory: false,
-            planned_delete: false,
-        }
-    }
-
-    fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
-        let _inventory_lock = self.directory.acquire_inventory_lock()?;
-        self.validate_or_create_key_state_locked()?;
-        self.contains_with_key_state(id)
-    }
-
-    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
-        self.read_handle(id, range)
-    }
-
-    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+impl EncryptedDirectoryBlobBackend {
+    fn put_if_absent_fenced(
+        &self,
+        id: ContentId,
+        source: &BlobHandle,
+        inventory_state: &mut DirectoryInventoryState,
+    ) -> Result<PutReceipt, StoreError> {
         if source.logical_length() > self.maximum_logical_object_bytes {
             return Err(StoreError::Quota);
         }
-        let _inventory_lock = self.directory.acquire_inventory_lock()?;
         self.validate_or_create_key_state_locked()?;
-        let mut inventory_state = self.directory.load_or_create_inventory_state()?;
-        self.directory
-            .advance_inventory_state(&mut inventory_state)?;
+        self.directory.advance_inventory_state(inventory_state)?;
 
         let path = self.directory.object_path(id);
         let directory = path.parent().ok_or(StoreError::InvalidComposition {
@@ -632,6 +610,41 @@ impl ImmutableBlobBackend for EncryptedDirectoryBlobBackend {
         }
         publish_result?;
         Ok(directory_receipt(self.name(), id, source.logical_length()))
+    }
+}
+
+impl ImmutableBlobBackend for EncryptedDirectoryBlobBackend {
+    fn name(&self) -> &str {
+        self.directory.name()
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            durable: true,
+            deferred_write: false,
+            range_read: true,
+            streaming_read: true,
+            conditional_create: true,
+            streaming_put: true,
+            repair_inventory: false,
+            planned_delete: false,
+        }
+    }
+
+    fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+        let _inventory_lock = self.directory.acquire_inventory_lock()?;
+        self.validate_or_create_key_state_locked()?;
+        self.contains_with_key_state(id)
+    }
+
+    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        self.read_handle(id, range)
+    }
+
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        let _inventory_lock = self.directory.acquire_inventory_lock()?;
+        let mut inventory_state = self.directory.load_or_create_inventory_state()?;
+        self.put_if_absent_fenced(id, source, &mut inventory_state)
     }
 }
 
@@ -1254,6 +1267,16 @@ impl BlobInventoryFence for EncryptedDirectoryInventoryFence<'_> {
         })?;
         sync_directory(directory)?;
         Ok(PlannedDeleteDisposition::Deleted)
+    }
+
+    fn repair_put_if_absent(
+        &mut self,
+        _authority: &PhysicalRepairAuthority,
+        id: ContentId,
+        source: &BlobHandle,
+    ) -> Result<PutReceipt, StoreError> {
+        self.backend
+            .put_if_absent_fenced(id, source, &mut self.state)
     }
 }
 

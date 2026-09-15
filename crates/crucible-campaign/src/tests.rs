@@ -128,7 +128,7 @@ fn campaign_hashes_are_domain_separated_and_text_is_canonical() {
         Err(CampaignCodecError::InvalidHex)
     );
 
-    let policy_id = stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy");
+    let policy_id = stored_id!(CampaignPolicyId, ObjectKind::Policy, 4, "policy");
     let encoded = serde_json::to_string(&policy_id).expect("serialize typed ID");
     assert_eq!(encoded, format!("\"{policy_id}\""));
     assert_eq!(
@@ -144,14 +144,35 @@ fn exact_checkpoint_identity_admits_only_the_current_schema() {
     let current = ContentId::for_bytes(ObjectKind::ExactManifest, 4, b"current exact root");
     assert!(ExactCheckpointId::try_from(current).is_ok());
 
-    for retired_schema in [2, 3] {
-        let retired = ContentId::for_bytes(
-            ObjectKind::ExactManifest,
-            retired_schema,
-            b"retired exact root",
-        );
-        assert!(ExactCheckpointId::try_from(retired).is_err());
+    let wrong_version = ContentId::for_bytes(ObjectKind::ExactManifest, 3, b"wrong exact root");
+    assert!(ExactCheckpointId::try_from(wrong_version).is_err());
+}
+
+#[test]
+fn content_identities_admit_only_current_registry_versions() {
+    macro_rules! assert_current_version {
+        ($type:ty, $kind:expr, $version:expr) => {{
+            let current = ContentId::for_bytes($kind, $version, b"current identity");
+            assert!(<$type>::from_content_id(current).is_ok());
+
+            let wrong_version = ContentId::for_bytes($kind, $version - 1, b"wrong identity");
+            assert!(<$type>::from_content_id(wrong_version).is_err());
+        }};
     }
+
+    assert_current_version!(CampaignPolicyId, ObjectKind::Policy, 4);
+    assert_current_version!(CampaignFactId, ObjectKind::CampaignFact, 14);
+    assert_current_version!(BranchRequestId, ObjectKind::CampaignFact, 9);
+    assert_current_version!(ProposalId, ObjectKind::CampaignFact, 2);
+    assert_current_version!(AttemptId, ObjectKind::CampaignFact, 8);
+    assert_current_version!(ObservationId, ObjectKind::Observation, 12);
+    assert_current_version!(ObjectiveEvaluationId, ObjectKind::Observation, 2);
+    assert_current_version!(RankingExplanationId, ObjectKind::Projection, 2);
+    assert_current_version!(FindingId, ObjectKind::Finding, 4);
+    assert_current_version!(FindingCandidateBundleId, ObjectKind::Finding, 6);
+    assert_current_version!(FindingTriageReplayEvidenceId, ObjectKind::Finding, 2);
+    assert_current_version!(ReproductionArtifactId, ObjectKind::Finding, 2);
+    assert_current_version!(PlannerBeamCandidateId, ObjectKind::Projection, 2);
 }
 
 #[test]
@@ -206,6 +227,10 @@ fn campaign_policy_identity_is_order_independent_and_strictly_decoded() {
         CampaignPolicy::from_canonical_bytes(&bytes).expect("canonical policy"),
         policy
     );
+    let mut wrong_version = bytes.clone();
+    wrong_version[..4].copy_from_slice(&3_u32.to_be_bytes());
+    assert!(CampaignPolicy::from_canonical_bytes(&wrong_version).is_err());
+
     let mut trailing = bytes;
     trailing.push(0);
     assert_eq!(
@@ -214,7 +239,7 @@ fn campaign_policy_identity_is_order_independent_and_strictly_decoded() {
     );
     let policy_id = policy.id().expect("policy id");
     assert_eq!(policy_id.content_id().kind(), ObjectKind::Policy);
-    assert_eq!(policy_id.content_id().schema_version(), 1);
+    assert_eq!(policy_id.content_id().schema_version(), 4);
     assert_eq!(
         CampaignPolicyId::parse(&policy_id.to_text()).expect("parse policy id"),
         policy_id
@@ -243,7 +268,7 @@ fn campaign_policy_identity_is_order_independent_and_strictly_decoded() {
         .expect("opt-in campaign policy");
     assert_eq!(
         CampaignPolicy::from_canonical_bytes(&opted_in.canonical_bytes())
-            .expect("version-two campaign policy"),
+            .expect("current campaign policy"),
         opted_in
     );
     assert_eq!(
@@ -253,15 +278,15 @@ fn campaign_policy_identity_is_order_independent_and_strictly_decoded() {
     assert_eq!(
         opted_in
             .id()
-            .expect("version-two policy ID")
+            .expect("current policy ID")
             .content_id()
             .schema_version(),
-        2
+        4
     );
 
     let mut malformed = envelope.canonical_bytes();
     malformed.push(0);
-    let malformed_id = ContentId::for_bytes(ObjectKind::Policy, 1, &malformed);
+    let malformed_id = ContentId::for_bytes(ObjectKind::Policy, 4, &malformed);
     assert!(matches!(
         CampaignObjectProfiler.derive_profile(
             malformed_id,
@@ -301,7 +326,7 @@ fn snapshot_planning_view_excludes_pins_and_coordination_but_snapshot_identity_d
     };
     let snapshot = CampaignSnapshot::genesis(
         stored_id!(CampaignLineageId, ObjectKind::CampaignFact, "lineage"),
-        stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy"),
+        stored_id!(CampaignPolicyId, ObjectKind::Policy, 4, "policy"),
         roots,
         crate::test_budget_ledger_id(),
     )
@@ -484,7 +509,7 @@ fn lineage_and_invocation_identities_name_every_compatibility_input() {
     let invocation = PlannerInvocation::new(
         stored_id!(PlannerEngineId, ObjectKind::Policy, "engine"),
         stored_id!(PolicyArtifactId, ObjectKind::Policy, "artifact"),
-        stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy"),
+        stored_id!(CampaignPolicyId, ObjectKind::Policy, 4, "policy"),
         stored_id!(PlannerStateId, ObjectKind::Policy, "state"),
         stored_id!(CampaignViewId, ObjectKind::CampaignFact, "view"),
         PlanningScanPage::new(None, 1, Vec::new(), true, 0).expect("scan page"),
@@ -527,7 +552,7 @@ fn lineage_and_invocation_identities_name_every_compatibility_input() {
 #[test]
 fn command_and_fact_identities_bind_payload_and_admission_order() {
     let command = CampaignCommandId::from_hash(hash("command"));
-    let policy = stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy");
+    let policy = stored_id!(CampaignPolicyId, ObjectKind::Policy, 4, "policy");
     let expected_snapshot = stored_id!(
         CampaignSnapshotId,
         ObjectKind::CampaignSnapshot,
@@ -546,7 +571,7 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
     };
     assert_ne!(request.request_digest(), different.request_digest());
 
-    let attempt = stored_id!(AttemptId, ObjectKind::CampaignFact, "attempt");
+    let attempt = stored_id!(AttemptId, ObjectKind::CampaignFact, 8, "attempt");
     let first = CampaignFact::AttemptAdmitted(
         AttemptAdmission::new(
             attempt,
@@ -604,46 +629,30 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
         disposition: NonModeledAttemptDisposition::TerminalWorkerFailure,
     };
     let terminal_bytes = terminal.canonical_bytes();
-    assert_eq!(&terminal_bytes[..4], &10_u32.to_be_bytes());
+    assert_eq!(&terminal_bytes[..4], &14_u32.to_be_bytes());
     assert_eq!(
         CampaignFact::from_canonical_bytes(&terminal_bytes).expect("terminal closure fact"),
         terminal
     );
     let terminal_envelope = ObjectEnvelope::for_fact(&terminal).expect("terminal fact envelope");
-    assert_eq!(terminal_envelope.content_id().schema_version(), 10);
-    let mut terminal_as_v2 = terminal_bytes;
-    terminal_as_v2[..4].copy_from_slice(&2_u32.to_be_bytes());
-    assert!(CampaignFact::from_canonical_bytes(&terminal_as_v2).is_err());
-    let mut cancelled_as_v10 = cancelled.canonical_bytes();
-    cancelled_as_v10[..4].copy_from_slice(&10_u32.to_be_bytes());
-    assert!(CampaignFact::from_canonical_bytes(&cancelled_as_v10).is_err());
+    assert_eq!(terminal_envelope.content_id().schema_version(), 14);
 
     let credited = CampaignFact::ObservationCredited(stored_id!(
         ObservationId,
         ObjectKind::Observation,
+        12,
         "credited-observation"
     ));
     assert_eq!(
         &credited.canonical_bytes()[..std::mem::size_of::<u32>()],
-        &4_u32.to_be_bytes()
+        &14_u32.to_be_bytes()
     );
     let credited_envelope = ObjectEnvelope::for_fact(&credited).expect("credited fact envelope");
-    assert_eq!(credited_envelope.content_id().schema_version(), 4);
+    assert_eq!(credited_envelope.content_id().schema_version(), 14);
     assert_eq!(
         CampaignFact::from_canonical_bytes(credited_envelope.body())
             .expect("canonical credited fact"),
         credited
-    );
-    let legacy_envelope_with_credited_body = crucible_cas::content_envelope::ContentEnvelope::new(
-        CampaignRecordKind::Fact.schema_name(),
-        2,
-        credited_envelope.children().clone(),
-        credited.canonical_bytes(),
-    )
-    .expect("mismatched legacy credited envelope");
-    assert!(
-        ObjectEnvelope::from_canonical_bytes(&legacy_envelope_with_credited_body.canonical_bytes())
-            .is_err()
     );
 
     let pin = CampaignFact::PinCommandAccepted(PinRequest {
@@ -658,25 +667,14 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
     });
     assert_eq!(
         &pin.canonical_bytes()[..std::mem::size_of::<u32>()],
-        &5_u32.to_be_bytes()
+        &14_u32.to_be_bytes()
     );
     let pin_envelope = ObjectEnvelope::for_fact(&pin).expect("pin fact envelope");
-    assert_eq!(pin_envelope.content_id().schema_version(), 5);
+    assert_eq!(pin_envelope.content_id().schema_version(), 14);
     assert_eq!(pin_envelope.children().len(), 1);
     assert_eq!(
         CampaignFact::from_canonical_bytes(pin_envelope.body()).expect("canonical pin fact"),
         pin
-    );
-    let prior_envelope_with_pin_body = crucible_cas::content_envelope::ContentEnvelope::new(
-        CampaignRecordKind::Fact.schema_name(),
-        4,
-        pin_envelope.children().clone(),
-        pin.canonical_bytes(),
-    )
-    .expect("mismatched prior pin envelope");
-    assert!(
-        ObjectEnvelope::from_canonical_bytes(&prior_envelope_with_pin_body.canonical_bytes())
-            .is_err()
     );
 
     let branch = CampaignFact::BranchRequestAccepted {
@@ -697,26 +695,15 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
     };
     assert_eq!(
         &branch.canonical_bytes()[..std::mem::size_of::<u32>()],
-        &7_u32.to_be_bytes()
+        &14_u32.to_be_bytes()
     );
     let branch_envelope = ObjectEnvelope::for_fact(&branch).expect("branch acceptance envelope");
-    assert_eq!(branch_envelope.content_id().schema_version(), 7);
+    assert_eq!(branch_envelope.content_id().schema_version(), 14);
     assert_eq!(branch_envelope.children().len(), 1);
     assert_eq!(
         CampaignFact::from_canonical_bytes(branch_envelope.body())
             .expect("canonical branch acceptance fact"),
         branch
-    );
-    let prior_envelope_with_branch_body = crucible_cas::content_envelope::ContentEnvelope::new(
-        CampaignRecordKind::Fact.schema_name(),
-        6,
-        branch_envelope.children().clone(),
-        branch.canonical_bytes(),
-    )
-    .expect("mismatched prior branch envelope");
-    assert!(
-        ObjectEnvelope::from_canonical_bytes(&prior_envelope_with_branch_body.canonical_bytes())
-            .is_err()
     );
 }
 
@@ -1236,26 +1223,6 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
             reason: "unsupported branch-request schema or source"
         })
     ));
-    let legacy_body = encode_request_body(1, request.source());
-    assert!(matches!(
-        BranchRequest::from_canonical_bytes(&legacy_body),
-        Err(CampaignCodecError::InvalidValue {
-            reason: "unsupported branch-request schema or source"
-        })
-    ));
-    let legacy_envelope = ObjectEnvelope::for_record_versioned(
-        CampaignRecordKind::BranchRequest,
-        1,
-        request_envelope.children().clone(),
-        legacy_body,
-    )
-    .expect("legacy request envelope");
-    assert!(matches!(
-        ObjectEnvelope::from_canonical_bytes(&legacy_envelope.canonical_bytes()),
-        Err(CampaignCodecError::InvalidValue {
-            reason: "unsupported campaign record schema version"
-        })
-    ));
 
     let weighted_source = CandidateSource::weighted_finite(BTreeMap::from([
         (ChoiceValue::Integer(IntegerValue::Unsigned(0)), 1),
@@ -1445,7 +1412,7 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         request.id().expect("request id"),
         domain.id().expect("domain id"),
         ChoiceValue::Integer(IntegerValue::Unsigned(10)),
-        stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy"),
+        stored_id!(CampaignPolicyId, ObjectKind::Policy, 4, "policy"),
         None,
         1,
         stored_id!(CampaignViewId, ObjectKind::CampaignFact, "view"),
@@ -1459,7 +1426,7 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         request.id().expect("request id"),
         domain.id().expect("domain id"),
         ChoiceValue::Integer(IntegerValue::Unsigned(5)),
-        stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy"),
+        stored_id!(CampaignPolicyId, ObjectKind::Policy, 4, "policy"),
         None,
         1,
         stored_id!(CampaignViewId, ObjectKind::CampaignFact, "view"),
@@ -1471,7 +1438,7 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         request.id().expect("request id"),
         domain.id().expect("domain id"),
         ChoiceValue::Integer(IntegerValue::Unsigned(10)),
-        stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy"),
+        stored_id!(CampaignPolicyId, ObjectKind::Policy, 4, "policy"),
         None,
         3,
         stored_id!(CampaignViewId, ObjectKind::CampaignFact, "view"),
@@ -1509,6 +1476,7 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
     let origin = stored_id!(
         AttemptId,
         ObjectKind::CampaignFact,
+        8,
         "continuation-input-origin"
     );
     let reached = stored_id!(
@@ -1525,11 +1493,13 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
     let source_observation = stored_id!(
         ObservationId,
         ObjectKind::Observation,
+        12,
         "continuation-input-source-observation"
     );
     let another_source_observation = stored_id!(
         ObservationId,
         ObjectKind::Observation,
+        12,
         "continuation-input-another-source-observation"
     );
     let start = AttemptStart::AfterAttempt { origin, reached };
@@ -1555,7 +1525,7 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
         Attempt::new_with_continuation_input(start, path, StopCondition::Terminal, changed_source)
             .expect("changed-source continuation attempt");
 
-    assert_eq!(seed_attempt.schema_version(), 7);
+    assert_eq!(seed_attempt.schema_version(), 8);
     assert_eq!(seed_attempt.continuation_input(), Some(&base_seed));
     assert_ne!(
         seed_attempt.id().expect("seed attempt id"),
@@ -1683,49 +1653,6 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
         decode::<AttemptContinuationInput>(&[0]),
         Err(CampaignCodecError::Truncated)
     );
-    let mut unreleased_legacy_reseed = Encoder::new();
-    unreleased_legacy_reseed.u8(0);
-    unreleased_legacy_reseed.u64(17);
-    unreleased_legacy_reseed.fixed(&[0; 32]);
-    assert_eq!(
-        decode::<AttemptContinuationInput>(&unreleased_legacy_reseed.finish()),
-        Err(CampaignCodecError::InvalidValue {
-            reason: "typed content identity has the wrong record type",
-        })
-    );
-
-    let mut unreleased_v5_attempt = Encoder::new();
-    5_u32.encode(&mut unreleased_v5_attempt);
-    start.encode(&mut unreleased_v5_attempt);
-    path.encode(&mut unreleased_v5_attempt);
-    StopCondition::Terminal.encode(&mut unreleased_v5_attempt);
-    unreleased_v5_attempt.u8(0);
-    unreleased_v5_attempt.u64(17);
-    unreleased_v5_attempt.fixed(&[0; 32]);
-    assert_eq!(
-        Attempt::from_canonical_bytes(&unreleased_v5_attempt.finish()),
-        Err(CampaignCodecError::InvalidValue {
-            reason: "unsupported attempt schema version",
-        })
-    );
-
-    let mut unreleased_v6_attempt = Encoder::new();
-    6_u32.encode(&mut unreleased_v6_attempt);
-    start.encode(&mut unreleased_v6_attempt);
-    path.encode(&mut unreleased_v6_attempt);
-    StopCondition::Observation(ObservationCondition::SchedulerQuiescent)
-        .encode(&mut unreleased_v6_attempt);
-    unreleased_v6_attempt.u8(1);
-    unreleased_v6_attempt.u64(17);
-    unreleased_v6_attempt.sequence(&[vec![0x10, 0x20]], |encoder, decision| {
-        encoder.bytes(decision);
-    });
-    assert_eq!(
-        Attempt::from_canonical_bytes(&unreleased_v6_attempt.finish()),
-        Err(CampaignCodecError::InvalidValue {
-            reason: "unsupported attempt schema version",
-        })
-    );
 
     assert!(matches!(
         Attempt::new_with_continuation_input(
@@ -1778,6 +1705,7 @@ fn branch_request_variants_use_one_current_schema() {
     let policy = stored_id!(
         CampaignPolicyId,
         ObjectKind::Policy,
+        4,
         "scenario-default-policy"
     );
     let operator = BranchRequestCause::Operator(CampaignCommandId::from_hash(hash(
@@ -1845,6 +1773,7 @@ fn branch_request_variants_use_one_current_schema() {
     let attempt = stored_id!(
         AttemptId,
         ObjectKind::CampaignFact,
+        8,
         "scenario-default-attempt"
     );
     let proposal = stored_id!(
@@ -2171,11 +2100,11 @@ fn snapshot_envelope_exposes_every_child_and_authenticates_logical_identity() {
         3,
         "parent-snapshot"
     );
-    let transition = stored_id!(CampaignFactId, ObjectKind::CampaignFact, 2, "transition");
+    let transition = stored_id!(CampaignFactId, ObjectKind::CampaignFact, 14, "transition");
     let snapshot = CampaignSnapshot::successor(
         parent,
         stored_id!(CampaignLineageId, ObjectKind::CampaignFact, "lineage"),
-        stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy"),
+        stored_id!(CampaignPolicyId, ObjectKind::Policy, 4, "policy"),
         roots,
         transition,
         crate::test_budget_ledger_id(),
@@ -2217,14 +2146,6 @@ fn snapshot_envelope_exposes_every_child_and_authenticates_logical_identity() {
         ObjectEnvelope::from_canonical_bytes(&extra.canonical_bytes()),
         Err(CampaignCodecError::InvalidValue { .. })
     ));
-    let legacy = crucible_cas::content_envelope::ContentEnvelope::new(
-        "crucible.campaign.snapshot",
-        1,
-        envelope.children().clone(),
-        snapshot.canonical_bytes(),
-    )
-    .expect("legacy snapshot envelope");
-    assert!(ObjectEnvelope::from_canonical_bytes(&legacy.canonical_bytes()).is_err());
 }
 
 #[test]
@@ -2289,7 +2210,12 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
     );
 
     let observation = Observation::new(
-        stored_id!(AttemptId, ObjectKind::CampaignFact, "observation attempt"),
+        stored_id!(
+            AttemptId,
+            ObjectKind::CampaignFact,
+            8,
+            "observation attempt"
+        ),
         Observation::outcome(
             ConfigurationId::from_hash(hash("observation child")),
             stored_id!(
@@ -2322,7 +2248,7 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
     );
     let envelope = ObjectEnvelope::for_record_versioned(
         CampaignRecordKind::Observation,
-        1,
+        12,
         super::object::content_children(observation.content_children())
             .expect("observation children"),
         observation.canonical_bytes(),
@@ -2347,23 +2273,19 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
         .clone()
         .with_produced_selections(BTreeSet::from([produced_selection]))
         .expect("selection observation");
-    assert_eq!(selection_observation.schema_version(), 3);
+    assert_eq!(selection_observation.schema_version(), 12);
     assert_eq!(
         Observation::from_canonical_bytes(&selection_observation.canonical_bytes())
             .expect("canonical selection observation"),
         selection_observation
     );
-    let mut alternate_empty_selection_observation = observation.canonical_bytes();
-    alternate_empty_selection_observation[..4].copy_from_slice(&3_u32.to_be_bytes());
-    alternate_empty_selection_observation.extend_from_slice(&0_u64.to_be_bytes());
-    assert!(Observation::from_canonical_bytes(&alternate_empty_selection_observation).is_err());
     assert_eq!(
         selection_observation
             .id()
             .expect("selection observation id")
             .content_id()
             .schema_version(),
-        3
+        12
     );
     assert!(
         selection_observation
@@ -2390,7 +2312,7 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
         BTreeSet::new(),
     )
     .expect("scenario failure observation");
-    assert_eq!(scenario_failure.schema_version(), 2);
+    assert_eq!(scenario_failure.schema_version(), 12);
     assert_eq!(
         Observation::from_canonical_bytes(&scenario_failure.canonical_bytes())
             .expect("canonical scenario failure observation"),
@@ -2402,39 +2324,21 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
             .expect("scenario failure observation id")
             .content_id()
             .schema_version(),
-        2
+        12
     );
     let failure_selection_observation = scenario_failure
         .clone()
         .with_produced_selections(BTreeSet::from([produced_selection]))
         .expect("scenario failure selection observation");
-    assert_eq!(failure_selection_observation.schema_version(), 4);
+    assert_eq!(failure_selection_observation.schema_version(), 12);
     assert_eq!(
         Observation::from_canonical_bytes(&failure_selection_observation.canonical_bytes())
             .expect("canonical scenario failure selection observation"),
         failure_selection_observation
     );
-    let mut alternate_empty_failure_selection_observation = scenario_failure.canonical_bytes();
-    alternate_empty_failure_selection_observation[..4].copy_from_slice(&4_u32.to_be_bytes());
-    alternate_empty_failure_selection_observation.extend_from_slice(&0_u64.to_be_bytes());
-    assert!(
-        Observation::from_canonical_bytes(&alternate_empty_failure_selection_observation).is_err()
-    );
-    let mut downgraded_failure = scenario_failure.canonical_bytes();
-    downgraded_failure[..4].copy_from_slice(&1_u32.to_be_bytes());
-    assert!(Observation::from_canonical_bytes(&downgraded_failure).is_err());
-    let mismatched_failure_envelope = ObjectEnvelope::for_record_versioned(
-        CampaignRecordKind::Observation,
-        1,
-        super::object::content_children(scenario_failure.content_children())
-            .expect("scenario failure observation children"),
-        scenario_failure.canonical_bytes(),
-    )
-    .expect("structural scenario failure envelope");
-    assert!(
-        ObjectEnvelope::from_canonical_bytes(&mismatched_failure_envelope.canonical_bytes())
-            .is_err()
-    );
+    let mut malformed_observation = observation.canonical_bytes();
+    malformed_observation[..4].copy_from_slice(&0_u32.to_be_bytes());
+    assert!(Observation::from_canonical_bytes(&malformed_observation).is_err());
     assert!(
         Observation::new(
             observation.attempt(),
@@ -2663,7 +2567,7 @@ fn finding_and_reproduction_records_round_trip_with_exact_children() {
     .expect("signature");
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        1,
+        12,
         b"finding-observation",
     ))
     .expect("observation id");
@@ -2850,7 +2754,7 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
     .expect("role-tagged pins");
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        1,
+        12,
         b"finding-v2-observation",
     ))
     .expect("observation id");

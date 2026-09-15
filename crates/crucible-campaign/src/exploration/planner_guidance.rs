@@ -18,7 +18,6 @@ pub const MAX_PLANNER_GUIDANCE_DOMAIN_BYTES: usize = 128 * 1024 * 1024;
 /// Exact owner-built guidance for one Ready planner candidate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlannerCandidateGuidance {
-    schema_version: u32,
     input_view: CampaignViewId,
     policy: CampaignPolicyId,
     position: PlanningScanPosition,
@@ -59,42 +58,7 @@ impl PlannerCandidateGuidance {
         objective_reward_micros: i64,
         finding_events: BTreeMap<FindingKind, u64>,
     ) -> Result<Self, CampaignCodecError> {
-        Self::new_for_schema(
-            PLANNER_CANDIDATE_GUIDANCE_SCHEMA_VERSION,
-            input_view,
-            policy,
-            position,
-            domain,
-            domain_semantics,
-            value,
-            ordinal,
-            edge,
-            statistics,
-            novelty_events,
-            objective_reward_micros,
-            finding_events,
-        )
-    }
-
-    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_for_schema(
-        schema_version: u32,
-        input_view: CampaignViewId,
-        policy: CampaignPolicyId,
-        position: PlanningScanPosition,
-        domain: ChoiceDomainId,
-        domain_semantics: ChoiceDomainSemanticId,
-        value: ChoiceValue,
-        ordinal: u64,
-        edge: BranchEdgeId,
-        statistics: PuctEdgeStatistics,
-        novelty_events: u64,
-        objective_reward_micros: i64,
-        finding_events: BTreeMap<FindingKind, u64>,
-    ) -> Result<Self, CampaignCodecError> {
-        if schema_version != PLANNER_CANDIDATE_GUIDANCE_SCHEMA_VERSION
-            || ordinal == 0
+        if ordinal == 0
             || edge
                 != crate::Selection::campaign_edge_id(
                     position.branch_point(),
@@ -112,7 +76,6 @@ impl PlannerCandidateGuidance {
             });
         }
         let value = Self {
-            schema_version,
             input_view,
             policy,
             position,
@@ -201,7 +164,7 @@ impl PlannerCandidateGuidance {
     }
 
     pub(crate) const fn schema_version(&self) -> u32 {
-        self.schema_version
+        PLANNER_CANDIDATE_GUIDANCE_SCHEMA_VERSION
     }
 
     /// Returns owner-verified finding occurrences by closed finding class.
@@ -312,7 +275,7 @@ impl PlannerCandidateGuidance {
         PlannerCandidateGuidanceId::from_content_id(
             crate::ObjectEnvelope::for_record_versioned(
                 crate::CampaignRecordKind::PlannerCandidateGuidance,
-                self.schema_version,
+                PLANNER_CANDIDATE_GUIDANCE_SCHEMA_VERSION,
                 crate::object::content_children(self.content_children())?,
                 self.canonical_bytes(),
             )?
@@ -332,7 +295,7 @@ impl PlannerCandidateGuidance {
 
 impl Canonical for PlannerCandidateGuidance {
     fn encode(&self, encoder: &mut Encoder) {
-        self.schema_version.encode(encoder);
+        PLANNER_CANDIDATE_GUIDANCE_SCHEMA_VERSION.encode(encoder);
         self.input_view.encode(encoder);
         self.policy.encode(encoder);
         self.position.encode(encoder);
@@ -371,8 +334,7 @@ impl Canonical for PlannerCandidateGuidance {
             FindingKind::decode,
             u64::decode,
         )?;
-        Self::new_for_schema(
-            schema_version,
+        Self::new(
             input_view,
             policy,
             position,
@@ -680,7 +642,6 @@ impl Canonical for PlannerBeamCohortState {
 /// selection. Explicit terminal attempt dispositions are counted separately.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlannerBeamCandidate {
-    schema_version: u32,
     input_view: CampaignViewId,
     policy: CampaignPolicyId,
     position: PlanningScanPosition,
@@ -704,13 +665,7 @@ impl PlannerBeamCandidate {
         cohort_state: PlannerBeamCohortState,
         closed_attempts: PlannerBeamClosureSummary,
     ) -> Result<Self, CampaignCodecError> {
-        let schema_version = if cohort_state.intervention_exclusions() == 0 {
-            RECORD_SCHEMA_VERSION
-        } else {
-            2
-        };
         let value = Self {
-            schema_version,
             input_view,
             policy,
             position,
@@ -835,13 +790,13 @@ impl PlannerBeamCandidate {
     }
 
     pub(crate) const fn schema_version(&self) -> u32 {
-        self.schema_version
+        PLANNER_BEAM_CANDIDATE_SCHEMA_VERSION
     }
 }
 
 impl Canonical for PlannerBeamCandidate {
     fn encode(&self, encoder: &mut Encoder) {
-        self.schema_version.encode(encoder);
+        PLANNER_BEAM_CANDIDATE_SCHEMA_VERSION.encode(encoder);
         self.input_view.encode(encoder);
         self.policy.encode(encoder);
         self.position.encode(encoder);
@@ -853,13 +808,12 @@ impl Canonical for PlannerBeamCandidate {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        let schema_version = u32::decode(decoder)?;
-        if !matches!(schema_version, 1 | 2) {
+        if u32::decode(decoder)? != PLANNER_BEAM_CANDIDATE_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported planner-Beam-candidate schema version",
             });
         }
-        let value = Self::new(
+        Self::new(
             CampaignViewId::decode(decoder)?,
             CampaignPolicyId::decode(decoder)?,
             PlanningScanPosition::decode(decoder)?,
@@ -868,12 +822,6 @@ impl Canonical for PlannerBeamCandidate {
             PlannerBeamBarrier::decode(decoder)?,
             PlannerBeamCohortState::decode(decoder)?,
             PlannerBeamClosureSummary::decode(decoder)?,
-        )?;
-        if value.schema_version != schema_version {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "planner-Beam-candidate schema disagrees with cohort state",
-            });
-        }
-        Ok(value)
+        )
     }
 }

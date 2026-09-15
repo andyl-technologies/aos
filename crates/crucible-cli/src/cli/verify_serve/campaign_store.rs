@@ -1391,21 +1391,6 @@ unknown_secret_field = true
     }
 
     #[test]
-    fn strict_composed_store_rejects_retired_version_one_deployment() {
-        let fixture = StoreDeploymentFixture::new();
-        let deployment = fixture.write_deployment("");
-        let body = fs::read_to_string(&deployment)
-            .expect("read current campaign store deployment")
-            .replacen("version = 2", "version = 1", 1);
-        fs::write(&deployment, body).expect("write retired campaign store deployment");
-
-        let Err(error) = load_campaign_repository_store(&deployment) else {
-            panic!("retired version-one deployment was accepted");
-        };
-        assert!(error.to_string().contains("unsupported schema or version"));
-    }
-
-    #[test]
     fn serve_selects_the_composed_store_without_creating_default_leafs() {
         let fixture = StoreDeploymentFixture::new();
         let deployment = fixture.write_deployment("");

@@ -298,7 +298,6 @@ impl CampaignRepository {
                             self.validate_derivation_successor(
                                 &parent_snapshot,
                                 &loaded,
-                                transition.content_id(),
                                 derivation,
                                 &mut validated_generator_policies,
                             )?;
@@ -726,7 +725,6 @@ impl CampaignRepository {
         &self,
         parent: &LoadedSnapshot,
         child: &LoadedSnapshot,
-        transition_content: ContentId,
         derivation: CampaignDerivation,
         validated_generator_policies: &mut BTreeSet<CampaignPolicyId>,
     ) -> Result<(), CampaignRepositoryError> {
@@ -744,7 +742,7 @@ impl CampaignRepository {
         let prior_policy = self.read_policy(parent.snapshot.active_policy().content_id())?;
         let next_policy = self.read_policy(derivation.active_policy().content_id())?;
         if next_policy.scenario() != lineage.scenario()
-            || !derivation_modes_are_compatible(prior_policy.mode(), next_policy.mode())
+            || prior_policy.mode() != next_policy.mode()
             || (prior_policy.mode() == crate::CampaignMode::Statistical
                 && derivation.active_policy() != parent.snapshot.active_policy())
         {
@@ -758,18 +756,7 @@ impl CampaignRepository {
 
         let prior_roots = parent.snapshot.roots();
         let next_roots = child.snapshot.roots();
-        let accounting_matches =
-            if is_streaming_to_strict_migration(prior_policy.mode(), next_policy.mode()) {
-                let anchor = self
-                    .strict_migration_sequence_anchor(prior_roots.accounting, transition_content)?;
-                self.merkle.equals_after_upserts(
-                    prior_roots.accounting,
-                    next_roots.accounting,
-                    &BTreeMap::from([(observation_sequence_key(), anchor)]),
-                )?
-            } else {
-                prior_roots.accounting == next_roots.accounting
-            };
+        let accounting_matches = prior_roots.accounting == next_roots.accounting;
         if prior_roots.graph != next_roots.graph
             || prior_roots.observations != next_roots.observations
             || prior_roots.corpus != next_roots.corpus
@@ -835,56 +822,47 @@ impl CampaignRepository {
             return Err(integrity("branch-request-transition-reused-request"));
         }
         let mut upserts = BTreeMap::from([(request_key, request_content)]);
-        if let Some(index) = self.planner_scan_index_after(
+        let index = self.planner_scan_index_after(
             prior_roots.exploration,
             &[(request, request_record.branch_point())],
             false,
-        )? {
-            upserts.insert(planner_scan_index_anchor_key(), index);
-        }
+        )?;
+        upserts.insert(planner_scan_index_anchor_key(), index);
         let domain = self.read_choice_domain(request_record.domain().content_id())?;
         let feedback_indexed = self
             .candidate_source_profile(&request_record, &domain)?
             .is_some_and(super::projection::CandidateSourceProfile::requires_feedback_index);
         let frontier_index = self
             .merkle
-            .get(prior_roots.exploration, frontier_index_anchor_key())?;
-        if feedback_indexed && frontier_index.is_none() {
-            return Err(integrity("progressive-generator-requires-frontier-index"));
-        }
+            .get(prior_roots.exploration, frontier_index_anchor_key())?
+            .ok_or_else(|| integrity("current-campaign-frontier-index-is-missing"))?;
         let indexed_requests = feedback_indexed
             .then_some((request, request_record.branch_point()))
             .into_iter()
             .collect::<Vec<_>>();
-        if let Some(next_index) =
-            self.branch_request_index_after(prior_roots.exploration, &indexed_requests, false)?
+        let next_index =
+            self.branch_request_index_after(prior_roots.exploration, &indexed_requests, false)?;
+        upserts.insert(branch_request_index_anchor_key(), next_index);
+        if self
+            .merkle
+            .get(frontier_index, frontier_index_order_key(request))?
+            .is_some()
         {
-            upserts.insert(branch_request_index_anchor_key(), next_index);
+            return Err(integrity("branch-request-transition-reused-frontier-slot"));
         }
-        if let Some(frontier_index) = frontier_index {
-            if self
-                .merkle
-                .get(frontier_index, frontier_index_order_key(request))?
-                .is_some()
-            {
-                return Err(integrity("branch-request-transition-reused-frontier-slot"));
-            }
-            let next_frontier = self
-                .frontier_index_after(
-                    prior_roots.exploration,
-                    &[(
-                        request,
-                        request_record.branch_point(),
-                        self.initial_continuation_state_at(
-                            &request_record,
-                            super::projection::CandidateViewRoots::from_roots(prior_roots),
-                        )?,
-                    )],
-                    false,
-                )?
-                .ok_or_else(|| integrity("branch-request-frontier-index-disappeared"))?;
-            upserts.insert(frontier_index_anchor_key(), next_frontier);
-        }
+        let next_frontier = self.frontier_index_after(
+            prior_roots.exploration,
+            &[(
+                request,
+                request_record.branch_point(),
+                self.initial_continuation_state_at(
+                    &request_record,
+                    super::projection::CandidateViewRoots::from_roots(prior_roots),
+                )?,
+            )],
+            false,
+        )?;
+        upserts.insert(frontier_index_anchor_key(), next_frontier);
         if !self.merkle.equals_after_upserts(
             prior_roots.exploration,
             next_roots.exploration,
@@ -1077,35 +1055,32 @@ impl CampaignRepository {
             (ordinal_key, proposal_content),
             (value_key, proposal_content),
         ]);
-        if let Some(frontier_index) = self
+        let frontier_index = self
             .merkle
             .get(prior_roots.exploration, frontier_index_anchor_key())?
-        {
-            let request = self.read_branch_request(proposal_record.request().content_id())?;
-            let prior_state = self.continuation_state(
-                super::projection::CandidateViewRoots::from_roots(prior_roots),
-                proposal_record.request(),
-                &request,
-            )?;
-            self.validate_frontier_projection(
-                frontier_index,
+            .ok_or_else(|| integrity("current-campaign-frontier-index-is-missing"))?;
+        let request = self.read_branch_request(proposal_record.request().content_id())?;
+        let prior_state = self.continuation_state(
+            super::projection::CandidateViewRoots::from_roots(prior_roots),
+            proposal_record.request(),
+            &request,
+        )?;
+        self.validate_frontier_projection(
+            frontier_index,
+            proposal_record.request(),
+            proposal_record.branch_point(),
+            prior_state,
+        )?;
+        let next_frontier = self.frontier_index_after(
+            prior_roots.exploration,
+            &[(
                 proposal_record.request(),
                 proposal_record.branch_point(),
-                prior_state,
-            )?;
-            let next_frontier = self
-                .frontier_index_after(
-                    prior_roots.exploration,
-                    &[(
-                        proposal_record.request(),
-                        proposal_record.branch_point(),
-                        crate::ContinuationState::Open,
-                    )],
-                    false,
-                )?
-                .ok_or_else(|| integrity("proposal-frontier-index-disappeared"))?;
-            upserts.insert(frontier_index_anchor_key(), next_frontier);
-        }
+                crate::ContinuationState::Open,
+            )],
+            false,
+        )?;
+        upserts.insert(frontier_index_anchor_key(), next_frontier);
         if !self.merkle.equals_after_upserts(
             prior_roots.exploration,
             next_roots.exploration,
@@ -1183,61 +1158,50 @@ impl CampaignRepository {
                 "attempt-admission-transition-accounting-root-mismatch",
             ));
         }
-        match self
+        let frontier_index = self
             .merkle
             .get(prior_roots.exploration, frontier_index_anchor_key())?
-        {
-            Some(frontier_index) => {
-                let proposal_record = self.read_proposal(proposal.content_id())?;
-                let request = self.read_branch_request(proposal_record.request().content_id())?;
-                let prior_state = self.continuation_state(
-                    super::projection::CandidateViewRoots::from_roots(prior_roots),
-                    proposal_record.request(),
-                    &request,
-                )?;
-                self.validate_frontier_projection(
-                    frontier_index,
-                    proposal_record.request(),
-                    proposal_record.branch_point(),
-                    prior_state,
-                )?;
-                let next_state = self.continuation_state(
-                    super::projection::CandidateViewRoots::new(
-                        prior_roots.exploration,
-                        next_roots.observations,
-                        next_roots.corpus,
-                        next_roots.accounting,
-                    ),
-                    proposal_record.request(),
-                    &request,
-                )?;
-                let next_frontier = self
-                    .frontier_index_after(
-                        prior_roots.exploration,
-                        &[(
-                            proposal_record.request(),
-                            proposal_record.branch_point(),
-                            next_state,
-                        )],
-                        false,
-                    )?
-                    .ok_or_else(|| integrity("attempt-admission-frontier-index-disappeared"))?;
-                if !self.merkle.equals_after_upserts(
-                    prior_roots.exploration,
-                    next_roots.exploration,
-                    &BTreeMap::from([(frontier_index_anchor_key(), next_frontier)]),
-                )? {
-                    return Err(integrity(
-                        "attempt-admission-transition-frontier-root-mismatch",
-                    ));
-                }
-            }
-            None if prior_roots.exploration != next_roots.exploration => {
-                return Err(integrity(
-                    "attempt-admission-transition-changed-exploration-root",
-                ));
-            }
-            None => {}
+            .ok_or_else(|| integrity("current-campaign-frontier-index-is-missing"))?;
+        let proposal_record = self.read_proposal(proposal.content_id())?;
+        let request = self.read_branch_request(proposal_record.request().content_id())?;
+        let prior_state = self.continuation_state(
+            super::projection::CandidateViewRoots::from_roots(prior_roots),
+            proposal_record.request(),
+            &request,
+        )?;
+        self.validate_frontier_projection(
+            frontier_index,
+            proposal_record.request(),
+            proposal_record.branch_point(),
+            prior_state,
+        )?;
+        let next_state = self.continuation_state(
+            super::projection::CandidateViewRoots::new(
+                prior_roots.exploration,
+                next_roots.observations,
+                next_roots.corpus,
+                next_roots.accounting,
+            ),
+            proposal_record.request(),
+            &request,
+        )?;
+        let next_frontier = self.frontier_index_after(
+            prior_roots.exploration,
+            &[(
+                proposal_record.request(),
+                proposal_record.branch_point(),
+                next_state,
+            )],
+            false,
+        )?;
+        if !self.merkle.equals_after_upserts(
+            prior_roots.exploration,
+            next_roots.exploration,
+            &BTreeMap::from([(frontier_index_anchor_key(), next_frontier)]),
+        )? {
+            return Err(integrity(
+                "attempt-admission-transition-frontier-root-mismatch",
+            ));
         }
         if !self.coordination_matches_parent_result(parent, next_roots.coordination)? {
             return Err(integrity(

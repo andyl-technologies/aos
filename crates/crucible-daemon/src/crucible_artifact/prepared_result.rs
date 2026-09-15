@@ -8,7 +8,7 @@
 //! measurement-ownership, or finding-closure invariants.
 //!
 //! ```text
-//! v5-magic
+//! v6-magic
 //! observation-child, measurements, properties, coverage
 //! discovered-choice-count, discovered-choice records
 //! produced-selection-count, selection records, observation
@@ -72,7 +72,7 @@ use crate::{
     CrucibleMeasurementReplayEvidence, verify_crucible_measurement_publication,
 };
 
-const PREPARED_RESULT_MAGIC_V5: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v5\0";
+const PREPARED_RESULT_MAGIC_V6: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v6\0";
 pub(super) const MAX_PREPARED_RESULT_RECORDS: usize = 200_000;
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REPLAY_VALIDATION_REFERENCES: usize = 4 * 1024 * 1024;
@@ -170,6 +170,39 @@ impl PreparedSemanticAttemptResult {
     #[must_use]
     pub const fn finding(&self) -> Option<&PreparedCrucibleFindingCandidate> {
         self.finding.as_ref()
+    }
+
+    pub(crate) fn production_replay_capture_inputs(
+        &self,
+    ) -> Result<
+        Option<[crate::FindingReplayCaptureInput; 4]>,
+        crate::FindingProductionReplayCaptureError,
+    > {
+        self.finding
+            .as_ref()
+            .map(PreparedCrucibleFindingCandidate::production_replay_capture_inputs)
+            .transpose()
+            .map(Option::flatten)
+    }
+
+    pub(crate) fn prepare_bound_production_replay_finding(
+        &self,
+        replay_captures: crucible_campaign::FindingReplayCaptureSet,
+    ) -> Result<PreparedCrucibleFindingCandidate, PreparedSemanticResultCodecError> {
+        let mut finding = self
+            .finding
+            .clone()
+            .ok_or_else(|| inconsistent("finding production replay capture owner"))?;
+        finding.bind_production_replay_captures(replay_captures)?;
+        validate_pair(&self.observation, Some(&finding))?;
+        Ok(finding)
+    }
+
+    pub(crate) fn commit_bound_production_replay_finding(
+        &mut self,
+        finding: PreparedCrucibleFindingCandidate,
+    ) {
+        self.finding = Some(finding);
     }
 
     /// Attaches one automatically prepared finding and its raw replay leaves.
@@ -398,12 +431,19 @@ impl PreparedSemanticAttemptResult {
         maximum_bytes: usize,
     ) -> Result<Vec<u8>, PreparedSemanticResultCodecError> {
         validate_pair(&self.observation, self.finding.as_ref())?;
+        if self
+            .finding
+            .as_ref()
+            .is_some_and(|finding| finding.production_replays.is_some())
+        {
+            return Err(inconsistent("unbound finding production replay captures"));
+        }
         if let Some(terminal_fingerprints) = &self.terminal_fingerprints {
             validate_terminal_fingerprints(terminal_fingerprints)?;
         }
 
         let mut encoder = Encoder::new(maximum_bytes.min(MAX_PREPARED_SEMANTIC_RESULT_BYTES));
-        encoder.raw(PREPARED_RESULT_MAGIC_V5)?;
+        encoder.raw(PREPARED_RESULT_MAGIC_V6)?;
         encode_observation(&mut encoder, &self.observation)?;
         encode_measurement_evidence(&mut encoder, &self.measurement_replay_evidence)?;
         match &self.terminal_fingerprints {
@@ -460,11 +500,11 @@ impl PreparedSemanticAttemptResult {
             return Err(PreparedSemanticResultCodecError::LimitExceeded);
         }
 
-        if !bytes.starts_with(PREPARED_RESULT_MAGIC_V5) {
+        if !bytes.starts_with(PREPARED_RESULT_MAGIC_V6) {
             return Err(PreparedSemanticResultCodecError::Version);
         }
         let mut decoder = Decoder::new(bytes);
-        decoder.magic(PREPARED_RESULT_MAGIC_V5)?;
+        decoder.magic(PREPARED_RESULT_MAGIC_V6)?;
         let observation = decode_observation(&mut decoder)?;
         let measurement_replay_evidence = decode_measurement_evidence(&mut decoder)?;
         let terminal_fingerprints = match decoder.byte()? {
@@ -1341,6 +1381,7 @@ fn decode_finding(
         minimization_replays,
         verification_replays,
         triage_replays,
+        production_replays: None,
         bundle,
     };
     validate_finding(&value)?;
@@ -1455,6 +1496,21 @@ fn decode_journal_finding_reproduction(
         artifact,
         replay,
     })
+}
+
+impl PreparedCrucibleFindingCandidate {
+    pub(crate) fn production_replay_capture_limits(
+        &self,
+    ) -> Result<crate::FindingProductionReplayCaptureLimits, PreparedSemanticResultCodecError> {
+        let finding = decode_journal_finding_reproduction(
+            &self.original,
+            self.discovery_path,
+            "journal production replay capture basis",
+        )?;
+        Ok(crate::FindingProductionReplayCaptureLimits::for_finding(
+            &finding,
+        ))
+    }
 }
 
 fn validate_finding_triage_replays(

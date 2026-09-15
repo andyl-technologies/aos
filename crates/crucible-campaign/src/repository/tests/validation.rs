@@ -2,10 +2,9 @@
 
 use super::*;
 use crate::{
-    CampaignCommandId, ExactRational, FeedbackWait, FindingKind, FindingSignature, FindingTarget,
-    IntegerDomain, IntegerRepresentation, IntegerValue, Objective, ObjectiveGoal, ObjectiveValue,
-    PinChange, PinRetention, RankingCandidate, RankingMethod, SurvivorRule, evaluate_objectives,
-    rank_survivors,
+    CampaignCommandId, ExactRational, FeedbackWait, IntegerDomain, IntegerRepresentation,
+    IntegerValue, Objective, ObjectiveGoal, ObjectiveValue, PinChange, PinRetention,
+    RankingCandidate, RankingMethod, SurvivorRule, evaluate_objectives, rank_survivors,
 };
 
 struct PermitExhaustive;
@@ -20,6 +19,69 @@ impl crate::CampaignPrincipalAuthorizer for PermitExhaustive {
     ) -> Result<(), crate::CampaignAuthorizationError> {
         Ok(())
     }
+}
+
+fn expect_integrity_reason<T>(result: Result<T, CampaignRepositoryError>, expected: &'static str) {
+    match result {
+        Err(CampaignRepositoryError::Integrity { reason }) => assert_eq!(reason, expected),
+        Err(error) => panic!("expected integrity error `{expected}`, got `{error}`"),
+        Ok(_) => panic!("missing current index `{expected}` was accepted"),
+    }
+}
+
+#[test]
+fn current_exploration_index_anchors_are_required_without_writes() {
+    let (repository, _lineage, _policy, blobs) = counted_fixture();
+    let empty = repository.merkle.empty().expect("empty root").content_id();
+    let exploration_without = |omitted| {
+        [
+            frontier_index_anchor_key(),
+            branch_request_index_anchor_key(),
+            planner_scan_index_anchor_key(),
+        ]
+        .into_iter()
+        .filter(|anchor| *anchor != omitted)
+        .try_fold(empty, |root, anchor| {
+            repository
+                .merkle
+                .insert(root, anchor, empty)
+                .map(|map| map.content_id())
+        })
+        .expect("partial current exploration root")
+    };
+
+    let missing_frontier = exploration_without(frontier_index_anchor_key());
+    let missing_branch_requests = exploration_without(branch_request_index_anchor_key());
+    let missing_planner_scan = exploration_without(planner_scan_index_anchor_key());
+    let objects_before = blobs.object_count().expect("objects before rejection");
+
+    expect_integrity_reason(
+        repository.frontier_index_after(missing_frontier, &[], false),
+        "current-campaign-frontier-index-is-missing",
+    );
+    expect_integrity_reason(
+        repository.branch_request_index_after(missing_branch_requests, &[], false),
+        "current-campaign-branch-request-index-is-missing",
+    );
+    let mut remaining = 1;
+    expect_integrity_reason(
+        repository.branch_point_requests(
+            missing_branch_requests,
+            crate::BranchPointId::from_hash(CampaignHash::from_bytes([0x51; 32])),
+            &mut remaining,
+        ),
+        "current-campaign-branch-request-index-is-missing",
+    );
+    expect_integrity_reason(
+        repository.planner_scan_index_after(missing_planner_scan, &[], false),
+        "current-campaign-planner-scan-index-is-missing",
+    );
+
+    assert_eq!(
+        blobs.object_count().expect("objects after rejection"),
+        objects_before,
+        "missing current exploration indexes caused repository writes"
+    );
 }
 
 #[test]
@@ -205,7 +267,7 @@ fn objective_evaluation_publication_is_snapshot_owned_replayable_and_failure_ato
         .snapshot
         .transition()
         .expect("objective publication transition");
-    assert_eq!(transition.content_id().schema_version(), 6);
+    assert_eq!(transition.content_id().schema_version(), 14);
     assert_eq!(
         repository
             .read_fact(transition.content_id())
@@ -1053,8 +1115,7 @@ fn ancestry_rejects_branch_request_with_an_unrelated_root_change() {
             )],
             true,
         )
-        .expect("frontier projection")
-        .expect("frontier index");
+        .expect("frontier projection");
     roots.exploration = repository
         .merkle
         .insert(
@@ -1070,8 +1131,7 @@ fn ancestry_rejects_branch_request_with_an_unrelated_root_change() {
             &[(request_id, request.branch_point())],
             true,
         )
-        .expect("scan update")
-        .expect("scan index");
+        .expect("scan update");
     roots.exploration = repository
         .merkle
         .insert(
@@ -1173,8 +1233,7 @@ fn ancestry_rejects_a_forged_initial_frontier_projection() {
             )],
             true,
         )
-        .expect("forged frontier projection")
-        .expect("frontier index");
+        .expect("forged frontier projection");
     roots.exploration = repository
         .merkle
         .insert(
@@ -1825,7 +1884,7 @@ fn head_rejects_a_snapshot_with_missing_parent_and_transition() {
     .expect("parent id");
     let missing_transition = crate::CampaignFactId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignFact,
-        2,
+        14,
         b"missing-transition",
     ))
     .expect("transition id");

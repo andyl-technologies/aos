@@ -363,6 +363,19 @@ fn divergence_entry_summary(entry: Option<&SchedulerEventLogEntry>) -> String {
 }
 
 impl QemuFindingCandidateBoundaryEvidence {
+    pub(crate) fn causal_entries(&self) -> &[SchedulerEventLogEntry] {
+        &self.triage.causal_entries
+    }
+
+    pub(crate) fn paired_divergence_logs(
+        &self,
+    ) -> Option<(&[SchedulerEventLogEntry], &[SchedulerEventLogEntry])> {
+        self.triage
+            .paired_divergence_logs
+            .as_ref()
+            .map(|(expected, reproduced)| (expected.as_slice(), reproduced.as_slice()))
+    }
+
     /// Returns whether this replay observed a property failure or timeout.
     pub(crate) fn has_higher_priority_failure_source(&self) -> bool {
         self.triage.failures.iter().any(|failure| {

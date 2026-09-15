@@ -23,7 +23,7 @@ pub(super) fn assert_retention_policy_materialized_start(
         .expect("policy admission"),
         CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
-            1,
+            4,
             b"materialized-start-policy",
         ))
         .expect("policy"),

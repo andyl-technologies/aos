@@ -71,7 +71,7 @@ impl CampaignGcApplyReport {
         self.unreachable_candidates
     }
 
-    /// Returns completed reachable read-through cache deletions.
+    /// Returns completed reachable cache deletions.
     #[must_use]
     pub const fn reachable_cache_candidates(self) -> u64 {
         self.reachable_cache_candidates
@@ -92,11 +92,11 @@ impl CampaignGcApplyReport {
 /// leaves in canonical backend order. It reproduces the exact ref, current
 /// exact-pin roots, ledger, root-manifest, and every
 /// physical-inventory basis before durably entering `Applying`. Root fences
-/// remain held throughout. Version 1 reacquires each physical leaf and retains
-/// its fence through that leaf's unreachable deletions. Version 2 reacquires
-/// paired cache/source fences in physical-identity order, revalidates both exact
-/// placements, and advances the cache's rolling post-delete basis. Aliased v2
-/// identities fail closed before deletion.
+/// remain held throughout. Each physical leaf stays fenced through its
+/// unreachable deletions. Cache reclamation acquires paired cache/source fences
+/// in physical-identity order, revalidates both exact placements, and advances
+/// the cache's rolling post-delete basis. Aliased identities fail closed before
+/// deletion.
 /// The construction-time `store_graph` capability supplies both the graph
 /// identity and every physical leaf; independently supplied graph hashes or
 /// deletion capabilities are not accepted by this public boundary.
@@ -376,6 +376,9 @@ where
     if journal.phase() == CampaignGcJournalPhase::Applying {
         return Err(CampaignGcApplyError::InterruptedJournal);
     }
+    if journal.phase() == CampaignGcJournalPhase::Cancelled {
+        return Err(CampaignGcApplyError::CancelledJournal);
+    }
     if journal.plan().store_graph() != store_graph {
         return Err(CampaignGcApplyError::StoreGraphChanged);
     }
@@ -459,7 +462,7 @@ where
         fence
             .visit_roots(&mut |root| {
                 roots
-                    .insert_direct(root.id())
+                    .insert_pending_write_back(root.id())
                     .map_err(|()| StoreError::Quota)
             })
             .map_err(CampaignGcApplyError::WriteBack)?;
@@ -473,14 +476,25 @@ where
             })
             .map_err(CampaignGcApplyError::Transfer)?;
     }
+    if let Some(candidate) = journal.candidates().iter().find(|candidate| {
+        matches!(
+            candidate.reason(),
+            CampaignGcCandidateReason::ReachableCache { .. }
+        ) && roots.pending_write_back.contains(&candidate.id())
+    }) {
+        return Err(CampaignGcApplyError::CandidateBecameWriteBackPending {
+            backend: candidate.backend().to_owned(),
+            id: candidate.id(),
+        });
+    }
     let current_roots = CampaignGcRootManifest::new(roots.unique.iter().copied())?;
     if current_roots != *journal.roots() {
         return Err(CampaignGcApplyError::RootSetChanged);
     }
-    // Root-manifest v1 binds unique IDs but predates direct-versus-transitive
-    // archive roots. Recompute current reachability under the classified root
-    // inventory so promoting an archive object to an operational root cannot
-    // leave its newly required descendants eligible under an older plan.
+    // The root manifest binds unique IDs while the live inventory also
+    // classifies direct and transitive roots. Recompute reachability from that
+    // classification so promoting an archive object to an operational root
+    // cannot leave its newly required descendants eligible for deletion.
     let mut current_reachable = repository
         .authenticated_closure_ids(roots.ordinary.iter().copied())
         .map_err(CampaignGcApplyError::Campaign)?;
@@ -491,7 +505,6 @@ where
     }) {
         return Err(CampaignGcApplyError::CandidateBecameReachable { id: candidate.id() });
     }
-
     for (target, planned) in physical.iter().zip(journal.plan().physical()) {
         let mut fence = target.admin().acquire_inventory_fence().map_err(|source| {
             CampaignGcApplyError::Blob {
@@ -533,8 +546,7 @@ where
 {
     let mut authenticated = std::collections::BTreeSet::new();
     for candidate in journal.candidates().iter() {
-        let CampaignGcCandidateReason::ReachableReadThroughCache { required_backend } =
-            candidate.reason()
+        let CampaignGcCandidateReason::ReachableCache { required_backend } = candidate.reason()
         else {
             continue;
         };
@@ -545,7 +557,7 @@ where
         let source_role = physical[source_index].graph().retention(kind);
         if !current_reachable.contains(&candidate.id())
             || candidate.backend() == required_backend
-            || cache_role != Some(StoreGraphPhysicalRetention::ReadThroughCache)
+            || cache_role != Some(StoreGraphPhysicalRetention::Cache)
             || source_role != Some(StoreGraphPhysicalRetention::Required)
         {
             return Err(CampaignGcApplyError::CandidatePolicyChanged {
@@ -618,7 +630,7 @@ where
         let cache_index = physical_index(physical, candidate.backend())?;
         match candidate.reason() {
             CampaignGcCandidateReason::Unreachable => {
-                let updated = delete_v2_single(
+                let updated = delete_single(
                     physical[cache_index],
                     &rolling[cache_index],
                     candidate.id(),
@@ -626,7 +638,7 @@ where
                 )?;
                 rolling[cache_index] = updated;
             }
-            CampaignGcCandidateReason::ReachableReadThroughCache { required_backend } => {
+            CampaignGcCandidateReason::ReachableCache { required_backend } => {
                 let source_index = physical_index(physical, required_backend)?;
                 let cache_identity = validate_unique_policy_identity(
                     journal,
@@ -644,7 +656,7 @@ where
                         required_backend: required_backend.clone(),
                     });
                 }
-                let updated = delete_v2_paired(
+                let updated = delete_paired(
                     physical[cache_index],
                     &rolling[cache_index],
                     physical[source_index],
@@ -675,7 +687,7 @@ where
         }
 
         let target_index = physical_index(physical, candidate.backend())?;
-        rolling[target_index] = delete_v2_single(
+        rolling[target_index] = delete_single(
             physical[target_index],
             &rolling[target_index],
             candidate.id(),
@@ -685,7 +697,7 @@ where
     Ok(())
 }
 
-fn delete_v2_single<'a, E, P>(
+fn delete_single<'a, E, P>(
     target: P,
     expected: &CampaignGcBlobInventoryBasis,
     id: ContentId,
@@ -701,7 +713,7 @@ where
     refreshed_basis_after_delete(target, expected, id, logical_length, fence.as_mut())
 }
 
-fn delete_v2_paired<E>(
+fn delete_paired<E>(
     cache: CampaignGcPhysicalStore<'_>,
     cache_expected: &CampaignGcBlobInventoryBasis,
     source: CampaignGcPhysicalStore<'_>,
@@ -932,6 +944,9 @@ pub enum CampaignGcApplyError<E>
 where
     E: StdError + 'static,
 {
+    /// The operator cancelled this plan before deletion began.
+    #[error("campaign GC journal records a cancelled plan; create a fresh plan")]
+    CancelledJournal,
     /// A prior apply may have deleted candidates; this plan cannot be resumed.
     #[error("campaign GC journal records an interrupted apply; create a fresh plan")]
     InterruptedJournal,
@@ -1005,7 +1020,17 @@ where
         /// Newly reachable planned candidate.
         id: ContentId,
     },
-    /// A v2 candidate no longer has its planned graph-derived retention roles.
+    /// A planned cache eviction became owned by a pending write-back journal.
+    #[error(
+        "campaign GC candidate {id} on backend {backend} became pending write-back after planning"
+    )]
+    CandidateBecameWriteBackPending {
+        /// Cache backend selected for deletion.
+        backend: String,
+        /// Planned cache candidate now protected by the write-back fence.
+        id: ContentId,
+    },
+    /// A candidate no longer has its planned graph-derived retention roles.
     #[error("campaign GC candidate {id} on backend {backend} no longer satisfies cache policy")]
     CandidatePolicyChanged {
         /// Physical backend selected for cache eviction.
@@ -1013,7 +1038,7 @@ where
         /// Reachable logical object whose placement policy changed.
         id: ContentId,
     },
-    /// A v2 cache candidate shares its physical namespace with its source.
+    /// A cache candidate shares its physical namespace with its source.
     #[error("campaign GC cache backend {backend} aliases required backend {required_backend}")]
     AliasedRequiredCopy {
         /// Cache backend selected for deletion.
@@ -1021,7 +1046,7 @@ where
         /// Required backend that must be physically independent.
         required_backend: String,
     },
-    /// A v2 cache or source identity is represented by several graph nodes.
+    /// A cache or source identity is represented by several graph nodes.
     #[error("campaign GC physical identity for backend {backend} is aliased")]
     AliasedPhysicalBoundary {
         /// Backend whose physical identity is not unique in the plan.

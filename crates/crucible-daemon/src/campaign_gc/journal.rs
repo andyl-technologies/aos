@@ -11,6 +11,9 @@
 //! <journal>/state-v1
 //! ```
 //!
+//! State-v1 tags encode Planned=1, Applying=2, Complete=3, and Cancelled=4.
+//! Every other tag is rejected.
+//!
 //! State replacement is write-fsync-rename-directory-fsync. Opening a journal
 //! reacquires its exclusive process lock and re-fsyncs both the journal and its
 //! parent before treating a visible transition as durable. The containing
@@ -51,6 +54,8 @@ pub enum CampaignGcJournalPhase {
     Applying,
     /// Every candidate deletion completed while all planned fences remained held.
     Complete,
+    /// The operator cancelled the plan before deletion began.
+    Cancelled,
 }
 
 impl CampaignGcJournalPhase {
@@ -59,6 +64,7 @@ impl CampaignGcJournalPhase {
             Self::Planned => 1,
             Self::Applying => 2,
             Self::Complete => 3,
+            Self::Cancelled => 4,
         }
     }
 
@@ -67,6 +73,7 @@ impl CampaignGcJournalPhase {
             1 => Ok(Self::Planned),
             2 => Ok(Self::Applying),
             3 => Ok(Self::Complete),
+            4 => Ok(Self::Cancelled),
             _ => Err(CampaignGcJournalError::InvalidState),
         }
     }
@@ -244,7 +251,31 @@ impl DirectoryCampaignGcJournal {
                 Ok(CampaignGcJournalTransition::Advanced)
             }
             CampaignGcJournalPhase::Applying => Ok(CampaignGcJournalTransition::Existing),
-            CampaignGcJournalPhase::Complete => Err(CampaignGcJournalError::InvalidTransition),
+            CampaignGcJournalPhase::Complete | CampaignGcJournalPhase::Cancelled => {
+                Err(CampaignGcJournalError::InvalidTransition)
+            }
+        }
+    }
+
+    /// Durably cancels a plan before candidate deletion begins.
+    ///
+    /// Cancellation is monotonic and idempotent. A cancelled journal cannot
+    /// return to the planned phase.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignGcJournalError::InvalidTransition`] after apply has
+    /// begun, or an I/O error when state replacement is indeterminate.
+    pub fn cancel(&mut self) -> Result<CampaignGcJournalTransition, CampaignGcJournalError> {
+        match self.phase {
+            CampaignGcJournalPhase::Planned => {
+                self.replace_phase(CampaignGcJournalPhase::Cancelled)?;
+                Ok(CampaignGcJournalTransition::Advanced)
+            }
+            CampaignGcJournalPhase::Cancelled => Ok(CampaignGcJournalTransition::Existing),
+            CampaignGcJournalPhase::Applying | CampaignGcJournalPhase::Complete => {
+                Err(CampaignGcJournalError::InvalidTransition)
+            }
         }
     }
 
@@ -262,6 +293,7 @@ impl DirectoryCampaignGcJournal {
                 Ok(CampaignGcJournalTransition::Advanced)
             }
             CampaignGcJournalPhase::Complete => Ok(CampaignGcJournalTransition::Existing),
+            CampaignGcJournalPhase::Cancelled => Err(CampaignGcJournalError::InvalidTransition),
         }
     }
 

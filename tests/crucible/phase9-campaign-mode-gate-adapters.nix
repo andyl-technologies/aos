@@ -5,9 +5,7 @@
   compositions,
 }: let
   inventory = builtins.fromTOML (builtins.readFile ./campaign-gate-matrix-inventory.toml);
-  expectedGateNames = map (authority: authority.gate) (
-    builtins.filter (authority: authority.execution_family != "fleet-runtime") inventory.authorities
-  );
+  expectedGateNames = map (authority: authority.gate) inventory.authorities;
 
   mkAdapters = composition: let
     inherit (composition) mode system;
@@ -47,6 +45,19 @@
       inherit pkgs lib testing campaignComposition;
       productionPluginFlight = productionFlight;
     };
+    e2eDeterminism = import ./phase7-e2e-determinism.nix {
+      inherit pkgs lib testing campaignComposition;
+      attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
+      taskIds = [];
+      openTaskIds = [];
+      dependencies = [];
+    };
+    fleetEquivalence = import ./phase7-crucible-fleet-equivalence.nix {
+      inherit pkgs lib testing campaignComposition e2eDeterminism;
+      attrPath = "checks.crucible.phase7.gates.fleetEquivalence";
+      taskIds = ["T-DCE-8"];
+      dependencies = [];
+    };
   in {
     "gate:harness-lint" = import ./phase9-campaign-mode-static-closure.nix {
       inherit pkgs lib mode system;
@@ -64,6 +75,7 @@
     };
     "gate:scheduler-liveness" = native ./phase9-campaign-mode-native-scheduler-liveness.nix;
     "gate:adversarial-determinism" = native ./phase9-campaign-mode-native-adversarial-determinism.nix;
+    "gate:e2e-determinism" = e2eDeterminism;
     "gate:control-responsive" = native ./phase9-campaign-mode-native-control-responsive.nix;
     "gate:basic-block-coverage" = native ./phase9-campaign-mode-basic-block-coverage.nix;
     "gate:checkpoint-materialization" = native ./phase9-campaign-mode-checkpoint-materialization.nix;
@@ -82,6 +94,7 @@
         translationPrefetchNeutrality
         ;
     };
+    "gate:fleet-equivalence" = fleetEquivalence;
     "gate:campaign-continuity" = native ./phase9-campaign-mode-native-campaign-continuity.nix;
     "gate:replay-oracle" = replayOracle;
     "gate:divergence-bisect" = divergenceBisect;
@@ -125,15 +138,15 @@
     ])
     actualGateNames;
   failures =
-    map (gate: "${gate}: missing non-fleet adapter") missingGateNames
-    ++ map (gate: "${gate}: unexpected non-fleet adapter") extraGateNames
+    map (gate: "${gate}: missing authoritative adapter") missingGateNames
+    ++ map (gate: "${gate}: unexpected authoritative adapter") extraGateNames
     ++ lib.optional (actualGateNames != enabledGateNames) "enabled and disabled adapter gate sets differ"
     ++ lib.optional (
       builtins.length actualGateNames != builtins.length expectedGateNames
-    ) "non-fleet adapter gate count differs from the authoritative inventory"
+    ) "adapter gate count differs from the authoritative inventory"
     ++ lib.optional (
       builtins.length adapterPaths != builtins.length (lib.unique adapterPaths)
-    ) "two non-fleet gate/mode rows alias one adapter derivation";
+    ) "two gate/mode rows alias one adapter derivation";
 in
   if failures != []
   then throw "crucible campaign mode adapter map is incomplete:\n${builtins.concatStringsSep "\n" failures}"

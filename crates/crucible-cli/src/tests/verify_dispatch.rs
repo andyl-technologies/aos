@@ -1893,20 +1893,6 @@ pub(super) fn reproduction_findings_round_trips_timeout_evidence_and_skips_minim
     let (ledger_path, _, ledger_bytes) =
         write_reproduction_findings_ledger(&artifact_dir, None, std::slice::from_ref(&evidence))?;
     let ledger_text = String::from_utf8(ledger_bytes)?;
-    let retired_v3 = ledger_text.replacen(
-        FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA,
-        "crucible.failure-triage.findings-ledger.v3",
-        1,
-    );
-    assert!(
-        parse_failure_findings_ledger_bytes(&store, retired_v3.as_bytes()).is_err(),
-        "the retired V3 findings-ledger schema must fail closed"
-    );
-    let legacy_untyped_v4 = ledger_text.replacen("ledger_kind=reproduction\n", "", 1);
-    assert!(
-        parse_failure_findings_ledger_bytes(&store, legacy_untyped_v4.as_bytes()).is_err(),
-        "V4 ledgers must declare their evidence kind"
-    );
     let frame_hex = ledger_hex(&retained_frame);
     let mut changed_frame_hex = frame_hex.clone();
     changed_frame_hex.replace_range(
@@ -2043,66 +2029,6 @@ pub(super) fn cli_explicit_findings_path_writes_triageable_empty_reproduction_le
     assert!(loaded.ledger.signed_findings().is_empty());
     assert!(loaded.evidence.is_empty());
     Ok(())
-}
-
-#[test]
-pub(super) fn cli_triage_rejects_retired_findings_ledger_schema() {
-    let temp = TempDir::new().expect("tempdir must be created");
-    let findings = temp.path().join("sidecar.findings-ledger");
-    let store_root = temp.path().join("store");
-    let ledger_bytes = b"\
-crucible.failure-triage.findings-ledger.v3
-artifact.0=0000000000000000000000000000000000000000000000000000000000000000
-finding.0.kind=property
-";
-    fs::write(&findings, ledger_bytes).expect("retired ledger must be written");
-    let cli = Cli::parse_from([
-        "crucible",
-        "--store",
-        store_root.to_str().unwrap_or("."),
-        "triage",
-        findings.to_str().unwrap_or("."),
-    ]);
-    let Commands::Triage(args) = &cli.command else {
-        panic!("expected triage command");
-    };
-
-    let error = match run_triage_invocation(&cli, args) {
-        Ok(_) => panic!("retired findings ledger schema must be rejected"),
-        Err(error) => error,
-    };
-
-    assert!(matches!(error, CliError::Artifact(_)));
-    assert_eq!(error.exit_code(), 5);
-    assert!(error.to_string().contains("unsupported or malformed input"));
-
-    let store = crucible::LocalDagStore::new(store_root.clone());
-    let stored_hash = store
-        .put(ledger_bytes)
-        .expect("retired ledger must be stored");
-    let stored_cli = Cli::parse_from([
-        "crucible",
-        "--store",
-        store_root.to_str().unwrap_or("."),
-        "triage",
-        &format_content_hash_ref(stored_hash),
-    ]);
-    let Commands::Triage(stored_args) = &stored_cli.command else {
-        panic!("expected triage command");
-    };
-
-    let stored_error = match run_triage_invocation(&stored_cli, stored_args) {
-        Ok(_) => panic!("stored retired findings ledger schema must be rejected"),
-        Err(error) => error,
-    };
-
-    assert!(matches!(stored_error, CliError::Artifact(_)));
-    assert_eq!(stored_error.exit_code(), 5);
-    assert!(
-        stored_error
-            .to_string()
-            .contains("unsupported findings ledger artifact schema")
-    );
 }
 
 #[test]

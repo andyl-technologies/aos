@@ -196,7 +196,23 @@ pub fn retry_pending_attempt_result<W>(
 /// Returns [`AttemptResultJournalError`] with the complete prepared token when
 /// journal creation, reopening, authentication, or durability fails.
 pub fn journal_prepared_attempt_result(
-    namespace: impl AsRef<Path>,
+    namespace: &PreparedResultJournalNamespace,
+    maximum_payload_bytes: usize,
+    prepared: PreparedAttemptResult,
+) -> Result<
+    (
+        PreparedAttemptResult,
+        PreparedResultJournalCreateDisposition,
+    ),
+    AttemptResultJournalError,
+> {
+    let (prepared, disposition) =
+        stage_prepared_attempt_result_journal(namespace, maximum_payload_bytes, prepared)?;
+    Ok((prepared.commit_staged_journal()?, disposition))
+}
+
+pub(crate) fn stage_prepared_attempt_result_journal(
+    namespace: &PreparedResultJournalNamespace,
     maximum_payload_bytes: usize,
     mut prepared: PreparedAttemptResult,
 ) -> Result<
@@ -209,7 +225,7 @@ pub fn journal_prepared_attempt_result(
     let key = crate::AttemptExecutionKey::for_request(prepared.queued.request());
     let execution = prepared.queued.execution();
     let result = prepared.result().clone();
-    let (journal, disposition) = match DirectoryPreparedResultJournal::create(
+    let (journal, disposition) = match DirectoryPreparedResultJournal::prepare_staged(
         namespace,
         key,
         execution,
@@ -224,7 +240,7 @@ pub fn journal_prepared_attempt_result(
             });
         }
     };
-    prepared.result = PreparedAttemptResultOwner::Journal(journal);
+    prepared.result = PreparedAttemptResultOwner::Journal(Box::new(journal));
     Ok((prepared, disposition))
 }
 
@@ -241,7 +257,7 @@ pub fn journal_prepared_attempt_result(
 /// journal or semantic authentication fails.
 pub fn recover_prepared_attempt_result(
     store: &CampaignExecutorStore,
-    namespace: impl AsRef<Path>,
+    namespace: &PreparedResultJournalNamespace,
     maximum_payload_bytes: usize,
     queued: QueuedAttempt,
 ) -> Result<PreparedAttemptRecoveryOutcome, AttemptResultRecoveryError> {
@@ -301,15 +317,99 @@ pub fn recover_prepared_attempt_result(
             source: Box::new(source.into()),
         });
     }
+    if let Some(captures) = journal
+        .result()
+        .finding()
+        .and_then(|finding| finding.bundle().replay_captures())
+    {
+        let guard = match store.acquire_finding_replay_publication_guard() {
+            Ok(guard) => guard,
+            Err(source) => {
+                return Err(AttemptResultRecoveryError {
+                    queued: Box::new(queued),
+                    source: Box::new(crate::FindingReplayCaptureStoreError::from(source).into()),
+                });
+            }
+        };
+        let loaded = match crate::FindingReplayCaptureStore::load_set(&guard, captures) {
+            Ok(loaded) => loaded,
+            Err(source) => {
+                return Err(AttemptResultRecoveryError {
+                    queued: Box::new(queued),
+                    source: Box::new(source.into()),
+                });
+            }
+        };
+        if let Err(source) = validate_recovered_finding_replay_captures(journal.result(), &loaded) {
+            return Err(AttemptResultRecoveryError {
+                queued: Box::new(queued),
+                source,
+            });
+        }
+    }
 
     Ok(PreparedAttemptRecoveryOutcome::Prepared(Box::new(
         PreparedAttemptResult {
             queued,
-            result: PreparedAttemptResultOwner::Journal(journal),
+            result: PreparedAttemptResultOwner::Journal(Box::new(journal)),
             observation,
             finding_candidate,
         },
     )))
+}
+
+fn validate_recovered_finding_replay_captures(
+    result: &PreparedSemanticAttemptResult,
+    loaded: &[crate::LoadedFindingReplayCapture; 4],
+) -> Result<(), Box<AttemptResultRecoveryFailure>> {
+    let finding = result.finding().ok_or_else(|| {
+        Box::new(AttemptResultRecoveryFailure::Preparation(
+            AttemptResultPreparationFailure::Result(
+                PreparedSemanticResultCodecError::Inconsistent {
+                    component: "finding replay captures without finding",
+                },
+            ),
+        ))
+    })?;
+    let limits = finding
+        .production_replay_capture_limits()
+        .map_err(AttemptResultPreparationFailure::Result)
+        .map_err(AttemptResultRecoveryFailure::Preparation)
+        .map_err(Box::new)?;
+    let bindings = finding
+        .production_replay_capture_bindings()
+        .map_err(CampaignRepositoryError::Codec)
+        .map_err(AttemptResultPreparationFailure::Repository)
+        .map_err(AttemptResultRecoveryFailure::Preparation)
+        .map_err(Box::new)?;
+
+    for (capture, (reproduction, observed_signature)) in loaded.iter().zip(bindings) {
+        let crate::LoadedFindingReplayCapture::Complete {
+            bytes,
+            content_hash,
+        } = capture
+        else {
+            continue;
+        };
+        let capture = crate::FindingProductionReplayCapture::from_canonical_bytes(bytes, limits)
+            .map_err(AttemptResultRecoveryFailure::ProductionReplay)
+            .map_err(Box::new)?;
+        if capture
+            .content_hash(limits)
+            .map_err(AttemptResultRecoveryFailure::ProductionReplay)
+            .map_err(Box::new)?
+            != *content_hash
+        {
+            return Err(Box::new(AttemptResultRecoveryFailure::ProductionReplay(
+                crate::FindingProductionReplayCaptureError::CaptureBinding,
+            )));
+        }
+        capture
+            .validate_binding(reproduction, &observed_signature)
+            .map_err(AttemptResultRecoveryFailure::ProductionReplay)
+            .map_err(Box::new)?;
+    }
+    Ok(())
 }
 
 /// Retries no-write preparation of an already-captured exact checkpoint.
@@ -376,7 +476,7 @@ fn prepare_pending_attempt_result<W>(
     }
     Ok(PreparedAttemptResult {
         queued,
-        result: PreparedAttemptResultOwner::Volatile(result),
+        result: PreparedAttemptResultOwner::Volatile(Box::new(result)),
         observation,
         finding_candidate,
     })

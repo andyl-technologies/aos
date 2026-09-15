@@ -326,19 +326,6 @@ fn crucible_payloads_reject_schema_and_identity_drift() {
         decode_crucible_scenario_artifact(&unsupported),
         Err(CrucibleArtifactError::UnsupportedPayloadSchema { .. })
     ));
-    let retired_schema = CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3 - 1;
-    let mislabeled_retired =
-        ScenarioArtifact::new(valid.scenario(), retired_schema, valid.payload().to_vec())
-            .expect("mislabeled artifact remains structurally valid");
-    assert!(matches!(
-        decode_crucible_scenario_artifact(&mislabeled_retired),
-        Err(CrucibleArtifactError::UnsupportedPayloadSchema {
-            actual,
-            expected: CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3,
-            ..
-        }) if actual == retired_schema
-    ));
-
     let drifted = ScenarioArtifact::new(
         ScenarioDefId::from_hash(CampaignHash::from_bytes([0x5a; 32])),
         CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3,
@@ -352,45 +339,11 @@ fn crucible_payloads_reject_schema_and_identity_drift() {
         })
     ));
 
-    let configuration = encode_crucible_configuration_artifact(&valid, &Schedule::empty())
-        .expect("configuration artifact");
-    let legacy_configuration = ConfigurationArtifact::new(
-        configuration.scenario(),
-        configuration.scenario_artifact(),
-        configuration.configuration(),
-        1,
-        configuration.payload().to_vec(),
-    )
-    .expect("legacy configuration remains structurally valid");
-    assert!(matches!(
-        decode_crucible_configuration_artifact(&scenario, &valid, &legacy_configuration),
-        Err(CrucibleArtifactError::UnsupportedPayloadSchema {
-            artifact: "configuration",
-            actual: 1,
-            expected: CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2,
-        })
-    ));
-
     let selection_schedule = Schedule::empty().appended(selection_decision(valid.scenario()));
     let unresolved = encode_crucible_configuration_artifact(&valid, &selection_schedule)
         .expect("selection configuration");
     assert!(matches!(
         decode_crucible_configuration_artifact(&scenario, &valid, &unresolved),
         Err(CrucibleArtifactError::UnresolvedSelectionDecision)
-    ));
-
-    let mut legacy_payload = configuration.payload().to_vec();
-    legacy_payload[..b"crucible.schedule.v2\0".len()].copy_from_slice(b"crucible.schedule.v1\0");
-    let legacy_nested_schedule = ConfigurationArtifact::new(
-        configuration.scenario(),
-        configuration.scenario_artifact(),
-        configuration.configuration(),
-        CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2,
-        legacy_payload,
-    )
-    .expect("legacy nested schedule remains structurally valid");
-    assert!(matches!(
-        decode_crucible_configuration_artifact(&scenario, &valid, &legacy_nested_schedule),
-        Err(CrucibleArtifactError::UnsupportedScheduleEncoding)
     ));
 }

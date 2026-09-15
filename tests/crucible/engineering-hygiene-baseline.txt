@@ -152,7 +152,7 @@ shape-review|crates/crucible-session/src/tests/engine_state.rs|sha256:cfc0c30c8e
 shape-review|crates/crucible-cli/src/cli/run_save/qemu_live.rs|sha256:77e1fe8aff23854f67e797f6109aa5d460f1637590d595b6b87594ae71c25c0b|implementation|1257|Live packaged-QEMU run and save execution, probing, search, replay, and outcome projection.|threshold-not-reached
 shape-review|crates/crucible-api/src/streaming.rs|sha256:c2ebc257fa2dd6e18968d3bca6644765b155cc2ef0ec2ed2221e6b5dae2718c8|implementation|1258|Public streaming command, state, watch, and send protocol across HTTP/2 and in-process transports.|threshold-not-reached
 shape-review|crates/crucible-daemon/src/campaign_transfer.rs|sha256:2c95e4a1e00ac35457ab76e3f55b5aa402590a5dfaad788434294e5298e665e3|implementation|1013|Durable campaign archive transfer, journal, retention fence, endpoint resolution, and receipt protocol.|threshold-not-reached
-shape-review|crates/crucible-qemu/examples/crucible-qemu-production-plugin-flight.rs|sha256:650bd39c5052ad887784546a6c21a0264486104288169fbb85bbaf026a194b9b|implementation|1088|Production QEMU/plugin executable flight, evidence capture, and deterministic result comparison.|threshold-not-reached
+shape-review|crates/crucible-qemu/examples/crucible-qemu-production-plugin-flight.rs|sha256:e789b50f4d13f44e5015c729bd8272a09663a6672a982b624a3620967967f880|implementation|1453|Production QEMU/plugin executable flight, boundary comparison, and retained timer-service/hot-fork evidence.|threshold-not-reached
 shape-line|crates/aos-cache/src/backend/http.rs|1007
 shape-line|crates/aos-cache/src/push.rs|749
 shape-line|crates/aos-core/src/nar/cache.rs|635

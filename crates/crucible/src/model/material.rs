@@ -5,7 +5,7 @@ use super::*;
 pub(super) fn require_current_fault_schema(input: &str) -> Result<(), EngineError> {
     let value = toml::from_str::<toml::Value>(input).map_err(|source| {
         scenario_serialization_error(format!(
-            "parse TOML before fault-schema migration check: {source}"
+            "parse TOML before current fault-schema validation: {source}"
         ))
     })?;
     let root = value.as_table().ok_or_else(|| {
@@ -17,7 +17,7 @@ pub(super) fn require_current_fault_schema(input: &str) -> Result<(), EngineErro
         .unwrap_or(root);
     if plan.get("fault_model").and_then(toml::Value::as_str) != Some("signal_bindings_v2") {
         return Err(scenario_serialization_error(
-            "unsupported pre-signal fault schema; regenerate the plan with `fault_model = \"signal_bindings_v2\"`, `[[signal]]`, and `[[fault_binding]]` (or their `[plan]`-qualified scenario forms)",
+            "unsupported fault schema; use `fault_model = \"signal_bindings_v2\"`, `[[signal]]`, and `[[fault_binding]]` (or their `[plan]`-qualified scenario forms)",
         ));
     }
     Ok(())
@@ -1412,30 +1412,23 @@ mod policy_labels;
 pub(super) use policy_labels::*;
 
 #[cfg(test)]
-mod migration_tests {
+mod current_schema_tests {
     use super::*;
 
     #[test]
-    fn pre_signal_forms_return_one_actionable_migration_error() {
-        for input in [
-            "id = 'x'",
-            "id = 'x'\nfault_model = 'signal_bindings_v1'",
-            "id = 'x'\n[plan]\nid = 'p'",
-        ] {
-            let error = match require_current_fault_schema(input) {
-                Ok(()) => panic!("a pre-signal form must be rejected before typed lowering"),
-                Err(error) => error,
-            };
-            assert_eq!(
-                error.to_string(),
-                "scenario serialized form is invalid: unsupported pre-signal fault schema; regenerate the plan with `fault_model = \"signal_bindings_v2\"`, `[[signal]]`, and `[[fault_binding]]` (or their `[plan]`-qualified scenario forms)"
-            );
-        }
+    fn current_signal_driven_plan_fields_pass_validation() {
+        let input = "fault_model = 'signal_bindings_v2'\nsignal = []\nfault_binding = []";
+        assert_eq!(require_current_fault_schema(input), Ok(()));
     }
 
     #[test]
-    fn signal_driven_plan_fields_pass_the_migration_check() {
-        let input = "fault_model = 'signal_bindings_v2'\nsignal = []\nfault_binding = []";
-        assert_eq!(require_current_fault_schema(input), Ok(()));
+    fn noncurrent_fault_schema_is_rejected() {
+        let Err(error) = require_current_fault_schema("fault_model = 'not-current'") else {
+            panic!("a noncurrent fault schema must fail before typed lowering");
+        };
+        assert_eq!(
+            error.to_string(),
+            "scenario serialized form is invalid: unsupported fault schema; use `fault_model = \"signal_bindings_v2\"`, `[[signal]]`, and `[[fault_binding]]` (or their `[plan]`-qualified scenario forms)"
+        );
     }
 }

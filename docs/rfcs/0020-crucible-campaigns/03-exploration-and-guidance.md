@@ -122,18 +122,11 @@ source remains an auditable operator/planner override even when the opportunity
 names a model, and the model is used only when the request selects
 `ModeledFinite` or `ModeledGenerated`.
 They do not change canonical value order, legality, request budgets,
-deduplication, or attempt identity. Branch-request schema v2 adds the explicit
-weighted finite encoding, v3 adds the modeled finite encoding, and v4 adds the
-model-ID plus generator-ID encoding; schema-v1 uniform/generated, schema-v2
-explicit, and schema-v3 modeled-finite requests retain their exact identity.
-Generator draws are keyed by `BranchRequestId`, so a newly authored v2
-generated request intentionally owns a distinct stream from an otherwise equal
-v1 request; replay of the retained v1 body continues to use its original ID and
-stream.
-Statistical finite and SMC sources retain complete positive target and proposal
-mass maps plus their checked totals. They are emitted only by schema-v7 and
-schema-v8 branch requests respectively; candidate-source tags 5 and 6 preserve
-the distinct wire meanings.
+deduplication, or attempt identity. Branch requests use schema v9, whose source
+encoding covers uniform, explicit, modeled, generated, statistical-finite, and
+SMC inputs. Generator draws remain keyed by `BranchRequestId`. Statistical
+finite and SMC sources retain complete positive target and proposal mass maps
+plus their checked totals. Any other request schema is rejected.
 
 ## 03.2 Built-in generators
 
@@ -187,20 +180,6 @@ values above the maximum are omitted. It then emits the inclusive maximum.
 First occurrence wins throughout. Base two over the full unsigned 64-bit range
 is the largest sequence: 64 powers plus a distinct maximum, or 65 candidates.
 The owner uses checked 128-bit arithmetic and constant bounded space.
-
-Generator implementation-version 6 defines `permuted_integer` for stepped
-domains with cardinality `C <= 2^64 - 1`. Its key is
-`H("crucible.campaign.generator.permuted-integer.v6",
-BranchRequestId.digest)`, so policy activation cannot reinterpret an existing
-request. Split the 32-byte key into four big-endian `u64` words. Let `N` be the
-least power of two at least `C`, `M = N - 1`, and begin with zero-based ordinal
-offset `x`. For rounds zero through three, compute `y = x XOR (word & M)` on
-even rounds and `y = (word - x) mod N` on odd rounds. Replace `x` with `y` only
-when `y < C`; otherwise leave it unchanged. Each restricted round is an
-involution of `[0, C)`, so their composition is a bijection. The candidate is
-`minimum + x * step`. This walks every legal value exactly once with four
-bounded rounds and no domain materialization. Cardinality `2^64` fails closed
-because its last value has no one-based `u64` proposal ordinal.
 
 Generator implementation-version 17 resolves a uniform integer probability
 model into a bounded `ModeledGenerated` source. The exact generator algorithm
@@ -258,7 +237,7 @@ This preserves exact integer weights without expanding them into repeated
 entries, makes duplicate suppression independent of map insertion order, and
 reconstructs the same mixture after restart.
 
-Generator implementation-version 9 defines feedback-gated
+Generator implementation-version 16 defines feedback-gated
 `progressive_integer` over a stepped integer domain. Let `C` be the exact
 domain cardinality, `S = min(initial_strata, C)`, and
 `L = min(C, request.maximum_proposals)`. The first `min(S, L)` candidates use
@@ -276,7 +255,7 @@ becomes available only when the branch point has at least
 `r * feedback_interval` distinct authenticated descendant-observation credits.
 After an admitted refinement, the continuation reports
 `WaitingForFeedback(completed, required)` until the next threshold is met.
-Version 9 admits at most 4,096 initial strata and at most 4,096 proposals, and
+The current implementation admits at most 4,096 initial strata and at most 4,096 proposals, and
 the maximum feedback threshold must fit `u64`. Reaching `L` is `Exhausted`
 only when `C <= request.maximum_proposals`; otherwise it is budget-limited
 `Closed`. The interval heap and every threshold are owner-recomputed during
@@ -310,10 +289,10 @@ selection resolver's existing 4,096-ID and 128-MiB unique-record budget. Every
 limit and the exact proposal-set continuation are recomputed during local
 acceptance, import, and restart.
 
-Generator implementation-version 11 gives `progressive_integer` an exact
-feedback-sensitive interval order while retaining version 9's stratified
-prefix, visit thresholds, midpoint rule, exhaustion semantics, and 4,096-value
-bounds. After the initial prefix, reconstruct the exact set of values already
+The current progressive implementation uses an exact feedback-sensitive
+interval order with its stratified prefix, visit thresholds, midpoint rule,
+exhaustion semantics, and 4,096-value bounds. After the initial prefix,
+reconstruct the exact set of values already
 proposed by this request and every maximal interval of unselected legal offsets.
 For each interval, take the nearest selected offset immediately below and above
 it. A missing exterior endpoint has score zero. Each present endpoint maps to
@@ -338,23 +317,23 @@ Planner-page construction batches
 all needed branch-point projections under the existing aggregate credit,
 record, identity, and byte ceilings before deriving offers.
 
-Generator implementation-version 12 adds the exact producer-landmark interval
-term while retaining version 11's prefix, visit thresholds, endpoint PUCT
+Current progressive implementation-version 16 includes the exact producer-landmark interval
+term with its prefix, visit thresholds, endpoint PUCT
 scores, exhaustion semantics, and bounds. For every remaining interval, count
 the exact domain landmarks whose legal offsets lie inside it. Select the
 greatest tuple `(landmark_count, endpoint_score_delta, interval_cardinality)`,
 then the lowest interval offset. When the winning interval contains landmarks,
 emit the contained landmark with least absolute distance from that interval's
 lower midpoint, breaking equal distance by lower landmark offset. Otherwise
-emit the lower midpoint exactly as version 11 does. A landmark already proposed
+emit the lower midpoint. A landmark already proposed
 is no longer inside a remaining interval and therefore cannot receive another
 allocation. The exact `ChoiceDomainId` authenticates the landmark set even
 though presentation-only landmark edits deliberately preserve the domain's
 semantic ID and branch-edge identity. The existing 4,096-landmark domain bound
 keeps the interval fold and selected-interval search bounded.
 
-Generator implementation-version 13 adds a direct objective-measurement
-discontinuity term before version 12's interval terms. For one completed
+The same current implementation includes a direct objective-measurement
+discontinuity term before the landmark and PUCT terms. For one completed
 semantic edge `e`, let `R_e` be its owner-verified policy-weighted objective
 reward sum after the canonical once-per-edge signed saturation and `N_e` its
 positive completed-visit count. A completed edge without a verified objective
@@ -367,7 +346,7 @@ D(a, b) = abs(R_a * N_b - R_b * N_a) / (N_a * N_b)
 
 Compare `D` as an exact nonnegative rational, then compare landmark count,
 endpoint PUCT-score difference, interval cardinality, and lower offset exactly
-as version 12. The winning interval still emits its nearest lower-midpoint
+in their current order. The winning interval still emits its nearest lower-midpoint
 landmark when one remains and its ordinary lower midpoint otherwise. Objective
 reward sums, visit counts, observations, evaluations, property verdicts, and
 active-policy contracts come from the same bounded owner projection already
@@ -375,8 +354,8 @@ used by PUCT; uninterpreted or unauthenticated measurement payloads never enter
 the term. The existing 65,536-credit, 65,536-evaluation, 128-MiB evidence, and
 4,096-proposal bounds also bound every numerator, denominator, and comparison.
 
-Generator implementation-version 14 adds a direct coverage-novelty
-discontinuity term before version 13's interval terms. For one completed
+It also includes a direct coverage-novelty discontinuity term before the
+objective interval terms. For one completed
 semantic edge `e`, let `C_e` be the exact count of globally unique canonical
 coverage identities assigned to that edge and retain `N_e` as its positive
 completed-visit count. An edge without unique coverage and an exterior or
@@ -387,17 +366,17 @@ denominator basis `N_e = 1`. Compare
 C(a, b) = abs(C_a * N_b - C_b * N_a) / (N_a * N_b)
 ```
 
-as an exact nonnegative rational, then compare version 13's objective
+as an exact nonnegative rational, then compare the objective
 discontinuity, landmark count, endpoint PUCT-score difference, interval
-cardinality, and lower offset. The winning interval retains version 12's exact
+cardinality, and lower offset. The winning interval retains the exact
 landmark-or-midpoint value rule. Coverage identities, visit counts, and edge
 ownership come from the same bounded, snapshot-authenticated projection used by
 PUCT; executor arrival order and duplicate coverage identities cannot affect
 the term. Existing credit, observation, coverage-identity, evidence-byte, and
 proposal bounds therefore also bound this comparison.
 
-Generator implementation-version 15 adds a direct finding-reward
-discontinuity term before version 14's interval terms. For one completed
+It includes a direct finding-reward discontinuity term before the coverage
+interval terms. For one completed
 semantic edge `e`, let `F_e` be the saturating sum of owner-verified finding
 occurrence counts multiplied by the active policy's closed positive finding
 weights, and retain `N_e` as its positive completed-visit count. An edge without
@@ -408,7 +387,7 @@ the latter retaining `N_e = 1`. Compare
 F(a, b) = abs(F_a * N_b - F_b * N_a) / (N_a * N_b)
 ```
 
-as an exact nonnegative rational, then compare version 14's coverage,
+as an exact nonnegative rational, then compare coverage,
 objective, landmark, PUCT, cardinality, and lower-offset terms. The winning
 interval retains the same landmark-or-midpoint value rule. Finding signatures,
 occurrences, observation paths, weights, and visit counts come from the bounded
@@ -416,8 +395,8 @@ snapshot owner; duplicate or unauthenticated occurrences cannot affect this
 term. Existing finding-root, occurrence, body-byte, credit, and proposal bounds
 also bound every comparison.
 
-Generator implementation-version 16 adds inverse-frequency coverage rarity
-before version 15's interval terms. Let `Q = 65,536`, the canonical observation
+Current implementation-version 16 ranks inverse-frequency coverage rarity
+before the finding interval terms. Let `Q = 65,536`, the canonical observation
 ceiling, and let `f(i)` be coverage identity `i`'s positive occurrence count
 across the exact snapshot. Every occurrence of `i` in a credited observation
 contributes `floor(Q / f(i))` to that observation's semantic edge. Let `A_e` be
@@ -428,7 +407,7 @@ the checked sum for edge `e`; an exterior or unobserved endpoint uses
 A(a, b) = abs(A_a * N_b - A_b * N_a) / (N_a * N_b)
 ```
 
-as an exact nonnegative rational, then compare version 15's finding, unique
+as an exact nonnegative rational, then compare finding, unique
 coverage, objective, landmark, PUCT, cardinality, and lower-offset terms. The
 winning interval retains the same landmark-or-midpoint rule. Because
 `1 <= f(i) <= Q`, every contribution is positive and bounded; globally unique
@@ -437,12 +416,8 @@ but nonzero guidance. The owner derives both unique novelty and rarity from one
 bounded canonical observation scan, so arrival order, duplicate causes, and
 unauthenticated coverage cannot affect either term.
 
-Other algorithms remain valid suspended specifications but fail closed at
-proposal issuance and expansion projection until their versioned cursor and
-feedback owners are implemented. Earlier and unknown implementation versions
-remain suspended rather than being reinterpreted as versions 2 through 16; this
-preserves owner validation of histories created before executable enumeration
-landed.
+Any noncurrent or unknown implementation version is rejected before proposal
+issuance or expansion projection.
 
 Generators compose as a fixed ordered mixture with integer weights. Duplicate
 values deduplicate by `(BranchPointId, ChoiceDomainId, ChoiceValue)`; the
@@ -519,17 +494,12 @@ Intervals receive deterministic scores from:
 
 The partition is derived from proposals and observations and can be rebuilt.
 Splits use exact integer midpoint and rounding rules. Empty or duplicate splits
-are discarded. Version 9 is the bounded feedback-gated interval owner described
-in §03.2: its visit count gates refinement, while its largest-gap choice does
-not consume guidance scores. Version 11 consumes the exact owner-derived PUCT
-endpoint score described there. Dedicated objective-measurement discontinuity
-and producer-landmark interval terms require replay-distinct implementation
-versions. Version 12 consumes the exact landmark term, version 13 additionally
-consumes the direct owner-verified objective discontinuity, and version 14
-precedes it with the exact globally unique coverage-novelty discontinuity.
-Version 15 precedes those terms with the exact active-policy-weighted finding
-reward discontinuity. No adaptive term may be inferred from unauthenticated
-telemetry or opaque measurement payloads.
+are discarded. The current progressive-integer implementation version 16 gates
+refinement by visit count and ranks intervals by inverse-frequency rarity,
+active-policy-weighted finding reward, globally unique coverage novelty,
+owner-verified objective discontinuity, producer landmarks, PUCT endpoint
+score, cardinality, and lower offset. No adaptive term may be inferred from
+unauthenticated telemetry or opaque measurement payloads.
 
 - **[GUIDE-5]** Progressive widening MUST feed descendant observations back to
   the expansion state at every branch point on the recorded branch-edge path.
@@ -554,50 +524,44 @@ telemetry or opaque measurement payloads.
   4,096-proposal, 65,536-work-unit, and two 128-MiB input-resolution bounds
   during local acceptance, import, and restart. Earlier and unknown corpus-
   mutation versions MUST remain suspended.
-- **[GUIDE-27]** Feedback-progressive implementation-version 11 MUST retain
-  version 9's exact prefix, visit gates, midpoint, exhaustion, and owner bounds;
+- **[GUIDE-27]** Rarity-progressive implementation-version 16 MUST enforce the
+  exact prefix, visit gates, midpoint, exhaustion, and owner bounds;
   reconstruct the portable proposed-value set; rank every remaining interval by
   absolute exact endpoint PUCT-score difference, then interval cardinality and
   lower offset; and derive completed or prospective endpoint scores only from
-  the exact active policy and planning view. Version 9 histories MUST retain
-  their largest-gap order, and earlier or unknown progressive versions MUST
-  remain suspended.
-- **[GUIDE-28]** Landmark-progressive implementation-version 12 MUST retain
-  version 11's exact owner basis and rank intervals by landmark count, endpoint
+  the exact active policy and planning view. Any other implementation version
+  MUST remain suspended.
+- **[GUIDE-28]** Implementation-version 16 MUST rank intervals by landmark count, endpoint
   score difference, cardinality, and lower offset in that order. A selected
   landmark interval MUST emit the landmark nearest its lower midpoint with a
   lower-offset tie-break. Local issue, import, and restart MUST authenticate the
-  exact domain body and reproduce the same choice without mutating version 9 or
-  version 11 histories.
-- **[GUIDE-29]** Measurement-progressive implementation-version 13 MUST rank
+  exact domain body and reproduce the same choice.
+- **[GUIDE-29]** Implementation-version 16 MUST rank
   intervals first by the exact endpoint mean objective-reward discontinuity,
-  then by version 12's landmark, PUCT, cardinality, and lower-offset terms. Its
+  then by the landmark, PUCT, cardinality, and lower-offset terms. Its
   reward sums, visit denominators, and evaluation basis MUST be owner-verified
   under the active policy and bounded projection. Local issue, import, and
-  restart MUST reproduce the exact rational comparison, while versions 11 and
-  12 MUST ignore it.
-- **[GUIDE-30]** Coverage-progressive implementation-version 14 MUST rank
+  restart MUST reproduce the exact rational comparison.
+- **[GUIDE-30]** Implementation-version 16 MUST rank
   intervals first by the exact endpoint mean globally unique coverage-identity
-  discontinuity, then by version 13's objective, landmark, PUCT, cardinality,
+  discontinuity, then by the objective, landmark, PUCT, cardinality,
   and lower-offset terms. Coverage counts, visit denominators, and edge
   ownership MUST come from the bounded canonical observation projection. Local
-  issue, import, and restart MUST reproduce the comparison, while versions 11
-  through 13 MUST ignore the new leading term.
-- **[GUIDE-31]** Finding-progressive implementation-version 15 MUST rank
+  issue, import, and restart MUST reproduce the comparison.
+- **[GUIDE-31]** Implementation-version 16 MUST rank
   intervals first by exact endpoint mean active-policy-weighted finding-reward
-  discontinuity, then by version 14's coverage, objective, landmark, PUCT,
+  discontinuity, then by the coverage, objective, landmark, PUCT,
   cardinality, and lower-offset terms. Finding occurrences, policy weights,
   visit denominators, and edge ownership MUST come from the bounded canonical
   finding and observation projections. Local issue, import, and restart MUST
-  reproduce the comparison, while versions 11 through 14 MUST ignore the new
-  leading term.
+  reproduce the comparison.
 - **[GUIDE-32]** Rarity-progressive implementation-version 16 MUST rank
   intervals first by exact endpoint mean inverse-frequency coverage rarity,
-  then by version 15's finding, unique-coverage, objective, landmark, PUCT,
+  then by finding, unique-coverage, objective, landmark, PUCT,
   cardinality, and lower-offset terms. Frequencies, rarity mass, visit
   denominators, and edge ownership MUST come from the bounded canonical
   observation projection. Local issue, import, and restart MUST reproduce the
-  comparison, while versions 11 through 15 MUST ignore the new leading term.
+  comparison.
 
 ## 03.4 Tree policy: deterministic MCTS/PUCT
 
@@ -746,17 +710,10 @@ is already completed, its established completed-edge basis wins. The
 hypothetical contains no other offers, so its score is independent of planner
 page shape.
 
-The first executable closed-planner checkpoint established the pure paged
-frontier loop before adaptive scoring. Engine
-`crucible-canonical-frontier` implementation version 1 receives the
-coordinator's exact authenticated continuation state and next legal candidate
-for every served source, considers only `Ready` sources, and chooses the least
-canonical `PlanningScanPosition`. It carries that offer across pages and issues
-only at EOF. This ordering is deterministic fairness bootstrap behavior, not a
-claim that PUCT is complete.
-
-Implementation version 2 additionally advertises
-`canonical-frontier-puct-v1`. The coordinator supplies an exact
+The current `crucible-canonical-frontier` PUCT implementation version 6 receives
+the coordinator's exact authenticated continuation state and next legal
+candidate for every served source. It advertises
+`canonical-frontier-puct-v1`, and the coordinator supplies an exact
 `PlannerCandidateGuidanceV2` beside every Ready offer, recomputed from the
 authenticated view and active policy. A whole served page is one bounded
 projection batch: at most 65,536 aggregate credited observations and 128 MiB of
@@ -772,16 +729,14 @@ many distinct explicit weights from multiplying a large completed-edge set.
 The retained request remains subject to its 32 MiB stored-body and 65,529-child
 profile.
 
-Version 2 derives the exact score from the by-value policy and guidance, carries
+Guidance schema v2 derives the exact score from the by-value policy and guidance, carries
 the best candidate across pages, and issues only at EOF. Higher fixed-point
 total wins. Equal totals choose the lower `BranchEdgeId`, then the lower
 `PlanningScanPosition`; this is the closed frontier engine's complete tie rule.
 The engine receives no repository or Merkle authority. Local acceptance,
 restart, and imported-snapshot validation recompute every guidance record and
-rerun the complete pure transition. Version 1 remains replay-compatible and
-keeps its original least-position ordering. Guidance schema v1 remains
-identity-preserving for retained history; all newly projected guidance is
-schema v2. Engine version 2 consumes the owner-normalized explicit,
+rerun the complete pure transition. Every other guidance schema is rejected.
+The current engine consumes the owner-normalized explicit,
 modeled-finite, modeled-uniform-generated, or uniform prospective/completed
 priors, exact owner-published objective reward, global coverage novelty,
 configured closed finding rewards,
@@ -1025,11 +980,10 @@ The pure planner receives schema-v3 `PlannerRequest` messages for SMC work. Each
 message retains the derived generation identity, complete particle slot,
 authenticated parent configuration, selected opportunity, and domain by value.
 Canonical frontier implementation version 8 validates that basis and emits a
-schema-v8 `BranchRequest` with `CandidateSource::StatisticalSmc` (candidate-source
-tag 6); the stage-zero finite flight continues to use schema-v7 branch requests
-and `CandidateSource::StatisticalFinite` (tag 5). Planner-request schema v2 and
-branch-request schemas v2-v7 remain current operation-specific encodings for
-non-SMC work; none can carry an SMC transition basis.
+schema-v9 `BranchRequest` with `CandidateSource::StatisticalSmc` (candidate-source
+tag 6); the stage-zero finite flight uses the same current request schema with
+`CandidateSource::StatisticalFinite` (tag 5). Planner-request schema v3 and
+branch-request schema v9 are the sole current encodings for every operation.
 
 A complete SMC report leaves the final population unresampled, preserves slot
 multiplicity, and multiplies every prefinal resampling normalization factor into

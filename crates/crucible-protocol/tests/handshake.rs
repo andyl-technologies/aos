@@ -1,20 +1,20 @@
-//! Checks `Hello`/`HelloAck` control-protocol negotiation.
+//! Checks exact-version `Hello`/`HelloAck` control-protocol agreement.
 
 #![forbid(unsafe_code)]
 
 use std::io::{Cursor, Read, Write};
 
 use crucible_protocol::{
-    CONTROL_PROTOCOL_MIN_VERSION, CONTROL_PROTOCOL_VERSION, HandshakeError, HostHandshakeConfig,
-    HostMsg, NegotiatedHandshake, PluginHandshakeConfig, PluginMsg, control_encode_host_msg,
-    control_encode_plugin_msg, host_accept_handshake, host_negotiate_handshake,
-    plugin_start_handshake, plugin_validate_handshake_ack,
+    CONTROL_PROTOCOL_VERSION, HandshakeError, HostHandshakeConfig, HostMsg, NegotiatedHandshake,
+    PluginHandshakeConfig, PluginMsg, control_encode_host_msg, control_encode_plugin_msg,
+    host_accept_handshake, host_negotiate_handshake, plugin_start_handshake,
+    plugin_validate_handshake_ack,
 };
 
 #[test]
-fn host_accepts_hello_negotiates_minimum_and_writes_hello_ack() {
+fn host_accepts_exact_hello_and_writes_hello_ack() {
     let hello = control_encode_plugin_msg(&PluginMsg::Hello {
-        proto_version: CONTROL_PROTOCOL_VERSION + 2,
+        proto_version: CONTROL_PROTOCOL_VERSION,
         abi_version: 1,
     });
     let mut io = ScriptedIo::from_input(hello);
@@ -53,7 +53,7 @@ fn host_accepts_hello_negotiates_minimum_and_writes_hello_ack() {
 #[test]
 fn plugin_sends_hello_and_validates_hello_ack_before_setup() {
     let ack = control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: CONTROL_PROTOCOL_MIN_VERSION,
+        proto_version: CONTROL_PROTOCOL_VERSION,
         abi_version: 1,
         slot_index: 0,
         node_count: 4,
@@ -63,7 +63,7 @@ fn plugin_sends_hello_and_validates_hello_ack_before_setup() {
     let negotiated = plugin_start_handshake(
         &mut io,
         PluginHandshakeConfig {
-            proto_version: CONTROL_PROTOCOL_VERSION + 1,
+            proto_version: CONTROL_PROTOCOL_VERSION,
             abi_version: 1,
         },
     );
@@ -71,7 +71,7 @@ fn plugin_sends_hello_and_validates_hello_ack_before_setup() {
     assert_eq!(
         negotiated,
         Ok(NegotiatedHandshake {
-            proto_version: CONTROL_PROTOCOL_MIN_VERSION,
+            proto_version: CONTROL_PROTOCOL_VERSION,
             abi_version: 1,
             slot_index: 0,
             node_count: 4,
@@ -80,7 +80,7 @@ fn plugin_sends_hello_and_validates_hello_ack_before_setup() {
     assert_eq!(
         io.written(),
         control_encode_plugin_msg(&PluginMsg::Hello {
-            proto_version: CONTROL_PROTOCOL_VERSION + 1,
+            proto_version: CONTROL_PROTOCOL_VERSION,
             abi_version: 1,
         })
     );
@@ -105,15 +105,14 @@ fn host_rejects_handshake_failures_without_hello_ack() {
     assert_eq!(
         host_negotiate_handshake(
             PluginMsg::Hello {
-                proto_version: CONTROL_PROTOCOL_MIN_VERSION - 1,
+                proto_version: CONTROL_PROTOCOL_VERSION - 1,
                 abi_version: 1,
             },
             config,
         ),
-        Err(HandshakeError::ProtocolVersionNoOverlap {
-            plugin_max: CONTROL_PROTOCOL_MIN_VERSION - 1,
-            host_min: CONTROL_PROTOCOL_MIN_VERSION,
-            host_max: CONTROL_PROTOCOL_VERSION,
+        Err(HandshakeError::ProtocolVersionMismatch {
+            actual: CONTROL_PROTOCOL_VERSION - 1,
+            required: CONTROL_PROTOCOL_VERSION,
         })
     );
     assert_eq!(
@@ -148,7 +147,7 @@ fn host_rejects_handshake_failures_without_hello_ack() {
 
     assert_host_stream_failure_does_not_write_ack(
         PluginMsg::Hello {
-            proto_version: CONTROL_PROTOCOL_MIN_VERSION - 1,
+            proto_version: CONTROL_PROTOCOL_VERSION - 1,
             abi_version: 1,
         },
         config,
@@ -195,10 +194,9 @@ fn plugin_rejects_invalid_hello_ack() {
             },
             config,
         ),
-        Err(HandshakeError::NegotiatedProtocolOutOfRange {
-            negotiated: CONTROL_PROTOCOL_VERSION + 1,
-            plugin_min: CONTROL_PROTOCOL_MIN_VERSION,
-            plugin_max: CONTROL_PROTOCOL_VERSION,
+        Err(HandshakeError::ProtocolVersionMismatch {
+            actual: CONTROL_PROTOCOL_VERSION + 1,
+            required: CONTROL_PROTOCOL_VERSION,
         })
     );
     assert_eq!(

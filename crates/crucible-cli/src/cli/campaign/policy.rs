@@ -338,21 +338,11 @@ impl AuthoredCampaignPolicy {
         self,
         selector_scenario: Option<&ScenarioDefForm>,
     ) -> Result<CampaignPolicy, CliError> {
-        if !matches!(
-            self.schema_version,
-            1 | CAMPAIGN_POLICY_AUTHORING_SCHEMA_VERSION
-        ) {
+        if self.schema_version != CAMPAIGN_POLICY_AUTHORING_SCHEMA_VERSION {
             return Err(usage_error(format!(
-                "unsupported campaign policy manifest schema version {}; expected 1 or {}",
+                "unsupported campaign policy manifest schema version {}; expected {}",
                 self.schema_version, CAMPAIGN_POLICY_AUTHORING_SCHEMA_VERSION,
             )));
-        }
-        if self.schema_version == 1
-            && (self.statistical_sampling.is_some() || self.sequential_monte_carlo.is_some())
-        {
-            return Err(usage_error(
-                "statistical policy authoring requires manifest schema_version = 2",
-            ));
         }
         let statistical_sampling = self
             .statistical_sampling
@@ -854,7 +844,7 @@ mod tests {
             b"authored-policy-generator",
         );
         format!(
-            r#"schema_version = 1
+            r#"schema_version = 2
 scenario = "{scenario}"
 campaign_seed = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 mode = "strict"
@@ -1140,13 +1130,13 @@ stop = "next-choice"
                 .expect("opt-in policy ID")
                 .content_id()
                 .schema_version(),
-            2
+            4
         );
     }
 
     #[test]
-    fn schema_two_authors_finite_and_smc_statistical_policies() {
-        for (include_smc, expected_schema) in [(false, 3), (true, 4)] {
+    fn current_schema_authors_finite_and_smc_statistical_policies() {
+        for include_smc in [false, true] {
             let temporary = tempdir().expect("temporary directory");
             let input = temporary.path().join("policy.toml");
             let output = temporary.path().join("policy.bin");
@@ -1164,7 +1154,7 @@ stop = "next-choice"
                     .expect("statistical policy ID")
                     .content_id()
                     .schema_version(),
-                expected_schema
+                4
             );
             assert_eq!(
                 policy
@@ -1256,13 +1246,13 @@ proposal = [
     }
 
     #[test]
-    fn schema_one_rejects_statistical_fields_before_writing() {
+    fn wrong_schema_is_rejected_before_writing() {
         let temporary = tempdir().expect("temporary directory");
         let input = temporary.path().join("policy.toml");
         let output = temporary.path().join("policy.bin");
         let manifest =
             statistical_manifest(false).replacen("schema_version = 2", "schema_version = 1", 1);
-        std::fs::write(&input, manifest).expect("write version-one manifest");
+        std::fs::write(&input, manifest).expect("write wrong-version manifest");
 
         assert!(compile_campaign_policy(&input, None, &output).is_err());
         assert!(!output.exists());

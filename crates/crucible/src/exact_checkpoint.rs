@@ -36,6 +36,9 @@ pub const MAX_EXACT_CHECKPOINT_RAM_LAYERS: usize = 8;
 /// Maximum canonical v9 closure-manifest size.
 pub const MAX_EXACT_CHECKPOINT_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 
+/// Current production exact-closure manifest schema version.
+pub const PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION: u8 = 9;
+
 const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v9\0";
 const CLOSURE_DOMAIN: &str = "crucible.production-exact-closure.v9";
 const TARGET_DOMAIN: &str = "crucible.production-vm-exact-checkpoint.v3";

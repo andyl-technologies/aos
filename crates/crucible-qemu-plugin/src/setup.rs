@@ -2,7 +2,7 @@
 //!
 //! The setup path consumes the `Setup` descriptors, maps the shared-memory
 //! region for exactly the advertised byte length, validates the region header,
-//! authenticates the version-negotiated sealed plugin plan, and arms the wake
+//! authenticates the current-version sealed plugin plan, and arms the wake
 //! fd for later event-loop registration. The caller then proves plugin callback
 //! ownership, registers the wake fd, and sends `SetupAck(0)` with the returned
 //! completion token. Descriptor validity comes from the fixed SCM_RIGHTS
@@ -973,7 +973,7 @@ pub enum PluginSetupError {
         /// Underlying validation error.
         source: RegionSetupValidationError,
     },
-    /// Validating the immutable version-negotiated setup-plan descriptor failed.
+    /// Validating the immutable current-version setup-plan descriptor failed.
     #[error("setup plugin-plan validation failed")]
     ValidatePluginSetupPlan {
         /// Underlying descriptor or canonical-plan failure.
@@ -1028,7 +1028,7 @@ pub enum PluginSetupError {
     },
 }
 
-/// Invalid immutable descriptor carrying the version-negotiated plugin plan.
+/// Invalid immutable descriptor carrying the current-version plugin plan.
 #[cfg(unix)]
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum PluginSetupPlanDescriptorError {

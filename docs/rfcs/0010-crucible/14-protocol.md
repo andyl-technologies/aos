@@ -162,7 +162,7 @@ payload.
   **shmem fd** (a `memfd` or equivalent mapping the region of
   [`13-shmem-abi.md`](13-shmem-abi.md)) and the node's **wake fd** (an `eventfd`
   used as the edge-triggered nudge), followed by a sealed regular memfd carrying
-  the version-negotiated node-local plugin plan — as `SCM_RIGHTS` ancillary data
+  the current-version node-local plugin plan — as `SCM_RIGHTS` ancillary data
   attached to the `Setup` frame (§3.7). The fds MUST be attached in a fixed
   order: shmem fd first, wake fd second, plugin-plan fd third. The plugin MUST
   read exactly three fds from the `Setup`
@@ -179,8 +179,8 @@ payload.
 
 ```text
  offset  size  field
-   0      4    proto_version : u32 BE. Highest control-protocol version the
-                               plugin speaks (§4).
+   0      4    proto_version : u32 BE. Exact control-protocol version the plugin
+                               requires (§4).
    4      4    abi_version   : u32 BE. Shmem ABI version the plugin was built
                                against (the version constant of
                                13-shmem-abi.md).
@@ -196,8 +196,7 @@ payload.
 
 ```text
  offset  size  field
-   0      4    proto_version : u32 BE. The single negotiated protocol version
-                               the host has chosen (<= the plugin's; §4).
+   0      4    proto_version : u32 BE. The exact current protocol version (§4).
    4      4    abi_version   : u32 BE. The shmem ABI version the host built the
                                region with. MUST equal the plugin's abi_version.
    8      4    slot_index    : u32 BE. This node's zero-based index into the
@@ -206,7 +205,7 @@ payload.
                                the plugin can bounds-check slot_index.
 ```
 
-- **[PROTO-11]** `HelloAck` MUST carry the negotiated `proto_version`, the host's
+- **[PROTO-11]** `HelloAck` MUST carry the exact current `proto_version`, the host's
   `abi_version`, the node's `slot_index`, and the `node_count`. The plugin MUST
   verify `slot_index < node_count` and MUST verify the `abi_version` cross-check
   of [PROTO-13] before proceeding to `Setup`. *Gate:* `gate:abi-conformance`.
@@ -278,7 +277,7 @@ handshake:
  Plugin                                    Host
    │                                         │
    │── Hello(proto=P_p, abi=A_p) ───────────►│
-   │                                         │  choose proto = min(P_p, P_h)
+   │                                         │  require proto = current
    │                                         │  require abi: A_p == A_h
    │◄─ HelloAck(proto, abi=A_h, slot, n) ────│
    │   (or close socket on mismatch, §5.4)   │
@@ -290,18 +289,16 @@ handshake:
    │        ... run entirely via shmem ...    │
 ```
 
-- **[PROTO-15]** Protocol-version negotiation MUST select a single version equal
-  to the minimum of the plugin's offered `proto_version` and the host's supported
-  maximum, and the host MUST echo the chosen version in `HelloAck`. Both sides
-  MUST then speak exactly that version. If the host cannot satisfy any version the
-  plugin can speak (no overlap), the host MUST refuse the connection per §5.4 and
-  MUST NOT send `Setup`. *Gate:* `gate:abi-conformance`. *Spec:* §4.
+- **[PROTO-15]** The host and plugin MUST each require the exact current
+  `proto_version`, and the host MUST echo that version in `HelloAck`. Any
+  mismatch aborts setup before `Setup` is sent. *Gate:* `gate:abi-conformance`.
+  *Spec:* §4.
 
 - **[PROTO-16]** The shmem `abi_version` cross-check MUST be exact: the host MUST
   reject the connection if the plugin's `abi_version` does not equal the host's
   shmem-region `abi_version` ([`13-shmem-abi.md`](13-shmem-abi.md)), because the
   two sides share a byte-for-byte memory layout and a mismatch is unrecoverable.
-  This check is independent of `proto_version` negotiation: a compatible control
+  This check is independent of the exact `proto_version` match: a current control
   protocol with an incompatible shmem ABI MUST still be rejected. *Gate:*
   `gate:abi-conformance`. *Spec:* §4.
 
@@ -322,7 +319,7 @@ handshake:
 ```text
  1. connect      host creates socketpair; plugin opens its end at load.
  2. Hello        plugin -> host  (proto + abi versions)
- 3. HelloAck     host -> plugin  (negotiated proto, abi, slot, node_count)
+ 3. HelloAck     host -> plugin  (exact proto, abi, slot, node_count)
  4. Setup        host -> plugin  (region_len + [shmem_fd, wake_fd, branch_plan_fd])
  5. SetupAck     plugin -> host  (status = ready)
  6. RUN          all sync via shmem cells + SPSC queues + wake fd;
@@ -380,7 +377,7 @@ the *order* and the *guarantee*.
 
 - **[PROTO-21]** Any of the following MUST abort the node's setup cleanly and
   trigger the shutdown escalation (§5.3) rather than hang or panic:
-  (a) `proto_version` has no overlap (§4); (b) `abi_version` mismatch ([PROTO-16]);
+  (a) `proto_version` is not current (§4); (b) `abi_version` mismatch ([PROTO-16]);
   (c) `slot_index >= node_count` ([PROTO-11]); (d) wrong ancillary fd count
   ([PROTO-8]); (e) `region_len` smaller than the layout requires, or a failed
   shmem-header/ABI-marker validation ([PROTO-12]); (f) a `SetupAck` status that is
@@ -471,7 +468,7 @@ The control channel is determinism-neutral by construction.
   three fds and fails setup on any other count. — satisfies [PROTO-8],
   [PROTO-9], [PROTO-12]; spec §3.4, §3.7.
 - [x] **T-PROTO-4** Implement the handshake: plugin sends `Hello(proto, abi)`,
-  host negotiates `proto = min(...)`, cross-checks `abi` exactly against the
+  host exact-checks `proto`, cross-checks `abi` exactly against the
   shmem ABI version, and replies `HelloAck(proto, abi, slot_index, node_count)`;
   plugin bounds-checks `slot_index < node_count`. — satisfies [PROTO-3],
   [PROTO-10], [PROTO-11], [PROTO-15], [PROTO-16], [PROTO-17]; spec §3.5, §3.6, §4.

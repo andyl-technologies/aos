@@ -5,6 +5,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use super::admin::PhysicalRepairAuthority;
+
 use super::composition::{
     DurabilityPolicyStore, MetricsState, MetricsStore, ReadThroughStore, RoutedStore, TieredStore,
     TieredStoreChild, VerifiedStore, WriteThroughStore,
@@ -495,8 +497,12 @@ struct StoreGraphPhysicalAuthority {
 /// Graph-derived retention role for one physical boundary and object kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StoreGraphPhysicalRetention {
-    /// The boundary is reachable only through a read-through cache edge.
-    ReadThroughCache,
+    /// The boundary is reachable only through a reconstructible cache edge.
+    ///
+    /// This includes read-through caches, non-write tiers, and write-back
+    /// staging. Policy-aware GC may remove the placement only after it
+    /// authenticates an independent required copy of the same object.
+    Cache,
     /// At least one independently authoritative graph path reaches the boundary.
     Required,
 }
@@ -671,7 +677,7 @@ impl StoreGraphAdmin {
         {
             return Err(StoreError::Incompatible);
         }
-        {
+        let receipt = {
             let mut fence = target_authority.admin.acquire_inventory_fence()?;
             let mut current_present = false;
             let current_basis = fence.visit_inventory(&mut |record| {
@@ -686,13 +692,12 @@ impl StoreGraphAdmin {
             if current_present {
                 fence.delete_candidate(content)?;
             }
-        }
-
-        let repair_source = source_authority.backend.read(content, None)?;
-        repair_source.copy_to(&mut std::io::sink())?;
-        let receipt = target_authority
-            .backend
-            .put_if_absent(content, &repair_source)?;
+            // Reuse the authenticated reopenable handle so this target fence
+            // never nests a read lock from another physical backend. Inverse
+            // repairs can therefore make progress without a cross-store lock
+            // cycle.
+            fence.repair_put_if_absent(&PhysicalRepairAuthority::new(), content, &source_handle)?
+        };
         if receipt.id != content
             || receipt
                 .placements
@@ -842,10 +847,10 @@ impl<'a> StoreGraphPhysicalAdmin<'a> {
 
     /// Returns this boundary's graph-derived role for one admitted object kind.
     ///
-    /// Transparent wrappers preserve their incoming role. A read-through cache
-    /// edge changes a required path to cache-only, while its source preserves
-    /// the incoming role. If another path independently reaches the same node,
-    /// [`StoreGraphPhysicalRetention::Required`] dominates.
+    /// Transparent wrappers preserve their incoming role. Read-through cache,
+    /// non-write tier, and write-back staging edges are cache-only, while their
+    /// authoritative sources preserve the incoming role. If another path
+    /// independently reaches the same node, required retention dominates.
     #[must_use]
     pub fn retention(self, kind: ObjectKind) -> Option<StoreGraphPhysicalRetention> {
         self.retention.get(&kind).copied()
@@ -1698,16 +1703,16 @@ fn derive_physical_retention(
             }
             StoreNodeSpec::Tiered { tiers } => {
                 for tier in tiers {
-                    let tier_role = if tier.promote_reads && !tier.writable {
-                        StoreGraphPhysicalRetention::ReadThroughCache
-                    } else {
+                    let tier_role = if tier.writable {
                         role
+                    } else {
+                        StoreGraphPhysicalRetention::Cache
                     };
                     push(&tier.child, tier_role);
                 }
             }
             StoreNodeSpec::ReadThrough { cache, source } => {
-                push(cache, StoreGraphPhysicalRetention::ReadThroughCache);
+                push(cache, StoreGraphPhysicalRetention::Cache);
                 push(source, role);
             }
             StoreNodeSpec::WriteThrough { children } => {
@@ -1720,7 +1725,7 @@ fn derive_physical_retention(
                 destination,
                 ..
             } => {
-                push(staging, role);
+                push(staging, StoreGraphPhysicalRetention::Cache);
                 push(destination, role);
             }
         }

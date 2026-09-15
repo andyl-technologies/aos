@@ -759,7 +759,7 @@ pub struct ResolvedSelection {
 
 mod executor;
 
-pub use executor::CampaignExecutorStore;
+pub use executor::{CampaignExecutorPublicationGuard, CampaignExecutorStore};
 
 impl ResolvedSelection {
     /// Returns the authenticated recorded selection.
@@ -1304,19 +1304,6 @@ fn non_modeled_ordinal_key(ordinal: AdmissionOrdinal) -> CampaignHash {
         "crucible.campaign-accounting-admission-disposition.v1",
         &ordinal.value().to_be_bytes(),
     )
-}
-
-fn derivation_modes_are_compatible(prior: CampaignMode, next: CampaignMode) -> bool {
-    prior == next
-        || matches!(
-            (prior, next),
-            (CampaignMode::Strict, CampaignMode::Streaming)
-                | (CampaignMode::Streaming, CampaignMode::Strict)
-        )
-}
-
-fn is_streaming_to_strict_migration(prior: CampaignMode, next: CampaignMode) -> bool {
-    prior == CampaignMode::Streaming && next == CampaignMode::Strict
 }
 
 pub(crate) fn attempt_index_key(attempt: AttemptId) -> CampaignHash {

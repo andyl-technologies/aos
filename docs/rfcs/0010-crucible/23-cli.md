@@ -531,9 +531,9 @@ completion window rather than the short streaming acknowledgement yield budget,
 so a valid long-running QEMU quantum cannot be misreported as a missing
 boundary.
 
-Savepoint-handle admission accepts only the current campaign-backed v5 and v6
-schemas described below. Earlier v3 and v4 handles are rejected before their
-payload can enter resume planning.
+Savepoint-handle admission accepts only the current campaign-backed v6 schema
+described below. Any other schema is rejected before its payload can enter
+resume planning.
 
 A campaign-backed marker save stops directly on the campaign's authenticated
 named boundary rather than registering a session-actor breakpoint. Its
@@ -551,7 +551,7 @@ checks establish the structural closure; the campaign's execution and capture
 replay establish that the event was actually observed.
 
 Campaign-backed virtual-time and marker saves export
-`crucible.savepoint-handle.v5`. A v5 handle requires one
+`crucible.savepoint-handle.v6`. A v6 handle requires one
 `campaign-replay-closure` line containing the closure's content digest and
 canonical bytes. Before any handle or local-store index is written, export
 decodes those bytes canonically and proves that the records are complete and
@@ -1228,7 +1228,7 @@ branch on the verdict without parsing output:
   explicit traces, and quiet trace retention.
 - [x] **T-CLI-9** Implement `save` as a Campaign-owned semantic-stop and
   portable-handle export. — satisfies [CLI-19]; spec §9. Completed by
-  `checks.crucible.phase5.cliSaveWorkflow`: current v5 and v6 handles bind the
+  `checks.crucible.phase5.cliSaveWorkflow`: the current v6 handle binds the
   scenario, schedule, replay closure, exact frontier, and marker or observation
   evidence. Export rejects malformed or incomplete closure data and never
   persists a physical QEMU checkpoint in the handle.

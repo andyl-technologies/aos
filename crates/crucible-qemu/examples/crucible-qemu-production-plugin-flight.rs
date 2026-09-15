@@ -10,7 +10,7 @@
 //! reported only when the unchanged cross-variant comparison fails.
 //!
 //! ```text
-//! crucible-qemu-production-plugin-flight QEMU PLUGIN KERNEL INITRD FIRMWARE CGROUP_ROOT RUN_ROOT
+//! crucible-qemu-production-plugin-flight QEMU PLUGIN KERNEL INITRD FIRMWARE CGROUP_ROOT RUN_ROOT TRACE_OUT
 //! ```
 
 #![forbid(unsafe_code)]
@@ -34,8 +34,10 @@ use crucible_protocol::{SelectionReply, SelectionReplyStatus};
 use crucible_qemu::{
     BoundedSchedulerPreemptionEvidence, LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory,
     QemuLiveNodeIdentity, QemuLiveNodeStepGateConfig, QemuLogicalTimeCalibration, QemuNode,
-    QemuNodeIdleState, QemuProductionFreshLaunchAdmission, QemuRuntimeDeterminismTraceRecord,
-    QemuShutdownReport, QemuVirtualTimerFireWitness, launch_qemu_production_fresh_node,
+    QemuNodeIdleState, QemuProductionFreshLaunchAdmission, QemuRuntimeDeterminismIdlePhase,
+    QemuRuntimeDeterminismTimerScope, QemuRuntimeDeterminismTimerServicePhase,
+    QemuRuntimeDeterminismTraceRecord, QemuShutdownReport, QemuVirtualTimerFireWitness,
+    QmpHotForkTemplateOutcome, launch_qemu_production_fresh_node,
     parse_qemu_runtime_determinism_trace,
 };
 use crucible_shmem::FingerprintSample;
@@ -60,6 +62,7 @@ const READINESS_VCPU_INDEX: u32 = 0;
 const READINESS_REPLY_CAPACITY: usize = 128;
 const FLIGHT_NODE_ID: &str = "plugin-flight-node";
 const SETUP_COMPLETE_MARKER: &str = "lifecycle.setup_complete";
+const MAXIMUM_HOT_FORK_RING_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 
 fn main() -> ExitCode {
     match run() {
@@ -89,9 +92,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         firmware,
         cgroup_root,
         run_root,
+        trace_output,
     ] = arguments.as_slice()
     else {
-        return Err("expected QEMU PLUGIN KERNEL INITRD FIRMWARE CGROUP_ROOT RUN_ROOT".into());
+        return Err(
+            "expected QEMU PLUGIN KERNEL INITRD FIRMWARE CGROUP_ROOT RUN_ROOT TRACE_OUT".into(),
+        );
     };
     let host = LinuxQemuAttemptHostConfig::new(
         cgroup_root,
@@ -117,11 +123,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         .with_runtime_determinism_trace()
         .with_completion_timeout(Duration::from_secs(60));
 
-    let reference = run_once(&mut factory, &config, qemu, false, false)?;
-    let hostile = run_once(&mut factory, &config, qemu, true, false)?;
+    let reference = run_once(&mut factory, &config, qemu, false, false, true)?;
+    let hostile = run_once(&mut factory, &config, qemu, true, false, false)?;
     let prefetch = config.clone().with_translation_prefetch_experiment();
-    let prefetch_reference = run_once(&mut factory, &prefetch, qemu, false, true)?;
-    let prefetch_hostile = run_once(&mut factory, &prefetch, qemu, true, true)?;
+    let prefetch_reference = run_once(&mut factory, &prefetch, qemu, false, true, false)?;
+    let prefetch_hostile = run_once(&mut factory, &prefetch, qemu, true, true, false)?;
+    fs::write(trace_output, &reference.diagnostics.trace)?;
     compare_boundaries(
         "host-preempted restart",
         &reference.boundaries,
@@ -315,6 +322,35 @@ fn run() -> Result<(), Box<dyn Error>> {
         reference.idle.timer_fire.reserved
     );
     println!("idle_wake_stream_restart_identical=true");
+    let hot_fork = reference
+        .hot_fork_preparation
+        .as_ref()
+        .ok_or("reference flight omitted hot-fork preparation evidence")?;
+    println!("nonmain_timer_service_completed_before_hot_fork=true");
+    println!("nonmain_timer_service_list={}", hot_fork.timer_service.list);
+    println!(
+        "nonmain_timer_service_generation={}",
+        hot_fork.timer_service.generation
+    );
+    println!(
+        "nonmain_timer_service_request_sequence={}",
+        hot_fork.timer_service.request_sequence
+    );
+    println!(
+        "nonmain_timer_service_complete_sequence={}",
+        hot_fork.timer_service.complete_sequence
+    );
+    println!(
+        "nonmain_timer_service_raw_icount={}",
+        hot_fork.timer_service.raw_icount
+    );
+    println!(
+        "hot_fork_template_generation={}",
+        hot_fork.template_generation
+    );
+    println!("hot_fork_template_draining=true");
+    println!("hot_fork_template_prepared=true");
+    println!("hot_fork_preparation_order=timer-service-complete,draining,prepared");
     println!("component_failures=0");
     println!("per_vcpu_register_files_present=true");
     println!("aggregate_icount_equals_target=true");
@@ -341,6 +377,7 @@ struct FlightRun {
     translation_report: Option<TranslationReport>,
     shutdown: QemuShutdownReport,
     diagnostics: RuntimeDeterminismDiagnostics,
+    hot_fork_preparation: Option<HotForkPreparationEvidence>,
 }
 
 #[derive(Debug)]
@@ -356,6 +393,21 @@ struct RuntimeDeterminismBaseline {
     timer_witness: Result<Option<QemuVirtualTimerFireWitness>, String>,
     rr_current_vcpu: u32,
     rr_position_in_quantum: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HotForkPreparationEvidence {
+    timer_service: NonmainTimerServiceEvidence,
+    template_generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NonmainTimerServiceEvidence {
+    list: u64,
+    generation: u64,
+    request_sequence: u64,
+    complete_sequence: u64,
+    raw_icount: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -778,6 +830,7 @@ fn run_once(
     qemu: &Path,
     hostile: bool,
     translation_prefetch: bool,
+    prove_hot_fork_preparation: bool,
 ) -> Result<FlightRun, Box<dyn Error>> {
     let mut owner = factory.begin(4, MEMORY_BYTES, DISK_BYTES)?;
     let mut directory = owner.prepare_generation_run_directory(config.resource_requirements())?;
@@ -915,6 +968,12 @@ fn run_once(
         }
     };
 
+    let template_generation = if prove_hot_fork_preparation {
+        Some(prepare_live_hot_fork_template(&mut node)?)
+    } else {
+        None
+    };
+
     let shutdown = node.shutdown_child()?;
     drop(node);
     let trace = if shutdown.reaped && !shutdown.leaked {
@@ -922,6 +981,16 @@ fn run_once(
     } else {
         String::new()
     };
+    let hot_fork_preparation = template_generation
+        .map(|template_generation| {
+            retained_nonmain_timer_service_before_idle_completion(&trace, &idle.timer_fire).map(
+                |timer_service| HotForkPreparationEvidence {
+                    timer_service,
+                    template_generation,
+                },
+            )
+        })
+        .transpose()?;
     let translation_report = if translation_prefetch {
         Some(read_translation_report(directory.path())?)
     } else {
@@ -940,6 +1009,114 @@ fn run_once(
             baseline: runtime_baseline,
             trace,
         },
+        hot_fork_preparation,
+    })
+}
+
+fn prepare_live_hot_fork_template(node: &mut QemuNode) -> Result<u64, Box<dyn Error>> {
+    let draining = node.prepare_hot_fork_template(&[])?;
+    if draining.outcome() != QmpHotForkTemplateOutcome::Draining
+        || !draining.transaction_active()
+        || draining.ready()
+    {
+        return Err(format!("hot-fork template did not enter draining: {draining:?}").into());
+    }
+
+    let barriers = node.prepare_hot_fork_template_barriers(&[])?;
+    if barriers.generation() != draining.generation()
+        || barriers.outcome() != QmpHotForkTemplateOutcome::Draining
+        || !barriers.transaction_active()
+        || barriers.ready()
+    {
+        return Err(format!("hot-fork barriers did not retain draining: {barriers:?}").into());
+    }
+
+    let resources = node.prepare_hot_fork_child_resources(MAXIMUM_HOT_FORK_RING_IMAGE_BYTES)?;
+    let prepared = resources.template();
+    if prepared.generation() != draining.generation()
+        || prepared.outcome() != QmpHotForkTemplateOutcome::Prepared
+        || !prepared.transaction_active()
+        || !prepared.ready()
+        || prepared.missing_proofs() != 0
+    {
+        return Err(format!("hot-fork template did not become prepared: {prepared:?}").into());
+    }
+
+    Ok(prepared.generation())
+}
+
+fn retained_nonmain_timer_service_before_idle_completion(
+    trace: &str,
+    timer_fire: &VirtualTimerFireEvidence,
+) -> Result<NonmainTimerServiceEvidence, Box<dyn Error>> {
+    let records = parse_qemu_runtime_determinism_trace(trace)?;
+    let idle_completions = records
+        .iter()
+        .filter_map(|record| match record {
+            QemuRuntimeDeterminismTraceRecord::Idle(record)
+                if record.phase == QemuRuntimeDeterminismIdlePhase::Complete
+                    && record.target_ns == i64::try_from(timer_fire.fired_virtual_ns).ok()?
+                    && record.raw_icount == timer_fire.fired_raw_icount =>
+            {
+                Some(record.sequence)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [idle_completion_sequence] = idle_completions.as_slice() else {
+        return Err(format!(
+            "retained trace carried {} exact idle-completion rows instead of one",
+            idle_completions.len()
+        )
+        .into());
+    };
+
+    let mut candidates = Vec::new();
+    for record in &records {
+        let QemuRuntimeDeterminismTraceRecord::TimerService(request) = record else {
+            continue;
+        };
+        if request.phase != QemuRuntimeDeterminismTimerServicePhase::Request {
+            continue;
+        }
+        let complete = records.iter().find_map(|candidate| match candidate {
+            QemuRuntimeDeterminismTraceRecord::TimerService(complete)
+                if complete.phase == QemuRuntimeDeterminismTimerServicePhase::Complete
+                    && complete.list == request.list
+                    && complete.request == request.request =>
+            {
+                Some(*complete)
+            }
+            _ => None,
+        });
+        let Some(complete) = complete else {
+            continue;
+        };
+        let nonmain_callback = records.iter().any(|candidate| match candidate {
+            QemuRuntimeDeterminismTraceRecord::Timer(timer) => {
+                timer.list == request.list
+                    && timer.scope == QemuRuntimeDeterminismTimerScope::Aio
+                    && timer.sequence > request.sequence
+                    && timer.sequence < complete.sequence
+            }
+            _ => false,
+        });
+        if nonmain_callback
+            && complete.sequence < *idle_completion_sequence
+            && complete.raw_icount == request.raw_icount
+        {
+            candidates.push(NonmainTimerServiceEvidence {
+                list: request.list,
+                generation: request.request,
+                request_sequence: request.sequence,
+                complete_sequence: complete.sequence,
+                raw_icount: request.raw_icount,
+            });
+        }
+    }
+    candidates.sort_by_key(|candidate| candidate.request_sequence);
+    candidates.into_iter().next().ok_or_else(|| {
+        "retained trace omitted a completed nonmain timer service before idle completion".into()
     })
 }
 
@@ -1275,253 +1452,5 @@ fn validate_sample(sample: FingerprintSample, target: u64) -> Result<(), Box<dyn
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crucible::{ContentHash, MarkerId};
-
-    fn runtime_trace(target_ns: i64) -> String {
-        format!(
-            "crucible_sim_determinism_idle phase=request seq=1 raw=7999999 virtual_ns=7999999 target_ns=8000000 deadline_ns=-1 rr_owner=0 rr_cursor=1 cpu_count=4 halted=0xf work=0x0 exit=0x0 interrupt=0x0 stop=0x0 state=2\n\
-             crucible_sim_determinism_idle phase=complete seq=2 raw=7999999 virtual_ns=8000000 target_ns=8000000 deadline_ns=-1 rr_owner=0 rr_cursor=1 cpu_count=4 halted=0xf work=0x0 exit=0x0 interrupt=0x0 stop=0x0 state=2\n\
-             crucible_sim_determinism_idle phase=request seq=3 raw=8000000 virtual_ns=8000000 target_ns={target_ns} deadline_ns=-1 rr_owner=0 rr_cursor=1 cpu_count=4 halted=0xf work=0x0 exit=0x0 interrupt=0x0 stop=0x0 state=2\n\
-             crucible_sim_determinism_idle phase=complete seq=4 raw=8000000 virtual_ns={target_ns} target_ns={target_ns} deadline_ns=-1 rr_owner=0 rr_cursor=1 cpu_count=4 halted=0xf work=0x0 exit=0x0 interrupt=0x0 stop=0x0 state=2\n\
-             crucible_sim_determinism_timer_service seq=5 phase=request list=6 request=1 complete=0 expire_ns={target_ns} current_ns={target_ns} raw=8000000 owner=rr\n\
-             crucible_sim_determinism_timer_service seq=6 phase=complete list=6 request=1 complete=1 expire_ns=-1 current_ns={target_ns} raw=8000000 owner=host\n"
-        )
-    }
-
-    fn runtime_diagnostics(trace: String) -> RuntimeDeterminismDiagnostics {
-        RuntimeDeterminismDiagnostics {
-            baseline: RuntimeDeterminismBaseline {
-                calibration: Err(String::from("test calibration")),
-                idle_state: Err(String::from("test idle state")),
-                timer_witness: Err(String::from("test timer witness")),
-                rr_current_vcpu: 0,
-                rr_position_in_quantum: 7,
-            },
-            trace,
-        }
-    }
-
-    fn boundary(
-        target: u64,
-        rr_current_vcpu: u32,
-        rr_position_in_quantum: u64,
-    ) -> BoundaryEvidence {
-        let mut sample = FingerprintSample {
-            sample_icount: target,
-            vcpu_count: 4,
-            rr_current_vcpu,
-            rr_position_in_quantum,
-            rr_switch_quantum: RR_SWITCH_QUANTUM,
-            ..FingerprintSample::default()
-        };
-        sample.vcpus[usize::try_from(rr_current_vcpu).expect("test vCPU fits usize")]
-            .register_digest[0] = target.to_le_bytes()[0];
-        sample.device_state_digest[0] = target.to_le_bytes()[0];
-
-        BoundaryEvidence {
-            target,
-            outcome: AdvanceOutcome::ReachedHorizon,
-            fingerprint: ExecutionFingerprint {
-                hash: ContentHash::from_bytes(&target.to_be_bytes()),
-            },
-            sample,
-        }
-    }
-
-    #[test]
-    fn comparator_reports_first_differing_boundary_component() {
-        let reference = vec![boundary(2_000_000, 0, 47), boundary(2_000_001, 0, 48)];
-        let mut candidate = reference.clone();
-        candidate[1].sample.ram_digest[7] = 1;
-
-        let error = compare_boundaries("negative", &reference, &candidate)
-            .expect_err("changed RAM digest must be reported");
-        assert_eq!(
-            error,
-            "negative: boundary 1 window (2000000,2000001]: ram_digest differs"
-        );
-    }
-
-    #[test]
-    fn runtime_comparator_accepts_identical_post_boundary_sequences() {
-        let reference = runtime_diagnostics(runtime_trace(9_000_000));
-        let candidate = runtime_diagnostics(runtime_trace(9_000_000));
-
-        let report = compare_runtime_determinism_diagnostics([
-            ("reference", &reference),
-            ("hostile", &candidate),
-            ("prefetch_reference", &reference),
-            ("prefetch_hostile", &reference),
-        ]);
-
-        assert!(report.contains("post_8m_native_sequences_identical=true rows=4"));
-    }
-
-    #[test]
-    fn runtime_comparator_reports_the_first_post_boundary_tuple() {
-        let reference = runtime_diagnostics(runtime_trace(9_000_000));
-        let candidate = runtime_diagnostics(runtime_trace(9_000_001));
-
-        let report = compare_runtime_determinism_diagnostics([
-            ("reference", &reference),
-            ("hostile", &candidate),
-            ("prefetch_reference", &reference),
-            ("prefetch_hostile", &reference),
-        ]);
-
-        assert!(report.contains("first_split=reference/hostile index=0"));
-        assert!(report.contains("target_ns: 9000000"));
-        assert!(report.contains("target_ns: 9000001"));
-    }
-
-    #[test]
-    fn runtime_comparator_reports_a_timer_service_split() {
-        let reference = runtime_diagnostics(runtime_trace(9_000_000));
-        let candidate = runtime_diagnostics(
-            runtime_trace(9_000_000).replace("list=6 request=1", "list=7 request=1"),
-        );
-
-        let report = compare_runtime_determinism_diagnostics([
-            ("reference", &reference),
-            ("hostile", &candidate),
-            ("prefetch_reference", &reference),
-            ("prefetch_hostile", &reference),
-        ]);
-
-        assert!(report.contains("first_split=reference/hostile index=2"));
-        assert!(report.contains("TimerService"));
-        assert!(report.contains("list: 6"));
-        assert!(report.contains("list: 7"));
-    }
-
-    #[test]
-    fn adjacent_samples_prove_one_instruction_localization() {
-        let boundaries = vec![
-            boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, 47),
-            boundary(INSTRUCTION_EXACT_UPPER_TARGET, 0, 48),
-        ];
-
-        let evidence = instruction_exact_evidence(&boundaries)
-            .expect("adjacent exact samples must produce localization evidence");
-        assert_eq!(evidence.lower_target, 2_000_000);
-        assert_eq!(evidence.upper_target, 2_000_001);
-        assert_eq!(evidence.lower_rr_vcpu, evidence.upper_rr_vcpu);
-        assert_eq!(evidence.lower_rr_position + 1, evidence.upper_rr_position);
-        assert_eq!(
-            evidence.first_differing_state_component,
-            "device_state_digest"
-        );
-        assert!(
-            evidence
-                .changed_components
-                .contains(&String::from("sample_icount"))
-        );
-        assert!(
-            evidence
-                .changed_components
-                .contains(&String::from("vcpu[0].register_digest"))
-        );
-        assert_eq!(
-            evidence.owning_vcpu_state_projection,
-            "vcpu[0].register_digest"
-        );
-    }
-
-    #[test]
-    fn adjacent_samples_accept_a_terminal_rr_handoff() {
-        let lower = boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, RR_SWITCH_QUANTUM - 1);
-        let mut upper = boundary(INSTRUCTION_EXACT_UPPER_TARGET, 1, 0);
-        upper.sample.vcpus[0].register_digest[0] = INSTRUCTION_EXACT_UPPER_TARGET.to_le_bytes()[0];
-        upper.sample.vcpus[1].register_digest = [0; 32];
-        let boundaries = vec![lower, upper];
-
-        let evidence = instruction_exact_evidence(&boundaries)
-            .expect("the terminal instruction must advance to the next RR owner");
-        assert_eq!(evidence.lower_rr_vcpu, 0);
-        assert_eq!(evidence.upper_rr_vcpu, 1);
-        assert_eq!(evidence.lower_rr_position, RR_SWITCH_QUANTUM - 1);
-        assert_eq!(evidence.upper_rr_position, 0);
-    }
-
-    #[test]
-    fn adjacent_samples_reject_a_nonadvancing_rr_cursor() {
-        let boundaries = vec![
-            boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, 47),
-            boundary(INSTRUCTION_EXACT_UPPER_TARGET, 0, 47),
-        ];
-
-        let error = instruction_exact_evidence(&boundaries)
-            .expect_err("an unchanged RR cursor cannot certify one retired instruction");
-        assert!(error.contains("one exact RR successor"));
-    }
-
-    #[test]
-    fn adjacent_samples_reject_the_wrong_terminal_owner() {
-        let boundaries = vec![
-            boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, RR_SWITCH_QUANTUM - 1),
-            boundary(INSTRUCTION_EXACT_UPPER_TARGET, 2, 0),
-        ];
-
-        let error = instruction_exact_evidence(&boundaries)
-            .expect_err("a terminal handoff that skips the next owner must fail");
-        assert!(error.contains("one exact RR successor"));
-    }
-
-    #[test]
-    fn adjacent_samples_reject_a_changed_quantum() {
-        let lower = boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, 47);
-        let mut upper = boundary(INSTRUCTION_EXACT_UPPER_TARGET, 0, 48);
-        upper.sample.rr_switch_quantum += 1;
-
-        let error = instruction_exact_evidence(&[lower, upper])
-            .expect_err("a changed RR quantum cannot certify one instruction");
-        assert!(error.contains("one exact RR successor"));
-    }
-
-    #[test]
-    fn adjacent_samples_reject_an_unrelated_state_change() {
-        let lower = boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, 47);
-        let mut upper = boundary(INSTRUCTION_EXACT_UPPER_TARGET, 0, 48);
-        upper.sample.ram_digest[0] = 1;
-
-        let error = instruction_exact_evidence(&[lower, upper])
-            .expect_err("an unrelated RAM change must not certify one instruction");
-        assert!(error.contains("changed invariant fingerprint shape or RAM state"));
-    }
-
-    #[test]
-    fn readiness_marker_authenticates_the_exact_pre_request_event() {
-        let marker_icount = Icount { retired: 73 };
-        let event = ObservableEvent::guest_marker(
-            marker_icount,
-            NodeId {
-                name: String::from(FLIGHT_NODE_ID),
-            },
-            MarkerId::from_name(SETUP_COMPLETE_MARKER),
-        );
-
-        assert_eq!(
-            authenticate_readiness_marker(&[event], Icount { retired: 74 }),
-            Ok(73)
-        );
-    }
-
-    #[test]
-    fn readiness_marker_rejects_unrelated_or_ambiguous_events() {
-        let marker = || {
-            ObservableEvent::guest_marker(
-                Icount { retired: 73 },
-                NodeId {
-                    name: String::from(FLIGHT_NODE_ID),
-                },
-                MarkerId::from_name(SETUP_COMPLETE_MARKER),
-            )
-        };
-        assert!(
-            authenticate_readiness_marker(&[marker(), marker()], Icount { retired: 74 }).is_err()
-        );
-        assert!(authenticate_readiness_marker(&[marker()], Icount { retired: 72 }).is_err());
-    }
-}
+#[path = "crucible-qemu-production-plugin-flight/tests.rs"]
+mod tests;

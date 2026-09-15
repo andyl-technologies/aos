@@ -84,68 +84,51 @@ impl CampaignRepository {
             canonical_envelope_bytes(&root)?,
         )];
 
-        let logical_payload_bytes = match root_schema_version {
-            1 => {
-                let evidence = FindingTriageReplayEvidence::from_canonical_bytes(root.body())?;
-                self.validate_finding_triage_replay_dependencies(
-                    evidence.reproduction(),
-                    evidence.observed_signature(),
-                )?;
-                u64::try_from(evidence.payload().len()).map_err(|_| {
-                    CampaignCodecError::LimitExceeded {
-                        limit: "finding-triage-replay-payload-bytes",
-                    }
-                })?
+        if root_schema_version
+            != crate::CampaignRecordKind::FindingTriageReplayEvidence.schema_version()
+        {
+            return Err(integrity("finding-triage-replay-evidence-envelope-version"));
+        }
+        let manifest = FindingTriageReplayEvidence::manifest_from_canonical_bytes(root.body())?;
+        self.validate_finding_triage_replay_dependencies(
+            manifest.reproduction(),
+            manifest.observed_signature(),
+        )?;
+        for (index, descriptor) in manifest.chunks().iter().copied().enumerate() {
+            let chunk = self.require_record_kind(
+                descriptor.content(),
+                crate::CampaignRecordKind::FindingTriageReplayEvidenceChunk,
+            )?;
+            let payload = FindingTriageReplayEvidence::chunk_from_canonical_bytes(chunk.body())?;
+            if payload.len() != descriptor.logical_bytes() as usize {
+                return Err(integrity(
+                    "finding-triage-replay-evidence-chunk-length-mismatch",
+                ));
             }
-            2 => {
-                let manifest =
-                    FindingTriageReplayEvidence::manifest_from_canonical_bytes(root.body())?;
-                self.validate_finding_triage_replay_dependencies(
-                    manifest.reproduction(),
-                    manifest.observed_signature(),
-                )?;
-                for (index, descriptor) in manifest.chunks().iter().copied().enumerate() {
-                    let chunk = self.require_record_kind(
-                        descriptor.content(),
-                        crate::CampaignRecordKind::FindingTriageReplayEvidenceChunk,
-                    )?;
-                    let payload =
-                        FindingTriageReplayEvidence::chunk_from_canonical_bytes(chunk.body())?;
-                    if payload.len() != descriptor.logical_bytes() as usize {
-                        return Err(integrity(
-                            "finding-triage-replay-evidence-chunk-length-mismatch",
-                        ));
-                    }
-                    drop(payload);
-                    let ordinal = u32::try_from(index + 1).map_err(|_| {
-                        CampaignCodecError::LimitExceeded {
-                            limit: "finding-triage-replay-storage-object-ordinal",
-                        }
-                    })?;
-                    let chunk_index =
-                        u32::try_from(index).map_err(|_| CampaignCodecError::LimitExceeded {
-                            limit: "finding-triage-replay-storage-object-ordinal",
-                        })?;
-                    objects.push(FindingTriageReplayStorageObject::new(
-                        ordinal,
-                        FindingTriageReplayStorageObjectRole::PayloadChunk {
-                            index: chunk_index,
-                            logical_payload_bytes: descriptor.logical_bytes(),
-                        },
-                        descriptor.content(),
-                        canonical_envelope_bytes(&chunk)?,
-                    ));
-                }
-                u64::try_from(manifest.payload_bytes()?).map_err(|_| {
-                    CampaignCodecError::LimitExceeded {
-                        limit: "finding-triage-replay-payload-bytes",
-                    }
-                })?
+            drop(payload);
+            let ordinal =
+                u32::try_from(index + 1).map_err(|_| CampaignCodecError::LimitExceeded {
+                    limit: "finding-triage-replay-storage-object-ordinal",
+                })?;
+            let chunk_index =
+                u32::try_from(index).map_err(|_| CampaignCodecError::LimitExceeded {
+                    limit: "finding-triage-replay-storage-object-ordinal",
+                })?;
+            objects.push(FindingTriageReplayStorageObject::new(
+                ordinal,
+                FindingTriageReplayStorageObjectRole::PayloadChunk {
+                    index: chunk_index,
+                    logical_payload_bytes: descriptor.logical_bytes(),
+                },
+                descriptor.content(),
+                canonical_envelope_bytes(&chunk)?,
+            ));
+        }
+        let logical_payload_bytes = u64::try_from(manifest.payload_bytes()?).map_err(|_| {
+            CampaignCodecError::LimitExceeded {
+                limit: "finding-triage-replay-payload-bytes",
             }
-            _ => {
-                return Err(integrity("finding-triage-replay-evidence-envelope-version"));
-            }
-        };
+        })?;
 
         FindingTriageReplayStorageDescription::new(
             id,
@@ -217,7 +200,9 @@ impl CampaignRepository {
                 canonical_envelope_bytes(&root)?,
             ));
         }
-        if root.schema_version() != 2 {
+        if root.schema_version()
+            != crate::CampaignRecordKind::FindingTriageReplayEvidence.schema_version()
+        {
             return Err(CampaignRepositoryError::InvalidRequest {
                 reason: "finding-triage-replay-storage-object-ordinal",
             });

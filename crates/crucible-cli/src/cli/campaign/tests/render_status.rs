@@ -47,6 +47,8 @@ fn campaign_head_report_renders_machine_and_human_forms() {
     let decoded: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
     assert_eq!(decoded["schema"], CAMPAIGN_HEAD_REPORT_SCHEMA);
     assert_eq!(decoded["advanced"], true);
+    assert!(decoded.get("semantic").is_none());
+    assert!(decoded.get("operational").is_none());
 
     let table = render_campaign_head(&report, OutputFormat::Table).expect("table report");
     assert!(table.contains("campaign   example"));

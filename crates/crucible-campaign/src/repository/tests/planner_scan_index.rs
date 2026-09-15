@@ -1,4 +1,4 @@
-//! Ordered frontier pages, mixed request schemas, and forged index rejection.
+//! Ordered current-request frontier pages and forged index rejection.
 
 use super::*;
 
@@ -85,6 +85,26 @@ fn indexed_pages_match_canonical_order_across_request_shapes_and_restart() {
     let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
     let head = cold.head("scan-order").expect("cold indexed head");
     let view = head.snapshot().planning_view();
+    let index = cold
+        .merkle
+        .get(view.exploration(), planner_scan_index_anchor_key())
+        .expect("planner index lookup")
+        .expect("planner index anchor");
+    for position in &expected {
+        let request = position.source().content_id();
+        let branch = cold
+            .merkle
+            .get(index, position.branch_point().as_hash())
+            .expect("branch lookup")
+            .expect("indexed branch");
+        assert_eq!(
+            cold.merkle
+                .get(branch, CampaignHash::from_bytes(request.digest()))
+                .expect("request lookup"),
+            Some(request)
+        );
+    }
+
     for limit in [1, 3, 7] {
         let mut after = None;
         let mut seen = Vec::new();

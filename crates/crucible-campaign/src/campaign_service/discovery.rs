@@ -3,13 +3,11 @@
 use super::*;
 use crate::{CampaignDiscoveryResult, DiscoveryRequest};
 
-const EXTENDED_STOP_DISCOVERY_REQUEST_SCHEMA_VERSION: u32 = 2;
-const OBSERVATION_STOP_DISCOVERY_REQUEST_SCHEMA_VERSION: u32 = 3;
+const DISCOVERY_REQUEST_SCHEMA_VERSION: u32 = 3;
 
 /// Strict principal-bound request for one idempotent discovery admission.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubmitCampaignDiscoveryRequest {
-    schema_version: u32,
     principal: CampaignPrincipal,
     campaign: CampaignName,
     command: DiscoveryRequest,
@@ -27,15 +25,7 @@ impl SubmitCampaignDiscoveryRequest {
         campaign: CampaignName,
         command: DiscoveryRequest,
     ) -> Result<Self, CampaignCodecError> {
-        let schema_version = if command.uses_observation_stop_schema() {
-            OBSERVATION_STOP_DISCOVERY_REQUEST_SCHEMA_VERSION
-        } else if command.uses_extended_stop_schema() {
-            EXTENDED_STOP_DISCOVERY_REQUEST_SCHEMA_VERSION
-        } else {
-            CAMPAIGN_SERVICE_SCHEMA_VERSION
-        };
         let request = Self {
-            schema_version,
             principal,
             campaign,
             command,
@@ -87,35 +77,23 @@ impl SubmitCampaignDiscoveryRequest {
 
 impl Canonical for SubmitCampaignDiscoveryRequest {
     fn encode(&self, encoder: &mut Encoder) {
-        self.schema_version.encode(encoder);
+        DISCOVERY_REQUEST_SCHEMA_VERSION.encode(encoder);
         self.principal.encode(encoder);
         self.campaign.encode(encoder);
         self.command.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        let schema_version = u32::decode(decoder)?;
-        if !matches!(
-            schema_version,
-            CAMPAIGN_SERVICE_SCHEMA_VERSION
-                | EXTENDED_STOP_DISCOVERY_REQUEST_SCHEMA_VERSION
-                | OBSERVATION_STOP_DISCOVERY_REQUEST_SCHEMA_VERSION
-        ) {
+        if u32::decode(decoder)? != DISCOVERY_REQUEST_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported campaign service schema version",
             });
         }
-        let request = Self::new(
+        Self::new(
             CampaignPrincipal::decode(decoder)?,
             CampaignName::decode(decoder)?,
             DiscoveryRequest::decode(decoder)?,
-        )?;
-        if request.schema_version != schema_version {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "discovery request schema disagrees with stop-condition schema",
-            });
-        }
-        Ok(request)
+        )
     }
 }
 

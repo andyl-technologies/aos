@@ -486,7 +486,7 @@ long-held locks.
   stdout and explicit trace output.
   `T-CLI-9` is completed through `checks.crucible.phase5.cliSaveWorkflow`.
   Campaign-owned semantic stops capture an authenticated exact checkpoint and
-  export current v5 or v6 portable handles binding the scenario, schedule,
+  export the current v6 portable handle binding the scenario, schedule,
   replay closure, exact frontier, and marker or observation evidence. Export
   rejects malformed or incomplete replay closures and never places physical
   QEMU checkpoint data in the handle. Quiescence, virtual-time, property, and

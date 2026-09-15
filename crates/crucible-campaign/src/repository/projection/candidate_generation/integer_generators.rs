@@ -2,71 +2,12 @@
 
 use super::*;
 
-pub(in crate::repository) fn progressive_integer_candidate(
-    initial_strata: u32,
-    domain: &IntegerDomain,
-    ordinal: u64,
-) -> Result<IntegerValue, CampaignRepositoryError> {
-    if initial_strata > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA {
-        return Err(integrity("progressive-generator-initial-strata-limit"));
-    }
-    if ordinal == 0 || ordinal > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_PROPOSALS {
-        return Err(integrity("proposal-ordinal-exceeds-source-cardinality"));
-    }
-    let initial_count = u64::try_from(domain.cardinality().min(u128::from(initial_strata)))
-        .map_err(|_| integrity("candidate-source-cardinality-overflow"))?;
-    if ordinal <= initial_count {
-        return stratified_integer_candidate(initial_strata, domain, ordinal);
-    }
-
-    let mut selected = BTreeSet::new();
-    for initial_ordinal in 1..=initial_count {
-        selected.insert(stratified_integer_offset(
-            initial_strata,
-            domain,
-            initial_ordinal,
-        )?);
-    }
-    let mut gaps = progressive_refinement_gaps(domain.cardinality(), &selected)?;
-    let refinements = ordinal
-        .checked_sub(initial_count)
-        .ok_or_else(|| integrity("progressive-generator-ordinal-underflow"))?;
-    let mut selected_offset = None;
-    for _ in 0..refinements {
-        let gap = gaps
-            .pop()
-            .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality"))?;
-        let midpoint = gap
-            .lower
-            .checked_add((gap.len() - 1) / 2)
-            .ok_or_else(|| integrity("candidate-source-cardinality-overflow"))?;
-        if midpoint > gap.lower {
-            gaps.push(RefinementGap {
-                lower: gap.lower,
-                upper: midpoint - 1,
-            });
-        }
-        if midpoint < gap.upper {
-            gaps.push(RefinementGap {
-                lower: midpoint + 1,
-                upper: gap.upper,
-            });
-        }
-        selected_offset = Some(midpoint);
-    }
-    integer_candidate_at_offset(
-        domain,
-        selected_offset.ok_or_else(|| integrity("progressive-generator-refinement-is-empty"))?,
-    )
-}
-
 pub(in crate::repository::projection) fn feedback_progressive_integer_candidate(
     request: &BranchRequest,
     domain: &IntegerDomain,
     domain_semantic: crate::ChoiceDomainSemanticId,
     proposed: &BTreeSet<ChoiceValue>,
     feedback: CandidateFeedbackProjection<'_>,
-    terms: FeedbackIntervalTerms,
 ) -> Result<IntegerValue, CampaignRepositoryError> {
     let projection = feedback.projection;
     if projection.branch_point() != request.branch_point() || projection.policy() != feedback.policy
@@ -87,15 +28,11 @@ pub(in crate::repository::projection) fn feedback_progressive_integer_candidate(
         selected.insert(integer_candidate_offset(domain, *value)?);
     }
     let gaps = progressive_refinement_gaps(domain.cardinality(), &selected)?;
-    let landmark_offsets = if terms.landmarks {
-        domain
-            .landmarks()
-            .iter()
-            .map(|landmark| integer_candidate_offset(domain, *landmark))
-            .collect::<Result<BTreeSet<_>, _>>()?
-    } else {
-        BTreeSet::new()
-    };
+    let landmark_offsets = domain
+        .landmarks()
+        .iter()
+        .map(|landmark| integer_candidate_offset(domain, *landmark))
+        .collect::<Result<BTreeSet<_>, _>>()?;
     let prospective_prior = projection.prospective_prior_basis(1)?;
     let mut endpoints = BTreeMap::<u128, FeedbackEndpoint>::new();
     let mut scored = BinaryHeap::new();
@@ -128,26 +65,10 @@ pub(in crate::repository::projection) fn feedback_progressive_integer_candidate(
         )?;
         scored.push(FeedbackRefinementGap {
             gap,
-            rarity_discontinuity: if terms.rarity_discontinuity {
-                rarity_discontinuity(projection, lower.edge, upper.edge)?
-            } else {
-                ExactMeanDiscontinuity::ZERO
-            },
-            finding_discontinuity: if terms.finding_discontinuity {
-                finding_discontinuity(projection, lower.edge, upper.edge)?
-            } else {
-                ExactMeanDiscontinuity::ZERO
-            },
-            novelty_discontinuity: if terms.novelty_discontinuity {
-                novelty_discontinuity(projection, lower.edge, upper.edge)?
-            } else {
-                ExactMeanDiscontinuity::ZERO
-            },
-            objective_discontinuity: if terms.objective_discontinuity {
-                objective_discontinuity(projection, lower.edge, upper.edge)?
-            } else {
-                ExactMeanDiscontinuity::ZERO
-            },
+            rarity_discontinuity: rarity_discontinuity(projection, lower.edge, upper.edge)?,
+            finding_discontinuity: finding_discontinuity(projection, lower.edge, upper.edge)?,
+            novelty_discontinuity: novelty_discontinuity(projection, lower.edge, upper.edge)?,
+            objective_discontinuity: objective_discontinuity(projection, lower.edge, upper.edge)?,
             producer_landmarks: landmark_offsets.range(gap.lower..=gap.upper).count(),
             endpoint_score_delta: lower.score_micros.abs_diff(upper.score_micros),
         });
@@ -474,47 +395,6 @@ pub(in crate::repository::projection) fn integer_candidate_at_offset(
         return Err(integrity("static-generator-produced-illegal-integer"));
     }
     Ok(value)
-}
-
-pub(in crate::repository) fn permuted_integer_candidate_count(
-    domain: &IntegerDomain,
-) -> Result<u64, CampaignRepositoryError> {
-    if domain.cardinality() > crate::PERMUTED_INTEGER_GENERATOR_MAX_CARDINALITY {
-        return Err(integrity("permuted-generator-cardinality-limit"));
-    }
-    u64::try_from(domain.cardinality())
-        .map_err(|_| integrity("permuted-generator-cardinality-limit"))
-}
-
-pub(in crate::repository) fn permuted_integer_candidate(
-    request: &BranchRequest,
-    domain: &IntegerDomain,
-    ordinal: u64,
-) -> Result<IntegerValue, CampaignRepositoryError> {
-    let cardinality = permuted_integer_candidate_count(domain)?;
-    if ordinal == 0 || ordinal > cardinality {
-        return Err(integrity("proposal-ordinal-exceeds-source-cardinality"));
-    }
-    let request_digest = request.id()?.content_id().digest();
-    let key = CampaignHash::derive(
-        "crucible.campaign.generator.permuted-integer.v6",
-        &request_digest,
-    );
-    let envelope_mask = u64::try_from(u128::from(cardinality).next_power_of_two() - 1)
-        .map_err(|_| integrity("permuted-generator-cardinality-limit"))?;
-    let mut offset = ordinal - 1;
-    for (round, chunk) in key.as_bytes().as_chunks::<8>().0.iter().enumerate() {
-        let word = u64::from_be_bytes(*chunk);
-        let candidate = if round % 2 == 0 {
-            offset ^ (word & envelope_mask)
-        } else {
-            word.wrapping_sub(offset) & envelope_mask
-        };
-        if candidate < cardinality {
-            offset = candidate;
-        }
-    }
-    integer_candidate_at_offset(domain, u128::from(offset))
 }
 
 pub(in crate::repository) fn modeled_uniform_integer_candidate_count(
