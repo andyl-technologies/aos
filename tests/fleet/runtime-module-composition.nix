@@ -143,7 +143,7 @@ in {
               raise
 
 
-      def assert_package_configuration():
+      def assert_package_configuration(nginx_expected="nginx-runtime"):
           runtime.succeed(
               "test \"$(cat /etc/runtime-modules/platform.conf)\" = authority=platform"
           )
@@ -155,7 +155,7 @@ in {
           nginx_body = runtime.succeed(
               f"{CURL} --fail --silent http://127.0.0.1:18080/health"
           )
-          assert nginx_body == "nginx-runtime", nginx_body
+          assert nginx_body == nginx_expected, nginx_body
           runtime.succeed("grep -q 'listen 18080;' /etc/nginx/nginx.conf")
 
           wait_for_service("envoy.service")
@@ -377,6 +377,63 @@ in {
       configured = current_generation()
       assert configured != initial, (initial, configured)
       assert_package_configuration()
+      assert_payloads_immutable()
+
+      # Change only nginx's rendered configuration. The package-owned service
+      # declaration requests reload for configuration changes, so the selected
+      # systemd provider must preserve the running process while the new route
+      # becomes observable.
+      nginx_invocation = runtime.succeed(
+          "systemctl show -p InvocationID --value nginx.service"
+      ).strip()
+      nginx_pid = runtime.succeed(
+          "systemctl show -p MainPID --value nginx.service"
+      ).strip()
+      updated_services_module = services_module.replace(
+          'body = "nginx-runtime";',
+          'body = "nginx-runtime-reloaded";',
+      )
+      write_file(
+          "/run/runtime-module-fixtures/20-services-updated.nix",
+          updated_services_module,
+      )
+      runtime.succeed(
+          f"{APM} config replace 20-services.nix "
+          "/run/runtime-module-fixtures/20-services-updated.nix"
+      )
+      apply_worktree("/run/runtime-module-composition-reload")
+      reloaded = current_generation()
+      assert reloaded != configured, (configured, reloaded)
+      assert_package_configuration("nginx-runtime-reloaded")
+      assert runtime.succeed(
+          "systemctl show -p InvocationID --value nginx.service"
+      ).strip() == nginx_invocation
+      assert runtime.succeed(
+          "systemctl show -p MainPID --value nginx.service"
+      ).strip() == nginx_pid
+      assert_payloads_immutable()
+
+      # Restore the original declaration through the same reload path so the
+      # retained generation used by the reboot and rollback checks below has
+      # the fixture's canonical contents.
+      write_file(
+          "/run/runtime-module-fixtures/20-services-original.nix",
+          services_module,
+      )
+      runtime.succeed(
+          f"{APM} config replace 20-services.nix "
+          "/run/runtime-module-fixtures/20-services-original.nix"
+      )
+      apply_worktree("/run/runtime-module-composition-reload-restore")
+      configured = current_generation()
+      assert configured != reloaded, (reloaded, configured)
+      assert_package_configuration()
+      assert runtime.succeed(
+          "systemctl show -p InvocationID --value nginx.service"
+      ).strip() == nginx_invocation
+      assert runtime.succeed(
+          "systemctl show -p MainPID --value nginx.service"
+      ).strip() == nginx_pid
       assert_payloads_immutable()
 
       manifest = json.loads(runtime.succeed(
