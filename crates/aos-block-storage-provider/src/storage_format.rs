@@ -13,7 +13,6 @@ use crate::engine::{Backend, BackendObservation, ability_value};
 use crate::process::{Executable, ExecutableReference};
 use crate::state;
 
-const INTERFACE: &str = "aos.util-linux.storage-format-effects";
 const REALIZATION_SCHEMA: &str = "aos.storage.format-realization/v1";
 const OBSERVATION_SCHEMA: &str = "aos.ability.storage-format-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.util-linux.storage-format-context/v1";
@@ -74,10 +73,6 @@ struct Marker {
 pub struct StorageFormatBackend;
 
 impl Backend for StorageFormatBackend {
-    fn interface_name(&self) -> &'static str {
-        INTERFACE
-    }
-
     fn action_method(&self) -> &'static str {
         "format"
     }

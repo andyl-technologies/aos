@@ -13,7 +13,6 @@ use crate::engine::{Backend, BackendObservation, ability_value};
 use crate::process::{Executable, ExecutableReference};
 use crate::state;
 
-const INTERFACE: &str = "aos.zfs.storage-dataset-effects";
 const REALIZATION_SCHEMA: &str = "aos.storage.dataset-realization/v1";
 const OBSERVATION_SCHEMA: &str = "aos.ability.storage-dataset-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.zfs.storage-dataset-context/v1";
@@ -72,10 +71,6 @@ struct NativeState {
 pub struct ZfsDatasetBackend;
 
 impl Backend for ZfsDatasetBackend {
-    fn interface_name(&self) -> &'static str {
-        INTERFACE
-    }
-
     fn action_method(&self) -> &'static str {
         "mount"
     }
