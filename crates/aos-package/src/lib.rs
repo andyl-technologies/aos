@@ -773,9 +773,9 @@ pub enum PackageCommand {
         /// Durable image profile beneath the mounted host root.
         #[arg(long = "image-profile")]
         image_profile: PathBuf,
-        /// Signed initrd activation selection.
-        #[arg(long)]
-        input: PathBuf,
+        /// Checked build-stage projection carrying the exact executable plan.
+        #[arg(long = "resolved-stage")]
+        resolved_stage: PathBuf,
     },
     /// Hidden: validate initrd ownership release before switch-root.
     #[command(name = "__ability-stage-validate", hide = true)]
@@ -3774,10 +3774,15 @@ pub async fn run(
         stage,
         root,
         image_profile,
-        input,
+        resolved_stage,
     } = command
     {
-        return config_eval::stage_handoff::run_initrd_stage(stage, root, image_profile, input);
+        return config_eval::stage_handoff::run_initrd_stage(
+            stage,
+            root,
+            image_profile,
+            resolved_stage,
+        );
     }
     if let PackageCommand::AbilityStageValidate {
         from_stage,

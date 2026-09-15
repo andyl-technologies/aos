@@ -12,8 +12,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail, ensure};
-use aos_ability_model::{ExecutionStage, InterfaceDocument, LocalKey, PackageDocument};
-use aos_ability_plan::{PlanningReplayInputs, PlanningSnapshot};
+use aos_ability_model::{
+    EnvironmentId, ExecutionStage, InterfaceDocument, LocalKey, PackageDocument,
+};
+use aos_ability_plan::{
+    PlanningReplayInputs, PlanningSnapshot, TransitionInputs, TransitionPlanner,
+};
+use aos_ability_runtime::bundle::ReloadablePlanBundle;
 use aos_ability_validate::PackageOutputSelector;
 use aos_ability_validate::build_frontend::ResolvedPackageOutput;
 use aos_contract::Sha256Digest;
@@ -65,13 +70,26 @@ struct BuildStagePlanManifest {
     planning_snapshot: Sha256Digest,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ResolvedBuildStage<'a> {
-    schema: &'static str,
-    environment: &'a aos_ability_model::EnvironmentId,
+struct ResolvedBuildStage {
+    schema: String,
+    environment: EnvironmentId,
     planning_snapshot: Sha256Digest,
-    fixed_point: &'a super::ability_rounds::AbilityFixedPointProjection,
+    fixed_point: super::ability_rounds::AbilityFixedPointProjection,
+    plan_bundle: ReloadablePlanBundle,
+}
+
+/// Carries one fully replayed build-stage execution selection.
+pub(super) struct CheckedResolvedBuildStage {
+    /// Identifies the exact stage environment selected by the parent system.
+    pub(super) environment: EnvironmentId,
+    /// Carries the structurally replayed checked effect plan.
+    pub(super) plan: aos_ability_validate::CheckedEffectPlan,
+    /// Retains the canonical bundle used for durable transaction recovery.
+    pub(super) bundle: ReloadablePlanBundle,
+    /// Carries the fixed point bound to the replayed desired planning state.
+    pub(super) fixed_point: super::ability_rounds::AbilityFixedPointProjection,
 }
 
 /// Plans one build-stage graph from authenticated package and policy inputs.
@@ -227,11 +245,26 @@ pub fn resolve_build_stage(spec_path: &Path, output_path: &Path, eval_root: &Pat
         .fixed_point
         .bind_checked_planning(&verified, &outcome.selections)?;
 
+    let transition = TransitionPlanner::new(catalog.validation_context())
+        .plan(
+            &verified,
+            TransitionInputs {
+                current: None,
+                authority: None,
+                reconciliation: None,
+            },
+            &mut composition_evaluator,
+        )
+        .context("constructing checked build-stage transition")?;
+    let plan_bundle = ReloadablePlanBundle::from_verified(&verified, None, None, &transition)
+        .context("constructing reloadable build-stage plan bundle")?;
+
     let output = ResolvedBuildStage {
-        schema: BUILD_STAGE_OUTPUT_SCHEMA,
-        environment: &desired.environment.environment,
+        schema: BUILD_STAGE_OUTPUT_SCHEMA.to_string(),
+        environment: desired.environment.environment.clone(),
         planning_snapshot: verified.snapshot_digest(),
-        fixed_point: &outcome.fixed_point,
+        fixed_point: outcome.fixed_point,
+        plan_bundle,
     };
     let bytes = aos_contract::canonical::to_vec(&output)
         .context("encoding resolved build-stage projection")?;
@@ -241,6 +274,55 @@ pub fn resolve_build_stage(spec_path: &Path, output_path: &Path, eval_root: &Pat
     }
     fs::write(output_path, bytes)
         .with_context(|| format!("writing resolved build stage {}", output_path.display()))
+}
+
+/// Decodes and independently replays one embedded resolved-stage selection.
+///
+/// # Errors
+///
+/// Returns an error when the document is oversized, noncanonical, names an
+/// unsupported schema, cannot replay its checked bundle, or its fixed point
+/// differs from the exact replayed desired planning state.
+pub(super) fn decode_resolved_stage(bytes: &[u8]) -> Result<CheckedResolvedBuildStage> {
+    ensure!(
+        bytes.len() as u64 <= MAXIMUM_SPEC_BYTES,
+        "resolved build stage exceeds its document bound"
+    );
+    let resolved: ResolvedBuildStage =
+        serde_json::from_slice(bytes).context("decoding resolved build stage")?;
+    ensure!(
+        resolved.schema == BUILD_STAGE_OUTPUT_SCHEMA,
+        "unsupported resolved build-stage schema"
+    );
+    ensure!(
+        aos_contract::canonical::to_vec(&resolved)? == bytes,
+        "resolved build stage is not canonical JSON"
+    );
+
+    let bundle = resolved.plan_bundle;
+    ensure!(
+        bundle.desired_planning_digest() == resolved.planning_snapshot,
+        "resolved build stage differs from its planning commitment"
+    );
+    let (plan, planning) = bundle
+        .clone()
+        .revalidate_with_desired(super::native_activation::supported_native_ability_features()?)
+        .context("replaying resolved build-stage plan bundle")?;
+    resolved
+        .fixed_point
+        .validate_replayed_planning(&planning)
+        .context("binding resolved build-stage fixed point")?;
+    ensure!(
+        plan.binding_plan().environment().environment == resolved.environment,
+        "resolved build-stage environment differs from its checked plan"
+    );
+
+    Ok(CheckedResolvedBuildStage {
+        environment: resolved.environment,
+        plan,
+        bundle,
+        fixed_point: resolved.fixed_point,
+    })
 }
 
 fn validate_planning_spec(spec: &BuildStagePlanningSpec) -> Result<()> {

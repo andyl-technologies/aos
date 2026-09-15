@@ -47,79 +47,6 @@
     }
     else staticAbilityContractSource;
 
-  initrdActivationInput = config.aos.abilities.initrdActivationInput;
-  serializedInitrdActivation =
-    if initrdActivationInput == null
-    then null
-    else {
-      inherit (initrdActivationInput) schema;
-      manager = {
-        inherit (initrdActivationInput.manager) kind stage;
-      };
-      operations =
-        map (operation: {
-          inherit (operation) id kind;
-        })
-        initrdActivationInput.operations;
-    };
-  initrdActivationSelection = {
-    schema = "aos.ability.initrd-activation-selection/v1";
-    execution_stage = "initrd";
-    disposition =
-      if initrdActivationInput == null
-      then "none"
-      else "required";
-    activation = serializedInitrdActivation;
-  };
-  initrdActivationOperationType = lib.types.submodule {
-    options = {
-      id = lib.mkOption {
-        type = lib.types.strMatching "[a-z0-9][a-z0-9._-]*";
-        description = "Stable operation identifier within the initrd activation.";
-      };
-      kind = lib.mkOption {
-        type = lib.types.enum [
-          "authenticate-target-image"
-          "verify-static-ability-contract"
-        ];
-        description = "Closed boot-substrate operation executed in the initrd.";
-      };
-    };
-  };
-  initrdActivationType = lib.types.submodule {
-    options = {
-      schema = lib.mkOption {
-        type = lib.types.enum ["aos.ability.initrd-activation/v1"];
-        default = "aos.ability.initrd-activation/v1";
-        description = "Typed initrd activation schema.";
-      };
-      manager = lib.mkOption {
-        type = lib.types.submodule {
-          options = {
-            stage = lib.mkOption {
-              type = lib.types.enum ["initrd"];
-              default = "initrd";
-              description = "Execution stage that owns the manager capability.";
-            };
-            kind = lib.mkOption {
-              type = lib.types.enum ["boot-substrate"];
-              default = "boot-substrate";
-              description = "Closed manager implementation used for early boot.";
-            };
-          };
-        };
-        default = {};
-        description = "Exact initrd-scoped manager selected for every operation.";
-      };
-      operations = lib.mkOption {
-        type = lib.types.listOf initrdActivationOperationType;
-        description = ''
-          Canonically ordered boot-substrate operations. The runtime rejects
-          empty, duplicate, unsorted, or unsupported operation sets.
-        '';
-      };
-    };
-  };
 in {
   options = {
     aos.abilities.activationInput = lib.mkOption {
@@ -133,30 +60,9 @@ in {
       '';
     };
 
-    aos.abilities.initrdActivationInput = lib.mkOption {
-      type = lib.types.nullOr initrdActivationType;
-      default = null;
-      description = ''
-        Typed, authenticated initrd-stage activation embedded in the signed
-        initrd. Only the closed boot-substrate manager operations are accepted.
-        A null value records an explicit no-activation disposition; file absence
-        never authorizes a no-op.
-      '';
-    };
-
     aos.boot.initrd.abilityHandoff.enable = lib.mkEnableOption ''
       the signed initrd-to-host ability ownership handoff
     '';
-
-    system.build.initrdAbilityActivationSelection = lib.mkOption {
-      type = lib.types.attrs;
-      readOnly = true;
-      internal = true;
-      description = ''
-        Closed initrd activation selection before the initrd builder binds the
-        exact static ability contract digest.
-      '';
-    };
 
     system.build.staticAbilityContract = lib.mkOption {
       type = lib.types.package;
@@ -188,17 +94,6 @@ in {
     };
 
     system.build.staticAbilityContract = staticAbilityContract;
-    system.build.initrdAbilityActivationSelection = initrdActivationSelection;
-
-    assertions = [
-      {
-        assertion =
-          config.aos.boot.initrd.abilityHandoff.enable
-          || config.aos.abilities.initrdActivationInput == null;
-        message = "initrd ability activation input requires the initrd-to-host ownership handoff";
-      }
-    ];
-
     aos.boot.initrd.extraPackages = lib.mkIf config.aos.boot.initrd.abilityHandoff.enable [
       pkgs.aos.packageRuntime
     ];
@@ -235,7 +130,7 @@ in {
           --stage initrd \
           --root /sysroot \
           --image-profile /sysroot/var/lib/profiles/image \
-          --input /etc/aos/initrd-ability-activation.json
+          --resolved-stage /lib/aos/initrd/resolved-ability-stage.json
       '';
     };
 

@@ -37,7 +37,8 @@ use crate::package_contract::{VerifiedPackageContract, VerifiedPackageContractSe
 
 /// Resolves and executes only handlers selected by a checked effect plan.
 pub(crate) struct HandlerDispatcher<'a> {
-    activation: &'a SpecializedAbilityActivation,
+    activation: Option<&'a SpecializedAbilityActivation>,
+    plan: &'a CheckedEffectPlan,
     packages: &'a VerifiedPackageContractSet,
 }
 
@@ -51,8 +52,15 @@ impl<'a> HandlerDispatcher<'a> {
         activation: &'a SpecializedAbilityActivation,
         packages: &'a VerifiedPackageContractSet,
     ) -> Result<()> {
-        for operation in activation.plan().operations() {
-            let (binding, package, _) = selected_route(activation.plan(), packages, operation)?;
+        Self::preflight_plan(activation.plan(), packages)
+    }
+
+    fn preflight_plan(
+        plan: &'a CheckedEffectPlan,
+        packages: &'a VerifiedPackageContractSet,
+    ) -> Result<()> {
+        for operation in plan.operations() {
+            let (binding, package, _) = selected_route(plan, packages, operation)?;
             preflight_selected_handler(package, &binding.interface, &binding.implementation)
                 .with_context(|| format!("authenticating handler for {:?}", operation.key))?;
         }
@@ -70,7 +78,25 @@ impl<'a> HandlerDispatcher<'a> {
     ) -> Result<Self> {
         Self::preflight(activation, packages)?;
         Ok(Self {
-            activation,
+            activation: Some(activation),
+            plan: activation.plan(),
+            packages,
+        })
+    }
+
+    /// Constructs a dispatcher for a statically authenticated stage plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any operation lacks an exact package-owned handler.
+    pub(crate) fn for_static_plan(
+        plan: &'a CheckedEffectPlan,
+        packages: &'a VerifiedPackageContractSet,
+    ) -> Result<Self> {
+        Self::preflight_plan(plan, packages)?;
+        Ok(Self {
+            activation: None,
+            plan,
             packages,
         })
     }
@@ -92,16 +118,61 @@ impl<'a> HandlerDispatcher<'a> {
     where
         Observer: ExecutionBoundaryObserver,
     {
+        let activation = self
+            .activation
+            .context("operator-authorized dispatcher lacks its activation")?;
         let mut policy =
-            OperatorAuthorizedPolicy::new(self.activation, operator_authority, current_policy);
+            OperatorAuthorizedPolicy::new(activation, operator_authority, current_policy);
+        self.run_with_policy(session, &mut policy, cancellation, observer, || {
+            activation.reauthorize(operator_authority)
+        })
+    }
+
+    /// Drives a statically authenticated stage through package-owned handlers.
+    ///
+    /// The checked stage bundle is the immutable execution authorization. It
+    /// has no mutable operator sidecar to reauthorize between operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error under the same runtime conditions as
+    /// [`Self::run_to_terminal`].
+    pub(crate) fn run_static_to_terminal<Observer>(
+        &self,
+        session: &mut AbilityTransactionSession<'a>,
+        mut current_policy: PublishingNativeAdmissionPolicy,
+        cancellation: &CancellationToken,
+        observer: &mut Observer,
+    ) -> Result<TerminalResult>
+    where
+        Observer: ExecutionBoundaryObserver,
+    {
+        self.run_with_policy(session, &mut current_policy, cancellation, observer, || {
+            Ok(())
+        })
+    }
+
+    fn run_with_policy<Observer, Policy, BeforeFinalize>(
+        &self,
+        session: &mut AbilityTransactionSession<'a>,
+        policy: &mut Policy,
+        cancellation: &CancellationToken,
+        observer: &mut Observer,
+        mut before_finalize: BeforeFinalize,
+    ) -> Result<TerminalResult>
+    where
+        Observer: ExecutionBoundaryObserver,
+        Policy: PublishingAdmissionPolicy,
+        BeforeFinalize: FnMut() -> Result<()>,
+    {
         let clock = SystemMonotonicClock::new();
         let blobs = session.transaction_blob_store()?;
 
         loop {
             if let Some(terminal) = session.transaction().summary().terminal() {
-                self.activation.reauthorize(operator_authority)?;
+                before_finalize()?;
                 ensure!(
-                    !self.activation.plan().operations().is_empty(),
+                    !self.plan.operations().is_empty(),
                     "empty checked transactions require explicit retained-resource observation"
                 );
                 session
@@ -150,10 +221,9 @@ impl<'a> HandlerDispatcher<'a> {
             }
 
             let assignment = assignment_for_operation(session, operation)?;
-            let (_, package, interface) =
-                selected_route(self.activation.plan(), self.packages, operation)?;
+            let (_, package, interface) = selected_route(self.plan, self.packages, operation)?;
             let mut catalog = CommandHandlerResourceCatalog::for_operation(
-                self.activation.plan(),
+                self.plan,
                 self.packages,
                 operation,
                 |owner| assignment_for_operation(session, owner),
@@ -167,11 +237,7 @@ impl<'a> HandlerDispatcher<'a> {
                     state: current_resource_state(state),
                 });
             }
-            policy.current_mut().publish_authority(
-                self.activation.plan(),
-                &assignments,
-                resources,
-            )?;
+            policy.publish_authority(self.plan, &assignments, resources)?;
             let mut adapter =
                 CommandHandlerAdapter::new(package, assignment, interface.clone(), blobs.clone())?;
             drive_with_adapter(
@@ -179,12 +245,34 @@ impl<'a> HandlerDispatcher<'a> {
                 item.operation(),
                 &mut adapter,
                 &mut catalog,
-                &mut policy,
+                policy,
                 &clock,
                 cancellation,
                 observer,
             )?;
         }
+    }
+}
+
+trait PublishingAdmissionPolicy: TrustedAdmissionPolicy {
+    fn publish_authority(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        assignments: &[ProviderAssignment],
+        resources: Vec<CurrentResourceObservation>,
+    ) -> Result<()>;
+}
+
+impl PublishingAdmissionPolicy for PublishingNativeAdmissionPolicy {
+    fn publish_authority(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        assignments: &[ProviderAssignment],
+        resources: Vec<CurrentResourceObservation>,
+    ) -> Result<()> {
+        PublishingNativeAdmissionPolicy::publish_authority(self, plan, assignments, resources)
+            .map(|_| ())
+            .map_err(anyhow::Error::new)
     }
 }
 
@@ -487,9 +575,19 @@ impl<'a, Policy> OperatorAuthorizedPolicy<'a, Policy> {
             current,
         }
     }
+}
 
-    fn current_mut(&mut self) -> &mut Policy {
-        &mut self.current
+impl<Policy> PublishingAdmissionPolicy for OperatorAuthorizedPolicy<'_, Policy>
+where
+    Policy: PublishingAdmissionPolicy,
+{
+    fn publish_authority(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        assignments: &[ProviderAssignment],
+        resources: Vec<CurrentResourceObservation>,
+    ) -> Result<()> {
+        self.current.publish_authority(plan, assignments, resources)
     }
 }
 

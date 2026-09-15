@@ -269,7 +269,6 @@ in {
       renderedUnits = builtins.attrNames renderedInitrdUnits;
       renderedNetworks = map (name: "${name}.network") (builtins.attrNames cfg.network);
       handoff = config.system.build.bootSubstrateContract;
-      abilityActivationSelection = config.system.build.initrdAbilityActivationSelection;
       abilityResolutionInput = config.aos.abilities.stages.initrd.resolutionInput;
       abilityEnvironment = config.system.build.initrdAbilityGraph.environment;
       abilityIntent = config.aos.abilities.stages.initrd.intent;

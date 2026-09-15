@@ -604,6 +604,49 @@ impl<'plan> AbilityTransactionSession<'plan> {
         )
     }
 
+    /// Opens or recovers a checked stage transaction beneath a durable image root.
+    ///
+    /// Unlike [`Self::open`], this path is not a numbered configuration
+    /// generation. The caller supplies a protected stage directory whose
+    /// lifetime spans the initrd-to-host handoff, and the transaction store
+    /// retains the exact plan bundle, artifact roots, blobs, and journal there.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stage directory or lock is unsafe, package
+    /// artifacts differ, plan retention fails, or journal recovery fails.
+    pub(crate) fn open_stage(
+        plan: &'plan CheckedEffectPlan,
+        transaction: TransactionId,
+        limits: JournalLimits,
+        stage_directory: impl Into<PathBuf>,
+        supported_features: BTreeSet<RequiredFeature>,
+        bundle: ReloadablePlanBundle,
+        packages: VerifiedPackageContractSet,
+    ) -> Result<Self, GenerationTransactionStoreError> {
+        let generation = stage_directory.into();
+        create_private_directory(&generation)?;
+        let journal = generation
+            .join(TRANSACTION_ROOT)
+            .join(transaction.0.as_str())
+            .join(EXECUTION_JOURNAL_FILE);
+        let switch_lock = generation.join("execution.lock");
+        let paths = SessionPaths {
+            generation,
+            journal,
+            switch_lock,
+        };
+        Self::open_at(
+            plan,
+            transaction,
+            limits,
+            supported_features,
+            bundle,
+            packages,
+            paths,
+        )
+    }
+
     /// Opens or recovers a transaction while the caller retains the switch lock.
     ///
     /// This entry point lets configuration activation hold one uninterrupted

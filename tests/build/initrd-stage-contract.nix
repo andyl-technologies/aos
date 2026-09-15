@@ -26,18 +26,6 @@
       pkgs.coreutils
       pkgs.ability-package-smoke
     ];
-    aos.abilities.initrdActivationInput = {
-      operations = [
-        {
-          id = "authenticate-image";
-          kind = "authenticate-target-image";
-        }
-        {
-          id = "verify-static-contract";
-          kind = "verify-static-ability-contract";
-        }
-      ];
-    };
     environment.systemPackages = [pkgs.ability-package-smoke];
   };
   system = mkSystem {
@@ -75,7 +63,6 @@ in
   assert securityDisabledInitrdServices ? mount-var;
   assert securityDisabledInitrdServices ? nix-overlay-setup;
   assert securityDisabledInitrdServices ? aos-seed-profiles;
-  assert securityDisabledInitrdServices ? aos-credential-recovery;
   assert securityDisabledInitrdServices.aos-ability-initrd-controller.requiredBy
   == ["initrd-fs.target"];
   assert securityDisabledInitrdServices.aos-ability-initrd-controller.serviceConfig.RemainAfterExit;
@@ -88,7 +75,6 @@ in
   assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.serviceConfig.RemainAfterExit;
   assert securityDisabledHostServices ? aos-ability-host-receiver;
   assert securityDisabledHostServices ? aos-nix-db;
-  assert securityDisabledHostServices ? aos-credential-recovery;
   assert securityDisabledHostServices.aos-ability-host-receiver.requiredBy
   == [
     "aos-eval.service"
@@ -377,34 +363,11 @@ in
             grep -Fx "OnFailure=emergency.target" "$initrd_fs_target" >/dev/null
             grep -Fx "OnFailureJobMode=replace-irreversibly" \
               "$initrd_fs_target" >/dev/null
-            activation_selection=unit-graph/etc/aos/initrd-ability-activation.json
-            static_contract_hex=$(sha256sum "$initrd_abilities" | cut -d ' ' -f1)
-            ${pkgs.jq}/bin/jq -e \
-              --arg digest "sha256:$static_contract_hex" '
-                keys == [
-                  "activation",
-                  "disposition",
-                  "execution_stage",
-                  "schema",
-                  "static_ability_contract_sha256"
-                ]
-                and .schema == "aos.ability.initrd-activation-selection/v1"
-                and .execution_stage == "initrd"
-                and .disposition == "required"
-                and .static_ability_contract_sha256 == $digest
-                and .activation == {
-                  schema:"aos.ability.initrd-activation/v1",
-                  manager:{kind:"boot-substrate",stage:"initrd"},
-                  operations:[
-                    {id:"authenticate-image",kind:"authenticate-target-image"},
-                    {id:"verify-static-contract",kind:"verify-static-ability-contract"}
-                  ]
-                }
-              ' "$activation_selection" >/dev/null
-            ${pkgs.jq}/bin/jq -cS . "$activation_selection" > canonical-activation.json
-            canonical_activation_size=$(stat -c %s canonical-activation.json)
-            truncate -s $((canonical_activation_size - 1)) canonical-activation.json
-            cmp canonical-activation.json "$activation_selection"
+            grep -Fx "lib/aos/initrd/resolved-ability-stage.json" archive-files >/dev/null
+            if grep -E 'etc/aos/initrd.*activation.*\.json' archive-files >/dev/null; then
+              echo "legacy initrd activation selection remains in the archive" >&2
+              exit 1
+            fi
 
             initrd_controller=$(resolve_archived_store_path unit-graph/nix \
               "$(readlink unit-graph/etc/systemd/system/aos-ability-initrd-controller.service)")
@@ -414,7 +377,7 @@ in
             initrd_controller_script=$(resolve_archived_store_path unit-graph/nix \
               "$(sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' "$initrd_controller")")
             grep -F "__ability-stage-run" "$initrd_controller_script" >/dev/null
-            grep -F -- "--input /etc/aos/initrd-ability-activation.json" \
+            grep -F -- "--resolved-stage /lib/aos/initrd/resolved-ability-stage.json" \
               "$initrd_controller_script" >/dev/null
             initrd_barrier=$(resolve_archived_store_path unit-graph/nix \
               "$(readlink unit-graph/etc/systemd/system/aos-ability-initrd-handoff-barrier.service)")

@@ -1,4 +1,4 @@
-# Typed initrd activation and host continuation qualification.
+# Checked initrd-stage execution and host receipt qualification.
 {
   mkSystem,
   pkgs,
@@ -8,16 +8,6 @@
     ../../systems/server-test.nix
     {
       aos.image.erofsCompressionLevel = 1;
-      aos.abilities.initrdActivationInput.operations = [
-        {
-          id = "authenticate-image";
-          kind = "authenticate-target-image";
-        }
-        {
-          id = "verify-static-contract";
-          kind = "verify-static-ability-contract";
-        }
-      ];
       aos.packages.aos-test-agent = {
         package = pkgs.aos-test-agent;
         bundle = true;
@@ -52,9 +42,8 @@ in {
       ), checkpoint
       assert checkpoint["source_stage"] == "initrd", checkpoint
       assert checkpoint["receiver_stage"] == "host", checkpoint
-      assert checkpoint["disposition"] == "required", checkpoint
-      assert checkpoint["activation_sha256"].startswith("sha256:"), checkpoint
-      assert checkpoint["completion_sha256"].startswith("sha256:"), checkpoint
+      assert checkpoint["resolved_stage_sha256"].startswith("sha256:"), checkpoint
+      assert checkpoint["execution_sha256"].startswith("sha256:"), checkpoint
       assert checkpoint["status"] == "ownership-released", checkpoint
 
       boot_id = target.succeed(
@@ -71,15 +60,9 @@ in {
       ).replace(" ", "").replace("\n", "")
       for marker in (
           '"event":"source-completed"',
-          '"outcome":"activation-succeeded"',
-          '"schema":"aos.ability.initrd-activation-completion/v1"',
-          '"kind":"target-image-authenticated"',
-          '"kind":"static-ability-contract-verified"',
+          '"terminal":"succeeded"',
+          '"retained_resources"',
           '"event":"host-received"',
-          '"schema":"aos.ability.host-stage-continuation/v1"',
-          '"manager_stage":"host"',
-          '"kind":"target-image-reauthenticated"',
-          '"kind":"static-ability-contract-reacquired"',
       ):
           assert marker.encode().hex() in journal_hex, marker
     '';
