@@ -422,6 +422,13 @@ impl CommandHandlerResourceEntry {
         remaining_millis: u64,
     ) -> Result<AuthenticatedAdmission, io::Error> {
         authenticate_method_contract(&self.handler, &self.handler_interface, &method)?;
+        authenticate_method_target(
+            &self.handler_interface,
+            &self.resource_interface,
+            &method,
+            target,
+            &self.spec,
+        )?;
         let semantics = method_semantics_for(&self.handler_interface, &method)?;
         let request = AdmissionRequest {
             schema: ADMISSION_REQUEST_SCHEMA.into(),
@@ -985,6 +992,32 @@ fn authenticate_method_contract(
     {
         return Err(invalid(
             "command handler schemas differ from the selected method contract",
+        ));
+    }
+    Ok(())
+}
+
+fn authenticate_method_target(
+    handler_interface: &InterfaceDocument,
+    resource_interface: &InterfaceDocument,
+    method: &MethodReference,
+    target: &ResourceReference,
+    spec: &CommandHandlerResourceSpec,
+) -> Result<(), io::Error> {
+    let descriptor = handler_interface
+        .interface
+        .methods
+        .get(&method.method)
+        .ok_or_else(|| invalid("command handler method is absent from authenticated interface"))?;
+    let resource_interface = resource_interface.interface_key().map_err(err)?;
+    if descriptor.target_resource != spec.kind
+        || target.interface != resource_interface
+        || target.interface.name != descriptor.target_resource
+        || target.resource != spec.resource
+        || target.lifetime != spec.lifetime
+    {
+        return Err(invalid(
+            "command handler method target differs from its authenticated resource",
         ));
     }
     Ok(())
@@ -1641,7 +1674,70 @@ fn invalid(message: impl Into<String>) -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU32;
+
+    use aos_ability_model::{
+        AggregationContract, AggregationScope, IndeterminateSemantics, InterfaceDescriptor,
+        LifecycleSemantics, MethodDescriptor, OutcomeSemantics,
+    };
+
     use super::*;
+
+    fn interface_document(name: &str, target_resource: Option<&str>) -> InterfaceDocument {
+        let methods = target_resource
+            .map(|target_resource| {
+                BTreeMap::from([(
+                    LocalKey::new("apply").expect("method name is valid"),
+                    MethodDescriptor {
+                        description: "Applies the test resource.".into(),
+                        semantics: MethodSemantics::ordinary(
+                            aos_ability_model::AccessMode::ExclusiveWrite,
+                        ),
+                        parameters: ValueSchema::Boolean,
+                        target_resource: InterfaceName::new(target_resource)
+                            .expect("target resource name is valid"),
+                        outputs: BTreeMap::new(),
+                        permitted_operations: Vec::new(),
+                        guarantees: Vec::new(),
+                        outcome: OutcomeSemantics {
+                            completion_evidence: ValueSchema::Boolean,
+                            observation_evidence: ValueSchema::Boolean,
+                            supports_rejected_before_effect: true,
+                            indeterminate: IndeterminateSemantics::Reconcile,
+                        },
+                    },
+                )])
+            })
+            .unwrap_or_default();
+
+        InterfaceDocument {
+            schema: "aos.ability.interface/v1".into(),
+            required_features: Vec::new(),
+            interface: InterfaceDescriptor {
+                name: InterfaceName::new(name).expect("interface name is valid"),
+                abi: NonZeroU32::MIN,
+                description: "Defines a test interface.".into(),
+                request: ValueSchema::Boolean,
+                configuration: None,
+                outputs: BTreeMap::new(),
+                methods,
+                lifecycle: LifecycleSemantics {
+                    stable_resource_identity: true,
+                    releases_ephemeral_on_disable: false,
+                    retains_persistent_by_default: false,
+                    persistent_delete_method: None,
+                },
+                aggregation: AggregationContract {
+                    scope: AggregationScope::ProviderInstance,
+                    key: LocalKey::new("slot").expect("aggregation key is valid"),
+                    controller_group: LocalKey::new("test").expect("controller group is valid"),
+                    reject_slot_collisions: true,
+                    merge_contract: None,
+                },
+                guarantees: Vec::new(),
+            },
+        }
+    }
 
     fn resource_reference(key: &str, operations: &[&str]) -> ResourceReference {
         serde_json::from_value(serde_json::json!({
@@ -1665,6 +1761,54 @@ mod tests {
             "lifetime": "instance",
         }))
         .expect("resource reference is valid")
+    }
+
+    #[test]
+    fn terminal_method_authenticates_a_distinct_controller_resource_interface() {
+        let handler_interface = interface_document("aos.test.terminal", Some("aos.test.resource"));
+        let resource_interface = interface_document("aos.test.resource", None);
+        let method = MethodReference {
+            interface: handler_interface
+                .interface_key()
+                .expect("handler interface key is valid"),
+            method: LocalKey::new("apply").expect("method name is valid"),
+        };
+        let target = resource_reference("service", &["apply"]);
+        let spec = resource_spec(serde_json::json!({"enabled": true}));
+
+        authenticate_method_target(
+            &handler_interface,
+            &resource_interface,
+            &method,
+            &target,
+            &spec,
+        )
+        .expect("terminal method may target its declared controller resource");
+
+        let wrong_resource_interface = interface_document("aos.test.other-resource", None);
+        assert!(
+            authenticate_method_target(
+                &handler_interface,
+                &wrong_resource_interface,
+                &method,
+                &target,
+                &spec,
+            )
+            .is_err()
+        );
+
+        let wrong_handler_interface =
+            interface_document("aos.test.terminal", Some("aos.test.other-resource"));
+        assert!(
+            authenticate_method_target(
+                &wrong_handler_interface,
+                &resource_interface,
+                &method,
+                &target,
+                &spec,
+            )
+            .is_err()
+        );
     }
 
     fn resource_spec(value: serde_json::Value) -> CommandHandlerResourceSpec {

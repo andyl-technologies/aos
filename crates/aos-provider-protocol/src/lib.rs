@@ -56,21 +56,15 @@ pub fn resource_set_digest(resources: &[ResourceContext]) -> anyhow::Result<Sha2
     Sha256Digest::of_canonical(RESOURCE_SET_DIGEST_DOMAIN, &resources)
 }
 
-/// Validates one admitted resource against its selected provider and bound context.
+/// Validates one admitted resource against its checked reference and bound context.
 ///
 /// # Errors
 ///
-/// Returns an error when the resource reference, provider assignment, semantic
-/// revision, or bound native context disagree.
+/// Returns an error when the resource reference, semantic revision, or bound
+/// native context disagree. The assignment identifies the terminal callable;
+/// the reference identifies the controller-owned resource and may therefore
+/// name a different provider and interface.
 pub fn validate_resource_context(context: &ResourceContext) -> anyhow::Result<BoundNativeContext> {
-    anyhow::ensure!(
-        context.assignment.provider == context.reference.resource.provider,
-        "resource context provider assignment differs from the resource owner"
-    );
-    anyhow::ensure!(
-        context.assignment.interface == context.reference.interface,
-        "resource context provider assignment differs from the referenced interface"
-    );
     anyhow::ensure!(
         !context.reference.operations.is_empty()
             && context
@@ -129,12 +123,8 @@ pub fn validate_resource_contexts(resources: &[ResourceContext]) -> anyhow::Resu
 /// lifetime identity.
 pub fn validate_admission_resource(request: &AdmissionRequest) -> anyhow::Result<()> {
     anyhow::ensure!(
-        request.assignment.provider == request.target.resource.provider,
-        "admission provider assignment differs from the target owner"
-    );
-    anyhow::ensure!(
-        request.assignment.interface == request.target.interface,
-        "admission provider assignment differs from the target interface"
+        request.assignment.interface == request.method.interface,
+        "admission provider assignment differs from the callable method interface"
     );
     anyhow::ensure!(
         request.target.resource == request.resource_spec.resource,
@@ -147,10 +137,6 @@ pub fn validate_admission_resource(request: &AdmissionRequest) -> anyhow::Result
     anyhow::ensure!(
         request.target.lifetime == request.resource_spec.lifetime,
         "admission target differs from the resolved resource lifetime"
-    );
-    anyhow::ensure!(
-        request.method.interface == request.target.interface,
-        "admission method interface differs from the target reference"
     );
     anyhow::ensure!(
         request
@@ -484,11 +470,11 @@ mod tests {
     use aos_contract::Sha256Digest;
 
     use super::{
-        native_context_digest, validate_admission_resource, validate_resource_contexts,
-        AdmissionDisposition, AdmissionRequest, AdmissionRevision, BoundNativeContext,
-        InvocationControl, InvocationDisposition, InvocationPurpose, RecoveryMethods,
-        ResourceContext, ResourceSpec, SupportedPurposes, ADMISSION_REQUEST_SCHEMA,
-        NATIVE_CONTEXT_DIGEST_DOMAIN,
+        ADMISSION_REQUEST_SCHEMA, AdmissionDisposition, AdmissionRequest, AdmissionRevision,
+        BoundNativeContext, InvocationControl, InvocationDisposition, InvocationPurpose,
+        NATIVE_CONTEXT_DIGEST_DOMAIN, RecoveryMethods, ResourceContext, ResourceSpec,
+        SupportedPurposes, native_context_digest, validate_admission_resource,
+        validate_resource_contexts,
     };
 
     #[test]
@@ -573,6 +559,11 @@ mod tests {
             abi: NonZeroU32::MIN,
             descriptor: Sha256Digest::of_bytes(b"test-resource-interface"),
         };
+        let handler_interface = InterfaceKey {
+            name: InterfaceName::new("aos.test.handler").expect("interface is valid"),
+            abi: NonZeroU32::MIN,
+            descriptor: Sha256Digest::of_bytes(b"test-handler-interface"),
+        };
         let resource: ResourceId = serde_json::from_value(serde_json::json!({
             "provider": {
                 "environment": {"authority":"test","key":"host","stage":"host"},
@@ -582,8 +573,11 @@ mod tests {
         }))
         .expect("resource identity is valid");
         let assignment = serde_json::from_value(serde_json::json!({
-            "provider": resource.provider.clone(),
-            "interface": resource_interface.clone(),
+            "provider": {
+                "environment": resource.provider.environment.clone(),
+                "key": "terminal-provider"
+            },
+            "interface": handler_interface.clone(),
             "implementation": {
                 "descriptor": format!("sha256:{}", "3".repeat(64)),
                 "artifact": {
@@ -600,12 +594,12 @@ mod tests {
         let request = AdmissionRequest {
             schema: ADMISSION_REQUEST_SCHEMA.into(),
             method: MethodReference {
-                interface: resource_interface.clone(),
+                interface: handler_interface,
                 method: LocalKey::new("apply").expect("method is valid"),
             },
             semantics: MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             target: aos_ability_model::ResourceReference {
-                interface: resource_interface,
+                interface: resource_interface.clone(),
                 resource: resource.clone(),
                 operations: vec![LocalKey::new("apply").expect("operation is valid")],
                 lifetime: ResourceLifetime::Instance,
@@ -629,7 +623,12 @@ mod tests {
             },
         };
 
-        validate_admission_resource(&request).expect("matching authority is accepted");
+        validate_admission_resource(&request)
+            .expect("a terminal callable may target a controller-owned resource");
+
+        let mut wrong_callable = request.clone();
+        wrong_callable.assignment.interface = resource_interface.clone();
+        assert!(validate_admission_resource(&wrong_callable).is_err());
 
         let mut wrong_lifetime = request.clone();
         wrong_lifetime.resource_spec.lifetime = ResourceLifetime::Persistent;
@@ -691,11 +690,14 @@ mod tests {
         .expect("bound context is valid");
         ResourceContext {
             assignment: serde_json::from_value(serde_json::json!({
-                "provider": reference.resource.provider,
+                "provider": {
+                    "environment": reference.resource.provider.environment,
+                    "key": "terminal-provider"
+                },
                 "interface": {
-                    "name": "aos.test.resource",
+                    "name": "aos.test.handler",
                     "abi": 1,
-                    "descriptor": format!("sha256:{}", "1".repeat(64)),
+                    "descriptor": format!("sha256:{}", "2".repeat(64)),
                 },
                 "implementation": {
                     "descriptor": format!("sha256:{}", "3".repeat(64)),
@@ -731,15 +733,10 @@ mod tests {
         wrong_revision.revision = RevisionId(Sha256Digest::of_bytes(b"wrong-revision"));
         assert!(validate_resource_contexts(&[wrong_revision]).is_err());
 
-        let mut wrong_provider = first.clone();
-        wrong_provider.assignment.provider.key =
-            LocalKey::new("other-provider").expect("provider key is valid");
-        assert!(validate_resource_contexts(&[wrong_provider]).is_err());
-
-        let mut wrong_interface = first.clone();
-        wrong_interface.assignment.interface.name =
-            InterfaceName::new("aos.test.other").expect("interface is valid");
-        assert!(validate_resource_contexts(&[wrong_interface]).is_err());
+        let mut wrong_resource = first.clone();
+        wrong_resource.reference.resource.key =
+            LocalKey::new("other-resource").expect("resource key is valid");
+        assert!(validate_resource_contexts(&[wrong_resource]).is_err());
 
         assert!(validate_resource_contexts(&[first.clone(), first.clone()]).is_err());
         assert!(validate_resource_contexts(&[second, first]).is_err());
