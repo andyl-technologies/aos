@@ -1,0 +1,230 @@
+{
+  "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+  "scenarios": [
+    {
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "failure": "injected-interruption",
+      "family": "durability-recovery",
+      "id": "interrupt-before-acquisition",
+      "predecessor": "none"
+    },
+    {
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "failure": "injected-interruption",
+      "family": "durability-recovery",
+      "id": "interrupt-after-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "after-durable-intent",
+      "candidate": "same",
+      "failure": "injected-interruption",
+      "family": "durability-recovery",
+      "id": "interrupt-after-durable-intent",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "after-external-return",
+      "candidate": "same",
+      "failure": "lost-result",
+      "family": "durability-recovery",
+      "id": "lose-external-result",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "after-durable-outcome",
+      "candidate": "same",
+      "failure": "injected-interruption",
+      "family": "durability-recovery",
+      "id": "interrupt-after-durable-outcome",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "cancellation",
+      "candidate": "same",
+      "failure": "route-dependent",
+      "family": "durability-recovery",
+      "id": "cancel-unsettled-attempt",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "deadline",
+      "candidate": "same",
+      "failure": "deadline-expired",
+      "family": "durability-recovery",
+      "id": "expire-attempt-deadline",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "cleanup",
+      "candidate": "same",
+      "failure": "cleanup-failed",
+      "family": "durability-recovery",
+      "id": "fail-cleanup",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "release",
+      "candidate": "same",
+      "failure": "release-failed",
+      "family": "durability-recovery",
+      "id": "fail-release",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "failure": "caller-authority-revoked",
+      "family": "authority-revocation",
+      "id": "revoke-caller-before-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "failure": "caller-authority-revoked",
+      "family": "authority-revocation",
+      "id": "revoke-caller-after-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "failure": "caller-authority-revoked",
+      "family": "authority-revocation",
+      "id": "revoke-caller-before-external-effect",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "failure": "provider-authority-revoked",
+      "family": "authority-revocation",
+      "id": "revoke-provider-before-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "failure": "provider-authority-revoked",
+      "family": "authority-revocation",
+      "id": "revoke-provider-after-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "failure": "provider-authority-revoked",
+      "family": "authority-revocation",
+      "id": "revoke-provider-before-external-effect",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "failure": "enforcement-authority-revoked",
+      "family": "authority-revocation",
+      "id": "revoke-enforcement-before-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "failure": "enforcement-authority-revoked",
+      "family": "authority-revocation",
+      "id": "revoke-enforcement-after-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "failure": "enforcement-authority-revoked",
+      "family": "authority-revocation",
+      "id": "revoke-enforcement-before-external-effect",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "failure": "assignment-authority-revoked",
+      "family": "authority-revocation",
+      "id": "revoke-assignment-before-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "failure": "assignment-authority-revoked",
+      "family": "authority-revocation",
+      "id": "revoke-assignment-after-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "failure": "assignment-authority-revoked",
+      "family": "authority-revocation",
+      "id": "revoke-assignment-before-external-effect",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "recovery",
+      "candidate": "new-executor-incarnation",
+      "failure": "stale-executor-rejected",
+      "family": "incarnation-replacement",
+      "id": "replace-executor-incarnation",
+      "predecessor": "in-flight"
+    },
+    {
+      "boundary": "recovery",
+      "candidate": "new-provider-incarnation",
+      "failure": "stale-provider-rejected",
+      "family": "incarnation-replacement",
+      "id": "replace-provider-incarnation",
+      "predecessor": "in-flight"
+    },
+    {
+      "boundary": "recovery",
+      "candidate": "compatible-replacement",
+      "failure": "none",
+      "family": "provider-state-transfer",
+      "id": "adopt-compatible-state",
+      "predecessor": "in-flight-compatible"
+    },
+    {
+      "boundary": "recovery",
+      "candidate": "unsupported-replacement",
+      "failure": "transfer-rejected",
+      "family": "provider-state-transfer",
+      "id": "reject-unsupported-transfer",
+      "predecessor": "in-flight-incompatible"
+    },
+    {
+      "boundary": "retained-target-activation",
+      "candidate": "current-authority",
+      "failure": "none",
+      "family": "provider-state-transfer",
+      "id": "activate-retained-target",
+      "predecessor": "retained"
+    },
+    {
+      "boundary": "prerequisite",
+      "candidate": "same",
+      "failure": "prerequisite-failed",
+      "family": "dependent-effect",
+      "id": "block-dependent-effect",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "foreign-resource",
+      "candidate": "same",
+      "failure": "foreign-authority-rejected",
+      "family": "foreign-resource",
+      "id": "reject-foreign-resource-mutation",
+      "predecessor": "same"
+    }
+  ],
+  "subject_schema": "aos.qualification.native-adapter-subject/v1"
+}

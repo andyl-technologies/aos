@@ -6,18 +6,21 @@
   transitionTransform ? transition: transition,
   qualificationCell ? false,
 }: let
+  qualificationObserver = import ./_native-adapter-observer.nix {inherit pkgs;};
   package = import ../abilities/reference-image-rollout/package.nix {
     inherit lib;
     inherit (pkgs) mkDerivation;
     rolloutRuntime = pkgs.aos.packageRuntime;
     inherit transitionTransform;
     inherit qualificationCell;
+    inherit qualificationObserver;
   };
   incompatiblePackage = import ../abilities/reference-image-rollout/package.nix {
     inherit lib;
     inherit (pkgs) mkDerivation;
     rolloutRuntime = pkgs.aos.packageRuntime;
     inherit transitionTransform qualificationCell;
+    inherit qualificationObserver;
     packageName = "ability-reference-image-rollout-incompatible";
     stateFormatOverride = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
   };
@@ -35,7 +38,7 @@
     package
     package.abilities.contract
     incompatiblePackage
-    incompatiblePackage.abilities
+    incompatiblePackage.abilityContract
   ];
   drainHook = pkgs.writeShellScriptBin "aos-qualified-rollout-drain-hook" ''
     set -eu
@@ -76,7 +79,7 @@
     {
       name = "ability-reference-image-rollout-incompatible";
       primary = incompatiblePackage;
-      abilities = incompatiblePackage.abilities;
+      abilities = incompatiblePackage.abilityContract;
       originalRuntime = pkgs.aos.packageRuntime;
     }
   ];

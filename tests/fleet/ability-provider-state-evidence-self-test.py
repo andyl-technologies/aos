@@ -121,7 +121,6 @@ def cell(scenario: str, postconditions: list[str]) -> dict:
         "method": "apply",
         "postconditions": postconditions,
         "predecessor": "retained",
-        "recovery": {"cancel": "apply", "reconcile": "apply"},
         "scope": "host-resource",
     }
 
@@ -242,6 +241,18 @@ MATRIX = {
         "adapters": [
             {
                 "adapter": "host-storage",
+                "provider_implementation": {
+                    "observer": {
+                        "result": {
+                            "fields": {
+                                "kind": {
+                                    "kind": "string-enum",
+                                    "values": ["filesystem"],
+                                }
+                            }
+                        }
+                    }
+                },
                 "provider_contract": {
                     "resource_lifetime": "instance",
                     "state_format": None,
@@ -257,6 +268,18 @@ COMPATIBLE_MATRIX = {
         "adapters": [
             {
                 "adapter": "host-storage",
+                "provider_implementation": {
+                    "observer": {
+                        "result": {
+                            "fields": {
+                                "kind": {
+                                    "kind": "string-enum",
+                                    "values": ["filesystem"],
+                                }
+                            }
+                        }
+                    }
+                },
                 "provider_contract": {
                     "resource_lifetime": "persistent",
                     "state_format": STATE_FORMAT["descriptor"],
@@ -533,6 +556,7 @@ def verify_shared_consumer(
             probe["observations"],
             subject,
             cell_document,
+            matrix,
         )
 
     forged_subject = copy.deepcopy(subject)

@@ -687,6 +687,10 @@
         implementation.qualification.conformanceFamilies
         != []
         && uniqueValues implementation.qualification.conformanceFamilies
+        && packageOutputType.check implementation.qualification.observer.artifact
+        && relativePathType.check implementation.qualification.observer.entryPoint
+        && portableType.check implementation.qualification.observer.arguments
+        && portableType.check implementation.qualification.observer.result
       )
     )
     && (

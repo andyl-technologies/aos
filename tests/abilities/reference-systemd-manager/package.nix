@@ -3,6 +3,7 @@
   lib,
   mkDerivation,
   packageRuntime,
+  qualificationObserver ? null,
 }: let
   inherit (lib.abilities) types;
   providerArtifact = ./provider;
@@ -122,6 +123,13 @@
     package = "aos";
     output = "packageRuntime";
   };
+  qualificationSupport =
+    if qualificationObserver == null
+    then null
+    else import ../_native-adapter-qualification.nix {
+      inherit lib;
+      observerPackage = qualificationObserver;
+    };
   abilities = {
     config.aos.abilities = lib.abilities.projectDefinitions {
       driver = {
@@ -154,7 +162,25 @@
           transition = provider.transition;
         };
       };
-      systemd-manager = {
+      systemd-manager = rec {
+        qualification =
+          if qualificationSupport == null
+          then null
+          else {
+            conformanceFamilies = [
+              "authority-revocation"
+              "dependent-effect"
+              "durability-recovery"
+              "foreign-resource"
+              "incarnation-replacement"
+              "provider-state-transfer"
+            ];
+            observer = qualificationSupport.observerFor {
+              provider = "systemd-manager";
+              kind = "systemd";
+              scope = "host-manager";
+            };
+          };
         artifact = packageRuntimeSelector;
         definition = lib.abilities.define {
           interface = systemdManager.name;
@@ -187,7 +213,7 @@ in
     pname = "ability-reference-systemd-manager";
     version = "1.0.0";
     src = providerArtifact;
-    runtimeDeps = [packageRuntime];
+    runtimeDeps = [packageRuntime] ++ lib.optional (qualificationObserver != null) qualificationObserver;
     inherit abilities;
     phases = [
       {

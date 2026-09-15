@@ -707,14 +707,7 @@ fn run_cell(
     let evidence = json!({
         "scenario": INTERRUPTION_SCENARIO,
         "runtime-boundary": format!("{:?}", Boundary::BeforeResourceAcquisition),
-        "declared-recovery-routes": {
-            "reconcile": matrix_method.reconcile,
-            "cancel": matrix_method.cancel,
-        },
-        "fixture-recovery-routes": {
-            "reconcile": matrix_method.reconcile.as_ref().map(|_| &matrix_method.method),
-            "cancel": Value::Null,
-        },
+        "operation-recovery": operation.recovery,
         "boundary-record": {
             "digest": digest_file(&boundary_path)?,
             "bytes": serde_json::from_slice::<Value>(&fs::read(&boundary_path)?)?,
@@ -835,27 +828,26 @@ fn checked_plan(
     operation.inputs = ValueExpression::Literal { value: input };
     operation.accesses[0].resource = operation.target.resource.clone();
     operation.accesses[0].mode = access;
-    // The interruption precedes dispatch, so restart always returns to
-    // admission. A reconcilable contract still requires a type-compatible
-    // recovery reference for the checked plan; the audit never invokes it.
-    operation.recovery.retry = if matrix_method.reconcile.is_some() {
-        RetryPolicy::Bounded {
-            max_attempts: NonZeroU32::new(2).context("retry count must be non-zero")?,
-            backoff_millis: 0,
-        }
-    } else {
-        RetryPolicy::Disabled
-    };
-    operation.recovery.reconcile = matrix_method
-        .reconcile
-        .as_ref()
-        .map(|_| {
-            Ok::<MethodReference, anyhow::Error>(MethodReference {
+    // This fixture derives its representative recovery behavior from the
+    // selected interface outcome. Matrix policy never authors a route map.
+    operation.recovery.retry =
+        if descriptor.outcome.indeterminate == IndeterminateSemantics::Reconcile {
+            RetryPolicy::Bounded {
+                max_attempts: NonZeroU32::new(2).context("retry count must be non-zero")?,
+                backoff_millis: 0,
+            }
+        } else {
+            RetryPolicy::Disabled
+        };
+    operation.recovery.reconcile =
+        if descriptor.outcome.indeterminate == IndeterminateSemantics::Reconcile {
+            Some(MethodReference {
                 interface: interface_key,
                 method: LocalKey::new(&matrix_method.method)?,
             })
-        })
-        .transpose()?;
+        } else {
+            None
+        };
     operation.recovery.cancel = None;
     operation.recovery.compensate = None;
     let qualified_resource = operation.target.resource.clone();

@@ -19,51 +19,37 @@
     pkgs.${name}.passthru.serviceDocumentation.kind or null;
   isFixture = name: documentationKind name == "fixture";
 
-  exposedPackages = builtins.filter exposes packageNames;
-  abilityPackages = builtins.filter hasAbility packageNames;
-  productionStructured =
+  productionPackages = builtins.filter (name: !isFixture name) packageNames;
+  exposedPackages = builtins.filter exposes productionPackages;
+  abilityPackages = builtins.filter hasAbility productionPackages;
+  activationPackages =
     builtins.filter (
       name: exposes name && activationMode name == "structured-effects"
     )
     abilityPackages;
-  productionContractsOnly =
+  contractPackages =
     builtins.filter (
-      name: !isFixture name && activationMode name == "contracts-only"
+      name: activationMode name == "contracts-only"
     )
     abilityPackages;
-  testOnlyLegacy =
-    builtins.filter (
-      name: exposes name && !hasAbility name && isFixture name
-    )
-    packageNames;
-  passive = builtins.filter (name: !exposes name && !hasAbility name) packageNames;
-  legacyEffectful =
-    builtins.filter (
-      name: !hasAbility name && !isFixture name
-    )
-    exposedPackages;
+  passivePackages =
+    builtins.filter (name: !exposes name && !hasAbility name) productionPackages;
+  missingActivation = builtins.filter (name: !hasAbility name) exposedPackages;
 
   require = condition: message:
     if condition
     then true
     else throw message;
 in
-  assert require (legacyEffectful == [])
-  "production expose packages without ability ownership: ${builtins.concatStringsSep ", " legacyEffectful}";
-  assert require (builtins.all (name: activationMode name == "structured-effects") productionStructured)
-  "derived production service inventory contains a non-structured package";
-  assert require (builtins.all (name: activationMode name == "contracts-only") productionContractsOnly)
-  "derived contract-only inventory contains another activation mode"; {
+  assert require (missingActivation == [])
+  "production expose packages without structured activation ownership: ${builtins.concatStringsSep ", " missingActivation}";
+  assert require (builtins.length activationPackages == builtins.length exposedPackages)
+  "every production expose package must use the sole structured activation path"; {
     schema = "aos.package-activation-inventory/v1";
-    abilityNative = abilityPackages;
-    intentionallyUnsupported = testOnlyLegacy;
-    passiveNoActivation = passive;
     inherit
+      activationPackages
       abilityPackages
-      legacyEffectful
-      passive
-      productionContractsOnly
-      productionStructured
-      testOnlyLegacy
+      contractPackages
+      passivePackages
       ;
   }

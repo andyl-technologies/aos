@@ -10,6 +10,7 @@
   writeTextFile,
   effectQualification ? false,
   transitionTransform ? transition: transition,
+  qualificationObserver ? null,
 }: let
   contract = import ../../../pkgs/storage/_postgresql-ability/contract.nix {inherit lib;};
   inherit
@@ -183,6 +184,28 @@
     package = "aos";
     output = "packageRuntime";
   };
+  qualificationSupport =
+    if qualificationObserver == null
+    then null
+    else import ../_native-adapter-qualification.nix {
+      inherit lib;
+      observerPackage = qualificationObserver;
+    };
+  postgresqlQualification = {
+    conformanceFamilies = [
+      "authority-revocation"
+      "dependent-effect"
+      "durability-recovery"
+      "foreign-resource"
+      "incarnation-replacement"
+      "provider-state-transfer"
+    ];
+    observer = qualificationSupport.observerFor {
+      provider = "postgresql";
+      kind = "postgresql";
+      scope = "host-resource";
+    };
+  };
 
   mkSuite = {
     pname,
@@ -190,12 +213,15 @@
     selectedPostgresql,
     selectedProviderSource,
     stateFormat ? null,
+    qualifiesNativeAdapter ? false,
   }:
     mkDerivation {
       inherit pname;
       version = "1.0.0";
       src = selectedProviderSource;
-      runtimeDeps = [packageRuntime selectedControl selectedPostgresql];
+      runtimeDeps =
+        [packageRuntime selectedControl selectedPostgresql]
+        ++ lib.optional (qualificationObserver != null) qualificationObserver;
       abilities = {
         config.aos.abilities = lib.abilities.projectDefinitions {
           postgresql = {
@@ -268,7 +294,11 @@
               result = networkPolicyObservation;
             };
           };
-          postgresql-terminal = {
+          postgresql-terminal = rec {
+            qualification =
+              if qualifiesNativeAdapter && qualificationSupport != null
+              then postgresqlQualification
+              else null;
             artifact = packageRuntimeSelector;
             definition = terminalExport {
               selected = postgresqlEffects;
@@ -334,6 +364,8 @@
     selectedControl = control;
     selectedPostgresql = postgresql;
     selectedProviderSource = providerSource;
+    stateFormat = compatibleStateFormat;
+    qualifiesNativeAdapter = true;
   };
   upgradeSuite = mkSuite {
     pname = "ability-reference-postgresql-upgrade";

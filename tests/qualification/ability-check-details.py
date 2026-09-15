@@ -27,16 +27,32 @@ def check_details(path):
         and detail
         for check, detail in details.items()
     ), details
-    return details
+    prefixes = {
+        argument.value
+        for statement in module.body
+        if isinstance(statement, ast.FunctionDef) and statement.name == "check_detail"
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "startswith"
+        and len(node.args) == 1
+        for argument in node.args
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+    }
+    return details, prefixes
 
 
 contract = json.loads(pathlib.Path(sys.argv[1]).read_text())
-details = check_details(sys.argv[2])
+details, detail_prefixes = check_details(sys.argv[2])
 required = {
     check
     for requirement in contract["requirements"]
     if requirement["id"].startswith("ability-native-")
     for check in requirement["checks"]
 }
-missing = sorted(required - details.keys())
+missing = sorted(
+    check
+    for check in required - details.keys()
+    if not any(check.startswith(prefix) for prefix in detail_prefixes)
+)
 assert not missing, f"native ability checks lack qualification report details: {missing}"

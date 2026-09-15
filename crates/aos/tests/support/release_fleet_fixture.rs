@@ -937,8 +937,8 @@ fn fixture_evidence(
         CheckObservation, NATIVE_ADAPTER_MATRIX_OBSERVATION_V1, NATIVE_ADAPTER_MATRIX_REQUIREMENT,
         NativeAdapterCellObservation, NativeAdapterMatrixComponentIdentity,
         NativeAdapterMatrixEnvironment, NativeAdapterMatrixEnvironmentStatus,
-        NativeAdapterMatrixObservation, NativeAdapterMatrixSpec, NativeAdapterPostconditionProbe,
-        QualificationObservation, native_adapter_matrix_check,
+        NativeAdapterMatrixObservation, NativeAdapterPostconditionProbe, QualificationObservation,
+        native_adapter_matrix_check, native_adapter_matrix_spec_from_surface,
         validate_native_adapter_matrix_observation,
     };
     let seconds = if case.phase == aos_release::qualification::QualificationPhase::Complete {
@@ -973,10 +973,8 @@ fn fixture_evidence(
         std::collections::BTreeMap::from([("synthetic-requests".into(), 1)])
     };
     let native_adapter_matrix = if case.requirement_id == NATIVE_ADAPTER_MATRIX_REQUIREMENT {
-        let spec = canonical::from_slice::<NativeAdapterMatrixSpec>(
-            include_bytes!("../../../aos-release/tests/fixtures/native-adapter-matrix-spec.json"),
-            "native adapter matrix fixture",
-        )?;
+        let surface = native_adapter_surface_fixture()?;
+        let spec = native_adapter_matrix_spec_from_surface(surface)?;
         let spec_digest = Sha256Digest::of_bytes(canonical::to_vec(&spec)?);
         let component =
             |name: &str, component_digest: Sha256Digest| NativeAdapterMatrixComponentIdentity {
@@ -1169,6 +1167,90 @@ fn fixture_evidence(
             .to_string(),
         finished_at: finish.into(),
     })
+}
+
+fn native_adapter_surface_fixture()
+-> Result<aos_release::qualification_evidence::NativeAdapterSurfaceSpec> {
+    use aos_release::qualification_evidence::NativeAdapterSurfaceSpec;
+
+    let adapter = |name: &str, descriptor: &str| {
+        json!({
+            "adapter": name,
+            "conformance_families": ["durability-recovery"],
+            "interface_abi": 1,
+            "interface_descriptor": descriptor,
+            "interface_name": format!("aos.{name}-effects"),
+            "methods": [{"effect_class": "mutation", "method": "apply"}],
+            "provider_contract": {
+                "resource_lifetime": "persistent",
+                "state_format": digest(&format!("{name} state format")),
+            },
+            "provider_implementation": {
+                "contract": format!(
+                    "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-{name}-abilities"
+                ),
+                "implementation": format!("{name}-implementation"),
+                "observer": {
+                    "artifact": {
+                        "path": format!(
+                            "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-{name}-observer"
+                        ),
+                        "selector": {
+                            "_type": "aos-package-output-selector",
+                            "package": format!("{name}-observer"),
+                            "output": "out",
+                        },
+                    },
+                    "entry_point": "bin/fixture-observer",
+                    "arguments": {"kind": "record"},
+                    "result": {"kind": "record"},
+                },
+            },
+            "scope": "host-resource",
+        })
+    };
+    let scenario = |id: &str, boundary: &str, failure: &str| {
+        json!({
+            "boundary": boundary,
+            "candidate": "same",
+            "failure": failure,
+            "family": "durability-recovery",
+            "id": id,
+            "predecessor": "same",
+        })
+    };
+    let value = json!({
+        "adapters": [
+            adapter(
+                "fixture-a",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            adapter(
+                "fixture-z",
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ),
+        ],
+        "families": ["durability-recovery"],
+        "limits": {"max_adapters": 2, "max_methods": 2, "max_scenarios": 2},
+        "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+        "scenarios": [
+            scenario(
+                "interrupt-before-acquisition",
+                "before-acquisition",
+                "injected-interruption"
+            ),
+            scenario(
+                "lose-external-result",
+                "after-external-return",
+                "lost-result"
+            ),
+        ],
+        "schema": "aos.qualification.native-adapter-surface/v1",
+        "subject_schema": "aos.qualification.native-adapter-subject/v1",
+    });
+
+    serde_json::from_value::<NativeAdapterSurfaceSpec>(value)
+        .context("construct native adapter surface fixture")
 }
 
 fn review(arguments: &[String]) -> Result<()> {

@@ -1,4 +1,4 @@
-##! Selects supported-cancellation cells for the reference provider stack.
+##! Selects cells whose concrete production operation determines cancellation.
 {
   lib,
   matrix,
@@ -7,8 +7,7 @@
     builtins.filter
     (cell:
       builtins.elemAt (lib.splitString "/" cell.id) 4
-      == "cancel-unsettled-attempt"
-      && cell.recovery.cancel != null)
+      == "cancel-unsettled-attempt")
     matrix.cells
   );
   byAdapters = adapters:
@@ -36,14 +35,14 @@
   };
 in
   assert builtins.length all == builtins.length (lib.unique all);
-  assert builtins.sort builtins.lessThan all
-  == builtins.sort builtins.lessThan (
+  assert builtins.sort builtins.lessThan (
     groups.reference
     ++ groups.foreground
     ++ groups.postgresql
     ++ groups.kubernetes
     ++ groups.systemd
     ++ groups.rollout
-  ); {
+  )
+  == builtins.sort builtins.lessThan all; {
     inherit all groups;
   }

@@ -3,6 +3,7 @@
   lib,
   mkSystem,
   pkgs,
+  nativeAdapterMatrix,
   systems,
   method,
   cellIds,
@@ -28,7 +29,7 @@
     inherit lib pkgs;
     guestTools = true;
   };
-  matrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
+  matrix = nativeAdapterMatrix;
   matrixSpec = pkgs.writeTextFile {
     name = "ability-rollout-provider-negative-matrix-spec";
     destination = "/matrix-spec.json";

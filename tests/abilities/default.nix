@@ -355,7 +355,7 @@
     (import ../../qualification/package-activation-inventory.nix {
       inherit pkgs lib;
     })
-    .productionStructured;
+    .activationPackages;
   oversizedFallback = builtins.tryEval (builtins.deepSeq (
       requirementExport "advisory" {outputs.payload = effectFixture.oversizedValue;}
     )
@@ -380,7 +380,8 @@
         phases = [];
         abilities = {};
       })
-      .abilities.contract
+      .abilities
+      .contract
       .outPath))
     .success;
   proseVariant = prose:

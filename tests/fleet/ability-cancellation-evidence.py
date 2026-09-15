@@ -29,8 +29,6 @@ CANCELLATION_RESULTS = {
     "cancellation-observed-completion",
     "cancellation-indeterminate",
 }
-
-
 def canonical(value: Any) -> bytes:
     """Encodes one value with the release evidence canonical JSON profile."""
 
@@ -103,8 +101,6 @@ class CancellationEvidence:
         if cell_id not in self._qualified or cell_id in self.probes:
             raise RuntimeError(f"unexpected or repeated cancellation cell {cell_id}")
         cell = self._cells[cell_id]
-        if cell["recovery"]["cancel"] is None:
-            raise RuntimeError("supported cancellation cell has no checked route")
 
         bundle = json.loads(plan_bundle)
         if canonical(bundle) != plan_bundle:
@@ -122,11 +118,13 @@ class CancellationEvidence:
             raise RuntimeError("plan does not contain one exact cancellation operation")
         ordinal, operation = matches[0]
         operation_identity = EFFECT_EVIDENCE._operation_identity(operation, ordinal)
-        if operation["recovery"]["cancel"] != {
-            "interface": cell["interface"],
-            "method": cell["recovery"]["cancel"],
-        }:
-            raise RuntimeError("operation carries another checked cancellation route")
+        cancel_route = operation["recovery"]["cancel"]
+        if cancel_route is not None and (
+            cancel_route.get("interface") != cell["interface"]
+            or not isinstance(cancel_route.get("method"), str)
+            or not cancel_route["method"]
+        ):
+            raise RuntimeError("operation carries an invalid cancellation route")
 
         kinds = [event["kind"] for event in observation.timeline]
         if kinds[:3] != [
@@ -138,6 +136,10 @@ class CancellationEvidence:
         results = [kind for kind in kinds if kind in CANCELLATION_RESULTS]
         if len(results) != 1 or kinds[-1] != results[0]:
             raise RuntimeError(f"cancellation journal has no exact outcome: {kinds!r}")
+        if (cancel_route is None) != (
+            results[0] == "cancellation-rejected-before-effect"
+        ):
+            raise RuntimeError("cancellation result differs from the concrete operation route")
         boundaries = [
             (event["purpose"], event["boundary"])
             for event in observation.boundary_timeline
@@ -183,6 +185,8 @@ class CancellationEvidence:
         provider_implementation = EFFECT_EVIDENCE._provider_implementation(
             bundle, operation
         )
+        if not provider_implementation.get("handler"):
+            raise RuntimeError("cancellation did not select a terminal handler")
         native_route = EFFECT_EVIDENCE._native_route(
             bundle,
             operation,
@@ -208,12 +212,16 @@ class CancellationEvidence:
             "evidence-digest": EFFECT_EVIDENCE.sha256_bytes(evidence_bytes),
             "adapter": cell["adapter"],
             "operation": operation_identity,
-            "cancel-route": operation["recovery"]["cancel"],
+            "cancel-route": cancel_route,
             "dependent-operation": observation.dependent_operation,
             "provider-implementation": provider_implementation,
             "native-route": native_route,
         }
-        disposition = "cancelled-after-reconciliation"
+        disposition = (
+            "unsupported-cancellation-retains-ownership"
+            if cancel_route is None
+            else "cancelled-after-reconciliation"
+        )
         self.subjects[cell_id] = subject
         self.plan_bundles[cell_id] = evidence_bytes
         self.probes[cell_id] = {

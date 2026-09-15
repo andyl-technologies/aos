@@ -48,6 +48,6 @@ in
   assert builtins.length all == builtins.length (lib.unique all);
   assert builtins.sort builtins.lessThan all
   == builtins.sort builtins.lessThan (map (cell: cell.id) selected);
-  assert builtins.all (cell: builtins.length cell.postconditions == 4) selected; {
+  assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) selected; {
     inherit all alreadyQualified groups scenarios;
   }

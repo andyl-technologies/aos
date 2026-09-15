@@ -6,18 +6,19 @@ use anyhow::{Context as _, Result};
 
 use crate::digest::Sha256Digest;
 use crate::evidence::GateResult;
-use crate::qualification::{QualificationMethod, QualificationPhase};
+use crate::qualification::{
+    QualificationMethod, QualificationPhase, QualificationRequirement, QualificationScope,
+};
 use crate::qualification_evidence::{
-    CheckObservation, NATIVE_ADAPTER_MATRIX_APPLICABILITY_V1, NATIVE_ADAPTER_MATRIX_OBSERVATION_V1,
-    NATIVE_ADAPTER_MATRIX_REQUIREMENT, NATIVE_ADAPTER_MATRIX_SPEC_V1, NativeAdapterCellObservation,
-    NativeAdapterCellSpec, NativeAdapterInterfaceIdentity, NativeAdapterMatrixApplicability,
+    CheckObservation, NATIVE_ADAPTER_MATRIX_OBSERVATION_V1, NATIVE_ADAPTER_MATRIX_REQUIREMENT,
+    NativeAdapterCellObservation, NativeAdapterClaimHandler, NativeAdapterImplementationClaim,
     NativeAdapterMatrixComponentIdentity, NativeAdapterMatrixEnvironment,
-    NativeAdapterMatrixEnvironmentStatus, NativeAdapterMatrixObservation, NativeAdapterMatrixSpec,
-    NativeAdapterMatrixSubject, NativeAdapterPostconditionProbe, NativeAdapterProviderContract,
-    NativeAdapterRecoverySpec, NativeAdapterSurfaceAdapter, NativeAdapterSurfaceLimits,
-    NativeAdapterSurfaceMethod, NativeAdapterSurfaceScenario, NativeAdapterSurfaceSpec,
-    QualificationCase, QualificationObservation, QualificationPredecessor,
-    native_adapter_inapplicable_reason, native_adapter_matrix_check, validate_matrix_for_case,
+    NativeAdapterMatrixEnvironmentStatus, NativeAdapterMatrixObservation,
+    NativeAdapterPostconditionProbe, NativeAdapterProviderContract, NativeAdapterSurfaceAdapter,
+    NativeAdapterSurfaceLimits, NativeAdapterSurfaceMethod, NativeAdapterSurfaceScenario,
+    NativeAdapterSurfaceSpec, QualificationCase, QualificationObservation,
+    QualificationPredecessor, native_adapter_inapplicable_reason, native_adapter_matrix_check,
+    native_adapter_matrix_spec_from_surface, validate_matrix_for_case,
     validate_native_adapter_matrix_observation, validate_native_adapter_matrix_spec,
 };
 use crate::verify::tests::{observations, qualification_fixture};
@@ -44,36 +45,43 @@ fn disposition(scenario: &str) -> &'static str {
     }
 }
 
-fn fixture() -> Result<(
-    QualificationCase,
-    Sha256Digest,
-    NativeAdapterMatrixObservation,
-)> {
-    let first_interface = NativeAdapterInterfaceIdentity {
-        name: "aos.fixture-a-effects".into(),
-        abi: 1,
-        descriptor: digest("interface a"),
-    };
-    let second_interface = NativeAdapterInterfaceIdentity {
-        name: "aos.fixture-z-effects".into(),
-        abi: 1,
-        descriptor: digest("interface z"),
-    };
+pub(crate) fn fixture_surface() -> NativeAdapterSurfaceSpec {
     let method = |descriptor: Sha256Digest, adapter: &str, interface_name: &str| {
+        let artifact = |package: &str| {
+            serde_json::json!({
+                "path": format!("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-{package}"),
+                "selector": {
+                    "_type": "aos-package-output-selector",
+                    "package": package,
+                    "output": "out",
+                },
+            })
+        };
         NativeAdapterSurfaceAdapter {
             adapter: adapter.into(),
+            conformance_families: vec!["durability-recovery".into()],
             interface_abi: 1,
             interface_descriptor: descriptor,
             interface_name: interface_name.into(),
             methods: vec![NativeAdapterSurfaceMethod {
-                cancel: None,
                 effect_class: "mutation".into(),
                 method: "apply".into(),
-                reconcile: Some("apply".into()),
             }],
             provider_contract: NativeAdapterProviderContract {
                 resource_lifetime: "persistent".into(),
                 state_format: Some(digest("state format")),
+            },
+            provider_implementation: NativeAdapterImplementationClaim {
+                contract: format!(
+                    "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-{adapter}-abilities"
+                ),
+                implementation: format!("{adapter}-implementation"),
+                observer: NativeAdapterClaimHandler {
+                    artifact: artifact(&format!("{adapter}-observer")),
+                    entry_point: "bin/fixture-observer".into(),
+                    arguments: serde_json::json!({"kind": "record"}),
+                    result: serde_json::json!({"kind": "record"}),
+                },
             },
             scope: "host-resource".into(),
         }
@@ -82,105 +90,47 @@ fn fixture() -> Result<(
         boundary: boundary.into(),
         candidate: "same".into(),
         failure: failure.into(),
+        family: "durability-recovery".into(),
         id: id.into(),
         predecessor: "same".into(),
     };
-    let scenarios = vec![
-        scenario(
-            "interrupt-before-acquisition",
-            "before-acquisition",
-            "injected-interruption",
-        ),
-        scenario(
-            "lose-external-result",
-            "after-external-return",
-            "lost-result",
-        ),
-    ];
-    let surface = NativeAdapterSurfaceSpec {
+
+    NativeAdapterSurfaceSpec {
         adapters: vec![
-            method(
-                first_interface.descriptor,
-                "fixture-a",
-                &first_interface.name,
-            ),
-            method(
-                second_interface.descriptor,
-                "fixture-z",
-                &second_interface.name,
-            ),
+            method(digest("interface a"), "fixture-a", "aos.fixture-a-effects"),
+            method(digest("interface z"), "fixture-z", "aos.fixture-z-effects"),
         ],
+        families: vec!["durability-recovery".into()],
         limits: NativeAdapterSurfaceLimits {
             max_adapters: 2,
             max_methods: 2,
             max_scenarios: 2,
         },
         matrix_schema: "aos.qualification.native-adapter-matrix/v1".into(),
-        scenarios: scenarios.clone(),
+        scenarios: vec![
+            scenario(
+                "interrupt-before-acquisition",
+                "before-acquisition",
+                "injected-interruption",
+            ),
+            scenario(
+                "lose-external-result",
+                "after-external-return",
+                "lost-result",
+            ),
+        ],
         schema: "aos.qualification.native-adapter-surface/v1".into(),
         subject_schema: "aos.qualification.native-adapter-subject/v1".into(),
-    };
-    let subject = NativeAdapterMatrixSubject {
-        schema: "aos.qualification.native-adapter-subject/v1".into(),
-        matrix_schema: "aos.qualification.native-adapter-matrix/v1".into(),
-        surface_digest: Sha256Digest::of_bytes(crate::canonical::to_vec(&surface)?),
-        adapter_count: 2,
-        method_count: 2,
-        scenario_count: 2,
-        interfaces: vec![first_interface.clone(), second_interface.clone()],
-    };
-    let cell = |adapter: &str,
-                interface: &NativeAdapterInterfaceIdentity,
-                scenario: &NativeAdapterSurfaceScenario|
-     -> NativeAdapterCellSpec {
-        NativeAdapterCellSpec {
-            id: format!("{adapter}/{}/abi-1/apply/{}", interface.name, scenario.id),
-            matrix_schema: subject.matrix_schema.clone(),
-            adapter: adapter.into(),
-            interface: interface.clone(),
-            method: "apply".into(),
-            effect_class: "mutation".into(),
-            scope: "host-resource".into(),
-            boundary: scenario.boundary.clone(),
-            failure: scenario.failure.clone(),
-            predecessor: scenario.predecessor.clone(),
-            candidate: scenario.candidate.clone(),
-            postconditions: vec![
-                "durable-attempt-state-classified".into(),
-                "at-most-one-resource-owner".into(),
-                "foreign-resources-unchanged".into(),
-                "dependent-effects-not-executed".into(),
-            ],
-            recovery: NativeAdapterRecoverySpec {
-                reconcile: Some("apply".into()),
-                cancel: None,
-            },
-            invalidated_by: vec![
-                "subject".into(),
-                "policy".into(),
-                "executor".into(),
-                "environment".into(),
-            ],
-        }
-    };
-    let mut cells = vec![
-        cell("fixture-a", &first_interface, &scenarios[0]),
-        cell("fixture-a", &first_interface, &scenarios[1]),
-        cell("fixture-z", &second_interface, &scenarios[0]),
-        cell("fixture-z", &second_interface, &scenarios[1]),
-    ];
-    cells.sort_by(|left, right| left.id.cmp(&right.id));
-    let spec = NativeAdapterMatrixSpec {
-        schema: NATIVE_ADAPTER_MATRIX_SPEC_V1.into(),
-        surface,
-        subject,
-        cells,
-        applicability: NativeAdapterMatrixApplicability {
-            schema: NATIVE_ADAPTER_MATRIX_APPLICABILITY_V1.into(),
-            required_production_vm_cells: 4,
-            inapplicable_cells: Vec::new(),
-        },
-    };
+    }
+}
+
+fn fixture() -> Result<(
+    QualificationCase,
+    Sha256Digest,
+    NativeAdapterMatrixObservation,
+)> {
+    let surface = fixture_surface();
+    let spec = native_adapter_matrix_spec_from_surface(surface)?;
     let spec_digest = Sha256Digest::of_bytes(crate::canonical::to_vec(&spec)?);
     let component =
         |name: &str, component_digest: Sha256Digest| NativeAdapterMatrixComponentIdentity {
@@ -832,15 +782,15 @@ fn unknown_status_and_regression_fields_are_rejected() -> Result<()> {
 
 #[test]
 fn specification_order_and_v1_bounds_are_enforced() -> Result<()> {
-    let (mut case, _, mut unsorted_interfaces) = fixture()?;
-    unsorted_interfaces.spec.subject.interfaces.swap(0, 1);
-    let environment = recommit(&mut case, &mut unsorted_interfaces)?;
+    let (mut case, _, mut unsorted_adapters) = fixture()?;
+    unsorted_adapters.spec.surface.adapters.swap(0, 1);
+    let environment = recommit(&mut case, &mut unsorted_adapters)?;
     assert!(
         validate_native_adapter_matrix_observation(
             &case,
             environment,
             digest("executor"),
-            &unsorted_interfaces
+            &unsorted_adapters
         )
         .is_err()
     );
@@ -880,7 +830,7 @@ fn specification_order_and_v1_bounds_are_enforced() -> Result<()> {
     assert!(validate_native_adapter_matrix_spec(&forged_exclusion.spec).is_err());
 
     let (mut case, _, mut incomplete_interfaces) = fixture()?;
-    let first_interface = incomplete_interfaces.spec.subject.interfaces[0].clone();
+    let first_interface = incomplete_interfaces.spec.cells[0].interface.clone();
     for cell in &mut incomplete_interfaces.spec.cells[2..] {
         let scenario = cell
             .id
@@ -972,9 +922,11 @@ fn surface_digest_subject_and_cell_expansion_are_recomputed() -> Result<()> {
     method.spec.surface.adapters[0].methods[0].effect_class = "observation".into();
     mutations.push(method);
 
-    let mut recovery = observation.clone();
-    recovery.spec.surface.adapters[0].methods[0].reconcile = Some("missing-route".into());
-    mutations.push(recovery);
+    let mut implementation_reference = observation.clone();
+    implementation_reference.spec.surface.adapters[0]
+        .provider_implementation
+        .implementation = "foreign-implementation".into();
+    mutations.push(implementation_reference);
 
     let mut scenario = observation.clone();
     scenario.spec.surface.scenarios[0].candidate = "replacement".into();
@@ -1035,7 +987,39 @@ fn aggregate_check_and_operation_denominators_are_derived() -> Result<()> {
 fn central_phase_rejects_failed_cells_and_prepared_environment_mutation() -> Result<()> {
     const NOW: &str = "2026-09-01T00:00:02Z";
 
-    let (plan, manifest) = qualification_fixture()?;
+    let (mut plan, manifest) = qualification_fixture()?;
+    let surface = fixture_surface();
+    let matrix_spec = native_adapter_matrix_spec_from_surface(surface)?;
+    let matrix_digest = Sha256Digest::of_bytes(crate::canonical::to_vec(&matrix_spec)?);
+    let contract = plan
+        .qualification
+        .as_mut()
+        .context("fixture plan lacks its qualification contract")?;
+    contract.requirements.push(QualificationRequirement {
+        id: NATIVE_ADAPTER_MATRIX_REQUIREMENT.into(),
+        phase: QualificationPhase::Staging,
+        scope: QualificationScope::Release,
+        method: QualificationMethod::Automated,
+        production_only: true,
+        checks: vec![format!(
+            "native-adapter-matrix-v1-sha256-{}",
+            matrix_digest.hex()
+        )],
+        regressions: Vec::new(),
+        invalidated_by: ["subject", "policy", "executor", "environment"]
+            .map(str::to_owned)
+            .to_vec(),
+        measurements: BTreeMap::new(),
+    });
+    contract
+        .requirements
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    let gates = contract.gates(&plan.registry, plan.release_class)?;
+    let policy_digest = contract.digest()?;
+    plan.gates = gates;
+    plan.public_evidence_policy_digest = policy_digest;
+    plan.validate()?;
+
     let complete = observations(&plan, &manifest, QualificationPhase::Staging)?;
     let matrix_index = complete
         .iter()

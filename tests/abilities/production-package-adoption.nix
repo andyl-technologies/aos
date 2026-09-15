@@ -80,9 +80,11 @@
   };
   serviceSpec = name: let
     services =
-      specialServices.${
+      specialServices
+      .${
         name
-      } or [
+      }
+      or [
         {
           key = "main";
           dependencies = [];
@@ -347,22 +349,11 @@
       configuration.enabled = true;
     })
     true);
-
-  retainsLegacySurface = contract:
-    contract.ability.activation_mode
-    == "structured-effects"
-    && contract.hasConfigModule
-    && contract.exposure.expose.config.artifacts != []
-    && contract.exposure.expose.units != []
-    && contract.exposure.permissions.network == "host"
-    && contract.exposure.permissions."host-paths" != [];
 in
-  assert retainsLegacySurface nginx;
-  assert retainsLegacySurface postgresql;
   assert nginx.exposure.permissions.capabilities == ["CAP_NET_BIND_SERVICE"];
   assert postgresql.exposure.expose.target == "aos-pkg-postgresql.target";
   assert builtins.all migratedContract migratedServices;
-  assert inventory.legacyEffectful == [];
+  assert inventory.activationPackages != [];
   assert composition.requests != [];
   assert (builtins.head composition.resources).revision == activationRevision;
   assert (builtins.head customizedComposition.resources).revision != activationRevision;

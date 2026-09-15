@@ -9,11 +9,13 @@
   transitionTransform ? transition: transition,
   bootstrapMatrix ? false,
 }: let
+  qualificationObserver = import ./_native-adapter-observer.nix {inherit pkgs;};
   packageSet = import ../abilities/reference-kubernetes/package.nix {
     inherit lib;
     inherit (pkgs) mkDerivation;
     kubernetesRuntime = pkgs.kubectl;
     systemdRuntime = pkgs.aos.packageRuntime;
+    inherit qualificationObserver;
     inherit bootstrapMatrix effectQualification providerStateQualification transitionTransform;
   };
 

@@ -814,11 +814,9 @@ pub(crate) mod tests {
                 let native_adapter_matrix = if case.requirement_id
                     == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_REQUIREMENT
                 {
-                    let spec = canonical::from_slice::<
-                        crate::qualification_evidence::NativeAdapterMatrixSpec,
-                    >(
-                        include_bytes!("../tests/fixtures/native-adapter-matrix-spec.json"),
-                        "native adapter matrix fixture",
+                    let surface = crate::native_adapter_matrix_tests::fixture_surface();
+                    let spec = crate::qualification_evidence::native_adapter_matrix_spec_from_surface(
+                        surface,
                     )?;
                     let spec_digest = Sha256Digest::of_bytes(canonical::to_vec(&spec)?);
                     let component = |name: &str, component_digest: Sha256Digest| {

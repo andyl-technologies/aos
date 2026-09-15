@@ -194,32 +194,6 @@
     },
     {
       "checks": [
-        "native-adapter-matrix-v1-sha256-3a94192c0dda66ab8b278d7aab58c055041ca8d87eb5a1e561f371d7b3df9086",
-        "stage-specific-manager-and-foreground-contracts-with-unqualified-container-cells"
-      ],
-      "id": "ability-native-adapter-matrix",
-      "invalidated_by": [
-        "subject",
-        "policy",
-        "executor",
-        "environment"
-      ],
-      "measurements": {},
-      "method": "automated",
-      "phase": "staging",
-      "production_only": true,
-      "regressions": [
-        "checks.fleet.ability-native-activation",
-        "checks.fleet.ability-native-foreground-container",
-        "checks.fleet.ability-native-image-rollout",
-        "checks.fleet.ability-native-kubernetes",
-        "checks.fleet.ability-native-postgresql",
-        "checks.fleet.ability-native-power-loss"
-      ],
-      "scope": "release"
-    },
-    {
-      "checks": [
         "advisory-exact-candidate-staging-without-selection-or-reboot",
         "authenticated-rollout-plan-and-exact-native-request",
         "booted-candidate-health-hook-before-config-generation-commit",

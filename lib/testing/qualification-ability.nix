@@ -257,39 +257,50 @@
       fi
     '';
   };
-  matrixCohortSupport = pkgs.writeTextFile {
-    name = "${name}-native-adapter-cohort-support";
-    destination = "/share/aos-release/qualification-native-adapter-cohort.py";
-    text = builtins.readFile ./qualification-native-adapter-cohort.py;
-    checkPhase = ''
-      PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-cohort-pycache \
-        ${pkgs.buildPackages.python3}/bin/python3 -m py_compile \
-        $out/share/aos-release/qualification-native-adapter-cohort.py
+  matrixCohortSupport = pkgs.runCommand "${name}-native-adapter-cohort-support" {} ''
+    mkdir -p $out/share/aos-release
+    cp ${./qualification-native-adapter-cohort.py} \
+      $out/share/aos-release/qualification-native-adapter-cohort.py
+    cp ${../../qualification/providers/native_adapter_evidence.py} \
+      $out/share/aos-release/native_adapter_evidence.py
+    cp ${../../qualification/providers/postgresql_evidence.py} \
+      $out/share/aos-release/postgresql_evidence.py
+    cp ${../../qualification/providers/reference_evidence.py} \
+      $out/share/aos-release/reference_evidence.py
+    cp ${../../qualification/providers/rollout_evidence.py} \
+      $out/share/aos-release/rollout_evidence.py
 
-      PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-cohort-test-pycache \
-        ${pkgs.buildPackages.python3}/bin/python3 \
-        ${./qualification-native-adapter-cohort-self-test.py} \
-        $out/share/aos-release/qualification-native-adapter-cohort.py
+    PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-cohort-pycache \
+      ${pkgs.buildPackages.python3}/bin/python3 -m py_compile \
+      $out/share/aos-release/qualification-native-adapter-cohort.py \
+      $out/share/aos-release/native_adapter_evidence.py \
+      $out/share/aos-release/postgresql_evidence.py \
+      $out/share/aos-release/reference_evidence.py \
+      $out/share/aos-release/rollout_evidence.py
 
-      PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-effect-test-pycache \
-        ${pkgs.buildPackages.python3}/bin/python3 \
-        ${./qualification-native-adapter-effect-self-test.py} \
-        $out/share/aos-release/qualification-native-adapter-cohort.py \
-        ${../..}/tests/fleet/ability-effect-boundary-evidence.py
+    PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-cohort-test-pycache \
+      ${pkgs.buildPackages.python3}/bin/python3 \
+      ${./qualification-native-adapter-cohort-self-test.py} \
+      $out/share/aos-release/qualification-native-adapter-cohort.py
 
-      PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-provider-state-test-pycache \
-        ${pkgs.buildPackages.python3}/bin/python3 \
-        ${../..}/tests/fleet/ability-provider-state-evidence-self-test.py \
-        $out/share/aos-release/qualification-native-adapter-cohort.py
+    PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-effect-test-pycache \
+      ${pkgs.buildPackages.python3}/bin/python3 \
+      ${./qualification-native-adapter-effect-self-test.py} \
+      $out/share/aos-release/qualification-native-adapter-cohort.py \
+      ${../..}/tests/fleet/ability-effect-boundary-evidence.py
 
-      PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-cancellation-test-pycache \
-        ${pkgs.buildPackages.python3}/bin/python3 \
-        ${./qualification-native-adapter-cancellation-self-test.py} \
-        $out/share/aos-release/qualification-native-adapter-cohort.py \
-        ${../..}/tests/fleet/ability-effect-boundary-evidence.py \
-        ${../..}/tests/fleet/ability-cancellation-evidence.py
-    '';
-  };
+    PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-provider-state-test-pycache \
+      ${pkgs.buildPackages.python3}/bin/python3 \
+      ${../..}/tests/fleet/ability-provider-state-evidence-self-test.py \
+      $out/share/aos-release/qualification-native-adapter-cohort.py
+
+    PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-cancellation-test-pycache \
+      ${pkgs.buildPackages.python3}/bin/python3 \
+      ${./qualification-native-adapter-cancellation-self-test.py} \
+      $out/share/aos-release/qualification-native-adapter-cohort.py \
+      ${../..}/tests/fleet/ability-effect-boundary-evidence.py \
+      ${../..}/tests/fleet/ability-cancellation-evidence.py
+  '';
   matrixCohortSupportPath =
     if matrixSpec == null
     then ""

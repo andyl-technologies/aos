@@ -3,6 +3,7 @@
   lib,
   mkSystem,
   pkgs,
+  nativeAdapterMatrix,
   qualificationImage ? false,
 }: let
   fixture = import ./_ability-runtime-reference.nix {
@@ -10,11 +11,11 @@
     guestTools = qualificationImage;
     effectQualification = true;
   };
-  matrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
+  matrix = nativeAdapterMatrix;
   cells = import ./_ability-provider-negative-cells.nix {inherit lib matrix;};
 in
   import ./_ability-provider-negative-cohort.nix {
-    inherit lib mkSystem pkgs fixture;
+    inherit lib mkSystem pkgs fixture nativeAdapterMatrix;
     name = "ability-native-provider-negative-systemd-manager";
     qualifiedCells = cells.groups.systemd-manager;
     domainScript = ''

@@ -3,6 +3,7 @@
   lib,
   mkSystem,
   pkgs,
+  nativeAdapterMatrix,
   fixture,
   name,
   qualifiedCells,
@@ -16,6 +17,7 @@ import ./_ability-effect-boundary-cohort.nix {
     lib
     mkSystem
     pkgs
+    nativeAdapterMatrix
     fixture
     name
     qualifiedCells

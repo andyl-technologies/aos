@@ -7,6 +7,7 @@
   qualificationCell ? false,
   packageName ? "ability-reference-image-rollout",
   stateFormatOverride ? null,
+  qualificationObserver ? null,
 }: let
   inherit (lib.abilities) types;
 
@@ -20,6 +21,13 @@
     else stateFormatOverride;
 
   rolloutEffectsName = "aos.ab-image-rollout-effects";
+  qualificationSupport =
+    if qualificationObserver == null
+    then null
+    else import ../_native-adapter-qualification.nix {
+      inherit lib;
+      observerPackage = qualificationObserver;
+    };
 
   storePath = types.string {
     maxLength = 4096;
@@ -54,15 +62,15 @@
     };
     optional = [];
   };
+  methodSemantics = name: {
+    requiredTargetAccess =
+      if builtins.elem name ["observe" "observe-boot" "observe-health" "validate" "verify"]
+      then "read"
+      else "exclusive-write";
+    stopsProvider = name == "stop";
+  };
   qualificationRequest = types.record {
     fields = {
-      methodSemantics = name: {
-        requiredTargetAccess =
-          if builtins.elem name ["observe" "observe-boot" "observe-health" "validate" "verify"]
-          then "read"
-          else "exclusive-write";
-        stopsProvider = name == "stop";
-      };
       method = types.enum [
         "drain"
         "hold"
@@ -228,7 +236,25 @@
           transition = transitionTransform rolloutProvider.transition;
         };
       };
-      rollout-effects = {
+      rollout-effects = rec {
+        qualification =
+          if packageName == "ability-reference-image-rollout" && qualificationSupport != null
+          then {
+            conformanceFamilies = [
+              "authority-revocation"
+              "dependent-effect"
+              "durability-recovery"
+              "foreign-resource"
+              "incarnation-replacement"
+              "provider-state-transfer"
+            ];
+            observer = qualificationSupport.observerFor {
+              provider = "image-rollout";
+              kind = "rollout";
+              scope = "host-machine";
+            };
+          }
+          else null;
         artifact = rolloutRuntimeSelector;
         requiredFeatures = ["ab-image-rollout-v1"];
         definition = lib.abilities.define {
@@ -271,7 +297,7 @@ in
     pname = packageName;
     version = "1.0.0";
     src = providerArtifact;
-    runtimeDeps = [rolloutRuntime];
+    runtimeDeps = [rolloutRuntime] ++ lib.optional (qualificationObserver != null) qualificationObserver;
     inherit abilities;
 
     phases = [
