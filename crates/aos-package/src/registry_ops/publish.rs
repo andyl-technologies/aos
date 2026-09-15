@@ -878,6 +878,7 @@ pub(crate) async fn publish_canonical_ability_output(
     validate_registry_name(registry)?;
     validate_package_name(package)?;
     ensure_writable_registry_clone(registry, dir)?;
+    validate_external_provenance_signer(dir, provenance_signer)?;
 
     let projection = introspect_store_path(store_path)?;
     validate_store_path_release_policy(&projection)?;
