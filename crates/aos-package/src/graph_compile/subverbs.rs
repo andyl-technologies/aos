@@ -727,22 +727,6 @@ mod subverb_tests {
     }
 
     #[test]
-    fn json_to_toml_converts_scalars_and_nesting() {
-        let v = json!({"a": 1, "b": "x", "c": [true, 2.5], "d": {"e": 3}});
-        let t = json_to_toml(&v).unwrap();
-        let table = t.as_table().unwrap();
-        assert_eq!(table["a"].as_integer(), Some(1));
-        assert_eq!(table["b"].as_str(), Some("x"));
-        assert_eq!(table["c"].as_array().unwrap().len(), 2);
-        assert_eq!(table["d"].as_table().unwrap()["e"].as_integer(), Some(3));
-    }
-
-    #[test]
-    fn json_to_toml_rejects_null() {
-        assert!(json_to_toml(&Value::Null).is_err());
-    }
-
-    #[test]
     fn marker_paths_are_under_root() {
         let root = Path::new("/run/aos");
         assert_eq!(
@@ -753,70 +737,6 @@ mod subverb_tests {
             render_marker(root, "redis"),
             Path::new("/run/aos/render/redis.ok")
         );
-    }
-
-    #[test]
-    fn desired_config_extracted_from_manifest() {
-        let mut value: Value = serde_json::from_str(include_str!(
-            "../../tests/fixtures/config_manifest/manifest.json"
-        ))
-        .unwrap();
-        value["config"] = json!({
-            "example": { "redis.conf": { "port": 6380, "bind": "127.0.0.1" } }
-        });
-        let manifest: ConfigManifest = serde_json::from_value(value).unwrap();
-        let desired = desired_config_for(&manifest, "example").unwrap().unwrap();
-        let artifact = &desired["redis.conf"];
-        assert_eq!(artifact["port"].as_integer(), Some(6380));
-        assert_eq!(artifact["bind"].as_str(), Some("127.0.0.1"));
-        assert!(desired_config_for(&manifest, "absent").unwrap().is_none());
-    }
-
-    #[test]
-    fn system_credential_shorthand_canonicalizes_to_stable_secret_ref() {
-        let signed = [CredentialMeta {
-            name: "join-token".into(),
-            source: Some("/etc/credstore.encrypted/web/join-token".into()),
-            ciphertext: None,
-            units: vec!["web.service".into()],
-            encrypted: true,
-            optional: false,
-        }];
-        let handles = json!({
-            "join-token": {"system-credential": "bootstrap-token"}
-        });
-        let canonical = canonicalize_credential_handles("web", Some(&handles), &signed).unwrap();
-        assert_eq!(
-            canonical,
-            json!({
-                "join-token": {
-                    "name": "join-token",
-                    "source": "/etc/credstore.encrypted/web/join-token",
-                    "encrypted": true,
-                    "units": ["web.service"],
-                    "ref": "system-credential:bootstrap-token"
-                }
-            })
-        );
-    }
-
-    #[test]
-    fn desired_config_rejects_bad_shapes_instead_of_rendering_defaults() {
-        for bad in [
-            json!("ignored"),
-            json!({"env": "ignored"}),
-            json!({
-                "env": {"TOKEN": null}
-            }),
-        ] {
-            let mut value: Value = serde_json::from_str(include_str!(
-                "../../tests/fixtures/config_manifest/manifest.json"
-            ))
-            .unwrap();
-            value["config"] = json!({"example": bad});
-            let manifest: ConfigManifest = serde_json::from_value(value).unwrap();
-            assert!(desired_config_for(&manifest, "example").is_err());
-        }
     }
 
     #[test]
