@@ -100,6 +100,7 @@ in
         openssl
       ];
       runtimeDeps = [
+        bash
         curl
         zlib
         openssl
