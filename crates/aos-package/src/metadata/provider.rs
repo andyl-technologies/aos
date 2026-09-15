@@ -634,6 +634,7 @@ fn read_observed_instance_facts(
         fs::read(stash_dir.join("facts.json")).context("reading normalized instance facts")?;
     let facts: super::fetcher::Facts =
         serde_json::from_slice(&bytes).context("decoding normalized instance facts")?;
+    let facts = super::facts_render::canonicalize_host_facts(&facts)?;
     observed_instance_facts(serde_json::to_value(facts)?)
 }
 

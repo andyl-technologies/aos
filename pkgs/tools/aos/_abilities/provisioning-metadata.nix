@@ -63,11 +63,15 @@
       addresses = abilityTypes.list {
         element = factText 128;
         maxItems = 64;
+        unique = true;
+        canonicalOrder = true;
       };
       gateway = abilityTypes.optional (factText 128);
       dns = abilityTypes.list {
         element = factText 128;
         maxItems = 32;
+        unique = true;
+        canonicalOrder = true;
       };
     };
   };
@@ -77,6 +81,8 @@
       ssh_authorized_keys = abilityTypes.list {
         element = factText 16384;
         maxItems = 64;
+        unique = true;
+        canonicalOrder = true;
       };
       instance_id = abilityTypes.optional (factText 1024);
       region = abilityTypes.optional (factText 256);
@@ -89,10 +95,14 @@
           };
         };
         maxItems = 64;
+        unique = true;
+        canonicalOrder = true;
       };
       disk_ids = abilityTypes.list {
         element = factText 512;
         maxItems = 256;
+        unique = true;
+        canonicalOrder = true;
       };
       network = abilityTypes.optional staticNetworkFacts;
     };

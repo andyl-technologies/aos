@@ -27,9 +27,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use anyhow::Result;
 use serde::Serialize;
 
-use super::fetcher::Facts;
+use super::fetcher::{Facts, MacIface, StaticNetwork};
 
 /// Canonical typed tree hashed as the `instance_facts` eval input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -147,6 +148,64 @@ pub fn normalize_host_facts(facts: &Facts) -> NormalizedHostFacts {
             .collect(),
         static_network,
     }
+}
+
+/// Returns the canonical transport form of normalized observational facts.
+///
+/// The transport retains the existing [`Facts`] wire shape for the evaluator,
+/// while ordering and deduplicating every collection before the authorization
+/// boundary commits its digest.
+///
+/// # Errors
+///
+/// Returns an error when one normalized value cannot be encoded as canonical
+/// AOS JSON for wire-order comparison.
+pub fn canonicalize_host_facts(facts: &Facts) -> Result<Facts> {
+    let normalized = normalize_host_facts(facts);
+    let mac_to_iface = canonical_values(
+        normalized
+            .interfaces
+            .iter()
+            .flat_map(|(mac, interface)| {
+                interface.names.iter().map(|iface| MacIface {
+                    mac: mac.clone(),
+                    iface: iface.clone(),
+                })
+            })
+            .collect(),
+    )?;
+    let network = normalized
+        .static_network
+        .map(|network| -> Result<_> {
+            Ok(StaticNetwork {
+                mac: network.mac,
+                interface_name: network.interface_name,
+                addresses: canonical_values(network.addresses)?,
+                gateway: network.gateway,
+                dns: canonical_values(network.dns)?,
+            })
+        })
+        .transpose()?;
+
+    Ok(Facts {
+        hostname: normalized.hostname,
+        ssh_authorized_keys: canonical_values(normalized.ssh_authorized_keys)?,
+        instance_id: normalized.instance_id,
+        region: normalized.region,
+        availability_zone: normalized.availability_zone,
+        mac_to_iface,
+        disk_ids: canonical_values(normalized.disks)?,
+        network,
+    })
+}
+
+fn canonical_values<T: Serialize>(values: Vec<T>) -> Result<Vec<T>> {
+    let mut entries = values
+        .into_iter()
+        .map(|value| Ok((aos_contract::canonical::to_vec(&value)?, value)))
+        .collect::<Result<Vec<_>>>()?;
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(entries.into_iter().map(|(_, value)| value).collect())
 }
 
 /// Escape a string for a Nix double-quoted literal.
