@@ -623,6 +623,163 @@
         requiredFeatures = [];
       };
     }) (builtins.attrNames identityKinds));
+  nativeResourceRealizationType = types.record {
+    fields = {
+      schema = types.enum ["aos.systemd.native-resource-realization/v1"];
+      backend = types.enum ["mount-unit" "swap-unit"];
+    };
+  };
+  nativeResourceKinds = {
+    mount = {
+      controller = serviceInterfaces.mountResource;
+      effectsAlias = "systemd-mount-effects";
+      effectsName = "aos.systemd.mount-effects";
+      requestType = serviceManagement.types.mountResource;
+      observationType = serviceManagement.types.producerObservations.mountResource;
+      resourceKind = "aos.filesystem.mount";
+    };
+    swap = {
+      controller = serviceInterfaces.swapResource;
+      effectsAlias = "systemd-swap-effects";
+      effectsName = "aos.systemd.swap-effects";
+      requestType = serviceManagement.types.swapResource;
+      observationType = serviceManagement.types.producerObservations.swapResource;
+      resourceKind = "aos.memory.swap";
+    };
+  };
+  nativeEffectsRequest = selected:
+    types.record {
+      fields.desired = selected.requestType;
+    };
+  nativeEffectsObservation = selected:
+    types.record {
+      fields = {
+        kind = types.enum [selected.resourceKind];
+        observation = selected.observationType;
+      };
+    };
+  nativeEffectMethod = selected: name: description: access: stopsProvider: {
+    inherit description;
+    semantics = {
+      requiredTargetAccess = access;
+      inherit stopsProvider;
+    };
+    parameters = nativeEffectsRequest selected;
+    targetResource = selected.resourceKind;
+    outputs.observation =
+      output
+      (if name == "observe" then "observation" else "runtime")
+      "attempt"
+      "Reports the exact systemd native-resource effect state."
+      (nativeEffectsObservation selected);
+    permittedOperations = [name];
+    guarantees = [];
+    outcome = {
+      completionEvidence = nativeEffectsObservation selected;
+      observationEvidence = nativeEffectsObservation selected;
+      supportsRejectedBeforeEffect = true;
+      indeterminate = "reconcile";
+    };
+  };
+  nativeEffectsDeclaration = selected:
+    lib.abilities.declareInterface {
+      name = selected.effectsName;
+      description = "Executes checked lower systemd native-resource effects for ${selected.resourceKind}.";
+      abi = 1;
+      requestType = nativeEffectsRequest selected;
+      outputs = {};
+      methods = {
+        create = nativeEffectMethod selected "create" "Creates and activates the exact native resource." "exclusive-write" false;
+        observe = nativeEffectMethod selected "observe" "Observes the exact native resource." "read" false;
+        reconcile = nativeEffectMethod selected "reconcile" "Repairs divergent exact native-resource state." "exclusive-write" false;
+        remove = nativeEffectMethod selected "remove" "Deactivates and removes native-resource state owned by this controller." "exclusive-write" true;
+        update = nativeEffectMethod selected "update" "Updates exact native-resource state owned by this controller." "exclusive-write" false;
+      };
+      lifecycle = lifecycle;
+      aggregation = {
+        scope = "provider-instance";
+        key = "slot";
+        rejectSlotCollisions = true;
+        mergeContract = null;
+        controllerGroup = selected.effectsAlias;
+      };
+      configurationType = null;
+      guarantees = [];
+    };
+  nativeEffectsDeclarations = builtins.mapAttrs (_: nativeEffectsDeclaration) nativeResourceKinds;
+  nativeEffectsIdentity = selected:
+    lib.abilities.interfaceIdentity (
+      lib.abilities.interfaceDocumentFromDeclaration (nativeEffectsDeclaration selected)
+    );
+  nativeEffectsRequirement = selected: {
+    alias = "native-effects";
+    description = "Selects the checked lower systemd native-resource effect handler for ${selected.resourceKind}.";
+    accepted_interfaces = [(nativeEffectsIdentity selected)];
+    methods = ["create" "observe" "reconcile" "remove" "update"];
+    guarantees = [];
+    strength = "required";
+    fallback = null;
+  };
+  nativeControllerImplementations = builtins.listToAttrs (builtins.map (kind: let
+      selected = nativeResourceKinds.${kind};
+    in {
+      name = selected.controller.alias;
+      value = {
+        description = "Realizes ${selected.resourceKind} through the selected systemd native-resource controller.";
+        interface = selected.controller.alias;
+        inherit artifact;
+        inherit (selected.controller) methods;
+        guarantees = [];
+        requirements.native-effects = nativeEffectsRequirement selected;
+        providerModule = {
+          inherit artifact;
+          path = "share/aos/providers/systemd.nix";
+        };
+        desiredType = nativeResourceRealizationType;
+        requiredFeatures = [];
+      };
+    }) (builtins.attrNames nativeResourceKinds));
+  nativeTerminalImplementations = builtins.listToAttrs (builtins.map (kind: let
+      selected = nativeResourceKinds.${kind};
+    in {
+      name = selected.effectsAlias;
+      value = {
+        description = "Executes checked ${selected.resourceKind} effects through systemd native units.";
+        interface = selected.effectsAlias;
+        artifact = handlerArtifact;
+        methods = ["create" "observe" "reconcile" "remove" "update"];
+        guarantees = [];
+        handlerDescriptor = {
+          artifact = handlerArtifact;
+          entryPoint = "bin/aos-systemd-provider";
+          arguments = nativeEffectsRequest selected;
+          result = nativeEffectsObservation selected;
+        };
+        desiredType = null;
+        requiredFeatures = [];
+      };
+    }) (builtins.attrNames nativeResourceKinds));
+  devicePresenceImplementation = {
+    ${serviceInterfaces.devicePresence.alias} = {
+      description = "Observes provider-neutral device presence through systemd device units.";
+      interface = serviceInterfaces.devicePresence.alias;
+      inherit artifact;
+      inherit (serviceInterfaces.devicePresence) methods;
+      guarantees = [];
+      providerModule = {
+        inherit artifact;
+        path = "share/aos/providers/systemd.nix";
+      };
+      handlerDescriptor = {
+        artifact = handlerArtifact;
+        entryPoint = "bin/aos-systemd-provider";
+        arguments = serviceInterfaces.devicePresence.requestType;
+        result = serviceInterfaces.devicePresence.observationType;
+      };
+      desiredType = null;
+      requiredFeatures = [];
+    };
+  };
   serviceFeatureNames = builtins.filter (featureName: let
     selected = serviceInterfaces.${featureName};
     aggregation = selected.document.interface.aggregation;
@@ -704,13 +861,20 @@ in {
     // builtins.listToAttrs (builtins.map (kind: {
         name = identityKinds.${kind}.effectsAlias;
         value = identityEffectsDeclarations.${kind};
-      }) (builtins.attrNames identityKinds));
+      }) (builtins.attrNames identityKinds))
+    // builtins.listToAttrs (builtins.map (kind: {
+        name = nativeResourceKinds.${kind}.effectsAlias;
+        value = nativeEffectsDeclarations.${kind};
+      }) (builtins.attrNames nativeResourceKinds));
 
     implementations =
       serviceImplementations
       // readinessImplementations
       // identityControllerImplementations
       // identityTerminalImplementations
+      // nativeControllerImplementations
+      // nativeTerminalImplementations
+      // devicePresenceImplementation
       // {
         systemd-service-effects = {
           description = "Executes checked systemd service effects selected by the package-owned service controller.";

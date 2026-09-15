@@ -39,6 +39,13 @@
     (builtins.filter controlsService serviceImplementationNames);
   networkReadinessAlias = serviceInterfaces.networkReadiness.alias;
   filesystemReadinessAlias = serviceInterfaces.filesystemReadiness.alias;
+  nativeResourceInterfaces = [
+    serviceInterfaces.mountResource
+    serviceInterfaces.swapResource
+  ];
+  nativeResourceImplementationNames = builtins.map (
+    selected: "${packageName}:${selected.alias}"
+  ) nativeResourceInterfaces;
   interface = config.aos.abilities.interfaces.${implementationName};
 
   emptyResult = {
@@ -589,6 +596,13 @@
     config.aos.abilities.bindings.${resource.controller}.implementation
     serviceControllerImplementationNames)
   (builtins.attrValues config.aos.abilities.resolvedResources);
+  selectedNativeResources = builtins.filter (resource:
+    resource.controller
+    != null
+    && builtins.elem
+    config.aos.abilities.bindings.${resource.controller}.implementation
+    nativeResourceImplementationNames)
+  (builtins.attrValues config.aos.abilities.resolvedResources);
   staticArtifactFor = resource: let
     realization = builtins.toJSON resource.realization;
     rendered =
@@ -600,10 +614,28 @@
       '';
   in
     rendered;
+  staticNativeArtifactFor = resource: let
+    input = builtins.toJSON {
+      schema = "aos.systemd.native-resource-static-input/v1";
+      inherit (resource) kind;
+      desired = resource.value;
+      inherit (resource) realization;
+    };
+    rendered =
+      pkgs.runCommand "systemd-native-resource-${builtins.hashString "sha256" input}" {
+        realization = input;
+        passAsFile = ["realization"];
+      } ''
+        ${pkgs.buildPackages.aos-systemd-provider}/bin/aos-systemd-provider render
+      '';
+  in
+    rendered;
   staticArtifacts =
     if config.aos.abilities.compositionPendingRequests != {}
     then []
-    else builtins.map staticArtifactFor (selectedResources ++ selectedServiceResources);
+    else
+      builtins.map staticArtifactFor (selectedResources ++ selectedServiceResources)
+      ++ builtins.map staticNativeArtifactFor selectedNativeResources;
   serviceProviderImplementations = builtins.listToAttrs (builtins.map (featureName: let
       selected = serviceInterfaces.${featureName};
     in {
@@ -630,11 +662,15 @@
   identityProviderImplementations = import ./_systemd-identity-provider.nix {
     inherit config lib packageName;
   };
+  nativeResourceProviderImplementations = import ./_systemd-native-resource-provider.nix {
+    inherit config lib packageName;
+  };
 in {
   config.aos.abilities.implementations =
     serviceProviderImplementations
     // readinessProviderImplementations
     // identityProviderImplementations
+    // nativeResourceProviderImplementations
     // {
       ${implementationAlias} = {
         inherit provide compose;
