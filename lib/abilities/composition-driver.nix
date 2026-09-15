@@ -34,6 +34,18 @@
     };
   semanticInterfaces = builtins.mapAttrs (_: semanticInterface) abilities.interfaces;
   semanticImplementations = builtins.mapAttrs (_: semanticImplementation) abilities.implementations;
+  interfaceForImplementation = implementationKey: implementation:
+    if builtins.isString implementation.interface
+    then semanticInterfaces.${implementation.interface} or (fail "implementation '${implementationKey}' references an absent interface")
+    else let
+      matches = builtins.filter (declaration:
+        lib.abilities.interfaceIdentity (lib.abilities.interfaceDocumentFromDeclaration declaration)
+        == implementation.interface)
+      (builtins.attrValues semanticInterfaces);
+    in
+      if builtins.length matches == 1
+      then builtins.head matches
+      else fail "implementation '${implementationKey}' must resolve its exact shared interface identity to one declaration";
   emptyProvision = {
     requests = {};
     outputs = {};
@@ -153,7 +165,7 @@
         or compositionGeneratedRequests.${binding.request}
         or (fail "binding '${bindingName}' selects an absent request");
     implementation = semanticImplementations.${binding.implementation} or (fail "binding '${bindingName}' selects an absent implementation");
-    interface = semanticInterfaces.${implementation.interface} or (fail "implementation '${binding.implementation}' references an absent interface");
+    interface = interfaceForImplementation binding.implementation implementation;
     instance = abilities.instances.${binding.providerInstance} or (fail "binding '${bindingName}' selects an absent provider instance");
     provider = abilities.instanceIdentities.${binding.providerInstance} or (fail "binding '${bindingName}' has no canonical provider identity");
   in {
