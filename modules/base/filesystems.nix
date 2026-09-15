@@ -17,6 +17,8 @@
 }: let
   cfg = config.aos.filesystems;
   zfsForRunningKernel = pkgs.zfsForKernel config.system.build.kernel;
+  zfsSelected = lib.hasAttrByPath ["aos" "filesystems" "zfs" "enable"] config;
+  zfsEnabled = zfsSelected && config.aos.filesystems.zfs.enable;
 
   # Build fstab entries from the filesystem configuration.
   #
@@ -52,7 +54,7 @@
     "${cfg.espDevice}  /boot  vfat  noauto,nofail,ro,noatime,fmask=0077,dmask=0077  0  0"
     ""
     (
-      if cfg.zfs.enable && cfg.zfs.systemState
+      if zfsEnabled && config.aos.filesystems.zfs.systemState
       then ''
         # /var is a native storage dataset mounted by the selected provider.
       ''
@@ -129,7 +131,7 @@ in {
     assertions = [
       {
         assertion =
-          !(cfg.zfs.enable && cfg.zfs.systemState)
+          !(zfsEnabled && config.aos.filesystems.zfs.systemState)
           || config.aos.boot.storage.backend == "zfs-zvol";
         message =
           "aos.filesystems.zfs.systemState requires the zfs-zvol boot backend so /var can be unlocked before switch-root; set systemState = false for a data-only pool";
@@ -208,15 +210,17 @@ in {
 
     # ZFS userland and its module must come from one kernel-bound build. The
     # same closure is retained in recovery so pool repair never mixes releases.
-    aos.filesystems.zfs.package = lib.mkIf cfg.zfs.enable (lib.mkDefault zfsForRunningKernel);
-    aos.filesystems.zfs.packagedVersion = lib.mkIf cfg.zfs.enable cfg.zfs.package.version;
-    aos.kernel.modulePackages = lib.mkIf cfg.zfs.enable [cfg.zfs.package];
-    aos.kernel.modules = lib.mkIf cfg.zfs.enable ["zfs"];
-    aos.boot.recovery.extraPackages = lib.mkIf cfg.zfs.enable [cfg.zfs.package];
-    aos.boot.kernelParams = lib.mkIf cfg.zfs.enable cfg.zfs.moduleParameters;
-    aos.monitoring.hardware.enable = lib.mkIf cfg.zfs.enable (lib.mkDefault true);
-    aos.zram.enable = lib.mkIf cfg.zfs.enable (lib.mkDefault true);
-    aos.zram.size = lib.mkIf cfg.zfs.enable (lib.mkDefault "min(ram / 8, 2048)");
-    environment.systemPackages = lib.mkIf cfg.zfs.enable [cfg.zfs.package];
+    aos.filesystems.zfs.package = lib.mkIf zfsEnabled (lib.mkDefault zfsForRunningKernel);
+    aos.filesystems.zfs.packagedVersion =
+      lib.mkIf zfsEnabled config.aos.filesystems.zfs.package.version;
+    aos.services.zfsMaintenance.enable = lib.mkIf zfsEnabled (lib.mkDefault true);
+    aos.kernel.modulePackages = lib.mkIf zfsEnabled [config.aos.filesystems.zfs.package];
+    aos.kernel.modules = lib.mkIf zfsEnabled ["zfs"];
+    aos.boot.recovery.extraPackages = lib.mkIf zfsEnabled [config.aos.filesystems.zfs.package];
+    aos.boot.kernelParams = lib.mkIf zfsEnabled config.aos.filesystems.zfs.moduleParameters;
+    aos.monitoring.hardware.enable = lib.mkIf zfsEnabled (lib.mkDefault true);
+    aos.zram.enable = lib.mkIf zfsEnabled (lib.mkDefault true);
+    aos.zram.size = lib.mkIf zfsEnabled (lib.mkDefault "min(ram / 8, 2048)");
+    environment.systemPackages = lib.mkIf zfsEnabled [config.aos.filesystems.zfs.package];
   };
 }

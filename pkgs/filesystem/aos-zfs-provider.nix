@@ -47,7 +47,7 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-block-storage-provider --bin aos-zfs-pool-provider --bin aos-zfs-dataset-provider --bin aos-zfs-memory-policy"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-block-storage-provider --bin aos-zfs-pool-provider --bin aos-zfs-dataset-provider --bin aos-zfs-memory-policy --bin aos-zfs-maintenance"
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-block-storage-provider"
     ];
     preBuild = staticBuildSetup;
@@ -64,7 +64,7 @@ in
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
-    cargoFlags = "-p aos-block-storage-provider --bin aos-zfs-pool-provider --bin aos-zfs-dataset-provider --bin aos-zfs-memory-policy";
+    cargoFlags = "-p aos-block-storage-provider --bin aos-zfs-pool-provider --bin aos-zfs-dataset-provider --bin aos-zfs-memory-policy --bin aos-zfs-maintenance";
     cargoTestFlags = "-p aos-block-storage-provider";
     doCheck = true;
     buildDeps = [patchelf];
@@ -77,13 +77,14 @@ in
       cp "target/$CARGO_BUILD_TARGET/release/aos-zfs-pool-provider" target/release/
       cp "target/$CARGO_BUILD_TARGET/release/aos-zfs-dataset-provider" target/release/
       cp "target/$CARGO_BUILD_TARGET/release/aos-zfs-memory-policy" target/release/
+      cp "target/$CARGO_BUILD_TARGET/release/aos-zfs-maintenance" target/release/
     '';
 
     postInstall = ''
       mkdir -p "$out/share/aos/providers"
       cp ${./_aos-zfs-provider/pool-provider.nix} "$out/share/aos/providers/storage-pool.nix"
       cp ${./_aos-zfs-provider/dataset-provider.nix} "$out/share/aos/providers/storage-dataset.nix"
-      for provider in aos-zfs-pool-provider aos-zfs-dataset-provider aos-zfs-memory-policy; do
+      for provider in aos-zfs-pool-provider aos-zfs-dataset-provider aos-zfs-memory-policy aos-zfs-maintenance; do
         test -x "$out/bin/$provider"
         if patchelf --print-interpreter "$out/bin/$provider" \
             > "$TMPDIR/$provider.interpreter" 2>/dev/null; then

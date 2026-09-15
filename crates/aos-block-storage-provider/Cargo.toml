@@ -34,5 +34,9 @@ name = "aos-zfs-memory-policy"
 path = "src/bin/zfs_memory_policy.rs"
 
 [[bin]]
+name = "aos-zfs-maintenance"
+path = "src/bin/zfs_maintenance.rs"
+
+[[bin]]
 name = "aos-storage-provisioning-provider"
 path = "src/bin/storage_provisioning.rs"

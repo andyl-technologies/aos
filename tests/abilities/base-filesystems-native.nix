@@ -47,6 +47,12 @@ in
   assert requests ? "aos-zfs-provider:zfs-kernel-tunables";
   assert requests ? "aos-zfs-provider:zfs-memory-policy-lifecycle";
   assert requests ? "aos-zfs-provider:zfs-verify-parameters-lifecycle";
+  assert requests ? "aos-zfs-provider:zfs-zed-lifecycle";
+  assert requests ? "aos-zfs-provider:zfs-scrub-schedule";
+  assert requests ? "aos-zfs-provider:zfs-scrub-activation";
+  assert requests ? "aos-zfs-provider:zfs-trim-schedule";
+  assert requests ? "aos-zfs-provider:zfs-health-schedule";
+  assert requests ? "aos-zfs-provider:zfs-metrics-schedule";
   assert requests ? "aos-zfs-provider:dataset-${builtins.substring 0 32 (builtins.hashString "sha256" "srv/data")}";
   assert requests."aos-zfs-provider:dataset-${builtins.substring 0 32 (builtins.hashString "sha256" "srv/data")}".parameters.properties.quota == "16G";
   assert lib.hasInfix "/dev/disk/by-partlabel/var  /var  ext4" config.environment.etc.fstab.text;
@@ -54,5 +60,8 @@ in
   assert requests."aos-zfs-provider:zfs-kernel-tunables".parameters.values."vm.defrag_mode" == "1";
   assert !(config.systemd.services ? "aos-zfs-memory-policy");
   assert !(config.systemd.services ? "aos-zfs-verify-parameters");
+  assert !(config.systemd.services ? "zfs-zed");
+  assert !(config.systemd.services ? "aos-zfs-scrub");
+  assert !(config.systemd ? timers) || !(config.systemd.timers ? "aos-zfs-scrub");
   assert !(config.systemd.services ? "zfs-import");
   assert !(config.systemd.services ? "zfs-mount"); true

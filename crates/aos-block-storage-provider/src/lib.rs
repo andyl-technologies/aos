@@ -13,5 +13,6 @@ pub mod state;
 pub mod storage_format;
 pub mod storage_provisioning;
 pub mod zfs_dataset;
+pub mod zfs_maintenance;
 pub mod zfs_memory;
 pub mod zfs_pool;
