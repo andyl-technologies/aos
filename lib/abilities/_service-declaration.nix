@@ -14,6 +14,7 @@
     failure_policy = serviceInterfaces.failurePolicy;
     scheduling = serviceInterfaces.scheduling;
     resources = serviceInterfaces.resources;
+    environment = serviceInterfaces.environment;
     directories = serviceInterfaces.directories;
     activation = serviceInterfaces.activation;
     credentials = serviceInterfaces.credentials;
@@ -42,6 +43,7 @@
     supervision = declaration.supervision or null;
     startPolicy = declaration.start_policy or null;
     resources = declaration.resources or null;
+    environment = declaration.environment or null;
     directories = declaration.directories or null;
     activation = declaration.activation or null;
     readiness = declaration.readiness or null;
@@ -99,7 +101,17 @@
     directoriesValid =
       directories
       == null
-      || uniqueBy "name" directories.managed;
+      || builtins.length directories.managed
+      == builtins.length (builtins.attrNames (builtins.listToAttrs (builtins.map (directory: {
+          name = "${directory.purpose}:${directory.name}";
+          value = true;
+        })
+        directories.managed)));
+    environmentValid =
+      environment
+      == null
+      || environment.search_path == []
+      || !(builtins.hasAttr "PATH" environment.variables);
     activationValid =
       activation
       == null
@@ -205,6 +217,8 @@
     then throw "service '${declaration.service}' finite memory high limit must not exceed its maximum"
     else if !directoriesValid
     then throw "service '${declaration.service}' has duplicate managed directory names"
+    else if !environmentValid
+    then throw "service '${declaration.service}' environment.variables cannot define PATH when search_path is non-empty"
     else if !activationValid
     then throw "service '${declaration.service}' has duplicate activation binding names"
     else if !readinessValid
@@ -244,6 +258,51 @@
     strength = "required";
     fallback = null;
   };
+
+  namespaceOf = consumerInstance: let
+    matched = builtins.match "([^:]+):[^:]+" consumerInstance;
+  in
+    if matched == null
+    then null
+    else builtins.head matched;
+  qualify = namespace: name:
+    if namespace == null || builtins.match "[^:]+:[^:]+" name != null
+    then name
+    else "${namespace}:${name}";
+  qualifyResults = namespace: value:
+    if namespace == null
+    then value
+    else if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
+    then value // {request = qualify namespace value.request;}
+    else if builtins.isAttrs value
+    then builtins.mapAttrs (_: qualifyResults namespace) value
+    else if builtins.isList value
+    then builtins.map (qualifyResults namespace) value
+    else value;
+  qualifyForConsumer = consumerInstance: contribution: let
+    namespace = namespaceOf consumerInstance;
+  in
+    if namespace == null
+    then contribution
+    else {
+      requirementTemplates = builtins.listToAttrs (builtins.map (name: {
+          name = qualify namespace name;
+          value = contribution.requirementTemplates.${name};
+        })
+        (builtins.attrNames contribution.requirementTemplates));
+      requests = builtins.listToAttrs (builtins.map (name: {
+          name = qualify namespace name;
+          value = let
+            request = contribution.requests.${name};
+          in
+            request
+            // {
+              requirement = qualify namespace request.requirement;
+              parameters = qualifyResults namespace request.parameters;
+            };
+        })
+        (builtins.attrNames contribution.requests));
+    };
 
   requestParameters = declaration: feature: let
     featureValue = declaration.${feature};
@@ -379,23 +438,25 @@
       if feature == "lifecycle" && (checked.reload or null) == null
       then builtins.filter (method: method != "reload") featureInterfaces.lifecycle.methods
       else featureInterfaces.${feature}.methods;
-  in {
-    requirementTemplates = builtins.listToAttrs (builtins.map (feature: {
-        name = featureInterfaces.${feature}.alias;
-        value = requirementFor featureInterfaces.${feature} (methodsFor feature);
-      })
-      enabledFeatures);
-    requests = builtins.listToAttrs (builtins.map (feature: {
-        name = "${checked.service}-${feature}";
-        value = {
-          requirement = featureInterfaces.${feature}.alias;
-          consumer = consumerInstance;
-          scope = [checked.service];
-          parameters = requestParameters checked feature;
-        };
-      })
-      enabledFeatures);
-  };
+    contribution = {
+      requirementTemplates = builtins.listToAttrs (builtins.map (feature: {
+          name = featureInterfaces.${feature}.alias;
+          value = requirementFor featureInterfaces.${feature} (methodsFor feature);
+        })
+        enabledFeatures);
+      requests = builtins.listToAttrs (builtins.map (feature: {
+          name = "${checked.service}-${feature}";
+          value = {
+            requirement = featureInterfaces.${feature}.alias;
+            consumer = consumerInstance;
+            scope = [checked.service];
+            parameters = requestParameters checked feature;
+          };
+        })
+        enabledFeatures);
+    };
+  in
+    qualifyForConsumer consumerInstance contribution;
 
   forConfiguration = {
     serviceTypes,
@@ -414,39 +475,44 @@
       then throw "managed configuration '${declaration.name}' has an invalid structured document tree"
       else declaration;
     interface = serviceInterfaces.managedConfiguration;
-  in {
-    requirementTemplates.${interface.alias} = requirementFor interface interface.methods;
-    requests.${checked.name} = {
-      requirement = interface.alias;
-      consumer = consumerInstance;
-      scope = [checked.name];
-      parameters = checked;
+    contribution = {
+      requirementTemplates.${interface.alias} = requirementFor interface interface.methods;
+      requests.${checked.name} = {
+        requirement = interface.alias;
+        consumer = consumerInstance;
+        scope = [checked.name];
+        parameters = checked;
+      };
     };
-  };
+  in
+    qualifyForConsumer consumerInstance contribution;
 
   forProducers = {
     consumerInstance,
     interface,
     producers,
-  }:
-    if !uniqueBy "key" producers
-    then throw "producer request keys must be unique"
-    else {
-      requirementTemplates =
-        if producers == []
-        then {}
-        else {${interface.alias} = requirementFor interface interface.methods;};
-      requests = builtins.listToAttrs (builtins.map (producer: {
-          name = producer.key;
-          value = {
-            requirement = interface.alias;
-            consumer = consumerInstance;
-            scope = [producer.key];
-            inherit (producer) parameters;
-          };
-        })
-        producers);
-    };
+  }: let
+    contribution =
+      if !uniqueBy "key" producers
+      then throw "producer request keys must be unique"
+      else {
+        requirementTemplates =
+          if producers == []
+          then {}
+          else {${interface.alias} = requirementFor interface interface.methods;};
+        requests = builtins.listToAttrs (builtins.map (producer: {
+            name = producer.key;
+            value = {
+              requirement = interface.alias;
+              consumer = consumerInstance;
+              scope = [producer.key];
+              inherit (producer) parameters;
+            };
+          })
+          producers);
+      };
+  in
+    qualifyForConsumer consumerInstance contribution;
 
   forProducer = args:
     forProducers {

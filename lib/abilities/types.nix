@@ -633,8 +633,9 @@ in rec {
   in
     decorate "deferred result" schema authored;
 
+  artifactSelector = decorate "symbolic artifact" schemas.artifactReference packageOutputType;
+
   executableReference = let
-    artifactSelector = decorate "symbolic executable artifact" schemas.artifactReference packageOutputType;
     argumentList = list {
       element = deferredResult runtimeString;
       maxItems = 128;
@@ -662,7 +663,6 @@ in rec {
     decorate "executable reference" schema authored;
 
   artifactFileReference = let
-    artifactSelector = decorate "symbolic file artifact" schemas.artifactReference packageOutputType;
     path =
       decorate "artifact-relative file path" (schemas.string {
         maxLength = 4096;
