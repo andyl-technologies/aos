@@ -1050,7 +1050,7 @@ impl NativeAbRolloutBackend {
         Ok(images)
     }
 
-    fn execution_directory(&self, request: &AbRolloutRequest) -> Result<PathBuf> {
+    pub(crate) fn execution_directory(&self, request: &AbRolloutRequest) -> Result<PathBuf> {
         let digest = Sha256Digest::of_canonical(EXECUTION_SCHEMA, request)?;
         Ok(self
             .image_profile
@@ -1058,7 +1058,7 @@ impl NativeAbRolloutBackend {
             .join(digest.to_string().replace(':', "-")))
     }
 
-    fn retained_uki_directory(&self, request: &AbRolloutRequest) -> Result<PathBuf> {
+    pub(crate) fn retained_uki_directory(&self, request: &AbRolloutRequest) -> Result<PathBuf> {
         let digest = Sha256Digest::of_canonical(EXECUTION_SCHEMA, request)?;
         Ok(self
             .boot_root

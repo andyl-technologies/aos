@@ -17,6 +17,7 @@ use super::{
 
 mod ability;
 mod model;
+mod observer;
 mod plan;
 mod process;
 mod provider;
@@ -24,6 +25,7 @@ mod provider;
 pub(crate) use ability::NativeAbRolloutBackend;
 pub(super) use ability::retained_uki_entry_ids;
 pub(crate) use model::{AbRolloutRequest, MAX_RETENTION_MILLIS, RolloutImageIdentity};
+pub use observer::run_from_process as run_observer_from_process;
 pub(crate) use plan::authenticate_single_image_rollout_fragment;
 pub use provider::run_from_process as run_provider_from_process;
 
