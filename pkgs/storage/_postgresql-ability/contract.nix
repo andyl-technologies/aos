@@ -216,7 +216,7 @@
       if builtins.elem name ["observe" "observe-boot" "observe-health" "validate" "verify"]
       then "read"
       else "exclusive-write";
-    stopsProvider = name == "stop";
+    stopsProvider = builtins.elem name ["release" "remove" "stop"];
   };
   method = target: name: parameters: outputs: evidence: {
     targetResource = target;

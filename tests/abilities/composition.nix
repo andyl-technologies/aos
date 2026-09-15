@@ -26,7 +26,7 @@
 
   emptyLifecycle = {
     stableResourceIdentity = true;
-    releasesEphemeralOnDisable = true;
+    releasesEphemeralOnDisable = false;
     retainsPersistentByDefault = true;
     persistentDeleteMethod = null;
   };

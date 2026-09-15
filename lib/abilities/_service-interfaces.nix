@@ -8,10 +8,11 @@
 }: let
   lifecyclePolicy = {
     stableResourceIdentity = true;
-    releasesEphemeralOnDisable = true;
+    releasesEphemeralOnDisable = false;
     retainsPersistentByDefault = false;
     persistentDeleteMethod = null;
   };
+  ephemeralLifecyclePolicy = lifecyclePolicy // {releasesEphemeralOnDisable = true;};
   mergeContract = descriptorFor "aos.ability.merge-contract/v1" {
     resource = "aos.service.instance";
     strategy = "closed-record-facets";
@@ -70,23 +71,60 @@
   write = semantics "exclusive-write" false;
   stopSemantics = semantics "exclusive-write" true;
 
-  canonical = alias: name: description: requestType: observationType: methodsFor: let
+  conditionGuarantee = name: semantics: {
+    inherit name;
+    version = 1;
+    descriptor = descriptorFor "aos.ability.execution-guarantee/v1" {
+      inherit name semantics;
+      version = 1;
+    };
+  };
+  conditionGuarantees = {
+    path =
+      conditionGuarantee
+      "aos.guarantee.service-condition.path"
+      "the provider evaluates the declared path predicate without translating provider-specific condition tokens";
+    kernel-argument =
+      conditionGuarantee
+      "aos.guarantee.service-condition.kernel-argument"
+      "the provider evaluates exact kernel argument presence without translating provider-specific condition tokens";
+    mandatory-access-control =
+      conditionGuarantee
+      "aos.guarantee.service-condition.mandatory-access-control"
+      "the provider evaluates whether mandatory access control is available or enforcing without translating provider-specific condition tokens";
+  };
+  linuxConditionGuarantees = {
+    capability =
+      conditionGuarantee
+      "aos.guarantee.linux-service-condition.capability"
+      "the provider evaluates availability of the declared Linux capability name";
+  };
+
+  canonicalWithGuarantees = guarantees: alias: name: description: requestType: observationType: methodsFor: let
     methods = methodsFor "aos.service.instance";
+    ownsControllerLifecycle =
+      builtins.any
+      (method: method.semantics.stopsProvider)
+      (builtins.attrValues methods);
     declaration = declareInterface {
       inherit name description requestType methods;
       abi = 1;
       configurationType = null;
       outputs = {};
-      lifecycle = lifecyclePolicy;
-      guarantees = [];
+      lifecycle =
+        if ownsControllerLifecycle
+        then ephemeralLifecyclePolicy
+        else lifecyclePolicy;
+      inherit guarantees;
       inherit aggregation;
     };
     document = interfaceDocumentFromDeclaration declaration;
   in {
-    inherit alias declaration document requestType observationType;
+    inherit alias declaration document requestType observationType guarantees;
     identity = interfaceIdentity document;
     methods = builtins.attrNames methods;
   };
+  canonical = canonicalWithGuarantees [];
 
   managedConfigurationName = "aos.configuration.materialization";
   managedConfigurationMethods = {
@@ -112,6 +150,14 @@
       "observe"
       "Observes whether the exact declared configuration is materialized."
       read;
+    release =
+      method
+      serviceTypes.configurationMaterialization
+      serviceTypes.configurationMaterializationObservation
+      managedConfigurationName
+      "release"
+      "Releases the exact materialized configuration owned by this request."
+      stopSemantics;
   };
   managedConfigurationDeclaration = declareInterface {
     name = managedConfigurationName;
@@ -120,7 +166,7 @@
     requestType = serviceTypes.configurationMaterialization;
     outputs = {};
     methods = managedConfigurationMethods;
-    lifecycle = lifecyclePolicy;
+    lifecycle = ephemeralLifecyclePolicy;
     guarantees = [];
     aggregation = {
       scope = "provider-instance";
@@ -227,7 +273,7 @@
       "References the exact kernel-module set whose readiness gates dependent resources."
       serviceTypes.resourceReference;
     methods = kernelModulesMethods;
-    lifecycle = lifecyclePolicy // {releasesEphemeralOnDisable = false;};
+    lifecycle = lifecyclePolicy;
     guarantees = [];
     aggregation = {
       scope = "provider-instance";
@@ -260,7 +306,7 @@
       "References the exact resolved credential resource without exposing its bytes."
       serviceTypes.resourceReference;
     methods = namedCredentialMethods;
-    lifecycle = lifecyclePolicy // { releasesEphemeralOnDisable = false; };
+    lifecycle = lifecyclePolicy;
     guarantees = [];
     aggregation = {
       scope = "provider-instance";
@@ -283,7 +329,7 @@
     outputType,
     outputLifetime ? "instance",
     interfaceOutputs ? {},
-    lifecycle ? lifecyclePolicy,
+    lifecycle ? ephemeralLifecyclePolicy,
     releaseDescription ? "Releases the exact active resource ownership established by this request.",
     actionDescription,
     observationDescription,
@@ -374,6 +420,52 @@
     methods = ["observe"];
   };
 
+  resolver = {
+    alias,
+    name,
+    description,
+    requestType,
+    observationType,
+    outputName,
+    outputType,
+    actionDescription,
+    observationDescription,
+    outputDescription,
+  }: let
+    resolveMethod = method requestType observationType name "resolve" actionDescription read;
+    methods = {
+      resolve =
+        resolveMethod
+        // {
+          outputs =
+            resolveMethod.outputs
+            // {
+              ${outputName} = output "runtime" "instance" outputDescription outputType;
+            };
+        };
+      observe = method requestType observationType name "observe" observationDescription read;
+    };
+    declaration = declareInterface {
+      inherit name description requestType methods;
+      abi = 1;
+      outputs = {};
+      lifecycle = lifecyclePolicy;
+      guarantees = [];
+      aggregation = {
+        scope = "provider-instance";
+        key = "slot";
+        rejectSlotCollisions = true;
+        mergeContract = null;
+        controllerGroup = alias;
+      };
+    };
+    document = interfaceDocumentFromDeclaration declaration;
+  in {
+    inherit alias declaration document requestType observationType;
+    identity = interfaceIdentity document;
+    methods = builtins.attrNames methods;
+  };
+
   declarations = rec {
     serviceInstance =
       canonical "service-instance" "aos.service.instance"
@@ -408,6 +500,25 @@
           "Stops the exact assembled service resource."
           stopSemantics;
       });
+    templateDefinition =
+      canonical "service-template-definition" "aos.service.template-definition"
+      "Materializes and observes one static service template without controlling a concrete service instance."
+      serviceTypes.templateDefinition
+      serviceTypes.observations.templateDefinition
+      (targetResource: {
+        materialize =
+          retainingMethod serviceTypes.templateDefinition serviceTypes.observations.templateDefinition targetResource "materialize"
+          "Materializes the exact static service template definition."
+          write;
+        observe =
+          method serviceTypes.templateDefinition serviceTypes.observations.templateDefinition targetResource "observe"
+          "Observes the exact static service template definition."
+          read;
+        release =
+          method serviceTypes.templateDefinition serviceTypes.observations.templateDefinition targetResource "release"
+          "Releases the exact static service template definition."
+          stopSemantics;
+      });
     dependencies =
       canonical "service-dependencies" "aos.service.dependencies"
       "Contributes typed ordering and readiness dependencies to a service resource."
@@ -420,27 +531,31 @@
           read;
       });
     conditions =
-      canonical "service-conditions" "aos.service.conditions"
-      "Contributes declarative environment conditions to a service resource."
-      serviceTypes.conditions
-      serviceTypes.observations.conditions
-      (targetResource: {
-        observe =
-          method serviceTypes.conditions serviceTypes.observations.conditions targetResource "observe"
-          "Observes the service's exact environment conditions."
-          read;
-      });
+      (canonicalWithGuarantees (builtins.attrValues conditionGuarantees)
+        "service-conditions" "aos.service.conditions"
+        "Contributes declarative environment conditions to a service resource."
+        serviceTypes.conditions
+        serviceTypes.observations.conditions
+        (targetResource: {
+          observe =
+            method serviceTypes.conditions serviceTypes.observations.conditions targetResource "observe"
+            "Observes the service's exact environment conditions."
+            read;
+        }))
+      // {guaranteesByKind = conditionGuarantees;};
     linuxConditions =
-      canonical "linux-service-conditions" "aos.platform.linux.service-conditions"
-      "Contributes Linux capability-availability conditions to a service resource."
-      serviceTypes.linuxConditions
-      serviceTypes.observations.linuxConditions
-      (targetResource: {
-        observe =
-          method serviceTypes.linuxConditions serviceTypes.observations.linuxConditions targetResource "observe"
-          "Observes the Linux capability conditions applied to the service."
-          read;
-      });
+      (canonicalWithGuarantees (builtins.attrValues linuxConditionGuarantees)
+        "linux-service-conditions" "aos.platform.linux.service-conditions"
+        "Contributes Linux capability-availability conditions to a service resource."
+        serviceTypes.linuxConditions
+        serviceTypes.observations.linuxConditions
+        (targetResource: {
+          observe =
+            method serviceTypes.linuxConditions serviceTypes.observations.linuxConditions targetResource "observe"
+            "Observes the Linux capability conditions applied to the service."
+            read;
+        }))
+      // {guaranteesByKind = linuxConditionGuarantees;};
     instantiation =
       canonical "service-instantiation" "aos.service.instantiation"
       "Contributes singleton, template, or bound-instance identity to a service resource."
@@ -835,27 +950,25 @@
       outputDescription = "Returns the authorized execution path for the service root.";
       outputType = serviceTypes.rootDirectoryPath;
     };
-    principalResolution = producer {
+    principalResolution = resolver {
       alias = "principal-resolution";
       name = "aos.identity.principal";
-      description = "Resolves or allocates one provider-neutral runtime principal.";
+      description = "Resolves one provider-neutral runtime principal.";
       requestType = serviceTypes.principalResolution;
       observationType = serviceTypes.producerObservations.principalResolution;
-      action = "resolve";
-      actionDescription = "Resolves or allocates the requested runtime principal.";
+      actionDescription = "Resolves the requested runtime principal.";
       observationDescription = "Observes whether the exact runtime principal is available.";
       outputName = "principal-name";
       outputDescription = "Returns the provider-resolved runtime principal name.";
       outputType = serviceTypes.principalName;
     };
-    groupResolution = producer {
+    groupResolution = resolver {
       alias = "group-resolution";
       name = "aos.identity.group";
-      description = "Resolves or allocates one provider-neutral runtime group.";
+      description = "Resolves one provider-neutral runtime group.";
       requestType = serviceTypes.groupResolution;
       observationType = serviceTypes.producerObservations.groupResolution;
-      action = "resolve";
-      actionDescription = "Resolves or allocates the requested runtime group.";
+      actionDescription = "Resolves the requested runtime group.";
       observationDescription = "Observes whether the exact runtime group is available.";
       outputName = "group-name";
       outputDescription = "Returns the provider-resolved runtime group name.";

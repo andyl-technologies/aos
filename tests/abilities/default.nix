@@ -179,7 +179,7 @@
       methods = {};
       lifecycle = {
         stableResourceIdentity = true;
-        releasesEphemeralOnDisable = true;
+        releasesEphemeralOnDisable = false;
         retainsPersistentByDefault = true;
         persistentDeleteMethod = null;
       };
@@ -225,7 +225,7 @@
       else "exclusive-write";
     stopsProvider = name == "stop";
   };
-  methodSemanticsInterface = semantics:
+  methodSemanticsInterfaceFor = releasesEphemeralOnDisable: semantics:
     lib.abilities.define {
       interface = "aos.test.method-family";
       abi = 1;
@@ -247,7 +247,7 @@
       };
       lifecycle = {
         stableResourceIdentity = true;
-        releasesEphemeralOnDisable = true;
+        inherit releasesEphemeralOnDisable;
         retainsPersistentByDefault = true;
         persistentDeleteMethod = null;
       };
@@ -263,6 +263,7 @@
       ownsResourceKinds = ["aos.test.method-family"];
       handler = "method-family-handler";
     };
+  methodSemanticsInterface = methodSemanticsInterfaceFor false;
   acceptedMethodSemantics =
     (methodSemanticsInterface {
       requiredTargetAccess = "exclusive-write";
@@ -281,6 +282,13 @@
       .semantics
     )
     true);
+  invalidReleasePromise = builtins.tryEval (builtins.deepSeq (
+      methodSemanticsInterfaceFor true {
+        requiredTargetAccess = "exclusive-write";
+        stopsProvider = false;
+      }
+    )
+    true);
 
   configurationExport = configurationSchema:
     lib.abilities.define {
@@ -292,7 +300,7 @@
       methods = {};
       lifecycle = {
         stableResourceIdentity = true;
-        releasesEphemeralOnDisable = true;
+        releasesEphemeralOnDisable = false;
         retainsPersistentByDefault = true;
         persistentDeleteMethod = null;
       };
@@ -335,7 +343,7 @@
       methods = {};
       lifecycle = {
         stableResourceIdentity = true;
-        releasesEphemeralOnDisable = true;
+        releasesEphemeralOnDisable = false;
         retainsPersistentByDefault = true;
         persistentDeleteMethod = null;
       };
@@ -659,6 +667,7 @@ in
     stops_provider = false;
   };
   assert !invalidMethodSemantics.success;
+  assert !invalidReleasePromise.success;
   assert advisoryRequirement.strength == "advisory";
   assert advisoryRequirement.fallback.outputs
   == {

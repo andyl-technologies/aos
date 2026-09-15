@@ -68,7 +68,7 @@ pub fn network_endpoint_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "release",
-            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            MethodSemantics::provider_stop(),
             network_endpoint_request_schema()?,
             network_endpoint_observation_schema()?,
             BTreeMap::new(),

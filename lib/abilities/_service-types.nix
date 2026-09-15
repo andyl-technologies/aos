@@ -164,7 +164,20 @@
     };
   } [];
   lifecycle = request lifecycleFeature;
+  templateDefinition = types.record {
+    fields = {service = localKey;} // lifecycleFeature._serviceFeatureFields;
+    optional = lifecycleFeature._serviceFeatureOptional;
+  };
   dependenciesFeature = feature {
+    prerequisites = {
+      type = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+        unique = true;
+        canonicalOrder = true;
+      };
+      default = [];
+    };
     after = types.list {
       element = types.deferredResult types.resourceReference;
       maxItems = 256;
@@ -259,10 +272,10 @@
       negated = types.boolean;
     };
   };
-  facilityCondition = types.record {
+  mandatoryAccessControlCondition = types.record {
     fields = {
-      kind = types.enum ["facility"];
-      facility = localKey;
+      kind = types.enum ["mandatory-access-control"];
+      state = types.enum ["available" "enforcing"];
       negated = types.boolean;
     };
   };
@@ -271,7 +284,7 @@
     variants = {
       path = pathCondition;
       kernel-argument = kernelArgumentCondition;
-      facility = facilityCondition;
+      mandatory-access-control = mandatoryAccessControlCondition;
     };
   };
   conditionsFeature = feature {
@@ -320,7 +333,7 @@
   supervision = request supervisionFeature;
   readinessFeature = feature {
     mechanism = types.enum ["process-running" "process-signal" "socket-accepting" "successful-exit"];
-    signal_scope = types.enum ["all-processes" "children" "main-process" "none"];
+    signal_scope = types.enum ["all-processes" "main-process" "none"];
     timeout_millis = types.integer {
       minimum = 1;
       maximum = 86400000;
@@ -457,11 +470,34 @@
   } [];
   directories = request directoriesFeature;
 
-  activationBinding = types.record {
-    fields = {
-      name = localKey;
-      resource = types.deferredResult types.resourceReference;
-      relationship = types.enum ["dependency" "membership" "trigger"];
+  activationBindingBase = {
+    name = localKey;
+    resource = types.deferredResult types.resourceReference;
+  };
+  activationBinding = types.taggedUnion {
+    tag = "relationship";
+    variants = {
+      service-depends-on-resource = types.record {
+        fields =
+          activationBindingBase
+          // {
+            relationship = types.enum ["service-depends-on-resource"];
+          };
+      };
+      service-member-of-resource = types.record {
+        fields =
+          activationBindingBase
+          // {
+            relationship = types.enum ["service-member-of-resource"];
+          };
+      };
+      resource-triggers-service = types.record {
+        fields =
+          activationBindingBase
+          // {
+            relationship = types.enum ["resource-triggers-service"];
+          };
+      };
     };
   };
   activationFeature = feature {
@@ -1484,6 +1520,7 @@
         optional = true;
       };
     };
+    templateDefinition = observationFor "template-definition" templateDefinition featureState {};
     dependencies = observationFor "dependencies" dependencies featureState {};
     conditions = observationFor "conditions" conditions featureState {};
     linuxConditions = observationFor "linux-conditions" linuxConditions featureState {};
@@ -1556,6 +1593,7 @@ in {
     structuredConfigurationSource
     structuredDocumentValid
     lifecycle
+    templateDefinition
     dependencies
     conditions
     linuxConditions

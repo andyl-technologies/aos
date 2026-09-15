@@ -68,7 +68,7 @@ pub fn credential_delivery_effects_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "release",
-            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            MethodSemantics::provider_stop(),
             credential_delivery_request_schema()?,
             credential_delivery_observation_schema()?,
             BTreeMap::new(),

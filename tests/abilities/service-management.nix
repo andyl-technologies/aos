@@ -62,6 +62,17 @@
     (builtins.tryEval (builtins.deepSeq (evaluateAs type value) true)).success;
   validates = declaration:
     (builtins.tryEval (builtins.deepSeq (serviceManagement.validate serviceTypes declaration) true)).success;
+  validatesActivationRelationship = relationship:
+    validates (minimalService
+      // {
+        activation.bindings = [
+          {
+            name = "related-resource";
+            resource = resultOf "related" "activation-resource";
+            inherit relationship;
+          }
+        ];
+      });
 
   interfaces = serviceManagement.interfaces;
   lifecycleMethods = interfaces.lifecycle.document.interface.methods;
@@ -69,7 +80,10 @@
     builtins.filter
     (name: lifecycleMethods.${name}.semantics.required_target_access == "exclusive-write")
     (builtins.attrNames lifecycleMethods);
-  featureInterfaces = builtins.removeAttrs serviceManagement.featureInterfaces ["lifecycle"];
+  featureInterfaces = builtins.removeAttrs serviceManagement.featureInterfaces [
+    "lifecycle"
+    "template_definition"
+  ];
   featureMethodsAreReadOnly =
     builtins.all
     (interface:
@@ -89,6 +103,8 @@
     lib.abilities.types.schemaOf
     "activation resource reference"
     serviceTypes.resourceReference;
+  prerequisiteSchema =
+    interfaces.dependencies.document.interface.request.fields.prerequisites;
   requestSchemas =
     builtins.mapAttrs
     (_: interface: interface.document.interface.request)
@@ -116,32 +132,53 @@
     == requestSchemas.storageAllocation.fields.group.value
     && interfaces.persistentStorageAllocation.document.interface.outputs.planned-path.schema
     == requestSchemas.principalResolution.fields.home_directory;
-  producerInterfacesReleaseEphemeralResources =
+  lifecycleContractsAreExecutable =
     builtins.all
-    (interface:
-      interface.document.interface.lifecycle.releases_ephemeral_on_disable
-      && interface.document.interface.methods.release.semantics.required_target_access
-      == "exclusive-write"
-      && interface.document.interface.methods.release.semantics.stops_provider)
-    (builtins.attrValues {
-      inherit
-        (interfaces)
-        credentialDelivery
-        storageView
-        storageAllocation
-        hostPathView
-        deviceView
-        rootDirectoryView
-        principalResolution
-        groupResolution
-        scheduledActivation
-        pathActivation
-        mountResource
-        automountResource
-        swapResource
-        activationGroup
-        ;
-    });
+    (interface: let
+      declaration = interface.document.interface;
+      stoppingTargets =
+        builtins.map
+        (method: method.target_resource)
+        (builtins.filter
+          (method:
+            method.semantics.required_target_access
+            == "exclusive-write"
+            && method.semantics.stops_provider)
+          (builtins.attrValues declaration.methods));
+      retainedTargets =
+        builtins.concatMap
+        (method:
+          if
+            builtins.any
+            (output:
+              output.schema.kind
+              == "resource-reference"
+              && output.phase == "runtime"
+              && output.visibility == "protected"
+              && output.lifetime == "instance")
+            (builtins.attrValues method.outputs)
+          then [method.target_resource]
+          else [])
+        (builtins.attrValues declaration.methods);
+    in
+      !declaration.lifecycle.releases_ephemeral_on_disable
+      || (
+        stoppingTargets
+        != []
+        && builtins.all (target: builtins.elem target stoppingTargets) retainedTargets
+      ))
+    (builtins.attrValues interfaces);
+  readOnlyInterfacesDoNotRelease =
+    builtins.all
+    (interface: let
+      declaration = interface.document.interface;
+      readOnly =
+        builtins.all
+        (method: method.semantics.required_target_access == "read")
+        (builtins.attrValues declaration.methods);
+    in
+      !readOnly || !declaration.lifecycle.releases_ephemeral_on_disable)
+    (builtins.attrValues interfaces);
   activationOutputsAreReferences =
     outputSchema "scheduledActivation" "realize" "activation-resource"
     == resourceReferenceSchema
@@ -187,6 +224,20 @@
     inherit serviceTypes;
     consumerInstance = "consumer";
     declaration = minimalService // {service = "helper";};
+  };
+  staticTemplateService =
+    minimalService
+    // {
+      enabled = false;
+      instantiation = {
+        kind = "template";
+        template = "worker";
+      };
+    };
+  expandedStaticTemplate = serviceManagement.forService {
+    inherit serviceTypes;
+    consumerInstance = "consumer";
+    declaration = staticTemplateService;
   };
   observeOnlyKernelModules = serviceManagement.forProducer {
     consumerInstance = "consumer";
@@ -235,6 +286,7 @@
           stop_timeout_unbounded = true;
         };
       dependencies = {
+        prerequisites = [(resultOf "dependency" "retained-resource")];
         after = [];
         before = [];
         requires = [];
@@ -262,8 +314,8 @@
           negated = false;
         }
         {
-          kind = "facility";
-          facility = "mandatory-access-control";
+          kind = "mandatory-access-control";
+          state = "available";
           negated = true;
         }
       ];
@@ -361,7 +413,7 @@
         {
           name = "periodic";
           resource = resultOf "schedule" "activation-resource";
-          relationship = "trigger";
+          relationship = "resource-triggers-service";
         }
       ];
       linux_device_policy = {
@@ -922,14 +974,24 @@ in
       };
     });
   assert lifecycleWrites == ["reload" "restart" "start" "stop"];
+  assert interfaces.lifecycle.document.interface.lifecycle.releases_ephemeral_on_disable;
+  assert interfaces.templateDefinition.document.interface.lifecycle.releases_ephemeral_on_disable;
+  assert !interfaces.serviceInstance.document.interface.lifecycle.releases_ephemeral_on_disable;
   assert builtins.attrNames interfaces.reload.document.interface.methods == ["observe"];
   assert featureMethodsAreReadOnly;
+  assert builtins.all
+  (interface: !interface.document.interface.lifecycle.releases_ephemeral_on_disable)
+  (builtins.attrValues featureInterfaces);
   assert lifecycleMethods.observe.outputs.observation.phase == "observation";
   assert lifecycleMethods.observe.outputs.observation.lifetime == "attempt";
   assert lifecycleMethods.start.outputs.observation.phase == "runtime";
   assert lifecycleMethods.start.outputs.observation.lifetime == "attempt";
   assert lifecycleMethods.start.outputs.retained-resource.lifetime == "instance";
   assert materializedPathSchema == executionPathSchema;
+  assert materialization.methods == ["materialize" "observe" "release"];
+  assert materialization.document.interface.methods.release.semantics.required_target_access
+  == "exclusive-write";
+  assert materialization.document.interface.methods.release.semantics.stops_provider;
   assert protectedRequest.requests.protected.parameters == protectedConfiguration;
   assert !(builtins.tryEval (builtins.deepSeq (serviceManagement.forConfiguration {
       inherit serviceTypes;
@@ -960,13 +1022,21 @@ in
     true))
   .success;
   assert producerOutputsMatchConsumers;
-  assert producerInterfacesReleaseEphemeralResources;
+  assert lifecycleContractsAreExecutable;
+  assert readOnlyInterfacesDoNotRelease;
+  assert prerequisiteSchema.max_items == 256;
+  assert prerequisiteSchema.unique;
+  assert prerequisiteSchema.canonical_order;
   assert activationOutputsAreReferences;
   assert readinessOutputsAreReferences;
   assert interfaces.namedCredential.document.interface.outputs.credential-resource.phase == "planning";
   assert interfaces.namedCredential.document.interface.outputs.credential-resource.lifetime == "instance";
   assert !interfaces.namedCredential.document.interface.lifecycle.releases_ephemeral_on_disable;
   assert interfaces.namedCredential.methods == ["observe"];
+  assert interfaces.principalResolution.methods == ["observe" "resolve"];
+  assert !interfaces.principalResolution.document.interface.lifecycle.releases_ephemeral_on_disable;
+  assert interfaces.groupResolution.methods == ["observe" "resolve"];
+  assert !interfaces.groupResolution.document.interface.lifecycle.releases_ephemeral_on_disable;
   assert interfaces.storageAllocation.document.interface.methods.allocate.outputs.storage-path.lifetime == "instance";
   assert interfaces.storageAllocation.document.interface.methods.allocate.outputs.storage-path.phase == "runtime";
   assert interfaces.storageAllocation.document.interface.outputs.planned-path.phase == "planning";
@@ -1033,6 +1103,16 @@ in
   == ["multi-service:helper-lifecycle" "multi-service:main-lifecycle"];
   assert multiServiceGuaranteeFixedPoint.config.aos.abilities.requirementTemplates."multi-service-guarantee:shared".guarantees
   == [sharedGuarantee];
+  assert validates staticTemplateService;
+  assert builtins.attrNames expandedStaticTemplate.requirementTemplates
+  == ["service-instantiation" "service-template-definition"];
+  assert builtins.attrNames expandedStaticTemplate.requests
+  == ["main-instantiation" "main-template_definition"];
+  assert expandedStaticTemplate.requirementTemplates.service-template-definition.methods
+  == ["materialize" "observe" "release"];
+  assert expandedStaticTemplate.requests.main-template_definition.parameters.service == "main";
+  assert !(expandedStaticTemplate.requests.main-template_definition.parameters ? enabled);
+  assert !validates (staticTemplateService // {enabled = true;});
   assert observeOnlyKernelModules.requirementTemplates.kernel-modules.methods == ["observe"];
   assert declarationOnlyKernelModules.requirementTemplates.kernel-modules
   == observeOnlyKernelModules.requirementTemplates.kernel-modules;
@@ -1073,6 +1153,20 @@ in
     }
   ];
   assert expandedExtended.requests.main-lifecycle.parameters.start_timeout_unbounded;
+  assert expandedExtended.requests.main-dependencies.parameters.prerequisites
+  == [(resultOf "dependency" "retained-resource")];
+  assert builtins.map
+  (guarantee: guarantee.name)
+  expandedExtended.requirementTemplates.service-conditions.guarantees
+  == [
+    "aos.guarantee.service-condition.kernel-argument"
+    "aos.guarantee.service-condition.mandatory-access-control"
+    "aos.guarantee.service-condition.path"
+  ];
+  assert builtins.map
+  (guarantee: guarantee.name)
+  expandedExtended.requirementTemplates.linux-service-conditions.guarantees
+  == ["aos.guarantee.linux-service-condition.capability"];
   assert expandedExtended.requests.main-environment.parameters.variables.INSTANCE == "blue";
   assert !validates (extendedService
     // {
@@ -1130,6 +1224,39 @@ in
     name = "hub-jwt";
     scope = "system";
   };
+  assert builtins.all validatesActivationRelationship [
+    "resource-triggers-service"
+    "service-depends-on-resource"
+    "service-member-of-resource"
+  ];
+  assert !validates (extendedService
+    // {
+      activation.bindings = [
+        {
+          name = "periodic";
+          resource = resultOf "schedule" "activation-resource";
+          relationship = "trigger";
+        }
+      ];
+    });
+  assert !succeedsAs serviceTypes.serviceDeclaration (minimalService
+    // {
+      conditions.all = [
+        {
+          kind = "facility";
+          facility = "mandatory-access-control";
+          negated = false;
+        }
+      ];
+    });
+  assert !succeedsAs serviceTypes.serviceDeclaration (minimalService
+    // {
+      readiness = {
+        mechanism = "process-signal";
+        signal_scope = "children";
+        timeout_millis = 1000;
+      };
+    });
   assert !validates (minimalService
     // {
       instantiation = {
