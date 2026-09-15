@@ -10,7 +10,6 @@ mod graph;
 mod snapshot;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, Write};
 
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, InstanceId, ResourceId, ResourceLifetime,
@@ -24,6 +23,7 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{CompositionEvaluator, VerifiedPlanningSnapshot};
+use aos_contract::limits::BoundedWriter;
 
 use context::{
     LinkedCurrentAuthorityDocument, LinkedCurrentResourceObservation, LinkedCurrentResourceState,
@@ -822,9 +822,12 @@ impl TransitionBudget {
                 .ok_or(TransitionError::Limit {
                     limit: "aggregate transition evaluation byte",
                 })?;
-        let mut writer = EvaluationBoundedWriter::new(remaining);
+        let mut writer = BoundedWriter::new(
+            remaining,
+            "serialized transition evaluation exceeds its byte limit",
+        );
         serde_json::to_writer(&mut writer, context).map_err(|error| {
-            if writer.exceeded {
+            if writer.exceeded() {
                 TransitionError::Limit {
                     limit: "aggregate transition evaluation byte",
                 }
@@ -846,9 +849,12 @@ impl TransitionBudget {
                 .ok_or(TransitionError::Limit {
                     limit: "aggregate transition evaluation byte",
                 })?;
-        let mut writer = EvaluationBoundedWriter::new(remaining);
+        let mut writer = BoundedWriter::new(
+            remaining,
+            "serialized transition evaluation exceeds its byte limit",
+        );
         serde_json::to_writer(&mut writer, value).map_err(|error| {
-            if writer.exceeded {
+            if writer.exceeded() {
                 TransitionError::Limit {
                     limit: "aggregate transition evaluation byte",
                 }
@@ -856,36 +862,5 @@ impl TransitionBudget {
                 TransitionError::Encoding(error.to_string())
             }
         })
-    }
-}
-
-struct EvaluationBoundedWriter {
-    remaining: u64,
-    exceeded: bool,
-}
-
-impl EvaluationBoundedWriter {
-    const fn new(remaining: u64) -> Self {
-        Self {
-            remaining,
-            exceeded: false,
-        }
-    }
-}
-
-impl Write for EvaluationBoundedWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() as u64 > self.remaining {
-            self.exceeded = true;
-            return Err(io::Error::other(
-                "serialized transition evaluation exceeds its byte limit",
-            ));
-        }
-        self.remaining -= bytes.len() as u64;
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
     }
 }

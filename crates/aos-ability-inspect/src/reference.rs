@@ -14,7 +14,6 @@
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, Write};
 
 use aos_ability_model::{ABILITY_LIMITS_V1, RequiredFeature};
 use aos_contract::Sha256Digest;
@@ -30,6 +29,7 @@ use crate::{
     Direction, GraphQuery, GraphQueryError, InspectionEdge, InspectionNode, InspectionRelation,
     NodeKey,
 };
+use aos_contract::limits::BoundedWriter;
 
 /// Exact schema discriminator for portable public-reference inspection input.
 pub const REFERENCE_INSPECTION_INPUT_SCHEMA: &str = "aos.ability.reference-inspection-input/v1";
@@ -551,9 +551,12 @@ fn bounded_canonical_bytes(
     value: &impl Serialize,
     limit: usize,
 ) -> Result<Vec<u8>, ReferenceInspectionError> {
-    let mut writer = ReferenceBoundedWriter::new(limit);
+    let mut writer = BoundedWriter::new(
+        limit as u64,
+        "serialized reference inspection exceeds its byte limit",
+    );
     serde_json::to_writer(&mut writer, value).map_err(|error| {
-        if writer.exceeded {
+        if writer.exceeded() {
             ReferenceInspectionError::EncodedSizeLimit
         } else {
             ReferenceInspectionError::Encode(error.to_string())
@@ -561,37 +564,6 @@ fn bounded_canonical_bytes(
     })?;
     aos_contract::canonical::to_vec(value)
         .map_err(|error| ReferenceInspectionError::Encode(error.to_string()))
-}
-
-struct ReferenceBoundedWriter {
-    remaining: usize,
-    exceeded: bool,
-}
-
-impl ReferenceBoundedWriter {
-    const fn new(limit: usize) -> Self {
-        Self {
-            remaining: limit,
-            exceeded: false,
-        }
-    }
-}
-
-impl Write for ReferenceBoundedWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > self.remaining {
-            self.exceeded = true;
-            return Err(io::Error::other(
-                "serialized reference inspection exceeds its byte limit",
-            ));
-        }
-        self.remaining -= bytes.len();
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }
 
 fn input_limits() -> JsonLimits {

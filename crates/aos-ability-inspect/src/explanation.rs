@@ -40,8 +40,6 @@
 //! }
 //! ```
 
-use std::io::{self, Write};
-
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AuthorityGrant, BindingId, BindingRequest, BindingSource,
     DeploymentObligation, GuaranteeKey, InstanceId, InterfaceKey, LocalKey, PlanId,
@@ -51,6 +49,8 @@ use aos_ability_plan::{CandidateRejection, VerifiedPlanningSnapshot};
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use aos_contract::limits::BoundedWriter;
 
 /// Exact schema discriminator for one provider-selection explanation.
 pub const BINDING_EXPLANATION_SCHEMA: &str = "aos.ability.binding-explanation/v1";
@@ -330,9 +330,12 @@ impl BindingExplanation {
     /// Returns an error if canonical serialization fails or the explanation
     /// exceeds its version-1 byte bound.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, BindingExplanationError> {
-        let mut writer = ExplanationBoundedWriter::new(BINDING_EXPLANATION_MAX_BYTES);
+        let mut writer = BoundedWriter::new(
+            BINDING_EXPLANATION_MAX_BYTES as u64,
+            "serialized binding explanation exceeds its byte limit",
+        );
         serde_json::to_writer(&mut writer, self).map_err(|error| {
-            if writer.exceeded {
+            if writer.exceeded() {
                 BindingExplanationError::EncodedSizeLimit
             } else {
                 BindingExplanationError::Encoding(error.into())
@@ -434,37 +437,6 @@ fn limitations(
         limitations.push(ExplanationLimitation::CandidateHistoryRedacted);
     }
     limitations
-}
-
-struct ExplanationBoundedWriter {
-    remaining: usize,
-    exceeded: bool,
-}
-
-impl ExplanationBoundedWriter {
-    const fn new(limit: usize) -> Self {
-        Self {
-            remaining: limit,
-            exceeded: false,
-        }
-    }
-}
-
-impl Write for ExplanationBoundedWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > self.remaining {
-            self.exceeded = true;
-            return Err(io::Error::other(
-                "serialized binding explanation exceeds its byte limit",
-            ));
-        }
-        self.remaining -= bytes.len();
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }
 
 #[cfg(test)]

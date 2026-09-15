@@ -16,7 +16,6 @@
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, Write};
 
 use aos_ability_model::document::ProviderState;
 use aos_ability_model::{
@@ -33,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::bundle::CheckedInspectionBundle;
+use aos_contract::limits::BoundedWriter;
 
 /// Exact schema discriminator for a portable checked-plan inspection view.
 pub const INSPECTION_VIEW_SCHEMA: &str = "aos.ability.inspection-view/v1";
@@ -474,9 +474,12 @@ impl InspectionView {
         }
         self.check_bounds()?;
 
-        let mut writer = ViewBoundedWriter::new(INSPECTION_VIEW_MAX_BYTES);
+        let mut writer = BoundedWriter::new(
+            INSPECTION_VIEW_MAX_BYTES as u64,
+            "serialized inspection view exceeds its byte limit",
+        );
         serde_json::to_writer(&mut writer, self).map_err(|error| {
-            if writer.exceeded {
+            if writer.exceeded() {
                 InspectionViewError::EncodedSizeLimit
             } else {
                 InspectionViewError::Encoding(error.into())
@@ -1470,35 +1473,4 @@ fn semantic_digest(
 ) -> Result<Sha256Digest, InspectionViewError> {
     Sha256Digest::of_canonical(&format!("{INSPECTION_VIEW_SCHEMA}\0{kind}"), value)
         .map_err(InspectionViewError::Encoding)
-}
-
-struct ViewBoundedWriter {
-    remaining: usize,
-    exceeded: bool,
-}
-
-impl ViewBoundedWriter {
-    const fn new(limit: usize) -> Self {
-        Self {
-            remaining: limit,
-            exceeded: false,
-        }
-    }
-}
-
-impl Write for ViewBoundedWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > self.remaining {
-            self.exceeded = true;
-            return Err(io::Error::other(
-                "serialized inspection view exceeds its byte limit",
-            ));
-        }
-        self.remaining -= bytes.len();
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }

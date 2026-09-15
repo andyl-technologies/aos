@@ -6,7 +6,6 @@
 //! accident.
 
 use std::collections::BTreeMap;
-use std::io::{self, Write};
 use std::num::NonZeroU32;
 
 use anyhow::bail;
@@ -18,6 +17,7 @@ use crate::identity::{InterfaceKey, InterfaceName, InterfaceSelector, LocalKey, 
 use crate::plan::AccessMode;
 use crate::schema::ValueSchema;
 use crate::value::{AbilityValue, ArtifactIdentity, ArtifactReference, ResourceLifetime};
+use aos_contract::limits::BoundedWriter;
 
 /// Names the version-1 package-level persistent-state format semantics.
 pub const PROVIDER_STATE_FORMAT_V1: &str = "provider-state-format-v1";
@@ -489,9 +489,12 @@ fn validate_provider_implementation_limits(
         limits.max_structural_depth,
     )?;
 
-    let mut writer = BoundedWriter::new(limits.max_document_bytes);
+    let mut writer = BoundedWriter::new(
+        limits.max_document_bytes,
+        "provider implementation encoding exceeds its bound",
+    );
     if let Err(source) = serde_json::to_writer(&mut writer, implementation) {
-        if writer.exceeded {
+        if writer.exceeded() {
             bail!("provider implementation exceeds the version-1 encoded-byte limit");
         }
         return Err(source.into());
@@ -597,37 +600,6 @@ fn consume_items(remaining: &mut u64, count: usize) -> anyhow::Result<()> {
         anyhow::anyhow!("provider implementation exceeds the version-1 item limit")
     })?;
     Ok(())
-}
-
-struct BoundedWriter {
-    remaining: u64,
-    exceeded: bool,
-}
-
-impl BoundedWriter {
-    const fn new(limit: u64) -> Self {
-        Self {
-            remaining: limit,
-            exceeded: false,
-        }
-    }
-}
-
-impl Write for BoundedWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() as u64 > self.remaining {
-            self.exceeded = true;
-            return Err(io::Error::other(
-                "provider implementation encoding exceeds its bound",
-            ));
-        }
-        self.remaining -= bytes.len() as u64;
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }
 
 /// Pins one exact provider implementation used by a binding or environment root.

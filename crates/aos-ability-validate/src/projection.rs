@@ -2,7 +2,6 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, Write};
 
 use aos_ability_model::{
     AccessMode, AggregateOutput, AggregateOutputReference, ArtifactReference, AuthorityGrant,
@@ -16,6 +15,7 @@ use crate::ValidationErrors;
 use crate::authority::grant_permits;
 use crate::graph::{ValidationContext, diagnostic};
 use crate::schema::{SchemaPath, validate_composition_value};
+use aos_contract::limits::BoundedWriter;
 
 pub(crate) fn validate_composed_output(
     context: &ValidationContext,
@@ -673,9 +673,12 @@ fn preflight_projection_inputs(
         resources,
         artifacts,
     };
-    let mut writer = ProjectionSizeWriter::new(limits.max_document_bytes);
+    let mut writer = BoundedWriter::new(
+        limits.max_document_bytes,
+        "projection input exceeds its encoded byte limit",
+    );
     serde_json::to_writer(&mut writer, &input).map_err(|_| {
-        if writer.exceeded {
+        if writer.exceeded() {
             "aggregate output validation input exceeds the encoded byte limit"
         } else {
             "aggregate output validation input cannot be encoded"
@@ -734,37 +737,6 @@ fn preflight_projection_expressions(
         }
     }
     Ok(())
-}
-
-struct ProjectionSizeWriter {
-    remaining: u64,
-    exceeded: bool,
-}
-
-impl ProjectionSizeWriter {
-    const fn new(limit: u64) -> Self {
-        Self {
-            remaining: limit,
-            exceeded: false,
-        }
-    }
-}
-
-impl Write for ProjectionSizeWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() as u64 > self.remaining {
-            self.exceeded = true;
-            return Err(io::Error::other(
-                "projection input exceeds its encoded byte limit",
-            ));
-        }
-        self.remaining -= bytes.len() as u64;
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }
 
 fn selected_projection_grant<'a>(

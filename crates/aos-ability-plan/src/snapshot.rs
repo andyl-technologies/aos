@@ -6,8 +6,6 @@
 //! fragment validation against the retained transcript without executing
 //! provider code. An optional live replay can invoke the exact evaluator again.
 
-use std::io::{self, Write};
-
 use aos_ability_model::{
     ABILITY_LIMITS_V1, BindingPlanDocument, DesiredStateDocument, EnvironmentDocument,
     PackageDocument, PlanId, VersionedDocument, encode_canonical,
@@ -23,6 +21,7 @@ use crate::{
     CompositionEvaluator, CompositionOutcome, CompositionPass, EvaluationError, RecursiveComposer,
     ResolutionDecision, ResolutionPolicyDocument,
 };
+use aos_contract::limits::BoundedWriter;
 
 /// Exact schema discriminator for retained recursive planning provenance.
 pub const PLANNING_SNAPSHOT_SCHEMA: &str = "aos.ability.planning-snapshot/v1";
@@ -272,9 +271,12 @@ impl PlanningSnapshot {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, PlanningSnapshotError> {
         self.validate_bounded_structure()?;
 
-        let mut writer = BoundedWriter::new(PLANNING_SNAPSHOT_MAX_BYTES);
+        let mut writer = BoundedWriter::new(
+            PLANNING_SNAPSHOT_MAX_BYTES as u64,
+            "serialized planning snapshot exceeds its byte limit",
+        );
         serde_json::to_writer(&mut writer, self).map_err(|error| {
-            if writer.exceeded {
+            if writer.exceeded() {
                 PlanningSnapshotError::InvalidLinkage(
                     "encoded snapshot exceeds the version-1 byte limit",
                 )
@@ -701,36 +703,5 @@ const fn snapshot_limits() -> JsonLimits {
         max_items: (ABILITY_LIMITS_V1.max_collection_items as usize)
             .saturating_mul(PLANNING_SNAPSHOT_COMPONENT_LIMIT),
         max_string_bytes: ABILITY_LIMITS_V1.max_string_bytes as usize,
-    }
-}
-
-struct BoundedWriter {
-    remaining: usize,
-    exceeded: bool,
-}
-
-impl BoundedWriter {
-    const fn new(maximum_bytes: usize) -> Self {
-        Self {
-            remaining: maximum_bytes,
-            exceeded: false,
-        }
-    }
-}
-
-impl Write for BoundedWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > self.remaining {
-            self.exceeded = true;
-            return Err(io::Error::other(
-                "serialized planning snapshot exceeds its byte limit",
-            ));
-        }
-        self.remaining -= bytes.len();
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
     }
 }
