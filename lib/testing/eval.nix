@@ -860,11 +860,6 @@
         enable = true;
         packages = ["web" "worker"];
         config.web.env.TOKEN = "<tag>|{x}";
-        credentials.web.join-token = {
-          source = "/etc/credstore.encrypted/web/join-token";
-          ref = "desired-toml";
-        };
-        systemCredentials.worker.join-token = "bootstrap-token";
       };
     }
   ];
@@ -889,12 +884,8 @@
     then throw "aos.apm.installAtBoot desired.toml is missing the config table: ${desiredText}"
     else if !(containsStr ''TOKEN = "<tag>|{x}"'' desiredText)
     then throw "aos.apm.installAtBoot desired.toml is missing the config value: ${desiredText}"
-    else if containsStr "[credentials.web]" desiredText
-    then throw "aos.apm.installAtBoot desired.toml must not serialize opaque references as values: ${desiredText}"
-    else if !(containsStr "[credentials.worker.join-token]" desiredText)
-    then throw "aos.apm.installAtBoot desired.toml is missing the system credential table: ${desiredText}"
-    else if !(containsStr ''system-credential = "bootstrap-token"'' desiredText)
-    then throw "aos.apm.installAtBoot desired.toml is missing the system credential reference: ${desiredText}"
+    else if containsStr "[credentials" desiredText
+    then throw "aos.apm.installAtBoot desired.toml must not carry credential declarations: ${desiredText}"
     else if !(containsStr ''name = "example"'' registryText)
     then throw "aos.apm.installAtBoot registry file is missing the registry name: ${registryText}"
     else if !(containsStr "example:Ed25519:QUJDREVGR0g=" trustedKeysText)
@@ -915,77 +906,6 @@
   in
     if forced.success
     then throw "aos.apm.installAtBoot.config must reject invalid package names"
-    else "ok";
-
-  invalidInstallAtBootCredentialSystem = mkSystem [
-    ../../systems/server.nix
-    {
-      aos.apm.installAtBoot = {
-        enable = true;
-        credentials.web."bad/name" = {
-          source = "/etc/credstore/bad";
-          ref = "desired-toml";
-        };
-      };
-    }
-  ];
-  apmInstallAtBootRejectsInvalidCredentialName = let
-    forced = builtins.tryEval (invalidInstallAtBootCredentialSystem.config.system.build.toplevel.outPath);
-  in
-    if forced.success
-    then throw "aos.apm.installAtBoot.credentials must reject invalid credential names"
-    else "ok";
-
-  plaintextInstallAtBootCredentialSystem = mkSystem [
-    ../../systems/server.nix
-    {
-      aos.apm.installAtBoot.credentials.web.join-token = {
-        ref = "desired-toml";
-        value = "must-not-enter-the-value-graph";
-      };
-    }
-  ];
-  apmInstallAtBootRejectsPlaintextCredential = let
-    forced = builtins.tryEval (plaintextInstallAtBootCredentialSystem.config.system.build.toplevel.outPath);
-  in
-    if forced.success
-    then throw "aos.apm.installAtBoot.credentials secretRef must reject plaintext value fields"
-    else "ok";
-
-  invalidInstallAtBootSystemCredentialSystem = mkSystem [
-    ../../systems/server.nix
-    {
-      aos.apm.installAtBoot = {
-        enable = true;
-        systemCredentials.web.join-token = "bad/name";
-      };
-    }
-  ];
-  apmInstallAtBootRejectsInvalidSystemCredentialName = let
-    forced = builtins.tryEval (invalidInstallAtBootSystemCredentialSystem.config.system.build.toplevel.outPath);
-  in
-    if forced.success
-    then throw "aos.apm.installAtBoot.systemCredentials must reject invalid system credential names"
-    else "ok";
-
-  conflictingInstallAtBootCredentialSystem = mkSystem [
-    ../../systems/server.nix
-    {
-      aos.apm.installAtBoot = {
-        enable = true;
-        credentials.web.join-token = {
-          source = "/etc/credstore.encrypted/web/join-token";
-          ref = "desired-toml";
-        };
-        systemCredentials.web.join-token = "bootstrap-token";
-      };
-    }
-  ];
-  apmInstallAtBootRejectsCredentialConflicts = let
-    forced = builtins.tryEval (conflictingInstallAtBootCredentialSystem.config.system.build.toplevel.outPath);
-  in
-    if forced.success
-    then throw "aos.apm.installAtBoot must reject credentials/systemCredentials conflicts"
     else "ok";
 
   invalidRegistryNameSystem = mkSystem [
@@ -1123,7 +1043,7 @@ in
         echo "lifecycle units: recurrent provisioning/tmpfiles/sysusers (${rfcLifecycleRecurrence})"
         echo "edge boundary:   image capability only (${edgeImageHostBoundary}), host-selectable runtime role (${edgeHostRole})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
-        echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid credential (${apmInstallAtBootRejectsInvalidCredentialName}), plaintext credential (${apmInstallAtBootRejectsPlaintextCredential}), invalid system credential (${apmInstallAtBootRejectsInvalidSystemCredentialName}), credential conflict (${apmInstallAtBootRejectsCredentialConflicts}), invalid registry (${apmRegistriesRejectsInvalidName})"
+        echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid registry (${apmRegistriesRejectsInvalidName})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"
         echo "firewall:       no package drop-in include (${firewallNoNftablesDropin})"
         echo "derivations:    meta.execute uses build execution identity (${executionCompatibilityUsesBuildExecutionSystem})"
