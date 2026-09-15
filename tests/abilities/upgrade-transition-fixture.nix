@@ -21,12 +21,12 @@
         {
           name = "test-http-server";
           version = pkgs.test-http-server.version;
-          module = ../../pkgs/tests/_test-http-server/module.nix;
+          module = pkgs.test-http-server.module + "/module.nix";
         }
         {
           name = "upgrade-transition-fixture";
           version = pkgs.upgrade-transition-fixture.version;
-          module = ../../pkgs/tests/_upgrade-transition-fixture/module.nix;
+          module = pkgs.upgrade-transition-fixture.module + "/module.nix";
         }
       ];
     };

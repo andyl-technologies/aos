@@ -1,5 +1,8 @@
 ##! Fixed-point checks for the package-owned release maintenance services.
-{lib}: let
+{
+  lib,
+  pkgs,
+}: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   program = name: {
     artifact = lib.abilities.packageOutput {};
@@ -45,7 +48,8 @@
       packageModules = [
         {
           name = "aos";
-          module = ../../pkgs/tools/aos/_abilities/release-coordinator/module.nix;
+          inherit (pkgs.aos) version;
+          module = pkgs.aos.module + "/module.nix";
         }
       ];
     };
@@ -67,7 +71,6 @@
     request = "aos:${requestName}";
     inherit output;
   };
-  requirementNames = builtins.attrNames (abilities enabled).requirementTemplates;
   expectedRequirements = builtins.sort builtins.lessThan [
     "aos:credential-delivery"
     "aos:group-resolution"
@@ -115,10 +118,12 @@ in
   assert assertionsHold enabled;
   assert !assertionsHold missingPrograms;
   assert !assertionsHold sharedCredential;
-  assert (abilities disabled).instances == {};
+  assert !(abilities disabled).instances ? "aos:release-coordinator";
   assert (abilities disabled).requests == {};
   assert (abilities disabled).requirementTemplates == (abilities enabled).requirementTemplates;
-  assert requirementNames == expectedRequirements;
+  assert builtins.all
+  (name: builtins.hasAttr name (abilities enabled).requirementTemplates)
+  expectedRequirements;
   assert portableOptionTree enabled.options.aos.services.releaseCoordinator;
   assert builtins.all
   (name: (request "${name}-lifecycle").service == name)

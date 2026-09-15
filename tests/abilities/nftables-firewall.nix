@@ -33,7 +33,8 @@
       packageModules = [
         {
           name = "nftables";
-          module.imports = [../../pkgs/networking/_nftables/module.nix];
+          inherit (pkgs.nftables) version;
+          module = pkgs.nftables.module + "/module.nix";
         }
       ];
     };

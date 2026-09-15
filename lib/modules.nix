@@ -863,15 +863,16 @@
                     // (
                       if packageIdentity == null
                       then {}
-                      else {
-                        packageName = packageIdentity.name;
-                        packageVersion = packageIdentity.version;
-                      }
-                      // (
-                        if packageIdentity ? artifactLocatorFor
-                        then {inherit (packageIdentity) artifactLocatorFor;}
-                        else {}
-                      )
+                      else
+                        {
+                          packageName = packageIdentity.name;
+                          packageVersion = packageIdentity.version;
+                        }
+                        // (
+                          if packageIdentity ? artifactLocatorFor
+                          then {inherit (packageIdentity) artifactLocatorFor;}
+                          else {}
+                        )
                     );
                 }
                 mod;
@@ -919,6 +920,28 @@
         && builtins.all
         (path: builtins.isString path && strings.hasPrefix "/nix/store/" path)
         (builtins.attrValues outputs.dependencies);
+
+      validStoreRoot = root: let
+        rootString =
+          if builtins.isPath root || builtins.isString root
+          then builtins.toString root
+          else "";
+      in
+        builtins.match "/nix/store/[0-9a-z]+-[^/]+" rootString != null;
+
+      validStoreModule = root: module: let
+        rootString = builtins.toString root;
+        moduleString =
+          if builtins.isPath module || builtins.isString module
+          then builtins.toString module
+          else "";
+        components = strings.splitString "/" moduleString;
+      in
+        moduleString
+        != ""
+        && strings.hasPrefix "${rootString}/" moduleString
+        && !builtins.any (component: component == "." || component == "..") components
+        && builtins.pathExists module;
 
       validArtifactReference = reference:
         builtins.isAttrs reference
@@ -988,13 +1011,13 @@
           else [];
         configRoot = record.configRoot or null;
         root =
-          if builtins.isPath configRoot
+          if builtins.isPath configRoot || builtins.isString configRoot
           then builtins.toString configRoot
           else "";
-        modulePath =
-          if builtins.isPath (record.module or null)
-          then builtins.toString record.module
-          else "";
+        authenticatedRoots =
+          if validPackageOutputs (record.outputs or null)
+          then [record.outputs.self] ++ builtins.attrValues record.outputs.dependencies
+          else [];
       in
         if
           !builtins.isAttrs record
@@ -1002,15 +1025,13 @@
         then throw "evalModules: selectedProviderModules entries must contain exactly artifactLocators/configRoot/module/name/outputs/packageVersion"
         else if !builtins.isString record.name || builtins.match "[a-z0-9][a-z0-9._+-]*" record.name == null
         then throw "evalModules: invalid resolver-supplied provider package provenance name"
-        else if
-          root
-          == ""
-          || modulePath == ""
-          || !strings.hasPrefix "${root}/" modulePath
-          || !builtins.pathExists record.module
-        then throw "evalModules: selected provider module for '${record.name}' escapes or is absent from its authenticated root"
         else if !validPackageOutputs record.outputs
         then throw "evalModules: selected provider module for '${record.name}' has invalid resolver-supplied outputs"
+        else if
+          !validStoreRoot configRoot
+          || !builtins.elem root authenticatedRoots
+          || !validStoreModule configRoot record.module
+        then throw "evalModules: selected provider module for '${record.name}' escapes or is absent from its authenticated root"
         else if !builtins.isString record.packageVersion || record.packageVersion == ""
         then throw "evalModules: selected provider module for '${record.name}' has an invalid resolver-supplied version"
         else if !validArtifactLocators record.artifactLocators

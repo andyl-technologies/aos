@@ -3,7 +3,11 @@
   lib,
   pkgs,
 }: let
-  providerRoot = ../../pkgs/tools/aos/_abilities;
+  selectedConfigurationProvider = import ./_selected-package-provider.nix {
+    inherit lib;
+    package = pkgs.aos;
+    implementation = "configuration-materialization";
+  };
   evaluation = lib.evalModules {
     inherit lib pkgs;
     modules = [
@@ -23,19 +27,7 @@
         module = pkgs.aos.module + "/module.nix";
       }
     ];
-    selectedProviderModules = [
-      {
-        name = "aos";
-        packageVersion = pkgs.aos.version;
-        configRoot = providerRoot;
-        module = providerRoot + "/configuration-provider/provider.nix";
-        outputs = {
-          self = builtins.toString pkgs.aos.packageRuntime;
-          dependencies = {};
-        };
-        artifactLocators = {};
-      }
-    ];
+    selectedProviderModules = [selectedConfigurationProvider];
   };
   abilities = evaluation.config.aos.abilities;
   implementation = abilities.implementations."aos:configuration-materialization";

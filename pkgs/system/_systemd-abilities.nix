@@ -1090,8 +1090,6 @@
       requirements =
         lib.optionalAttrs controlsService {
           service-effects = serviceEffectsRequirement;
-        }
-        // lib.optionalAttrs (selected.alias == serviceInterfaces.directories.alias) {
           directory-preparation = directoryPreparationRequirement;
         };
       providerModule = {

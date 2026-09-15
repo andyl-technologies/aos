@@ -58,9 +58,11 @@
     serviceInterfaces.scheduledActivation
     serviceInterfaces.swapResource
   ];
-  nativeResourceImplementationNames = builtins.map (
-    selected: "${packageName}:${selected.alias}"
-  ) nativeResourceInterfaces;
+  nativeResourceImplementationNames =
+    builtins.map (
+      selected: "${packageName}:${selected.alias}"
+    )
+    nativeResourceInterfaces;
   interface = config.aos.abilities.interfaces.${implementationName};
 
   emptyResult = {
@@ -144,15 +146,17 @@
   compose = {resources, ...}:
     emptyResult
     // {
-      requests = builtins.mapAttrs (key: resource: {
-        requirement = "packaged-unit-effects";
-        scope = ["packaged-unit-effects"];
-        slot = resource.resource.key;
-        parameters = {
-          kind = "packaged-unit";
-          desired = resource.value;
-        };
-      }) resources;
+      requests =
+        builtins.mapAttrs (key: resource: {
+          requirement = "packaged-unit-effects";
+          scope = ["packaged-unit-effects"];
+          slot = resource.resource.key;
+          parameters = {
+            kind = "packaged-unit";
+            desired = resource.value;
+          };
+        })
+        resources;
       realizations = builtins.mapAttrs (_: realizationFor) resources;
     };
 
@@ -286,7 +290,8 @@
             slot = entry.binding.slot;
             parameters = entry.parameters;
           };
-        }) entries);
+        })
+        entries);
       outputs = builtins.listToAttrs (builtins.map (entry: {
           name = entry.requestName;
           value.${outputName} = entry.reference;
@@ -318,15 +323,17 @@
   composeManagerWatchdog = {resources, ...}:
     emptyResult
     // {
-      requests = builtins.mapAttrs (key: resource: {
-        requirement = "manager-watchdog-effects";
-        scope = ["manager-watchdog-effects"];
-        slot = key;
-        parameters = {
-          kind = "manager-watchdog";
-          desired = resource.value;
-        };
-      }) resources;
+      requests =
+        builtins.mapAttrs (key: resource: {
+          requirement = "manager-watchdog-effects";
+          scope = ["manager-watchdog-effects"];
+          slot = key;
+          parameters = {
+            kind = "manager-watchdog";
+            desired = resource.value;
+          };
+        })
+        resources;
       realizations = builtins.mapAttrs (_: resource:
         {
           schema = "aos.systemd.manager-watchdog-realization/v1";
@@ -514,17 +521,22 @@
     else
       resource
       // {
-        value = value // {
-          directories = directories // {
-            managed = builtins.filter
-              (directory: !needsDirectoryPreparation value directory)
-              directories.managed;
+        value =
+          value
+          // {
+            directories =
+              directories
+              // {
+                managed =
+                  builtins.filter
+                  (directory: !needsDirectoryPreparation value directory)
+                  directories.managed;
+              };
           };
-        };
       };
-  preparationReference = providerInstance: preparation: let
+  preparationReference = implementation: providerInstance: preparation: let
     requestKey = lib.abilities.compositionRequestKey {
-      implementation = "${packageName}:${serviceInterfaces.directories.alias}";
+      inherit implementation;
       inherit providerInstance;
       key = preparation.key;
     };
@@ -537,11 +549,13 @@
     else if entryResource.phase != "planning" || !lib.abilities.types.resourceReference.check entryResource.value
     then throw "systemd directory preparation omitted an exact planning ResourceReference"
     else entryResource.value;
-  composeServices = controllerInterface: {
+  composeServices = featureName: {
     bindings,
     resources,
     ...
   }: let
+    selected = serviceInterfaces.${featureName};
+    implementation = "${packageName}:${selected.alias}";
     selectedBindings = builtins.attrValues bindings;
     providerInstance =
       if selectedBindings == []
@@ -551,7 +565,7 @@
     preparations = builtins.concatLists (builtins.attrValues preparationsByResource);
     destinations = builtins.map (preparation: preparation.destination) preparations;
     referencesFor = resourceName:
-      builtins.map (preparationReference providerInstance) preparationsByResource.${resourceName};
+      builtins.map (preparationReference implementation providerInstance) preparationsByResource.${resourceName};
   in
     if !builtins.all (binding: binding.providerInstance == providerInstance) selectedBindings
     then throw "systemd service controller received several provider instances"
@@ -560,17 +574,24 @@
     else
       emptyResult
       // {
-        requests = builtins.mapAttrs (key: resource: {
-          requirement = "service-effects";
-          scope = ["service-effects"];
-          slot = key;
-          parameters = {
-            kind = "service";
-            desired = resource.value;
-          };
-        }) resources;
+        requests =
+          builtins.listToAttrs (builtins.map (preparation: {
+              name = preparation.key;
+              value = preparation.request;
+            })
+            preparations)
+          // builtins.mapAttrs (key: resource: {
+            requirement = "service-effects";
+            scope = ["service-effects"];
+            slot = key;
+            parameters = {
+              kind = "service";
+              desired = resource.value;
+            };
+          })
+          resources;
         realizations = builtins.mapAttrs (resourceName: resource:
-          (serviceRenderer.realizationFor controllerInterface (withoutPreparedDirectories resource))
+          (serviceRenderer.realizationFor selected.identity (withoutPreparedDirectories resource))
           // {prerequisites = referencesFor resourceName;})
         resources;
       };
@@ -728,7 +749,7 @@
         provide = provideServiceFacet featureName;
         compose =
           if controlsService featureName
-          then composeServices selected.identity
+          then composeServices featureName
           else null;
         transition =
           if controlsService featureName

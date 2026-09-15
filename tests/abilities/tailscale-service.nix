@@ -33,7 +33,8 @@
       packageModules = [
         {
           name = "tailscale";
-          module.imports = [../../pkgs/networking/_tailscale/module.nix];
+          inherit (pkgs.tailscale) version;
+          module = pkgs.tailscale.module + "/module.nix";
         }
       ];
     };
