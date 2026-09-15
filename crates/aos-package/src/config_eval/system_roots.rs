@@ -66,8 +66,8 @@ pub struct ResolvedAbilityModule {
     pub platform: String,
     /// Authenticated runtime payload output.
     pub runtime_output: String,
-    /// Sole current package-module locator from the signed package document.
-    pub module: aos_ability_model::ModuleLocator,
+    /// Canonical signed package document containing the sole module locator.
+    pub document: aos_ability_model::PackageDocument,
 }
 
 /// A package configuration module resolved by name from registry metadata.

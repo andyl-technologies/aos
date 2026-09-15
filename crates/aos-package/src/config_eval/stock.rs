@@ -475,13 +475,14 @@ where
 {
     let mut items = Vec::new();
     for member in members {
-        if member.package_module.is_some() && member.config_output.is_some() {
+        if member.ability.is_some() && member.config_output.is_some() {
             bail!(
                 "working-set package {} carries both current ability-module and legacy config-module authority",
                 member.package
             );
         }
-        let module = member.package_module.as_ref().map(|locator| {
+        let module = member.ability.as_ref().map(|document| {
+            let locator = &document.package_module;
             (
                 locator.artifact.store_path.as_str(),
                 locator.artifact.nar_hash.to_string(),
@@ -1091,10 +1092,10 @@ fn resolved_registry_ability_module(
         "package {} carries both current ability and legacy config module metadata",
         package.name
     );
-    let Some(module) = crate::ability_package::resolve_package_module(package)? else {
+    let Some(document) = crate::ability_package::resolve_package_document(package)? else {
         return Ok(None);
     };
-    let root = crate::registry::store_path_hash(&module.artifact.store_path);
+    let root = crate::registry::store_path_hash(&document.package_module.artifact.store_path);
 
     Ok(Some(ResolvedAbilityModule {
         registry: registry.config.name.clone(),
@@ -1107,7 +1108,7 @@ fn resolved_registry_ability_module(
         version: package.version.clone(),
         platform: package.platform.clone(),
         runtime_output: package.store_path.clone(),
-        module,
+        document,
     }))
 }
 
@@ -1169,9 +1170,9 @@ fn resolved_image_ability_module(
         bpf_lsm: None,
         attestation: Default::default(),
     };
-    let module = crate::ability_package::resolve_package_module(&package_meta)?;
+    let document = crate::ability_package::resolve_package_document(&package_meta)?;
 
-    Ok(module.map(|module| ResolvedAbilityModule {
+    Ok(document.map(|document| ResolvedAbilityModule {
         registry: String::new(),
         release_trust: None,
         realization: None,
@@ -1179,7 +1180,7 @@ fn resolved_image_ability_module(
         version: package.version.clone(),
         platform: "image".to_string(),
         runtime_output: package.store_path.clone(),
-        module,
+        document,
     }))
 }
 
@@ -1403,7 +1404,11 @@ impl ConfigModuleResolver for RegistryConfigModules {
 
 #[cfg(test)]
 mod tests {
-    use aos_ability_model::{ArtifactReference, LocalKey, ModuleLocator, RelativePath};
+    use aos_ability_model::document::PackageSubject;
+    use aos_ability_model::{
+        AbilityActivationMode, ArtifactReference, LocalKey, ModuleLocator, PackageDocument,
+        PackageImplementation, RelativePath, RequiredFeature, VersionedDocument,
+    };
     use aos_ability_validate::PackageOutputSelector;
     use aos_contract::Sha256Digest;
 
@@ -1419,11 +1424,39 @@ mod tests {
             config_realization: None,
             package: pkg.to_string(),
             version: Some("1.0.0".to_string()),
-            package_module: None,
+            ability: None,
             config_output: config_output.map(str::to_string),
             config_output_nar_hash: config_output.map(|_| "sha256:test".to_string()),
             module_abi_compat: Some(ModuleAbiCompat { min: 1, max: 2 }),
             outputs: super::super::PackageOutputs::default(),
+        }
+    }
+
+    fn ability_document(package: &str, package_module: ModuleLocator) -> PackageDocument {
+        let artifact = package_module.artifact.clone();
+
+        PackageDocument {
+            schema: PackageDocument::SCHEMA.to_string(),
+            required_features: vec![RequiredFeature::new("abilities-v1").unwrap()],
+            activation_mode: AbilityActivationMode::ContractsOnly,
+            package: PackageSubject {
+                name: LocalKey::new(package).unwrap(),
+                version: "1.0.0".to_string(),
+                payload: artifact.clone(),
+                source: artifact.clone(),
+            },
+            artifacts: vec![artifact],
+            interfaces: BTreeMap::new(),
+            guarantees: BTreeMap::new(),
+            package_module,
+            option_declarations: Vec::new(),
+            exports: Vec::new(),
+            requirements: Vec::new(),
+            implementation: PackageImplementation {
+                providers: Vec::new(),
+                handlers: BTreeMap::new(),
+                qualification: BTreeMap::new(),
+            },
         }
     }
 
@@ -1689,15 +1722,19 @@ max = 1
     #[test]
     fn locked_entry_imports_the_authenticated_package_module_and_version() {
         let mut web = member("web", None);
-        web.package_module = Some(ModuleLocator {
-            artifact: ArtifactReference {
-                content: Sha256Digest::of_bytes(b"web module"),
-                store_path: "/nix/store/00000000000000000000000000000000-web-module".to_string(),
-                nar_hash: Sha256Digest::of_bytes(b"web module NAR"),
-                closure: Sha256Digest::of_bytes(b"web module closure"),
+        web.ability = Some(ability_document(
+            "web",
+            ModuleLocator {
+                artifact: ArtifactReference {
+                    content: Sha256Digest::of_bytes(b"web module"),
+                    store_path: "/nix/store/00000000000000000000000000000000-web-module"
+                        .to_string(),
+                    nar_hash: Sha256Digest::of_bytes(b"web module NAR"),
+                    closure: Sha256Digest::of_bytes(b"web module closure"),
+                },
+                path: RelativePath::new("abilities/module.nix").unwrap(),
             },
-            path: RelativePath::new("abilities/module.nix").unwrap(),
-        });
+        ));
 
         let mut admitted = Vec::new();
         let rendered = render_package_module_list_with(&[web], true, |path, nar_hash| {
@@ -1723,15 +1760,19 @@ max = 1
             "web",
             Some("/nix/store/11111111111111111111111111111111-web-config"),
         );
-        web.package_module = Some(ModuleLocator {
-            artifact: ArtifactReference {
-                content: Sha256Digest::of_bytes(b"web module"),
-                store_path: "/nix/store/00000000000000000000000000000000-web-module".to_string(),
-                nar_hash: Sha256Digest::of_bytes(b"web module NAR"),
-                closure: Sha256Digest::of_bytes(b"web module closure"),
+        web.ability = Some(ability_document(
+            "web",
+            ModuleLocator {
+                artifact: ArtifactReference {
+                    content: Sha256Digest::of_bytes(b"web module"),
+                    store_path: "/nix/store/00000000000000000000000000000000-web-module"
+                        .to_string(),
+                    nar_hash: Sha256Digest::of_bytes(b"web module NAR"),
+                    closure: Sha256Digest::of_bytes(b"web module closure"),
+                },
+                path: RelativePath::new("module.nix").unwrap(),
             },
-            path: RelativePath::new("module.nix").unwrap(),
-        });
+        ));
 
         let error = render_package_module_list(&[web], true).unwrap_err();
         assert!(
