@@ -231,6 +231,9 @@
     };
     dependencies = defaultDependencies // {
       before = [(resultOf "aos-preset-lifecycle" "service-resource")];
+      prerequisites = [
+        (resultOf "configuration-evaluation-lifecycle" "service-resource")
+      ];
     };
     conditions.all = [
       {
@@ -291,6 +294,9 @@
       wants = [
         (resultOf "aos-fetch" "activation-resource")
         (resultOf "aos-config-render" "activation-resource")
+      ];
+      prerequisites = [
+        (resultOf "package-profile-convergence-lifecycle" "service-resource")
       ];
     };
     conditions.all = [
