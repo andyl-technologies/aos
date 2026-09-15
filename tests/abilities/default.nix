@@ -459,6 +459,9 @@
   nixStoreDatabase = import ./nix-store-database.nix {
     inherit lib;
   };
+  stagedEnvironment = import ./staged-environment.nix {
+    inherit lib mkSystem;
+  };
   postgresqlService = import ./postgresql-service.nix {
     inherit lib pkgs;
   };
@@ -952,6 +955,7 @@ in
   assert kernelModules;
   assert bootPreparationCore;
   assert nixStoreDatabase;
+  assert stagedEnvironment;
   assert postgresqlService;
   assert securityWrappers;
   assert releaseCoordinatorService;

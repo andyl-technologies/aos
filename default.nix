@@ -231,6 +231,23 @@
         (package: !(builtins.elem (package.pname or package.name) callerPackageNames))
         selectedAbilityPackages);
     finalPackageModules = packageModules ++ nativeAbilityPackageModules;
+    initrdAbilityEvaluation = lib.evalModules {
+      modules =
+        [
+          lib.abilities.module
+          {
+            aos.abilities.environment = {
+              authority = "system-image";
+              key = systemName;
+              stage = "initrd";
+            };
+          }
+        ]
+        ++ selectionEvaluation.config.aos.abilities.stages.initrd.modules;
+      inherit pkgs lib operatorModules runtimeModules;
+      packageModules = finalPackageModules;
+      specialArgs = moduleSpecialArgs;
+    };
     # Determine the resolved image ABI from the complete caller module list.
     # The base library bundles only source-backed system modules, so without
     # carrying this value explicitly an inline image override would leave the
@@ -256,11 +273,16 @@
               inherit baseLib;
               baseLibAbiHash = baseLib.passthru.abiHash;
             };
+            aos.abilities.environment = {
+              authority = "system-image";
+              key = systemName;
+              stage = "host";
+            };
           }
         ];
       inherit pkgs lib operatorModules runtimeModules;
       packageModules = finalPackageModules;
-      specialArgs = moduleSpecialArgs;
+      specialArgs = moduleSpecialArgs // {inherit initrdAbilityEvaluation;};
     };
 
   # Auto-discover system definitions from ./systems/*.nix
