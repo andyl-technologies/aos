@@ -91,7 +91,13 @@
   kernelRequest = abilities.requests."containerd:kernel-modules".parameters;
   socketView = abilities.requests."containerd:grpc-socket-view".parameters;
   lifecycleRequest = abilities.requests."containerd:main-lifecycle".parameters;
+  storageRequest = abilities.requests."containerd:main-storage".parameters;
   registryIsolation = registryAbilities.requests."containerd:main-isolation".parameters;
+  plannedPath = request: {
+    _type = "aos-request-output-reference";
+    request = "containerd:${request}";
+    output = "planned-path";
+  };
   configFile = pkgs.writeTextFile {
     name = "containerd-contract.toml";
     destination = "/config.toml";
@@ -146,12 +152,19 @@
     && !(lib.hasInfix "/var/lib/containerd" configurationJson)
     && !(lib.hasInfix "/run/containerd" configurationJson)
     && !(lib.hasInfix "/run/containerd/containerd.sock" configurationJson)
+    && !(lib.hasInfix ''"output":"storage-path"'' configurationJson)
     && kernelRequest
     == {
       modules = ["overlay"];
       required = true;
     }
+    && socketView.source_path == plannedPath "state-storage"
     && socketView.relative_path == "containerd.sock"
+    && builtins.map (mount: mount.source) storageRequest.mounts
+    == [
+      (plannedPath "root-storage")
+      (plannedPath "state-storage")
+    ]
     && builtins.length registryIsolation.host_paths == 1
     && lifecycleRequest.start != [];
 in

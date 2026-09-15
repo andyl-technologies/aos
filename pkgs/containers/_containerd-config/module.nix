@@ -103,9 +103,9 @@
       };
     };
   };
-  rootPath = resultOf "root-storage" "storage-path";
-  statePath = resultOf "state-storage" "storage-path";
-  socketPath = resultOf "grpc-socket-view" "storage-path";
+  rootPath = resultOf "root-storage" "planned-path";
+  statePath = resultOf "state-storage" "planned-path";
+  socketPath = resultOf "grpc-socket-view" "planned-path";
   configPath = resultOf "server-configuration" "execution-path";
   serverConfig =
     {
@@ -165,6 +165,7 @@
   grpcSocket = producer "grpc-socket-view" serviceManagement.interfaces.storageView {
     name = "grpc-socket";
     source = resultOf "state-storage" "retained-resource";
+    source_path = statePath;
     access = "read-write";
     relative_path = cfg.grpcSocketName;
   };
