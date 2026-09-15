@@ -821,6 +821,7 @@ impl VersionedDocument for InterfaceDocument {
             name: &'a InterfaceName,
             abi: NonZeroU32,
             request: &'a ValueSchema,
+            #[serde(skip_serializing_if = "Option::is_none")]
             configuration: &'a Option<ValueSchema>,
             outputs: BTreeMap<&'a LocalKey, SemanticOutput<'a>>,
             methods: BTreeMap<&'a LocalKey, SemanticMethod<'a>>,
@@ -1688,7 +1689,10 @@ mod tests {
             decode_canonical::<InterfaceDocument>(bytes, ABILITY_LIMITS_V1, &supported_features)?;
 
         assert_eq!(encode_canonical(&document)?, bytes);
-        document.interface_key()?;
+        assert_eq!(
+            document.interface_key()?.descriptor.to_string(),
+            "sha256:bd3fdf9b30dc21a40ae0c7369f12bf12a6cbf88a70ebaf5771fc25c1a05fad2a"
+        );
         Ok(())
     }
 }
