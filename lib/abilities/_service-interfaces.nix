@@ -24,16 +24,12 @@
     inherit mergeContract;
     controllerGroup = "service";
   };
-  output = description: schema: {
-    inherit description schema;
-    phase = "runtime";
+  output = phase: lifetime: description: schema: {
+    inherit description schema phase lifetime;
     visibility = "protected";
-    lifetime = "instance";
   };
-  outputWithLifetime = lifetime: description: schema:
-    (output description schema) // {inherit lifetime;};
   retainedResourceOutput =
-    output
+    output "runtime" "instance"
     "References the exact retained resource controlled by this completed operation."
     serviceTypes.resourceReference;
   semantics = requiredTargetAccess: stopsProvider: {
@@ -46,6 +42,12 @@
     inherit targetResource;
     outputs.observation =
       output
+      (
+        if name == "observe"
+        then "observation"
+        else "runtime"
+      )
+      "attempt"
       "Reports the provider-neutral observed state for this exact request."
       observationType;
     permittedOperations = [name];
@@ -57,9 +59,13 @@
       indeterminate = "reconcile";
     };
   };
-  retainingMethod = requestType: observationType: targetResource: name: description: methodSemantics:
-    (method requestType observationType targetResource name description methodSemantics)
-    // {outputs.retained-resource = retainedResourceOutput;};
+  retainingMethod = requestType: observationType: targetResource: name: description: methodSemantics: let
+    base = method requestType observationType targetResource name description methodSemantics;
+  in
+    base
+    // {
+      outputs = base.outputs // {retained-resource = retainedResourceOutput;};
+    };
   read = semantics "read" false;
   write = semantics "exclusive-write" false;
   stopSemantics = semantics "exclusive-write" true;
@@ -94,7 +100,7 @@
         write)
       // {
         outputs.execution-path =
-          output
+          output "runtime" "instance"
           "Returns the authorized path containing the materialized configuration."
           serviceTypes.executionPath;
       };
@@ -126,6 +132,39 @@
   };
   managedConfigurationDocument = interfaceDocumentFromDeclaration managedConfigurationDeclaration;
 
+  networkReadinessName = "aos.network.readiness";
+  networkReadinessMethods = {
+    observe =
+      method
+      serviceTypes.networkReadiness
+      serviceTypes.networkReadinessObservation
+      networkReadinessName
+      "observe"
+      "Observes whether the requested provider-neutral network scope is ready."
+      read;
+  };
+  networkReadinessDeclaration = declareInterface {
+    name = networkReadinessName;
+    description = "Publishes and observes readiness for a provider-neutral network scope.";
+    abi = 1;
+    requestType = serviceTypes.networkReadiness;
+    outputs.readiness-resource =
+      output "planning" "instance"
+      "References the exact network readiness resource selected for this request."
+      serviceTypes.resourceReference;
+    methods = networkReadinessMethods;
+    lifecycle = lifecyclePolicy;
+    guarantees = [];
+    aggregation = {
+      scope = "provider-instance";
+      key = "slot";
+      rejectSlotCollisions = true;
+      mergeContract = null;
+      controllerGroup = "network-readiness";
+    };
+  };
+  networkReadinessDocument = interfaceDocumentFromDeclaration networkReadinessDeclaration;
+
   producer = {
     alias,
     name,
@@ -148,11 +187,10 @@
           retainingAction.outputs
           // {
             retained-resource =
-              outputWithLifetime
-              outputLifetime
+              output "runtime" outputLifetime
               "References the exact retained resource controlled by this completed operation."
               serviceTypes.resourceReference;
-            ${outputName} = outputWithLifetime outputLifetime outputDescription outputType;
+            ${outputName} = output "runtime" outputLifetime outputDescription outputType;
           };
       };
     methods = {
@@ -197,10 +235,6 @@
           method serviceTypes.lifecycle serviceTypes.observations.lifecycle targetResource "observe"
           "Observes the exact assembled service resource without mutating it."
           read;
-        reload =
-          retainingMethod serviceTypes.lifecycle serviceTypes.observations.lifecycle targetResource "reload"
-          "Reloads the assembled service through its bound reload facet."
-          write;
         restart =
           retainingMethod serviceTypes.lifecycle serviceTypes.observations.lifecycle targetResource "restart"
           "Restarts the exact assembled service resource."
@@ -242,6 +276,10 @@
       serviceTypes.reload
       serviceTypes.observations.reload
       (targetResource: {
+        reload =
+          retainingMethod serviceTypes.reload serviceTypes.observations.reload targetResource "reload"
+          "Reloads the assembled service using this declared reload strategy."
+          write;
         observe =
           method serviceTypes.reload serviceTypes.observations.reload targetResource "observe"
           "Observes whether the declared reload strategy is available."
@@ -343,6 +381,15 @@
       methods = builtins.attrNames managedConfigurationMethods;
       requestType = serviceTypes.configurationMaterialization;
       observationType = serviceTypes.configurationMaterializationObservation;
+    };
+    networkReadiness = {
+      alias = "network-readiness";
+      declaration = networkReadinessDeclaration;
+      document = networkReadinessDocument;
+      identity = interfaceIdentity networkReadinessDocument;
+      methods = builtins.attrNames networkReadinessMethods;
+      requestType = serviceTypes.networkReadiness;
+      observationType = serviceTypes.networkReadinessObservation;
     };
     credentialDelivery = producer {
       alias = "credential-delivery";

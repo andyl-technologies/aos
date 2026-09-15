@@ -51,7 +51,7 @@
     builtins.filter
     (name: lifecycleMethods.${name}.semantics.required_target_access == "exclusive-write")
     (builtins.attrNames lifecycleMethods);
-  featureInterfaces = builtins.removeAttrs serviceManagement.featureInterfaces ["lifecycle"];
+  featureInterfaces = builtins.removeAttrs serviceManagement.featureInterfaces ["lifecycle" "reload"];
   featureMethodsAreReadOnly =
     builtins.all
     (interface:
@@ -92,6 +92,18 @@
     consumerInstance = "consumer";
     declaration = minimalService;
   };
+  expandedWithReload = serviceManagement.forService {
+    inherit serviceTypes;
+    consumerInstance = "consumer";
+    declaration =
+      minimalService
+      // {
+        reload = {
+          strategy = "unsupported";
+          commands = [];
+        };
+      };
+  };
   structuredConfiguration = {
     name = "structured";
     source = {
@@ -119,10 +131,26 @@
   projectedStructuredConfiguration =
     structuredConfiguration
     // {
-      source = serviceManagement.structuredSource "json" {
-        enabled = true;
-        path = lib.abilities.resultOf "runtime" "storage-path";
-        ports = [80 443];
+      source = serviceManagement.structuredSource {
+        format = "json";
+        valueType = lib.abilities.types.record {
+          fields = {
+            enabled = lib.abilities.types.deferredResult lib.abilities.types.boolean;
+            path = lib.abilities.types.deferredResult lib.abilities.types.runtimeString;
+            ports = lib.abilities.types.list {
+              element = lib.abilities.types.integer {
+                minimum = 1;
+                maximum = 65535;
+              };
+              maxItems = 16;
+            };
+          };
+        };
+        value = {
+          enabled = lib.abilities.resultOf "enabled" "value";
+          path = lib.abilities.resultOf "runtime" "storage-path";
+          ports = [80 443];
+        };
       };
     };
   invalidStructuredConfiguration =
@@ -151,6 +179,26 @@
             ];
         };
     };
+  sparseArraySource = {
+    kind = "structured-value";
+    format = "json";
+    document = [
+      {
+        kind = "array";
+        path = [];
+      }
+      {
+        kind = "integer";
+        path = [
+          {
+            kind = "index";
+            value = 1;
+          }
+        ];
+        value = 1;
+      }
+    ];
+  };
   fixedPoint = lib.evalModules {
     specialArgs = {inherit lib;};
     modules = [
@@ -200,17 +248,27 @@ in
         timeout_millis = 1000;
       };
     });
-  assert lifecycleWrites == ["reload" "restart" "start" "stop"];
+  assert lifecycleWrites == ["restart" "start" "stop"];
+  assert builtins.attrNames interfaces.reload.document.interface.methods == ["observe" "reload"];
   assert featureMethodsAreReadOnly;
+  assert lifecycleMethods.observe.outputs.observation.phase == "observation";
+  assert lifecycleMethods.observe.outputs.observation.lifetime == "attempt";
+  assert lifecycleMethods.start.outputs.observation.phase == "runtime";
+  assert lifecycleMethods.start.outputs.observation.lifetime == "attempt";
+  assert lifecycleMethods.start.outputs.retained-resource.lifetime == "instance";
   assert materializedPathSchema == executionPathSchema;
   assert producerOutputsMatchConsumers;
   assert interfaces.storageAllocation.document.interface.methods.allocate.outputs.storage-path.lifetime == "instance";
   assert interfaces.persistentStorageAllocation.document.interface.methods.allocate.outputs.storage-path.lifetime == "persistent";
   assert interfaces.persistentStorageAllocation.document.interface.methods.allocate.outputs.retained-resource.lifetime == "persistent";
   assert builtins.attrNames expanded.requests == ["main-lifecycle"];
+  assert builtins.attrNames expandedWithReload.requests == ["main-lifecycle" "main-reload"];
   assert expanded.requests.main-lifecycle.consumer == "consumer";
   assert succeedsAs serviceTypes.configurationMaterialization structuredConfiguration;
   assert succeedsAs serviceTypes.configurationMaterialization projectedStructuredConfiguration;
+  assert builtins.elem "boolean" (builtins.map (node: node.kind) projectedStructuredConfiguration.source.document);
+  assert !succeedsAs serviceTypes.structuredConfigurationSource invalidStructuredConfiguration.source;
+  assert !succeedsAs serviceTypes.structuredConfigurationSource sparseArraySource;
   assert !(builtins.tryEval (builtins.deepSeq (serviceManagement.forConfiguration {
       inherit serviceTypes;
       consumerInstance = "consumer";

@@ -575,6 +575,24 @@ in rec {
   in
     decorate "optional" schema (moduleTypes.nullOr value);
 
+  refined = {
+    name,
+    description,
+    type,
+    predicate,
+  }:
+    type
+    // {
+      inherit name description;
+      check = value: type.check value && predicate value;
+      merge = location: definitions: let
+        merged = type.merge location definitions;
+      in
+        if predicate merged
+        then merged
+        else throw "The option '${builtins.concatStringsSep "." location}' is not valid for ${description}.";
+    };
+
   artifactReference = specialType "artifact-reference" schemas.artifactReference {
     _type = moduleTypes.enum ["aos-artifact-reference"];
     content = digestType;
