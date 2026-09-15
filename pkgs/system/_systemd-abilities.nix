@@ -403,6 +403,81 @@
     configurationType = null;
     guarantees = [];
   };
+  serviceEffectsName = "aos.systemd.service-effects";
+  serviceEffectsRequest = types.taggedUnion {
+    tag = "kind";
+    variants.service = types.record {
+      fields = {
+        kind = types.enum ["service"];
+        desired = serviceManagement.types.serviceDeclaration;
+      };
+    };
+  };
+  serviceEffectsObservation = types.record {
+    fields = {
+      kind = types.enum ["service"];
+      observation = serviceManagement.types.observations.lifecycle;
+    };
+  };
+  serviceEffectMethod = name: description: access: stopsProvider: {
+    inherit description;
+    semantics = {
+      requiredTargetAccess = access;
+      inherit stopsProvider;
+    };
+    parameters = serviceEffectsRequest;
+    targetResource = "aos.service.instance";
+    outputs.observation =
+      output
+      (if name == "observe" then "observation" else "runtime")
+      "attempt"
+      "Reports the exact systemd service effect state."
+      serviceEffectsObservation;
+    permittedOperations = [name];
+    guarantees = [];
+    outcome = {
+      completionEvidence = serviceEffectsObservation;
+      observationEvidence = serviceEffectsObservation;
+      supportsRejectedBeforeEffect = true;
+      indeterminate = "reconcile";
+    };
+  };
+  serviceEffectsDeclaration = lib.abilities.declareInterface {
+    name = serviceEffectsName;
+    description = "Executes checked lower systemd effects for one provider-neutral service controller.";
+    abi = 1;
+    requestType = serviceEffectsRequest;
+    outputs = {};
+    methods = {
+      create = serviceEffectMethod "create" "Creates and starts the exact desired systemd service state." "exclusive-write" false;
+      observe = serviceEffectMethod "observe" "Observes the exact desired systemd service state." "read" false;
+      reconcile = serviceEffectMethod "reconcile" "Repairs a stopped or divergent systemd service state." "exclusive-write" false;
+      remove = serviceEffectMethod "remove" "Stops and removes the exact systemd service state owned by this controller." "exclusive-write" true;
+      update = serviceEffectMethod "update" "Updates the exact desired systemd service state using its declared change action." "exclusive-write" false;
+    };
+    lifecycle = lifecycle;
+    aggregation = {
+      scope = "provider-instance";
+      key = "slot";
+      rejectSlotCollisions = true;
+      mergeContract = null;
+      controllerGroup = "systemd-service-effects";
+    };
+    configurationType = null;
+    guarantees = [];
+  };
+  serviceEffectsIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration serviceEffectsDeclaration
+  );
+  serviceEffectsRequirement = {
+    alias = "service-effects";
+    description = "Selects the checked lower systemd service effect handler.";
+    accepted_interfaces = [serviceEffectsIdentity];
+    methods = ["create" "observe" "reconcile" "remove" "update"];
+    guarantees = [];
+    strength = "required";
+    fallback = null;
+  };
   serviceFeatureNames = builtins.filter (featureName: let
     selected = serviceInterfaces.${featureName};
     aggregation = selected.document.interface.aggregation;
@@ -429,18 +504,16 @@
       inherit artifact;
       inherit (selected) methods;
       inherit guarantees;
-      requirements = lib.optionalAttrs (selected.alias == serviceInterfaces.directories.alias) {
-        directory-preparation = directoryPreparationRequirement;
-      };
+      requirements =
+        lib.optionalAttrs controlsService {
+          service-effects = serviceEffectsRequirement;
+        }
+        // lib.optionalAttrs (selected.alias == serviceInterfaces.directories.alias) {
+          directory-preparation = directoryPreparationRequirement;
+        };
       providerModule = {
         inherit artifact;
         path = "share/aos/providers/systemd.nix";
-      };
-      handlerDescriptor = {
-        artifact = handlerArtifact;
-        entryPoint = "bin/aos-systemd-provider";
-        arguments = selected.requestType;
-        result = selected.observationType;
       };
       desiredType =
         if controlsService
@@ -479,12 +552,30 @@
     ]);
 in {
   config.aos.abilities = {
-    interfaces.systemd-packaged-unit = packagedUnitDeclaration;
+    interfaces = {
+      systemd-packaged-unit = packagedUnitDeclaration;
+      systemd-service-effects = serviceEffectsDeclaration;
+    };
 
     implementations =
       serviceImplementations
       // readinessImplementations
       // {
+        systemd-service-effects = {
+          description = "Executes checked systemd service effects selected by the package-owned service controller.";
+          interface = "systemd-service-effects";
+          artifact = handlerArtifact;
+          methods = ["create" "observe" "reconcile" "remove" "update"];
+          guarantees = [];
+          handlerDescriptor = {
+            artifact = handlerArtifact;
+            entryPoint = "bin/aos-systemd-provider";
+            arguments = serviceEffectsRequest;
+            result = serviceEffectsObservation;
+          };
+          desiredType = null;
+          requiredFeatures = [];
+        };
         systemd-packaged-unit = {
           description = "Activates authenticated packaged units and materializes bounded systemd drop-ins.";
           interface = "systemd-packaged-unit";

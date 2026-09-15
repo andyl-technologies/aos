@@ -5,6 +5,11 @@
 }: let
   abilitiesModule = ../../pkgs/system/_systemd-abilities.nix;
   providerModule = ../../pkgs/system/_systemd-provider.nix;
+  serviceEffectsRequest = lib.abilities.compositionRequestKey {
+    implementation = "systemd:service-lifecycle";
+    providerInstance = "systemd:manager";
+    key = "main";
+  };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   artifact = lib.abilities.packageOutput {};
   artifactLocatorFor = selector:
@@ -198,6 +203,12 @@
               providerInstance = "systemd:manager";
               slot = "main";
             };
+            "test:service-effects" = {
+              request = serviceEffectsRequest;
+              implementation = "systemd:systemd-service-effects";
+              providerInstance = "systemd:manager";
+              slot = "main";
+            };
           };
         };
       }
@@ -289,6 +300,7 @@
     true);
   guarantees = evaluation.config.aos.abilities.guarantees;
   lifecycleImplementation = evaluation.config.aos.abilities.implementations."systemd:service-lifecycle";
+  effectsRequest = evaluation.config.aos.abilities.compositionRequests.${serviceEffectsRequest};
   conditionImplementation = evaluation.config.aos.abilities.implementations."systemd:service-conditions";
 in
   assert builtins.length resources == 1;
@@ -346,6 +358,10 @@ in
   assert builtins.length evaluation.config.systemd.providerUnitArtifacts == 1;
   assert guarantees."core:service-template-exact-reuse".name == "aos.guarantee.service-template-exact-reuse";
   assert lifecycleImplementation.guarantees == ["core:service-template-exact-reuse"];
+  assert lifecycleImplementation.handlerDescriptor == null;
+  assert builtins.isFunction lifecycleImplementation.transition;
+  assert effectsRequest.parameters.kind == "service";
+  assert effectsRequest.parameters.desired.service == "main";
   assert conditionImplementation.guarantees
   == [
     "core:service-condition-kernel-argument"

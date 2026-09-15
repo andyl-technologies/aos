@@ -11,6 +11,12 @@
   implementationName = "${packageName}:${implementationAlias}";
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceInterfaces = serviceManagement.interfaces;
+  serviceEffectsInterface = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration config.aos.abilities.interfaces."${packageName}:systemd-service-effects"
+  );
+  serviceTransition = import ./_systemd-service-transition.nix {
+    effectsInterface = serviceEffectsInterface;
+  };
   serviceResourceFields = serviceManagement.types.serviceDeclaration._abilitySchema.fields;
   serviceImplementationNames = builtins.filter (featureName: let
     selected = serviceInterfaces.${featureName};
@@ -472,7 +478,15 @@
     else
       emptyResult
       // {
-        requests = {};
+        requests = builtins.mapAttrs (key: resource: {
+          requirement = "service-effects";
+          scope = ["service-effects"];
+          slot = key;
+          parameters = {
+            kind = "service";
+            desired = resource.value;
+          };
+        }) resources;
         realizations = builtins.mapAttrs (resourceName: resource:
           (serviceRenderer.realizationFor controllerInterface (withoutPreparedDirectories resource))
           // {prerequisites = referencesFor resourceName;})
@@ -599,6 +613,10 @@
         compose =
           if controlsService featureName
           then composeServices selected.identity
+          else null;
+        transition =
+          if controlsService featureName
+          then serviceTransition
           else null;
       };
     })
