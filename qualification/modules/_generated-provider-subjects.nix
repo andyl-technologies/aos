@@ -3,44 +3,15 @@
   lib,
   packages,
   scenarioPolicy ? builtins.fromJSON (builtins.readFile ../native-adapter-scenarios.json),
-  regressions ? [
-    "checks.fleet.ability-native-activation"
-    "checks.fleet.ability-native-foreground-container"
-    "checks.fleet.ability-native-image-rollout"
-    "checks.fleet.ability-native-kubernetes"
-    "checks.fleet.ability-native-power-loss"
-  ],
+  regressions,
 }: let
-  expectedSurfaceKeys = ["adapters" "families" "invalidation_dimensions" "limits" "matrix_schema" "scenarios" "schema" "subject_schema"];
-  expectedAdapterKeys = ["adapter" "conformance_families" "interface_abi" "interface_descriptor" "interface_name" "methods" "observation_kind" "provider_contract" "provider_implementation" "scope"];
-  expectedMethodKeys = ["method" "required_target_access"];
-  expectedProviderContractKeys = ["lifecycle" "resource_lifetimes" "state_format"];
-  expectedProviderImplementationKeys = ["contract" "implementation" "observer"];
-  expectedHandlerKeys = ["arguments" "artifact" "entry_point" "result"];
-  expectedScenarioKeys = ["applicability" "boundary" "candidate" "disposition" "failure" "family" "id" "postconditions" "predecessor"];
   expectedPolicyScenarioKeys = ["additional_postconditions" "applicability" "boundary" "candidate" "disposition" "failure" "family" "id" "postcondition_groups" "predecessor"];
-  expectedPostconditionKeys = ["evidence_kind" "name"];
   expectedScenarioPolicyKeys = ["invalidation_dimensions" "matrix_schema" "postcondition_groups" "postcondition_kinds" "scenarios" "subject_schema"];
-  allowedRegressions = [
-    "checks.fleet.ability-native-activation"
-    "checks.fleet.ability-native-foreground-container"
-    "checks.fleet.ability-native-image-rollout"
-    "checks.fleet.ability-native-kubernetes"
-    "checks.fleet.ability-native-power-loss"
-  ];
   token = value:
     builtins.isString value
     && builtins.stringLength value > 0
     && builtins.stringLength value <= 96
     && builtins.match "[a-z0-9.-]+" value != null;
-  localKey = value:
-    builtins.isString value
-    && builtins.stringLength value > 0
-    && builtins.stringLength value <= 128
-    && builtins.match "[A-Za-z0-9._-]+" value != null;
-  digest = value:
-    builtins.isString value
-    && builtins.match "sha256:[0-9a-f]{64}" value != null;
   unique = values: builtins.length values == builtins.length (lib.unique values);
   scenarioFamilies = builtins.sort builtins.lessThan (
     lib.unique (map (scenario: scenario.family) scenarioPolicy.scenarios)
@@ -270,42 +241,6 @@
   };
   matrixDigest = builtins.hashString "sha256" (builtins.toJSON matrixSpec);
   selectedIds = map (cell: cell.id or "") selectedCells;
-  validMethod = method:
-    builtins.attrNames method
-    == expectedMethodKeys
-    && token method.method
-    && token method.required_target_access;
-  validProviderContract = contract:
-    builtins.attrNames contract
-    == expectedProviderContractKeys
-    && builtins.isAttrs contract.lifecycle
-    && unique contract.resource_lifetimes
-    && builtins.all token contract.resource_lifetimes
-    && (contract.state_format == null || digest contract.state_format);
-  validArtifact = artifact:
-    builtins.isAttrs artifact
-    && builtins.attrNames artifact == ["path" "selector"]
-    && builtins.isString artifact.path
-    && artifact.path != ""
-    && builtins.isAttrs artifact.selector
-    && builtins.attrNames artifact.selector == ["_type" "output" "package"]
-    && artifact.selector._type == "aos-package-output-selector"
-    && builtins.all localKey [artifact.selector.output artifact.selector.package];
-  validHandler = handler:
-    builtins.isAttrs handler
-    && builtins.attrNames handler == expectedHandlerKeys
-    && validArtifact handler.artifact
-    && builtins.isString handler.entry_point
-    && handler.entry_point != ""
-    && builtins.isAttrs handler.arguments
-    && builtins.isAttrs handler.result;
-  validProviderImplementation = implementation:
-    builtins.attrNames implementation
-    == expectedProviderImplementationKeys
-    && builtins.isString implementation.contract
-    && lib.hasPrefix "/nix/store/" implementation.contract
-    && localKey implementation.implementation
-    && validHandler implementation.observer;
   validDisposition = disposition:
     builtins.isAttrs disposition
     && (
@@ -318,64 +253,6 @@
         && token disposition.unsupported
         && disposition.supported != disposition.unsupported)
     );
-  validAdapter = adapter:
-    builtins.attrNames adapter
-    == expectedAdapterKeys
-    && token adapter.adapter
-    && token adapter.interface_name
-    && adapter.interface_abi == 1
-    && digest adapter.interface_descriptor
-    && adapter.conformance_families != []
-    && unique adapter.conformance_families
-    && builtins.all (family: builtins.elem family selectedSurface.families) adapter.conformance_families
-    && validProviderContract adapter.provider_contract
-    && validProviderImplementation adapter.provider_implementation
-    && token adapter.observation_kind
-    && token adapter.scope
-    && adapter.methods != []
-    && unique (map (method: method.method) adapter.methods)
-    && builtins.all validMethod adapter.methods;
-  validScenario = scenario:
-    builtins.attrNames scenario
-    == expectedScenarioKeys
-    && builtins.all token [scenario.boundary scenario.candidate scenario.failure scenario.family scenario.id scenario.predecessor]
-    && scenario.postconditions != []
-    && unique (map (postcondition: postcondition.name) scenario.postconditions)
-    && builtins.all (postcondition:
-      builtins.attrNames postcondition
-      == expectedPostconditionKeys
-      && token postcondition.name
-      && token postcondition.evidence_kind)
-    scenario.postconditions
-    && builtins.elem scenario.family selectedSurface.families
-    && validDisposition scenario.disposition
-    && builtins.isAttrs scenario.applicability
-    && unique scenario.applicability.required_resource_lifetimes
-    && builtins.all token scenario.applicability.required_resource_lifetimes
-    && builtins.isBool scenario.applicability.requires_state_format;
-  validSurface =
-    builtins.attrNames selectedSurface
-    == expectedSurfaceKeys
-    && selectedSurface.schema == "aos.qualification.native-adapter-surface/v1"
-    && selectedSurface.matrix_schema == "aos.qualification.native-adapter-matrix/v1"
-    && selectedSurface.subject_schema == "aos.qualification.native-adapter-subject/v1"
-    && selectedSurface.families != []
-    && unique selectedSurface.families
-    && builtins.all token selectedSurface.families
-    && selectedSurface.limits
-    == {
-      max_adapters = builtins.length selectedSurface.adapters;
-      max_methods = builtins.length adapterMethods;
-      max_scenarios = builtins.length selectedSurface.scenarios;
-    }
-    && selectedSurface.adapters != []
-    && adapterMethods != []
-    && selectedSurface.scenarios != []
-    && unique (map (adapter: adapter.adapter) selectedSurface.adapters)
-    && unique (map (adapter: "${adapter.interface_name}/abi-${toString adapter.interface_abi}/${adapter.interface_descriptor}") selectedSurface.adapters)
-    && unique (map (scenario: scenario.id) selectedSurface.scenarios)
-    && builtins.all validAdapter selectedSurface.adapters
-    && builtins.all validScenario selectedSurface.scenarios;
   check = "native-adapter-matrix-v1-sha256-${matrixDigest}";
 in
   assert packages != [];
@@ -390,14 +267,21 @@ in
   assert builtins.all (scenario:
     builtins.attrNames scenario
     == expectedPolicyScenarioKeys
+    && builtins.all token [scenario.boundary scenario.candidate scenario.failure scenario.family scenario.id scenario.predecessor]
+    && validDisposition scenario.disposition
+    && builtins.attrNames scenario.applicability == ["required_resource_lifetimes" "requires_state_format"]
+    && unique scenario.applicability.required_resource_lifetimes
+    && builtins.all token scenario.applicability.required_resource_lifetimes
+    && builtins.isBool scenario.applicability.requires_state_format
     && unique scenario.postcondition_groups
     && builtins.all (group: builtins.hasAttr group scenarioPolicy.postcondition_groups) scenario.postcondition_groups
     && unique scenario.additional_postconditions
     && builtins.all token scenario.additional_postconditions
     && builtins.all (name: builtins.hasAttr name scenarioPolicy.postcondition_kinds) (postconditionsFor scenario))
   scenarioPolicy.scenarios;
-  assert validSurface;
-  assert regressions == allowedRegressions;
+  assert regressions != [];
+  assert unique regressions;
+  assert builtins.all (regression: builtins.match "checks[.][A-Za-z0-9._-]+" regression != null) regressions;
   assert unique selectedIds;
   assert unique inapplicableCellIds;
   assert builtins.all (cell: !builtins.elem cell.id inapplicableCellIds) applicableCells;

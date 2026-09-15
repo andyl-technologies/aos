@@ -33,6 +33,13 @@
   authorityMatrix = import ../../qualification/modules/_generated-provider-subjects.nix {
     inherit lib;
     packages = selectedPackages;
+    regressions = [
+      "checks.fleet.ability-native-activation"
+      "checks.fleet.ability-native-foreground-container"
+      "checks.fleet.ability-native-image-rollout"
+      "checks.fleet.ability-native-kubernetes"
+      "checks.fleet.ability-native-power-loss"
+    ];
   };
   authorityMatrixSpec = pkgs.writeTextFile {
     name = "aos-authority-revocation-matrix-spec";
