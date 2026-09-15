@@ -96,14 +96,16 @@ Nix and Rust schema implementations.
 Every interface, implementation, requirement template, option type, default,
 semantic constraint, method, guarantee, handler selector, and description has
 one owning module declaration. Each method declares its required target access
-and the small provider-neutral scheduling facts needed by the planner, such as
-whether it establishes provider readiness or stops a provider. There is no
-central operation-family or backend-action catalog. Checked operations carry
-the selected method's exact projected semantics, and validation requires them
-to agree with the retained interface document. Facts that can be determined
-from a method's schemas, references, or visibility are derived rather than
-authored as additional flags. Configured instances and requests refer to those
-declarations by typed identity instead of copying their contents.
+and whether it stops its provider. Those are the only authored method scheduling
+facts because neither can be recovered from the method's input and output
+schemas. Provider readiness is derived from the declared readiness output and
+its producer binding. There is no central operation-family or backend-action
+catalog. Checked operations carry the selected method's exact projected
+semantics, and validation requires them to agree with the retained interface
+document. Facts that can be determined from a method's schemas, references,
+visibility, or retained bindings are derived rather than authored as additional
+flags. Configured instances and requests refer to those declarations by typed
+identity instead of copying their contents.
 Bindings refer to requests and implementations; desired resources refer to
 the selected definitions. Module type checking rejects unknown fields,
 malformed values, invalid merges, and missing required values during the final
