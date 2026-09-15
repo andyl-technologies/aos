@@ -477,8 +477,7 @@
     ++ (map (p: "${p}/sbin") initrdPackages)
     ++ ["/bin" "/sbin"]
   );
-in
-  pkgs.mkDerivation {
+  initrdArtifact = pkgs.mkDerivation {
     name = "aos-initrd";
     src = null;
 
@@ -1042,9 +1041,12 @@ in
       }
     ];
 
-    passthru.staticAbilityContract = initrdStaticAbilityContract;
-
     meta = {
       description = "AOS initrd (zstd-compressed cpio, systemd PID 1)";
     };
+  };
+in
+  initrdArtifact
+  // {
+    staticAbilityContract = initrdStaticAbilityContract;
   }

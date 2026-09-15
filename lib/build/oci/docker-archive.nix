@@ -22,7 +22,7 @@
     (common.validateTaggedReference "Docker archive reference")
     (common.validateStringList "references" references);
   validated =
-    if !(builtins.isAttrs image && (image.passthru.ociImage or false))
+    if !(builtins.isAttrs image && (image._type or null) == "aos-oci-image")
     then common.fail "image must be produced by mkImageLayout"
     else if checkedReferences == []
     then common.fail "a Docker archive requires at least one repository tag"

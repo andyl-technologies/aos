@@ -2,9 +2,9 @@
 ##!
 ##! The assembler treats layer outputs as untrusted build inputs: it verifies
 ##! descriptor syntax, size, SHA-256, and DiffID shape before copying blobs.  It
-##! also reruns static ability contract semantics rather than trusting a Nix
-##! passthru marker.  All layout members are regular files, so the result can be
-##! copied away from the Nix store without retaining its input derivations.
+##! also reruns static ability contract semantics from the typed builder result.
+##! All layout members are regular files, so the result can be copied away from
+##! the Nix store without retaining its input derivations.
 {
   lib,
   mkDerivation,
@@ -130,7 +130,10 @@
     then runtimeAudit
     else common.fail "runtimeAudit must be an AOS runtime-closure-audit derivation";
   checkedAbilityContract =
-    if builtins.isAttrs abilityContract && (abilityContract.passthru.ociStaticAbilityContract or false)
+    if
+      builtins.isAttrs abilityContract
+      && (abilityContract._type or null) == "aos-oci-static-ability-contract"
+      && builtins.isAttrs (abilityContract.artifact or null)
     then abilityContract
     else common.fail "abilityContract must be produced by mkStaticAbilityContract";
   validated =
@@ -142,7 +145,7 @@
     then common.fail "config.entrypoint[0] must not be empty"
     else if authoredAbilityAnnotations != []
     then common.fail "static ability contract annotations are builder-owned"
-    else if checkedAbilityContract.passthru.checkedPlatform != checkedPlatform
+    else if checkedAbilityContract.checkedPlatform != checkedPlatform
     then common.fail "abilityContract platform must exactly match the image platform"
     else builtins.deepSeq [checkedPlatform checkedLayers checkedRuntimeAudit checkedAbilityContract envList checkedPorts checkedAnnotations checkedIndexAnnotations labels] true;
 
@@ -180,14 +183,13 @@
       else checkedPlatform.variant
     )
   ];
-in
-  builtins.deepSeq validated (mkDerivation {
+  imageArtifact = mkDerivation {
     inherit pname;
     version = "1";
     src = null;
     buildDeps =
       [abilityContractValidator coreutils findutils gzip jq tar]
-      ++ checkedAbilityContract.passthru.packageAbilityContracts;
+      ++ checkedAbilityContract.packageAbilityContracts;
 
     outputChecks.out = {};
     inherit imageSpec;
@@ -455,11 +457,13 @@ in
       }
     ];
 
-    passthru = {
-      ociImage = true;
+    meta.description = "Self-contained deterministic OCI image layout and archive";
+  };
+in
+  builtins.deepSeq validated (imageArtifact
+    // {
+      _type = "aos-oci-image";
+      artifact = imageArtifact;
       inherit checkedPlatform checkedAbilityContract;
       mediaType = common.indexMediaType;
-    };
-
-    meta.description = "Self-contained deterministic OCI image layout and archive";
-  })
+    })
