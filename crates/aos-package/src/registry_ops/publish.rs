@@ -10,6 +10,7 @@ use crate::provenance::{ProvenanceSigner, sign_statement_dsse_jsonl_external};
 use crate::registry::parse::{ImageVerificationState, parse_package_file};
 use crate::registry::sb_certs::SbCertsToml;
 use crate::registry::{objectstore, sb_certs, store};
+use crate::registry_ops::ability_artifacts::resolve_store_artifact;
 use crate::registry_ops::attestation::{
     publish_config_attestation_meta, publish_documentation_attestation_meta,
 };
@@ -40,16 +41,12 @@ use crate::registry_ops::provenance::{
 };
 use crate::registry_ops::signing::resolve_producer_signing_key;
 use crate::registry_ops::store_paths::{
-    first_letter, introspect_closure_nars, introspect_deriver, introspect_direct_reference_hashes,
-    introspect_store_path, parse_store_path, resolve_publish_platform,
-    validate_store_path_release_policy, write_store_files,
+    first_letter, introspect_deriver, introspect_store_path, parse_store_path,
+    resolve_publish_platform, validate_store_path_release_policy, write_store_files,
 };
 use crate::registry_ops::uki::sb_db_cert_path;
 use crate::registry_ops::workflow::{current_git_branch, git_branch_entries};
-use crate::types::{
-    AbilityArtifactRetentionMeta, AbilityClosureMemberMeta, AbilityPackageMeta,
-    validate_package_name, validate_registry_name,
-};
+use crate::types::{AbilityPackageMeta, validate_package_name, validate_registry_name};
 use anyhow::{Context, Result, bail};
 use aos_ability_model::VersionedDocument;
 use aos_contract::Sha256Digest;
@@ -989,44 +986,26 @@ pub(crate) async fn publish_canonical_ability_output(
     let artifacts = collect_distinct_artifacts(&package_document)?;
     let mut artifact_retention = Vec::with_capacity(artifacts.len());
     for artifact in &artifacts {
-        let artifact_info = introspect_store_path(&artifact.store_path)
-            .with_context(|| format!("introspecting ability artifact {}", artifact.store_path))?;
-        validate_store_path_release_policy(&artifact_info)?;
-        let artifact_nar_hash = canonical_nar_hash(&artifact_info.nar_hash)?;
-        if artifact_nar_hash != artifact.nar_hash.to_string() {
+        let resolved = resolve_store_artifact(&artifact.store_path)?;
+        if resolved.reference.nar_hash != artifact.nar_hash {
             bail!(
                 "ability artifact {} NAR identity differs from its package manifest",
                 artifact.store_path
             );
         }
-        let mut closure = introspect_closure_nars(&artifact.store_path)?
-            .into_iter()
-            .map(|member| {
-                let references = introspect_direct_reference_hashes(&member.path)?;
-                Ok(AbilityClosureMemberMeta {
-                    store_path: member.path,
-                    nar_hash: canonical_nar_hash(&member.nar_hash)?,
-                    nar_size: member.nar_size,
-                    references,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        closure.sort();
-        let closure_digest = Sha256Digest::of_canonical("aos.ability.closure/v1", &closure)?;
-        if closure_digest != artifact.closure {
+        if resolved.reference.closure != artifact.closure {
             bail!(
                 "ability artifact {} closure differs from its package manifest",
                 artifact.store_path
             );
         }
-        artifact_retention.push(AbilityArtifactRetentionMeta {
-            content: artifact.content.to_string(),
-            store_path: artifact.store_path.clone(),
-            nar_hash: artifact.nar_hash.to_string(),
-            nar_size: artifact_info.nar_size,
-            closure_digest: closure_digest.to_string(),
-            closure,
-        });
+        if resolved.reference.content != artifact.content {
+            bail!(
+                "ability artifact {} content identity differs from its package manifest",
+                artifact.store_path
+            );
+        }
+        artifact_retention.push(resolved.retention);
     }
 
     let manifest_sha256 = Sha256Digest::of_bytes(&manifest_bytes);
