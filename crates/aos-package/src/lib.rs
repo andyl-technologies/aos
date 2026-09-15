@@ -857,6 +857,29 @@ pub enum PackageCommand {
         #[arg(long = "run-root")]
         run_root: Option<PathBuf>,
     },
+    /// Hidden: produce one authenticated build-stage planning snapshot.
+    #[command(name = "__ability-plan-build-stage", hide = true)]
+    AbilityPlanBuildStage {
+        /// Canonical adapter specification carrying existing checked inputs.
+        #[arg(long)]
+        spec: PathBuf,
+        /// Canonical planning snapshot to write.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Hidden: resolve one authenticated build-stage ability fixed point.
+    #[command(name = "__ability-build-stage", hide = true)]
+    AbilityBuildStage {
+        /// Canonical adapter specification carrying existing checked inputs.
+        #[arg(long)]
+        spec: PathBuf,
+        /// Canonical resolved stage projection to write.
+        #[arg(long)]
+        out: PathBuf,
+        /// Private directory for generated restricted-evaluator source.
+        #[arg(long = "eval-root")]
+        eval_root: PathBuf,
+    },
     /// Hidden: complete initrd ability work and release journal ownership.
     #[command(name = "__ability-stage-run", hide = true)]
     AbilityStageRun {
@@ -1291,6 +1314,8 @@ impl PackageCommand {
                 | PackageCommand::Fetch { .. }
                 | PackageCommand::RenderOne { .. }
                 | PackageCommand::GraphCompile { .. }
+                | PackageCommand::AbilityPlanBuildStage { .. }
+                | PackageCommand::AbilityBuildStage { .. }
                 | PackageCommand::AbilityStageRun { .. }
                 | PackageCommand::AbilityStageValidate { .. }
                 | PackageCommand::AbilityStageReceive { .. }
@@ -1316,6 +1341,8 @@ impl PackageCommand {
             | PackageCommand::RenderOne { .. }
             | PackageCommand::GraphCompile { .. } => LiveAos,
             PackageCommand::AbilityStageRun { .. }
+            | PackageCommand::AbilityPlanBuildStage { .. }
+            | PackageCommand::AbilityBuildStage { .. }
             | PackageCommand::AbilityStageValidate { .. }
             | PackageCommand::AbilityStageReceive { .. } => Portable,
             PackageCommand::RecoverCredentialTransactions | PackageCommand::Switch { .. } => {
@@ -3992,6 +4019,17 @@ pub async fn run(
             &credential_artifact::aos_root_path(),
         );
     }
+    if let PackageCommand::AbilityPlanBuildStage { spec, out } = command {
+        return config_eval::build_stage::plan_build_stage(spec, out);
+    }
+    if let PackageCommand::AbilityBuildStage {
+        spec,
+        out,
+        eval_root,
+    } = command
+    {
+        return config_eval::build_stage::resolve_build_stage(spec, out, eval_root);
+    }
     if let PackageCommand::AbilityStageRun {
         stage,
         root,
@@ -4387,6 +4425,12 @@ pub async fn run(
         }
         PackageCommand::GraphCompile { .. } => {
             unreachable!("GraphCompile is handled before ApmConfig::load")
+        }
+        PackageCommand::AbilityPlanBuildStage { .. } => {
+            unreachable!("AbilityPlanBuildStage is handled before ApmConfig::load")
+        }
+        PackageCommand::AbilityBuildStage { .. } => {
+            unreachable!("AbilityBuildStage is handled before ApmConfig::load")
         }
         PackageCommand::AbilityStageRun { .. } => {
             unreachable!("AbilityStageRun is handled before ApmConfig::load")

@@ -68,8 +68,75 @@ let
   # packages, which arrive at stage-2 as authenticated `packageModules`).
   baseModules = import ./modules;
   systemModules = import ./system-modules.nix;
+
+  projectAbilityRound = evaluated: manifest: let
+    abilities = evaluated.config.aos.abilities;
+    bindingNamesForRequest = requestName:
+      builtins.filter
+      (name: abilities.bindings.${name}.request == requestName)
+      (builtins.attrNames abilities.bindings);
+    authoredRequestKey = requestName: request: let
+      prefix =
+        if request.package == null
+        then ""
+        else "${request.package}:";
+    in
+      if prefix != "" && lib.hasPrefix prefix requestName
+      then lib.removePrefix prefix requestName
+      else throw "authored ability request '${requestName}' has no authenticated package-local key";
+    unresolvedAuthoredRequests = lib.filterAttrs
+      (name: _: bindingNamesForRequest name == [])
+      abilities.requests;
+    pendingAuthoredRequests = builtins.mapAttrs
+      (name: request: {
+        origin = "authored";
+        request = name;
+        identity = {
+          consumer = abilities.instanceIdentities.${request.consumer};
+          inherit (request) scope;
+          key = authoredRequestKey name request;
+        };
+        declaration = request;
+      })
+      unresolvedAuthoredRequests;
+    pendingProviderRequests = builtins.mapAttrs
+      (_: request:
+        request
+        // {
+          origin = "provider";
+          identity = {
+            consumer = abilities.instanceIdentities.${request.providerInstance};
+            inherit (request.declaration) scope;
+            key = request.localRequestKey;
+          };
+        })
+      abilities.compositionPendingRequests;
+    pendingRequests = pendingAuthoredRequests // pendingProviderRequests;
+  in
+    if pendingRequests == {}
+    then {
+      status = "complete";
+      inherit manifest;
+      fixedPoint = {
+        inherit (abilities) bindings resolvedResources;
+        executionObserver = abilities.resolvedExecutionObserver;
+      };
+    }
+    else {
+      status = "pending";
+      pending = {
+        requests = pendingRequests;
+        requirements = abilities.compositionRequirements;
+        providerInstances = builtins.mapAttrs
+          (name: instance: {
+            inherit (instance) implementation;
+            identity = abilities.instanceIdentities.${name};
+          })
+          abilities.instances;
+      };
+    };
 in {
-  inherit lib imageManifest;
+  inherit lib imageManifest projectAbilityRound;
 
   ## Merge an evaluated runtime candidate with the immutable image baseline.
   mergeImageManifest = {
@@ -172,5 +239,36 @@ in {
         ++ lib.optional (abilityBindings != {}) {
           aos.abilities.bindings = abilityBindings;
         };
+    };
+
+  ## Evaluates one build-stage ability graph without the host module surface.
+  ##
+  ## The caller supplies only a normalized data-only stage intent, authenticated
+  ## package modules, checked provider selections, and their exact bindings.
+  ## The returned module evaluation is projected through `projectAbilityRound`;
+  ## no pending request is accepted by the build-stage adapter.
+  evalAbilityStage = {
+    stage,
+    authority,
+    key,
+    intentModules ? [],
+    packageModules ? [],
+    selectedProviderModules ? [],
+    abilityBindings ? {},
+  }:
+    lib.evalModules {
+      modules =
+        [
+          lib.abilities.module
+          {
+            aos.abilities.environment = {inherit authority key stage;};
+          }
+        ]
+        ++ intentModules;
+      pkgs = frozenPkgs;
+      inherit lib packageModules selectedProviderModules;
+      runtimeModules = lib.optional (abilityBindings != {}) {
+        aos.abilities.bindings = abilityBindings;
+      };
     };
 }

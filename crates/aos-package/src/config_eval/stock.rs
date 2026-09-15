@@ -38,7 +38,8 @@ use std::process::{Command, Output, Stdio};
 
 use anyhow::{Context, Result, bail, ensure};
 use aos_ability_model::{
-    Binding, ProviderImplementation, ProviderImplementationReference, VersionedDocument,
+    ArtifactReference, Binding, ProviderImplementation, ProviderImplementationReference,
+    VersionedDocument,
 };
 use aos_ability_plan::VerifiedPlanningSnapshot;
 use base64::Engine as _;
@@ -82,12 +83,26 @@ pub struct StockNixEvaluator {
 pub struct StockAbilityRoundEvaluator<'a> {
     evaluator: &'a StockNixEvaluator,
     attempt: EvalAttempt<'a>,
+    stage: Option<BuildAbilityStage<'a>>,
+}
+
+#[derive(Clone, Copy)]
+struct BuildAbilityStage<'a> {
+    stage: &'a str,
+    authority: &'a str,
+    key: &'a str,
 }
 
 /// Selects child providers only from authenticated packages in one working set.
 pub(super) struct StockAbilityRoundResolver<'a> {
     working_set: &'a [WorkingSetMember],
     planning: &'a VerifiedPlanningSnapshot,
+    artifact_locators: Option<
+        &'a BTreeMap<
+            String,
+            BTreeMap<aos_ability_validate::PackageOutputSelector, ArtifactReference>,
+        >,
+    >,
 }
 
 impl<'a> StockAbilityRoundResolver<'a> {
@@ -99,6 +114,23 @@ impl<'a> StockAbilityRoundResolver<'a> {
         Self {
             working_set,
             planning,
+            artifact_locators: None,
+        }
+    }
+
+    /// Creates the build-stage resolver over exact checked output locators.
+    pub(super) const fn for_build_stage(
+        working_set: &'a [WorkingSetMember],
+        planning: &'a VerifiedPlanningSnapshot,
+        artifact_locators: &'a BTreeMap<
+            String,
+            BTreeMap<aos_ability_validate::PackageOutputSelector, ArtifactReference>,
+        >,
+    ) -> Self {
+        Self {
+            working_set,
+            planning,
+            artifact_locators: Some(artifact_locators),
         }
     }
 
@@ -211,12 +243,15 @@ impl<'a> StockAbilityRoundResolver<'a> {
             .collect::<Vec<_>>();
         match contributions.as_slice() {
             [permission] => Ok(permission.slot.as_str().to_string()),
-            [] => request.expected_slot().map(str::to_string).with_context(|| {
-                format!(
-                    "checked root binding {:?} has no exact contribution slot",
-                    binding.id.0.as_str()
-                )
-            }),
+            [] => request
+                .expected_slot()
+                .map(str::to_string)
+                .with_context(|| {
+                    format!(
+                        "checked root binding {:?} has no exact contribution slot",
+                        binding.id.0.as_str()
+                    )
+                }),
             _ => bail!(
                 "checked binding {:?} grants {} exact contribution slots",
                 binding.id.0.as_str(),
@@ -226,6 +261,7 @@ impl<'a> StockAbilityRoundResolver<'a> {
     }
 
     fn selected_module(
+        &self,
         member: &WorkingSetMember,
         provider: &ProviderImplementation,
     ) -> Result<Option<SelectedProviderModule>> {
@@ -252,7 +288,11 @@ impl<'a> StockAbilityRoundResolver<'a> {
             // Current provider modules consume exact values and resource
             // references from the fixed point. They do not resolve additional
             // package-output selectors during an outer round.
-            artifact_locators: BTreeMap::new(),
+            artifact_locators: self
+                .artifact_locators
+                .and_then(|catalog| catalog.get(&member.package))
+                .cloned()
+                .unwrap_or_default(),
         }))
     }
 }
@@ -295,7 +335,7 @@ impl AbilityRoundResolver for StockAbilityRoundResolver<'_> {
                 implementation,
                 provider_instance,
                 slot,
-                provider_module: Self::selected_module(member, provider)?,
+                provider_module: self.selected_module(member, provider)?,
             });
         }
         Ok(selections)
@@ -306,7 +346,30 @@ impl<'a> StockAbilityRoundEvaluator<'a> {
     /// Creates a complete-fixed-point adapter around one immutable eval attempt.
     #[must_use]
     pub const fn new(evaluator: &'a StockNixEvaluator, attempt: EvalAttempt<'a>) -> Self {
-        Self { evaluator, attempt }
+        Self {
+            evaluator,
+            attempt,
+            stage: None,
+        }
+    }
+
+    /// Creates a build-stage evaluator over one normalized intent module.
+    pub(super) const fn for_build_stage(
+        evaluator: &'a StockNixEvaluator,
+        attempt: EvalAttempt<'a>,
+        stage: &'a str,
+        authority: &'a str,
+        key: &'a str,
+    ) -> Self {
+        Self {
+            evaluator,
+            attempt,
+            stage: Some(BuildAbilityStage {
+                stage,
+                authority,
+                key,
+            }),
+        }
     }
 }
 
@@ -359,12 +422,34 @@ impl StockNixEvaluator {
         &self,
         attempt: &EvalAttempt<'_>,
         selections: &AbilityRoundSelections,
+        stage: Option<BuildAbilityStage<'_>>,
     ) -> Result<String> {
         let package_modules = render_package_module_list(attempt.working_set, true)?;
         let provider_modules = render_selected_provider_module_list(selections, true)?;
         let bindings = render_selected_ability_bindings(selections);
         let base = locked_store_input(attempt.base_lib, None)?;
         let host = locked_store_input(attempt.host_nix, None)?;
+        if let Some(stage) = stage {
+            return Ok(format!(
+                "# Generated by the AOS build-stage ability resolver; do not edit.\n\
+                 let\n\
+                \x20 baseLib = import {base};\n\
+                \x20 intentModule = import {host};\n\
+                \x20 evaluated = baseLib.evalAbilityStage {{\n\
+                \x20   stage = {stage_name};\n\
+                \x20   authority = {authority};\n\
+                \x20   key = {key};\n\
+                \x20   intentModules = [ intentModule ];\n\
+                \x20   packageModules = {package_modules};\n\
+                \x20   selectedProviderModules = {provider_modules};\n\
+                \x20   abilityBindings = {bindings};\n\
+                \x20 }};\n\
+                 in {{ abilityRound = baseLib.projectAbilityRound evaluated {{}}; }}\n",
+                stage_name = nix_string(stage.stage),
+                authority = nix_string(stage.authority),
+                key = nix_string(stage.key),
+            ));
+        }
         self.render_entry_nix_with_inputs(
             attempt,
             &package_modules,
@@ -553,9 +638,11 @@ impl AbilityRoundEvaluator for StockAbilityRoundEvaluator<'_> {
         _round: u32,
         selections: &AbilityRoundSelections,
     ) -> Result<AbilityRoundEvaluation> {
-        let expression = self
-            .evaluator
-            .render_locked_ability_round_entry_nix(&self.attempt, selections)?;
+        let expression = self.evaluator.render_locked_ability_round_entry_nix(
+            &self.attempt,
+            selections,
+            self.stage,
+        )?;
         let mut command = pure_eval_command()?;
         command.arg("-A").arg("abilityRound").arg("-");
         if self.evaluator.verbose > 0 {

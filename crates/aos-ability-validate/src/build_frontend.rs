@@ -20,9 +20,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
-    AbilityContractData, StaticAbilityArtifactClass, StaticAbilityContractExpectation,
-    StaticAbilityExecutionStage, StaticAbilityPlatform, decode_package_projection,
-    resolve_package_projection, validate_ability_contract, validate_static_ability_artifacts,
+    AbilityContractData, PackageOutputSelector, StaticAbilityArtifactClass,
+    StaticAbilityContractExpectation, StaticAbilityExecutionStage, StaticAbilityPlatform,
+    decode_package_projection, resolve_package_projection, validate_ability_contract,
+    validate_static_ability_artifacts,
 };
 
 #[derive(Deserialize)]
@@ -42,6 +43,18 @@ struct SelectedArtifact {
     output: Option<String>,
     path: String,
     graph: String,
+}
+
+/// Retains one resolved symbolic package output for downstream build evaluators.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedPackageOutput {
+    /// Names the package from the original symbolic selector.
+    pub package: String,
+    /// Names the selected output from the original symbolic selector.
+    pub output: String,
+    /// Carries the authenticated artifact selected from the exported Nix graph.
+    pub artifact: ArtifactReference,
 }
 
 #[derive(Deserialize)]
@@ -410,6 +423,29 @@ pub fn resolve_package_projection_file(
             bail!("selector resolution repeats ({}, {})", key.0, key.1);
         }
     }
+    let supplied_selectors = selectors
+        .keys()
+        .map(|(package, output)| -> Result<PackageOutputSelector> {
+            Ok(PackageOutputSelector {
+                package: aos_ability_model::LocalKey::new(package.clone())?,
+                output: aos_ability_model::LocalKey::new(output.clone())?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ensure!(
+        supplied_selectors == projection.artifacts,
+        "selector resolutions do not exactly cover the canonical projection selectors"
+    );
+    let resolved_selectors = selectors
+        .iter()
+        .map(|((package, output), selected)| {
+            Ok(ResolvedPackageOutput {
+                package: package.clone(),
+                output: output.clone(),
+                artifact: resolve_selected_artifact(selected, &exported_graph)?.artifact,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let document = resolve_package_projection(projection, payload, source, |selector| {
         let key = (
             selector.package.as_str().to_string(),
@@ -421,6 +457,8 @@ pub fn resolve_package_projection_file(
         Ok(resolve_selected_artifact(selected, &exported_graph)?.artifact)
     })?;
     let manifest = encode_canonical(&document).context("encoding resolved ability package")?;
+    let selector_manifest = aos_contract::canonical::to_vec(&resolved_selectors)
+        .context("encoding resolved package output selectors")?;
 
     fs::create_dir_all(output_directory.join("interfaces")).with_context(|| {
         format!(
@@ -430,6 +468,8 @@ pub fn resolve_package_projection_file(
     })?;
     fs::write(output_directory.join("package.json"), &manifest)
         .context("writing resolved ability package")?;
+    fs::write(output_directory.join("selectors.json"), &selector_manifest)
+        .context("writing resolved package output selectors")?;
     for interface in &interface_documents {
         let name = format!("{}.json", interface.descriptor.hex());
         fs::write(
