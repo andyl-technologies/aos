@@ -433,6 +433,9 @@
   postgresqlService = import ./postgresql-service.nix {
     inherit lib pkgs;
   };
+  networkPolicyCore = import ./network-policy-core.nix {
+    inherit lib;
+  };
   compositionDriver = import ./composition-driver.nix {
     inherit lib;
   };
@@ -867,6 +870,7 @@ in
   assert kernelModules;
   assert postgresqlService;
   assert (builtins.head smokePublishedInterfaces).document == smokeAbilityProjection.interfaces.default;
+  assert networkPolicyCore;
   assert fails (lib.abilities.effects.normalize [] effectFixture.missingReference);
   assert fails (lib.abilities.effects.normalize [] effectFixture.cycle);
   assert fails (lib.abilities.effects.normalize [] effectFixture.incompleteBoolean);

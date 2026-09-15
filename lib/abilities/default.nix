@@ -1633,8 +1633,12 @@ in rec {
     qualifyPackageAbilities
     ;
   types = abilityTypes;
-  interfaces = {
+  interfaces = rec {
     serviceManagement = import ./service-management.nix {
+      inherit declareInterface descriptorFor interfaceDocumentFromDeclaration interfaceIdentity;
+      types = abilityTypes;
+    };
+    networkPolicy = import ./network-policy.nix {
       inherit declareInterface descriptorFor interfaceDocumentFromDeclaration interfaceIdentity;
       types = abilityTypes;
     };
@@ -1652,6 +1656,9 @@ in rec {
         normalizeSemanticValue
         resourceRevision
         ;
+      coreInterfaces =
+        interfaces.serviceManagement.declarations
+        // interfaces.networkPolicy.declarations;
       moduleTypes = moduleOptionTypes;
     };
 
