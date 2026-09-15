@@ -116,7 +116,7 @@
       guarantees = [];
       handlerDescriptor = {
         inherit artifact;
-        entryPoint = "libexec/aos-filesystem-provider";
+        entryPoint = "libexec/aos-${effectsAlias alias}";
         arguments = selected.interface.requestType;
         result = selected.interface.observationType;
       };

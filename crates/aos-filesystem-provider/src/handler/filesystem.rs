@@ -234,7 +234,7 @@ pub(super) fn entry_observation(
 }
 
 pub(super) fn successful_outputs(
-    interface: &str,
+    role: FilesystemRole,
     method: &str,
     target: &ResourceReference,
     context: &StorageProviderContext,
@@ -243,7 +243,7 @@ pub(super) fn successful_outputs(
     if method == "observe" || method == "release" {
         return Ok(outputs);
     }
-    let path_key = LocalKey::new(if interface == FILESYSTEM_ENTRY_INTERFACE {
+    let path_key = LocalKey::new(if role == FilesystemRole::FilesystemEntry {
         "execution-path"
     } else {
         "storage-path"

@@ -1,6 +1,7 @@
 //! Durable storage allocation and child-view command-handler implementation.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::OwnedFd;
@@ -34,10 +35,6 @@ use crate::{
     validate_storage_claim,
 };
 
-const STORAGE_ALLOCATION_INTERFACE: &str = "aos.storage.allocation";
-const PERSISTENT_STORAGE_ALLOCATION_INTERFACE: &str = "aos.storage.persistent-allocation";
-const STORAGE_VIEW_INTERFACE: &str = "aos.storage.view";
-const FILESYSTEM_ENTRY_INTERFACE: &str = "aos.filesystem.entry";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.filesystem.storage-context/v1";
 const CLAIM_SCHEMA: &str = "aos.filesystem.storage-claim/v1";
 const VIEW_CLAIM_SCHEMA: &str = "aos.filesystem.storage-view-claim/v1";
@@ -46,6 +43,50 @@ const ENTRY_REALIZATION_SCHEMA: &str = "aos.filesystem.entry-realization/v1";
 const VIEW_REALIZATION_SCHEMA: &str = "aos.filesystem.storage-view-realization/v1";
 const LOCK_RETRY: Duration = Duration::from_millis(5);
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Selects one package-declared filesystem handler role.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FilesystemRole {
+    /// Allocates storage whose ownership ends with the provider instance.
+    InstanceAllocation,
+    /// Allocates storage retained across provider instances.
+    PersistentAllocation,
+    /// Resolves an authorized child view within an allocation.
+    StorageView,
+    /// Materializes a declared directory or copied file.
+    FilesystemEntry,
+}
+
+impl FilesystemRole {
+    /// Resolves a closed role from a package-installed handler entry point.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the executable name is not one of the entry
+    /// points published by the filesystem provider package.
+    pub fn from_entry_point(entry_point: &OsStr) -> Result<Self> {
+        let name = Path::new(entry_point)
+            .file_name()
+            .and_then(OsStr::to_str)
+            .context("filesystem handler entry point is not valid UTF-8")?;
+
+        match name {
+            "aos-storage-allocation-effects" => Ok(Self::InstanceAllocation),
+            "aos-persistent-storage-allocation-effects" => Ok(Self::PersistentAllocation),
+            "aos-storage-view-effects" => Ok(Self::StorageView),
+            "aos-filesystem-entry-effects" => Ok(Self::FilesystemEntry),
+            _ => bail!("entry point does not select a checked filesystem handler role"),
+        }
+    }
+
+    const fn context_kind(self) -> StorageContextKind {
+        match self {
+            Self::InstanceAllocation | Self::PersistentAllocation => StorageContextKind::Allocation,
+            Self::StorageView => StorageContextKind::View,
+            Self::FilesystemEntry => StorageContextKind::Entry,
+        }
+    }
+}
 
 /// Owns filesystem paths used by the package-owned storage handler.
 #[derive(Clone, Debug)]
@@ -75,9 +116,9 @@ impl FilesystemProvider {
     /// # Errors
     ///
     /// Returns an error unless the purpose and input schema match, the selected
-    /// interface belongs to this provider, all native context is exact, and the
+    /// role belongs to this provider, all native context is exact, and the
     /// requested filesystem operation completes safely.
-    pub fn handle(&self, purpose: &str, input: &[u8]) -> Result<Vec<u8>> {
+    pub fn handle(&self, role: FilesystemRole, purpose: &str, input: &[u8]) -> Result<Vec<u8>> {
         let result = match purpose {
             "admit" => {
                 let request: AdmissionRequest =
@@ -86,7 +127,7 @@ impl FilesystemProvider {
                     request.schema == ADMISSION_REQUEST_SCHEMA,
                     "unsupported admission schema"
                 );
-                serde_json::to_value(self.admit(request)?)?
+                serde_json::to_value(self.admit(role, request)?)?
             }
             "effect" | "reconcile" | "cancel" | "compensate" | "reconcile-compensation" => {
                 let invocation: Invocation =
@@ -99,7 +140,7 @@ impl FilesystemProvider {
                     purpose == purpose_name(invocation.purpose),
                     "invocation purpose differs from argv"
                 );
-                serde_json::to_value(self.invoke(invocation)?)?
+                serde_json::to_value(self.invoke(role, invocation)?)?
             }
             _ => bail!("unsupported command-handler purpose {purpose:?}"),
         };
@@ -107,15 +148,14 @@ impl FilesystemProvider {
             .context("encoding canonical storage response")
     }
 
-    fn admit(&self, request: AdmissionRequest) -> Result<AdmissionResult> {
+    fn admit(&self, role: FilesystemRole, request: AdmissionRequest) -> Result<AdmissionResult> {
         validate_admission_resource(&request)?;
         validate_resource_contexts(&request.resources)?;
-        let interface = request.resource_spec.kind.as_str();
         let desired = request.resource_spec.value.clone();
-        let (path, observation, revision) = match interface {
-            STORAGE_ALLOCATION_INTERFACE | PERSISTENT_STORAGE_ALLOCATION_INTERFACE => {
+        let (path, observation, revision) = match role {
+            FilesystemRole::InstanceAllocation | FilesystemRole::PersistentAllocation => {
                 let input: StorageAllocationRequest = decode_value(&desired)?;
-                let path = self.storage_path(interface, &request.resource_spec.resource, &input)?;
+                let path = self.storage_path(role, &request.resource_spec.resource, &input)?;
                 let realization: StorageAllocationRealization =
                     decode_value(&request.resource_spec.realization)?;
                 ensure!(
@@ -147,7 +187,7 @@ impl FilesystemProvider {
                 )?;
                 (path, observation, state.revision())
             }
-            STORAGE_VIEW_INTERFACE => {
+            FilesystemRole::StorageView => {
                 let input: StorageViewRequest = decode_value(&desired)?;
                 let realization: StorageViewRealization =
                     decode_value(&request.resource_spec.realization)?;
@@ -194,17 +234,11 @@ impl FilesystemProvider {
                 )?;
                 (path, observation, state.revision())
             }
-            FILESYSTEM_ENTRY_INTERFACE => self.admit_entry(&request)?,
-            _ => bail!("selected interface is not owned by the filesystem storage provider"),
-        };
-        let kind = match interface {
-            STORAGE_VIEW_INTERFACE => StorageContextKind::View,
-            FILESYSTEM_ENTRY_INTERFACE => StorageContextKind::Entry,
-            _ => StorageContextKind::Allocation,
+            FilesystemRole::FilesystemEntry => self.admit_entry(&request)?,
         };
         let native_context = ability_value(json!({
             "schema": PROVIDER_CONTEXT_SCHEMA,
-            "kind": kind,
+            "kind": role.context_kind(),
             "path": path_string(&path)?,
         }))?;
         Ok(AdmissionResult {
@@ -223,7 +257,7 @@ impl FilesystemProvider {
         })
     }
 
-    fn invoke(&self, invocation: Invocation) -> Result<InvocationResult> {
+    fn invoke(&self, role: FilesystemRole, invocation: Invocation) -> Result<InvocationResult> {
         ensure!(
             invocation.method_is_bound(),
             "invocation method differs from durable recovery authority"
@@ -236,6 +270,11 @@ impl FilesystemProvider {
         ensure!(
             resource_set_digest(&request.resources)? == request.native_context_digest,
             "invocation resource-set digest differs"
+        );
+        ensure!(
+            request.target.interface == request.method.interface
+                && invocation.method.interface == request.method.interface,
+            "invocation method differs from the checked target interface"
         );
         let target = exact_resource_context(&request.resources, &request.target)?;
         let bound = validate_resource_context(target)?;
@@ -253,8 +292,11 @@ impl FilesystemProvider {
             "unsupported filesystem context schema"
         );
 
-        let interface = bound.resource_spec.kind.as_str();
-        let observation_before = self.observe_request(interface, &bound, &request.resources)?;
+        ensure!(
+            provider_context.kind == role.context_kind(),
+            "admitted filesystem context differs from the selected handler role"
+        );
+        let observation_before = self.observe_request(role, &bound, &request.resources)?;
         let (disposition, evidence, mut outputs) = match invocation.purpose {
             InvocationPurpose::Effect if invocation.method.method.as_str() == "observe" => (
                 InvocationDisposition::Completed,
@@ -263,23 +305,23 @@ impl FilesystemProvider {
             ),
             InvocationPurpose::Effect if invocation.method.method.as_str() == "release" => {
                 self.release(
-                    interface,
+                    role,
                     &bound,
                     &provider_context,
                     invocation.control.attempt_remaining_millis,
                 )?;
-                let evidence = self.observe_request(interface, &bound, &request.resources)?;
+                let evidence = self.observe_request(role, &bound, &request.resources)?;
                 (InvocationDisposition::Completed, evidence, BTreeMap::new())
             }
             InvocationPurpose::Effect => {
-                if interface == FILESYSTEM_ENTRY_INTERFACE {
+                if role == FilesystemRole::FilesystemEntry {
                     self.apply_entry(
                         &bound,
                         &provider_context,
                         &request.resources,
                         invocation.control.attempt_remaining_millis,
                     )?;
-                } else if interface == STORAGE_VIEW_INTERFACE {
+                } else if role == FilesystemRole::StorageView {
                     self.apply_view(
                         &bound,
                         &provider_context,
@@ -288,15 +330,15 @@ impl FilesystemProvider {
                     )?;
                 } else {
                     self.apply(
-                        interface,
+                        role,
                         &bound,
                         &provider_context,
                         invocation.control.attempt_remaining_millis,
                     )?;
                 }
-                let evidence = self.observe_request(interface, &bound, &request.resources)?;
+                let evidence = self.observe_request(role, &bound, &request.resources)?;
                 let outputs = successful_outputs(
-                    interface,
+                    role,
                     invocation.method.method.as_str(),
                     &request.target,
                     &provider_context,
@@ -312,13 +354,12 @@ impl FilesystemProvider {
                     ),
                     Some("ready") => {
                         self.release(
-                            interface,
+                            role,
                             &bound,
                             &provider_context,
                             invocation.control.recovery_remaining_millis,
                         )?;
-                        let evidence =
-                            self.observe_request(interface, &bound, &request.resources)?;
+                        let evidence = self.observe_request(role, &bound, &request.resources)?;
                         (InvocationDisposition::Completed, evidence, BTreeMap::new())
                     }
                     _ => (
@@ -331,7 +372,7 @@ impl FilesystemProvider {
             InvocationPurpose::Reconcile => match observation_state(&observation_before) {
                 Some("ready") => {
                     let outputs = successful_outputs(
-                        interface,
+                        role,
                         invocation.method.method.as_str(),
                         &request.target,
                         &provider_context,
@@ -361,7 +402,7 @@ impl FilesystemProvider {
                 ),
                 Some("ready") => {
                     let outputs = successful_outputs(
-                        interface,
+                        role,
                         invocation.method.method.as_str(),
                         &request.target,
                         &provider_context,
@@ -403,7 +444,7 @@ impl FilesystemProvider {
 
     fn apply(
         &self,
-        interface: &str,
+        role: FilesystemRole,
         bound: &BoundNativeContext,
         context: &StorageProviderContext,
         remaining_millis: u64,
@@ -413,12 +454,14 @@ impl FilesystemProvider {
             "storage views have no mutating effect"
         );
         ensure!(
-            interface == STORAGE_ALLOCATION_INTERFACE
-                || interface == PERSISTENT_STORAGE_ALLOCATION_INTERFACE,
+            matches!(
+                role,
+                FilesystemRole::InstanceAllocation | FilesystemRole::PersistentAllocation
+            ),
             "selected method has no storage allocation effect"
         );
         let input: StorageAllocationRequest = decode_value(&bound.resource_spec.value)?;
-        let expected = self.storage_path(interface, &bound.resource_spec.resource, &input)?;
+        let expected = self.storage_path(role, &bound.resource_spec.resource, &input)?;
         let realization: StorageAllocationRealization =
             decode_value(&bound.resource_spec.realization)?;
         ensure!(
@@ -576,21 +619,21 @@ impl FilesystemProvider {
 
     fn release(
         &self,
-        interface: &str,
+        role: FilesystemRole,
         bound: &BoundNativeContext,
         context: &StorageProviderContext,
         remaining_millis: u64,
     ) -> Result<()> {
-        let expected = match interface {
-            STORAGE_ALLOCATION_INTERFACE | PERSISTENT_STORAGE_ALLOCATION_INTERFACE => {
+        let expected = match role {
+            FilesystemRole::InstanceAllocation | FilesystemRole::PersistentAllocation => {
                 ensure!(
                     context.kind == StorageContextKind::Allocation,
                     "storage release has the wrong admitted context kind"
                 );
                 let input: StorageAllocationRequest = decode_value(&bound.resource_spec.value)?;
-                self.storage_path(interface, &bound.resource_spec.resource, &input)?
+                self.storage_path(role, &bound.resource_spec.resource, &input)?
             }
-            FILESYSTEM_ENTRY_INTERFACE => {
+            FilesystemRole::FilesystemEntry => {
                 ensure!(
                     context.kind == StorageContextKind::Entry,
                     "filesystem entry release has the wrong admitted context kind"
@@ -598,7 +641,7 @@ impl FilesystemProvider {
                 let input: FilesystemEntryRequest = decode_value(&bound.resource_spec.value)?;
                 PathBuf::from(input.destination)
             }
-            STORAGE_VIEW_INTERFACE => {
+            FilesystemRole::StorageView => {
                 ensure!(
                     context.kind == StorageContextKind::View,
                     "storage-view release has the wrong admitted context kind"
@@ -615,7 +658,6 @@ impl FilesystemProvider {
                 );
                 PathBuf::from(&context.path)
             }
-            _ => bail!("selected method has no filesystem release effect"),
         };
         ensure!(
             Path::new(&context.path) == expected,
@@ -623,7 +665,7 @@ impl FilesystemProvider {
         );
 
         let _lock = StateLock::acquire(&self.state_root, remaining_millis)?;
-        if interface == STORAGE_VIEW_INTERFACE {
+        if role == FilesystemRole::StorageView {
             let claim = self
                 .view_claim_for(&bound.resource_spec.resource)?
                 .context("storage-view release requires its durable ownership claim")?;
@@ -635,7 +677,7 @@ impl FilesystemProvider {
             );
             return self.remove_view_claim(&bound.resource_spec.resource);
         }
-        if interface == PERSISTENT_STORAGE_ALLOCATION_INTERFACE {
+        if role == FilesystemRole::PersistentAllocation {
             let mut claim = self
                 .claim_for(&bound.resource_spec.resource)?
                 .context("persistent release requires its durable ownership claim")?;
@@ -660,15 +702,15 @@ impl FilesystemProvider {
 
     fn observe_request(
         &self,
-        interface: &str,
+        role: FilesystemRole,
         bound: &BoundNativeContext,
         resources: &[ResourceContext],
     ) -> Result<AbilityValue> {
         let desired = &bound.resource_spec.value;
-        match interface {
-            STORAGE_ALLOCATION_INTERFACE | PERSISTENT_STORAGE_ALLOCATION_INTERFACE => {
+        match role {
+            FilesystemRole::InstanceAllocation | FilesystemRole::PersistentAllocation => {
                 let input: StorageAllocationRequest = decode_value(desired)?;
-                let path = self.storage_path(interface, &bound.resource_spec.resource, &input)?;
+                let path = self.storage_path(role, &bound.resource_spec.resource, &input)?;
                 let claim = self.claim_for(&bound.resource_spec.resource)?;
                 let ownership = self.resolve_ownership(&input)?;
                 let state = inspect_storage(
@@ -684,7 +726,7 @@ impl FilesystemProvider {
                     state.observation_state(),
                 )
             }
-            STORAGE_VIEW_INTERFACE => {
+            FilesystemRole::StorageView => {
                 let input: StorageViewRequest = decode_value(desired)?;
                 let source = exact_resource_context(resources, &input.source)?;
                 let source_context = decode_provider_context(source)?;
@@ -714,8 +756,7 @@ impl FilesystemProvider {
                     state.observation_state(),
                 )
             }
-            FILESYSTEM_ENTRY_INTERFACE => self.observe_entry(bound, resources),
-            _ => bail!("selected interface is not owned by the filesystem storage provider"),
+            FilesystemRole::FilesystemEntry => self.observe_entry(bound, resources),
         }
     }
 
@@ -749,7 +790,7 @@ impl FilesystemProvider {
 
     fn storage_path(
         &self,
-        interface: &str,
+        role: FilesystemRole,
         resource: &ResourceId,
         request: &StorageAllocationRequest,
     ) -> Result<PathBuf> {
@@ -758,7 +799,7 @@ impl FilesystemProvider {
             validate_requested_storage_path(&path)?;
             return Ok(path);
         }
-        let root = if interface == PERSISTENT_STORAGE_ALLOCATION_INTERFACE {
+        let root = if role == FilesystemRole::PersistentAllocation {
             &self.persistent_root
         } else {
             &self.instance_root
