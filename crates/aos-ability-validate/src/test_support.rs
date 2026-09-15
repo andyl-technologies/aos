@@ -42,7 +42,7 @@ impl PlanFixture {
     /// Rebuilds the interface catalog with an explicit format-feature set.
     ///
     /// This variant supports fixtures that replace the baseline interface with
-    /// a versioned built-in contract while retaining the same cross-document
+    /// a versioned fixture contract while retaining the same cross-document
     /// identity rewrite as [`Self::refresh_interface`].
     ///
     /// # Panics
@@ -158,7 +158,7 @@ pub fn checked_effect_plan() -> CheckedEffectPlan {
 pub fn checked_lifecycle_effect_plan() -> CheckedEffectPlan {
     lifecycle_plan_fixture()
         .validate()
-        .expect("built-in systemd fixture must pass production validation")
+        .expect("lifecycle fixture must pass production validation")
 }
 
 /// Builds mutable inputs for an exact host-local lifecycle-manager plan.
@@ -180,7 +180,7 @@ pub fn lifecycle_plan_fixture() -> PlanFixture {
     let implementation = ProviderImplementationReference {
         descriptor: provider
             .descriptor_digest()
-            .expect("built-in systemd provider must have a digest"),
+            .expect("lifecycle provider must have a digest"),
         artifact,
         handler: Some(test_manager_handler_key()),
     };
@@ -196,8 +196,8 @@ pub fn lifecycle_plan_fixture() -> PlanFixture {
     let methods = vec![key("observe"), key("start")];
     fixture.binding_inputs.desired_state.child_requests[0].methods = methods.clone();
     fixture.binding_inputs.desired_state.child_requests[0].parameters =
-        AbilityValue::new(serde_json::json!({"unit": "example.service"}))
-            .expect("systemd request parameters must be bounded");
+        AbilityValue::new(serde_json::json!({"subject": "fixture"}))
+            .expect("lifecycle request parameters must be bounded");
     fixture.binding_plan.requests[0].methods = methods.clone();
     fixture.binding_plan.requests[0].parameters =
         fixture.binding_inputs.desired_state.child_requests[0]
@@ -230,8 +230,8 @@ pub fn lifecycle_plan_fixture() -> PlanFixture {
     operation.input_phase = ValuePhase::Planning;
     operation.target.operations = vec![key("start")];
     operation.inputs = ValueExpression::Literal {
-        value: AbilityValue::new(serde_json::json!({"unit": "example.service"}))
-            .expect("systemd fixture input must be bounded"),
+        value: AbilityValue::new(serde_json::json!({"subject": "fixture"}))
+            .expect("lifecycle fixture input must be bounded"),
     };
     operation.accesses[0].mode = AccessMode::ExclusiveWrite;
     operation.controller = Some(controller);
@@ -1119,7 +1119,7 @@ pub fn test_manager_interface() -> InterfaceDocument {
     let interface_name = InterfaceName::new("test.manager").expect("valid test interface");
     let request = ValueSchema::Record {
         fields: BTreeMap::from([(
-            key("unit"),
+            key("subject"),
             ValueSchema::String {
                 max_length: 256,
                 syntax: None,
@@ -1207,7 +1207,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_systemd_fixture_passes_production_validators() {
+    fn lifecycle_fixture_passes_production_validators() {
         let plan = checked_lifecycle_effect_plan();
 
         assert!(plan.is_executable());
