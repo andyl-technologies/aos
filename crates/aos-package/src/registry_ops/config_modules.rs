@@ -1,15 +1,14 @@
 //! Config-module interface derivation and validation of builder-authored claims.
 
 use crate::registry_ops::store_paths::{
-    StorePathInfo, TARGET_PLATFORM_RELATIVE_PATH, introspect_store_path, nix_command,
+    introspect_store_path, nix_command, StorePathInfo, TARGET_PLATFORM_RELATIVE_PATH,
 };
 use crate::types::{
+    validate_config_module_meta, validate_config_output_meta, validate_package_name,
     ConfigModuleMeta, ConfigOptionDeclaration, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot,
-    RootContribution, validate_config_module_meta, validate_config_output_meta,
-    validate_package_name,
+    RootContribution,
 };
-use anyhow::{Context, Result, bail};
-use aos_doc_model::{DocumentedValue, OptionType, Visibility};
+use anyhow::{bail, Context, Result};
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
@@ -48,27 +47,13 @@ pub(in crate::registry_ops) struct DerivedOptionDeclaration {
     pub(in crate::registry_ops) path_str: String,
     #[serde(rename = "typeSig")]
     pub(in crate::registry_ops) type_sig: String,
-    #[serde(rename = "type")]
-    pub(in crate::registry_ops) option_type: OptionType,
-    #[serde(default)]
-    pub(in crate::registry_ops) description: String,
-    #[serde(default)]
-    pub(in crate::registry_ops) default: Option<DocumentedValue>,
-    #[serde(default)]
-    pub(in crate::registry_ops) example: Option<DocumentedValue>,
-    pub(in crate::registry_ops) visibility: Visibility,
-    #[serde(default, rename = "readOnly")]
-    pub(in crate::registry_ops) read_only: bool,
     #[serde(default)]
     pub(in crate::registry_ops) contributable: bool,
-    pub(in crate::registry_ops) owner: String,
 }
 
 #[derive(Debug)]
 pub(in crate::registry_ops) struct PublishedConfigModule {
     pub(in crate::registry_ops) metadata: ConfigModuleMeta,
-    pub(in crate::registry_ops) authored: PublishConfigModuleManifest,
-    pub(in crate::registry_ops) declarations: Vec<DerivedOptionDeclaration>,
 }
 
 /// Parses and authenticates the named outputs exposed to a config module.
@@ -276,14 +261,7 @@ pub(in crate::registry_ops) fn read_publish_config_module(
     };
     validate_config_output_meta(&module.config_output)?;
     validate_config_module_meta(package_name, &module)?;
-    Ok(PublishedConfigModule {
-        metadata: module,
-        authored,
-        declarations: declarations
-            .into_iter()
-            .filter(|declaration| !declaration.path_str.starts_with("_module."))
-            .collect(),
-    })
+    Ok(PublishedConfigModule { metadata: module })
 }
 
 fn derive_owned_root_names(
@@ -351,9 +329,7 @@ fn derive_config_option_declarations(
     inherit (base) lib;
   }};
 in builtins.map (decl: {{
-  inherit (decl)
-    path pathStr typeSig type description default example visibility readOnly
-    contributable owner;
+  inherit (decl) path pathStr typeSig contributable;
 }})
   (base.lib.optionSurface evaluated)"#,
         nix_publish_string(package_name),

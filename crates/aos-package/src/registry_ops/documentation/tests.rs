@@ -1,23 +1,6 @@
-//! Tests for package documentation derivation, runtime surface descriptions, and publication.
+//! Tests for package documentation identity and publication.
 
-use super::documented_option_declarations;
 use crate::registry_ops::attestation::documentation_nar_identity;
-use crate::registry_ops::test_support::documentation_declaration;
-use aos_doc_model::Visibility;
-
-#[test]
-fn package_documentation_excludes_internal_module_plumbing() {
-    let declarations = [
-        documentation_declaration("nginx.enable", Visibility::Public),
-        documentation_declaration("nginx._aosExposeConfigProjection", Visibility::Internal),
-    ];
-
-    let paths = documented_option_declarations(&declarations)
-        .map(|declaration| declaration.path_str.as_str())
-        .collect::<Vec<_>>();
-
-    assert_eq!(paths, ["nginx.enable"]);
-}
 
 #[test]
 fn package_documentation_preserves_the_nar_byte_identity() {

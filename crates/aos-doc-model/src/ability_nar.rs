@@ -1,4 +1,4 @@
-//! Strict bounded extraction of public documents from an ability companion NAR.
+//! Strict bounded extraction of public documents from an signed package ability publication NAR.
 //!
 //! The accepted archive shape is deliberately narrower than a general Nix
 //! archive. It contains one non-executable `package.json` file and an
@@ -11,28 +11,30 @@ use aos_ability_model::ABILITY_LIMITS_V1;
 
 use crate::{DocumentationError, Result};
 
-/// Maximum uncompressed ability companion NAR size accepted by reference tooling.
-pub const MAX_ABILITY_COMPANION_NAR_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum uncompressed signed package ability publication NAR size accepted by reference tooling.
+pub const MAX_PACKAGE_ABILITY_NAR_BYTES: usize = 16 * 1024 * 1024;
 
-/// Public documents extracted from one strictly shaped ability companion NAR.
+/// Public documents extracted from one strictly shaped signed package ability publication NAR.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AbilityCompanionDocuments {
+pub struct PackageAbilityDocuments {
     /// Exact canonical `package.json` bytes.
     pub package: Vec<u8>,
     /// Exact interface bytes keyed by their `<sha256-hex>.json` file names.
     pub interfaces: BTreeMap<String, Vec<u8>>,
 }
 
-/// Extracts bounded ability documents from an uncompressed companion NAR.
+/// Extracts bounded ability documents from an uncompressed package publication NAR.
 ///
 /// # Errors
 ///
 /// Returns an error for an oversized, malformed, noncanonical, executable, or
 /// unexpectedly shaped archive, or for a document outside the shared ability
 /// document bounds.
-pub fn decode_ability_companion_nar(bytes: &[u8]) -> Result<AbilityCompanionDocuments> {
-    if bytes.len() > MAX_ABILITY_COMPANION_NAR_BYTES {
-        return Err(invalid("ability companion NAR exceeds the 16 MiB limit"));
+pub fn decode_package_ability_nar(bytes: &[u8]) -> Result<PackageAbilityDocuments> {
+    if bytes.len() > MAX_PACKAGE_ABILITY_NAR_BYTES {
+        return Err(invalid(
+            "signed package ability publication NAR exceeds the 16 MiB limit",
+        ));
     }
 
     let mut reader = NarReader::new(bytes);
@@ -51,43 +53,55 @@ pub fn decode_ability_companion_nar(bytes: &[u8]) -> Result<AbilityCompanionDocu
         }
         if tag != b"entry" {
             return Err(invalid(
-                "ability companion root contains an invalid entry tag",
+                "signed package ability publication root contains an invalid entry tag",
             ));
         }
         reader.expect(b"(", "root entry")?;
         reader.expect(b"name", "root entry name tag")?;
         let name = reader.read("root entry name")?.to_vec();
-        require_sorted_name(&mut previous, &name, "ability companion root")?;
+        require_sorted_name(
+            &mut previous,
+            &name,
+            "signed package ability publication root",
+        )?;
         reader.expect(b"node", "root entry node tag")?;
         match name.as_slice() {
             b"package.json" => {
                 if package.is_some() {
-                    return Err(invalid("ability companion repeats package.json"));
+                    return Err(invalid(
+                        "signed package ability publication repeats package.json",
+                    ));
                 }
                 package = Some(read_regular_document(&mut reader, "package.json")?);
             }
             b"interfaces" => {
                 if interfaces.is_some() {
-                    return Err(invalid("ability companion repeats interfaces directory"));
+                    return Err(invalid(
+                        "signed package ability publication repeats interfaces directory",
+                    ));
                 }
                 interfaces = Some(read_interfaces(&mut reader)?);
             }
             _ => {
                 return Err(invalid(
-                    "ability companion contains an unexpected root entry",
+                    "signed package ability publication contains an unexpected root entry",
                 ));
             }
         }
         reader.expect(b")", "root entry close")?;
     }
     if !reader.is_finished() {
-        return Err(invalid("ability companion NAR has trailing data"));
+        return Err(invalid(
+            "signed package ability publication NAR has trailing data",
+        ));
     }
 
-    Ok(AbilityCompanionDocuments {
-        package: package.ok_or_else(|| invalid("ability companion has no package.json"))?,
-        interfaces: interfaces
-            .ok_or_else(|| invalid("ability companion has no interfaces directory"))?,
+    Ok(PackageAbilityDocuments {
+        package: package
+            .ok_or_else(|| invalid("signed package ability publication has no package.json"))?,
+        interfaces: interfaces.ok_or_else(|| {
+            invalid("signed package ability publication has no interfaces directory")
+        })?,
     })
 }
 
@@ -122,7 +136,9 @@ fn read_interfaces(reader: &mut NarReader<'_>) -> Result<BTreeMap<String, Vec<u8
         reader.expect(b"node", "interface entry node tag")?;
         let document = read_regular_document(reader, "interface document")?;
         if interfaces.insert(name, document).is_some() {
-            return Err(invalid("ability companion repeats an interface file"));
+            return Err(invalid(
+                "signed package ability publication repeats an interface file",
+            ));
         }
         reader.expect(b")", "interface entry close")?;
     }
@@ -173,44 +189,55 @@ impl<'a> NarReader<'a> {
     }
 
     fn read(&mut self, label: &str) -> Result<&'a [u8]> {
-        let length_end = self
-            .position
-            .checked_add(8)
-            .ok_or_else(|| invalid(format!("ability companion NAR overflows at {label}")))?;
-        let length_bytes = self
-            .bytes
-            .get(self.position..length_end)
-            .ok_or_else(|| invalid(format!("ability companion NAR is truncated at {label}")))?;
+        let length_end = self.position.checked_add(8).ok_or_else(|| {
+            invalid(format!(
+                "signed package ability publication NAR overflows at {label}"
+            ))
+        })?;
+        let length_bytes = self.bytes.get(self.position..length_end).ok_or_else(|| {
+            invalid(format!(
+                "signed package ability publication NAR is truncated at {label}"
+            ))
+        })?;
         let mut encoded = [0_u8; 8];
         encoded.copy_from_slice(length_bytes);
-        let length = usize::try_from(u64::from_le_bytes(encoded))
-            .map_err(|_| invalid(format!("ability companion NAR length overflows at {label}")))?;
+        let length = usize::try_from(u64::from_le_bytes(encoded)).map_err(|_| {
+            invalid(format!(
+                "signed package ability publication NAR length overflows at {label}"
+            ))
+        })?;
         let content_start = length_end;
-        let content_end = content_start
-            .checked_add(length)
-            .ok_or_else(|| invalid(format!("ability companion NAR overflows at {label}")))?;
+        let content_end = content_start.checked_add(length).ok_or_else(|| {
+            invalid(format!(
+                "signed package ability publication NAR overflows at {label}"
+            ))
+        })?;
         let padded = length
             .checked_add(7)
             .map(|value| value / 8 * 8)
             .ok_or_else(|| {
                 invalid(format!(
-                    "ability companion NAR padding overflows at {label}"
+                    "signed package ability publication NAR padding overflows at {label}"
                 ))
             })?;
-        let next = content_start
-            .checked_add(padded)
-            .ok_or_else(|| invalid(format!("ability companion NAR overflows at {label}")))?;
-        let content = self
-            .bytes
-            .get(content_start..content_end)
-            .ok_or_else(|| invalid(format!("ability companion NAR is truncated at {label}")))?;
-        let padding = self
-            .bytes
-            .get(content_end..next)
-            .ok_or_else(|| invalid(format!("ability companion NAR is truncated after {label}")))?;
+        let next = content_start.checked_add(padded).ok_or_else(|| {
+            invalid(format!(
+                "signed package ability publication NAR overflows at {label}"
+            ))
+        })?;
+        let content = self.bytes.get(content_start..content_end).ok_or_else(|| {
+            invalid(format!(
+                "signed package ability publication NAR is truncated at {label}"
+            ))
+        })?;
+        let padding = self.bytes.get(content_end..next).ok_or_else(|| {
+            invalid(format!(
+                "signed package ability publication NAR is truncated after {label}"
+            ))
+        })?;
         if padding.iter().any(|byte| *byte != 0) {
             return Err(invalid(format!(
-                "ability companion NAR has non-zero padding after {label}"
+                "signed package ability publication NAR has non-zero padding after {label}"
             )));
         }
         self.position = next;
@@ -220,7 +247,7 @@ impl<'a> NarReader<'a> {
     fn expect(&mut self, expected: &[u8], label: &str) -> Result<()> {
         if self.read(label)? != expected {
             return Err(invalid(format!(
-                "ability companion NAR has invalid {label}"
+                "signed package ability publication NAR has invalid {label}"
             )));
         }
         Ok(())
@@ -297,10 +324,10 @@ mod tests {
     }
 
     #[test]
-    fn extracts_the_exact_closed_companion_shape() {
+    fn extracts_the_exact_closed_publication_shape() {
         let name = format!("{}.json", "a".repeat(64));
-        let documents = decode_ability_companion_nar(&fixture(name.as_bytes()))
-            .expect("decode companion fixture");
+        let documents = decode_package_ability_nar(&fixture(name.as_bytes()))
+            .expect("decode package publication fixture");
 
         assert_eq!(documents.package, b"{}");
         assert_eq!(
@@ -311,11 +338,11 @@ mod tests {
 
     #[test]
     fn rejects_non_digest_names_and_trailing_data() {
-        assert!(decode_ability_companion_nar(&fixture(b"interface.json")).is_err());
+        assert!(decode_package_ability_nar(&fixture(b"interface.json")).is_err());
 
         let name = format!("{}.json", "a".repeat(64));
         let mut nar = fixture(name.as_bytes());
         nar.push(0);
-        assert!(decode_ability_companion_nar(&nar).is_err());
+        assert!(decode_package_ability_nar(&nar).is_err());
     }
 }

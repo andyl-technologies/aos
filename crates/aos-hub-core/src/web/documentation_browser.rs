@@ -266,7 +266,7 @@ async fn load_document(
     registry_id: i64,
     release: &str,
     entry: &crate::db::DocumentationTreeEntry,
-) -> Result<aos_doc_model::PackageDocumentation, Rendered> {
+) -> Result<aos_doc_model::PackageDocumentationProjection, Rendered> {
     let locator = match svc
         .db
         .package_documentation_locator_at_release(
@@ -282,7 +282,7 @@ async fn load_document(
         Ok(_) => return Err(Rendered::NotFound),
         Err(_) => return Err(Rendered::ServiceUnavailable),
     };
-    svc.load_package_documentation_locator(registry_id, &locator)
+    svc.load_package_documentation_projection_locator(registry_id, &locator)
         .await
         .map_err(|_| Rendered::ServiceUnavailable)
 }

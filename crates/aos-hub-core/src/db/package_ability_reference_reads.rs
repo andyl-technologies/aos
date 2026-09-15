@@ -30,7 +30,7 @@ impl Database {
     /// Replaces one complete authenticated per-commit ability projection.
     ///
     /// An explicit catalog row records successful projection even when the
-    /// commit contains no ability companions. Other commits remain immutable
+    /// commit contains no signed package ability publications. Other commits remain immutable
     /// and available to signed release selectors.
     ///
     /// # Errors

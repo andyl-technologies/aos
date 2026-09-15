@@ -1,4 +1,4 @@
-//! Canonical public reference data derived from an authenticated ability companion.
+//! Canonical public reference data derived from a checked signed package projection.
 //!
 //! This object is deliberately separate from [`crate::PackageDocumentation`].
 //! Its identity follows the signed ability manifest, while package-authored
@@ -7,15 +7,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityActivationMode, GuaranteeDeclaration, HandlerDescriptor,
-    InterfaceDocument, InterfaceKey, LocalKey, RequiredFeature, RequirementDeclaration,
-    ValueSchema, VersionedDocument, decode_canonical, encode_canonical,
+    decode_canonical, encode_canonical, validate_package_option_declarations,
+    AbilityActivationMode, GuaranteeDeclaration, HandlerDescriptor, InterfaceDocument,
+    InterfaceKey, LocalKey, OptionVisibility, PackageOptionDeclaration, ProviderImplementation,
+    RequiredFeature, RequirementDeclaration, ValueSchema, VersionedDocument, ABILITY_LIMITS_V1,
 };
-use aos_ability_validate::{CheckedPackageContract, package_source_supported_features};
+use aos_ability_validate::{package_source_supported_features, CheckedPackageContract};
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
-use crate::{DocumentationError, Result};
+use crate::{
+    DocumentationError, InlineSpan, OptionDocument, OptionOwner, PathSegment, ProseBlock, Result,
+    SourceLocator,
+};
 
 /// Exact schema discriminator for generated package ability reference data.
 pub const ABILITY_REFERENCE_SCHEMA: &str = "aos.package-ability-reference/v1";
@@ -23,7 +27,6 @@ pub const ABILITY_REFERENCE_SCHEMA: &str = "aos.package-ability-reference/v1";
 /// Required feature identifying per-export provider requirements in references.
 pub const ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1: &str =
     "ability-reference-provider-requirements-v1";
-
 /// Maximum canonical reference size admitted by version 1.
 pub const MAX_ABILITY_REFERENCE_BYTES: usize = 4 * 1024 * 1024;
 
@@ -73,7 +76,7 @@ pub struct AbilityHandlerReference {
     pub result: ValueSchema,
 }
 
-/// Bounded public reference projection of one signed package ability companion.
+/// Bounded public reference projection of one checked signed package document.
 ///
 /// The projection retains public operator configuration schemas, but never a
 /// desired deployment instance's configuration value.
@@ -98,6 +101,10 @@ pub struct PackageAbilityReference {
     pub interfaces: BTreeMap<LocalKey, InterfaceDocument>,
     /// Retains every package-authored guarantee semantic and description once.
     pub guarantees: BTreeMap<LocalKey, GuaranteeDeclaration>,
+    /// Retains mechanically derived package-owned option declarations.
+    pub option_declarations: Vec<PackageOptionDeclaration>,
+    /// Retains every package-owned provider implementation, including unexported providers.
+    pub implementations: Vec<ProviderImplementation>,
     /// Lists public exports in canonical package order.
     pub exports: Vec<AbilityExportReference>,
     /// Lists declarative lower-interface requirements in canonical alias order.
@@ -125,7 +132,6 @@ impl PackageAbilityReference {
         let provider_requirements_feature =
             RequiredFeature::new(ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1)
                 .map_err(invalid_model)?;
-
         let interfaces = package
             .interfaces
             .iter()
@@ -195,8 +201,8 @@ impl PackageAbilityReference {
         let mut required_features = package.required_features.clone();
         if !required_features.contains(&provider_requirements_feature) {
             required_features.push(provider_requirements_feature);
-            required_features.sort();
         }
+        required_features.sort();
 
         let reference = Self {
             schema: ABILITY_REFERENCE_SCHEMA.to_string(),
@@ -208,6 +214,8 @@ impl PackageAbilityReference {
             activation_mode: package.activation_mode,
             interfaces,
             guarantees: package.guarantees.clone(),
+            option_declarations: package.option_declarations.clone(),
+            implementations: package.implementation.providers.clone(),
             exports,
             requirements: package.requirements.clone(),
             handlers,
@@ -235,6 +243,58 @@ impl PackageAbilityReference {
                     export.name.as_str()
                 ))
             })
+    }
+
+    /// Derives transient option documents from the checked signed declarations.
+    ///
+    /// The returned values are a renderer/editor DTO. They do not create a
+    /// second authored option surface or alter the signed package document.
+    #[must_use]
+    pub fn documented_options(&self) -> Vec<OptionDocument> {
+        self.option_declarations
+            .iter()
+            .filter(|declaration| declaration.visibility == OptionVisibility::Public)
+            .map(|declaration| {
+                let path = declaration
+                    .path
+                    .iter()
+                    .cloned()
+                    .map(documented_path_segment)
+                    .collect::<Vec<_>>();
+                OptionDocument {
+                    display_path: declaration.path.join("."),
+                    path,
+                    option_type: declaration.structured_type.clone(),
+                    type_signature: declaration.type_signature.clone(),
+                    description: vec![ProseBlock::Paragraph {
+                        spans: vec![InlineSpan::Text {
+                            text: declaration.description.clone(),
+                        }],
+                    }],
+                    default: declaration.default.clone(),
+                    example: declaration.example.clone(),
+                    visibility: declaration.visibility,
+                    read_only: declaration.read_only,
+                    deprecated: declaration.deprecated.clone(),
+                    replacement: declaration.replacement.as_ref().map(|replacement| {
+                        replacement
+                            .iter()
+                            .cloned()
+                            .map(documented_path_segment)
+                            .collect()
+                    }),
+                    owner: OptionOwner {
+                        package: self.package.as_str().to_string(),
+                        root: declaration.path.first().cloned().unwrap_or_default(),
+                        interface_abi: None,
+                    },
+                    contributable: declaration.contributable,
+                    source: Some(SourceLocator {
+                        path: declaration.source.path.clone(),
+                    }),
+                }
+            })
+            .collect()
     }
 
     /// Decodes exact canonical reference JSON under the version-1 bounds.
@@ -301,6 +361,8 @@ impl PackageAbilityReference {
         let max_items = ABILITY_LIMITS_V1.max_collection_items as usize;
         if self.interfaces.len() > max_items
             || self.guarantees.len() > max_items
+            || self.option_declarations.len() > max_items
+            || self.implementations.len() > max_items
             || self.exports.len() > max_items
             || self.requirements.len() > max_items
             || self.handlers.len() > max_items
@@ -332,6 +394,29 @@ impl PackageAbilityReference {
                 }
             }
         }
+        validate_package_option_declarations(&self.option_declarations, &ABILITY_LIMITS_V1)
+            .map_err(invalid_model)?;
+        let mut implementation_names = BTreeSet::new();
+        let mut implementation_identities = BTreeSet::new();
+        for implementation in &self.implementations {
+            let descriptor = implementation.descriptor_digest().map_err(invalid_model)?;
+            if !implementation_names.insert(implementation.name.clone()) {
+                return Err(invalid("ability reference repeats an implementation name"));
+            }
+            if !implementation_identities.insert((implementation.interface.clone(), descriptor)) {
+                return Err(invalid(
+                    "ability reference repeats an implementation identity",
+                ));
+            }
+        }
+        if self.implementations.windows(2).any(|pair| {
+            pair[0].interface > pair[1].interface
+                || (pair[0].interface == pair[1].interface && pair[0].name >= pair[1].name)
+        }) {
+            return Err(invalid(
+                "ability reference implementations are not in canonical interface/name order",
+            ));
+        }
 
         let mut export_names = BTreeSet::new();
         let mut previous_export = None;
@@ -362,6 +447,13 @@ impl PackageAbilityReference {
             if !interface_identities.contains_key(&export.interface) {
                 return Err(invalid(
                     "ability export references an interface outside the package declarations",
+                ));
+            }
+            if !implementation_identities
+                .contains(&(export.interface.clone(), export.implementation))
+            {
+                return Err(invalid(
+                    "ability export references an implementation outside the package declarations",
                 ));
             }
             previous_export = Some(&export.name);
@@ -401,6 +493,19 @@ impl PackageAbilityReference {
     }
 }
 
+fn documented_path_segment(value: String) -> PathSegment {
+    let wildcard = value
+        .strip_prefix('<')
+        .and_then(|name| name.strip_suffix('>'))
+        .filter(|name| !name.is_empty());
+    match wildcard {
+        Some(name) => PathSegment::Wildcard {
+            name: name.to_string(),
+        },
+        None => PathSegment::Literal { value },
+    }
+}
+
 impl VersionedDocument for PackageAbilityReference {
     const SCHEMA: &'static str = ABILITY_REFERENCE_SCHEMA;
 
@@ -433,13 +538,13 @@ fn invalid_model(error: impl std::fmt::Display) -> DocumentationError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_ability_model::RequirementStrength;
+    use aos_ability_model::{ArtifactReference, RequirementStrength};
 
     fn reference() -> PackageAbilityReference {
         PackageAbilityReference {
             schema: ABILITY_REFERENCE_SCHEMA.to_string(),
             required_features: vec![
-                RequiredFeature::new("abilities-v1").expect("valid feature name"),
+                RequiredFeature::new("abilities-v1").expect("valid feature name")
             ],
             package: LocalKey::new("demo").expect("valid package name"),
             version: "1.0.0".to_string(),
@@ -448,9 +553,35 @@ mod tests {
             activation_mode: AbilityActivationMode::ContractsOnly,
             interfaces: BTreeMap::new(),
             guarantees: BTreeMap::new(),
+            option_declarations: Vec::new(),
+            implementations: Vec::new(),
             exports: Vec::new(),
             requirements: Vec::new(),
             handlers: Vec::new(),
+        }
+    }
+
+    fn implementation(
+        interface: InterfaceKey,
+        requirements: Vec<RequirementDeclaration>,
+    ) -> ProviderImplementation {
+        ProviderImplementation {
+            name: LocalKey::new("echo").expect("implementation name"),
+            description: "Implements the echo test interface.".to_string(),
+            interface,
+            artifact: ArtifactReference {
+                content: Sha256Digest::of_bytes(b"content"),
+                store_path: "/nix/store/echo-provider".to_string(),
+                nar_hash: Sha256Digest::of_bytes(b"nar"),
+                closure: Sha256Digest::of_bytes(b"closure"),
+            },
+            requirements,
+            desired_schema: None,
+            provider_module: None,
+            handler: None,
+            owns_resource_kinds: Vec::new(),
+            guarantees: Vec::new(),
+            state_format: None,
         }
     }
 
@@ -500,6 +631,25 @@ mod tests {
     }
 
     #[test]
+    fn decoding_requires_the_complete_package_documentation_projection() {
+        let reference = reference();
+        let supported =
+            BTreeSet::from([RequiredFeature::new("abilities-v1").expect("valid feature name")]);
+
+        for field in ["option_declarations", "implementations"] {
+            let mut value = serde_json::to_value(&reference).expect("serialize reference");
+            value
+                .as_object_mut()
+                .expect("reference object")
+                .remove(field);
+            let bytes = aos_contract::canonical::to_vec(&value)
+                .expect("encode incomplete reference");
+
+            assert!(PackageAbilityReference::from_canonical_json(&bytes, &supported).is_err());
+        }
+    }
+
+    #[test]
     fn decoding_does_not_self_authorize_nested_interface_features() {
         let supported =
             BTreeSet::from([RequiredFeature::new("abilities-v1").expect("valid feature name")]);
@@ -517,10 +667,15 @@ mod tests {
         reference
             .interfaces
             .insert(LocalKey::new("echo").expect("interface alias"), interface);
+        let implementation = implementation(interface_key.clone(), Vec::new());
+        let implementation_key = implementation
+            .descriptor_digest()
+            .expect("implementation descriptor");
+        reference.implementations.push(implementation);
         reference.exports.push(AbilityExportReference {
             name: LocalKey::new("echo").expect("valid export name"),
             interface: interface_key,
-            implementation: Sha256Digest::of_bytes("implementation"),
+            implementation: implementation_key,
             requirements: Vec::new(),
         });
         let bytes = reference.canonical_json().expect("encode reference");
@@ -556,10 +711,15 @@ mod tests {
         reference
             .interfaces
             .insert(LocalKey::new("echo").expect("interface alias"), interface);
+        let implementation = implementation(interface_key.clone(), vec![requirement.clone()]);
+        let implementation_key = implementation
+            .descriptor_digest()
+            .expect("implementation descriptor");
+        reference.implementations.push(implementation);
         reference.exports.push(AbilityExportReference {
             name: LocalKey::new("echo").expect("export name"),
             interface: interface_key,
-            implementation: Sha256Digest::of_bytes("implementation"),
+            implementation: implementation_key,
             requirements: vec![requirement],
         });
 

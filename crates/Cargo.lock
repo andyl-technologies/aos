@@ -451,7 +451,9 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "aos-ability-model",
  "aos-cache",
+ "aos-contract",
  "aos-core",
  "aos-doc-model",
  "aos-hub-core",

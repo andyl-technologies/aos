@@ -1,14 +1,15 @@
 //! Safe terminal, HTML, and roff rendering for static package ability declarations.
 //!
-//! These views describe only the authenticated declaration carried by a
-//! package companion. They deliberately omit activation, provider selection,
+//! These views describe only the checked signed package declaration. They
+//! deliberately omit activation, provider selection,
 //! assignments, health, and observed runtime state.
 
 use std::fmt::Write as _;
 
 use anyhow::Result;
 use aos_ability_model::{
-    AbilityActivationMode, RequirementDeclaration, RequirementStrength, ValueSchema,
+    AbilityActivationMode, OptionVisibility, RequirementDeclaration, RequirementStrength,
+    ValueSchema,
 };
 use aos_doc_model::PackageAbilityReference;
 
@@ -33,6 +34,105 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
         reference.package_digest
     );
 
+    output.push_str("\nPACKAGE OPTIONS\n");
+    if !reference
+        .option_declarations
+        .iter()
+        .any(|option| option.visibility == OptionVisibility::Public)
+    {
+        output.push_str("No package-owned configuration options are declared.\n");
+    }
+    for option in reference
+        .option_declarations
+        .iter()
+        .filter(|option| option.visibility == OptionVisibility::Public)
+    {
+        let _ = writeln!(
+            output,
+            "declared option\t{}\t{}",
+            option.path.join("."),
+            option.description
+        );
+        let _ = writeln!(
+            output,
+            "  portable type\t{}",
+            scalar(&option.structured_type)?
+        );
+        let _ = writeln!(output, "  source\t{}", option.source.path.as_str());
+    }
+
+    output.push_str("\nPACKAGE INTERFACES\n");
+    if reference.interfaces.is_empty() {
+        output.push_str("No package-owned interfaces are declared.\n");
+    }
+    for (alias, document) in &reference.interfaces {
+        let interface = &document.interface;
+        let _ = writeln!(
+            output,
+            "declared interface\t{}\t{}\tABI {}\t{}",
+            alias.as_str(),
+            interface.name.as_str(),
+            interface.abi,
+            interface.description,
+        );
+        output.push_str("  declared request or contribution schema\n");
+        indented_schema(&mut output, &interface.request, "    ")?;
+        for (name, declared_output) in &interface.outputs {
+            let _ = writeln!(
+                output,
+                "  declared aggregate output\t{}\t{}",
+                name.as_str(),
+                declared_output.description,
+            );
+        }
+        for (name, method) in &interface.methods {
+            let _ = writeln!(
+                output,
+                "  declared method\t{}\t{}",
+                name.as_str(),
+                method.description,
+            );
+            for (output_name, declared_output) in &method.outputs {
+                let _ = writeln!(
+                    output,
+                    "    declared method output\t{}\t{}",
+                    output_name.as_str(),
+                    declared_output.description,
+                );
+            }
+        }
+    }
+
+    output.push_str("\nPROVIDER IMPLEMENTATIONS\n");
+    if reference.implementations.is_empty() {
+        output.push_str("No provider implementations are declared.\n");
+    }
+    for implementation in &reference.implementations {
+        let _ = writeln!(
+            output,
+            "declared implementation\t{}\t{}\t{}",
+            implementation.name.as_str(),
+            implementation.interface.name.as_str(),
+            implementation.description
+        );
+    }
+
+    output.push_str("\nEXECUTION GUARANTEES\n");
+    if reference.guarantees.is_empty() {
+        output.push_str("No package-owned execution guarantees are declared.\n");
+    }
+    for (alias, guarantee) in &reference.guarantees {
+        let _ = writeln!(
+            output,
+            "declared guarantee\t{}\t{} v{}\t{}",
+            alias.as_str(),
+            guarantee.name.as_str(),
+            guarantee.version,
+            guarantee.description
+        );
+        let _ = writeln!(output, "  semantics\t{}", guarantee.semantics);
+    }
+
     output.push_str("\nEXPOSED ABILITIES\n");
     if reference.exports.is_empty() {
         output.push_str("No provider interfaces are declared.\n");
@@ -47,6 +147,7 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
             interface.name.as_str(),
             interface.abi
         );
+        let _ = writeln!(output, "  description\t{}", interface.description);
         let _ = writeln!(output, "  descriptor identity\t{descriptor}");
         let _ = writeln!(
             output,
@@ -71,6 +172,7 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
                 scalar(&declared_output.visibility)?,
                 scalar(&declared_output.lifetime)?
             );
+            let _ = writeln!(output, "    description\t{}", declared_output.description);
         }
         for (name, method) in &interface.methods {
             let operations = method
@@ -87,6 +189,15 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
                 method.target_resource.as_str(),
                 operations
             );
+            let _ = writeln!(output, "    description\t{}", method.description);
+            for (output_name, declared_output) in &method.outputs {
+                let _ = writeln!(
+                    output,
+                    "    declared method output\t{}\t{}",
+                    output_name.as_str(),
+                    declared_output.description
+                );
+            }
         }
 
         let lifecycle = &interface.lifecycle;
@@ -160,7 +271,7 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
 pub(super) fn plain_absent() -> String {
     concat!(
         "\nDECLARED ABILITIES\n------------------\n",
-        "No authenticated ability companion is declared for this package.\n",
+        "No checked signed ability projection is available for this package.\n",
         "\nEXPOSED ABILITIES\n",
         "No exposed abilities are declared.\n",
         "\nCONSUMED ABILITIES\n",
@@ -179,7 +290,108 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
     escape_html_into(&reference.manifest_sha256.to_string(), &mut output);
     output.push_str("</code></dd><dt>Package contract identity</dt><dd><code>");
     escape_html_into(&reference.package_digest.to_string(), &mut output);
-    output.push_str("</code></dd></dl><h3>Exposed abilities</h3>");
+    output.push_str("</code></dd></dl>");
+
+    output.push_str("<h3>Package options</h3>");
+    if !reference
+        .option_declarations
+        .iter()
+        .any(|option| option.visibility == OptionVisibility::Public)
+    {
+        output.push_str("<p>No package-owned configuration options are declared.</p>");
+    }
+    for option in reference
+        .option_declarations
+        .iter()
+        .filter(|option| option.visibility == OptionVisibility::Public)
+    {
+        output.push_str("<article><h4><code>");
+        escape_html_into(&option.path.join("."), &mut output);
+        output.push_str("</code></h4><p>");
+        escape_html_into(&option.description, &mut output);
+        output.push_str("</p><dl><dt>Portable type</dt><dd><code>");
+        escape_html_into(&scalar(&option.structured_type)?, &mut output);
+        output.push_str("</code></dd><dt>Source</dt><dd><code>");
+        escape_html_into(option.source.path.as_str(), &mut output);
+        output.push_str("</code></dd></dl></article>");
+    }
+
+    output.push_str("<h3>Package interfaces</h3>");
+    if reference.interfaces.is_empty() {
+        output.push_str("<p>No package-owned interfaces are declared.</p>");
+    }
+    for (alias, document) in &reference.interfaces {
+        let interface = &document.interface;
+        output.push_str("<article><h4><code>");
+        escape_html_into(alias.as_str(), &mut output);
+        output.push_str("</code>: <code>");
+        escape_html_into(interface.name.as_str(), &mut output);
+        let _ = write!(output, "</code> ABI {}</h4><p>", interface.abi);
+        escape_html_into(&interface.description, &mut output);
+        output.push_str("</p><h5>Request or contribution schema</h5>");
+        schema_html(&mut output, &interface.request)?;
+        if !interface.outputs.is_empty() {
+            output.push_str("<h5>Aggregate outputs</h5><ul>");
+            for (name, declared_output) in &interface.outputs {
+                output.push_str("<li><code>");
+                escape_html_into(name.as_str(), &mut output);
+                output.push_str("</code> — ");
+                escape_html_into(&declared_output.description, &mut output);
+                output.push_str("</li>");
+            }
+            output.push_str("</ul>");
+        }
+        if !interface.methods.is_empty() {
+            output.push_str("<h5>Methods</h5><ul>");
+            for (name, method) in &interface.methods {
+                output.push_str("<li><code>");
+                escape_html_into(name.as_str(), &mut output);
+                output.push_str("</code> — ");
+                escape_html_into(&method.description, &mut output);
+                for (output_name, declared_output) in &method.outputs {
+                    output.push_str("; output <code>");
+                    escape_html_into(output_name.as_str(), &mut output);
+                    output.push_str("</code>: ");
+                    escape_html_into(&declared_output.description, &mut output);
+                }
+                output.push_str("</li>");
+            }
+            output.push_str("</ul>");
+        }
+        output.push_str("</article>");
+    }
+
+    output.push_str("<h3>Provider implementations</h3>");
+    if reference.implementations.is_empty() {
+        output.push_str("<p>No provider implementations are declared.</p>");
+    }
+    for implementation in &reference.implementations {
+        output.push_str("<article><h4><code>");
+        escape_html_into(implementation.name.as_str(), &mut output);
+        output.push_str("</code></h4><p>");
+        escape_html_into(&implementation.description, &mut output);
+        output.push_str("</p><p>Implements <code>");
+        escape_html_into(implementation.interface.name.as_str(), &mut output);
+        output.push_str("</code>.</p></article>");
+    }
+
+    output.push_str("<h3>Execution guarantees</h3>");
+    if reference.guarantees.is_empty() {
+        output.push_str("<p>No package-owned execution guarantees are declared.</p>");
+    }
+    for (alias, guarantee) in &reference.guarantees {
+        output.push_str("<article><h4><code>");
+        escape_html_into(alias.as_str(), &mut output);
+        output.push_str("</code></h4><p>");
+        escape_html_into(&guarantee.description, &mut output);
+        output.push_str("</p><p><code>");
+        escape_html_into(guarantee.name.as_str(), &mut output);
+        let _ = write!(output, "</code> v{}: ", guarantee.version);
+        escape_html_into(&guarantee.semantics, &mut output);
+        output.push_str("</p></article>");
+    }
+
+    output.push_str("<h3>Exposed abilities</h3>");
 
     if reference.exports.is_empty() {
         output.push_str("<p>No provider interfaces are declared.</p>");
@@ -192,6 +404,9 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
         output.push_str("</code></h4><dl><dt>Interface</dt><dd><code>");
         escape_html_into(interface.name.as_str(), &mut output);
         let _ = write!(output, "</code> ABI {}</dd>", interface.abi);
+        output.push_str("<dt>Description</dt><dd>");
+        escape_html_into(&interface.description, &mut output);
+        output.push_str("</dd>");
         output.push_str("<dt>Descriptor identity</dt><dd><code>");
         escape_html_into(&descriptor.to_string(), &mut output);
         output.push_str("</code></dd><dt>Implementation identity</dt><dd><code>");
@@ -219,6 +434,8 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
                 escape_html_into(&scalar(&declared_output.visibility)?, &mut output);
                 output.push_str(", ");
                 escape_html_into(&scalar(&declared_output.lifetime)?, &mut output);
+                output.push_str(" - ");
+                escape_html_into(&declared_output.description, &mut output);
                 output.push_str("</li>");
             }
             output.push_str("</ul>");
@@ -230,6 +447,8 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
                 escape_html_into(name.as_str(), &mut output);
                 output.push_str("</code> - ");
                 escape_html_into(&scalar(&method.semantics)?, &mut output);
+                output.push_str(" - ");
+                escape_html_into(&method.description, &mut output);
                 output.push_str(" targeting <code>");
                 escape_html_into(method.target_resource.as_str(), &mut output);
                 output.push_str("</code>");
@@ -243,6 +462,12 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
                         escape_html_into(operation.as_str(), &mut output);
                         output.push_str("</code>");
                     }
+                }
+                for (output_name, declared_output) in &method.outputs {
+                    output.push_str("; output <code>");
+                    escape_html_into(output_name.as_str(), &mut output);
+                    output.push_str("</code>: ");
+                    escape_html_into(&declared_output.description, &mut output);
                 }
                 output.push_str("</li>");
             }
@@ -324,7 +549,7 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
 pub(super) fn html_absent() -> String {
     concat!(
         "<section id=\"declared-abilities\"><h2>Declared abilities</h2>",
-        "<p>No authenticated ability companion is declared for this package.</p>",
+        "<p>No checked signed ability projection is available for this package.</p>",
         "<h3>Exposed abilities</h3><p>No exposed abilities are declared.</p>",
         "<h3>Consumed abilities</h3><p>No consumed abilities are declared.</p>",
         "</section>",
@@ -372,6 +597,7 @@ fn plain_requirement(output: &mut String, consumer: &str, requirement: &Requirem
         requirement_strength(requirement.strength),
         consumer,
     );
+    let _ = writeln!(output, "  description\t{}", requirement.description);
     for accepted in &requirement.accepted_interfaces {
         let descriptor = accepted.descriptor.map_or_else(
             || "any compatible descriptor".to_string(),
@@ -406,7 +632,9 @@ fn html_requirement(output: &mut String, consumer: &str, requirement: &Requireme
     output.push_str(requirement_strength(requirement.strength));
     output.push_str(") consumed by <code>");
     escape_html_into(consumer, output);
-    output.push_str("</code><ul>");
+    output.push_str("</code> — ");
+    escape_html_into(&requirement.description, output);
+    output.push_str("<ul>");
     for accepted in &requirement.accepted_interfaces {
         output.push_str("<li>Accepted interface <code>");
         escape_html_into(accepted.name.as_str(), output);
@@ -481,7 +709,11 @@ const fn requirement_strength(strength: RequirementStrength) -> &'static str {
 }
 
 const fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
 }
 
 fn escape_html_into(value: &str, output: &mut String) {

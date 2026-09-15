@@ -747,9 +747,14 @@ async fn index_registry_inner(
                 }
 
                 let artifacts = release_snapshot_artifacts(&release_tree.packages);
-                let search = verify_package_documentation(fetch, &release_tree.packages).await?;
                 let ability_references =
                     verify_package_ability_references(fetch, &release_tree.packages).await?;
+                let search = verify_package_documentation(
+                    fetch,
+                    &release_tree.packages,
+                    &ability_references,
+                )
+                .await?;
                 {
                     let _projection = browse_projection_gate.lock().await;
                     db.retain_release_browse_catalog(
@@ -882,9 +887,10 @@ async fn index_registry_inner(
     }
     let image_presence = deduplicated_presence;
 
-    let package_documentation = verify_package_documentation(fetch, &tree.packages).await?;
     let package_ability_references =
         verify_package_ability_references(fetch, &tree.packages).await?;
+    let package_documentation =
+        verify_package_documentation(fetch, &tree.packages, &package_ability_references).await?;
     db.retain_release_browse_catalog(
         registry.id,
         &commit_oid.to_hex(),
@@ -2610,6 +2616,7 @@ pub async fn fetch_package_documentation(
 async fn verify_package_documentation(
     fetch: &dyn SurfaceFetch,
     packages: &[aos_registry_surface::manifest::PackageToml],
+    ability_references: &[crate::db::IndexedPackageAbilityReference],
 ) -> Result<Vec<IndexedPackageDocumentation>> {
     let mut indexed = Vec::new();
     for package in packages {
@@ -2660,13 +2667,33 @@ async fn verify_package_documentation(
                         "package documentation expose-artifact identity mismatch"
                     );
                 }
+                let ability_reference = ability_references
+                    .iter()
+                    .find(|reference| {
+                        reference.package_name == package.package.name
+                            && reference.package_version == version.version
+                            && reference.platform == *platform
+                    })
+                    .map(|reference| {
+                        let supported = aos_doc_model::ability_reference_supported_features()?;
+                        let checked = aos_doc_model::PackageAbilityReference::from_canonical_json(
+                            &reference.canonical_json,
+                            &supported,
+                        )?;
+                        Ok::<_, anyhow::Error>(checked)
+                    })
+                    .transpose()?;
+                let documentation_view = aos_doc_model::PackageDocumentationProjection::new(
+                    document.clone(),
+                    ability_reference,
+                )?;
                 indexed.push(IndexedPackageDocumentation {
                     package_name: package.package.name.clone(),
                     package_version: version.version.clone(),
                     platform: platform.clone(),
                     artifact: artifact.clone(),
-                    search: document.search_documents(),
-                    options: document
+                    search: documentation_view.search_documents(),
+                    options: documentation_view
                         .options
                         .iter()
                         .map(|option| crate::db::IndexedDocumentationOption {
@@ -3924,7 +3951,6 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
                 expose_artifact_nar_hash: Some(format!("sha256:{}", "3".repeat(64))),
                 source_nar_hash: format!("sha256:{}", "4".repeat(64)),
             },
-            options: Vec::new(),
         };
         document.identity.semantic_schema_sha256 = document
             .computed_semantic_schema_sha256()

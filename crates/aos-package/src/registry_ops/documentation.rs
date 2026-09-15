@@ -1,17 +1,15 @@
 //! Package documentation derivation and publication.
 
 use crate::registry_ops::attestation::documentation_nar_identity;
-use crate::registry_ops::config_modules::{DerivedOptionDeclaration, PublishConfigModuleManifest};
-use crate::registry_ops::mac::PublishExposeManifest;
-use crate::registry_ops::store_paths::{StorePathInfo, introspect_store_path, nix_command};
+use crate::registry_ops::store_paths::{introspect_store_path, nix_command, StorePathInfo};
 use crate::registry_ops::uki::sha256_hex;
 use crate::types::{
-    ConfigModuleMeta, DocumentationArtifactMeta, validate_documentation_artifact_meta,
+    validate_documentation_artifact_meta, ConfigModuleMeta, DocumentationArtifactMeta,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use aos_doc_model::{
-    DOCUMENT_FORMAT, DOCUMENT_SCHEMA, DocumentationIdentity, DocumentedPackage, OptionDocument,
-    OptionOwner, PackageDocumentation, PathSegment, ProseBlock, Visibility,
+    DocumentationIdentity, DocumentedPackage, PackageDocumentation, DOCUMENT_FORMAT,
+    DOCUMENT_SCHEMA,
 };
 use std::fs;
 use std::fs::OpenOptions;
@@ -34,62 +32,8 @@ pub(in crate::registry_ops) fn publish_package_documentation(
     runtime: &StorePathInfo,
     source: Option<&StorePathInfo>,
     config_module: Option<&ConfigModuleMeta>,
-    config_manifest: Option<&PublishConfigModuleManifest>,
-    _expose_manifest: Option<&PublishExposeManifest>,
     expose_artifact: Option<&StorePathInfo>,
-    declarations: &[DerivedOptionDeclaration],
 ) -> Result<PublishedDocumentation> {
-    let options = documented_option_declarations(declarations)
-        .map(|declaration| {
-            if declaration.description.trim().is_empty() {
-                bail!(
-                    "public configuration option '{}' has no description",
-                    declaration.path_str
-                );
-            }
-            let description = declaration.description.clone();
-            let root = declaration
-                .path
-                .first()
-                .cloned()
-                .context("documentation option path is empty")?;
-            let interface_abi = config_manifest.and_then(|manifest| {
-                manifest
-                    .owns_roots
-                    .iter()
-                    .find(|owned| owned.root == root)
-                    .map(|owned| owned.interface_abi)
-            });
-            Ok(OptionDocument {
-                path: declaration
-                    .path
-                    .iter()
-                    .cloned()
-                    .map(|value| PathSegment::Literal { value })
-                    .collect(),
-                display_path: declaration.path_str.clone(),
-                option_type: declaration.option_type.clone(),
-                type_signature: declaration.type_sig.clone(),
-                description: vec![ProseBlock::Paragraph {
-                    spans: vec![aos_doc_model::InlineSpan::Text { text: description }],
-                }],
-                default: declaration.default.clone(),
-                example: declaration.example.clone(),
-                visibility: declaration.visibility,
-                read_only: declaration.read_only,
-                deprecated: None,
-                replacement: None,
-                owner: OptionOwner {
-                    package: declaration.owner.clone(),
-                    root,
-                    interface_abi,
-                },
-                contributable: declaration.contributable,
-                source: None,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
     let mut document = PackageDocumentation {
         schema: DOCUMENT_SCHEMA.to_string(),
         package: DocumentedPackage {
@@ -113,7 +57,6 @@ pub(in crate::registry_ops) fn publish_package_documentation(
                 source.map_or(runtime.nar_hash.as_str(), |source| source.nar_hash.as_str()),
             )?,
         },
-        options,
     };
     document.identity.semantic_schema_sha256 = document
         .computed_semantic_schema_sha256()
@@ -187,20 +130,6 @@ pub(in crate::registry_ops) fn publish_package_documentation(
     validate_documentation_artifact_meta(&metadata)
         .context("validating published package documentation metadata")?;
     Ok(PublishedDocumentation { metadata, info })
-}
-
-/// Selects the declarations that form the user/tooling documentation surface.
-///
-/// Internal module-system plumbing remains part of the signed config-module
-/// declaration schema and authorization checks, but it is not a package API
-/// and may intentionally use reserved path segments such as
-/// `_aosExposeConfigProjection`.
-fn documented_option_declarations(
-    declarations: &[DerivedOptionDeclaration],
-) -> impl Iterator<Item = &DerivedOptionDeclaration> {
-    declarations
-        .iter()
-        .filter(|declaration| declaration.visibility != Visibility::Internal)
 }
 
 #[cfg(test)]

@@ -11561,8 +11561,9 @@ impl RpcService {
     ) -> Result<pb::GetPackageDocumentationResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
-        let (locator, document) = self
-            .load_package_documentation_for_registry(
+        let locator = self
+            .db
+            .resolve_package_documentation_locator(
                 registry.id,
                 &req.package,
                 &req.version,
@@ -11571,6 +11572,10 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("package documentation"))?;
+        let document = self
+            .load_package_documentation_locator(registry.id, &locator)
+            .await
+            .map_err(RpcError::internal)?;
         let canonical_json = document.canonical_json().map_err(RpcError::internal)?;
         let identity = package_documentation_identity(&locator);
         let artifact = locator.artifact;
@@ -12157,11 +12162,13 @@ impl RpcService {
         Ok(overlays)
     }
 
-    /// Loads and re-verifies one indexed package document after authorization.
+    /// Loads one checked package documentation view after authorization.
     ///
-    /// The caller must already have authorized access to `registry_id`. This
-    /// helper is shared by the typed API and the session-aware browser so both
-    /// runtimes render bytes from the same signed Nix-object path.
+    /// The caller must already have authorized access to `registry_id`. The
+    /// signed metadata document supplies package identity. Option rows are
+    /// then derived from the exact checked PackageDocument reference selected
+    /// for the same package coordinate. The result is a transient view; callers
+    /// that return canonical artifact bytes use [`Self::load_package_documentation_locator`].
     ///
     /// # Errors
     ///
@@ -12176,7 +12183,7 @@ impl RpcService {
     ) -> anyhow::Result<
         Option<(
             crate::db::PackageDocumentationLocator,
-            aos_doc_model::PackageDocumentation,
+            aos_doc_model::PackageDocumentationProjection,
         )>,
     > {
         let Some(locator) = self
@@ -12186,10 +12193,56 @@ impl RpcService {
         else {
             return Ok(None);
         };
-        let document = self
-            .load_package_documentation_locator(registry_id, &locator)
+        let projection = self
+            .load_package_documentation_projection_locator(registry_id, &locator)
             .await?;
-        Ok(Some((locator, document)))
+        Ok(Some((locator, projection)))
+    }
+
+    /// Loads one checked derived documentation view for an exact signed locator.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for object verification, reference validation, or
+    /// cross-artifact coordinate mismatches.
+    pub(crate) async fn load_package_documentation_projection_locator(
+        &self,
+        registry_id: i64,
+        locator: &crate::db::PackageDocumentationLocator,
+    ) -> anyhow::Result<aos_doc_model::PackageDocumentationProjection> {
+        let document = self
+            .load_package_documentation_locator(registry_id, locator)
+            .await?;
+        let ability_reference = if let Some(ability) = self
+            .db
+            .resolve_package_ability_reference_at_commit(
+                registry_id,
+                &locator.indexed_commit,
+                &locator.package_name,
+                &locator.package_version,
+                &locator.platform,
+            )
+            .await?
+        {
+            let supported = aos_doc_model::ability_reference_supported_features()?;
+            let reference = aos_doc_model::PackageAbilityReference::from_canonical_json(
+                &ability.canonical_json,
+                &supported,
+            )?;
+            anyhow::ensure!(
+                reference.package.as_str() == locator.package_name
+                    && reference.version == locator.package_version
+                    && ability.platform == locator.platform,
+                "package documentation and ability reference coordinates differ"
+            );
+            Some(reference)
+        } else {
+            None
+        };
+        Ok(aos_doc_model::PackageDocumentationProjection::new(
+            document,
+            ability_reference,
+        )?)
     }
 
     /// Fetches and verifies a previously authorized indexed documentation reference.

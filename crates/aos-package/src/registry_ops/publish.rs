@@ -1,17 +1,17 @@
 //! Package publication orchestration and its exclusive authoring-clone lock.
 
 use crate::ability_package::{
-    AbilityPackageCoordinate, ability_provenance_statement, ability_retention_digest,
-    activation_mode_name, canonical_nar_hash, collect_distinct_artifacts,
+    ability_provenance_statement, ability_retention_digest, activation_mode_name,
+    canonical_nar_hash, collect_distinct_artifacts, AbilityPackageCoordinate,
 };
 use crate::config::ApmConfig;
-use crate::provenance::{ProvenanceSigner, sign_statement_dsse_jsonl_external};
-use crate::registry::parse::{ImageVerificationState, parse_package_file};
+use crate::provenance::{sign_statement_dsse_jsonl_external, ProvenanceSigner};
+use crate::registry::parse::{parse_package_file, ImageVerificationState};
 use crate::registry::sb_certs::SbCertsToml;
 use crate::registry::{objectstore, sb_certs, store};
 use crate::registry_ops::ability_artifacts::{
-    AbilitySelectorRegistry, materialize_resolved_companion, resolve_release_projection,
-    resolve_store_artifact,
+    materialize_resolved_ability_publication, resolve_release_projection, resolve_store_artifact,
+    AbilitySelectorRegistry,
 };
 use crate::registry_ops::attestation::{
     publish_config_attestation_meta, publish_documentation_attestation_meta,
@@ -26,7 +26,7 @@ use crate::registry_ops::documentation::publish_package_documentation;
 use crate::registry_ops::git::{
     commit_registry_paths, current_git_head, refresh_registry_object_store,
 };
-use crate::registry_ops::images::{PublishedImage, inspect_published_image};
+use crate::registry_ops::images::{inspect_published_image, PublishedImage};
 use crate::registry_ops::mac::{
     infer_publish_expose_artifact, read_publish_expose_manifest, read_publish_manifest_digest,
 };
@@ -46,8 +46,8 @@ use crate::registry_ops::store_paths::{
 };
 use crate::registry_ops::uki::sb_db_cert_path;
 use crate::registry_ops::workflow::{current_git_branch, git_branch_entries};
-use crate::types::{AbilityPackageMeta, validate_package_name, validate_registry_name};
-use anyhow::{Context, Result, bail};
+use crate::types::{validate_package_name, validate_registry_name, AbilityPackageMeta};
+use anyhow::{bail, Context, Result};
 use aos_ability_model::VersionedDocument;
 use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
@@ -338,11 +338,6 @@ pub(crate) async fn publish_to_registry_directory(
     let expose_manifest_digest = expose_manifest_path
         .map(|path| read_publish_manifest_digest(Path::new(path)))
         .transpose()?;
-    let documentation_declarations = config_module_bundle
-        .as_ref()
-        .into_iter()
-        .flat_map(|bundle| bundle.declarations.iter().cloned())
-        .collect::<Vec<_>>();
     let documentation = publish_package_documentation(
         pkg_name,
         pkg_version,
@@ -353,10 +348,7 @@ pub(crate) async fn publish_to_registry_directory(
         &info,
         source_info.as_ref(),
         config_module,
-        config_module_bundle.as_ref().map(|bundle| &bundle.authored),
-        expose_manifest.as_ref(),
         expose_artifact_info.as_ref(),
-        &documentation_declarations,
     )?;
     let mut local_provenance_signer;
     let provenance_signer: &mut dyn ProvenanceSigner =
@@ -859,7 +851,7 @@ pub(crate) fn publish_canonical_named_output(
     Ok(())
 }
 
-/// Publishes and signs the canonical RFC-0022 ability companion output.
+/// Publishes and signs the canonical RFC-0022 signed package ability publication output.
 ///
 /// The operation decodes `package.json` canonically, binds it to the exact
 /// primary package coordinate, inventories every distinct artifact's complete
@@ -934,8 +926,10 @@ pub(crate) async fn publish_canonical_ability_output(
             retained_interfaces: &interface_bytes,
         },
     )
-    .context("validating resolved ability companion with the shared semantic validator")?;
-    let companion = materialize_resolved_companion(
+    .context(
+        "validating resolved signed package ability publication with the shared semantic validator",
+    )?;
+    let companion = materialize_resolved_ability_publication(
         &projection.path,
         package,
         version,
