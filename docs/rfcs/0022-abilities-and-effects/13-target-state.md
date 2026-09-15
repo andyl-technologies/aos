@@ -178,25 +178,31 @@ human-readable output, or a private copy of the provider inventory.
 
 ## Package construction
 
-`abilities` is a first-class AOS package field whose value is a standard module
-or list of modules:
+`abilities` is a first-class AOS package field whose value is an authenticated,
+path-backed standard module artifact:
 
 ```nix
 mkDerivation {
   pname = "example";
   version = "1.0";
 
-  abilities = { lib, ... }: {
-    options.services.example = {
-      enable = lib.mkEnableOption "the example service";
-    };
-
-    config.aos.abilities.requirementTemplates.service =
-      lib.abilities.requirement {
-        interface = lib.abilities.interfaces.serviceLifecycle;
-      };
-  };
+  abilities = ./_example-package-module.nix;
 };
+```
+
+The referenced module is ordinary module source shipped in the package's
+authenticated module output:
+
+```nix
+{ lib, ... }: {
+  options.services.example.enable =
+    lib.mkEnableOption "the example service";
+
+  config.aos.abilities.requirementTemplates.service =
+    lib.abilities.requirement {
+      interface = lib.abilities.interfaces.serviceLifecycle;
+    };
+}
 ```
 
 Package definitions receive the composed AOS `lib` through the existing
@@ -270,14 +276,7 @@ Every implementation is exposed by the package that ships it:
 ```nix
 systemd = mkDerivation {
   # Ordinary package fields are omitted from this example.
-  abilities = { lib, ... }: {
-    config.aos.abilities.implementations = {
-      serviceLifecycle = lib.abilities.implementation { /* ... */ };
-      serviceDependencies = lib.abilities.implementation { /* ... */ };
-      serviceReload = lib.abilities.implementation { /* ... */ };
-      serviceCredentials = lib.abilities.implementation { /* ... */ };
-    };
-  };
+  abilities = ./_systemd-package-module.nix;
 };
 ```
 
@@ -508,18 +507,20 @@ package documentation, AOS Hub, editor tooling, and JSON exports render that
 model rather than implementing their own joins.
 
 Package reference documentation reads the checked package option declarations
-and `package.abilities` projection and shows every provided and consumed
+and canonical package projection and shows every provided and consumed
 interface, method, guarantee, configuration option, contribution, handler
 artifact, and supported environment. Deployment documentation adds the
-selected provider for each requirement, resolved service instances, actual
-provider-produced unit or process identities, effects, and current observations.
+selected provider for each requirement, effects, current observations, and the
+typed values and provider realizations of resolved resources from the checked
+inspection view.
 
 The central documentation module is a pure projection over the package and
-module fixed points. `aos.documentation.systemServices`, manual option-prefix
-lists, copied unit-name lists, and package-specific documentation branches do
-not exist. Unit names and other backend artifacts come from evaluated provider
-output. Option names, types, defaults, descriptions, examples, and provenance
-come from evaluated `mkOption` declarations. Ability schemas and relationships
+module fixed points. Separate service and option-prefix catalogs, copied unit
+name lists, and package-specific documentation branches do not exist. Unit
+names and other backend artifacts appear only inside typed provider
+realizations validated by the resource's interface schema. Option names, types,
+defaults, descriptions, examples, and provenance come from evaluated `mkOption`
+declarations. Ability schemas and relationships
 come from the corresponding `aos.abilities` definitions. A frontend cannot
 provide a second default, method description, provider feature list, or
 package-to-option association.
