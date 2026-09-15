@@ -802,7 +802,7 @@ let
     "tests/_aos-test-agent-config/module.nix" = "linux-only-test-source";
     "tests/_config-module-smoke/module.nix" = "linux-only-test-source";
     "tests/_config-module-smoke/private.nix" = "linux-only-test-source";
-    "tools/_conntrackd-config/module.nix" = "linux-only-config-source";
+    "tools/_conntrackd/module.nix" = "linux-only-config-source";
     "tools/_rsyncd-config/module.nix" = "linux-only-config-source";
   };
 
