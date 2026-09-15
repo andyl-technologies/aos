@@ -1,16 +1,12 @@
 ##! Native package ability projection smoke fixture.
 {
   mkDerivation,
-}: let
-  providerArtifact = import ./_ability-package-smoke-provider.nix {
-    inherit mkDerivation;
-  };
-in
+}:
   mkDerivation {
     pname = "ability-package-smoke";
     version = "1.0.0";
     src = null;
-    runtimeDeps = [providerArtifact];
+    runtimeDeps = [];
 
     phases = [
       {
