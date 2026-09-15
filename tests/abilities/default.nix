@@ -2,6 +2,7 @@
 {
   pkgs,
   lib,
+  mkSystem,
 }: let
   fails = value: !(builtins.tryEval (builtins.deepSeq value true)).success;
   boundedSelectorNormalizer = import ../../lib/abilities/package-output-selectors.nix {
@@ -494,6 +495,20 @@
     inherit pkgs lib;
   };
   disabledRsyncProjection = pkgs.rsync.abilities;
+  selectedChronySystem = mkSystem {
+    modules = [
+      {
+        aos.abilities.environment = {
+          authority = "test";
+          key = "selected-chrony";
+          stage = "host";
+        };
+        aos.services.chrony.enable = true;
+      }
+    ];
+    systemName = "selected-chrony";
+  };
+  selectedChronyAbilities = selectedChronySystem.config.aos.abilities;
 in
   assert canonicalListType.check ["alpha" "beta"];
   assert canonicalListSchema.unique && canonicalListSchema.canonical_order;
@@ -843,6 +858,9 @@ in
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
   assert builtins.length (builtins.attrNames smokeAbilityProjection.requirementTemplates) == 1;
   assert builtins.length (builtins.attrNames disabledRsyncProjection.requirementTemplates) > 0;
+  assert selectedChronyAbilities.instances ? "chrony:service";
+  assert selectedChronyAbilities.requests ? "chrony:chronyd-lifecycle";
+  assert selectedChronyAbilities.requests ? "chrony:chrony-configuration";
   assert dockerService;
   assert containerdStaticProjection;
   assert kernelModules;
