@@ -16,8 +16,9 @@
   coreutils,
   jq,
   writeShellScriptBin,
-}: let
-  mkK3sExposePackage = import ./_k3s-expose-package.nix {
+}:
+let
+  mkK3sRolePackage = import ./_k3s-role-package.nix {
     inherit
       lib
       mkDerivation
@@ -39,16 +40,7 @@
       ;
   };
 in
-  mkK3sExposePackage {
-    pname = "k3s-combined";
-    role = "combined";
-    description = "Lightweight Kubernetes (combined: server + agent)";
-    command = "server";
-    requiredEnv = [];
-    evidenceSources = [./k3s-combined.nix];
-    firewall = {
-      allowedTCP = [6443 10250];
-      allowedUDP = [8472];
-      forwardPolicy = "accept";
-    };
-  }
+mkK3sRolePackage {
+  pname = "k3s-combined";
+  evidenceSources = [ ./k3s-combined.nix ];
+}
