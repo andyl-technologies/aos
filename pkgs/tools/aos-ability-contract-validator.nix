@@ -10,7 +10,7 @@
     inherit src;
     name = "aos-ability-contract-validator-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-4G8waM8fsmqSjIgkaitrG3HmPy2e6KShpDDJn7THqZc=";
+    hash = "sha256-jgo0MD4rN+B9hjCBswyllyYc1ImfEBPZMJsh0BxADhg=";
   };
 in
   mkCargoPackage {
