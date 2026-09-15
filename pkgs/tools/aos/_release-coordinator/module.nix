@@ -59,31 +59,56 @@
     then declarationProgram
     else program;
 
-  group = name: id:
+  identities = {
+    aos-release = {
+      description = "AOS content release coordinator";
+      home = "/var/lib/aos-release-coordinator";
+      supplementaryGroups = [];
+    };
+    aos-release-timestamp = {
+      description = "AOS TUF timestamp renewal";
+      home = "/var/lib/aos-release-timestamp";
+      supplementaryGroups = [];
+    };
+    aos-release-backup = {
+      description = "AOS release backup and restore verification";
+      home = "/var/lib/aos-release-backup";
+      supplementaryGroups = ["aos-release" "aos-release-timestamp"];
+    };
+    aos-release-monitor = {
+      description = "AOS release operation alerts";
+      home = "/var/lib/aos-release-monitor";
+      supplementaryGroups = [];
+    };
+  };
+
+  group = name:
     producer "${name}-group" serviceManagement.interfaces.groupResolution {
       inherit name;
       allocation = "managed";
-      requested_id = id;
     };
-  principal = {
-    name,
-    id,
-    description,
-    home,
-    supplementaryGroups ? [],
-  }:
+  principal = name: definition:
     producer "${name}-principal" serviceManagement.interfaces.principalResolution {
-      inherit name description;
+      inherit name;
+      inherit (definition) description;
       allocation = "managed";
-      requested_id = id;
-      home_directory = home;
+      home_directory = definition.home;
       login_access = "disabled";
       primary_group = resultOf "${name}-group" "group-name";
       supplementary_groups =
         builtins.map
         (groupName: resultOf "${groupName}-group" "group-name")
-        supplementaryGroups;
+        definition.supplementaryGroups;
     };
+  identityFragments =
+    lib.concatMap
+    (name: let
+      definition = identities.${name};
+    in [
+      (group name)
+      (principal name definition)
+    ])
+    (builtins.attrNames identities);
   storage = {
     key,
     name,
@@ -170,13 +195,13 @@
     source = resultOf request "planned-path";
     access = "read-only";
   };
-  identity = role: supplementaryGroups: {
+  identity = role: {
     principal = resultOf "${role}-principal" "principal-name";
     primary_group = resultOf "${role}-group" "group-name";
     supplementary_groups =
       builtins.map
       (groupName: resultOf "${groupName}-group" "group-name")
-      supplementaryGroups;
+      identities.${role}.supplementaryGroups;
     ephemeral = false;
     file_creation_mask = "0077";
   };
@@ -306,7 +331,7 @@
         (readWriteMount "runtime" "release-runtime")
       ];
       inherit logging;
-      identity = identity "aos-release" [];
+      identity = identity "aos-release";
       isolation = isolation "host";
       linux_isolation = linuxIsolation true;
     };
@@ -335,7 +360,7 @@
         (readWriteMount "runtime" "timestamp-runtime")
       ];
       inherit logging;
-      identity = identity "aos-release-timestamp" [];
+      identity = identity "aos-release-timestamp";
       isolation = isolation "host";
       linux_isolation = linuxIsolation true;
     };
@@ -366,7 +391,7 @@
         (readOnlyMount "timestamp-state" "timestamp-state")
       ];
       inherit logging;
-      identity = identity "aos-release-backup" ["aos-release" "aos-release-timestamp"];
+      identity = identity "aos-release-backup";
       isolation = isolation "host";
       linux_isolation = linuxIsolation true;
     };
@@ -397,7 +422,7 @@
         (readWriteMount "runtime" "restore-runtime")
       ];
       inherit logging;
-      identity = identity "aos-release-backup" ["aos-release" "aos-release-timestamp"];
+      identity = identity "aos-release-backup";
       isolation = isolation "none";
       linux_isolation = linuxIsolation false;
     };
@@ -417,42 +442,14 @@
         (readWriteMount "runtime" "monitor-runtime")
       ];
       inherit logging;
-      identity = identity "aos-release-monitor" [];
+      identity = identity "aos-release-monitor";
       isolation = isolation "host";
       linux_isolation = linuxIsolation true;
     };
 
   fragmentsFor = programs: credentials:
-    [
-      (group "aos-release" 803)
-      (group "aos-release-timestamp" 804)
-      (group "aos-release-backup" 805)
-      (group "aos-release-monitor" 806)
-      (principal {
-        name = "aos-release";
-        id = 803;
-        description = "AOS content release coordinator";
-        home = "/var/lib/aos-release-coordinator";
-      })
-      (principal {
-        name = "aos-release-timestamp";
-        id = 804;
-        description = "AOS TUF timestamp renewal";
-        home = "/var/lib/aos-release-timestamp";
-      })
-      (principal {
-        name = "aos-release-backup";
-        id = 805;
-        description = "AOS release backup and restore verification";
-        home = "/var/lib/aos-release-backup";
-        supplementaryGroups = ["aos-release" "aos-release-timestamp"];
-      })
-      (principal {
-        name = "aos-release-monitor";
-        id = 806;
-        description = "AOS release operation alerts";
-        home = "/var/lib/aos-release-monitor";
-      })
+    identityFragments
+    ++ [
       (storage {
         key = "release-state";
         name = "aos-release-coordinator";

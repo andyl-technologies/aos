@@ -20,6 +20,11 @@
       operations = ["observe"];
       lifetime = "persistent";
     };
+  program = name: {
+    artifact = lib.abilities.packageOutput {};
+    entry_point = "bin/${name}";
+    arguments = [];
+  };
 
   fixedPoint = lib.evalModules {
     inherit lib;
@@ -32,6 +37,14 @@
           contributable = true;
         };
         aos.abilities.environment = builtins.removeAttrs environmentId ["_type"];
+        aos.services.releaseCoordinator = {
+          enable = true;
+          releaseProgram = program "release";
+          timestampProgram = program "timestamp";
+          backupProgram = program "backup";
+          restoreCheckProgram = program "restore-check";
+          alertProgram = program "alert";
+        };
         aos.services.chrony.enable = true;
         aos.registry-hub = {
           enable = true;
@@ -59,6 +72,10 @@
       }
     ];
     packageModules = [
+      {
+        name = "aos";
+        module.imports = [../../pkgs/tools/aos/_abilities/module.nix];
+      }
       {
         name = "chrony";
         module.imports = [../../pkgs/networking/_chrony-abilities/module.nix];
@@ -89,6 +106,14 @@
   identityRequestNames = [
     "aos-hub:service-group"
     "aos-hub:service-principal"
+    "aos:aos-release-backup-group"
+    "aos:aos-release-backup-principal"
+    "aos:aos-release-group"
+    "aos:aos-release-monitor-group"
+    "aos:aos-release-monitor-principal"
+    "aos:aos-release-principal"
+    "aos:aos-release-timestamp-group"
+    "aos:aos-release-timestamp-principal"
     "chrony:chrony-group"
     "chrony:chrony-principal"
     "garage:service-group"
@@ -118,6 +143,14 @@ in
   == [
     "aos-hub"
     "aos-hub"
+    "aos-release"
+    "aos-release"
+    "aos-release-backup"
+    "aos-release-backup"
+    "aos-release-monitor"
+    "aos-release-monitor"
+    "aos-release-timestamp"
+    "aos-release-timestamp"
     "chrony"
     "chrony"
     "garage"

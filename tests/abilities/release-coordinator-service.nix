@@ -179,10 +179,12 @@ in
   assert builtins.all
   (name: (request "${name}-isolation").home_access == "inaccessible")
   lifecycleNames;
-  assert (request "aos-release-group").requested_id == 803;
-  assert (request "aos-release-timestamp-group").requested_id == 804;
-  assert (request "aos-release-backup-group").requested_id == 805;
-  assert (request "aos-release-monitor-group").requested_id == 806;
+  assert builtins.all
+  (name: !((request "${name}-group") ? requested_id))
+  ["aos-release" "aos-release-timestamp" "aos-release-backup" "aos-release-monitor"];
+  assert builtins.all
+  (name: !((request "${name}-principal") ? requested_id))
+  ["aos-release" "aos-release-timestamp" "aos-release-backup" "aos-release-monitor"];
   assert (request "aos-release-backup-principal").supplementary_groups
   == [
     (resultOf "aos-release-group" "group-name")
