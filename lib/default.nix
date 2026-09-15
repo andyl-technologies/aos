@@ -158,7 +158,6 @@
     evalModules = modules.evalModules;
   };
   qualification = import ./qualification.nix {inherit abilities;};
-  aosDoc = import ./documentation.nix;
 
   platformMod = import ./platform.nix;
   derivations = import ./derivations.nix {inherit system bash;};
@@ -183,7 +182,6 @@
       inherit abilities;
       inherit qualification;
       effects = abilities.effects;
-      inherit aosDoc;
       literalExpression = text: {
         _type = "literalExpression";
         inherit text;
