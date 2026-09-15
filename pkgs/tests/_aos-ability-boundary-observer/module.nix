@@ -12,6 +12,26 @@
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
   inherit (lib.abilities) resultOf;
+  forwardEndpointInterface = {
+    name = "aos.execution.observation-endpoint";
+    abi = 1;
+    descriptor = null;
+  };
+  forwardEndpointRequirement = {
+    description = "Discovers the selected protected execution observer endpoint.";
+    interface = forwardEndpointInterface.name;
+    inherit (forwardEndpointInterface) abi descriptor;
+    methods = ["observe"];
+    guarantees = [];
+    strength = "required";
+    fallback = null;
+  };
+  forwardEndpointRequest = {
+    requirement = "forward-endpoint";
+    consumer = "boundary-observer";
+    scope = ["forward-endpoint"];
+    parameters.endpoint = "default";
+  };
 
   producer = key: interface: parameters:
     serviceManagement.forProducer {
@@ -66,18 +86,20 @@
         stop_timeout_millis = 90000;
       };
       dependencies = {
-        prerequisites = [
-          (resultOf "runtime-storage" "retained-resource")
-          (resultOf "state-storage" "retained-resource")
-        ] ++ cfg.forwardPrerequisites;
-        after = cfg.forwardPrerequisites;
+        prerequisites =
+          [
+            (resultOf "runtime-storage" "retained-resource")
+            (resultOf "state-storage" "retained-resource")
+          ]
+          ++ lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "retained-resource");
+        after = lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "retained-resource");
         before = [];
-        requires = cfg.forwardPrerequisites;
+        requires = lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "retained-resource");
         wants = [];
       };
       environment = {
-        variables = lib.optionalAttrs (cfg.forwardSocket != null) {
-          AOS_ABILITY_FORWARD_SOCKET = cfg.forwardSocket;
+        variables = lib.optionalAttrs cfg.forwardToSelectedEndpoint {
+          AOS_ABILITY_FORWARD_SOCKET = resultOf "forward-endpoint" "socket-path";
         };
         search_path = [];
       };
@@ -175,27 +197,20 @@ in {
       default = "managed-service";
       description = "Whether this system owns the controller or consumes the test's externally mounted socket.";
     };
-    forwardSocket = lib.mkOption {
-      type = abilityTypes.optional (abilityTypes.deferredResult abilityTypes.executionPath);
-      default = null;
-      description = "Optional protected observer endpoint to which the controller forwards each event.";
-    };
-    forwardPrerequisites = lib.mkOption {
-      type = abilityTypes.list {
-        element = abilityTypes.deferredResult abilityTypes.resourceReference;
-        maxItems = 8;
-        unique = true;
-        canonicalOrder = true;
-      };
-      default = [];
-      description = "Resources that must be ready before forwarding observed events.";
+    forwardToSelectedEndpoint = lib.mkOption {
+      type = abilityTypes.boolean;
+      default = false;
+      description = "Forward observed events to the endpoint selected by the package requirement.";
     };
   };
 
   config = lib.mkMerge [
     {
       aos.abilities = lib.mkMerge (
-        builtins.map (contribution: contribution.declarations) contributions
+        [
+          {requirementTemplates.forward-endpoint = forwardEndpointRequirement;}
+        ]
+        ++ builtins.map (contribution: contribution.declarations) contributions
       );
     }
     (lib.mkIf cfg.enable {
@@ -204,6 +219,9 @@ in {
           {
             instances.boundary-observer = {};
           }
+          (lib.optionalAttrs cfg.forwardToSelectedEndpoint {
+            requests.forward-endpoint = forwardEndpointRequest;
+          })
         ]
         ++ builtins.map
         (fragment: (serviceManagement.splitContribution fragment).configured)

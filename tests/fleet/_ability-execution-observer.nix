@@ -3,42 +3,31 @@
   lib,
   pkgs,
   external ? false,
-  forwardEndpoint ? null,
+  forwardToCrucible ? false,
 }: let
   package = pkgs.aos-ability-boundary-observer;
   mode =
     if external
     then "external-test-mount"
     else "managed-service";
-  forwardSocket =
-    if forwardEndpoint == null
-    then null
-    else lib.abilities.resultOf forwardEndpoint.request forwardEndpoint.socketOutput;
-  forwardPrerequisites =
-    if forwardEndpoint == null
-    then []
-    else [
-      (lib.abilities.resultOf forwardEndpoint.request forwardEndpoint.resourceOutput)
-    ];
   observerConfig = {
     enable = true;
-    inherit mode forwardSocket forwardPrerequisites;
+    inherit mode;
+    forwardToSelectedEndpoint = forwardToCrucible;
   };
   forwardHostConfig =
-    if forwardEndpoint == null
+    if !forwardToCrucible
     then ''
-      aos.tests.executionObserver.forwardSocket = null;
-      aos.tests.executionObserver.forwardPrerequisites = [];
+      aos.tests.executionObserver.forwardToSelectedEndpoint = false;
     ''
     else ''
-      aos.tests.executionObserver.forwardSocket = lib.abilities.resultOf \
-        ${builtins.toJSON forwardEndpoint.request} \
-        ${builtins.toJSON forwardEndpoint.socketOutput};
-      aos.tests.executionObserver.forwardPrerequisites = [
-        (lib.abilities.resultOf
-          ${builtins.toJSON forwardEndpoint.request}
-          ${builtins.toJSON forwardEndpoint.resourceOutput})
-      ];
+      aos.tests.executionObserver.forwardToSelectedEndpoint = true;
+      aos.abilities.bindings."fleet-observer:forward-endpoint" = {
+        request = "aos-ability-boundary-observer:forward-endpoint";
+        implementation = "aos-ability-crucible:execution-observer-endpoint";
+        providerInstance = "aos-ability-crucible:ability-crucible";
+        slot = "forward-observer";
+      };
     '';
 in {
   inherit package;
@@ -52,12 +41,23 @@ in {
       resourceOutput = "retained-resource";
       socketOutput = "socket-path";
     };
-    aos.abilities.bindings."fleet-observer:endpoint" = {
-      request = "aos-ability-boundary-observer:endpoint";
-      implementation = "aos-ability-boundary-observer:execution-observer-endpoint";
-      providerInstance = "aos-ability-boundary-observer:boundary-observer";
-      slot = "observer";
-    };
+    aos.abilities.bindings =
+      {
+        "fleet-observer:endpoint" = {
+          request = "aos-ability-boundary-observer:endpoint";
+          implementation = "aos-ability-boundary-observer:execution-observer-endpoint";
+          providerInstance = "aos-ability-boundary-observer:boundary-observer";
+          slot = "observer";
+        };
+      }
+      // lib.optionalAttrs forwardToCrucible {
+        "fleet-observer:forward-endpoint" = {
+          request = "aos-ability-boundary-observer:forward-endpoint";
+          implementation = "aos-ability-crucible:execution-observer-endpoint";
+          providerInstance = "aos-ability-crucible:ability-crucible";
+          slot = "forward-observer";
+        };
+      };
   };
 
   hostModule = ''

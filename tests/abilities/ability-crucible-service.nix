@@ -108,10 +108,7 @@ in
   assert builtins.attrNames disabled.config.aos.abilities.implementations == builtins.attrNames abilities.implementations;
   assert abilities.instances ? "aos-ability-crucible:ability-crucible";
   assert endpoint.parameters
-  == {
-    service_resource = outputReference "aos-ability-crucible:adapter-lifecycle" "service-resource";
-    socket_path = runtimePath;
-  };
+  == {endpoint = "default";};
   assert endpointDeclaration.lifecycle.releasesEphemeralOnDisable == false;
   assert endpointDeclaration.methods.observe.semantics
   == {

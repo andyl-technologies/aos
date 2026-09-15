@@ -12,7 +12,8 @@
   serviceTypes = serviceManagement.types;
   resultOf = lib.abilities.resultOf;
   packageArtifact = lib.abilities.packageOutput {};
-  runtimePath = "/run/aos/ability-crucible";
+  settings = import ./settings.nix {socketName = cfg.socketName;};
+  inherit (settings) runtimePath socketPath;
 
   producer = key: interface: parameters:
     serviceManagement.forProducer {
@@ -25,7 +26,6 @@
     mode = "0700";
     requested_path = runtimePath;
   };
-  socketPath = "${runtimePath}/${cfg.socketName}";
   adapterConfiguration = serviceManagement.forConfiguration {
     inherit serviceTypes;
     consumerInstance = "ability-crucible";
@@ -159,10 +159,7 @@
     alias = "execution-observer-endpoint";
     declaration = config.aos.abilities.interfaces."${packageName}:execution-observer-endpoint";
   };
-  endpoint = producer "observer-endpoint" endpointInterface {
-    service_resource = resultOf "adapter-lifecycle" "service-resource";
-    socket_path = socketPath;
-  };
+  endpoint = producer "observer-endpoint" endpointInterface {endpoint = "default";};
   fragments = [runtimeStorage adapterConfiguration service endpoint];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
