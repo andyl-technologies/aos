@@ -7,10 +7,12 @@
 //! the same loaded resolver participates in the module fixed point.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context as _, Result, ensure};
-use aos_ability_model::{LocalKey, MAX_TRANSACTION_BLOB_BYTES, ResourceReference};
+use aos_ability_model::{
+    ABILITY_LIMITS_V1, ArtifactReference, LocalKey, MAX_TRANSACTION_BLOB_BYTES, ResourceReference,
+};
 use aos_contract::Sha256Digest;
 use aos_provider_protocol::{TRANSACTION_BLOB_OUTPUT_TYPE, TransactionBlobOutput};
 use aos_storage_provisioning::{
@@ -37,9 +39,27 @@ pub(crate) struct EvaluationParameters {
     /// Carries the durable storage-provisioning intent.
     pub(crate) request: ProvisioningIntent,
     /// Carries the only value authorized to supply host configuration bytes.
-    pub(crate) authorized_input: AuthorizedProvisioningInput,
+    pub(crate) authorized_input: AuthorizedInputSource,
     /// Pins the synchronized registry and immutable image authorities.
     pub(crate) registry_snapshot: SynchronizedSnapshot,
+}
+
+/// Selects the protected authorization result within the durable stage graph.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub(crate) enum AuthorizedInputSource {
+    /// Consumes the authorizer result directly within the initrd transaction.
+    DirectResult {
+        /// Carries the exact typed protected result.
+        input: AuthorizedProvisioningInput,
+    },
+    /// Reloads the same canonical result from its retained persistent artifact.
+    RetainedArtifact {
+        /// Locates the provider-reverified immutable flat object.
+        artifact: ArtifactReference,
+        /// Authenticates the exact canonical serialized input bytes.
+        content_sha256: Sha256Digest,
+    },
 }
 
 /// Carries canonical manifest bytes and their graph-bound result envelope.
@@ -83,8 +103,9 @@ pub(crate) struct EvaluationResult {
 /// transport bound.
 pub(crate) fn evaluate(parameters: EvaluationParameters) -> Result<EvaluationOutput> {
     validate_provisioning_intent(&parameters.request)?;
-    validate_authorized_provisioning_input(&parameters.authorized_input)?;
     validate_synchronized_snapshot(&parameters.registry_snapshot)?;
+    let authorized_input = resolve_authorized_input(parameters.authorized_input)?;
+    validate_authorized_provisioning_input(&authorized_input)?;
 
     let scratch = Builder::new()
         .prefix("aos-provisioning-evaluation-")
@@ -92,21 +113,21 @@ pub(crate) fn evaluate(parameters: EvaluationParameters) -> Result<EvaluationOut
         .context("creating private provisioning evaluation scratch")?;
     let eval_root = scratch.path().join("eval");
     fs::create_dir(&eval_root).context("creating provisioning evaluator root")?;
-    let host_nix = prepare_host_input(scratch.path(), &parameters.authorized_input)?;
-    let facts_json = prepare_facts_input(scratch.path(), &parameters.authorized_input)?;
+    let host_nix = prepare_host_input(scratch.path(), &authorized_input)?;
+    let facts_json = prepare_facts_input(scratch.path(), &authorized_input)?;
     let pinned_host = add_fixed_eval_host_source(&host_nix, &eval_root)
         .context("pinning authorized provisioning host input")?;
     let pinned_facts = add_fixed_input_to_store(&facts_json)
         .context("pinning observational provisioning facts")?;
 
-    let base_lib = PathBuf::from(&parameters.authorized_input.base_library.store_path);
+    let base_lib = PathBuf::from(&authorized_input.base_library.store_path);
     let module_abi = read_module_abi(&base_lib)?;
     let abi_hash = read_base_lib_abi_hash(&base_lib, module_abi)?;
     ensure!(
-        abi_hash == parameters.authorized_input.base_library.abi_hash,
+        abi_hash == authorized_input.base_library.abi_hash,
         "authorized base-library ABI differs from the immutable module library"
     );
-    let retained = retained_inputs(&parameters.authorized_input, &pinned_host, &pinned_facts)?;
+    let retained = retained_inputs(&authorized_input, &pinned_host, &pinned_facts)?;
     let out = scratch.path().join("manifest.json");
     run_eval_command(&EvalCommand {
         host_nix: pinned_host,
@@ -123,8 +144,7 @@ pub(crate) fn evaluate(parameters: EvaluationParameters) -> Result<EvaluationOut
         trusted_config_keys_dirs: Vec::new(),
         retained_host_inputs: Some(retained),
         require_signed_host_nix: false,
-        image_default_host: parameters.authorized_input.source
-            == CanonicalProvisioningSource::Fallback,
+        image_default_host: authorized_input.source == CanonicalProvisioningSource::Fallback,
         registry_snapshot: Some(parameters.registry_snapshot.clone()),
     })?;
 
@@ -144,10 +164,51 @@ pub(crate) fn evaluate(parameters: EvaluationParameters) -> Result<EvaluationOut
         },
         manifest_sha256,
         registry_snapshot_sha256: parameters.registry_snapshot.snapshot_sha256,
-        host_module_sha256: parameters.authorized_input.host_module_sha256,
-        instance_facts_sha256: parameters.authorized_input.facts.sha256,
+        host_module_sha256: authorized_input.host_module_sha256,
+        instance_facts_sha256: authorized_input.facts.sha256,
     };
     Ok(EvaluationOutput { manifest, result })
+}
+
+fn resolve_authorized_input(source: AuthorizedInputSource) -> Result<AuthorizedProvisioningInput> {
+    match source {
+        AuthorizedInputSource::DirectResult { input } => Ok(input),
+        AuthorizedInputSource::RetainedArtifact {
+            artifact,
+            content_sha256,
+        } => {
+            let path = Path::new(&artifact.store_path);
+            ensure!(
+                path.is_absolute()
+                    && path.parent() == Some(Path::new("/nix/store"))
+                    && path.components().all(|component| matches!(
+                        component,
+                        Component::RootDir | Component::Normal(_)
+                    )),
+                "authorized-input artifact is not an exact Nix store object"
+            );
+            let metadata = fs::symlink_metadata(path)
+                .context("inspecting the retained authorized-input artifact")?;
+            ensure!(
+                metadata.is_file() && !metadata.file_type().is_symlink(),
+                "authorized-input artifact is not a regular immutable object"
+            );
+            ensure!(
+                metadata.len() <= ABILITY_LIMITS_V1.max_document_bytes,
+                "authorized-input artifact exceeds the canonical document bound"
+            );
+            ensure!(
+                fs::canonicalize(path)? == path,
+                "authorized-input artifact path is not canonical"
+            );
+            let bytes = fs::read(path).context("reading the retained authorized-input artifact")?;
+            ensure!(
+                Sha256Digest::of_bytes(&bytes) == content_sha256,
+                "authorized-input artifact differs from its observed content digest"
+            );
+            aos_contract::canonical::from_slice(&bytes, "retained authorized provisioning input")
+        }
+    }
 }
 
 fn prepare_host_input(root: &Path, input: &AuthorizedProvisioningInput) -> Result<PathBuf> {
