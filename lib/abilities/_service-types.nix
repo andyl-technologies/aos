@@ -444,6 +444,8 @@
       locked_memory_bytes = resourceLimit;
       memory_high_bytes = resourceLimit;
       memory_max_bytes = resourceLimit;
+      memory_swap_max_bytes = resourceLimit;
+      oom_policy = types.enum ["continue" "stop" "kill"];
     } [
       "open_files"
       "processes"
@@ -451,6 +453,8 @@
       "locked_memory_bytes"
       "memory_high_bytes"
       "memory_max_bytes"
+      "memory_swap_max_bytes"
+      "oom_policy"
     ];
   resources = request resourcesFeature;
 
