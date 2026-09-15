@@ -165,6 +165,9 @@
     then isExecutionPath value
     else false;
 
+  semanticJson = value:
+    builtins.unsafeDiscardStringContext (builtins.toJSON value);
+
   strictRecordType = file: fields: let
     submoduleType = moduleTypes.submodule {
       _file = file;
@@ -538,7 +541,7 @@ in rec {
       builtins.length value
       <= schema.max_items
       && (let
-        encoded = builtins.map builtins.toJSON value;
+        encoded = builtins.map semanticJson value;
         distinct =
           builtins.length encoded
           == builtins.length (builtins.attrNames (builtins.listToAttrs (builtins.map (item: {
@@ -552,7 +555,7 @@ in rec {
     normalize = value: let
       entries =
         builtins.map (item: {
-          encoded = builtins.toJSON item;
+          encoded = semanticJson item;
           value = item;
         })
         value;
