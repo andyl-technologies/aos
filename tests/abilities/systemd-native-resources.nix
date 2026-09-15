@@ -161,5 +161,6 @@ in
   assert builtins.isFunction abilities.implementations."systemd:mount-resource".transition;
   assert abilities.implementations."systemd:systemd-mount-effects".providerModule == null;
   assert abilities.implementations."systemd:systemd-mount-effects".handlerDescriptor.entryPoint == "bin/aos-systemd-provider";
+  assert abilities.implementations."systemd:device-presence".providerModule == null;
   assert abilities.implementations."systemd:device-presence".handlerDescriptor.entryPoint == "bin/aos-systemd-provider";
   assert builtins.length evaluation.config.systemd.providerUnitArtifacts == 2; true
