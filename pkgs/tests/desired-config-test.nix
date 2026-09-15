@@ -5,9 +5,12 @@
   start = writeShellScriptBin "desired-config-test-start" ''
     set -eu
 
-    . /etc/aos/packages/desired-config-test/config.env
+    config=$1
+    state_dir=$2
+    . "$config"
     test "$TOKEN" = desired-token
-    printf '%s\n' "$TOKEN" > /var/lib/aos-pkg-desired-config-test/started
+    mkdir -p "$state_dir"
+    printf '%s\n' "$TOKEN" > "$state_dir/started"
   '';
 in
   mkDerivation {
@@ -15,47 +18,21 @@ in
     version = "1.0.0";
     src = null;
 
+    runtimeDeps = [start];
+
     phases = [
       {
         name = "install";
         script = ''
           mkdir -p "$out/share/desired-config-test"
           printf desired-config-test > "$out/share/desired-config-test/payload.txt"
+          mkdir -p "$out/bin"
+          ln -s ${start}/bin/desired-config-test-start "$out/bin/desired-config-test-start"
         '';
       }
     ];
 
-    expose = {
-      units."desired-config-test.service" = {
-        description = "AOS desired reconciliation config sequencing test";
-        serviceConfig = {
-          Type = "oneshot";
-          ExecStart = "${start}/bin/desired-config-test-start";
-          RemainAfterExit = true;
-          StateDirectory = "aos-pkg-desired-config-test";
-        };
-      };
-
-      config.artifacts = [
-        {
-          name = "env";
-          path = "/etc/aos/packages/desired-config-test/config.env";
-          format = "env";
-          required = ["TOKEN"];
-          optional = [];
-          units = ["desired-config-test.service"];
-          reload = "none";
-        }
-      ];
-
-      permissions = {
-        network = "private";
-        capabilities = [];
-        devices = [];
-        host-paths = [];
-        syscalls = "restricted";
-      };
-    };
+    abilities = ./_desired-config-test/module.nix;
 
     meta = {
       description = "AOS desired package config sequencing test payload";
