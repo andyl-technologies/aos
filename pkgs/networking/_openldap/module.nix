@@ -137,6 +137,7 @@
     dataView = producer "data-view" serviceManagement.interfaces.storageView {
       name = "data";
       source = resultOf "state-storage" "retained-resource";
+      source_path = resultOf "state-storage" "planned-path";
       access = "read-write";
       relative_path = "data";
     };

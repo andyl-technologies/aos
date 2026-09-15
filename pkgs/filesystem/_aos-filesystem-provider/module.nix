@@ -43,7 +43,7 @@
   };
   implementation = interface: desiredType: description: {
     inherit description desiredType providerModule;
-    interface = interface.alias;
+    interface = interface.identity;
     inherit artifact;
     inherit (interface) methods;
     guarantees = [];

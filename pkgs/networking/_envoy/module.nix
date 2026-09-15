@@ -327,6 +327,7 @@
   adminLogView = producer "admin-log-view" serviceManagement.interfaces.storageView {
     name = "admin-access-log";
     source = resultOf "log-storage" "retained-resource";
+    source_path = resultOf "log-storage" "planned-path";
     access = "read-write";
     relative_path = "admin-access.log";
   };
