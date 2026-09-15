@@ -1,9 +1,10 @@
 ##! modules/packages.nix - Image-baked package policy.
 ##!
 ##! Declares the host policy layer for RFC-0001 exposed packages: which
-##! package artifacts are baked into the image, which package targets receive
-##! image preset enablement, and how baked packages seed apm's system package
-##! profile on first boot.
+##! package artifacts are baked into the image and which package targets
+##! receive image preset enablement. Runtime configuration comes from each
+##! package's authenticated module contract rather than a parallel config
+##! output projection.
 {
   config,
   lib,
@@ -63,21 +64,13 @@
   packageMetaFile = name: package: let
     packageHash = storePathHash package.package;
     packageVersion = package.package.version or "0";
-    configOutput =
-      if package.package ? config
-      then builtins.toString package.package.config
-      else "";
   in
     pkgs.runCommand "aos-package-${name}-meta.json" {
       buildDeps = [pkgs.coreutils pkgs.jq pkgs.nix];
-      exportReferencesGraph =
-        {
-          exposeArtifact = [package.package.expose];
-          packagePayload = [package.package];
-        }
-        // lib.optionalAttrs (package.package ? config) {
-          configOutput = [package.package.config];
-        };
+      exportReferencesGraph = {
+        exposeArtifact = [package.package.expose];
+        packagePayload = [package.package];
+      };
       preferLocalBuild = true;
       allowSubstitutes = false;
     } ''
@@ -87,12 +80,6 @@
       package_store_path=${lib.escapeShellArg (builtins.toString package.package)}
       package_name=${lib.escapeShellArg name}
       package_version=${lib.escapeShellArg packageVersion}
-      config_output=${lib.escapeShellArg configOutput}
-      if [ -n "$config_output" ]; then
-        config_meta="$config_output/config-meta.json"
-      else
-        config_meta=/dev/null
-      fi
 
       jq -ce \
         --arg path ${lib.escapeShellArg (builtins.toString package.package.expose)} \
@@ -111,17 +98,6 @@
       }
       expose_nar_hash=$(canonical_nar_hash "$(jq -r '.narHash' expose-info.json)")
       package_nar_hash=$(canonical_nar_hash "$(jq -r '.narHash' package-info.json)")
-      if [ -n "$config_output" ]; then
-        jq -ce \
-          --arg path "$config_output" \
-          '[.configOutput[] | select(.path == $path)] | if length == 1 then .[0] else error("missing config output realization") end' \
-        "$NIX_ATTRS_JSON_FILE" > config-info.json
-        config_info_file=config-info.json
-        config_nar_hash=$(canonical_nar_hash "$(jq -r '.narHash' config-info.json)")
-      else
-        config_info_file=/dev/null
-        config_nar_hash=
-      fi
 
       jq -n \
         --slurpfile manifest "$manifest" \
@@ -153,12 +129,8 @@
         --arg name "$package_name" \
         --arg version "$package_version" \
         --arg expose_path ${lib.escapeShellArg (builtins.toString package.package.expose)} \
-        --arg config_output "$config_output" \
-        --slurpfile config_meta "$config_meta" \
         --slurpfile expose_info expose-info.json \
-        --slurpfile config_info "$config_info_file" \
         --arg expose_nar_hash "$expose_nar_hash" \
-        --arg config_nar_hash "$config_nar_hash" \
         --arg root_hash "$root_hash" \
         --arg root_hash_sig "$root_hash_sig" \
         --arg root_digest "$root_digest" \
@@ -184,31 +156,6 @@
               nar_hash: $expose_nar_hash,
               nar_size: $expose_info[0].narSize
             },
-            config_module: (
-              if $config_output == "" then null
-              else {
-                config_output: {
-                  store_path: $config_output,
-                  nar_hash: $config_nar_hash,
-                  nar_size: $config_info[0].narSize,
-                  references: (
-                    $config_info[0].references
-                    | map(split("/")[-1] | split("-")[0])
-                    | unique
-                  )
-                },
-                evaluation_base_lib: null,
-                module_abi_compat: $config_meta[0].module_abi_compat,
-                declares: $config_meta[0].declares,
-                declaration_schema: [],
-                requires: [],
-                owns_roots: $config_meta[0].owns_roots,
-                contributes: $config_meta[0].contributes,
-                provides_capabilities: $config_meta[0].provides_capabilities,
-                artifacts: ($config_meta[0].artifacts // {})
-              }
-              end
-            ),
             permissions: $manifest[0].permissions,
             attestation: ({
               root_digest: $root_digest,
@@ -249,7 +196,7 @@
       allowSubstitutes = false;
     } ''
       set -eu
-      mkdir -p "$out/gen-1/usr" "$out/gen-1/expose" "$out/gen-1/cfgsrc" "$out/gen-1/meta" "$out/meta"
+      mkdir -p "$out/gen-1/usr" "$out/gen-1/expose" "$out/gen-1/meta" "$out/meta"
       cat > "$out/state.json" <<'JSON'
       {"current_generation":1,"next_generation":2}
       JSON
@@ -260,13 +207,9 @@
             packageHash = storePathHash package.package;
             exposeHash = storePathHash package.package.expose;
             metaFile = packageMetaFile name package;
-            configLink = lib.optionalString (package.package ? config) ''
-              ln -sfn ${package.package.config} "$out/gen-1/cfgsrc/${storePathHash package.package.config}"
-            '';
           in ''
             ln -sfn ${package.package} "$out/gen-1/usr/${packageHash}"
             ln -sfn ${package.package.expose} "$out/gen-1/expose/${exposeHash}"
-            ${configLink}
             cp ${metaFile}/${packageHash}.json "$out/meta/${packageHash}.json"
             cp ${metaFile}/${packageHash}.json "$out/gen-1/meta/${packageHash}.json"
           ''
@@ -307,32 +250,6 @@
     lib.mapAttrsToList
     (_: package: "enable ${packageTarget package}")
     presetExposedPackages;
-
-  seedPackageCases =
-    lib.concatStringsSep "\n"
-    (lib.mapAttrsToList (
-        name: package: let
-          packageHash = storePathHash package.package;
-          exposeHash = storePathHash package.package.expose;
-          metaFile = packageMetaFile name package;
-          configLink = lib.optionalString (package.package ? config) ''
-            ${pkgs.coreutils}/bin/ln -sfn ${package.package.config} "$profile/gen-1/cfgsrc/${storePathHash package.package.config}"
-          '';
-        in ''
-          ${name})
-            ${pkgs.coreutils}/bin/ln -sfn ${package.package} "$profile/gen-1/usr/${packageHash}"
-            ${pkgs.coreutils}/bin/ln -sfn ${package.package.expose} "$profile/gen-1/expose/${exposeHash}"
-            ${configLink}
-            ${pkgs.coreutils}/bin/cp ${metaFile}/${packageHash}.json "$profile/meta/${packageHash}.json"
-            ${pkgs.coreutils}/bin/cp ${metaFile}/${packageHash}.json "$profile/gen-1/meta/${packageHash}.json"
-            ;;
-        ''
-      )
-      exposedBundledPackages);
-
-  reconcileExposedUnits = pkgs.writeShellScriptBin "aos-reconcile-exposed-units" ''
-    exec ${pkgs.aos.packageRuntime}/bin/aos-package-runtime _test-reconcile-exposed-units "$@"
-  '';
 in {
   options = {
     aos.packages = lib.mkOption {
@@ -418,62 +335,12 @@ in {
     environment.systemPackages =
       lib.concatLists
       (lib.mapAttrsToList (
-          _: package:
-            [
-              package.package
-              package.package.expose
-            ]
-            ++ lib.optional (package.package ? config) package.package.config
+          _: package: [package.package package.package.expose]
         )
         exposedBundledPackages);
 
     environment.etc."aos/package-attestation-catalog.json" = lib.mkIf (exposedBundledPackages != {}) {
       source = "${packageAttestationCatalog}/package-attestation-catalog.json";
-    };
-
-    systemd.services.aos-seed-baked-packages = lib.mkIf (exposedBundledPackages != {}) {
-      description = "Seed baked AOS package profile";
-      wantedBy = ["multi-user.target"];
-      before = [
-        "aos-install-baked-packages.service"
-        "aos-preset.service"
-        "multi-user.target"
-      ];
-      after = [
-        "aos-seed-profiles.service"
-        "nix-overlay-setup.service"
-      ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-      };
-      script = ''
-        profile=/var/lib/profiles/system-packages
-        if [ ! -e "$profile/state.json" ]; then
-          if [ -f /etc/aos/packages.d/fleet-seed ]; then
-            ${pkgs.coreutils}/bin/mkdir -p "$profile/gen-1/usr" "$profile/gen-1/expose" "$profile/gen-1/cfgsrc" "$profile/gen-1/meta" "$profile/meta"
-            printf '%s\n' '{"current_generation":1,"next_generation":2}' > "$profile/state.json"
-            ${pkgs.coreutils}/bin/ln -sfn gen-1 "$profile/current"
-            seed_one() {
-              case "$1" in
-          ${seedPackageCases}
-                *)
-                  echo "unknown bundled AOS package seed '$1'" >&2
-                  exit 1
-                  ;;
-              esac
-            }
-            while IFS= read -r package || [ -n "$package" ]; do
-              [ -n "$package" ] || continue
-              seed_one "$package"
-            done < /etc/aos/packages.d/fleet-seed
-          else
-            ${pkgs.coreutils}/bin/mkdir -p "$profile"
-            ${pkgs.coreutils}/bin/cp -a ${packageSeedBundle}/. "$profile/"
-          fi
-        fi
-        AOS_EXPOSE_START_NO_WAIT=1 ${reconcileExposedUnits}/bin/aos-reconcile-exposed-units --system
-      '';
     };
   };
 }
