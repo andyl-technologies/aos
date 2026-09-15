@@ -11,11 +11,7 @@
   lib,
   system,
   mkSystem,
-  packagesWithExpose,
 }: let
-  exposeRenderer = import ../../pkgs/build-support/_expose-renderer.nix {
-    inherit lib pkgs;
-  };
   baseLib = system.config.aos.config.evalAtBoot.baseLib;
   abiOverrideSystem = mkSystem [
     ../../systems/server.nix
@@ -523,10 +519,12 @@
     then throw "the stock system must restore its last fully evaluated host input"
     else if !(builtins.hasAttr "aos-host-config-cache" system.config.systemd.services)
     then throw "the stock system must cache fully evaluated host input"
-    else if system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
+    else if
+      system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
       ? ConditionPathExists
     then throw "metadata acquisition must run on provisioned boots"
-    else if system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
+    else if
+      system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
       ? ConditionPathExists
     then throw "the restricted storage projection must remain available as a post-commit advisory check"
     else if
@@ -1033,32 +1031,6 @@
     if containsStr "nftables.d" system.config.environment.etc."nftables.conf".text
     then throw "modules/security/firewall.nix must not include /etc/nftables.d drop-ins"
     else "ok";
-  scanDirStorageRejected = let
-    forced = builtins.tryEval (
-      exposeRenderer.assertNoGlobalScanDirStorage "bad-package" [
-        {
-          path = "/etc/sysctl.d/70-bad-package.conf";
-          target = "/nix/store/bad-package-sysctl.conf";
-          overwrite = true;
-        }
-      ]
-    );
-  in
-    if forced.success
-    then throw "expose renderer must reject storage links under global scan dirs"
-    else "ok";
-
-  exposedPackageNames = builtins.attrNames packagesWithExpose;
-  exposedPackagePathsJson = builtins.toJSON (
-    builtins.map (name: packagesWithExpose.${name}.expose.outPath) exposedPackageNames
-  );
-  packageExposeSecurityGateEntries = builtins.toJSON (
-    builtins.map (name: {
-      inherit name;
-      expose = builtins.toString packagesWithExpose.${name}.expose;
-    })
-    exposedPackageNames
-  );
   derivationLibForExecutionCompatibility = import ../derivations.nix {
     system = "x86_64-linux";
   };
@@ -1122,8 +1094,6 @@ in
     name = "aos-eval-checks-0";
     system = lib.system;
     builder = "${pkgs.bash}/bin/bash";
-    inherit packageExposeSecurityGateEntries;
-    passAsFile = ["packageExposeSecurityGateEntries"];
     args = [
       "-c"
       ''
@@ -1132,224 +1102,6 @@ in
         jq=${pkgs.jq}/bin/jq
         systemd_analyze=${pkgs.systemd}/bin/systemd-analyze
         coreutils=${pkgs.coreutils}/bin
-        security_threshold=55
-        security_units=0
-        security_roots_helpers=0
-        security_skipped=0
-        security_skipped_names=
-        security_failed=0
-
-        is_allowed_unconfined_package() {
-          case "$1" in
-            # These workloads deliberately cross the ordinary package sandbox
-            # boundary: containerd owns namespaces/cgroups, EdgeCore manages
-            # edge workloads, and each k3s role owns a Kubernetes node. Keep
-            # this an exact list so a newly unconfined package still fails the
-            # aggregate security gate until its privilege model is reviewed.
-            aos-test-agent|containerd|edgecore|k3s-combined|k3s-control-plane|k3s-worker|kubelet)
-              return 0
-              ;;
-            *)
-              return 1
-              ;;
-          esac
-        }
-
-        unit_single_value() {
-          key=$1
-          path=$2
-          found=
-          while IFS= read -r line; do
-            case "$line" in
-              "$key="*)
-                if [ -n "$found" ]; then
-                  return 1
-                fi
-                found=''${line#*=}
-                ;;
-            esac
-          done < "$path"
-          if [ -z "$found" ]; then
-            return 1
-          fi
-          printf '%s\n' "$found"
-        }
-
-        is_authenticated_service_roots_unit() {
-          package_name=$1
-          service_path=$2
-          expose_path=$3
-          helper=${pkgs.aos-service-root}/bin/aos-service-root
-
-          if ! prepare=$(unit_single_value ExecStart "$service_path") \
-            || ! cleanup=$(unit_single_value ExecStop "$service_path") \
-            || ! cleanup_post=$(unit_single_value ExecStopPost "$service_path"); then
-            return 1
-          fi
-
-          read -r -a prepare_args <<< "$prepare"
-          if [ "''${#prepare_args[@]}" -lt 5 ] \
-            || [ "''${prepare_args[0]}" != "$helper" ] \
-            || [ "''${prepare_args[1]}" != prepare ] \
-            || [ "''${prepare_args[2]}" != "$package_name" ]; then
-            return 1
-          fi
-          payload=''${prepare_args[3]}
-          case "$payload" in
-            /nix/store/*) ;;
-            *) return 1 ;;
-          esac
-          payload_name=''${payload#/nix/store/}
-          case "$payload_name" in
-            ""|*/*|*,*|*:*|*\\*) return 1 ;;
-          esac
-
-          expected_cleanup="$helper cleanup ''${prepare#"$helper prepare "}"
-          if [ "$cleanup" != "$expected_cleanup" ] \
-            || [ "$cleanup_post" != "$expected_cleanup" ] \
-            || [ "$(unit_single_value Type "$service_path")" != oneshot ] \
-            || [ "$(unit_single_value RemainAfterExit "$service_path")" != true ] \
-            || [ "$(unit_single_value CapabilityBoundingSet "$service_path")" != "CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN" ] \
-            || [ "$(unit_single_value AmbientCapabilities "$service_path")" != "CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN" ] \
-            || [ "$(unit_single_value NoNewPrivileges "$service_path")" != false ] \
-            || [ "$(unit_single_value PrivateMounts "$service_path")" != false ] \
-            || [ "$(unit_single_value RestrictAddressFamilies "$service_path")" != AF_UNIX ] \
-            || [ "$(unit_single_value UMask "$service_path")" != 0077 ]; then
-            return 1
-          fi
-
-          declared_units=()
-          for ((i = 4; i < ''${#prepare_args[@]}; i++)); do
-            unit=''${prepare_args[i]}
-            for declared in "''${declared_units[@]}"; do
-              if [ "$declared" = "$unit" ]; then
-                return 1
-              fi
-            done
-            workload_path="$expose_path/units/$unit"
-            if [ ! -f "$workload_path" ] \
-              || [ "$(unit_single_value RootDirectory "$workload_path")" != "/run/aos/service-roots/$package_name/$unit/merged" ]; then
-              return 1
-            fi
-            declared_units+=("$unit")
-          done
-
-          discovered_units=0
-          shopt -s nullglob
-          for candidate in "$expose_path"/units/*.service; do
-            candidate_name=''${candidate##*/}
-            if [ "$candidate_name" = "aos-pkg-$package_name-service-roots.service" ]; then
-              continue
-            fi
-            root=$(unit_single_value RootDirectory "$candidate" 2>/dev/null || true)
-            case "$root" in
-              /run/aos/service-roots/"$package_name"/*/merged)
-                expected_root="/run/aos/service-roots/$package_name/$candidate_name/merged"
-                if [ "$root" != "$expected_root" ]; then
-                  shopt -u nullglob
-                  return 1
-                fi
-                matched=0
-                for declared in "''${declared_units[@]}"; do
-                  if [ "$declared" = "$candidate_name" ]; then
-                    matched=1
-                    break
-                  fi
-                done
-                if [ "$matched" -ne 1 ]; then
-                  shopt -u nullglob
-                  return 1
-                fi
-                discovered_units=$((discovered_units + 1))
-                ;;
-            esac
-          done
-          shopt -u nullglob
-
-          [ "$discovered_units" -eq "''${#declared_units[@]}" ]
-        }
-
-        is_side_effect_unit() {
-          package_name=$1
-          unit_name=$2
-          service_path=$3
-          expose_path=$4
-          case "$unit_name" in
-            aos-pkg-"$package_name"-host-paths.service|aos-pkg-"$package_name"-modules.service|aos-pkg-"$package_name"-sysctl.service|aos-pkg-"$package_name"-firewall.service|aos-pkg-"$package_name"-netns.service|aos-pkg-"$package_name"-ebpf.service)
-              return 0
-              ;;
-            aos-pkg-"$package_name"-service-roots.service)
-              if is_authenticated_service_roots_unit "$package_name" "$service_path" "$expose_path"; then
-                security_roots_helpers=$((security_roots_helpers + 1))
-                return 0
-              fi
-              return 1
-              ;;
-            *)
-              return 1
-              ;;
-          esac
-        }
-
-        check_package_security() {
-          entry=$1
-          package_name=$(printf '%s\n' "$entry" | "$jq" -r '.name')
-          expose_path=$(printf '%s\n' "$entry" | "$jq" -r '.expose')
-          manifest="$expose_path/manifest.json"
-          confinement_class=$("$jq" -r '.permissions.confinement.class // "sandboxed"' "$manifest")
-          if [ "$confinement_class" = unconfined ]; then
-            if ! is_allowed_unconfined_package "$package_name"; then
-              echo "systemd security gate found unexpected unconfined package: $package_name" >&2
-              security_failed=1
-              return 0
-            fi
-            security_skipped=$((security_skipped + 1))
-            security_skipped_names="$security_skipped_names''${security_skipped_names:+,}$package_name"
-            return 0
-          fi
-
-          tmp=$("$coreutils"/mktemp -d)
-          "$coreutils"/mkdir -p "$tmp/etc/systemd/system"
-          "$coreutils"/cp -a "$expose_path/units/." "$tmp/etc/systemd/system/"
-
-          shopt -s nullglob
-          for service_path in "$expose_path"/units/*.service; do
-            unit_name=''${service_path##*/}
-            if is_side_effect_unit "$package_name" "$unit_name" "$service_path" "$expose_path"; then
-              continue
-            fi
-            security_units=$((security_units + 1))
-            report="$tmp/$unit_name.security"
-            if ! "$systemd_analyze" security --offline=yes --threshold="$security_threshold" --root="$tmp" "$unit_name" >"$report" 2>&1; then
-              echo "systemd security gate failed for $package_name:$unit_name" >&2
-              "$coreutils"/cat "$report" >&2
-              security_failed=1
-            fi
-          done
-          shopt -u nullglob
-
-          "$coreutils"/chmod -R u+w "$tmp" 2>/dev/null || true
-          "$coreutils"/rm -rf "$tmp" 2>/dev/null || true
-        }
-
-        while IFS= read -r entry; do
-          check_package_security "$entry"
-        done < <("$jq" -c '.[]' "$packageExposeSecurityGateEntriesPath")
-
-        if [ "$security_units" -eq 0 ]; then
-          echo "systemd security gate did not check any workload services" >&2
-          exit 1
-        fi
-
-        if [ "$security_roots_helpers" -eq 0 ]; then
-          echo "systemd security gate did not recognize any exact authenticated service-roots helper" >&2
-          exit 1
-        fi
-
-        if [ "$security_failed" -ne 0 ]; then
-          exit 1
-        fi
-
         echo "==> AOS Evaluation Checks"
         echo ""
 
@@ -1396,9 +1148,7 @@ in
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
         echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid credential (${apmInstallAtBootRejectsInvalidCredentialName}), plaintext credential (${apmInstallAtBootRejectsPlaintextCredential}), invalid system credential (${apmInstallAtBootRejectsInvalidSystemCredentialName}), credential conflict (${apmInstallAtBootRejectsCredentialConflicts}), invalid registry (${apmRegistriesRejectsInvalidName})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"
-        echo "firewall:       no package drop-in include (${firewallNoNftablesDropin}), scan-dir storage rejected (${scanDirStorageRejected})"
-        echo "package expose: enumerated ${builtins.toJSON exposedPackageNames} (${exposedPackagePathsJson})"
-        echo "systemd gate:   $security_units workload services under threshold $security_threshold; $security_roots_helpers exact authenticated service-roots helper(s); $security_skipped allowlisted unconfined package(s) skipped: ''${security_skipped_names:-none}"
+        echo "firewall:       no package drop-in include (${firewallNoNftablesDropin})"
         echo "derivations:    meta.execute uses build execution identity (${executionCompatibilityUsesBuildExecutionSystem})"
         echo "named outputs:  preserve ${namedOutputsPreservePackageMetadata}"
         echo "bare metal:    encrypted ZFS zvol slots and authoritative ESPs (${bareMetalStorageProfile})"

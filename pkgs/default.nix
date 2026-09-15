@@ -129,19 +129,10 @@
     };
   withDefaultMaintainers = withDistributionMeta {};
 
-  exposeRenderer = import ./build-support/_expose-renderer.nix {
-    inherit lib;
-    pkgs = self;
-  };
   cargoArtifactsSupport = import ./build-support/_cargo-artifacts.nix {
     inherit lib mkDerivation;
   };
 
-  # Turn a package-authored `configModule` arg into the package's logical
-  # `config` output (a pure-data store path carrying `module.nix` plus a
-  # declared-interface manifest). A fixed companion derivation builds it so
-  # package-authored phases cannot skip or mutate its validation boundary.
-  configModuleRenderer = import ./build-support/_config-module-renderer.nix {inherit lib;};
   projectPackageAbilities = import ../lib/abilities/package-projection.nix {
     inherit lib;
     abilities = lib.abilities;
@@ -156,72 +147,12 @@
       args.pname
       or args.name
       or (throw "mkDerivation: package must set pname or name");
-    renderedExpose =
-      if args ? expose
-      then
-        exposeRenderer.render {
-          inherit packageName drv;
-          expose = args.expose;
-        }
-      else null;
-    exposeAttrs =
-      if args ? expose
-      then {expose = renderedExpose;}
-      else {};
-    hasGeneratedExposeConfig = args ? expose;
-    generatedExposeDeclares = [
-      "${packageName}._aosExposeConfigProjection"
-      "${packageName}.config"
-      "${packageName}.credentials"
-    ];
-    generatedExposeConfigFile =
-      if hasGeneratedExposeConfig
-      then
-        builtins.toFile "expose-config-${packageName}.json" (builtins.toJSON {
-          package = packageName;
-          config = exposeRenderer.normalizeConfig packageName (args.expose.config or {});
-        })
-      else null;
-    generatedExposeSchema =
-      if hasGeneratedExposeConfig
-      then {
-        package = packageName;
-        config = exposeRenderer.normalizeConfig packageName (args.expose.config or {});
-      }
-      else null;
-    generatedExposeModule =
-      if generatedExposeSchema == null
-      then null
-      else import ./build-support/_expose-config-projection-module.nix {schema = generatedExposeSchema;};
-    generatedConfigSource =
-      if hasGeneratedExposeConfig
-      then
-        rawMkDerivation {
-          pname = "${packageName}-generated-config-source";
-          version = args.version or "0";
-          src = null;
-          phases = [
-            {
-              name = "install";
-              script = ''
-                mkdir -p "$out"
-                cp ${./build-support/_generated-expose-config-module.nix} "$out/module.nix"
-                cp ${./build-support/_expose-config-projection-module.nix} "$out/expose-config-projection-module.nix"
-                cp ${generatedExposeConfigFile} "$out/expose-config.json"
-              '';
-            }
-          ];
-          preferLocalBuild = true;
-          allowSubstitutes = false;
-        }
-      else null;
     existingOutputs = args.outputs or ["out"];
     reservedAbilityOutputs = ["abilities" "abilityContract" "abilityModule" "module"];
     conflictingAbilityOutputs =
       builtins.filter
       (output: builtins.elem output reservedAbilityOutputs)
       existingOutputs;
-    authoredConfigModule = args.configModule or null;
     authoredAbilities = args.abilities or null;
     abilityModuleSource =
       if authoredAbilities == null
@@ -404,188 +335,6 @@
           builtins.toFile
           "${packageName}-ability-projection.json"
           projectionJson;
-    preparedAuthoredConfigModule =
-      if authoredConfigModule != null
-      then
-        configModuleRenderer.prepare {
-          inherit packageName;
-          configModule = authoredConfigModule;
-        }
-      else null;
-    authoredConfigMeta =
-      if preparedAuthoredConfigModule != null
-      then builtins.fromJSON preparedAuthoredConfigModule.metaJson
-      else null;
-    packageModule = {
-      imports =
-        lib.optional
-        (authoredConfigModule != null)
-        (authoredConfigModule.src + "/module.nix")
-        ++ lib.optional (generatedExposeModule != null) generatedExposeModule
-        ++ abilityModules;
-    };
-    composedModuleFile = builtins.toFile "composed-config-module-${packageName}.nix" ''
-      { ... }: {
-        imports = [
-          ./authored/module.nix
-          ./generated/module.nix
-        ];
-      }
-    '';
-    composedConfigSource =
-      if authoredConfigModule != null && hasGeneratedExposeConfig
-      then
-        rawMkDerivation {
-          pname = "${packageName}-composed-config-source";
-          version = args.version or "0";
-          src = null;
-          phases = [
-            {
-              name = "install";
-              script = ''
-                mkdir -p "$out/authored" "$out/generated"
-                cp -R ${preparedAuthoredConfigModule.src}/. "$out/authored/"
-                cp -R ${generatedConfigSource}/. "$out/generated/"
-                cp ${composedModuleFile} "$out/module.nix"
-              '';
-            }
-          ];
-          preferLocalBuild = true;
-          allowSubstitutes = false;
-        }
-      else null;
-    effectiveConfigModule =
-      if authoredConfigModule != null
-      then authoredConfigModule
-      else if hasGeneratedExposeConfig
-      then {
-        src = generatedConfigSource;
-        moduleAbiCompat = {
-          min = 1;
-          max = 1;
-        };
-        declares = generatedExposeDeclares;
-      }
-      else null;
-    hasConfigModule = effectiveConfigModule != null;
-    preparedConfigModule =
-      if authoredConfigModule != null && hasGeneratedExposeConfig
-      then {
-        src = composedConfigSource;
-        metaJson = builtins.toJSON (authoredConfigMeta
-          // {
-            declares = lib.unique (authoredConfigMeta.declares ++ generatedExposeDeclares);
-          });
-        dependencyOutputs = preparedAuthoredConfigModule.dependencyOutputs;
-      }
-      else if hasGeneratedExposeConfig
-      then {
-        src = generatedConfigSource;
-        metaJson = builtins.toJSON {
-          schema = "aos.config-module-meta/v1";
-          module_abi_compat = {
-            min = 1;
-            max = 1;
-          };
-          declares = effectiveConfigModule.declares;
-          owns_roots = [];
-          contributes = [];
-          provides_capabilities = [];
-          dependencies = [];
-        };
-        dependencyOutputs = {};
-      }
-      else if hasConfigModule
-      then preparedAuthoredConfigModule
-      else null;
-    configModuleMetaFile =
-      if hasConfigModule
-      then builtins.toFile "config-meta-${packageName}.json" preparedConfigModule.metaJson
-      else null;
-    configStoreDir = args.storeDir or "/nix/store";
-    configArtifact =
-      if hasConfigModule
-      then
-        lib.throwIfNot
-        (!(builtins.elem "config" existingOutputs))
-        "mkDerivation configModule for package '${packageName}' reserves the 'config' output name"
-        (rawMkDerivation {
-          pname = "${packageName}-config";
-          version = args.version or "0";
-          src = preparedConfigModule.src;
-          outputs = ["config"];
-          buildDeps = [resolvedBuildPackages.nix];
-          phases = [
-            {
-              name = "install";
-              script = ''
-                ${stdenv.coreutils}/bin/env -i TMPDIR=/build \
-                  ${stdenv.bash}/bin/bash --noprofile --norc -euo pipefail -c ${
-                  lib.escapeShellArg ''
-                    output=$1
-                    source=$2
-                    authored_meta=$(${stdenv.findutils}/bin/find "$source" -name config-meta.json -print -quit)
-                    if [[ -n "$authored_meta" ]]; then
-                      echo "config module for '${packageName}' must not author config-meta.json" >&2
-                      exit 1
-                    fi
-
-                    ${stdenv.coreutils}/bin/mkdir -p "$output"
-                    ${stdenv.coreutils}/bin/cp -R "$source/." "$output/"
-                    ${stdenv.coreutils}/bin/chmod -R u+w "$output"
-                    # Directory derivations carry an AOS target marker. Nested
-                    # generated inputs are module content here, not separately
-                    # publishable outputs, so discard their copied metadata.
-                    ${stdenv.findutils}/bin/find "$output" -path '*/nix-support/aos-target-platform' -delete
-                    ${stdenv.findutils}/bin/find "$output" -type d -name nix-support -empty -delete
-                    ${stdenv.coreutils}/bin/cp "${configModuleMetaFile}" "$output/config-meta.json"
-
-                    invalid_entry=$(${stdenv.findutils}/bin/find "$output" ! -type d ! -type f -print -quit)
-                    if [[ -n "$invalid_entry" ]]; then
-                      echo "config module for '${packageName}' contains a non-regular entry: $invalid_entry" >&2
-                      exit 1
-                    fi
-                    if [[ ! -f "$output/module.nix" ]]; then
-                      echo "config module for '${packageName}' must contain a regular module.nix" >&2
-                      exit 1
-                    fi
-                    invalid_helper=$(${stdenv.findutils}/bin/find "$output" -type f ! -name '*.nix' ! -path "$output/config-meta.json" ${lib.optionalString hasGeneratedExposeConfig ''! -path "$output/expose-config.json" ! -path "$output/generated/expose-config.json"''} -print -quit)
-                    if [[ -n "$invalid_helper" ]]; then
-                      echo "config module for '${packageName}' contains a non-Nix helper: $invalid_helper" >&2
-                      exit 1
-                    fi
-                    if ! ${stdenv.diffutils}/bin/cmp -s "${configModuleMetaFile}" "$output/config-meta.json"; then
-                      echo "config module for '${packageName}' did not retain the generated metadata bytes" >&2
-                      exit 1
-                    fi
-                    ${stdenv.findutils}/bin/find "$output" -type f -name '*.nix' \
-                      -exec ${resolvedBuildPackages.nix}/bin/nix-instantiate --store dummy:// --parse {} \; >/dev/null
-                      # Reject direct store literals and builtins.storeDir. The
-                      # evaluated manifest validator is the semantic boundary for
-                      # paths assembled by otherwise ordinary Nix expressions.
-                      if ${stdenv.grep}/bin/grep -R -n -F "${configStoreDir}/" "$output" \
-                        || ${stdenv.grep}/bin/grep -R -n -E 'builtins\.storeDir' "$output"; then
-                      echo "config module for '${packageName}' contains a Nix store-path construction" >&2
-                      exit 1
-                    fi
-                  ''
-                } _ "$config" "$src"
-              '';
-            }
-          ];
-          outputChecks.config.allowedReferences = [];
-          preferLocalBuild = true;
-          allowSubstitutes = false;
-        })
-      else null;
-    configModuleAttrs =
-      if hasConfigModule
-      then {
-        config = configArtifact;
-        configModule = configArtifact;
-        configModuleDependencies = preparedConfigModule.dependencyOutputs;
-      }
-      else {};
     crossFixupPhase =
       if stdenv.hostPlatform.objectFormat == "macho"
       then phases.darwinCrossFixupPhase
@@ -602,7 +351,7 @@
     lowerArgs =
       # Package integration modules are evaluated by this wrapper and never
       # become low-level derivation attributes.
-      (builtins.removeAttrs args ["abilities" "configModule"])
+      (builtins.removeAttrs args ["abilities"])
       // {
         meta =
           (args.meta or {})
@@ -612,7 +361,7 @@
         buildDeps =
           builtins.map spliceBuildDependency (args.buildDeps or [])
           ++ [resolvedBuildPackages.nuke-references];
-        passthru = (args.passthru or {}) // exposeAttrs // configModuleAttrs;
+        passthru = args.passthru or {};
       }
       // lib.optionalAttrs (
         args
@@ -623,52 +372,26 @@
         # Replace only that exact implementation so package-authored phases
         # that happen to use the same name retain their behavior.
         phases = crossPhases;
-      }
-      // exposeAttrs;
+      };
     drv = rawMkDerivation lowerArgs;
-    abilityAttrs =
-      if abilityProjection != null
-      then {
-        abilities =
-          localAbilityProjection
-          // {
-            # These handles are derived from the same authored module path as
-            # the checked package-local tree. Publication strips underscore
-            # fields and derives the signed wire projection separately.
-            _module = retainedAbilityModule;
-            _artifact_outputs =
-              (lib.optionalAttrs (abilityModuleArtifact != null) {
-                module = abilityModuleArtifact.module;
-              })
-              // (lib.optionalAttrs (abilityProjectionSource != null) {
-                projection = abilityProjectionSource;
-                selectors = abilityProjectionResult.selectors;
-              });
-          };
-      }
-      else if hasConfigModule
-      then {
-        inherit packageModule;
-        packageModuleOutputs = {
-          self = builtins.toString drv;
-          dependencies = preparedConfigModule.dependencyOutputs or {};
+    abilityAttrs = lib.optionalAttrs (abilityProjection != null) {
+      abilities =
+        localAbilityProjection
+        // {
+          # These handles are derived from the same authored module path as
+          # the checked package-local tree. Publication strips underscore
+          # fields and derives the signed wire projection separately.
+          _module = retainedAbilityModule;
+          _artifact_outputs =
+            (lib.optionalAttrs (abilityModuleArtifact != null) {
+              module = abilityModuleArtifact.module;
+            })
+            // (lib.optionalAttrs (abilityProjectionSource != null) {
+              projection = abilityProjectionSource;
+              selectors = abilityProjectionResult.selectors;
+            });
         };
-      }
-      else {};
-    exposeCheck =
-      if args ? expose
-      then
-        resolvedBuildPackages.runCommand "expose-payload-closure-check-${packageName}" {
-          payload = drv;
-          exposePath = renderedExpose;
-          disallowedRequisites = [renderedExpose];
-          preferLocalBuild = true;
-          allowSubstitutes = false;
-        } ''
-          set -eu
-          ln -s "$payload" "$out"
-        ''
-      else null;
+    };
     secondaryOutputAttrs = builtins.listToAttrs (
       builtins.map (outputName: {
         name = outputName;
@@ -681,19 +404,7 @@
           // lib.optionalAttrs (args ? version) {inherit (args) version;};
       }) (builtins.filter (outputName: outputName != drv.outputName) drv.outputs)
     );
-    result =
-      drv
-      // secondaryOutputAttrs
-      // configModuleAttrs
-      // abilityAttrs
-      // (
-        if args ? expose
-        then {
-          inherit exposeCheck;
-          passthru = drv.passthru // {inherit exposeCheck;};
-        }
-        else {}
-      );
+    result = drv // secondaryOutputAttrs // abilityAttrs;
   in
     addBuilderOverrides mkDerivation args result;
 

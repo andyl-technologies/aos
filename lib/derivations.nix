@@ -676,7 +676,6 @@
     passthru ? {},
     update ? null,
     checks ? null,
-    expose ? null,
     # ── Compiler-hardening policy ─────────────────────────────────────
     # Per-package opt-in / opt-out over the central token set. The
     # effective set is (defaultHardeningFlags ++ hardeningEnable) minus
@@ -838,7 +837,6 @@
       "passthru"
       "update"
       "checks"
-      "expose"
       "hardeningEnable"
       "hardeningDisable"
       "defaultHardeningFlags"
@@ -1099,11 +1097,6 @@
             platforms = derivationPlatforms;
           }
           // (
-            if expose != null
-            then {inherit expose;}
-            else {}
-          )
-          // (
             if update != null
             then {
               aos = (passthru.aos or {}) // {maintenance = update;};
@@ -1111,11 +1104,6 @@
             else {}
           );
       }
-      // (
-        if expose != null
-        then {inherit expose;}
-        else {}
-      )
       // (
         if checks != null
         then {inherit checks;}
