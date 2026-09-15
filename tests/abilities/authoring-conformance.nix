@@ -422,6 +422,24 @@
       (packageModuleFor "beta")
     ];
   };
+  instanceIdentityEvaluation = lib.evalModules {
+    inherit lib;
+    modules = [
+      lib.abilities.module
+      {
+        config.aos.abilities = {
+          environment = {
+            authority = "fleet";
+            key = "host";
+            stage = "host";
+          };
+          instances."demo:server" = {};
+        };
+      }
+    ];
+  };
+  derivedInstanceIdentity =
+    instanceIdentityEvaluation.config.aos.abilities.instanceIdentities."demo:server";
   qualifiedDeferredRequest = lib.abilities.qualifyPackageAbilities "alpha" {
     requests.consumer = {
       package = null;
@@ -539,6 +557,13 @@ in
   assert combinedImplementationKeys == ["alpha:test" "beta:test"];
   assert builtins.attrNames combinedPackageEvaluation.config.aos.abilities.implementations == ["alpha:test" "beta:test"];
   assert builtins.isFunction combinedPackageEvaluation.config.aos.abilities.implementations."alpha:test".provide;
+  assert derivedInstanceIdentity.environment == {
+    authority = "fleet";
+    key = "host";
+    stage = "host";
+  };
+  assert derivedInstanceIdentity.key
+  == "instance-122435614f54784fad556d4f153bdccaa571e66af26db80f2330fd7dca893044";
   assert qualifiedDeferredRequest.requests."alpha:consumer".parameters.literal == "producer";
   assert (builtins.head qualifiedDeferredRequest.requests."alpha:consumer".parameters.nested).request == "alpha:producer";
   assert alphaImplementationProjection.implementations."alpha:test".package == "alpha";
