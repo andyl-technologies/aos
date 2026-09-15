@@ -149,7 +149,29 @@
                 remove_on_stop = true;
                 prerequisites = [];
               }
+              {
+                name = "api-admin";
+                manager_name = "example-api-admin";
+                enabled = true;
+                endpoints = [
+                  {
+                    kind = "unix";
+                    path = "/run/example/api-admin.sock";
+                  }
+                ];
+                mode = "0600";
+                remove_on_stop = true;
+                prerequisites = [];
+                after = ["api"];
+                binds_to = ["api"];
+              }
             ];
+            service_dependencies = {
+              after = ["api" "api-admin"];
+              binds_to = ["api"];
+              requires = [];
+              wants = ["api-admin"];
+            };
           };
         };
         terminal = {
@@ -267,6 +289,9 @@
   socketUnit = builtins.head (builtins.filter
     (unit: unit.systemd_unit.unit_name == "example-api.socket")
     resource.realization.units);
+  adminSocketUnit = builtins.head (builtins.filter
+    (unit: unit.systemd_unit.unit_name == "example-api-admin.socket")
+    resource.realization.units);
   sectionFor = unit: name:
     builtins.head (builtins.filter (candidate: candidate.name == name) unit.sections);
   section = sectionFor primary;
@@ -275,6 +300,7 @@
   unitSection = section "Unit";
   serviceSection = section "Service";
   socketSection = sectionFor socketUnit "Socket";
+  adminSocketUnitSection = sectionFor adminSocketUnit "Unit";
   execStart = builtins.head (directives "ExecStart" serviceSection);
   execStartSubstitutions = builtins.attrValues execStart.value.substitutions;
   executable = builtins.head (builtins.filter
@@ -282,6 +308,11 @@
     execStartSubstitutions);
   templates = name: selected:
     builtins.map (directive: directive.value.template) (directives name selected);
+  unitIdentities = name: selected:
+    builtins.map
+    (directive:
+      (builtins.head (builtins.attrValues directive.value.substitutions)).source.identity)
+    (directives name selected);
   serviceRenderer = import ../../pkgs/system/_systemd-service-document.nix {
     inherit lib;
     serviceFacets = resource.realization.facets;
@@ -351,8 +382,58 @@ in
   assert executable.source.relative_path == "bin/example";
   assert lib.hasInfix "@@AOS_SYSTEMD_SUBSTITUTION:" execStart.value.template;
   assert !lib.hasInfix "/nix/store/" (builtins.toJSON resource.realization);
+  assert unitIdentities "After" unitSection
+  == [
+    {
+      kind = "unit";
+      unit_name = "example-api.socket";
+    }
+    {
+      kind = "unit";
+      unit_name = "example-api-admin.socket";
+    }
+  ];
+  assert unitIdentities "BindsTo" unitSection
+  == [
+    {
+      kind = "unit";
+      unit_name = "example-api.socket";
+    }
+  ];
+  assert unitIdentities "Wants" unitSection
+  == [
+    {
+      kind = "unit";
+      unit_name = "example-api-admin.socket";
+    }
+  ];
+  assert unitIdentities "After" adminSocketUnitSection
+  == [
+    {
+      kind = "unit";
+      unit_name = "example-api.socket";
+    }
+  ];
+  assert unitIdentities "BindsTo" adminSocketUnitSection
+  == [
+    {
+      kind = "unit";
+      unit_name = "example-api.socket";
+    }
+  ];
   assert resource.realization.links
   == [
+    {
+      parent = {
+        kind = "unit";
+        unit_name = "sockets.target";
+      };
+      child = {
+        kind = "unit";
+        unit_name = "example-api-admin.socket";
+      };
+      relationship = "wants";
+    }
     {
       parent = {
         kind = "unit";
@@ -398,5 +479,5 @@ in
     "core:service-condition-kernel-argument"
     "core:service-condition-path"
   ];
-  assert builtins.length matchedOwnership.units == 2;
+  assert builtins.length matchedOwnership.units == 3;
   assert !mismatchedOwnership.success; true

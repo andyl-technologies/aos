@@ -827,7 +827,17 @@
       ++ targets "wants" (dependencies.wanted_by or [])
       ++ targets "requires" (dependencies.required_by or []);
 
-  socketDocument = serviceUnitName: resource: socket: let
+  socketIdentity = resource: socketsByName: name: {
+    kind = "unit";
+    unit_name =
+      providerLib.socketUnitNameForResource
+      resource.resource
+      name
+      (socketsByName.${name}.manager_name or null);
+  };
+  socketUnitIdentityList = directive: resource: socketsByName: names:
+    unitIdentityList directive (builtins.map (socketIdentity resource socketsByName) names);
+  socketDocument = serviceUnitName: resource: socketsByName: socket: let
     unitName = providerLib.socketUnitNameForResource resource.resource socket.name (socket.manager_name or null);
     endpoint = endpoint:
       if endpoint.kind == "unix"
@@ -842,6 +852,8 @@
         [(semantic.directive "Description" (semantic.quotedLiteral "${resource.value.lifecycle.description} (${socket.name})"))]
         ++ unitIdentityList "After" (dependencyIdentities (socket.prerequisites or []))
         ++ unitIdentityList "Requires" (dependencyIdentities (socket.prerequisites or []))
+        ++ socketUnitIdentityList "After" resource socketsByName (socket.after or [])
+        ++ socketUnitIdentityList "BindsTo" resource socketsByName (socket.binds_to or [])
       ))
       (semantic.section "Socket" (
         [
@@ -883,10 +895,21 @@
       then serviceIdentity.unit_name
       else serviceIdentity.template_unit_name;
     sockets = (value.socket_activation or {sockets = [];}).sockets;
+    socketsByName = builtins.listToAttrs (builtins.map (socket: {
+        name = socket.name;
+        value = socket;
+      })
+      sockets);
+    socketServiceDependencies = (value.socket_activation or {}).service_dependencies or {};
+    socketServiceDependencyDirectives =
+      socketUnitIdentityList "After" resource socketsByName (socketServiceDependencies.after or [])
+      ++ socketUnitIdentityList "BindsTo" resource socketsByName (socketServiceDependencies.binds_to or [])
+      ++ socketUnitIdentityList "Requires" resource socketsByName (socketServiceDependencies.requires or [])
+      ++ socketUnitIdentityList "Wants" resource socketsByName (socketServiceDependencies.wants or []);
     auxiliary =
       if selection.kind != "singleton" && sockets != []
       then throw "systemd template services cannot own instance-specific socket activation"
-      else builtins.map (socketDocument serviceUnitName resource) sockets;
+      else builtins.map (socketDocument serviceUnitName resource socketsByName) sockets;
     facets =
       builtins.filter
       (facet:
@@ -899,6 +922,7 @@
         (semantic.section "Unit" (
           [(semantic.directive "Description" (semantic.quotedLiteral value.lifecycle.description))]
           ++ dependencyDirectives value
+          ++ socketServiceDependencyDirectives
           ++ activationDirectives value
           ++ conditionDirectives value
           ++ linuxConditionDirectives value

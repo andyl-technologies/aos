@@ -204,7 +204,7 @@ in
     ];
     propagatedDeps = [libxml2];
 
-    abilities = ./_libvirt-dbus-registration.nix;
+    abilities = ./_libvirt;
 
     phases = [
       {
@@ -423,8 +423,54 @@ in
     checks = {
       testing,
       self,
+      pkgs,
       ...
-    }: {
+    }: let
+      packageModule = package: {
+        inherit (package) version;
+        name = package.pname;
+        module = package.module + "/module.nix";
+        outputs = {
+          self = builtins.toString package;
+          dependencies = {};
+        };
+      };
+      evaluated = lib.evalModules {
+        inherit lib;
+        modules = [
+          lib.abilities.module
+          {
+            aos.abilities.environment = {
+              authority = "deployment";
+              key = "libvirt-test";
+              stage = "host";
+            };
+            aos.services.libvirt = {
+              enable = true;
+              allowedUsers = ["operator"];
+            };
+          }
+        ];
+        packageModules = builtins.map packageModule [pkgs.dbus self];
+      };
+      requests = evaluated.config.aos.abilities.requests;
+      sockets = requests."libvirt:libvirtd-socket_activation".parameters.sockets;
+      socketDependencies =
+        requests."libvirt:libvirtd-socket_activation".parameters.service_dependencies;
+      requestsHaveAutomaticIdentities = builtins.all
+        (request: !(request.parameters ? requested_id))
+        (builtins.attrValues requests);
+      contractHolds =
+        requests ? "libvirt:libvirtd-lifecycle"
+        && requests ? "libvirt:virtlogd-lifecycle"
+        && requests ? "libvirt:virtlockd-lifecycle"
+        && requests ? "libvirt:access-membership"
+        && builtins.length sockets == 3
+        && (builtins.head sockets).mode == "0660"
+        && socketDependencies.after == ["libvirtd" "libvirtd-admin" "libvirtd-ro"]
+        && socketDependencies.wants == ["libvirtd" "libvirtd-admin" "libvirtd-ro"]
+        && requestsHaveAutomaticIdentities;
+    in {
       link = testing.mkLinkCheck {
         pname = "libvirt";
         library = self;
@@ -442,6 +488,14 @@ in
         tool = self;
         command = "virsh --version && virt-xml-validate --help";
       };
+      ability-module-contract =
+        if contractHolds
+        then
+          pkgs.runCommand "libvirt-ability-module-contract" {} ''
+            mkdir -p "$out"
+            printf '%s\n' PASS > "$out/result"
+          ''
+        else throw "the Libvirt native ability contract check failed";
     };
 
     meta = {
