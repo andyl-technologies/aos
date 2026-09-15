@@ -189,6 +189,8 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         | PackageCommand::Fetch { .. }
         | PackageCommand::RenderOne { .. }
         | PackageCommand::GraphCompile { .. }
+        | PackageCommand::AbilityPlanBuildStage { .. }
+        | PackageCommand::AbilityBuildStage { .. }
         | PackageCommand::AbilityStageRun { .. }
         | PackageCommand::AbilityStageValidate { .. }
         | PackageCommand::AbilityStageReceive { .. } => true,
@@ -257,6 +259,8 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Fetch { .. }
         | PackageCommand::RenderOne { .. }
         | PackageCommand::GraphCompile { .. }
+        | PackageCommand::AbilityPlanBuildStage { .. }
+        | PackageCommand::AbilityBuildStage { .. }
         | PackageCommand::AbilityStageRun { .. }
         | PackageCommand::AbilityStageReceive { .. } => false,
     }

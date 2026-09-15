@@ -348,6 +348,10 @@ in {
       renderedNetworks = map (name: "${name}.network") (builtins.attrNames cfg.network);
       handoff = config.system.build.bootSubstrateContract;
       abilityActivationSelection = config.system.build.initrdAbilityActivationSelection;
+      abilityResolutionInput = config.aos.abilities.stages.initrd.resolutionInput;
+      abilityEnvironment = config.system.build.initrdAbilityGraph.environment;
+      abilityIntent = config.aos.abilities.stages.initrd.intent;
+      baseLib = config.aos.config.evalAtBoot.baseLib;
       maskedUnits =
         cfg.maskedUnits
         ++ lib.optionals config.aos.security.verity.enable [
