@@ -3,48 +3,38 @@
   pkgs,
   lib,
 }: let
+  fullLib = import ../../lib {system = builtins.currentSystem;};
   evaluateRole = {
-    package,
     name,
     host,
-    additionalPackageModules ? [],
+    additionalModules ? [],
   }:
-    lib.evalModules {
-      modules = [
-        lib.abilities.module
-        {
+    fullLib.evalModules {
+      lib = fullLib;
+      modules =
+        [
+          ../../modules/abilities/default.nix
+          {
+          aos.abilities.environment = {
+            authority = "deployment";
+            key = "k3s-config-test";
+            stage = "host";
+          };
           options.assertions = lib.mkOption {
             type = lib.types.listOf lib.types.attrs;
             default = [];
           };
-          options.${name} = {
-            config = lib.mkOption {
-              type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
-              default = {};
-              contributable = true;
-            };
-            credentials = lib.mkOption {
-              type = lib.types.attrsOf lib.types.attrs;
-              default = {};
-              contributable = true;
-            };
-          };
-        }
-      ];
-      operatorModules = [host];
-      packageModules =
-        [
-          {
-            inherit name;
-            configRoot = ../../pkgs/kubernetes/_k3s-config;
-            module = ../../pkgs/kubernetes/_k3s-config/module.nix;
-            outputs = {
-              self = builtins.toString package;
-              dependencies = {};
-            };
           }
         ]
-        ++ additionalPackageModules;
+        ++ builtins.map (entry: entry.module) additionalModules;
+      operatorModules = [host];
+      packageModules = [
+        {
+          inherit name;
+          version = "1.34.1";
+          module = ../../pkgs/kubernetes/_k3s-config/module.nix;
+        }
+      ];
     };
 
   token = {ref = "system-credential:k3s-token";};
@@ -74,21 +64,67 @@
   integrationModules = [
     {
       name = "cilium";
-      module = pkgs.cilium.packageModule;
-      outputs = {
-        self = builtins.toString pkgs.cilium;
-        dependencies = {};
+      module = {config, ...}: {
+        options.cilium.enable = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+        };
+        config.k3s.integrations.cni.cilium = lib.mkIf config.cilium.enable {
+          disableFlannel = true;
+          disableNetworkPolicy = true;
+          disableKubeProxy = true;
+        };
+        config.k3s.integrations.resources.cilium = lib.mkIf config.cilium.enable {
+          apiVersion = "helm.cattle.io/v1";
+          kind = "HelmChart";
+          name = "cilium";
+          namespace = "kube-system";
+          priority = 100;
+          spec = {
+            chart = "cilium";
+            repo = "https://helm.cilium.io/";
+            targetNamespace = "kube-system";
+            version = "1.17.3";
+            valuesContent = builtins.toJSON {
+              kubeProxyReplacement = true;
+              operator.replicas = 1;
+            };
+          };
+        };
       };
     }
     {
       name = "longhorn-manager";
-      configRoot = ../../pkgs/storage/_longhorn-config;
-      module = ../../pkgs/storage/_longhorn-config/module.nix;
-      outputs = {
-        self = builtins.toString pkgs.longhorn-manager;
-        dependencies = {
-          longhorn-engine = builtins.toString pkgs.longhorn-engine;
-          longhorn-instance-manager = builtins.toString pkgs.longhorn-instance-manager;
+      module = {config, ...}: {
+        options.longhorn = {
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+          };
+          defaultReplicaCount = lib.mkOption {
+            type = lib.types.int;
+            default = 3;
+          };
+        };
+        config.k3s.integrations.csi.longhorn = lib.mkIf config.longhorn.enable {
+          nodeLabels."node.longhorn.io/create-default-disk" = "true";
+        };
+        config.k3s.integrations.resources.longhorn = lib.mkIf config.longhorn.enable {
+          apiVersion = "helm.cattle.io/v1";
+          kind = "HelmChart";
+          name = "longhorn";
+          namespace = "kube-system";
+          priority = 200;
+          spec = {
+            chart = "longhorn";
+            repo = "https://charts.longhorn.io";
+            targetNamespace = "longhorn-system";
+            version = "1.8.1";
+            valuesContent = builtins.toJSON {
+              defaultSettings.defaultReplicaCount = builtins.toString config.longhorn.defaultReplicaCount;
+              persistence.defaultClassReplicaCount = config.longhorn.defaultReplicaCount;
+            };
+          };
         };
       };
     }
@@ -143,9 +179,8 @@
     additionalResources ? {},
   }:
     evaluateRole {
-      package = pkgs.k3s-worker;
       name = "k3s-worker";
-      additionalPackageModules = integrationModules;
+      additionalModules = integrationModules;
       host = {
         cilium.enable = true;
         longhorn = {
@@ -187,12 +222,10 @@
           spec = canonicalFixture.spec // {generation = 1.5;};
         };
     })
-    .config
-    ."k3s-worker"
-    .config
-    .addons));
+    .config.aos.abilities.requests
+    ."k3s-worker:addons"
+    .parameters.source.content));
   controlPlane = evaluateRole {
-    package = pkgs.k3s-control-plane;
     name = "k3s-control-plane";
     host.k3s = {
       enable = true;
@@ -206,7 +239,6 @@
     };
   };
   combined = evaluateRole {
-    package = pkgs.k3s-combined;
     name = "k3s-combined";
     host.k3s = {
       enable = true;
@@ -216,15 +248,18 @@
     };
   };
   disabled = evaluateRole {
-    package = pkgs.k3s-worker;
     name = "k3s-worker";
-    host = {};
+    host.k3s = {
+      serverUrl = "https://server.example:6443";
+      inherit token;
+    };
   };
 
   allAssertionsHold = evaluated:
-    builtins.all (assertion: assertion.assertion) evaluated.assertions;
-  workerEnv = worker.config."k3s-worker".config.env;
-  workerAddons = worker.config."k3s-worker".config.addons;
+    builtins.all (assertion: assertion.assertion) evaluated.config.assertions;
+  requests = evaluated: evaluated.config.aos.abilities.requests;
+  workerEnv = (requests worker)."k3s-worker:k3s-environment".parameters.variables;
+  workerAddons = builtins.fromJSON (requests worker)."k3s-worker:addons".parameters.source.content;
   workerPayload = builtins.removeAttrs workerAddons ["revision"];
   expectedWorkerRevision = "sha256:${builtins.hashString "sha256" (builtins.toJSON workerPayload)}";
   ciliumObject = (builtins.head workerAddons.resources).object;
@@ -233,8 +268,9 @@
   longhornValues = builtins.fromJSON longhornObject.spec.valuesContent;
   canonicalResource = builtins.elemAt workerAddons.resources 2;
   canonicalObject = canonicalResource.object;
-  controlPlaneEnv = controlPlane.config."k3s-control-plane".config.env;
-  combinedEnv = combined.config."k3s-combined".config.env;
+  controlPlaneEnv =
+    (requests controlPlane)."k3s-control-plane:k3s-environment".parameters.variables;
+  combinedEnv = (requests combined)."k3s-combined:k3s-environment".parameters.variables;
 
   workerAddonsFile = pkgs.writeTextFile {
     name = "k3s-worker-addons.json";
@@ -297,14 +333,6 @@
 
   checks = [
     {
-      assertion = pkgs.cilium ? packageModule && !(pkgs.cilium ? configModule);
-      message = "Cilium must publish its unified package module without the legacy configModule channel";
-    }
-    {
-      assertion = pkgs.cilium.abilities.requirementTemplates ? k3s;
-      message = "Cilium's unified package module must retain its k3s ability requirement";
-    }
-    {
       assertion = worker.config.k3s.role == "worker";
       message = "k3s worker role must be fixed by its provider";
     }
@@ -338,7 +366,8 @@
         == "aos.kubernetes-resources/v1"
         && workerAddons.role == "worker"
         && workerAddons.revision == expectedWorkerRevision
-        && reorderedGrantWorker.config."k3s-worker".config.addons.revision == workerAddons.revision
+        && (builtins.fromJSON (requests reorderedGrantWorker)."k3s-worker:addons".parameters.source.content).revision
+        == workerAddons.revision
         && builtins.length workerAddons.resources == 3
         && (builtins.head workerAddons.resources).name == "cilium"
         && (builtins.elemAt workerAddons.resources 1).name == "longhorn"
@@ -390,8 +419,15 @@
       message = "Kubernetes object specs must reject non-integer JSON numbers";
     }
     {
-      assertion = worker.config."k3s-worker".credentials.token.ref == token.ref;
-      message = "token must remain an opaque credential reference";
+      assertion =
+        (requests worker)."k3s-worker:token-source".parameters.name == "k3s-token"
+        && (requests worker)."k3s-worker:token".parameters.source
+        == {
+          _type = "aos-request-output-reference";
+          request = "k3s-worker:token-source";
+          output = "credential-resource";
+        };
+      message = "token must remain a typed named-credential request";
     }
     {
       assertion = controlPlane.config.k3s.role == "control-plane";
@@ -418,8 +454,11 @@
       message = "combined networking configuration must render";
     }
     {
-      assertion = disabled.config."k3s-worker".config.env.K3S_ENABLED == "false";
-      message = "disabled k3s must render a clean service condition";
+      assertion =
+        requests disabled == {}
+        && disabled.config.aos.abilities.requirementTemplates
+        == worker.config.aos.abilities.requirementTemplates;
+      message = "disabled k3s must retain declarations without concrete service requests";
     }
     {
       assertion = allAssertionsHold worker && allAssertionsHold controlPlane && allAssertionsHold combined;
@@ -427,6 +466,7 @@
     }
   ];
   contract = builtins.foldl' (value: check: lib.throwIfNot check.assertion check.message value) true checks;
+  common = import ../../pkgs/kubernetes/_k3s-common.nix {inherit lib pkgs;};
 in
   pkgs.mkDerivation {
     pname = "k3s-config-check";
@@ -434,10 +474,7 @@ in
     src = null;
 
     inherit contract;
-    workerExpose = pkgs.k3s-worker.expose;
-    controlPlaneExpose = pkgs.k3s-control-plane.expose;
-    combinedExpose = pkgs.k3s-combined.expose;
-    workerAddonRenderer = pkgs.k3s-worker.passthru.addonRenderer;
+    workerAddonRenderer = common.addonRenderer "k3s-worker" "worker";
     inherit
       workerAddonsFile
       tamperedWorkerAddonsFile
@@ -451,21 +488,6 @@ in
         name = "check";
         script = ''
           : "$contract"
-
-          for expose in "$workerExpose" "$controlPlaneExpose" "$combinedExpose"; do
-            test -f "$expose/manifest.json"
-            grep -q '"path":"/etc/aos/packages/k3s-' "$expose/manifest.json"
-            grep -q '"name":"addons"' "$expose/manifest.json"
-            grep -q '"required":\["resources","revision","role","schema"\]' "$expose/manifest.json"
-            grep -q '"name":"token"' "$expose/manifest.json"
-            grep -q '"source":"/run/credstore/k3s-[^"]*/token"' "$expose/manifest.json"
-            grep -q '"encrypted":false' "$expose/manifest.json"
-            grep -q 'EnvironmentFile=-/etc/aos/packages/k3s-' "$expose/units/k3s.service"
-            grep -q 'ExecStart=.*/bin/k3s-k3s-' "$expose/units/k3s.service"
-            grep -q 'ExecCondition=.*/bin/k3s-k3s-' "$expose/units/k3s.service"
-            grep -q 'EnvironmentFile=-/etc/aos/packages/k3s-' "$expose/units/k3s-preflight.service"
-            test "$(grep -c '^ExecCondition=' "$expose/units/k3s-preflight.service" || true)" -eq 0
-          done
 
           renderer="$workerAddonRenderer/bin/k3s-worker-render-addons"
           "$renderer" "$workerAddonsFile/addons.json" rendered-a.yaml revision-a

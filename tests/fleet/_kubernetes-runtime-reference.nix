@@ -43,38 +43,33 @@
   ];
 
   packageRoots = lib.concatMap (entry: [entry.package entry.package.abilities.contract]) orderedPackages;
-  emptyAddonPayload = {
-    schema = "aos.kubernetes-resources/v1";
-    role = "combined";
-    resources = [];
-  };
-  emptyAddons =
-    emptyAddonPayload
-    // {
-      revision = "sha256:${builtins.hashString "sha256" (builtins.toJSON emptyAddonPayload)}";
-    };
-
   runtimeModule = {
     aos.packages.k3s-combined = {
       package = pkgs.k3s-combined;
       bundle = true;
       preset = false;
     };
+    k3s = {
+      enable = true;
+      token.ref = "system-credential:token";
+      node = {
+        name = "ability-runtime";
+        ip = "192.168.50.10";
+      };
+      networking.flannelInterface = "eth0";
+      server.disableComponents = [
+        "traefik"
+        "servicelb"
+        "metrics-server"
+      ];
+      kubeconfigMode = "0600";
+    };
 
     environment.etc = {
-      "aos/packages/k3s-combined/k3s.env".text = ''
-        K3S_ENABLED=true
-        K3S_NODE_NAME=ability-runtime
-        K3S_NODE_IP=192.168.50.10
-        K3S_FLANNEL_IFACE=eth0
-        K3S_KUBECONFIG_MODE=0600
-        K3S_DISABLE=traefik,servicelb,metrics-server
-      '';
-      "aos/packages/k3s-combined/addons.json".text = builtins.toJSON emptyAddons;
       "tmpfiles.d/ability-kubernetes.conf".text = ''
         d /var/cache/aos-ability-evaluator-fixture 0700 root root - -
-        d /run/credstore 0700 root root - -
-        d /run/credstore/k3s-combined 0700 root root - -
+        d /run/credentials 0700 root root - -
+        d /run/credentials/@system 0700 root root - -
       '';
     };
 
@@ -98,8 +93,17 @@
       bundle = true;
       preset = false;
     };
-    environment.etc."aos/packages/k3s-combined/k3s.env".text = ${builtins.toJSON runtimeModule.environment.etc."aos/packages/k3s-combined/k3s.env".text};
-    environment.etc."aos/packages/k3s-combined/addons.json".text = ${builtins.toJSON runtimeModule.environment.etc."aos/packages/k3s-combined/addons.json".text};
+    k3s = {
+      enable = true;
+      token.ref = "system-credential:token";
+      node = {
+        name = "ability-runtime";
+        ip = "192.168.50.10";
+      };
+      networking.flannelInterface = "eth0";
+      server.disableComponents = [ "traefik" "servicelb" "metrics-server" ];
+      kubeconfigMode = "0600";
+    };
     environment.etc."tmpfiles.d/ability-kubernetes.conf".text = ${builtins.toJSON runtimeModule.environment.etc."tmpfiles.d/ability-kubernetes.conf".text};
     systemd.services.aos-kubernetes-matrix-foreign = {
       description = "Disposable foreign unit for Kubernetes effect qualification";

@@ -729,7 +729,7 @@ let
     "kernel/_source.nix" = "linux-only-source";
     "kubernetes/_ability-contracts.nix" = "target-independent-source";
     "kubernetes/_k3s-common.nix" = "linux-only-build-helper";
-    "kubernetes/_k3s-expose-package.nix" = "linux-only-build-helper";
+    "kubernetes/_k3s-role-package.nix" = "linux-only-build-helper";
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
     "system/_kmod-abilities.nix" = "target-independent-source";
