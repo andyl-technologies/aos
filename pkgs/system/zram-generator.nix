@@ -54,11 +54,6 @@ in
     propagatedDeps = [];
     disallowedReferences = [cargoDeps rust];
 
-    passthru.systemdUnitInventory = {
-      system = ["lib/systemd/system/systemd-zram-setup@.service"];
-      user = [];
-    };
-
     phases = [
       {
         name = "unpack";

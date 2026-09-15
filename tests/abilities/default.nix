@@ -474,6 +474,9 @@
   filesystemEntryProvider = import ./filesystem-entry-provider.nix {
     inherit lib pkgs;
   };
+  zram = import ./zram.nix {
+    inherit lib;
+  };
   compositionDriver = import ./composition-driver.nix {
     inherit lib;
   };
@@ -917,6 +920,7 @@ in
   assert selectedChronyAbilities.requests ? "chrony:chrony-configuration";
   assert dockerService;
   assert containerdStaticProjection;
+  assert zram;
   assert kernelModules;
   assert bootPreparationCore;
   assert nixStoreDatabase;
