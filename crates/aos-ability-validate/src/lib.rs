@@ -39,9 +39,9 @@ pub use output::{InputValidationError, OutputValidationError, ProviderReadinessE
 pub use package_contract::{CheckedPackageContract, PackageContractValidationError};
 pub use package_projection::{
     CONFIG_ARTIFACT_SELECTOR_MARKER, ConfigArtifactSelector, InterfaceDocumentProjection,
-    PACKAGE_OUTPUT_SELECTOR_MARKER, PACKAGE_PROJECTION_SCHEMA, PackageAbilityProjection,
-    PackageOutputSelector, decode_package_projection, resolve_artifact_selectors,
-    resolve_package_projection,
+    PACKAGE_OUTPUT_SELECTOR_MARKER, PACKAGE_PROJECTION_SCHEMA, PATH_WITHIN_REFERENCE_MARKER,
+    PackageAbilityProjection, PackageOutputSelector, decode_package_projection,
+    resolve_artifact_selectors, resolve_package_projection,
 };
 pub use schema::{SchemaPath, validate_value};
 pub use static_contract::{

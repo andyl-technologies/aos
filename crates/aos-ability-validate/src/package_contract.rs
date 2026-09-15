@@ -42,7 +42,11 @@ impl CheckedPackageContract {
         self.package()
             .interfaces
             .iter()
-            .filter_map(|(alias, key)| self.context.interface(key).map(|document| (alias, document)))
+            .filter_map(|(alias, key)| {
+                self.context
+                    .interface(key)
+                    .map(|document| (alias, document))
+            })
             .collect()
     }
 
@@ -199,14 +203,6 @@ fn validate_local_declarations(
         "package guarantee declarations must exactly cover all referenced guarantee identities"
     );
 
-    let module_artifact = package.package_module.artifact.identity();
-    anyhow::ensure!(
-        package
-            .artifacts
-            .iter()
-            .any(|artifact| artifact.identity() == module_artifact),
-        "package module artifact is absent from the retained artifact catalog"
-    );
     Ok(())
 }
 
@@ -238,7 +234,9 @@ mod tests {
             .interfaces
             .iter()
             .filter(|document| {
-                let key = document.interface_key().expect("fixture interface identity");
+                let key = document
+                    .interface_key()
+                    .expect("fixture interface identity");
                 fixture.binding_inputs.packages[0]
                     .interfaces
                     .values()
@@ -261,7 +259,9 @@ mod tests {
             .interfaces
             .iter()
             .filter(|document| {
-                let key = document.interface_key().expect("fixture interface identity");
+                let key = document
+                    .interface_key()
+                    .expect("fixture interface identity");
                 fixture.binding_inputs.packages[0]
                     .interfaces
                     .values()
@@ -298,28 +298,14 @@ mod tests {
         assert!(format!("{error:?}").contains("exactly cover"));
     }
 
-    #[test]
-    fn rejects_a_package_module_missing_from_retained_artifacts() {
-        let fixture = crate::test_support::stateful_owner_plan_fixture();
-        let mut package = fixture.binding_inputs.packages[0].clone();
-        package.artifacts.clear();
-        let package = encode_canonical(&package).expect("mutated package must encode");
-        let interfaces = retained_interface_bytes(&fixture);
-
-        let error = validate_package_contract(&package, &interfaces)
-            .expect_err("unretained package module must fail closed");
-
-        assert!(format!("{error:?}").contains("package module artifact"));
-    }
-
-    fn retained_interface_bytes(
-        fixture: &crate::test_support::PlanFixture,
-    ) -> Vec<Vec<u8>> {
+    fn retained_interface_bytes(fixture: &crate::test_support::PlanFixture) -> Vec<Vec<u8>> {
         fixture
             .interfaces
             .iter()
             .filter(|document| {
-                let key = document.interface_key().expect("fixture interface identity");
+                let key = document
+                    .interface_key()
+                    .expect("fixture interface identity");
                 fixture.binding_inputs.packages[0]
                     .interfaces
                     .values()

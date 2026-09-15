@@ -224,13 +224,6 @@
       else null;
     authoredConfigModule = args.configModule or null;
     authoredAbilities = args.abilities or null;
-    abilityModules =
-      if authoredAbilities == null
-      then []
-      else if builtins.isList authoredAbilities
-      then authoredAbilities
-      else [authoredAbilities];
-    retainedAbilityModule = {imports = abilityModules;};
     abilityModuleSource =
       if authoredAbilities != null && builtins.isPath authoredAbilities
       then let
@@ -241,6 +234,15 @@
         path = "module.nix";
       }
       else null;
+    abilityModules =
+      if authoredAbilities == null
+      then []
+      else if builtins.isList authoredAbilities
+      then authoredAbilities
+      else if abilityModuleSource != null && abilityModuleSource.isDirectory
+      then [(abilityModuleSource.source + "/module.nix")]
+      else [authoredAbilities];
+    retainedAbilityModule = {imports = abilityModules;};
     abilityModuleArtifact =
       if abilityModuleSource == null
       then null

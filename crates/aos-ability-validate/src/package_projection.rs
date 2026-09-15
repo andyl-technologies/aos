@@ -27,6 +27,9 @@ pub const PACKAGE_OUTPUT_SELECTOR_MARKER: &str = "aos-package-output-selector";
 /// Exact authoring marker for a symbolic evaluated configuration artifact selector.
 pub const CONFIG_ARTIFACT_SELECTOR_MARKER: &str = "aos-config-artifact-selector";
 
+/// Exact marker for a deferred path derived within a checked absolute base.
+pub const PATH_WITHIN_REFERENCE_MARKER: &str = "aos-path-within-reference";
+
 /// Selects one named output from a package in the enclosing orchestration set.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -60,6 +63,15 @@ struct TaggedConfigArtifactSelector {
     #[serde(rename = "_type")]
     marker: String,
     name: LocalKey,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TaggedPathWithinReference {
+    #[serde(rename = "_type")]
+    marker: String,
+    base: serde_json::Value,
+    relative_path: RelativePath,
 }
 
 struct PackageOutputResolver<F> {
@@ -158,6 +170,31 @@ where
                 *value = serde_json::to_value(artifact)
                     .context("encoding resolved configuration artifact")?;
             }
+            serde_json::Value::Object(fields)
+                if fields.get("_type").and_then(serde_json::Value::as_str)
+                    == Some(PATH_WITHIN_REFERENCE_MARKER) =>
+            {
+                let mut tagged: TaggedPathWithinReference =
+                    serde_json::from_value(value.clone())
+                        .context("decoding deferred path-within expression")?;
+                if tagged.marker != PATH_WITHIN_REFERENCE_MARKER {
+                    bail!("deferred path-within expression has an invalid marker");
+                }
+                self.resolve_value(&mut tagged.base, depth.saturating_add(1))?;
+                if let Some(base) = tagged.base.as_str() {
+                    if !normalized_absolute_path(base) {
+                        bail!("deferred path-within base is not a normalized absolute path");
+                    }
+                    let separator = if base == "/" { "" } else { "/" };
+                    *value = serde_json::Value::String(format!(
+                        "{base}{separator}{}",
+                        tagged.relative_path.as_str()
+                    ));
+                } else {
+                    *value = serde_json::to_value(tagged)
+                        .context("encoding unresolved path-within expression")?;
+                }
+            }
             serde_json::Value::Object(fields) => {
                 for value in fields.values_mut() {
                     self.resolve_value(value, depth.saturating_add(1))?;
@@ -167,6 +204,16 @@ where
         }
         Ok(())
     }
+}
+
+fn normalized_absolute_path(path: &str) -> bool {
+    path.len() <= 4096
+        && path.starts_with('/')
+        && (path == "/"
+            || path
+                .split('/')
+                .skip(1)
+                .all(|component| !component.is_empty() && component != "." && component != ".."))
 }
 
 /// Resolves symbolic artifact selectors nested in one evaluated ability value.
@@ -511,10 +558,18 @@ fn validate_projection_structure(projection: &PackageAbilityProjection) -> Resul
     if required_features.windows(2).any(|pair| pair[0] >= pair[1]) {
         bail!("ability projection required features are not unique and canonically ordered");
     }
-    if projection.artifacts.windows(2).any(|pair| pair[0] >= pair[1]) {
+    if projection
+        .artifacts
+        .windows(2)
+        .any(|pair| pair[0] >= pair[1])
+    {
         bail!("ability projection artifact selectors are not unique and canonically ordered");
     }
-    if projection.exports.windows(2).any(|pair| pair[0].name >= pair[1].name) {
+    if projection
+        .exports
+        .windows(2)
+        .any(|pair| pair[0].name >= pair[1].name)
+    {
         bail!("ability projection exports are not unique and canonically ordered");
     }
     if projection
@@ -684,9 +739,7 @@ mod tests {
                     ("dependency", "bin") => {
                         Ok(artifact("dependency", "/nix/store/dependency-bin"))
                     }
-                    ("self", "module") => {
-                        Ok(artifact("module", "/nix/store/owner-module"))
-                    }
+                    ("self", "module") => Ok(artifact("module", "/nix/store/owner-module")),
                     _ => unreachable!("fixture contains only declared selectors"),
                 }
             })
@@ -749,23 +802,21 @@ mod tests {
         let payload = artifact("payload", "/nix/store/payload");
         let source = artifact("source", "/nix/store/source.drv");
 
-        let document = resolve_package_projection(
-            projection,
-            payload.clone(),
-            source,
-            |selector| match (selector.package.as_str(), selector.output.as_str()) {
-                ("self", "out") => Ok(payload.clone()),
-                ("self", "module") => Ok(artifact("module", "/nix/store/module")),
-                ("dependency", "bin") => Ok(artifact("shared", "/nix/store/dependency")),
-                ("sibling", "out") => {
-                    let mut selected = artifact("shared", "/nix/store/sibling");
-                    selected.closure = Sha256Digest::of_bytes(b"distinct closure");
-                    Ok(selected)
+        let document =
+            resolve_package_projection(projection, payload.clone(), source, |selector| {
+                match (selector.package.as_str(), selector.output.as_str()) {
+                    ("self", "out") => Ok(payload.clone()),
+                    ("self", "module") => Ok(artifact("module", "/nix/store/module")),
+                    ("dependency", "bin") => Ok(artifact("shared", "/nix/store/dependency")),
+                    ("sibling", "out") => {
+                        let mut selected = artifact("shared", "/nix/store/sibling");
+                        selected.closure = Sha256Digest::of_bytes(b"distinct closure");
+                        Ok(selected)
+                    }
+                    _ => unreachable!("fixture contains only declared selectors"),
                 }
-                _ => unreachable!("fixture contains only declared selectors"),
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
 
         let shared_content = artifact("shared", "").content;
         assert_eq!(
@@ -806,9 +857,7 @@ mod tests {
                     ("dependency", "bin") => {
                         Ok(artifact("dependency", "/nix/store/dependency-bin"))
                     }
-                    ("self", "module") => {
-                        Ok(artifact("module", "/nix/store/owner-module"))
-                    }
+                    ("self", "module") => Ok(artifact("module", "/nix/store/owner-module")),
                     _ => unreachable!("fixture contains only declared selectors"),
                 }
             })
@@ -848,9 +897,7 @@ mod tests {
                     ("dependency", "bin") => {
                         Ok(artifact("dependency", "/nix/store/dependency-bin"))
                     }
-                    ("self", "module") => {
-                        Ok(artifact("module", "/nix/store/owner-module"))
-                    }
+                    ("self", "module") => Ok(artifact("module", "/nix/store/owner-module")),
                     _ => unreachable!("fixture contains only declared selectors"),
                 }
             })
@@ -880,9 +927,7 @@ mod tests {
             resolve_package_projection(projection, payload.clone(), source.clone(), |selector| {
                 match (selector.package.as_str(), selector.output.as_str()) {
                     ("self", "out") => Ok(payload.clone()),
-                    ("self", "module") => {
-                        Ok(artifact("module", "/nix/store/owner-module"))
-                    }
+                    ("self", "module") => Ok(artifact("module", "/nix/store/owner-module")),
                     ("dependency", "bin") => {
                         Ok(artifact("dependency", "/nix/store/dependency-bin"))
                     }
@@ -1033,5 +1078,86 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn resolves_a_normalized_path_within_a_materialized_base() {
+        let mut value = json!({
+            "_type": "aos-path-within-reference",
+            "base": "/nix/store/service",
+            "relative_path": "bin/daemon"
+        });
+
+        resolve_artifact_selectors(
+            &mut value,
+            |_| unreachable!("fixture contains no package selector"),
+            |_| unreachable!("fixture contains no configuration selector"),
+        )
+        .unwrap();
+
+        assert_eq!(value, json!("/nix/store/service/bin/daemon"));
+    }
+
+    #[test]
+    fn preserves_path_within_an_unresolved_operation_result() {
+        let mut value = json!({
+            "_type": "aos-path-within-reference",
+            "base": {
+                "_type": "aos-request-output-reference",
+                "request": "credential",
+                "output": "path"
+            },
+            "relative_path": "krb5.conf"
+        });
+        let original = value.clone();
+
+        resolve_artifact_selectors(
+            &mut value,
+            |_| unreachable!("fixture contains no package selector"),
+            |_| unreachable!("fixture contains no configuration selector"),
+        )
+        .unwrap();
+
+        assert_eq!(value, original);
+    }
+
+    #[test]
+    fn rejects_a_path_within_expression_with_extra_authority() {
+        let mut value = json!({
+            "_type": "aos-path-within-reference",
+            "base": "/nix/store/service",
+            "relative_path": "bin/daemon",
+            "store_path": "/nix/store/untrusted"
+        });
+
+        assert!(
+            resolve_artifact_selectors(
+                &mut value,
+                |_| unreachable!("malformed path must fail before package resolution"),
+                |_| unreachable!("malformed path must fail before config resolution"),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_non_normalized_path_within_bases() {
+        for base in ["relative", "/nix/../store", "/nix/./store", "/nix//store"] {
+            let mut value = json!({
+                "_type": "aos-path-within-reference",
+                "base": base,
+                "relative_path": "bin/daemon"
+            });
+
+            assert!(
+                resolve_artifact_selectors(
+                    &mut value,
+                    |_| unreachable!("fixture contains no package selector"),
+                    |_| unreachable!("fixture contains no configuration selector"),
+                )
+                .is_err(),
+                "base {base:?} must be rejected"
+            );
+        }
     }
 }

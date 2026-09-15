@@ -119,18 +119,25 @@
       };
     })
   implementationNames;
-  artifactSelectors = lib.unique (lib.concatMap (name: let
-      implementation = evaluated.implementations.${name};
-    in
-      [(implementationArtifact implementation)]
-      ++ map selector implementation.artifacts
-      ++ lib.optional
-      (implementation.providerModule != null)
-      (selector implementation.providerModule.artifact)
-      ++ lib.optional
-      (implementation.handlerDescriptor != null)
-      (selector implementation.handlerDescriptor.artifact))
-    implementationNames);
+  artifactSelectors = builtins.sort
+    (left: right: builtins.toJSON left < builtins.toJSON right)
+    (lib.unique (
+      lib.optional
+      (packageModuleLocator != null)
+      (selector packageModuleLocator.artifact)
+      ++ lib.concatMap (name: let
+        implementation = evaluated.implementations.${name};
+      in
+        [(implementationArtifact implementation)]
+        ++ map selector implementation.artifacts
+        ++ lib.optional
+        (implementation.providerModule != null)
+        (selector implementation.providerModule.artifact)
+        ++ lib.optional
+        (implementation.handlerDescriptor != null)
+        (selector implementation.handlerDescriptor.artifact))
+      implementationNames
+    ));
   interfaceAliases = map (name: let
     document = interfaceDocuments.${name};
     identity = abilities.interfaceIdentity document;

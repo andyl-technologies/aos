@@ -863,6 +863,11 @@
                         packageName = packageIdentity.name;
                         packageVersion = packageIdentity.version;
                       }
+                      // (
+                        if packageIdentity ? artifactLocatorFor
+                        then {inherit (packageIdentity) artifactLocatorFor;}
+                        else {}
+                      )
                     );
                 }
                 mod;
@@ -910,6 +915,34 @@
         && builtins.all
         (path: builtins.isString path && strings.hasPrefix "/nix/store/" path)
         (builtins.attrValues outputs.dependencies);
+
+      validArtifactReference = reference:
+        builtins.isAttrs reference
+        && builtins.attrNames reference == ["closure" "content" "nar_hash" "store_path"]
+        && builtins.all builtins.isString (builtins.attrValues reference)
+        && strings.hasPrefix "/nix/store/" reference.store_path;
+      validArtifactLocators = locators:
+        builtins.isAttrs locators
+        && builtins.all
+        (locator:
+          builtins.isAttrs locator
+          && builtins.attrNames locator == ["artifactReference" "path"]
+          && validArtifactReference locator.artifactReference
+          && builtins.isString locator.path
+          && strings.hasPrefix "/nix/store/" locator.path)
+        (builtins.attrValues locators);
+      artifactLocatorFor = package: locators: selector: let
+        checked =
+          if
+            !builtins.isAttrs selector
+            || builtins.attrNames selector != ["_type" "output" "package"]
+            || (selector._type or null) != "aos-package-output-selector"
+          then throw "evalModules: package '${package}' requested an invalid artifact selector"
+          else builtins.removeAttrs selector ["_type"];
+        key = builtins.toJSON checked;
+      in
+        locators.${key}
+        or (throw "evalModules: package '${package}' requested an artifact selector outside its authenticated view");
 
       validatedPackageModules = builtins.map (record: let
         keys =
@@ -961,8 +994,8 @@
       in
         if
           !builtins.isAttrs record
-          || keys != ["configRoot" "module" "name" "outputs"]
-        then throw "evalModules: selectedProviderModules entries must contain exactly configRoot/module/name/outputs"
+          || keys != ["artifactLocators" "configRoot" "module" "name" "outputs"]
+        then throw "evalModules: selectedProviderModules entries must contain exactly artifactLocators/configRoot/module/name/outputs"
         else if !builtins.isString record.name || builtins.match "[a-z0-9][a-z0-9._+-]*" record.name == null
         then throw "evalModules: invalid resolver-supplied provider package provenance name"
         else if
@@ -974,6 +1007,8 @@
         then throw "evalModules: selected provider module for '${record.name}' escapes or is absent from its authenticated root"
         else if !validPackageOutputs record.outputs
         then throw "evalModules: selected provider module for '${record.name}' has invalid resolver-supplied outputs"
+        else if !validArtifactLocators record.artifactLocators
+        then throw "evalModules: selected provider module for '${record.name}' has invalid resolver-supplied artifact locators"
         else record)
       selectedProviderModules;
 
@@ -991,7 +1026,17 @@
       validatedPackageModules);
 
       evaluatedProviderModules = builtins.concatLists (builtins.map (record:
-        collectModules "package:${record.name}" record.configRoot record.outputs {inherit (record) name; version = record.version or "0";} true [record.module])
+        collectModules
+        "package:${record.name}"
+        record.configRoot
+        record.outputs
+        {
+          inherit (record) name;
+          version = record.version or "0";
+          artifactLocatorFor = artifactLocatorFor record.name record.artifactLocators;
+        }
+        true
+        [record.module])
       validatedProviderModules);
 
       # Image modules carry `@base`; operator (host.nix) modules carry

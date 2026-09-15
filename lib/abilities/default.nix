@@ -1655,6 +1655,22 @@ in rec {
     name = requireLocalKey "configuration artifact name" checked.name;
   };
 
+  pathWithin = args: let
+    checked = requireAttrs "path-within expression" ["base" "relativePath"] args;
+  in {
+    _type = "aos-path-within-reference";
+    base =
+      if
+        abilityTypes.executionPath.check checked.base
+        || (abilityTypes.fromSchema schemas.operationResultReference).check checked.base
+      then checked.base
+      else fail "path-within base must be a normalized absolute path or operation result reference";
+    relative_path =
+      if abilityTypes.relativePath.check checked.relativePath
+      then checked.relativePath
+      else fail "path-within relativePath must be a normalized relative path";
+  };
+
   pinInterface = args: let
     checked = requireAttrs "interface pin" ["export" "descriptor"] args;
     export = requireMarker "interface pin export" "aos-ability-export" checked.export;

@@ -273,6 +273,21 @@
     && builtins.substring 0 1 value != "/"
     && builtins.all (component: component != "" && component != "." && component != "..") components);
 
+  normalizedAbsolutePath = value: let
+    splitComponents = builtins.filter builtins.isString (builtins.split "/" value);
+    components =
+      if splitComponents == []
+      then []
+      else builtins.tail splitComponents;
+  in
+    builtins.isString value
+    && builtins.stringLength value <= 4096
+    && builtins.substring 0 1 value == "/"
+    && (
+      value == "/"
+      || builtins.all (component: component != "" && component != "." && component != "..") components
+    );
+
   specialType = context: schema: fields:
     (decorate context schema (strictRecordType "<lib.abilities.types.${context}>" fields))
     // {
