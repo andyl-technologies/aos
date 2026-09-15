@@ -411,9 +411,8 @@ in
           --offline \
           -p aos-package \
           --lib \
-          config_eval::systemd_ability::tests::supplied_catalog_dispatches_exact_unit_and_recovers_observation \
+          config_eval::command_handler::tests::resolved_inputs_preserve_complete_resource_reference_authority \
           -- \
-          --ignored \
           --exact
 
         cleanup_pinned_bus

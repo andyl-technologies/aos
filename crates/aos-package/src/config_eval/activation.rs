@@ -1714,7 +1714,7 @@ mod tests {
     #[test]
     fn internal_commit_rejects_checked_plan_without_transaction() {
         let (_root, params, mut manifest) = setup();
-        manifest["schema"] = json!(ConfigManifest::SCHEMA_V2);
+        manifest["schema"] = json!(ConfigManifest::SCHEMA);
         manifest["inputs"]["expected_current_generation"] = json!(1);
         manifest["inputs"]["ability_activation"] = json!({
             "schema": "aos.contract.activation-input/v1",
@@ -1891,7 +1891,7 @@ mod tests {
     #[test]
     fn runtime_candidate_rejects_a_stale_generation_base_under_the_switch_lock() {
         let (_root, params, mut manifest) = setup();
-        manifest["schema"] = json!(ConfigManifest::SCHEMA_V2);
+        manifest["schema"] = json!(ConfigManifest::SCHEMA);
         manifest["inputs"]["runtime_modules"] = json!({
             "schema": "aos.runtime-module-set/v1",
             "trust_mode": "local-root",
