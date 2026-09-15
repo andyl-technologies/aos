@@ -707,7 +707,7 @@ mod tests {
             native_executor_ref: format!("/nix/store/{number:032}-executor"),
             evaluator_ref: format!("/nix/store/{number:032}-evaluator"),
             module_abi: 1,
-            baselib_digest: format!("sha256:{}", "0".repeat(64)),
+            base_lib_abi_hash: format!("sha256:{}", "0".repeat(64)),
             root_verity_roothash: None,
             expected_pcr11: None,
             initrd_pcr11: None,

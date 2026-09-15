@@ -259,7 +259,7 @@ in {
         AOS_STATE_VERSION=${cfg.stateVersion}
         AOS_MODULE_ABI=${toString cfg.moduleAbi}
         AOS_CONFIG_INPUT_ABI=${toString cfg.configInputAbi}
-        AOS_BASELIB_DIGEST=sha256:${builtins.hashString "sha256" (toString config.aos.config.evalAtBoot.baseLib)}
+        AOS_BASELIB_ABI_HASH=${config.aos.config.evalAtBoot.baseLibAbiHash}
         ${releaseOsMetadata}
       '';
     };

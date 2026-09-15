@@ -444,7 +444,7 @@
       AOS_RELEASE_ID="${version}"
       AOS_STATE_VERSION=${system.config.aos.system.stateVersion}
       AOS_MODULE_ABI=${toString system.config.aos.system.moduleAbi}
-      AOS_BASELIB_DIGEST=sha256:${builtins.hashString "sha256" (toString system.config.aos.config.evalAtBoot.baseLib)}
+      AOS_BASELIB_ABI_HASH=${system.config.aos.config.evalAtBoot.baseLibAbiHash}
     '';
   };
 

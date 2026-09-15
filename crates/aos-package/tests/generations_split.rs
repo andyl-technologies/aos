@@ -45,7 +45,7 @@ fn generation_axes_round_trip_independently() {
         kernel_path: Some("/nix/store/kernel".into()),
         evaluator_ref: "/nix/store/base-lib".into(),
         module_abi: 9,
-        baselib_digest: "sha256:base".into(),
+        base_lib_abi_hash: "sha256:base".into(),
         root_verity_roothash: None,
         initrd_pcr11: None,
         expected_pcr11: None,

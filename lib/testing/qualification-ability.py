@@ -1457,7 +1457,7 @@ class Scenario:
             "generation": running["number"],
             "toplevel": running["toplevel"],
             "module_abi": running["module_abi"],
-            "baselib_digest": running["baselib_digest"],
+            "base_lib_abi_hash": running["base_lib_abi_hash"],
             "root_verity_roothash": running.get("root_verity_roothash"),
         }
         if (

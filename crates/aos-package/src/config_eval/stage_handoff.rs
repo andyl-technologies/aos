@@ -253,7 +253,7 @@ struct ImageIdentity {
     generation: u32,
     toplevel: String,
     module_abi: u32,
-    baselib_digest: String,
+    base_lib_abi_hash: String,
     root_verity_roothash: Option<String>,
 }
 
@@ -263,7 +263,7 @@ impl ImageIdentity {
             generation: generation.number,
             toplevel: generation.toplevel.clone(),
             module_abi: generation.module_abi,
-            baselib_digest: generation.baselib_digest.clone(),
+            base_lib_abi_hash: generation.base_lib_abi_hash.clone(),
             root_verity_roothash: generation.root_verity_roothash.clone(),
         }
     }
@@ -1084,7 +1084,7 @@ mod tests {
             generation: 7,
             toplevel: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos-system".to_string(),
             module_abi: 3,
-            baselib_digest: format!("sha256:{}", "b".repeat(64)),
+            base_lib_abi_hash: format!("sha256:{}", "b".repeat(64)),
             root_verity_roothash: Some("c".repeat(64)),
         }
     }

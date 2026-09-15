@@ -2421,9 +2421,12 @@ pub struct ImageGeneration {
     /// The monotonic shared-option-schema ABI this image's base lib exports.
     /// Mirrors `AOS_MODULE_ABI` in this image's `/etc/os-release`.
     pub module_abi: u32,
-    /// SHA-256 of the base-lib closure, mirrored as `AOS_BASELIB_DIGEST` in
-    /// `/etc/os-release` and measured into PCR-11 via the `.osrel` section.
-    pub baselib_digest: String,
+    /// Canonical hash of the base-lib module ABI and option schema.
+    ///
+    /// This mirrors `AOS_BASELIB_ABI_HASH` in `/etc/os-release` and is measured
+    /// into PCR-11 through the `.osrel` section. Byte integrity remains bound by
+    /// [`Self::root_verity_roothash`].
+    pub base_lib_abi_hash: String,
     /// dm-verity Merkle root over the erofs root that carries the base lib
     /// (F1), baked into the UKI `.cmdline` as `roothash=<hex>`. `None` for
     /// unsigned/VM (ext4) images.
@@ -4012,7 +4015,7 @@ pin = "v2026.02"
                     kernel_path: Some("/nix/store/k1-linux".into()),
                     evaluator_ref: "/nix/store/bl1-aos-base-lib".into(),
                     module_abi: 1,
-                    baselib_digest: "sha256:aa".into(),
+                    base_lib_abi_hash: "sha256:aa".into(),
                     root_verity_roothash: Some("deadbeef".into()),
                     expected_pcr11: None,
                     initrd_pcr11: None,
@@ -4033,7 +4036,7 @@ pin = "v2026.02"
                     kernel_path: Some("/nix/store/k2-linux".into()),
                     evaluator_ref: "/nix/store/bl2-aos-base-lib".into(),
                     module_abi: 2,
-                    baselib_digest: "sha256:bb".into(),
+                    base_lib_abi_hash: "sha256:bb".into(),
                     root_verity_roothash: None,
                     expected_pcr11: None,
                     initrd_pcr11: None,
