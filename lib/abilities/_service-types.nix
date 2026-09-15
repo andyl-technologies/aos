@@ -1017,9 +1017,42 @@
   identityResolutionFields = {
     name = localKey;
     allocation = types.enum ["ephemeral" "existing" "managed"];
+    requested_id = {
+      type = types.integer {
+        minimum = 1;
+        maximum = 4294967294;
+      };
+      optional = true;
+    };
   };
   principalResolution = types.record {
-    fields = identityResolutionFields;
+    fields =
+      identityResolutionFields
+      // {
+        description = {
+          type = boundedString 1024;
+          optional = true;
+        };
+        home_directory = {
+          type = types.deferredResult executionPath;
+          optional = true;
+        };
+        login_access = {
+          type = types.enum ["disabled" "enabled"];
+          optional = true;
+        };
+        primary_group = {
+          type = types.deferredResult groupName;
+          optional = true;
+        };
+        supplementary_groups = {
+          type = types.list {
+            element = types.deferredResult groupName;
+            maxItems = 256;
+          };
+          optional = true;
+        };
+      };
   };
   groupResolution = types.record {
     fields = identityResolutionFields;
