@@ -195,27 +195,31 @@
     serviceFacets = resource.realization.facets;
     unitNameForReference = _: throw "ownership fixture has no dependencies";
   };
-  ownershipResource = owner: resource // {
-    value = resource.value // {
-      identity = {
-        principal = "example";
-        primary_group = "example";
-        supplementary_groups = [];
-        ephemeral = false;
-        file_creation_mask = "0022";
-      };
-      directories.managed = [
-        {
-          purpose = "state";
-          path = "example/nested";
-          mode = "0750";
-          retention = "persistent";
-          inherit owner;
-          group = "example";
-        }
-      ];
+  ownershipResource = owner:
+    resource
+    // {
+      value =
+        resource.value
+        // {
+          identity = {
+            principal = "example";
+            primary_group = "example";
+            supplementary_groups = [];
+            ephemeral = false;
+            file_creation_mask = "0022";
+          };
+          directories.managed = [
+            {
+              purpose = "state";
+              path = "example/nested";
+              mode = "0750";
+              retention = "persistent";
+              inherit owner;
+              group = "example";
+            }
+          ];
+        };
     };
-  };
   matchedOwnership = serviceRenderer.realizationFor serviceManagement.interfaces.lifecycle.identity (
     ownershipResource "example"
   );
@@ -225,6 +229,9 @@
       )
     )
     true);
+  guarantees = evaluation.config.aos.abilities.guarantees;
+  lifecycleImplementation = evaluation.config.aos.abilities.implementations."systemd:service-lifecycle";
+  conditionImplementation = evaluation.config.aos.abilities.implementations."systemd:service-conditions";
 in
   assert builtins.length resources == 1;
   assert resource.kind == "aos.service.instance";
@@ -238,11 +245,12 @@ in
   assert templates "StandardOutput" serviceSection == ["journal"];
   assert templates "StandardError" serviceSection == ["journal+console"];
   assert templates "RestartPreventExitStatus" serviceSection == ["3" "SIGABRT"];
-  assert executable.source.artifact == artifact;
+  assert executable.source.artifact == artifact // {package = "consumer";};
   assert executable.source.relative_path == "bin/example";
   assert lib.hasInfix "@@AOS_SYSTEMD_SUBSTITUTION:" execStart.value.template;
   assert !lib.hasInfix "/nix/store/" (builtins.toJSON resource.realization);
-  assert resource.realization.links == [
+  assert resource.realization.links
+  == [
     {
       parent = {
         kind = "unit";
@@ -253,5 +261,12 @@ in
     }
   ];
   assert builtins.length evaluation.config.systemd.providerUnitArtifacts == 1;
+  assert guarantees."core:service-template-exact-reuse".name == "aos.guarantee.service-template-exact-reuse";
+  assert lifecycleImplementation.guarantees == ["core:service-template-exact-reuse"];
+  assert conditionImplementation.guarantees
+  == [
+    "core:service-condition-kernel-argument"
+    "core:service-condition-path"
+  ];
   assert builtins.length matchedOwnership.units == 1;
   assert !mismatchedOwnership.success; true

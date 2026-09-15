@@ -382,6 +382,9 @@
     configurationType = null;
     guarantees = [];
   };
+  packagedUnitIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration packagedUnitDeclaration
+  );
   serviceFeatureNames = builtins.filter (featureName: let
     selected = serviceInterfaces.${featureName};
     aggregation = selected.document.interface.aggregation;
@@ -396,14 +399,15 @@
     controlsService = builtins.any (methodName:
       selected.declaration.methods.${methodName}.semantics.requiredTargetAccess == "exclusive-write")
     selected.methods;
-    guarantees = builtins.filter
-      (guarantee: guarantee.name != "aos.guarantee.service-condition.mandatory-access-control")
-      selected.declaration.guarantees;
+    guarantees =
+      builtins.filter
+      (guarantee: guarantee != serviceManagement.guaranteeAliases.condition.mandatoryAccessControl)
+      selected.guarantees;
   in {
     name = selected.alias;
     value = {
       description = "Realizes ${selected.document.interface.name} through the selected systemd service controller.";
-      interface = selected.alias;
+      interface = selected.identity;
       inherit artifact;
       inherit (selected) methods;
       inherit guarantees;
@@ -431,7 +435,7 @@
       name = selected.alias;
       value = {
         description = "Observes ${selected.document.interface.name} through systemd manager readiness targets.";
-        interface = selected.alias;
+        interface = selected.identity;
         inherit artifact;
         inherit (selected) methods;
         guarantees = [];
@@ -454,11 +458,7 @@
     ]);
 in {
   config.aos.abilities = {
-    interfaces =
-      serviceManagement.declarations
-      // {
-        systemd-packaged-unit = packagedUnitDeclaration;
-      };
+    interfaces.systemd-packaged-unit = packagedUnitDeclaration;
 
     implementations =
       serviceImplementations
@@ -466,7 +466,7 @@ in {
       // {
         systemd-packaged-unit = {
           description = "Activates authenticated packaged units and materializes bounded systemd drop-ins.";
-          interface = "systemd-packaged-unit";
+          interface = packagedUnitIdentity;
           inherit artifact;
           methods = ["apply" "observe" "remove"];
           guarantees = [];
