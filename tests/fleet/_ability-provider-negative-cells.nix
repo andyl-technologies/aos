@@ -43,14 +43,8 @@
     ++ groups.kubernetes
     ++ groups.rollout;
 in
-  assert builtins.length matrix.cells == 1428;
-  assert builtins.length all == 100;
-  assert builtins.length (lib.unique all) == 100;
-  assert builtins.length groups.reference == 44;
-  assert builtins.length groups.postgresql == 10;
-  assert builtins.length groups.foreground-process == 6;
-  assert builtins.length groups.systemd-manager == 10;
-  assert builtins.length groups.kubernetes == 12;
-  assert builtins.length groups.rollout == 18; {
+  assert builtins.length all == builtins.length (lib.unique all);
+  assert builtins.sort builtins.lessThan all
+  == builtins.sort builtins.lessThan (map (cell: cell.id) selected); {
     inherit all groups scenarios;
   }

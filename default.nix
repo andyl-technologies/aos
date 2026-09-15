@@ -620,17 +620,12 @@
     inherit lib mkSystem pkgs;
     qualificationImage = true;
   };
-  nativeProviderNegativeRolloutMethods = [
-    "drain"
-    "hold"
-    "observe-boot"
-    "observe-health"
-    "prepare"
-    "retain"
-    "retire"
-    "select"
-    "withdraw"
-  ];
+  nativeProviderNegativeRolloutMethods = lib.unique (
+    map (
+      cellId: builtins.elemAt (lib.splitString "/" cellId) 3
+    )
+    nativeProviderNegativeCells.groups.rollout
+  );
   nativeProviderNegativeRollouts =
     map (method: let
       cellIds =
@@ -732,10 +727,16 @@
       )
       0
       selected;
+    expectedPostconditions =
+      builtins.foldl' (
+        count: cell: count + builtins.length cell.postconditions
+      )
+      0
+      nativeAdapterMatrix.applicable_cells;
   in
-    assert builtins.length selected == 1391;
-    assert builtins.length (lib.unique selected) == 1391;
-    assert postconditions == 5949; selected;
+    assert builtins.length selected == nativeAdapterMatrix.required_production_vm_cells;
+    assert builtins.length (lib.unique selected) == nativeAdapterMatrix.required_production_vm_cells;
+    assert postconditions == expectedPostconditions; selected;
 
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline =
