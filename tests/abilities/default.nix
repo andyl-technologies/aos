@@ -6,9 +6,9 @@
 }: let
   fails = value: !(builtins.tryEval (builtins.deepSeq value true)).success;
   boundedSelectorNormalizer = lib.abilities.packageOutputSelectorsFor {
-      maxCollectionItems = 4;
-      maxStringBytes = 16;
-      maxStructuralDepth = 4;
+    maxCollectionItems = 4;
+    maxStringBytes = 16;
+    maxStructuralDepth = 4;
   };
   normalizeBounded = value:
     boundedSelectorNormalizer.normalizePackageOutputSelectors {
@@ -182,9 +182,11 @@
     inherit (testInterface) name abi;
     descriptor = null;
   };
-  mismatchedDescriptorSelector = descriptorAgnosticSelector // {
-    descriptor = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-  };
+  mismatchedDescriptorSelector =
+    descriptorAgnosticSelector
+    // {
+      descriptor = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    };
 
   guaranteeOrdering =
     builtins.map
@@ -250,15 +252,14 @@
         inherit semantics;
         parameters = lib.abilities.types.boolean;
         targetResource = "aos.test.method-family";
-        outputs =
-          lib.optionalAttrs retainedResource {
-            retained-resource = {
-              schema = lib.abilities.types.resourceReference;
-              phase = "runtime";
-              visibility = "protected";
-              lifetime = "instance";
-            };
+        outputs = lib.optionalAttrs retainedResource {
+          retained-resource = {
+            schema = lib.abilities.types.resourceReference;
+            phase = "runtime";
+            visibility = "protected";
+            lifetime = "instance";
           };
+        };
         permittedOperations = ["run"];
         guarantees = [];
         outcome = {
@@ -557,6 +558,9 @@
   };
   initrdSecurityServices = import ./initrd-security-services.nix {
     inherit pkgs lib mkSystem;
+  };
+  initrdBootSubstrate = import ./initrd-boot-substrate.nix {
+    inherit pkgs lib;
   };
   baseKernelNative = import ./base-kernel-native.nix {
     inherit pkgs lib;
@@ -1014,6 +1018,7 @@ in
   assert systemdReadiness;
   assert systemdStageMilestones;
   assert initrdSecurityServices;
+  assert initrdBootSubstrate;
   assert baseKernelNative;
   assert baseNixDbNative;
   assert baseNetworkingNative;

@@ -4,7 +4,13 @@
   mkDerivation,
   rust,
   aos,
+  bash,
+  coreutils,
   erofs-utils,
+  jq,
+  sbsigntools,
+  systemd,
+  tpm2-tools,
   util-linux,
 }: let
   source = ../../crates/aos-boot-preparations;
@@ -21,7 +27,17 @@ in
     src = source;
 
     buildDeps = [rust];
-    runtimeDeps = [packageRuntime erofs-utils util-linux];
+    runtimeDeps = [
+      packageRuntime
+      bash
+      coreutils
+      erofs-utils
+      jq
+      sbsigntools
+      systemd
+      tpm2-tools
+      util-linux
+    ];
     propagatedDeps = [];
     abilities = ./_aos-boot-preparations/module.nix;
 
@@ -42,8 +58,18 @@ in
       {
         name = "install";
         script = ''
-          mkdir -p $out/bin
+          mkdir -p $out/bin $out/lib/systemd/system
           cp aos-boot-preparations $out/bin/
+          for source in ${./_aos-boot-preparations}/*.sh; do
+            destination="$out/bin/$(basename "$source" .sh)"
+            sed 's|@bash@|${bash}|g' "$source" > "$destination"
+            chmod 0555 "$destination"
+          done
+
+          sed \
+            's#^ExecStart=.*#ExecStart=${systemd}/lib/systemd/systemd-networkd-wait-online --any#' \
+            ${systemd}/lib/systemd/system/systemd-networkd-wait-online.service \
+            > $out/lib/systemd/system/systemd-networkd-wait-online.service
         '';
       }
     ];

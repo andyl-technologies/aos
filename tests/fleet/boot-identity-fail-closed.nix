@@ -31,8 +31,14 @@
   rootVerifyLifecycle = request "aos-verity-root-verify-lifecycle";
   rootVerifyDependencies = request "aos-verity-root-verify-dependencies";
   rootVerifyFailure = request "aos-verity-root-verify-failure_policy";
+  mountVarDependencies = initrdRequests."aos-boot-preparations:mount-var-dependencies".parameters;
 in
-  assert builtins.elem "aos-boot-identity-guard.service" failClosedSystem.config.boot.initrd.systemd.services."mount-var".requires;
+  assert builtins.elem {
+    _type = "aos-request-output-reference";
+    request = "aos-boot-preparations:boot-identity";
+    output = "readiness-resource";
+  }
+  mountVarDependencies.requires;
   assert (builtins.head rootVerifyLifecycle.start).executable.entry_point == "bin/aos-verity-root-verify";
   assert builtins.elem (output "boot-identity") rootVerifyDependencies.requires;
   assert builtins.elem (output "persistent-state") rootVerifyDependencies.required_by;
