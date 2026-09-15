@@ -228,11 +228,32 @@ pub(crate) fn authorize_materialized_references(
                     }
                 }
             }
+            (
+                ValueSchema::DocumentRecord {
+                    fields: schemas, ..
+                },
+                Value::Object(fields),
+            ) => {
+                for (name, value) in fields {
+                    if let Some(field_schema) = schemas.get(name) {
+                        stack.push((field_schema, value));
+                    }
+                }
+            }
             (ValueSchema::TaggedUnion { tag, variants }, Value::Object(fields)) => {
                 if let Some(tag_value) = fields.get(tag.as_str()).and_then(Value::as_str) {
                     if let Some(variant) = variants.get(tag_value) {
                         stack.push((variant, value));
                     }
+                }
+            }
+            (ValueSchema::DisjointUnion { variants }, value) => {
+                if let Some(kind) = aos_ability_model::JsonValueKind::of_json(value)
+                    && let Some(variant) = variants
+                        .iter()
+                        .find(|variant| variant.top_level_json_kind() == Some(kind))
+                {
+                    stack.push((variant, value));
                 }
             }
             _ => {}

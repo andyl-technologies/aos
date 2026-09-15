@@ -151,12 +151,24 @@ pub(super) fn schema_summary(schema: &ValueSchema) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        ValueSchema::DocumentRecord { fields, .. } => format!(
+            "document record {{{}}}",
+            fields.keys().cloned().collect::<Vec<_>>().join(", ")
+        ),
         ValueSchema::TaggedUnion { tag, variants } => format!(
             "tagged union by {} ({})",
             tag.as_str(),
             variants
                 .keys()
                 .map(|variant| variant.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ValueSchema::DisjointUnion { variants } => format!(
+            "one of {}",
+            variants
+                .iter()
+                .map(schema_summary)
                 .collect::<Vec<_>>()
                 .join(", ")
         ),

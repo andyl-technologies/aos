@@ -835,6 +835,8 @@ fn foreground_process_request_schema() -> Result<ValueSchema> {
                 ValueSchema::List {
                     element: Box::new(bounded_string(FOREGROUND_ARGUMENT_MAX_BYTES)),
                     max_items: FOREGROUND_ARGUMENT_MAX_ITEMS,
+                    unique: false,
+                    canonical_order: false,
                 },
             ),
             (LocalKey::new("artifact")?, ValueSchema::ArtifactReference),

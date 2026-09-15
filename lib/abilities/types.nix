@@ -41,7 +41,8 @@
     then {
       kind = "list";
       element = nested schema.element;
-      unique = false;
+      unique = schema.unique or false;
+      canonical_order = schema.canonical_order or false;
     }
     else if schema.kind == "map"
     then {
@@ -55,10 +56,21 @@
       fields = builtins.mapAttrs (_: nested) schema.fields;
       open = false;
     }
+    else if schema.kind == "document-record"
+    then {
+      kind = "submodule";
+      fields = builtins.mapAttrs (_: nested) schema.fields;
+      open = false;
+    }
     else if schema.kind == "tagged-union"
     then {
       kind = "one-of";
       alternatives = builtins.map nested (builtins.attrValues schema.variants);
+    }
+    else if schema.kind == "disjoint-union"
+    then {
+      kind = "one-of";
+      alternatives = builtins.map nested schema.variants;
     }
     else if schema.kind == "optional"
     then {
@@ -144,6 +156,26 @@
       merge = location: definitions:
         builtins.removeAttrs (submoduleType.merge location definitions) ["_module"];
     };
+
+  decorateRecord = context: file: schema: normalizedFields: optionalFields: let
+    submoduleType = moduleTypes.submodule {
+      _file = file;
+      _module.strict = true;
+      options = builtins.mapAttrs (_: field: field.option) normalizedFields;
+    };
+    base =
+      submoduleType
+      // {
+        merge = location: definitions: let
+          merged = builtins.removeAttrs (submoduleType.merge location definitions) ["_module"];
+          omittedNullFields = builtins.filter (
+            name: builtins.elem name optionalFields && merged.${name} == null
+          ) (builtins.attrNames merged);
+        in
+          builtins.removeAttrs merged omittedNullFields;
+      };
+  in
+    decorate context schema base;
 
   digestType =
     moduleTypes.addCheck moduleTypes.str (value:
@@ -257,6 +289,8 @@ in rec {
       list {
         element = fromSchema normalized.element;
         maxItems = normalized.max_items;
+        unique = normalized.unique or false;
+        canonicalOrder = normalized.canonical_order or false;
       }
     else if normalized.kind == "map"
     then
@@ -272,11 +306,20 @@ in rec {
         fields = builtins.mapAttrs (_: fromSchema) normalized.fields;
         optional = normalized.optional_fields;
       }
+    else if normalized.kind == "document-record"
+    then
+      documentRecord {
+        keyMaxLength = normalized.key_max_length;
+        fields = builtins.mapAttrs (_: fromSchema) normalized.fields;
+        optional = normalized.optional_fields;
+      }
     else if normalized.kind == "tagged-union"
     then
       decorate "decoded tagged union" normalized (moduleTypes.oneOf (builtins.attrValues (
         builtins.mapAttrs (_: fromSchema) normalized.variants
       )))
+    else if normalized.kind == "disjoint-union"
+    then disjointUnion (builtins.map fromSchema normalized.variants)
     else if normalized.kind == "optional"
     then optional (fromSchema normalized.value)
     else if normalized.kind == "artifact-reference"
@@ -458,15 +501,64 @@ in rec {
   list = {
     element,
     maxItems,
+    unique ? false,
+    canonicalOrder ? false,
   }: let
     elementSchema = schemaOf "ability list element" element;
     schema = schemas.list {
-      inherit maxItems;
+      inherit maxItems unique canonicalOrder;
       element = elementSchema;
     };
+    listType = moduleTypes.listOf element;
+    checkedListType = moduleTypes.addCheck listType (value:
+      builtins.length value
+      <= schema.max_items
+      && (let
+        encoded = builtins.map builtins.toJSON value;
+        distinct =
+          builtins.length encoded
+          == builtins.length (builtins.attrNames (builtins.listToAttrs (builtins.map (item: {
+              name = item;
+              value = true;
+            })
+            encoded)));
+      in
+        (!(schema.unique or false) || distinct)
+        && (!(schema.canonical_order or false) || encoded == builtins.sort builtins.lessThan encoded)));
+    normalize = value: let
+      entries =
+        builtins.map (item: {
+          encoded = builtins.toJSON item;
+          value = item;
+        })
+        value;
+      ordered =
+        if schema.canonical_order or false
+        then builtins.sort (left: right: left.encoded < right.encoded) entries
+        else entries;
+    in
+      (
+        builtins.foldl' (
+          state: entry:
+            if (schema.unique or false) && builtins.hasAttr entry.encoded state.seen
+            then state
+            else {
+              seen = state.seen // {${entry.encoded} = true;};
+              values = state.values ++ [entry.value];
+            }
+        ) {
+          seen = {};
+          values = [];
+        }
+        ordered
+      )
+      .values;
     base =
-      moduleTypes.addCheck (moduleTypes.listOf element) (value:
-        builtins.length value <= schema.max_items);
+      checkedListType
+      // {
+        merge = location: definitions:
+          normalize (listType.merge location definitions);
+      };
   in
     decorate "list" schema base;
 
@@ -524,25 +616,50 @@ in rec {
         normalizedFields;
       optional = optionalFields;
     };
-    submoduleType = moduleTypes.submodule {
-      _file = "<lib.abilities.types.record>";
-      _module.strict = true;
-      options = builtins.mapAttrs (_: field: field.option) normalizedFields;
-    };
-    base =
-      submoduleType
-      // {
-        merge = location: definitions: let
-          merged = builtins.removeAttrs (submoduleType.merge location definitions) ["_module"];
-          omittedNullFields =
-            builtins.filter
-            (name: builtins.elem name optionalFields && merged.${name} == null)
-            (builtins.attrNames merged);
-        in
-          builtins.removeAttrs merged omittedNullFields;
-      };
   in
-    decorate "record" schema base;
+    decorateRecord "record" "<lib.abilities.types.record>" schema normalizedFields optionalFields;
+
+  documentRecord = {
+    keyMaxLength,
+    fields,
+    optional ? [],
+  }: let
+    normalizedFields = builtins.mapAttrs (name: value:
+      normalizedField name (
+        if builtins.elem name optional
+        then
+          if builtins.isAttrs value && value ? type
+          then value // {optional = true;}
+          else {
+            type = value;
+            optional = true;
+          }
+        else value
+      ))
+    fields;
+    inferredOptional = builtins.filter (
+      name: normalizedFields.${name}.optional
+    ) (builtins.attrNames normalizedFields);
+    optionalFields = builtins.attrNames (builtins.listToAttrs (builtins.map (name: {
+      inherit name;
+      value = true;
+    }) (optional ++ inferredOptional)));
+    schema = schemas.documentRecord {
+      inherit keyMaxLength;
+      fields =
+        builtins.mapAttrs (
+          _: field: schemaOf "ability document-record field" field.fieldType
+        )
+        normalizedFields;
+      optional = optionalFields;
+    };
+  in
+    decorateRecord
+    "document record"
+    "<lib.abilities.types.document-record>"
+    schema
+    normalizedFields
+    optionalFields;
 
   taggedUnion = {
     tag,
@@ -574,6 +691,12 @@ in rec {
     };
   in
     decorate "tagged union" schema taggedType;
+
+  disjointUnion = variants: let
+    variantSchemas = builtins.map (schemaOf "ability disjoint-union variant") variants;
+    schema = schemas.disjointUnion variantSchemas;
+  in
+    decorate "disjoint union" schema (moduleTypes.oneOf variants);
 
   optional = value: let
     schema = schemas.optional (schemaOf "optional ability value" value);

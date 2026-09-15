@@ -16,6 +16,7 @@ pub(super) fn validate_nested_authority(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let schema = unwrap_optional(schema, expression);
+    let schema = unwrap_disjoint(schema, expression);
     match expression {
         ValueExpression::Literal { value } => validate_literal_authority(
             context,
@@ -105,6 +106,26 @@ pub(super) fn validate_nested_authority(
                     }
                 }
             }
+            ValueSchema::DocumentRecord {
+                fields: schemas, ..
+            } => {
+                for (name, field) in fields {
+                    if let Some(field_schema) = schemas.get(name) {
+                        validate_nested_authority(
+                            context,
+                            field_schema,
+                            field,
+                            operation,
+                            operation_index,
+                            binding,
+                            grant,
+                            artifacts,
+                            resources,
+                            diagnostics,
+                        );
+                    }
+                }
+            }
             ValueSchema::TaggedUnion { tag, variants } => {
                 let selected = fields
                     .get(tag.as_str())
@@ -150,6 +171,21 @@ fn unwrap_optional<'a>(
     }
     schema
 }
+
+fn unwrap_disjoint<'a>(schema: &'a ValueSchema, expression: &ValueExpression) -> &'a ValueSchema {
+    let ValueSchema::DisjointUnion { variants } = schema else {
+        return schema;
+    };
+    let Some(kind) = expression.top_level_json_kind() else {
+        return schema;
+    };
+
+    variants
+        .iter()
+        .find(|variant| variant.top_level_json_kind() == Some(kind))
+        .unwrap_or(schema)
+}
+
 fn validate_literal_authority(
     context: &ValidationContext,
     schema: &ValueSchema,
@@ -256,6 +292,29 @@ fn validate_literal_authority(
                 }
             }
         }
+        (
+            ValueSchema::DocumentRecord {
+                fields: schemas, ..
+            },
+            Value::Object(fields),
+        ) => {
+            for (name, value) in fields {
+                if let Some(field_schema) = schemas.get(name) {
+                    validate_literal_authority(
+                        context,
+                        field_schema,
+                        value,
+                        operation,
+                        operation_index,
+                        binding,
+                        grant,
+                        artifacts,
+                        resources,
+                        diagnostics,
+                    );
+                }
+            }
+        }
         (ValueSchema::TaggedUnion { tag, variants }, Value::Object(fields)) => {
             if let Some(tag_value) = fields.get(tag.as_str()).and_then(Value::as_str) {
                 if let Some(variant) = variants.get(tag_value) {
@@ -272,6 +331,26 @@ fn validate_literal_authority(
                         diagnostics,
                     );
                 }
+            }
+        }
+        (ValueSchema::DisjointUnion { variants }, value) => {
+            if let Some(kind) = aos_ability_model::JsonValueKind::of_json(value)
+                && let Some(variant) = variants
+                    .iter()
+                    .find(|variant| variant.top_level_json_kind() == Some(kind))
+            {
+                validate_literal_authority(
+                    context,
+                    variant,
+                    value,
+                    operation,
+                    operation_index,
+                    binding,
+                    grant,
+                    artifacts,
+                    resources,
+                    diagnostics,
+                );
             }
         }
         _ => {}

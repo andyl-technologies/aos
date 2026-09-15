@@ -6,8 +6,8 @@ use std::io::{self, Write};
 
 use aos_ability_model::{
     ABILITY_LIMITS_V1, ArtifactReference, Diagnostic, DiagnosticClass, DiagnosticCode,
-    DiagnosticPhase, InterfaceName, LocalKey, OperationResultReference, ProviderAssignment,
-    ResourceReference, StringSyntax, ValueExpression, ValueSchema,
+    DiagnosticPhase, InterfaceName, JsonValueKind, LocalKey, OperationResultReference,
+    ProviderAssignment, ResourceReference, StringSyntax, ValueExpression, ValueSchema,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -247,8 +247,23 @@ pub(crate) fn validate_schema_definition(
                 }
             }
         }
-        ValueSchema::List { element, max_items } => {
+        ValueSchema::List {
+            element,
+            max_items,
+            unique,
+            canonical_order,
+        } => {
             validate_declared_collection_bound(*max_items, max_collection_items, path, diagnostics);
+            if *canonical_order && !*unique {
+                push_diagnostic(
+                    diagnostics,
+                    schema_diagnostic(
+                        DiagnosticCode::ValueTypeMismatch,
+                        path,
+                        "canonical list ordering requires unique elements".to_string(),
+                    ),
+                );
+            }
             validate_schema_definition(
                 element,
                 &path.child("element"),
@@ -321,6 +336,49 @@ pub(crate) fn validate_schema_definition(
                 );
             }
         }
+        ValueSchema::DocumentRecord {
+            key_max_length,
+            fields,
+            optional_fields,
+        } => {
+            validate_declared_string_bound(
+                *key_max_length,
+                max_string_bytes,
+                &path.child("key_max_length"),
+                diagnostics,
+            );
+            validate_declared_collection_bound(
+                fields.len().saturating_add(optional_fields.len()) as u64,
+                max_collection_items,
+                path,
+                diagnostics,
+            );
+            check_sorted_unique(optional_fields, &path.child("optional_fields"), diagnostics);
+            for optional in optional_fields {
+                if !fields.contains_key(optional) {
+                    push_diagnostic(
+                        diagnostics,
+                        schema_diagnostic(
+                            DiagnosticCode::MissingReference,
+                            &path.child("optional_fields").child(optional),
+                            "optional document field is not declared in fields".to_string(),
+                        ),
+                    );
+                }
+            }
+            for (name, field) in fields {
+                validate_document_key(name, *key_max_length, path, diagnostics);
+                validate_schema_definition(
+                    field,
+                    &path.child("fields").child(name),
+                    depth.saturating_add(1),
+                    max_depth,
+                    max_string_bytes,
+                    max_collection_items,
+                    diagnostics,
+                );
+            }
+        }
         ValueSchema::TaggedUnion { tag, variants } => {
             validate_declared_collection_bound(
                 variants.len() as u64,
@@ -343,6 +401,62 @@ pub(crate) fn validate_schema_definition(
                 validate_schema_definition(
                     variant,
                     &path.child("variants").child(variant_name.as_str()),
+                    depth.saturating_add(1),
+                    max_depth,
+                    max_string_bytes,
+                    max_collection_items,
+                    diagnostics,
+                );
+            }
+        }
+        ValueSchema::DisjointUnion { variants } => {
+            validate_declared_collection_bound(
+                variants.len() as u64,
+                max_collection_items,
+                path,
+                diagnostics,
+            );
+            if variants.len() < 2 {
+                push_diagnostic(
+                    diagnostics,
+                    schema_diagnostic(
+                        DiagnosticCode::ValueTypeMismatch,
+                        path,
+                        "disjoint union must contain at least two variants".to_string(),
+                    ),
+                );
+            }
+
+            let mut previous_kind = None;
+            for (index, variant) in variants.iter().enumerate() {
+                let variant_path = path.child("variants").child(index.to_string());
+                let kind = variant.top_level_json_kind();
+                if kind.is_none() {
+                    push_diagnostic(
+                        diagnostics,
+                        schema_diagnostic(
+                            DiagnosticCode::ValueTypeMismatch,
+                            &variant_path,
+                            "disjoint-union variants must admit one top-level JSON kind"
+                                .to_string(),
+                        ),
+                    );
+                } else if previous_kind.is_some_and(|previous| Some(previous) >= kind) {
+                    push_diagnostic(
+                        diagnostics,
+                        schema_diagnostic(
+                            DiagnosticCode::ValueTypeMismatch,
+                            &variant_path,
+                            "disjoint-union variants must have distinct canonical JSON-kind order"
+                                .to_string(),
+                        ),
+                    );
+                }
+                previous_kind = kind;
+
+                validate_schema_definition(
+                    variant,
+                    &variant_path,
                     depth.saturating_add(1),
                     max_depth,
                     max_string_bytes,
@@ -451,13 +565,38 @@ fn validate_expression_with_literal_source(
         );
         return;
     }
+    if let ValueSchema::DisjointUnion { variants } = schema {
+        let kind = expression_json_kind(expression);
+        let variant = kind.and_then(|kind| {
+            variants
+                .iter()
+                .find(|variant| variant.top_level_json_kind() == Some(kind))
+        });
+        if let Some(variant) = variant {
+            validate_expression_with_literal_source(
+                variant,
+                expression,
+                path,
+                diagnostics,
+                result_validator,
+                aggregate_validator,
+                literal_source,
+            );
+        } else {
+            push_type_mismatch(path, expression_kind(expression), schema, diagnostics);
+        }
+        return;
+    }
 
     match expression {
         ValueExpression::Literal { value } => {
             validate_literal(schema, value.as_json(), path, diagnostics, literal_source);
         }
         ValueExpression::List { items } => {
-            let ValueSchema::List { element, max_items } = schema else {
+            let ValueSchema::List {
+                element, max_items, ..
+            } = schema
+            else {
                 push_type_mismatch(path, "list expression", schema, diagnostics);
                 return;
             };
@@ -549,7 +688,15 @@ fn validate_literal(
                 );
             }
         }
-        (ValueSchema::List { element, max_items }, Value::Array(items)) => {
+        (
+            ValueSchema::List {
+                element,
+                max_items,
+                unique,
+                canonical_order,
+            },
+            Value::Array(items),
+        ) => {
             if items.len() as u64 > *max_items {
                 push_diagnostic(
                     diagnostics,
@@ -560,6 +707,7 @@ fn validate_literal(
                     ),
                 );
             }
+            validate_list_constraints(items, *unique, *canonical_order, path, diagnostics);
             for (index, item) in items.iter().enumerate() {
                 validate_json_literal(
                     element,
@@ -602,8 +750,36 @@ fn validate_literal(
             diagnostics,
             literal_source,
         ),
+        (
+            ValueSchema::DocumentRecord {
+                fields,
+                optional_fields,
+                ..
+            },
+            Value::Object(values),
+        ) => validate_literal_document_record(
+            fields,
+            optional_fields,
+            values,
+            path,
+            diagnostics,
+            literal_source,
+        ),
         (ValueSchema::TaggedUnion { tag, variants }, Value::Object(values)) => {
             validate_literal_tagged_union(tag, variants, values, path, diagnostics, literal_source);
+        }
+        (ValueSchema::DisjointUnion { variants }, value) => {
+            let kind = json_value_kind(value);
+            let variant = kind.and_then(|kind| {
+                variants
+                    .iter()
+                    .find(|variant| variant.top_level_json_kind() == Some(kind))
+            });
+            if let Some(variant) = variant {
+                validate_json_literal(variant, value, path, diagnostics, literal_source);
+            } else {
+                push_type_mismatch(path, json_kind(value), schema, diagnostics);
+            }
         }
         (ValueSchema::Optional { .. }, Value::Null) => {}
         (ValueSchema::Optional { value }, other) => {
@@ -656,6 +832,56 @@ fn validate_literal(
             );
         }
         _ => push_type_mismatch(path, json_kind(value), schema, diagnostics),
+    }
+}
+
+fn validate_list_constraints(
+    items: &[Value],
+    unique: bool,
+    canonical_order: bool,
+    path: &SchemaPath,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !unique && !canonical_order {
+        return;
+    }
+    let encodings = items
+        .iter()
+        .map(aos_contract::canonical::to_vec)
+        .collect::<Result<Vec<_>, _>>();
+    let Ok(encodings) = encodings else {
+        push_diagnostic(
+            diagnostics,
+            schema_diagnostic(
+                DiagnosticCode::ValueTypeMismatch,
+                path,
+                "list elements cannot be canonically encoded".to_string(),
+            ),
+        );
+        return;
+    };
+    if unique {
+        let distinct = encodings.iter().collect::<std::collections::BTreeSet<_>>();
+        if distinct.len() != encodings.len() {
+            push_diagnostic(
+                diagnostics,
+                schema_diagnostic(
+                    DiagnosticCode::ValueTypeMismatch,
+                    path,
+                    "list elements must be unique".to_string(),
+                ),
+            );
+        }
+    }
+    if canonical_order && !encodings.windows(2).all(|pair| pair[0] < pair[1]) {
+        push_diagnostic(
+            diagnostics,
+            schema_diagnostic(
+                DiagnosticCode::ValueTypeMismatch,
+                path,
+                "list elements must be in strict canonical order".to_string(),
+            ),
+        );
     }
 }
 
@@ -840,6 +1066,22 @@ fn validate_expression_object(
                 literal_source,
             );
         }
+        ValueSchema::DocumentRecord {
+            fields: schema_fields,
+            optional_fields,
+            ..
+        } => {
+            validate_expression_document_record(
+                schema_fields,
+                optional_fields,
+                fields,
+                path,
+                diagnostics,
+                result_validator,
+                aggregate_validator,
+                literal_source,
+            );
+        }
         ValueSchema::TaggedUnion { tag, variants } => {
             let Some(ValueExpression::Literal { value }) = fields.get(tag.as_str()) else {
                 push_diagnostic(
@@ -936,6 +1178,55 @@ fn validate_expression_record(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn validate_expression_document_record(
+    schema_fields: &BTreeMap<String, ValueSchema>,
+    optional_fields: &[String],
+    values: &BTreeMap<String, ValueExpression>,
+    path: &SchemaPath,
+    diagnostics: &mut Vec<Diagnostic>,
+    result_validator: Option<&ResultReferenceValidator<'_>>,
+    aggregate_validator: Option<&AggregateReferenceValidator<'_>>,
+    literal_source: LiteralSource,
+) {
+    let optional: BTreeSet<&str> = optional_fields.iter().map(String::as_str).collect();
+
+    for (name, field_schema) in schema_fields {
+        if let Some(value) = values.get(name) {
+            validate_expression_with_literal_source(
+                field_schema,
+                value,
+                &path.child(name),
+                diagnostics,
+                result_validator,
+                aggregate_validator,
+                literal_source,
+            );
+        } else if !optional.contains(name.as_str()) {
+            push_diagnostic(
+                diagnostics,
+                schema_diagnostic(
+                    DiagnosticCode::ValueTypeMismatch,
+                    &path.child(name),
+                    "required document field is missing".to_string(),
+                ),
+            );
+        }
+    }
+    for name in values.keys() {
+        if !schema_fields.contains_key(name) {
+            push_diagnostic(
+                diagnostics,
+                schema_diagnostic(
+                    DiagnosticCode::ValueTypeMismatch,
+                    &path.child(name),
+                    "document contains an unsupported field".to_string(),
+                ),
+            );
+        }
+    }
+}
+
 fn validate_literal_map(
     key: &aos_ability_model::StringConstraint,
     value_schema: &ValueSchema,
@@ -1009,6 +1300,74 @@ fn validate_literal_record(
                 ),
             );
         }
+    }
+}
+
+fn validate_literal_document_record(
+    fields: &BTreeMap<String, ValueSchema>,
+    optional_fields: &[String],
+    values: &serde_json::Map<String, Value>,
+    path: &SchemaPath,
+    diagnostics: &mut Vec<Diagnostic>,
+    literal_source: LiteralSource,
+) {
+    let optional: BTreeSet<&str> = optional_fields.iter().map(String::as_str).collect();
+
+    for (name, field_schema) in fields {
+        if let Some(value) = values.get(name) {
+            validate_json_literal(
+                field_schema,
+                value,
+                &path.child(name),
+                diagnostics,
+                literal_source,
+            );
+        } else if !optional.contains(name.as_str()) {
+            push_diagnostic(
+                diagnostics,
+                schema_diagnostic(
+                    DiagnosticCode::ValueTypeMismatch,
+                    &path.child(name),
+                    "required document field is missing".to_string(),
+                ),
+            );
+        }
+    }
+    for name in values.keys() {
+        if !fields.contains_key(name) {
+            push_diagnostic(
+                diagnostics,
+                schema_diagnostic(
+                    DiagnosticCode::ValueTypeMismatch,
+                    &path.child(name),
+                    "document contains an unsupported field".to_string(),
+                ),
+            );
+        }
+    }
+}
+
+fn validate_document_key(
+    name: &str,
+    max_length: u64,
+    path: &SchemaPath,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if name.is_empty()
+        || name.len() as u64 > max_length
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() || byte == b' ')
+    {
+        push_diagnostic(
+            diagnostics,
+            schema_diagnostic(
+                DiagnosticCode::ValueTypeMismatch,
+                &path.child("fields").child(name),
+                "document field name must be a non-empty bounded printable ASCII string"
+                    .to_string(),
+            ),
+        );
     }
 }
 
@@ -1242,6 +1601,26 @@ fn json_kind(value: &Value) -> &'static str {
     }
 }
 
+fn json_value_kind(value: &Value) -> Option<JsonValueKind> {
+    JsonValueKind::of_json(value)
+}
+
+fn expression_json_kind(expression: &ValueExpression) -> Option<JsonValueKind> {
+    expression.top_level_json_kind()
+}
+
+fn expression_kind(expression: &ValueExpression) -> &'static str {
+    match expression {
+        ValueExpression::Literal { value } => json_kind(value.as_json()),
+        ValueExpression::List { .. } => "array",
+        ValueExpression::Object { .. }
+        | ValueExpression::ArtifactReference { .. }
+        | ValueExpression::ResourceReference { .. } => "object",
+        ValueExpression::AggregateOutput { .. } => "aggregate output",
+        ValueExpression::OperationResult { .. } => "operation result",
+    }
+}
+
 fn schema_kind(schema: &ValueSchema) -> &'static str {
     match schema {
         ValueSchema::Boolean => "Boolean",
@@ -1251,7 +1630,9 @@ fn schema_kind(schema: &ValueSchema) -> &'static str {
         ValueSchema::List { .. } => "list",
         ValueSchema::Map { .. } => "map",
         ValueSchema::Record { .. } => "record",
+        ValueSchema::DocumentRecord { .. } => "document-record",
         ValueSchema::TaggedUnion { .. } => "tagged-union",
+        ValueSchema::DisjointUnion { .. } => "disjoint-union",
         ValueSchema::Optional { .. } => "optional",
         ValueSchema::ArtifactReference => "artifact-reference",
         ValueSchema::ResourceReference => "resource-reference",
@@ -1308,6 +1689,8 @@ mod tests {
         let list_schema = ValueSchema::List {
             element: Box::new(ValueSchema::Boolean),
             max_items: 0,
+            unique: false,
+            canonical_order: false,
         };
         let map_schema = ValueSchema::Map {
             key: aos_ability_model::StringConstraint {
@@ -1320,6 +1703,143 @@ mod tests {
 
         assert!(validate_value(&list_schema, &literal(serde_json::json!([]))).is_ok());
         assert!(validate_value(&map_schema, &literal(serde_json::json!({}))).is_ok());
+    }
+
+    #[test]
+    fn constrained_list_rejects_duplicates_and_noncanonical_order() {
+        let schema = ValueSchema::List {
+            element: Box::new(ValueSchema::String {
+                max_length: 8,
+                syntax: None,
+            }),
+            max_items: 4,
+            unique: true,
+            canonical_order: true,
+        };
+
+        assert!(validate_value(&schema, &literal(serde_json::json!(["a", "b"]))).is_ok());
+        assert!(validate_value(&schema, &literal(serde_json::json!(["a", "a"]))).is_err());
+        assert!(validate_value(&schema, &literal(serde_json::json!(["b", "a"]))).is_err());
+    }
+
+    #[test]
+    fn canonical_order_requires_unique_elements() {
+        let schema = ValueSchema::List {
+            element: Box::new(ValueSchema::Boolean),
+            max_items: 4,
+            unique: false,
+            canonical_order: true,
+        };
+
+        assert!(validate_value(&schema, &literal(serde_json::json!([false, true]))).is_err());
+    }
+
+    #[test]
+    fn disjoint_union_accepts_raw_boolean_integer_and_string_values() {
+        let schema = ValueSchema::DisjointUnion {
+            variants: vec![
+                ValueSchema::Boolean,
+                ValueSchema::Integer {
+                    minimum: 0,
+                    maximum: 8,
+                },
+                ValueSchema::String {
+                    max_length: 8,
+                    syntax: None,
+                },
+            ],
+        };
+
+        assert!(validate_value(&schema, &literal(serde_json::json!(true))).is_ok());
+        assert!(validate_value(&schema, &literal(serde_json::json!(4))).is_ok());
+        assert!(validate_value(&schema, &literal(serde_json::json!("raw"))).is_ok());
+        assert!(validate_value(&schema, &literal(serde_json::json!([]))).is_err());
+    }
+
+    #[test]
+    fn disjoint_union_rejects_ambiguous_or_reordered_variants() {
+        let ambiguous = ValueSchema::DisjointUnion {
+            variants: vec![
+                ValueSchema::String {
+                    max_length: 8,
+                    syntax: None,
+                },
+                ValueSchema::StringEnum {
+                    values: vec!["value".to_string()],
+                },
+            ],
+        };
+        let reordered = ValueSchema::DisjointUnion {
+            variants: vec![
+                ValueSchema::String {
+                    max_length: 8,
+                    syntax: None,
+                },
+                ValueSchema::Boolean,
+            ],
+        };
+
+        assert!(validate_value(&ambiguous, &literal(serde_json::json!("value"))).is_err());
+        assert!(validate_value(&reordered, &literal(serde_json::json!(true))).is_err());
+    }
+
+    #[test]
+    fn document_record_preserves_application_keys_and_rejects_unknown_fields() {
+        let schema = ValueSchema::DocumentRecord {
+            key_max_length: 32,
+            fields: BTreeMap::from([
+                (
+                    "@type".to_string(),
+                    ValueSchema::String {
+                        max_length: 64,
+                        syntax: None,
+                    },
+                ),
+                ("enabled".to_string(), ValueSchema::Boolean),
+            ]),
+            optional_fields: vec!["enabled".to_string()],
+        };
+
+        assert!(
+            validate_value(
+                &schema,
+                &literal(serde_json::json!({"@type": "type.googleapis.com/example"})),
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_value(
+                &schema,
+                &literal(serde_json::json!({"@type": "example", "unknown": true})),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn document_record_rejects_invalid_declared_keys_and_optional_order() {
+        let invalid_key = ValueSchema::DocumentRecord {
+            key_max_length: 8,
+            fields: BTreeMap::from([("bad\nkey".to_string(), ValueSchema::Boolean)]),
+            optional_fields: Vec::new(),
+        };
+        let invalid_optional_order = ValueSchema::DocumentRecord {
+            key_max_length: 8,
+            fields: BTreeMap::from([
+                ("alpha".to_string(), ValueSchema::Boolean),
+                ("beta".to_string(), ValueSchema::Boolean),
+            ]),
+            optional_fields: vec!["beta".to_string(), "alpha".to_string()],
+        };
+
+        assert!(validate_value(&invalid_key, &literal(serde_json::json!({}))).is_err());
+        assert!(
+            validate_value(
+                &invalid_optional_order,
+                &literal(serde_json::json!({"alpha": true, "beta": true})),
+            )
+            .is_err()
+        );
     }
 
     #[test]

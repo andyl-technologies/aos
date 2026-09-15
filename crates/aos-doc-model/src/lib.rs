@@ -353,6 +353,9 @@ pub enum OptionType {
         /// Whether duplicate values are forbidden.
         #[serde(default)]
         unique: bool,
+        /// Whether values use ascending canonical JSON order.
+        #[serde(default)]
+        canonical_order: bool,
     },
     /// Unordered semantic set.
     Set {
@@ -1120,8 +1123,17 @@ fn validate_option_type(option_type: &OptionType, depth: usize) -> Result<()> {
             }
             Ok(())
         }
-        OptionType::List { element, .. }
-        | OptionType::Set { element }
+        OptionType::List {
+            element,
+            unique,
+            canonical_order,
+        } => {
+            if *canonical_order && !*unique {
+                return Err(invalid("canonical list ordering requires unique values"));
+            }
+            validate_option_type(element, depth + 1)
+        }
+        OptionType::Set { element }
         | OptionType::AttrsOf { value: element, .. }
         | OptionType::Nullable { value: element } => validate_option_type(element, depth + 1),
         OptionType::Submodule { fields, .. } => {
@@ -1129,7 +1141,7 @@ fn validate_option_type(option_type: &OptionType, depth: usize) -> Result<()> {
                 return Err(invalid("submodule has too many fields"));
             }
             for (name, field_type) in fields {
-                validate_token("submodule field", name)?;
+                validate_document_key("submodule field", name)?;
                 validate_option_type(field_type, depth + 1)?;
             }
             Ok(())
@@ -1275,6 +1287,20 @@ fn validate_token(label: &str, value: &str) -> Result<()> {
             .is_some_and(u8::is_ascii_alphanumeric)
     {
         return Err(invalid(format!("{label} '{value}' is not a safe token")));
+    }
+    Ok(())
+}
+
+fn validate_document_key(label: &str, value: &str) -> Result<()> {
+    validate_nonempty(label, value)?;
+    if value.len() > 512
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() || byte == b' ')
+    {
+        return Err(invalid(format!(
+            "{label} '{value}' is not a bounded printable document key"
+        )));
     }
     Ok(())
 }
@@ -1851,9 +1877,11 @@ mod tests {
         let anchors = identities.map(|(kind, key)| documentation_anchor(kind, key));
         assert_eq!(anchors.iter().collect::<BTreeSet<_>>().len(), anchors.len());
         for anchor in anchors {
-            assert!(anchor
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b':'));
+            assert!(
+                anchor
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b':')
+            );
             assert!(validate_token("section id", &anchor).is_err());
         }
     }
@@ -1869,6 +1897,34 @@ mod tests {
                 && row.terms.contains_key("listenport")
                 && row.terms.contains_key("virtualhosts")
         }));
+    }
+
+    #[test]
+    fn option_types_preserve_canonical_lists_and_document_keys() {
+        let canonical_list = OptionType::List {
+            element: Box::new(OptionType::String {
+                max_length: Some(16),
+                pattern: None,
+            }),
+            unique: true,
+            canonical_order: true,
+        };
+        let canonical_list_json = serde_json::to_value(&canonical_list).expect("serialize list");
+
+        assert_eq!(canonical_list_json["unique"], true);
+        assert_eq!(canonical_list_json["canonical_order"], true);
+        validate_option_type(&canonical_list, 0).expect("valid canonical list");
+
+        let document_record = OptionType::Submodule {
+            fields: BTreeMap::from([("@type".to_string(), OptionType::Bool)]),
+            open: false,
+        };
+        let document_record_json =
+            serde_json::to_value(&document_record).expect("serialize document record");
+
+        assert_eq!(document_record_json["open"], false);
+        assert!(document_record_json["fields"].get("@type").is_some());
+        validate_option_type(&document_record, 0).expect("valid document record");
     }
 
     #[test]

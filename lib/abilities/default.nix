@@ -741,10 +741,12 @@
     then configurationSchemaIsLiteral schema.element
     else if schema.kind == "map" || schema.kind == "optional"
     then configurationSchemaIsLiteral schema.value
-    else if schema.kind == "record"
+    else if builtins.elem schema.kind ["record" "document-record"]
     then builtins.all configurationSchemaIsLiteral (builtins.attrValues schema.fields)
     else if schema.kind == "tagged-union"
     then builtins.all configurationSchemaIsLiteral (builtins.attrValues schema.variants)
+    else if schema.kind == "disjoint-union"
+    then builtins.all configurationSchemaIsLiteral schema.variants
     else true;
 
   schemaFromType = context: value:
@@ -1060,6 +1062,18 @@
     schema = schemas.validateSchema "composition value schema" schemaValue;
     marker = builtins.isAttrs value && (value._type or null) == "aos-request-output-reference";
     invalid = expected: fail "composition value must be ${expected}";
+    valueKind = candidate:
+      if builtins.isBool candidate
+      then "boolean"
+      else if builtins.isInt candidate || builtins.isFloat candidate
+      then "number"
+      else if builtins.isString candidate
+      then "string"
+      else if builtins.isList candidate
+      then "array"
+      else if builtins.isAttrs candidate
+      then "object"
+      else null;
   in
     if marker
     then value
@@ -1094,7 +1108,7 @@
       if builtins.length names > schema.max_entries || !(builtins.all validKey names)
       then invalid "a map with valid bounded keys"
       else builtins.mapAttrs (_: checkCompositionValue schema.value) entries
-    else if schema.kind == "record"
+    else if builtins.elem schema.kind ["record" "document-record"]
     then let
       record =
         if builtins.isAttrs value
@@ -1122,6 +1136,14 @@
       if builtins.isString tag && builtins.hasAttr tag schema.variants
       then checkCompositionValue schema.variants.${tag} value
       else invalid "a declared tagged-union variant"
+    else if schema.kind == "disjoint-union"
+    then let
+      kind = valueKind value;
+      matching = builtins.filter (variant: schemas.topLevelKind variant == kind) schema.variants;
+    in
+      if kind != null && builtins.length matching == 1
+      then checkCompositionValue (builtins.head matching) value
+      else invalid "a declared disjoint-union variant"
     else if schema.kind == "optional"
     then
       if value == null
@@ -1347,6 +1369,18 @@
       schema = schemas.validateSchema "composition projection schema" schemaValue;
       marker = builtins.isAttrs value && (value._type or null) == "aos-request-output-reference";
       sourceNode = nodes.${sourceName};
+      valueKind = candidate:
+        if builtins.isBool candidate
+        then "boolean"
+        else if builtins.isInt candidate || builtins.isFloat candidate
+        then "number"
+        else if builtins.isString candidate
+        then "string"
+        else if builtins.isList candidate
+        then "array"
+        else if builtins.isAttrs candidate
+        then "object"
+        else null;
     in
       if marker
       then let
@@ -1387,10 +1421,15 @@
         if !containsRequestOutput 0 checked
         then checked
         else if schema.kind == "list"
-        then builtins.map (entry: resolveComposition nodes sourceName schema.element entry trail) checked
+        then let
+          resolved = builtins.map (entry: resolveComposition nodes sourceName schema.element entry trail) checked;
+        in
+          if containsRequestOutput 0 resolved
+          then resolved
+          else schemas.checkValue schema resolved
         else if schema.kind == "map"
         then builtins.mapAttrs (_: entry: resolveComposition nodes sourceName schema.value entry trail) checked
-        else if schema.kind == "record"
+        else if builtins.elem schema.kind ["record" "document-record"]
         then
           builtins.mapAttrs
           (name: entry: resolveComposition nodes sourceName schema.fields.${name} entry trail)
@@ -1402,6 +1441,14 @@
           builtins.mapAttrs
           (name: entry: resolveComposition nodes sourceName variant.fields.${name} entry trail)
           checked
+        else if schema.kind == "disjoint-union"
+        then let
+          kind = valueKind checked;
+          matching = builtins.filter (variant: schemas.topLevelKind variant == kind) schema.variants;
+        in
+          if builtins.length matching == 1
+          then resolveComposition nodes sourceName (builtins.head matching) checked trail
+          else fail "composition value has no declared disjoint-union variant"
         else if schema.kind == "optional"
         then
           if checked == null
