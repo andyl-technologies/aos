@@ -6,6 +6,7 @@
   name,
   identity,
   packageNames,
+  checks,
   trustKeys,
   stagingHubUrl ? "https://aos.staging.andyl.org",
 }: let
@@ -70,6 +71,7 @@
 
     export AOS_QUALIFICATION_PLATFORM=${lib.escapeShellArg pkgs.stdenv.hostPlatform.system}
     export AOS_QUALIFICATION_IDENTITY=${lib.escapeShellArg identity}
+    export AOS_QUALIFICATION_CHECKS=${lib.escapeShellArg (builtins.toJSON checks)}
     export AOS_QUALIFICATION_PROBES=${lib.escapeShellArg "${probeRegistry}/probes.json"}
     export AOS_QUALIFICATION_TRUST_KEYS=${lib.escapeShellArg (builtins.toJSON trustKeys)}
     export AOS_QUALIFICATION_STAGING_HUB_URL=${lib.escapeShellArg stagingHubUrl}
@@ -103,6 +105,9 @@ in
   assert identity != "";
   assert packageNames != [];
   assert builtins.length sortedPackageNames == builtins.length (lib.unique sortedPackageNames);
+  assert checks != [];
+  assert builtins.all builtins.isString checks;
+  assert builtins.length checks == builtins.length (lib.unique checks);
   assert trustKeys != [];
   assert builtins.all (key: builtins.match "[A-Za-z0-9_-]+:Ed25519:[A-Za-z0-9+/]+=*" key != null) trustKeys;
   assert builtins.match "https://[^/]+/?" stagingHubUrl != null;

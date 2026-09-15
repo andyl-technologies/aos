@@ -403,6 +403,7 @@
     name = "aos-qualification-${hostPlatform.system}-package-function";
     identity = qualificationExecutorIdentity;
     packageNames = qualificationPackageNamesByPlatform.${hostPlatform.system};
+    checks = qualificationRequirementChecks "package-function";
     trustKeys = discoverSystems."aos-testing".config.aos.release.trustKeys;
   };
   containerLifecycleScenario =

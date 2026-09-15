@@ -10,6 +10,9 @@
     inherit lib nativeAdapterMatrix;
     inherit packageNames;
   };
+  packageFunctionRequirement = builtins.head (
+    builtins.filter (requirement: requirement.id == "package-function") contract.requirements
+  );
   fixture = import ../../qualification {
     inherit lib;
     inherit nativeAdapterMatrix;
@@ -149,6 +152,7 @@
     name = "qualification-package-scenario-fixture";
     identity = "fixture-executor";
     packageNames = ["gzip"];
+    checks = packageFunctionRequirement.checks;
     trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
   };
   rejectsPackageExecutor = packageNames:
@@ -156,6 +160,7 @@
         name = "qualification-package-scenario-invalid";
         identity = "fixture-executor";
         inherit packageNames;
+        checks = packageFunctionRequirement.checks;
         trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
       })
       true))
