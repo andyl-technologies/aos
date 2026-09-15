@@ -3,7 +3,7 @@
   lib,
   pkgs,
 }: let
-  objectContract = lib.abilities.interfaces.kubernetesObjectManagement;
+  objectContract = import ../../pkgs/kubernetes/_k3s-config/object-interface.nix {inherit lib;};
   configurationContract = import ../../pkgs/kubernetes/_k3s-config/configuration-interface.nix {inherit lib;};
 
   evaluateController = {

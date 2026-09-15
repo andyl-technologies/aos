@@ -5,7 +5,7 @@
   packageName,
   ...
 }: let
-  contract = lib.abilities.interfaces.kubernetesObjectManagement;
+  contract = import ./object-interface.nix {inherit lib;};
   controllerAlias = contract.controller.alias;
   contributionAlias = contract.contribution.alias;
   controllerIdentity = contract.controller.identity;
