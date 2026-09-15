@@ -1,5 +1,6 @@
 ##! LLVM — compiler infrastructure (default = LLVM 22)
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -16,6 +17,7 @@
 }:
 import ./llvm-22.nix {
   inherit
+    lib
     mkDerivation
     fetchurl
     gnumake

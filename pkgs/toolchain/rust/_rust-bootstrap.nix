@@ -25,6 +25,7 @@
   useBootstrapToml ? false,
   disableLld ? false,
   disableDarwinLld ? disableLld,
+  qualification ? null,
 }: let
   configFileName =
     if useBootstrapToml
@@ -59,6 +60,7 @@ in
         openssl
         zlib
         needsDownloadRustc
+        qualification
         ;
       disableLld = disableDarwinLld;
       nativeRust = buildPackages.${prevRust.pname};
@@ -72,7 +74,7 @@ in
   else if stdenv.isCross && stdenv.hostPlatform.isLinux
   then
     import ./_rust-linux-hosted.nix {
-      inherit mkDerivation pname version src changeId configFileName;
+      inherit mkDerivation pname version src changeId configFileName qualification;
       inherit buildPackages stdenv curl openssl zlib needsDownloadRustc disableLld;
       nativeRust = buildPackages.${prevRust.pname};
       nativeLlvm = buildPackages.${"llvm-${llvmMajor}"};
@@ -81,7 +83,7 @@ in
     }
   else
     mkDerivation {
-      inherit pname version src;
+      inherit pname version src qualification;
 
       buildDeps = [
         gnumake
