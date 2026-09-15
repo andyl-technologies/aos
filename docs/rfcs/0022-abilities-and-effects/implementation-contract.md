@@ -64,7 +64,7 @@ Separate logical identity, content revision, and live incarnation:
 | Identity | Construction and lifetime |
 | --- | --- |
 | Environment | Authority-assigned stable identity plus execution stage; a user manager and host manager differ |
-| Instance | Environment plus deployment-owned instance key; package upgrades do not rename the instance |
+| Instance | Environment plus a `LocalKey` derived by hashing the canonical qualified instance-map key and environment; package upgrades do not rename the instance |
 | Request | Consumer instance plus declared local request key; child keys include their composition scope |
 | Aggregate | Provider instance plus declared aggregation group; contributions retain their original request/grant IDs |
 | Resource | Owning provider/environment plus logical resource key; content equality does not merge resources |
@@ -256,7 +256,8 @@ evaluating the provider. The initial version-1 schema includes the final
 configuration representation; no reader or identity rule for an earlier draft
 of that schema remains.
 
-Every migrated package declares an explicit stable instance key. Additional
+Every instance `LocalKey` is derived by hashing its canonical qualified map key
+and environment. It is never separately authored or copied. Additional
 instances require instance-aware rendering of unit names, directories,
 credential destinations, endpoints, and resource ownership before admission.
 Do not create a second instance by copying a global root that still targets
