@@ -31,8 +31,12 @@ message Condition {
   string code = 1;
   ConditionState state = 2;
   string safe_message = 3;
-  Timestamp transition_time = 4;
+  Timestamp transition_time = 4; // The last condition-state transition time.
   repeated Feature unsatisfied_features = 5;
+  uint64 desired_generation = 6;
+  ConditionReason reason = 7;
+  ConditionFreshness freshness = 8;
+  uint64 observation_sequence = 9;
 }
 
 enum ConditionState {
@@ -40,6 +44,24 @@ enum ConditionState {
   CONDITION_STATE_TRUE = 1;
   CONDITION_STATE_FALSE = 2;
   CONDITION_STATE_UNKNOWN = 3;
+}
+
+enum ConditionReason {
+  CONDITION_REASON_UNSPECIFIED = 0;
+  CONDITION_REASON_VERIFIED = 1;
+  CONDITION_REASON_PENDING = 2;
+  CONDITION_REASON_DEPENDENCY_UNAVAILABLE = 3;
+  CONDITION_REASON_CAPACITY_UNAVAILABLE = 4;
+  CONDITION_REASON_POLICY_REJECTED = 5;
+  CONDITION_REASON_AUTHORITY_PENDING = 6;
+  CONDITION_REASON_AUTHORITY_FENCED = 7;
+  CONDITION_REASON_RESIDUAL_CLEANUP = 8;
+}
+
+enum ConditionFreshness {
+  CONDITION_FRESHNESS_UNSPECIFIED = 0;
+  CONDITION_FRESHNESS_CURRENT = 1;
+  CONDITION_FRESHNESS_STALE = 2;
 }
 
 enum DesiredLifecycle {
@@ -85,6 +107,110 @@ message SandboxObservedState {
   uint64 desired_generation = 5;
   uint64 observation_sequence = 6;
   repeated Condition conditions = 7;
+  OwnershipStatus ownership = 8;
+  GuardianStatus guardian = 9;
+  uint64 capability_generation = 10;
+  RealizedRootStatus realized_root = 11;
+  OwnershipTransactionStatus root_transaction = 12;
+  uint64 environment_generation = 13;
+  AttachmentStatusSet attachments = 14;
+  repeated ResourceReference active_executions = 15;
+  repeated ResourceReference pinned_references = 16;
+  CacheStatus cache = 17;
+  DisclosureStatus disclosure = 18;
+  LogicalUsageStatus logical_usage = 19;
+  bytes audit_event_cursor = 20;
+  Timestamp last_successful_reconciliation_time = 21;
+}
+
+enum OwnershipState {
+  OWNERSHIP_STATE_UNSPECIFIED = 0;
+  OWNERSHIP_STATE_UNASSIGNED = 1;
+  OWNERSHIP_STATE_AWAITING = 2;
+  OWNERSHIP_STATE_OWNED = 3;
+  OWNERSHIP_STATE_EXPIRED = 4;
+}
+
+message OwnershipStatus {
+  OwnershipState state = 1;
+  bytes node_id = 2;
+  uint64 assignment_epoch = 3;
+  uint64 lease_generation = 4;
+  Timestamp expires_at = 5;
+  bytes incarnation_id = 6;
+}
+
+enum GuardianState {
+  GUARDIAN_STATE_UNSPECIFIED = 0;
+  GUARDIAN_STATE_DISARMED = 1;
+  GUARDIAN_STATE_ARMING = 2;
+  GUARDIAN_STATE_ARMED = 3;
+  GUARDIAN_STATE_CONTAINED = 4;
+}
+
+message GuardianStatus {
+  GuardianState state = 1;
+  bytes node_id = 2;
+  uint64 assignment_epoch = 3;
+  uint64 guardian_generation = 4;
+  uint64 lease_generation = 5;
+  bytes incarnation_id = 6;
+}
+
+message RealizedRootStatus {
+  uint64 generation = 1;
+  ObjectDescriptor descriptor = 2;
+}
+
+enum OwnershipTransactionState {
+  OWNERSHIP_TRANSACTION_STATE_UNSPECIFIED = 0;
+  OWNERSHIP_TRANSACTION_STATE_ABSENT = 1;
+  OWNERSHIP_TRANSACTION_STATE_PREPARED = 2;
+  OWNERSHIP_TRANSACTION_STATE_COMMITTED = 3;
+  OWNERSHIP_TRANSACTION_STATE_ROLLED_BACK = 4;
+}
+
+message OwnershipTransactionStatus {
+  OwnershipTransactionState state = 1;
+  uint64 generation = 2;
+  bytes transaction_id = 3;
+}
+
+enum AttachmentHealth {
+  ATTACHMENT_HEALTH_UNSPECIFIED = 0;
+  ATTACHMENT_HEALTH_READY = 1;
+  ATTACHMENT_HEALTH_DEGRADED = 2;
+  ATTACHMENT_HEALTH_BLOCKED = 3;
+}
+
+message AttachmentStatus {
+  ResourceReference attachment = 1;
+  uint64 generation = 2;
+  AttachmentHealth health = 3;
+}
+
+message AttachmentStatusSet {
+  repeated AttachmentStatus attachments = 1;
+}
+
+message CacheStatus {
+  bytes domain_id = 1;
+  uint64 admitted_bytes = 2;
+  uint64 pinned_bytes = 3;
+  uint32 pinned_objects = 4;
+}
+
+message DisclosureStatus {
+  bytes domain_id = 1;
+  uint32 visible_resources = 2;
+  uint32 redacted_resources = 3;
+}
+
+message LogicalUsageStatus {
+  uint64 cpu_nanoseconds = 1;
+  uint64 memory_bytes = 2;
+  uint64 storage_bytes = 3;
+  uint32 process_count = 4;
 }
 
 // A durable generic sandbox resource.
@@ -157,6 +283,10 @@ message Execution {
   ExecutionResult result = 8;
   repeated Condition conditions = 9;
   bytes audit_id = 10;
+  uint64 desired_generation = 11;
+  uint64 observation_sequence = 12;
+  uint64 assignment_epoch = 13;
+  Timestamp last_successful_reconciliation_time = 14;
 }
 
 enum ViewPhase {
@@ -179,6 +309,9 @@ message FilesystemView {
   ViewPhase phase = 5;
   repeated Condition conditions = 6;
   uint64 active_attachment_count = 7;
+  uint64 desired_generation = 8;
+  uint64 observation_sequence = 9;
+  Timestamp last_successful_reconciliation_time = 10;
 }
 
 enum ViewMutation {
@@ -213,6 +346,9 @@ message Attachment {
   uint64 desired_generation = 8;
   uint64 source_generation = 9;
   repeated Condition conditions = 10;
+  uint64 observation_sequence = 11;
+  uint64 assignment_epoch = 12;
+  Timestamp last_successful_reconciliation_time = 13;
 }
 
 enum SnapshotPhase {
@@ -245,10 +381,16 @@ message Snapshot {
   SnapshotAvailability availability = 7;
   repeated Condition conditions = 8;
   Timestamp created_at = 9;
+  uint64 desired_generation = 10;
+  uint64 observation_sequence = 11;
+  Timestamp last_successful_reconciliation_time = 12;
 }
 
-// A non-secret online capability summary. The bearer handle is returned only
-// by issuance operations and is never included in list or event resources.
+// A non-secret online capability summary. This is a lifetime record, not a
+// placed reconciled resource: validity is expressed by not_before/expires_at
+// and revocation rather than assignment epoch or reconciliation time. The
+// bearer handle is returned only by issuance operations and is never included
+// in list or event resources.
 message Capability {
   bytes capability_id = 1;
   bytes project_id = 2;
@@ -310,6 +452,8 @@ message Operation {
   Timestamp accepted_at = 11;
   Timestamp completed_at = 12;
   bool cancelable = 13;
+  uint64 observation_sequence = 14;
+  Timestamp last_successful_reconciliation_time = 15;
 }
 
 // A pure policy-plan result; applying it still requires current authority and
@@ -336,6 +480,8 @@ message SemanticCapability {
   bytes conformance_fixture_digest = 4;
 }
 
+// A sampled node capability inventory. This is neither a placed resource nor
+// a lifecycle reconciliation status; observed_at timestamps the exact sample.
 message NodeCapabilities {
   bytes node_id = 1;
   bytes resource_version = 2;
@@ -352,6 +498,71 @@ enum EventKind {
   EVENT_KIND_OPERATION_UPDATED = 4;
   EVENT_KIND_AUDIT = 5;
   EVENT_KIND_SNAPSHOT_COMPLETE = 6;
+}
+
+enum AuditDecision {
+  AUDIT_DECISION_UNSPECIFIED = 0;
+  AUDIT_DECISION_ALLOWED = 1;
+  AUDIT_DECISION_DENIED = 2;
+  AUDIT_DECISION_COMPLETED = 3;
+  AUDIT_DECISION_FAILED = 4;
+  AUDIT_DECISION_EXPIRED = 5;
+  AUDIT_DECISION_REVOKED = 6;
+  AUDIT_DECISION_CONTAINED = 7;
+}
+
+enum AuditCategory {
+  AUDIT_CATEGORY_UNSPECIFIED = 0;
+  AUDIT_CATEGORY_CAPABILITY = 1;
+  AUDIT_CATEGORY_OWNERSHIP = 2;
+  AUDIT_CATEGORY_LIFECYCLE = 3;
+  AUDIT_CATEGORY_EXECUTION = 4;
+  AUDIT_CATEGORY_FILESYSTEM_VIEW = 5;
+  AUDIT_CATEGORY_SNAPSHOT = 6;
+  AUDIT_CATEGORY_CACHE = 7;
+  AUDIT_CATEGORY_BACKEND_POLICY = 8;
+  AUDIT_CATEGORY_BROKER = 9;
+}
+
+enum AuditAction {
+  AUDIT_ACTION_UNSPECIFIED = 0;
+  AUDIT_ACTION_CAPABILITY_ISSUE = 1;
+  AUDIT_ACTION_CAPABILITY_ATTENUATE = 2;
+  AUDIT_ACTION_CAPABILITY_USE = 3;
+  AUDIT_ACTION_CAPABILITY_EXPIRE = 4;
+  AUDIT_ACTION_CAPABILITY_REVOKE = 5;
+  AUDIT_ACTION_OWNERSHIP_LEASE_ISSUE = 6;
+  AUDIT_ACTION_OWNERSHIP_LEASE_RENEW = 7;
+  AUDIT_ACTION_OWNERSHIP_LEASE_EXPIRE = 8;
+  AUDIT_ACTION_BROKER_PLAN_ACCEPT = 9;
+  AUDIT_ACTION_GUARDIAN_CONTAIN = 10;
+  AUDIT_ACTION_SANDBOX_CREATE = 11;
+  AUDIT_ACTION_SANDBOX_PLACE = 12;
+  AUDIT_ACTION_SANDBOX_START = 13;
+  AUDIT_ACTION_SANDBOX_STOP = 14;
+  AUDIT_ACTION_SANDBOX_SUSPEND = 15;
+  AUDIT_ACTION_SANDBOX_RESUME = 16;
+  AUDIT_ACTION_SANDBOX_FORK = 17;
+  AUDIT_ACTION_SANDBOX_RESTORE = 18;
+  AUDIT_ACTION_SANDBOX_DELETE = 19;
+  AUDIT_ACTION_EXECUTION_ADMIT = 20;
+  AUDIT_ACTION_EXECUTION_ATTACH = 21;
+  AUDIT_ACTION_EXECUTION_EXIT = 22;
+  AUDIT_ACTION_EXECUTION_CANCEL = 23;
+  AUDIT_ACTION_VIEW_PUBLISH = 24;
+  AUDIT_ACTION_VIEW_REPLACE = 25;
+  AUDIT_ACTION_VIEW_DETACH = 26;
+  AUDIT_ACTION_VIEW_REVOKE = 27;
+  AUDIT_ACTION_SNAPSHOT_BARRIER = 28;
+  AUDIT_ACTION_CACHE_ADMIT = 29;
+  AUDIT_ACTION_CACHE_CROSS_DOMAIN_DENY = 30;
+  AUDIT_ACTION_CACHE_PIN = 31;
+  AUDIT_ACTION_CACHE_EVICT = 32;
+  AUDIT_ACTION_BACKEND_CAPABILITY_DRIFT = 33;
+  AUDIT_ACTION_POLICY_DRIFT = 34;
+  AUDIT_ACTION_BROKER_REQUEST = 35;
+  AUDIT_ACTION_EXECUTION_DATA_CHANNEL_PRINCIPAL = 36;
+  AUDIT_ACTION_SNAPSHOT_EXTERNAL_DEPENDENCY = 37;
 }
 
 // One bounded observation extension. Required unknown extensions terminate the
@@ -375,6 +586,15 @@ message Event {
   repeated ObservationExtension extensions = 8;
   bytes resume_cursor = 9;
   bytes bootstrap_watermark = 10; // Present on snapshot-complete events.
+  bytes resource_version = 11;
+  bytes actor = 12;
+  bytes authenticated_transport_identity = 13;
+  AuditDecision decision = 14;
+  ObjectDescriptor policy_revision = 15;
+  uint64 node_epoch = 16;
+  bytes causal_predecessor = 17;
+  AuditCategory audit_category = 18;
+  AuditAction audit_action = 19;
 }
 
 message PageInfo {
@@ -614,6 +834,11 @@ message CreateViewResponse {
 message GetViewRequest { bytes view_id = 1; }
 message GetViewResponse { FilesystemView view = 1; }
 
+// Dormant point-read messages. They intentionally are not registered as a
+// FilesystemViewService RPC until the public observation surface is activated.
+message GetAttachmentRequest { bytes attachment_id = 1; }
+message GetAttachmentResponse { Attachment attachment = 1; }
+
 message ListViewsRequest {
   bytes project_id = 1;
   uint32 page_size = 2;
@@ -795,6 +1020,7 @@ message WatchRequest {
   bytes resource_id = 3;
   WatchCursor resume_after = 4;
   repeated Feature observation_features = 5;
+  bool audit_only = 6;
 }
 
 message GetNodeCapabilitiesRequest { bytes node_id = 1; }

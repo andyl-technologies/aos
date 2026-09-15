@@ -18,6 +18,7 @@
 //! [`artifact`] owns the four typed signed records. [`projection`] commits
 //! canonical protobuf with only its containing authentication field cleared.
 //! [`checkpoint`] owns fixed non-authorizing durability companion records,
+//! [`durable`] owns canonical all-method exchange records and full histories,
 //! [`endpoint_publication`] owns the untrusted broker bootstrap record,
 //! [`context`] models caller-supplied protected configuration, and
 //! [`transcript`] and [`traffic`] perform pure cryptographic checks. None of
@@ -26,6 +27,7 @@
 pub mod artifact;
 pub mod checkpoint;
 pub mod context;
+pub mod durable;
 pub mod endpoint_publication;
 pub mod model;
 pub mod profile;
@@ -52,6 +54,15 @@ pub use checkpoint::{
     BrokerSessionCheckpointError, BrokerSessionOutcomeCompanionV1, BrokerSessionRequestCompanionV1,
 };
 pub use context::{ProtectedBrokerSessionKeyV1, ProtectedBrokerSessionVerificationContextV1};
+pub use durable::history::{
+    BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES, BrokerSessionDurableHistoryV1,
+};
+pub use durable::{
+    BROKER_SESSION_DURABLE_RECORD_MAXIMUM_BYTES, BrokerSessionDurableCasV1,
+    BrokerSessionDurableEndpointV1, BrokerSessionDurableError, BrokerSessionDurablePhaseV1,
+    BrokerSessionDurableRecordV1, BrokerSessionPeerBindingV1, BrokerSessionProtectedBindingsV1,
+    BrokerSessionRecoveredSequenceV1,
+};
 pub use endpoint_publication::{
     BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES, BrokerSessionEndpointPublicationError,
     UntrustedBrokerSessionEndpointPublicationV1,
@@ -89,8 +100,8 @@ pub use projection::{
     decode_canonical_client_hello_v1, decode_canonical_request_v1, decode_canonical_response_v1,
     decode_canonical_server_hello_v1, encode_signed_client_hello_packet_v1,
     encode_signed_request_packet_v1, encode_signed_response_packet_v1,
-    encode_signed_server_hello_packet_v1, outcome_fields_digest_v1, request_fields_digest_v1,
-    server_hello_fields_digest_v1,
+    encode_signed_server_hello_packet_v1, mount_qualification_outcome_projection_v1,
+    outcome_fields_digest_v1, request_fields_digest_v1, server_hello_fields_digest_v1,
 };
 pub use traffic::{
     BrokerOutcomeAdmissionV1, BrokerRequestAdmissionV1, BrokerSessionReplayEvidenceV1,

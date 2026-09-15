@@ -11,12 +11,12 @@ use aos_proto::aos::sandbox::local::v1::{
     MountSourceProofClass,
 };
 
+use super::SourceAcquisitionTableV2;
 use super::format::state_error;
 use super::model::{
     MountOperationV2, ProviderAttemptStateV2, ReleaseProofV2, SourceAcquisitionPhaseV2,
     SourceAcquisitionProofClassV2, SourceAcquisitionRowV2,
 };
-use super::SourceAcquisitionTableV2;
 use crate::Result;
 
 pub(super) fn source_acquisition_record(

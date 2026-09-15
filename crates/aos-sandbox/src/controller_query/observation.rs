@@ -1,8 +1,7 @@
-//! Additive checked observation metadata absent from the current public proto.
+//! Checked additive observation metadata for the public protobuf.
 //!
-//! These dormant models make required RFC-0021 semantics explicit, but are not
-//! a substitute wire schema. Integration must add equivalent fields to the
-//! established public protobuf before a service or CLI may expose them.
+//! The models correlate portable status fields before a service or CLI may
+//! return them. Backend-local diagnostics remain outside this schema.
 
 use aos_proto::aos::sandbox::v1::{ConditionState, SandboxPhase};
 
@@ -20,7 +19,7 @@ pub const MAXIMUM_AUDIT_CURSOR_BYTES: usize = 4 * 1024;
 
 /// States the mandatory integration constraint for these additive models.
 pub const PUBLIC_PROTO_INTEGRATION_REQUIRED: &str =
-    "add equivalent fields to aos.sandbox.v1 before exposing this observation";
+    "register the dormant checked adapters before exposing this observation";
 
 /// Identifies a closed portable condition reason family.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -930,6 +929,7 @@ pub struct AdditiveControllerObservationV1 {
     disclosure: Option<DisclosureStatusV1>,
     logical_usage: Option<LogicalUsageStatusV1>,
     audit_event_cursor: Option<AuditEventCursorV1>,
+    last_successful_reconciliation_time: PublicTimestampV1,
 }
 
 impl AdditiveControllerObservationV1 {
@@ -954,6 +954,7 @@ impl AdditiveControllerObservationV1 {
         disclosure: Option<DisclosureStatusV1>,
         logical_usage: Option<LogicalUsageStatusV1>,
         audit_event_cursor: Option<AuditEventCursorV1>,
+        last_successful_reconciliation_time: PublicTimestampV1,
     ) -> Result<Self, InvalidObservationMetadata> {
         let core_is_consistent = capability_generation.is_none_or(|value| value != 0)
             && environment_generation.is_none_or(|value| value != 0)
@@ -963,7 +964,13 @@ impl AdditiveControllerObservationV1 {
                     && environment_generation.is_some()
             });
         let accounting_is_consistent = (cache.is_none() || disclosure.is_some())
-            && (pinned_references.is_empty() || cache.is_some());
+            && (pinned_references.is_empty() || cache.is_some())
+            && match (cache, disclosure) {
+                (Some(cache), Some(disclosure)) => {
+                    cache.domain().as_bytes() == disclosure.domain.as_bytes()
+                }
+                _ => true,
+            };
         let execution_is_consistent = active_executions.as_slice().is_empty()
             || (matches!(ownership, OwnershipEvidenceV1::Owned(_))
                 && capability_generation.is_some()
@@ -997,6 +1004,7 @@ impl AdditiveControllerObservationV1 {
             disclosure,
             logical_usage,
             audit_event_cursor,
+            last_successful_reconciliation_time,
         })
     }
 
@@ -1078,6 +1086,12 @@ impl AdditiveControllerObservationV1 {
         self.audit_event_cursor.as_ref()
     }
 
+    /// Returns the last successful reconciliation timestamp.
+    #[must_use]
+    pub const fn last_successful_reconciliation_time(&self) -> PublicTimestampV1 {
+        self.last_successful_reconciliation_time
+    }
+
     /// Reports exact correlation with the public placement tuple.
     #[must_use]
     pub fn correlates_to_placement(&self, placement: Option<&CheckedPlacementV1>) -> bool {
@@ -1098,6 +1112,40 @@ impl AdditiveControllerObservationV1 {
             && self.logical_usage.is_some()
             && self.audit_event_cursor.is_some();
         let no_active_executions = self.active_executions.as_slice().is_empty();
+        let authority_legal = match phase {
+            P::SANDBOX_PHASE_REQUESTED
+            | P::SANDBOX_PHASE_STOPPED
+            | P::SANDBOX_PHASE_HIBERNATED
+            | P::SANDBOX_PHASE_DELETING
+            | P::SANDBOX_PHASE_DELETED => matches!(
+                (self.ownership, self.guardian),
+                (
+                    OwnershipEvidenceV1::Unassigned,
+                    GuardianEvidenceV1::Disarmed
+                )
+            ),
+            P::SANDBOX_PHASE_STARTING
+            | P::SANDBOX_PHASE_READY
+            | P::SANDBOX_PHASE_FREEZING
+            | P::SANDBOX_PHASE_FROZEN
+            | P::SANDBOX_PHASE_STOPPING => matches!(
+                (self.ownership, self.guardian),
+                (OwnershipEvidenceV1::Owned(_), GuardianEvidenceV1::Armed(_))
+            ),
+            P::SANDBOX_PHASE_LOST => matches!(
+                (self.ownership, self.guardian),
+                (
+                    OwnershipEvidenceV1::Expired(_),
+                    GuardianEvidenceV1::Contained(_)
+                )
+            ),
+            P::SANDBOX_PHASE_PREPARING | P::SANDBOX_PHASE_ERROR => true,
+            P::SANDBOX_PHASE_UNSPECIFIED => false,
+        };
+        if !authority_legal {
+            return false;
+        }
+
         match phase {
             P::SANDBOX_PHASE_REQUESTED => no_active_executions,
             P::SANDBOX_PHASE_PREPARING | P::SANDBOX_PHASE_ERROR => true,

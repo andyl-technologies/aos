@@ -11,14 +11,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::io::IoSlice;
 use std::mem::MaybeUninit;
-use std::os::fd::{AsFd, AsRawFd as _, BorrowedFd, FromRawFd as _, OwnedFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+#[cfg(test)]
+use std::os::fd::{AsRawFd as _, RawFd};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use aos_sandbox_linux::inherited_fd::duplicate_inherited_descriptor;
+use aos_sandbox_linux::inherited_fd::claim_systemd_activation_descriptor_range;
 use aos_sandbox_linux::mount::DetachedMount;
 use aos_sandbox_linux::path::ResolvedPath;
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
@@ -30,8 +32,9 @@ use rustix::net::{
 
 use crate::{MountError, Result};
 
-const ACTIVATION_FD_BASE: RawFd = 3;
 const NAME_PREFIX: &str = "aos-mount-v1-";
+#[cfg(test)]
+const ACTIVATION_FD_BASE: RawFd = 3;
 const SOURCE_NAME_PREFIX: &str = "aos-source-v1-";
 const DIGEST_HEX_LENGTH: usize = 64;
 const MAXIMUM_IMPORTED_DESCRIPTORS: usize = 1_024;
@@ -405,10 +408,10 @@ impl SystemdFdStore {
     ///
     /// # Safety
     ///
-    /// The caller must exclusively own every descriptor in the imported tail
-    /// of the systemd activation range. No Rust owner may exist for those raw
-    /// descriptors. This function consumes and closes that tail on every path
-    /// after ownership is claimed.
+    /// The caller must be the single-threaded startup owner of every descriptor
+    /// in the imported systemd tail. No Rust I/O owner may already represent a
+    /// tail entry, and no concurrent code may mutate the descriptor table until
+    /// this function returns.
     pub unsafe fn adopt_activation(
         reserved_descriptors: usize,
         maximum_imported: usize,
@@ -431,17 +434,16 @@ impl SystemdFdStore {
         }
         let imported_count = descriptor_count - reserved_descriptors;
 
-        let first_index = ACTIVATION_FD_BASE
-            .checked_add(raw_fd_from_usize(reserved_descriptors)?)
-            .ok_or_else(|| state_error("activation descriptor number overflow"))?;
-        // SAFETY: upheld by this function's caller for the validated imported
-        // tail. The range is claimed once and immediately moved into owned
-        // storage.
-        let originals = unsafe { claim_inherited_descriptor_range(first_index, imported_count)? };
+        // SAFETY: forwarded from this function's exclusive startup ownership
+        // and table-stability contract for the validated imported tail.
+        let descriptors = unsafe {
+            claim_systemd_activation_descriptor_range(reserved_descriptors, imported_count)
+        }
+        .map_err(|error| state_error(format!("could not claim activation descriptors: {error}")))?
+        .into_descriptors();
         if imported_count > maximum_imported {
             return Err(state_error("too many descriptor-store entries"));
         }
-        let descriptors = duplicate_and_close_owned_descriptors(originals)?;
 
         let names = std::env::var("LISTEN_FDNAMES")
             .map_err(|_| state_error("LISTEN_FDNAMES is absent or non-Unicode"))?;
@@ -479,11 +481,10 @@ impl SystemdFdStore {
     ///
     /// # Safety
     ///
-    /// The caller must exclusively own every open descriptor in the systemd
-    /// activation range beginning at FD 3. No Rust owner may exist for those
-    /// raw descriptors. This function consumes and closes all open entries in
-    /// the complete range on every path after ownership is claimed, including
-    /// when malformed metadata describes a gap.
+    /// The caller must be the single-threaded startup owner of the complete
+    /// systemd activation range beginning at FD 3. No Rust I/O owner may
+    /// already represent an entry, and no concurrent code may mutate the
+    /// descriptor table until this function returns.
     pub unsafe fn adopt_service_activation(
         listener_name: &str,
         maximum_imported: usize,
@@ -503,14 +504,16 @@ impl SystemdFdStore {
             return Err(state_error("LISTEN_PID does not name this process"));
         }
 
-        // SAFETY: upheld by this function's caller for the validated complete
-        // activation table. The range is claimed exactly once.
-        let originals =
-            unsafe { claim_inherited_descriptor_range(ACTIVATION_FD_BASE, descriptor_count)? };
+        // SAFETY: forwarded from this function's exclusive startup ownership
+        // and table-stability contract for the validated complete range.
+        let descriptors = unsafe { claim_systemd_activation_descriptor_range(0, descriptor_count) }
+            .map_err(|error| {
+                state_error(format!("could not claim activation descriptors: {error}"))
+            })?
+            .into_descriptors();
         if descriptor_count - 1 > maximum_imported {
             return Err(state_error("too many descriptor-store entries"));
         }
-        let descriptors = duplicate_and_close_owned_descriptors(originals)?;
 
         let names = std::env::var("LISTEN_FDNAMES")
             .map_err(|_| state_error("LISTEN_FDNAMES is absent or non-Unicode"))?;
@@ -889,71 +892,6 @@ fn environment_usize(name: &'static str) -> Result<usize> {
         .map_err(|_| state_error(format!("{name} is absent or non-Unicode")))?
         .parse()
         .map_err(|_| state_error(format!("{name} is not a decimal usize")))
-}
-
-fn raw_fd_from_usize(value: usize) -> Result<RawFd> {
-    RawFd::try_from(value).map_err(|_| state_error("activation descriptor number overflow"))
-}
-
-/// Claims a complete contiguous activation range without allocating an FD.
-///
-/// # Safety
-///
-/// The caller must have exclusive ownership of every open descriptor in the
-/// specified range, and no Rust owner may exist for one of those descriptors.
-/// A malformed range is closed completely before an error is returned.
-unsafe fn claim_inherited_descriptor_range(first: RawFd, count: usize) -> Result<Vec<OwnedFd>> {
-    let mut raw_descriptors = Vec::with_capacity(count);
-    for offset in 0..count {
-        let raw = first
-            .checked_add(raw_fd_from_usize(offset)?)
-            .ok_or_else(|| state_error("activation descriptor number overflow"))?;
-        raw_descriptors.push(raw);
-    }
-
-    let complete = raw_descriptors.iter().all(|raw| {
-        // SAFETY: F_GETFD observes only the numeric descriptor-table entry and
-        // accepts closed descriptor numbers, reporting EBADF for a gap.
-        unsafe { libc::fcntl(*raw, libc::F_GETFD) >= 0 }
-    });
-    if !complete {
-        for raw in raw_descriptors {
-            // SAFETY: the caller granted exclusive ownership of every open
-            // entry in this exact bounded range. `close` also safely reports
-            // EBADF for the missing entry that caused validation to fail.
-            unsafe { libc::close(raw) };
-        }
-        return Err(state_error(
-            "systemd activation descriptor range is incomplete",
-        ));
-    }
-
-    let mut descriptors = Vec::with_capacity(count);
-    for raw in raw_descriptors {
-        // SAFETY: the complete range was checked without allocating an FD, the
-        // caller grants exclusive ownership, and each number is consumed once.
-        descriptors.push(unsafe { OwnedFd::from_raw_fd(raw) });
-    }
-    Ok(descriptors)
-}
-
-fn duplicate_and_close_owned_descriptors(originals: Vec<OwnedFd>) -> Result<Vec<OwnedFd>> {
-    let duplicates = originals
-        .iter()
-        .map(|original| {
-            duplicate_inherited_descriptor(original.as_raw_fd()).map_err(|error| {
-                state_error(format!(
-                    "could not duplicate activation descriptor: {error}"
-                ))
-            })
-        })
-        .collect();
-
-    // Close the entire process-start table together. Keeping every original
-    // open until duplication finishes prevents F_DUPFD_CLOEXEC from filling a
-    // later activation slot if malformed input contains a gap.
-    drop(originals);
-    duplicates
 }
 
 fn ensure_cloexec(fd: BorrowedFd<'_>) -> Result<()> {

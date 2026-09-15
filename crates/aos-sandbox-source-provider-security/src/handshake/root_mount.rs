@@ -15,6 +15,9 @@ use crate::carrier::{CarrierFailureV1, InertSourceProviderCarrierV1};
 use crate::custody::ProtectedRootMountCustodyV1;
 use crate::execution::ProcessExecutionEvidenceV1;
 
+const FIXED_ROOT_MOUNT_SOURCE_PROVIDER_CUSTODY: &str =
+    "/var/lib/aos/sandbox-mount/source-provider-authority";
+
 pub(super) struct RootMountHelloPreparedV1 {
     custody: ProtectedRootMountCustodyV1,
     carrier: InertSourceProviderCarrierV1,
@@ -34,15 +37,142 @@ pub(super) struct RootMountHelloSentV1 {
 ///
 /// No public constructor or carrier/session extractor exists.
 pub struct CurrentRootMountSourceProviderSessionV1 {
-    custody: ProtectedRootMountCustodyV1,
-    carrier: InertSourceProviderCarrierV1,
-    session: SourceProviderSessionV1,
-    provider_execution: ProcessExecutionEvidenceV1,
+    pub(super) custody: ProtectedRootMountCustodyV1,
+    pub(super) carrier: InertSourceProviderCarrierV1,
+    pub(super) session: SourceProviderSessionV1,
+    pub(super) provider_execution: ProcessExecutionEvidenceV1,
+}
+
+enum RootMountSourceProviderOwnerStateV1 {
+    Prepared(RootMountHelloPreparedV1),
+    Sent(RootMountHelloSentV1),
+    Current(CurrentRootMountSourceProviderSessionV1),
+}
+
+/// Owns the fixed Root-Mount SourceProvider custody and one adopted channel.
+///
+/// This dormant owner opens only the compiled-in protected custody directory
+/// and accepts an already-connected descriptor-subject socket. It creates no
+/// listener, socket path, route advertisement, backend, or service loop. All
+/// retryable send and receive states remain inside the owner, and a current
+/// session is available only as a lifetime-bound mutable borrow.
+pub struct RootMountSourceProviderOwnerV1 {
+    state: Option<RootMountSourceProviderOwnerStateV1>,
+}
+
+/// Reports whether the fixed owner still needs handshake I/O or is current.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RootMountSourceProviderHandshakeStatusV1 {
+    /// The nonblocking channel must be advanced again when ready.
+    Pending,
+    /// The authenticated provider session is current and borrowable.
+    Current,
 }
 
 impl core::fmt::Debug for CurrentRootMountSourceProviderSessionV1 {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter.write_str("CurrentRootMountSourceProviderSessionV1([redacted])")
+    }
+}
+
+impl core::fmt::Debug for RootMountSourceProviderOwnerV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("RootMountSourceProviderOwnerV1([protected owner])")
+    }
+}
+
+impl RootMountSourceProviderOwnerV1 {
+    /// Opens the fixed Root-Mount custody and adopts one connected socket.
+    ///
+    /// `socket` must already be the caller's sole configured
+    /// descriptor-subject channel. The owner revalidates its pinned kernel peer
+    /// before every handshake action and again before exposing a current
+    /// session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] when fixed protected custody,
+    /// process identity, channel configuration, or initial hello preparation
+    /// cannot be authenticated.
+    pub fn open_fixed(
+        socket: DescriptorSubjectSocket,
+    ) -> Result<Self, SourceProviderSecurityError> {
+        let custody = ProtectedRootMountCustodyV1::load(std::path::Path::new(
+            FIXED_ROOT_MOUNT_SOURCE_PROVIDER_CUSTODY,
+        ))?;
+        let prepared = RootMountHelloPreparedV1::prepare(custody, socket)?;
+        Ok(Self {
+            state: Some(RootMountSourceProviderOwnerStateV1::Prepared(prepared)),
+        })
+    }
+
+    /// Advances exactly one nonblocking handshake state transition.
+    ///
+    /// Retryable I/O leaves the exact prepared or sent state inside this owner.
+    /// Fatal transport, custody, peer, or transcript failure closes the channel
+    /// and permanently consumes the state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] for fatal currentness,
+    /// transport, peer-execution, or authenticated-transcript failure.
+    pub fn advance_handshake(
+        &mut self,
+    ) -> Result<RootMountSourceProviderHandshakeStatusV1, SourceProviderSecurityError> {
+        let state = self
+            .state
+            .take()
+            .ok_or(SourceProviderSecurityError::Poisoned)?;
+        match state {
+            RootMountSourceProviderOwnerStateV1::Prepared(prepared) => match prepared.send() {
+                HandshakeTransitionV1::Complete(sent) => {
+                    self.state = Some(RootMountSourceProviderOwnerStateV1::Sent(sent));
+                    Ok(RootMountSourceProviderHandshakeStatusV1::Pending)
+                }
+                HandshakeTransitionV1::Retry(prepared) => {
+                    self.state = Some(RootMountSourceProviderOwnerStateV1::Prepared(prepared));
+                    Ok(RootMountSourceProviderHandshakeStatusV1::Pending)
+                }
+                HandshakeTransitionV1::Fatal(error) => Err(error),
+            },
+            RootMountSourceProviderOwnerStateV1::Sent(sent) => match sent.receive_provider() {
+                HandshakeTransitionV1::Complete(current) => {
+                    self.state = Some(RootMountSourceProviderOwnerStateV1::Current(current));
+                    Ok(RootMountSourceProviderHandshakeStatusV1::Current)
+                }
+                HandshakeTransitionV1::Retry(sent) => {
+                    self.state = Some(RootMountSourceProviderOwnerStateV1::Sent(sent));
+                    Ok(RootMountSourceProviderHandshakeStatusV1::Pending)
+                }
+                HandshakeTransitionV1::Fatal(error) => Err(error),
+            },
+            RootMountSourceProviderOwnerStateV1::Current(mut current) => {
+                current.revalidate()?;
+                self.state = Some(RootMountSourceProviderOwnerStateV1::Current(current));
+                Ok(RootMountSourceProviderHandshakeStatusV1::Current)
+            }
+        }
+    }
+
+    /// Runs one operation with the current fixed-owner session.
+    ///
+    /// `Ok(None)` means the owner still retains a retryable handshake state.
+    /// The closure cannot retain or detach the session from this fixed owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] when a previously current
+    /// custody, provider execution, or connected peer is no longer current.
+    pub fn with_current_session<R>(
+        &mut self,
+        operation: impl for<'session> FnOnce(&'session mut CurrentRootMountSourceProviderSessionV1) -> R,
+    ) -> Result<Option<R>, SourceProviderSecurityError> {
+        let Some(RootMountSourceProviderOwnerStateV1::Current(current)) = self.state.as_mut()
+        else {
+            return Ok(None);
+        };
+        current.revalidate()?;
+        Ok(Some(operation(current)))
     }
 }
 

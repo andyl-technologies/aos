@@ -81,8 +81,9 @@ impl ResolvedNetworkPreparationV1 {
     /// Constructs untrusted preparation-resolution data without kernel claims.
     ///
     /// The result is not catalog evidence. Production admission requires an
-    /// [`AuthenticatedNetworkPreparationV1`] issued by the future protected
-    /// catalog publisher.
+    /// [`AuthenticatedNetworkPreparationV1`] issued by the current crate-sealed
+    /// preparation-catalog/worker-protocol authenticator. That source seam is
+    /// dormant and does not activate a production catalog publisher.
     ///
     /// # Errors
     ///

@@ -43,7 +43,9 @@ impl core::fmt::Debug for ProtectedRootMountCustodyV1 {
 
 /// Owns protected provider configuration and role-local keys.
 ///
-/// No public loader exists in this production-inert tranche.
+/// Construction is retained inside the fixed dormant provider owner. It
+/// performs complete FD-relative protected-directory checks and activates no
+/// service.
 pub struct ProtectedProviderCustodyV1 {
     inner: ProtectedCustodyV1,
 }
@@ -78,6 +80,28 @@ impl ProtectedRootMountCustodyV1 {
 }
 
 impl ProtectedProviderCustodyV1 {
+    /// Produces a current non-secret projection after complete revalidation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] for custody drift, process
+    /// replacement, poison, or an inactive current authority or signer.
+    pub fn revalidated_configuration(
+        &mut self,
+    ) -> Result<crate::RevalidatedProviderConfigurationV1, SourceProviderSecurityError> {
+        let now_seconds = crate::handshake::current_unix_seconds()?;
+        crate::RevalidatedProviderConfigurationV1::capture(self, now_seconds)
+    }
+
+    /// Irreversibly closes custody after an ambiguous durable owner transition.
+    ///
+    /// This operation releases no key material or authority. It exists so an
+    /// owner that cannot prove whether a protected commit completed can fail
+    /// closed without reusing the same custody in a second transition.
+    pub fn close_after_ambiguous_durable_transition(&mut self) {
+        self.inner.poison();
+    }
+
     pub(crate) fn load(path: &Path) -> Result<Self, SourceProviderSecurityError> {
         Ok(Self {
             inner: ProtectedCustodyV1::load(path, SourceProviderSecurityRoleV1::Provider)?,
@@ -169,6 +193,42 @@ impl ProtectedCustodyV1 {
         self.files.trust().trust_set()
     }
 
+    pub(crate) fn trust_history(&self) -> &[crate::trust_file::ProtectedTrustHeadLinkV2] {
+        self.files.trust().history()
+    }
+
+    pub(crate) fn trust_key_issuance(
+        &self,
+        signer: &aos_sandbox_source_provider_protocol::SourceProviderSigningKeyV1,
+    ) -> Option<(
+        (
+            u64,
+            aos_sandbox_core::ObjectDigest,
+            u64,
+            aos_sandbox_core::ObjectDigest,
+        ),
+        (
+            u64,
+            aos_sandbox_core::ObjectDigest,
+            u64,
+            aos_sandbox_core::ObjectDigest,
+        ),
+    )> {
+        self.files.trust().key_history(signer)
+    }
+
+    pub(crate) fn trust_authority_state_head(
+        &self,
+        authority: &aos_sandbox_source_provider_protocol::SourceProviderAuthorityV1,
+    ) -> Option<(
+        u64,
+        aos_sandbox_core::ObjectDigest,
+        u64,
+        aos_sandbox_core::ObjectDigest,
+    )> {
+        self.files.trust().authority_state_head(authority)
+    }
+
     pub(crate) const fn route(&self) -> &ProtectedSourceProviderRouteV1 {
         self.files.route().route()
     }
@@ -199,6 +259,10 @@ impl ProtectedCustodyV1 {
 
     pub(crate) const fn hello_key(&self) -> &RetainedSecret {
         self.files.hello_key()
+    }
+
+    pub(crate) const fn outcome_key(&self) -> &RetainedSecret {
+        self.files.outcome_key()
     }
 }
 

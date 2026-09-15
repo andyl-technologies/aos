@@ -4,11 +4,12 @@ use aos_proto::aos::sandbox::v1::{Event, EventKind};
 use buffa::Message as _;
 
 use super::model::{
-    InvalidQueryModel, OpaqueResponseBytesV1, OpaqueResponseKindV1, QueryBindingV1,
-    MAXIMUM_PUBLIC_RESOURCE_BYTES,
+    InvalidQueryModel, MAXIMUM_PUBLIC_RESOURCE_BYTES, OpaqueResponseBytesV1, OpaqueResponseKindV1,
+    QueryBindingV1,
 };
+use super::proto_observation::checked_condition_observations;
 use super::registry::checked_timestamp;
-use super::resource::{checked_conditions, checked_results, PublicResourceTypeV1};
+use super::resource::{PublicResourceTypeV1, checked_conditions, checked_results};
 
 /// Maximum observation extensions in one public event.
 pub const MAXIMUM_EVENT_EXTENSIONS: usize = 64;
@@ -194,8 +195,17 @@ impl CheckedWatchEventV1 {
                 .ok_or(InvalidWatchEvent::Unspecified)?,
         )
         .map_err(|_| InvalidWatchEvent::InvalidNestedResource)?;
-        checked_conditions(&wire.conditions)
+        let conditions = checked_conditions(&wire.conditions)
             .map_err(|_| InvalidWatchEvent::InvalidNestedResource)?;
+        if let Some(first) = wire.conditions.first() {
+            checked_condition_observations(
+                &conditions,
+                &wire.conditions,
+                first.desired_generation,
+                wire.sequence,
+            )
+            .map_err(|_| InvalidWatchEvent::InvalidNestedResource)?;
+        }
 
         let checked_resource = wire
             .resource
@@ -246,6 +256,15 @@ impl CheckedWatchEventV1 {
         public_wire
             .extensions
             .retain(|extension| extension.safe_for_opaque_display);
+        public_wire.resource_version.clear();
+        public_wire.actor.clear();
+        public_wire.authenticated_transport_identity.clear();
+        public_wire.decision = Default::default();
+        public_wire.policy_revision = Default::default();
+        public_wire.node_epoch = 0;
+        public_wire.causal_predecessor.clear();
+        public_wire.audit_category = Default::default();
+        public_wire.audit_action = Default::default();
         Ok(Self {
             event_id,
             sequence: wire.sequence,
@@ -297,6 +316,10 @@ impl CheckedWatchEventV1 {
     #[must_use]
     pub fn into_proto(self) -> Event {
         self.public_wire
+    }
+
+    pub(crate) const fn full_proto(&self) -> &Event {
+        &self.wire
     }
 
     pub(crate) fn encoded_byte_cost(&self) -> usize {

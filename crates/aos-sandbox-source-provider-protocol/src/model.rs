@@ -18,6 +18,7 @@ use crate::proof::SourceProviderProofV1;
 const LOGICAL_BINDING_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.mount.source-realization-binding.v1\0";
 const PROSPECTIVE_MOUNT_TEMPLATE_DIGEST_DOMAIN: &[u8] =
     b"aos-source-provider-prospective-mount-template-v1\0";
+const ACQUISITION_ID_V2_DOMAIN: &[u8] = b"aos.sandbox.source-provider.acquisition-id.v2\0";
 const MOUNT_SEMANTICS_MAGIC: &[u8; 8] = b"AOSMSEM1";
 const MAXIMUM_MOUNT_TEMPLATE_BYTES: usize = 2 * 1024;
 const MAXIMUM_SIGNED_INVENTORY_BYTES: usize = 432 + 344 * MAXIMUM_INVENTORY_ENTRIES;
@@ -26,6 +27,27 @@ const MAXIMUM_SIGNED_INVENTORY_BYTES: usize = 432 + 344 * MAXIMUM_INVENTORY_ENTR
 pub const MAXIMUM_BINDING_BYTES: usize = 64 * 1024;
 /// Longest holder lease permitted by protocol 1.0.
 pub const MAXIMUM_SOURCE_LEASE_SECONDS: u64 = 86_400;
+/// Canonical body version used by legacy opaque-ID Acquire requests.
+pub const ACQUIRE_SOURCE_REQUEST_VERSION_V1: u16 = 1;
+/// Canonical body version required for explicit-sequence Acquire requests.
+pub const ACQUIRE_SOURCE_REQUEST_VERSION_V2: u16 = 2;
+
+/// Derives the opaque acquisition ID for one holder-scoped monotone sequence.
+#[must_use]
+pub fn source_acquisition_id_v2(
+    holder_authority_id: [u8; 16],
+    holder_generation: u64,
+    holder_authority_digest: ObjectDigest,
+    acquisition_sequence: u64,
+) -> ObjectDigest {
+    let mut hasher = Sha256::new();
+    hasher.update(ACQUISITION_ID_V2_DOMAIN);
+    hasher.update(holder_authority_id);
+    hasher.update(holder_generation.to_be_bytes());
+    hasher.update(holder_authority_digest.as_bytes());
+    hasher.update(acquisition_sequence.to_be_bytes());
+    ObjectDigest::from_bytes(hasher.finalize().into())
+}
 /// Largest recursive source tree admitted by a protocol 1.0 proof.
 pub const MAXIMUM_RECURSIVE_ENTRY_COUNT: u64 = 1 << 48;
 /// Largest represented recursive source size admitted by protocol 1.0.
@@ -73,6 +95,9 @@ pub enum SourceProviderValidationError {
     /// Exact logical binding bytes do not match their committed digest.
     #[error("logical binding bytes do not match their digest")]
     BindingDigestMismatch,
+    /// A versioned derived identifier differs from its canonical commitment.
+    #[error("{0} does not match its canonical commitment")]
+    CommitmentMismatch(&'static str),
     /// A method/status/descriptor table violates the closed transfer contract.
     #[error("source-provider descriptor contract does not match the method and status")]
     DescriptorContract,
@@ -467,10 +492,12 @@ impl SourceResourceV1 {
 /// Requests one exact source lease and root descriptor from a provider.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AcquireSourceRequestV1 {
+    pub(crate) acquisition_version: u16,
     pub(crate) session_binding: ObjectDigest,
     pub(crate) sequence: u64,
     pub(crate) request_id: [u8; 16],
     pub(crate) acquisition_id: ObjectDigest,
+    pub(crate) acquisition_sequence: u64,
     pub(crate) prospective_apply_template: Vec<u8>,
     pub(crate) prospective_apply_template_digest: ObjectDigest,
     pub(crate) source_use: SourceUseV1,
@@ -490,10 +517,14 @@ pub struct AcquireSourceRequestV1 {
 }
 
 impl AcquireSourceRequestV1 {
-    /// Constructs one bounded provider acquisition query.
+    /// Constructs one legacy version-1 opaque-ID acquisition query.
     ///
     /// `binding` is the exact canonical Mount logical-binding encoding. This
     /// crate commits it byte-for-byte without interpreting Mount semantics.
+    /// The request round-trips only through the untagged v1 wire layout and
+    /// carries acquisition sequence zero. New AOSMSA02 planning must reject
+    /// this legacy form and use [`Self::new_v2`]; no implicit v1-to-v2 identity
+    /// migration is performed.
     ///
     /// # Errors
     ///
@@ -522,10 +553,139 @@ impl AcquireSourceRequestV1 {
         requested_maximum_submounts: u32,
         kernel_coupled: bool,
     ) -> Result<Self, SourceProviderValidationError> {
+        Self::new_inner(
+            ACQUIRE_SOURCE_REQUEST_VERSION_V1,
+            session_binding,
+            sequence,
+            request_id,
+            acquisition_id,
+            0,
+            prospective_apply_template,
+            prospective_apply_template_digest,
+            source_use,
+            node_id,
+            boot_id,
+            holder_authority_id,
+            holder_generation,
+            holder_authority_digest,
+            binding,
+            binding_digest,
+            deadline_seconds,
+            requested_lease_seconds,
+            revocation_digest,
+            recursive,
+            requested_maximum_submounts,
+            kernel_coupled,
+        )
+    }
+
+    /// Constructs an Acquire request with an explicit holder-scoped monotone identity sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderValidationError`] for a zero acquisition
+    /// sequence or any invalid request field.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_acquisition_sequence(
+        session_binding: ObjectDigest,
+        sequence: u64,
+        request_id: [u8; 16],
+        acquisition_id: ObjectDigest,
+        acquisition_sequence: u64,
+        prospective_apply_template: Vec<u8>,
+        prospective_apply_template_digest: ObjectDigest,
+        source_use: SourceUseV1,
+        node_id: [u8; 16],
+        boot_id: [u8; 16],
+        holder_authority_id: [u8; 16],
+        holder_generation: u64,
+        holder_authority_digest: ObjectDigest,
+        binding: Vec<u8>,
+        binding_digest: ObjectDigest,
+        deadline_seconds: i64,
+        requested_lease_seconds: u64,
+        revocation_digest: ObjectDigest,
+        recursive: bool,
+        requested_maximum_submounts: u32,
+        kernel_coupled: bool,
+    ) -> Result<Self, SourceProviderValidationError> {
+        Self::new_inner(
+            ACQUIRE_SOURCE_REQUEST_VERSION_V2,
+            session_binding,
+            sequence,
+            request_id,
+            acquisition_id,
+            acquisition_sequence,
+            prospective_apply_template,
+            prospective_apply_template_digest,
+            source_use,
+            node_id,
+            boot_id,
+            holder_authority_id,
+            holder_generation,
+            holder_authority_digest,
+            binding,
+            binding_digest,
+            deadline_seconds,
+            requested_lease_seconds,
+            revocation_digest,
+            recursive,
+            requested_maximum_submounts,
+            kernel_coupled,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_inner(
+        acquisition_version: u16,
+        session_binding: ObjectDigest,
+        sequence: u64,
+        request_id: [u8; 16],
+        acquisition_id: ObjectDigest,
+        acquisition_sequence: u64,
+        prospective_apply_template: Vec<u8>,
+        prospective_apply_template_digest: ObjectDigest,
+        source_use: SourceUseV1,
+        node_id: [u8; 16],
+        boot_id: [u8; 16],
+        holder_authority_id: [u8; 16],
+        holder_generation: u64,
+        holder_authority_digest: ObjectDigest,
+        binding: Vec<u8>,
+        binding_digest: ObjectDigest,
+        deadline_seconds: i64,
+        requested_lease_seconds: u64,
+        revocation_digest: ObjectDigest,
+        recursive: bool,
+        requested_maximum_submounts: u32,
+        kernel_coupled: bool,
+    ) -> Result<Self, SourceProviderValidationError> {
         require_digest("Acquire session binding", session_binding)?;
         require_generation("Acquire sequence", sequence)?;
         require_nonzero("acquire request ID", &request_id)?;
         require_digest("acquisition ID", acquisition_id)?;
+        match acquisition_version {
+            ACQUIRE_SOURCE_REQUEST_VERSION_V1 if acquisition_sequence == 0 => {}
+            ACQUIRE_SOURCE_REQUEST_VERSION_V2
+                if acquisition_sequence > 0
+                    && acquisition_id
+                        == source_acquisition_id_v2(
+                            holder_authority_id,
+                            holder_generation,
+                            holder_authority_digest,
+                            acquisition_sequence,
+                        ) => {}
+            ACQUIRE_SOURCE_REQUEST_VERSION_V1 | ACQUIRE_SOURCE_REQUEST_VERSION_V2 => {
+                return Err(SourceProviderValidationError::CommitmentMismatch(
+                    "acquisition ID",
+                ));
+            }
+            _ => {
+                return Err(SourceProviderValidationError::CommitmentMismatch(
+                    "Acquire request version",
+                ));
+            }
+        }
         validate_prospective_mount_template(
             &prospective_apply_template,
             prospective_apply_template_digest,
@@ -555,10 +715,12 @@ impl AcquireSourceRequestV1 {
             return Err(SourceProviderValidationError::ProofCapabilityMismatch);
         }
         Ok(Self {
+            acquisition_version,
             session_binding,
             sequence,
             request_id,
             acquisition_id,
+            acquisition_sequence,
             prospective_apply_template,
             prospective_apply_template_digest,
             source_use,
@@ -576,6 +738,70 @@ impl AcquireSourceRequestV1 {
             requested_maximum_submounts,
             kernel_coupled,
         })
+    }
+
+    /// Constructs a canonical version-2 Acquire request.
+    ///
+    /// This is the primary constructor for new callers. The acquisition ID is
+    /// recomputed from the complete current holder-authority tuple and the
+    /// stable holder-wide acquisition sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderValidationError`] for a sentinel or mismatched
+    /// identity, an invalid interval, or an oversized committed artifact.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_v2(
+        session_binding: ObjectDigest,
+        sequence: u64,
+        request_id: [u8; 16],
+        acquisition_sequence: u64,
+        prospective_apply_template: Vec<u8>,
+        prospective_apply_template_digest: ObjectDigest,
+        source_use: SourceUseV1,
+        node_id: [u8; 16],
+        boot_id: [u8; 16],
+        holder_authority_id: [u8; 16],
+        holder_generation: u64,
+        holder_authority_digest: ObjectDigest,
+        binding: Vec<u8>,
+        binding_digest: ObjectDigest,
+        deadline_seconds: i64,
+        requested_lease_seconds: u64,
+        revocation_digest: ObjectDigest,
+        recursive: bool,
+        requested_maximum_submounts: u32,
+        kernel_coupled: bool,
+    ) -> Result<Self, SourceProviderValidationError> {
+        let acquisition_id = source_acquisition_id_v2(
+            holder_authority_id,
+            holder_generation,
+            holder_authority_digest,
+            acquisition_sequence,
+        );
+        Self::new_with_acquisition_sequence(
+            session_binding,
+            sequence,
+            request_id,
+            acquisition_id,
+            acquisition_sequence,
+            prospective_apply_template,
+            prospective_apply_template_digest,
+            source_use,
+            node_id,
+            boot_id,
+            holder_authority_id,
+            holder_generation,
+            holder_authority_digest,
+            binding,
+            binding_digest,
+            deadline_seconds,
+            requested_lease_seconds,
+            revocation_digest,
+            recursive,
+            requested_maximum_submounts,
+            kernel_coupled,
+        )
     }
 
     /// Returns the provider-idempotency request ID.
@@ -602,6 +828,18 @@ impl AcquireSourceRequestV1 {
         self.acquisition_id
     }
 
+    /// Returns the canonical Acquire subject version.
+    #[must_use]
+    pub const fn acquisition_version(&self) -> u16 {
+        self.acquisition_version
+    }
+
+    /// Returns the holder-authority-scoped monotone acquisition sequence.
+    #[must_use]
+    pub const fn acquisition_sequence(&self) -> u64 {
+        self.acquisition_sequence
+    }
+
     /// Returns the prospective Mount Apply/template commitment.
     #[must_use]
     pub const fn prospective_apply_template_digest(&self) -> ObjectDigest {
@@ -624,6 +862,39 @@ impl AcquireSourceRequestV1 {
     #[must_use]
     pub const fn binding_digest(&self) -> ObjectDigest {
         self.binding_digest
+    }
+
+    /// Returns the exclusive RPC completion deadline.
+    #[must_use]
+    pub const fn deadline_seconds(&self) -> i64 {
+        self.deadline_seconds
+    }
+
+    /// Returns the protected holder authority tuple named by the request.
+    #[must_use]
+    pub const fn holder_authority(&self) -> ([u8; 16], u64, ObjectDigest) {
+        (
+            self.holder_authority_id,
+            self.holder_generation,
+            self.holder_authority_digest,
+        )
+    }
+
+    /// Returns node, boot, and revocation bindings used by historical verification.
+    #[must_use]
+    pub const fn execution_bindings(&self) -> ([u8; 16], [u8; 16], ObjectDigest) {
+        (self.node_id, self.boot_id, self.revocation_digest)
+    }
+
+    /// Returns lease and topology bounds used by historical verification.
+    #[must_use]
+    pub const fn requested_bounds(&self) -> (u64, bool, u32, bool) {
+        (
+            self.requested_lease_seconds,
+            self.recursive,
+            self.requested_maximum_submounts,
+            self.kernel_coupled,
+        )
     }
 }
 
@@ -733,6 +1004,40 @@ impl SourceExportLeaseV1 {
     pub const fn proof(&self) -> &SourceProviderProofV1 {
         &self.proof
     }
+
+    /// Returns the request identity retained by the lease.
+    #[must_use]
+    pub const fn request_identity(&self) -> ([u8; 16], ObjectDigest) {
+        (self.request_id, self.request_digest)
+    }
+
+    /// Returns the exact request ID.
+    #[must_use]
+    pub const fn request_id(&self) -> [u8; 16] {
+        self.request_id
+    }
+
+    /// Returns the holder tuple retained by the lease.
+    #[must_use]
+    pub const fn holder_authority(&self) -> ([u8; 16], u64, ObjectDigest) {
+        (
+            self.holder_authority_id,
+            self.holder_generation,
+            self.holder_authority_digest,
+        )
+    }
+
+    /// Returns binding and revocation commitments retained by the lease.
+    #[must_use]
+    pub const fn holder_commitments(&self) -> (ObjectDigest, ObjectDigest) {
+        (self.binding_digest, self.revocation_digest)
+    }
+
+    /// Returns the inclusive issue and exclusive expiry times.
+    #[must_use]
+    pub const fn validity(&self) -> (i64, i64) {
+        (self.issued_seconds, self.expires_seconds)
+    }
 }
 
 /// Carries one successful descriptor-bearing provider receipt subject.
@@ -822,6 +1127,71 @@ impl SourceProviderReceiptV1 {
     #[must_use]
     pub const fn descriptor_role(&self) -> SourceProviderDescriptorRole {
         self.descriptor_role
+    }
+
+    /// Returns the exact request ID and typed request digest.
+    #[must_use]
+    pub const fn request_identity(&self) -> ([u8; 16], ObjectDigest) {
+        (self.request_id, self.request_digest)
+    }
+
+    /// Returns the exact request ID named by the receipt.
+    #[must_use]
+    pub const fn request_id(&self) -> [u8; 16] {
+        self.request_id
+    }
+
+    /// Returns the typed request digest named by the receipt.
+    #[must_use]
+    pub const fn request_digest(&self) -> ObjectDigest {
+        self.request_digest
+    }
+
+    /// Returns the provider acquisition identity.
+    #[must_use]
+    pub const fn acquisition_id(&self) -> ObjectDigest {
+        self.acquisition_id
+    }
+
+    /// Returns the claimed physical SourceRoot observation fields.
+    #[must_use]
+    pub const fn physical_observation(&self) -> ([u8; 16], u64, u64, u64) {
+        (
+            self.kernel_boot_id,
+            self.device,
+            self.inode,
+            self.unique_mount_id,
+        )
+    }
+
+    /// Returns the observed kernel boot identity.
+    #[must_use]
+    pub const fn kernel_boot_id(&self) -> [u8; 16] {
+        self.kernel_boot_id
+    }
+
+    /// Returns the observed device identity.
+    #[must_use]
+    pub const fn device(&self) -> u64 {
+        self.device
+    }
+
+    /// Returns the observed inode identity.
+    #[must_use]
+    pub const fn inode(&self) -> u64 {
+        self.inode
+    }
+
+    /// Returns the observed unique mount ID.
+    #[must_use]
+    pub const fn unique_mount_id(&self) -> u64 {
+        self.unique_mount_id
+    }
+
+    /// Returns the provider proof digest observed with the descriptor.
+    #[must_use]
+    pub const fn observed_proof_digest(&self) -> ObjectDigest {
+        self.observed_proof_digest
     }
 }
 
@@ -1227,6 +1597,30 @@ impl ReleaseSourceRequestV1 {
             deadline_seconds,
         })
     }
+
+    /// Returns the authenticated session binding.
+    #[must_use]
+    pub const fn session_binding(&self) -> ObjectDigest {
+        self.session_binding
+    }
+
+    /// Returns the request sequence and idempotency identity.
+    #[must_use]
+    pub const fn request_identity(&self) -> (u64, [u8; 16]) {
+        (self.sequence, self.request_id)
+    }
+
+    /// Returns the acquisition and exact lease identity being released.
+    #[must_use]
+    pub const fn release_identity(&self) -> (ObjectDigest, [u8; 16], ObjectDigest) {
+        (self.acquisition_id, self.lease_id, self.lease_digest)
+    }
+
+    /// Returns the exclusive RPC completion deadline.
+    #[must_use]
+    pub const fn deadline_seconds(&self) -> i64 {
+        self.deadline_seconds
+    }
 }
 
 /// Claims the terminal state of one exact provider lease.
@@ -1341,6 +1735,24 @@ impl InventorySourceRequestV1 {
             deadline_seconds,
         })
     }
+
+    /// Returns the authenticated session binding.
+    #[must_use]
+    pub const fn session_binding(&self) -> ObjectDigest {
+        self.session_binding
+    }
+
+    /// Returns the request sequence and idempotency identity.
+    #[must_use]
+    pub const fn request_identity(&self) -> (u64, [u8; 16]) {
+        (self.sequence, self.request_id)
+    }
+
+    /// Returns the exclusive RPC completion deadline.
+    #[must_use]
+    pub const fn deadline_seconds(&self) -> i64 {
+        self.deadline_seconds
+    }
 }
 
 /// Identifies the durable provider-side state of an inventoried lease.
@@ -1402,6 +1814,30 @@ impl SourceProviderInventoryEntryV1 {
             proof_digest,
             resource_commitment,
         })
+    }
+
+    /// Returns the exact retained lease identifier.
+    #[must_use]
+    pub const fn lease_id(&self) -> [u8; 16] {
+        self.lease_id
+    }
+
+    /// Returns the digest of the exact signed retained lease.
+    #[must_use]
+    pub const fn lease_digest(&self) -> ObjectDigest {
+        self.lease_digest
+    }
+
+    /// Returns the provider acquisition identifier carried by this entry.
+    #[must_use]
+    pub const fn acquisition_id(&self) -> ObjectDigest {
+        self.acquisition_id
+    }
+
+    /// Returns the provider-side lifecycle state of the retained lease.
+    #[must_use]
+    pub const fn state(&self) -> InventoryLeaseStateV1 {
+        self.state
     }
 }
 

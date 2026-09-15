@@ -11,8 +11,8 @@ use aos_sandbox_core::{ObjectDigest, OperationId};
 use super::decision::CompletionResult;
 use super::{
     AdmissionDecisionStateV1, AdmissionError, AdmissionLedger, AuthorityCheckpointV1,
-    CompletionPermitStateV1, LedgerMutation, ProtectedMutationBranchV1,
-    ProtectedStoreSettlementReceiptV1, ProtectedStoreSettlementV1, RecoveryDispositionV1,
+    CapacityProtectedStoreSettlementV1, CompletionPermitStateV1, LedgerMutation,
+    ProtectedMutationBranchV1, ProtectedStoreSettlementReceiptV1, RecoveryDispositionV1,
     digest_parts,
 };
 
@@ -40,27 +40,34 @@ pub struct RecoveryObservationV1<'root> {
 /// retains the value further through protected-store settlement.
 #[must_use = "physical recovery custody must be consumed by a protected transition"]
 pub struct RecoveryPhysicalCustodyV1<'root> {
+    #[cfg(target_os = "linux")]
     root: crate::publisher_roots::AuthorizedPublicationRoot<'root>,
+    #[cfg(not(target_os = "linux"))]
+    root: core::marker::PhantomData<&'root ()>,
+    root_record_digest: ObjectDigest,
     artifact_digest: Option<ObjectDigest>,
     observation_digest: ObjectDigest,
 }
 
 impl<'root> RecoveryPhysicalCustodyV1<'root> {
     /// Seals a pinned physical observation with its live root authorization.
+    #[cfg(target_os = "linux")]
     pub(crate) const fn seal_from_physical_adapter(
         root: crate::publisher_roots::AuthorizedPublicationRoot<'root>,
         artifact_digest: Option<ObjectDigest>,
         observation_digest: ObjectDigest,
     ) -> Self {
+        let root_record_digest = root.record_digest();
         Self {
             root,
+            root_record_digest,
             artifact_digest,
             observation_digest,
         }
     }
 
     const fn root_record_digest(&self) -> ObjectDigest {
-        self.root.record_digest()
+        self.root_record_digest
     }
 }
 
@@ -257,7 +264,7 @@ pub struct CatalogRepairPermitV1<'catalog> {
     ledger: &'catalog mut AdmissionLedger,
     catalog: Option<super::read_authority::ExclusiveCatalogInsertionCustody<'catalog>>,
     poison: Option<ProtectedMutationBranchV1>,
-    store: Option<&'catalog mut dyn ProtectedStoreSettlementV1>,
+    store: Option<&'catalog mut dyn CapacityProtectedStoreSettlementV1>,
     settled: bool,
 }
 
@@ -267,10 +274,7 @@ impl CatalogRepairPermitV1<'_> {
         primary: Option<&ProtectedMutationBranchV1>,
     ) -> Option<ProtectedStoreSettlementReceiptV1> {
         let poison = self.poison.as_ref()?;
-        Some(self.store.as_mut()?.settle(
-            primary.map(|branch| branch.mutations.as_slice()),
-            &poison.mutations,
-        ))
+        Some(self.store.as_mut()?.settle(primary, poison))
     }
 
     fn install_primary(
@@ -508,7 +512,7 @@ impl AdmissionLedger {
         operation: OperationId,
         intended_entry: super::CommittedReadEntryV1,
         catalog: &'catalog mut super::ReadCatalogProjectionV1,
-        store: &'catalog mut dyn ProtectedStoreSettlementV1,
+        store: &'catalog mut dyn CapacityProtectedStoreSettlementV1,
     ) -> Result<CatalogRepairPermitV1<'catalog>, AdmissionError> {
         self.require_committed(committed)?;
         let artifact = self

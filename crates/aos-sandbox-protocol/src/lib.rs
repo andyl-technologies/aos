@@ -9,6 +9,10 @@
 //! [`fencing`], [`inventory`], and [`session`] own their respective validated
 //! protocol state and envelopes. [`authenticated_session`] composes the
 //! production-inert authenticated traffic model with complete method semantics.
+//! [`mount_source_acquisition_state`] owns the pure canonical `AOSMSA02`
+//! storage codec and whole-snapshot validator shared by Mount and its security
+//! boundary. [`mount_source_consumption_state`] owns the pure persisted
+//! companion schemas and structural four-record consumption projection.
 
 pub mod authenticated_session;
 pub mod fencing;
@@ -18,9 +22,12 @@ pub mod host_observation;
 pub mod inventory;
 pub mod mount_catalog;
 pub mod mount_destination_slot;
+pub mod mount_manager_startup;
 mod mount_result;
 pub mod mount_scope;
 mod mount_source_acquisition;
+pub mod mount_source_acquisition_state;
+pub mod mount_source_consumption_state;
 pub mod network_inventory;
 pub mod payload_scope;
 pub mod semantics;

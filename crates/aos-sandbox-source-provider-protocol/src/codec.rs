@@ -517,10 +517,17 @@ pub fn decode_hello(bytes: &[u8]) -> Result<SourceProviderHelloV1, SourceProvide
 #[must_use]
 pub fn encode_acquire_request(value: &AcquireSourceRequestV1) -> Vec<u8> {
     let mut writer = Writer::new();
+    if value.acquisition_version == crate::ACQUIRE_SOURCE_REQUEST_VERSION_V2 {
+        writer.u16(crate::ACQUIRE_SOURCE_REQUEST_VERSION_V2);
+        writer.zeros(6);
+    }
     writer.digest(value.session_binding);
     writer.u64(value.sequence);
     writer.bytes(&value.request_id);
     writer.digest(value.acquisition_id);
+    if value.acquisition_version == crate::ACQUIRE_SOURCE_REQUEST_VERSION_V2 {
+        writer.u64(value.acquisition_sequence);
+    }
     writer.sized_bytes(&value.prospective_apply_template);
     writer.digest(value.prospective_apply_template_digest);
     writer.u8(value.source_use as u8);
@@ -550,11 +557,63 @@ pub fn encode_acquire_request(value: &AcquireSourceRequestV1) -> Vec<u8> {
 pub fn decode_acquire_request(
     bytes: &[u8],
 ) -> Result<AcquireSourceRequestV1, SourceProviderFrameError> {
+    let legacy = decode_acquire_request_v1(bytes).ok();
+    let version_2 = decode_acquire_request_v2(bytes).ok();
+    match (legacy, version_2) {
+        (Some(value), None) | (None, Some(value)) => Ok(value),
+        _ => Err(SourceProviderFrameError::InvalidFrame),
+    }
+}
+
+fn decode_acquire_request_v1(
+    bytes: &[u8],
+) -> Result<AcquireSourceRequestV1, SourceProviderFrameError> {
     let mut reader = Reader::new(bytes);
     let session_binding = reader.digest()?;
     let sequence = reader.u64()?;
     let request_id = reader.array::<16>()?;
     let acquisition_id = reader.digest()?;
+    decode_acquire_request_tail(
+        reader,
+        session_binding,
+        sequence,
+        request_id,
+        acquisition_id,
+        None,
+    )
+}
+
+fn decode_acquire_request_v2(
+    bytes: &[u8],
+) -> Result<AcquireSourceRequestV1, SourceProviderFrameError> {
+    let mut reader = Reader::new(bytes);
+    if reader.u16()? != crate::ACQUIRE_SOURCE_REQUEST_VERSION_V2 {
+        return Err(SourceProviderFrameError::InvalidFrame);
+    }
+    reader.require_zeros(6)?;
+    let session_binding = reader.digest()?;
+    let sequence = reader.u64()?;
+    let request_id = reader.array::<16>()?;
+    let acquisition_id = reader.digest()?;
+    let acquisition_sequence = reader.u64()?;
+    decode_acquire_request_tail(
+        reader,
+        session_binding,
+        sequence,
+        request_id,
+        acquisition_id,
+        Some(acquisition_sequence),
+    )
+}
+
+fn decode_acquire_request_tail(
+    mut reader: Reader<'_>,
+    session_binding: ObjectDigest,
+    sequence: u64,
+    request_id: [u8; 16],
+    acquisition_id: ObjectDigest,
+    acquisition_sequence: Option<u64>,
+) -> Result<AcquireSourceRequestV1, SourceProviderFrameError> {
     let prospective_apply_template = reader.sized_bytes(2 * 1024)?.to_vec();
     let prospective_apply_template_digest = reader.digest()?;
     let source_use = match reader.u8()? {
@@ -579,29 +638,54 @@ pub fn decode_acquire_request(
     reader.require_zeros(3)?;
     let requested_maximum_submounts = reader.u32()?;
     reader.finish()?;
-    AcquireSourceRequestV1::new(
-        session_binding,
-        sequence,
-        request_id,
-        acquisition_id,
-        prospective_apply_template,
-        prospective_apply_template_digest,
-        source_use,
-        node_id,
-        boot_id,
-        holder_authority_id,
-        holder_generation,
-        holder_authority_digest,
-        binding,
-        binding_digest,
-        deadline_seconds,
-        requested_lease_seconds,
-        revocation_digest,
-        source_flags & 1 != 0,
-        requested_maximum_submounts,
-        source_flags & 2 != 0,
-    )
-    .map_err(Into::into)
+    let value = match acquisition_sequence {
+        Some(acquisition_sequence) => AcquireSourceRequestV1::new_with_acquisition_sequence(
+            session_binding,
+            sequence,
+            request_id,
+            acquisition_id,
+            acquisition_sequence,
+            prospective_apply_template,
+            prospective_apply_template_digest,
+            source_use,
+            node_id,
+            boot_id,
+            holder_authority_id,
+            holder_generation,
+            holder_authority_digest,
+            binding,
+            binding_digest,
+            deadline_seconds,
+            requested_lease_seconds,
+            revocation_digest,
+            source_flags & 1 != 0,
+            requested_maximum_submounts,
+            source_flags & 2 != 0,
+        ),
+        None => AcquireSourceRequestV1::new(
+            session_binding,
+            sequence,
+            request_id,
+            acquisition_id,
+            prospective_apply_template,
+            prospective_apply_template_digest,
+            source_use,
+            node_id,
+            boot_id,
+            holder_authority_id,
+            holder_generation,
+            holder_authority_digest,
+            binding,
+            binding_digest,
+            deadline_seconds,
+            requested_lease_seconds,
+            revocation_digest,
+            source_flags & 1 != 0,
+            requested_maximum_submounts,
+            source_flags & 2 != 0,
+        ),
+    };
+    value.map_err(Into::into)
 }
 
 /// Encodes one provider-signed response-status subject.

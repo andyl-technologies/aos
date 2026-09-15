@@ -1,9 +1,9 @@
 //! Dormant lifecycle transaction records and recovery classification.
 //!
 //! This module models controller intent without granting broker authority or
-//! dispatching effects. Its codecs are suitable for an eventual append-only
-//! journal namespace, but the module is deliberately not connected to the
-//! controller, public protocol, or readiness advertisement.
+//! dispatching effects. Its protected-journal adapter owns exact CAS, replay,
+//! recovery, and postcommit capabilities, but remains disconnected from the
+//! controller, public protocol, and readiness advertisement.
 
 mod attempt;
 mod auxiliary_checkpoint;
@@ -21,6 +21,10 @@ mod journal;
 mod model;
 mod operation;
 mod projection;
+pub mod protected_journal;
+pub(crate) mod protected_journal_adapter;
+pub mod protected_journal_join;
+mod protected_owner;
 mod recovery;
 mod replay_validation;
 mod semantic;
@@ -30,16 +34,16 @@ mod snapshot;
 mod verification;
 
 pub use attempt::{
-    resume_ambiguous_attempt_v1, LifecycleAmbiguousResumeV1, LifecycleAttemptHistoryV1,
-    LifecycleAttemptStateV1, LifecycleEffectAttemptV1, LifecycleEffectDirectionV1,
-    MAXIMUM_LIFECYCLE_ATTEMPTS, MAXIMUM_LIFECYCLE_ATTEMPTS_PER_STEP,
+    LifecycleAmbiguousResumeV1, LifecycleAttemptHistoryV1, LifecycleAttemptStateV1,
+    LifecycleEffectAttemptV1, LifecycleEffectDirectionV1, MAXIMUM_LIFECYCLE_ATTEMPTS,
+    MAXIMUM_LIFECYCLE_ATTEMPTS_PER_STEP, resume_ambiguous_attempt_v1,
 };
 pub use auxiliary_checkpoint::{
     decode_lifecycle_auxiliary_checkpoint_v1, encode_lifecycle_auxiliary_checkpoint_v1,
 };
 pub use auxiliary_payload::{
-    decode_lifecycle_auxiliary_payload_v1, encode_lifecycle_auxiliary_payload_v1,
     LifecycleAuxiliaryPayloadV1, MAXIMUM_LIFECYCLE_AUXILIARY_PAYLOAD_BYTES,
+    decode_lifecycle_auxiliary_payload_v1, encode_lifecycle_auxiliary_payload_v1,
 };
 pub use cancel::{
     LifecycleCancelIdempotencyDigestV1, LifecycleCancelIdempotencyIndexV1,
@@ -55,11 +59,11 @@ pub use coordination::{
     LifecycleSuspendObservationV1, LifecycleThawCompensationDigestV1, LifecycleWriterFenceDigestV1,
 };
 pub use durable::{
-    bind_lifecycle_atomic_join_v1, decode_lifecycle_auxiliary_record_v1,
-    encode_lifecycle_auxiliary_record_v1, lifecycle_atomic_join_digest_v1,
     LifecycleAtomicJoinDigestV1, LifecycleAuxiliaryCheckpointV1, LifecycleAuxiliaryHistoryV1,
     LifecycleAuxiliaryKindV1, LifecycleAuxiliaryRecordV1, LifecycleCancellationAdmissionV1,
     MAXIMUM_LIFECYCLE_AUXILIARY_BYTES, MAXIMUM_LIFECYCLE_AUXILIARY_RECORDS,
+    bind_lifecycle_atomic_join_v1, decode_lifecycle_auxiliary_record_v1,
+    encode_lifecycle_auxiliary_record_v1, lifecycle_atomic_join_digest_v1,
 };
 pub use evidence::{
     LifecycleBootCommitFactV1, LifecycleBootRecordDigestV1, LifecycleCoordinationCommitFactV1,
@@ -84,9 +88,9 @@ pub use intent::{
     ResourceExpectedStateV1,
 };
 pub use journal::{
-    decode_lifecycle_journal_record_v1, encode_lifecycle_journal_record_v1,
-    LifecycleJournalHistoryV1, LifecycleJournalOwnershipRecordV1, LifecycleJournalRecordKindV1,
-    LifecycleJournalVerifierV1, LIFECYCLE_JOURNAL_NAMESPACE_V1,
+    LIFECYCLE_JOURNAL_NAMESPACE_V1, LifecycleJournalHistoryV1, LifecycleJournalOwnershipRecordV1,
+    LifecycleJournalRecordKindV1, LifecycleJournalVerifierV1, decode_lifecycle_journal_record_v1,
+    encode_lifecycle_journal_record_v1,
 };
 pub use model::{
     DesiredStateCasDigestV1, DesiredStateDocumentDigestV1, LifecycleFailureDigestV1,
@@ -101,7 +105,8 @@ pub use model::{
 pub use projection::{
     LifecycleModelError, LifecycleOperationClaimV1, LifecycleTerminalProjectionV1,
 };
-pub use recovery::{classify_operation_recovery_v1, LifecycleRecoveryActionV1};
+pub use protected_owner::LifecycleProtectedJournalOwnerV1;
+pub use recovery::{LifecycleRecoveryActionV1, classify_operation_recovery_v1};
 pub use semantic::{
     LifecycleAssignmentCommitFactV1, LifecycleAuthoritativeSemanticCommitV1,
     LifecycleCascadePlanDigestV1, LifecycleCascadeTombstonePlanV1, LifecycleCommittedResourceV1,

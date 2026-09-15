@@ -1,12 +1,18 @@
-//! Durable Mount Release request and teardown-authority validation.
+//! Historical Mount Release decoding and teardown-fence validation.
 //!
-//! The acquisition row retains the exact canonical controller request so
-//! recovery can reproduce its operation identity, predecessor CAS, and
-//! current-or-dominating assignment fence without trusting scalar projections.
+//! The exact controller body is retained so recovery can reproduce operation
+//! identity, predecessor CAS, and the closed dominating-fence relation without
+//! treating a scalar projection as authority.
 
-use super::*;
+use aos_proto::aos::sandbox::local::v1::ReleaseMountSourceAcquisitionRequest;
+use aos_sandbox_protocol::mount_source_acquisition_request_digest_v1;
+use buffa::Message as _;
 
-pub(super) fn validate_mount_release_request(row: &SourceAcquisitionRowV1) -> Result<()> {
+use super::format::state_error;
+use super::model::{AssignmentV2, ReleaseAuthorityV2, SourceAcquisitionRowV2};
+use crate::Result;
+
+pub(super) fn validate_mount_release_request(row: &SourceAcquisitionRowV2) -> Result<()> {
     let (Some(operation), Some(bytes), Some(authority)) = (
         row.release,
         row.mount_release_request.as_deref(),
@@ -48,7 +54,7 @@ pub(super) fn validate_mount_release_request(row: &SourceAcquisitionRowV1) -> Re
         || request.expected_revision != authority.expected_revision
         || authority.expected_revision == 0
         || request.expected_record_digest.as_slice() != authority.expected_record_digest
-        || !nonzero_digest(authority.expected_record_digest)
+        || authority.expected_record_digest == [0; 32]
         || fence.sandbox_id.as_slice() != authority.sandbox_id
         || fence.incarnation_id.as_slice() != authority.incarnation_id
         || fence.assignment_epoch != authority.assignment_epoch
@@ -62,4 +68,24 @@ pub(super) fn validate_mount_release_request(row: &SourceAcquisitionRowV1) -> Re
         ));
     }
     Ok(())
+}
+
+pub(super) const fn release_authority_dominates(
+    assignment: AssignmentV2,
+    release: ReleaseAuthorityV2,
+) -> bool {
+    if assignment.sandbox_id != release.sandbox_id
+        || assignment.incarnation_id != release.incarnation_id
+        || release.assignment_epoch < assignment.assignment_epoch
+    {
+        return false;
+    }
+    if release.assignment_epoch > assignment.assignment_epoch {
+        return release.desired_generation != 0 && release.assignment_digest != [0; 32];
+    }
+    if release.desired_generation < assignment.desired_generation {
+        return false;
+    }
+    release.desired_generation > assignment.desired_generation
+        || release.assignment_digest == assignment.assignment_digest
 }

@@ -3,10 +3,12 @@
 //! [`run_metadata`] consumes one prepared connection while borrowing its index,
 //! presentation, scratch, and descriptors. The synchronous AOS C transport owns
 //! kernel parsing and reply publication; Rust owns metadata decisions and handle
-//! state. File data and extended attributes remain unsupported in this profile.
+//! state. File data and extended attributes remain disabled in the installed profile.
 //! The private ABI and callback modules contain the audited pointer boundary.
 //! [`file_callbacks`] defines the dormant typed OPEN/READ/RELEASE sequencing
 //! contract for a later ABI revision; it is not installed in the C operations table.
+//! [`operations`] joins those paths with GETXATTR/LISTXATTR sizing and errno
+//! semantics, while remaining absent from [`run_metadata`].
 //!
 //! Each connection has exactly one runner. Its descriptors must refer to a
 //! broker-prepared mount with independently qualified permission policy. A
@@ -26,6 +28,7 @@ mod abi;
 mod callbacks;
 mod control;
 pub mod file_callbacks;
+pub mod operations;
 
 /// Configures the independently bounded C transport buffers and reply policy.
 #[derive(Clone, Copy, Debug)]
@@ -210,6 +213,11 @@ fn run_with(
     run: abi::Run,
 ) -> Result<TeardownSummary, RunError> {
     let encoded = limits.encode()?;
+    if connection.requires_extended_operation_transport() {
+        return Err(RunError::Representation(
+            MetadataTransportError::Unrepresentable("extended operation profile"),
+        ));
+    }
     if budget.forget_entries == 0 || budget.directory_entries == 0 {
         return Err(RunError::InvalidLimits);
     }

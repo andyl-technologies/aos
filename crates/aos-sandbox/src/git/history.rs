@@ -9,12 +9,12 @@ use aos_sandbox_core::{ObjectDigest, PrincipalId, ResourceId, Revision};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    git_ref_map_digest_v1, GitAdvertisedRefV1, GitAtomicCasDigestV1, GitBoottimeV1,
-    GitCheapForkStatusV1, GitCheapForkV1, GitExportGenerationDigestV1, GitExportGenerationV1,
-    GitModelError, GitPackConsumerV1, GitPackGenerationDigestV1, GitPackGenerationPredecessorV1,
-    GitPackLeaseStatusV1, GitReceivePlanV1, GitRefMapDigestV1, GitRepositoryV1,
-    GitTrustedBoottimeV1, GitWholeObjectDatabaseV1, ImmutablePackGenerationV1,
-    MAXIMUM_GIT_HISTORY_RECORDS, MAXIMUM_GIT_PACK_LEASES,
+    GitAdvertisedRefV1, GitAtomicCasDigestV1, GitBoottimeV1, GitCheapForkStatusV1, GitCheapForkV1,
+    GitExportGenerationDigestV1, GitExportGenerationV1, GitModelError, GitPackConsumerV1,
+    GitPackGenerationDigestV1, GitPackGenerationPredecessorV1, GitPackLeaseStatusV1,
+    GitReceivePlanV1, GitRefMapDigestV1, GitRepositoryV1, GitTrustedBoottimeV1,
+    GitWholeObjectDatabaseV1, ImmutablePackGenerationV1, MAXIMUM_GIT_HISTORY_RECORDS,
+    MAXIMUM_GIT_PACK_LEASES, git_ref_map_digest_v1,
 };
 
 /// Stores one exact materialized mutable-repository revision.

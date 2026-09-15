@@ -27,10 +27,10 @@ pub use host::{
     runtime_resource_handle,
 };
 pub use mount::{
-    CanonicalMountSemanticsV1, CanonicalPrecatalogMountCreateV1, MountCatalogBindingV1,
-    MountSemanticError, canonical_mount_semantics_v1,
-    canonical_precatalog_mount_create_template_v1,
-    final_mount_create_matches_precatalog_template_v1,
+    CanonicalMountSemanticsV1, CanonicalPrecatalogMountCreateV1, DecodedCanonicalMountSemanticsV1,
+    MountCatalogBindingV1, MountSemanticError, canonical_mount_semantics_v1,
+    canonical_precatalog_mount_create_template_v1, decode_canonical_mount_semantics_v1,
+    final_mount_create_matches_precatalog_template_v1, project_final_mount_create_semantics_v1,
 };
 pub use mount_source_acquisition::{
     CanonicalMountSourceAcquisitionSemanticsV1, MountSourceAcquisitionSemanticError,

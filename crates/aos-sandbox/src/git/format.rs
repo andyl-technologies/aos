@@ -21,15 +21,15 @@ use aos_sandbox_core::{
 use sha2::{Digest as _, Sha256};
 
 use super::model::{
-    cache_kind_code, git_ref_map_digest_v1, GitAdvertisedRefV1, GitAncestryReportV1,
-    GitAtomicCasDigestV1, GitAudienceDigestV1, GitChannelBindingDigestV1, GitDescriptorRoleV1,
-    GitDescriptorV1, GitExportGenerationDigestV1, GitExportGenerationV1, GitGraphCompletenessV1,
-    GitGraphProofDigestV1, GitGraphValidatorEvidenceV1, GitModelError, GitObjectDatabaseDigestV1,
-    GitObjectFormatV1, GitObjectGraphEvidenceV1, GitObjectIdV1, GitObjectInventoryDigestV1,
-    GitPackIndexSetDigestV1, GitPhysicalObjectEnumerationV1, GitQuarantineDigestV1,
-    GitReadAudienceV1, GitRefMapDigestV1, GitRefNameV1, GitRepositoryV1, GitTrustedValidatorV1,
-    GitValidationPolicyDigestV1, GitValidatorTrustDigestV1, GitWholeObjectDatabaseV1,
-    MAXIMUM_GIT_GRAPH_ROOTS, MAXIMUM_GIT_REF_BYTES,
+    GitAdvertisedRefV1, GitAncestryReportV1, GitAtomicCasDigestV1, GitAudienceDigestV1,
+    GitChannelBindingDigestV1, GitDescriptorRoleV1, GitDescriptorV1, GitExportGenerationDigestV1,
+    GitExportGenerationV1, GitGraphCompletenessV1, GitGraphProofDigestV1,
+    GitGraphValidatorEvidenceV1, GitModelError, GitObjectDatabaseDigestV1, GitObjectFormatV1,
+    GitObjectGraphEvidenceV1, GitObjectIdV1, GitObjectInventoryDigestV1, GitPackIndexSetDigestV1,
+    GitPhysicalObjectEnumerationV1, GitQuarantineDigestV1, GitReadAudienceV1, GitRefMapDigestV1,
+    GitRefNameV1, GitRepositoryV1, GitTrustedValidatorV1, GitValidationPolicyDigestV1,
+    GitValidatorTrustDigestV1, GitWholeObjectDatabaseV1, MAXIMUM_GIT_GRAPH_ROOTS,
+    MAXIMUM_GIT_REF_BYTES, cache_kind_code, git_ref_map_digest_v1,
 };
 use super::protocol::{
     GitExchangePlanV1, GitProtocolV2CapabilitiesDigestV1, GitProtocolV2CapabilityV1,

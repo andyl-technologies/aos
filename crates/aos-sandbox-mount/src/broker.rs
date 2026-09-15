@@ -42,14 +42,16 @@ use crate::destination_slot::{
     DestinationSlotStoreV1,
 };
 use crate::host_scope::ObservedMountScope;
-use crate::source_pin::{SourcePinRowV1, SourcePinTableV1, SourceRealizationEvidenceV1};
+use crate::source_pin::{
+    SourcePinRowV1, SourcePinRowV1Ext, SourcePinTableV1, SourceRealizationEvidenceV1,
+};
 use crate::state::authorization_v1::{MountEffectIntentV1, MountEffectStatusV1};
 use crate::state::mount_resource_v1::{
     AssignmentBindingV1, DetachedMountIdentityV1, InstalledMountObservationV1, MountFaultPhaseV1,
     MountHandleV1, MountPolicyV1, MountRecipeV1, MountResourceLimitsV1, MountResourceStateV1,
     MountResourceTableV1, MountResourceV1, MountSourceConsistencyV1, NativeMutationV1,
-    ObjectDescriptorV1, OperationCorrelationV1, OwnedMountAttributeV1, PublicationCorrelationV1,
-    canonical_fd_store_key,
+    ObjectDescriptorV1, ObjectDescriptorV1Ext, OperationCorrelationV1, OwnedMountAttributeV1,
+    PublicationCorrelationV1, canonical_fd_store_key,
 };
 use crate::worker::{
     CatalogAuthorizationV1, DurableMountExecutionV1, EffectDeadlineV1, EffectHandles,
@@ -1354,7 +1356,7 @@ fn installed_successor(
     Ok(next)
 }
 
-fn allocated_resource(
+pub(crate) fn allocated_resource(
     request: &ValidatedMountRequest,
     request_digest: [u8; 32],
     kernel_boot_id: [u8; 16],

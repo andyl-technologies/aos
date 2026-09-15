@@ -33,8 +33,11 @@ members = [
     "aos-filesystem-fuse",
     "aos-filesystem-fuse/tests/fixtures/kernel-worker",
     "aos-filesystem-fuse/tests/fixtures/link-consumer",
+    "aos-sandbox-agent",
     "aos-sandbox-core",
     "aos-sandbox-ownership-protocol",
+    "aos-sandbox-source-provider-ledger",
+    "aos-sandbox-source-provider",
     "aos-sandbox-source-provider-protocol",
     "aos-sandbox-source-provider-security",
     "aos-sandbox-broker-session-protocol",
@@ -248,9 +251,12 @@ aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }
 aos-filesystem-view = { path = "aos-filesystem-view" }
 aos-filesystem-fuse = { path = "aos-filesystem-fuse" }
+aos-sandbox-agent = { path = "aos-sandbox-agent" }
 aos-sandbox-core = { path = "aos-sandbox-core" }
 aos-sandbox-guardian = { path = "aos-sandbox-guardian" }
 aos-sandbox-ownership-protocol = { path = "aos-sandbox-ownership-protocol" }
+aos-sandbox-source-provider = { path = "aos-sandbox-source-provider" }
+aos-sandbox-source-provider-ledger = { path = "aos-sandbox-source-provider-ledger" }
 aos-sandbox-source-provider-protocol = { path = "aos-sandbox-source-provider-protocol" }
 aos-sandbox-source-provider-security = { path = "aos-sandbox-source-provider-security" }
 aos-sandbox-broker-session-protocol = { path = "aos-sandbox-broker-session-protocol" }

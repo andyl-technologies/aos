@@ -17,8 +17,9 @@ mod state;
 
 pub use aos_sandbox_core::GuardianPlanBinding;
 pub use authority::{
-    GuardianArtifacts, GuardianAuthority, GuardianAuthorityError, PendingGuardianState,
-    ReadinessConfirmedGuardian,
+    DormantGuardianProtectedCommitV1, DormantGuardianProtectedOwnerErrorV1,
+    DormantGuardianProtectedOwnerV1, GuardianArtifacts, GuardianAuthority, GuardianAuthorityError,
+    PendingGuardianState, ReadinessConfirmedGuardian,
 };
 pub use runtime::{GuardianRuntimeError, ReadyNotifier, run_from_environment};
 pub use state::{

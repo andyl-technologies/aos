@@ -12,6 +12,7 @@ struct RemoteBaselineV1 {
     boot_id: [u8; 16],
     pid: u32,
     tgid: u32,
+    parent_pid: u32,
     start_time_ticks: u64,
     cgroup_id: u64,
     cgroup_path_digest: [u8; 32],
@@ -99,6 +100,10 @@ impl ProcessExecutionEvidenceV1 {
 
     pub(crate) const fn tgid(&self) -> u32 {
         self.baseline.tgid
+    }
+
+    pub(crate) const fn parent_pid(&self) -> u32 {
+        self.baseline.parent_pid
     }
 
     pub(crate) const fn start_time_ticks(&self) -> u64 {
@@ -265,6 +270,7 @@ fn remote_baseline_from(
         boot_id,
         pid: expected_pid,
         tgid: expected_pid,
+        parent_pid: info.parent_pid(),
         start_time_ticks: identity.start_time_ticks(),
         cgroup_id,
         cgroup_path_digest,

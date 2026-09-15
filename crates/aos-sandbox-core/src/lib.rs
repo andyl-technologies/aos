@@ -12,7 +12,9 @@
 //! observation semantics, while [`format`] owns their canonical versioned CBOR
 //! encodings and digest commitments. Execution access is route-dependent: a
 //! live OpenSSH route carries a validated holder key, while a detached capture
-//! route carries no holder key.
+//! route carries no holder key. The [`runtime_backend`] module defines dormant
+//! backend-neutral typestates plus durable execution admission, effect, and
+//! recovery contracts without selecting or activating an implementation.
 
 pub mod assignment;
 pub mod broker_authorization;
@@ -26,6 +28,7 @@ pub mod ownership_lease;
 pub mod publisher;
 pub mod registry;
 pub mod resources;
+pub mod runtime_backend;
 pub mod selector;
 pub mod state;
 pub mod version;

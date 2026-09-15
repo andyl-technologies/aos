@@ -16,14 +16,17 @@ use crate::{
     ProjectedNodeKind, ValidatedIndex, ValidatedViewProjection,
 };
 use aos_sandbox_core::PathName;
+use sha2::{Digest as _, Sha256};
 
 mod authority;
 mod data;
 mod durable;
 mod file;
+mod integration;
 mod lifecycle;
 mod registration;
 mod scratch;
+mod xattr;
 
 pub use authority::{
     AuthenticatedConnectionJoin, ConnectionAuthorityError, ConnectionLease, FrozenFeatureSet,
@@ -39,6 +42,11 @@ pub use durable::{DurableStateCodec, DurableStateError, DurableStateLimits};
 pub use file::{
     FileAccessMode, FileContentAuthority, FileOpenRequest, OpenFileReply, PendingFileReply,
 };
+pub use integration::{
+    DormantFilesystemWorkerPreparation, PendingFuseConnectionQualification,
+    ProtectedFuseConnectionQualification, QualificationAdmission, QualificationError,
+    admit_fuse_connection_qualification,
+};
 pub use lifecycle::{
     AttachmentHealth, ConsumerEvidence, DurableLifecycleEvent, InventoryEvidence, LifecycleError,
     ProcessEvidence, PublicationHealth, ReconciliationAction, RepairEvidence, WorkerLifecycle,
@@ -50,6 +58,10 @@ pub use registration::{
 };
 pub use scratch::{ReadDirEntry, ReadDirPage, ReadDirPageEntries, ReplyScratch};
 use scratch::{ReadDirRecord, usize_u64};
+pub use xattr::{
+    ExtendedAttributeError, ExtendedAttributeLimits, ExtendedAttributeReply,
+    ExtendedAttributeScratch, ExtendedAttributeSize, ExtendedAttributeState,
+};
 
 const ATTRIBUTE_REPLY_BYTES: u64 = size_of::<WorkerAttributes>() as u64;
 const LOOKUP_REPLY_BYTES: u64 = size_of::<LookupReply>() as u64;
@@ -364,7 +376,10 @@ pub enum RejectedOperation {
     FileData,
     /// READDIRPLUS child interning.
     ReadDirPlus,
-    /// Any xattr retrieval or mutation.
+    /// An xattr request received through the metadata-only rejection surface.
+    ///
+    /// Qualified dormant reads use [`ExtendedAttributeState`]; mutations remain
+    /// read-only failures at the transport boundary.
     ExtendedAttribute,
 }
 
@@ -386,6 +401,87 @@ pub struct TeardownSummary {
 struct ConnectionBrandId(u64);
 
 static NEXT_CONNECTION_BRAND_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_CALLBACK_REDUCER_BRAND_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Carries worker-minted, single-use authority for one callback reducer.
+///
+/// The type is deliberately neither `Clone` nor `Copy`. It has no scalar
+/// constructor and can be consumed only while binding registration state to
+/// the exact worker that minted it.
+#[must_use = "consume this brand into exactly one callback reducer"]
+pub struct CallbackReducerBrand {
+    authority_binding: [u8; 32],
+    worker_brand: ConnectionBrandId,
+    commitment: [u8; 32],
+}
+
+/// Owns registrations authenticated to one consumed callback-reducer brand.
+///
+/// This value is deliberately move-only so the same brand cannot initialize
+/// two callback state machines.
+#[must_use = "consume this binding into exactly one callback reducer"]
+pub struct CallbackReducerBinding {
+    commitment: [u8; 32],
+    registrations: PassthroughRegistrations,
+}
+
+impl CallbackReducerBrand {
+    /// Consumes this brand while authenticating one registration reducer.
+    ///
+    /// Restored registration records are rebound to a fresh worker-local
+    /// reducer generation derived from both this move-only authority and the
+    /// authenticated prior durable commitment. The updated snapshot must become
+    /// durable before a backing effect or callback reply, as required by the
+    /// registration API.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DataError::IntegrityFailure`] for a foreign worker,
+    /// connection, or registration authority.
+    pub fn bind_registrations(
+        self,
+        connection: &MetadataConnection<'_, '_, '_, '_>,
+        mut registrations: PassthroughRegistrations,
+    ) -> Result<CallbackReducerBinding, DataError> {
+        if connection.is_faulted()
+            || self.authority_binding != connection.connection_binding()
+            || self.worker_brand != connection.connection_brand
+            || registrations.authority_binding() != self.authority_binding
+        {
+            return Err(DataError::IntegrityFailure);
+        }
+        let previous_commitment = registrations.callback_reducer_commitment();
+        let mut hasher = Sha256::new();
+        hasher.update(b"aos-filesystem-bound-callback-reducer-v1\0");
+        hasher.update(self.commitment);
+        hasher.update(previous_commitment);
+        let commitment = hasher.finalize().into();
+        if commitment == [0; 32]
+            || (previous_commitment != [0; 32] && commitment == previous_commitment)
+        {
+            return Err(DataError::IntegrityFailure);
+        }
+        registrations.bind_callback_reducer(commitment)?;
+        Ok(CallbackReducerBinding {
+            commitment,
+            registrations,
+        })
+    }
+}
+
+impl CallbackReducerBinding {
+    /// Returns the non-authorizing diagnostic commitment for this reducer.
+    #[must_use]
+    pub const fn commitment(&self) -> [u8; 32] {
+        self.commitment
+    }
+
+    /// Consumes the binding and returns its uniquely branded registrations.
+    #[must_use]
+    pub fn into_registrations(self) -> PassthroughRegistrations {
+        self.registrations
+    }
+}
 
 /// Executes bounded immutable metadata operations for one logical connection.
 ///
@@ -399,8 +495,10 @@ pub struct MetadataConnection<'prepared, 'index, 'bytes, 'plan> {
     projection: &'prepared ValidatedViewProjection<'index, 'bytes>,
     lease: ConnectionLease,
     authority_binding: [u8; 32],
+    capabilities: FuseCapabilities,
     inodes: InodeTable<'index, 'bytes>,
     connection_brand: ConnectionBrandId,
+    callback_reducer_minted: bool,
     limits: WorkerLimits,
     directory_enabled: bool,
     features: Option<InitReply>,
@@ -448,8 +546,10 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
             projection,
             lease: prepared.lease(),
             authority_binding: prepared.binding(),
+            capabilities: prepared.transport_profile().1,
             inodes,
             connection_brand,
+            callback_reducer_minted: false,
             limits,
             directory_enabled,
             features: None,
@@ -475,6 +575,64 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     #[must_use]
     pub const fn connection_binding(&self) -> [u8; 32] {
         self.authority_binding
+    }
+
+    /// Returns the private process-local identity of this exact worker instance.
+    ///
+    /// The value is non-authorizing and exists only to prevent dormant callback
+    /// tokens from crossing between workers prepared from identical authority.
+    #[must_use]
+    pub const fn callback_instance_brand(&self) -> u64 {
+        self.connection_brand.0
+    }
+
+    /// Mints single-use authority for this worker's sole callback reducer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkerError::Stale`] after a terminal connection fault, or
+    /// [`WorkerError::ResourceExhausted`] if this worker already minted its
+    /// reducer or the process-local brand space is permanently exhausted.
+    pub fn mint_callback_reducer_brand(&mut self) -> Result<CallbackReducerBrand, WorkerError> {
+        if self.faulted {
+            return Err(WorkerError::Stale);
+        }
+        if self.callback_reducer_minted {
+            return Err(WorkerError::ResourceExhausted);
+        }
+        let serial = mint_callback_reducer_brand_id()?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"aos-filesystem-callback-reducer-brand-v1\0");
+        hasher.update(self.authority_binding);
+        hasher.update(self.connection_brand.0.to_be_bytes());
+        hasher.update(serial.to_be_bytes());
+        let commitment = hasher.finalize().into();
+        if commitment == [0; 32] {
+            return Err(WorkerError::IntegrityFailure);
+        }
+        self.callback_reducer_minted = true;
+        Ok(CallbackReducerBrand {
+            authority_binding: self.authority_binding,
+            worker_brand: self.connection_brand,
+            commitment,
+        })
+    }
+
+    /// Reports whether this connection requires the dormant extended operation profile.
+    ///
+    /// Metadata-only transports must reject such a connection before dispatch;
+    /// this bit does not install callbacks or advertise kernel features.
+    #[must_use]
+    pub const fn requires_extended_operation_transport(&self) -> bool {
+        self.capabilities.requires_extended_operation_transport()
+    }
+
+    /// Reports whether authenticated admission included generic xattr reads.
+    ///
+    /// This diagnostic does not install or advertise the dormant callbacks.
+    #[must_use]
+    pub const fn extended_attributes_admitted(&self) -> bool {
+        self.capabilities.extended_attributes()
     }
 
     /// Returns the connection inode table for read-only diagnostics.
@@ -1149,9 +1307,9 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     ///
     /// Before INIT, returns [`WorkerError::InvalidArgument`]. After INIT, always
     /// returns read-only-filesystem for mutation and operation-not-supported for
-    /// generic file data-plane callbacks, READDIRPLUS, and xattr operations. The
-    /// internal read-only OPEN lifecycle is invoked through its dedicated methods
-    /// and does not make this generic rejection surface transport-ready.
+    /// generic file data-plane callbacks, READDIRPLUS, and metadata-profile xattr
+    /// operations. Dedicated OPEN and xattr state machines remain dormant source
+    /// seams and do not make this rejection surface transport-ready.
     pub fn reject(&self, operation: RejectedOperation) -> Result<(), WorkerError> {
         self.ready()?;
         match operation {
@@ -1304,6 +1462,14 @@ fn mint_connection_brand() -> Result<ConnectionBrandId, WorkerError> {
         })
         .map_err(|_| WorkerError::ResourceExhausted)?;
     Ok(ConnectionBrandId(brand))
+}
+
+fn mint_callback_reducer_brand_id() -> Result<u64, WorkerError> {
+    NEXT_CALLBACK_REDUCER_BRAND_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| WorkerError::ResourceExhausted)
 }
 
 #[derive(Clone, Copy)]

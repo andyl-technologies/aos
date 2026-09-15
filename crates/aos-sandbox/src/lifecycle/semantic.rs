@@ -1,8 +1,8 @@
 //! Exact method-family facts retained beside an irreversible semantic witness.
 
 use aos_sandbox_core::{
-    model::snapshot::RetentionClaim, AssignmentEpoch, ObjectDigest, ResourceId, Revision,
-    SandboxId, SnapshotId,
+    AssignmentEpoch, ObjectDigest, ResourceId, Revision, SandboxId, SnapshotId,
+    model::snapshot::RetentionClaim,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -22,8 +22,8 @@ use super::{
     LifecycleProtectedCoordinationV1, LifecycleProtectedRetentionLedgerV1,
     LifecycleResourceStateDigestV1, LifecycleResourceV1, LifecycleRetentionCommitFactV1,
     LifecycleRetentionLedgerDigestV1, LifecycleRetentionLedgerReceiptV1,
-    LifecycleRetentionLedgerV1, LifecycleSemanticCommitV1, ResourceExpectationV1,
-    ResourceExpectedStateV1, MAXIMUM_LIFECYCLE_EXPECTATIONS,
+    LifecycleRetentionLedgerV1, LifecycleSemanticCommitV1, MAXIMUM_LIFECYCLE_EXPECTATIONS,
+    ResourceExpectationV1, ResourceExpectedStateV1,
 };
 
 /// Identifies one atomic semantic transaction without granting authority.

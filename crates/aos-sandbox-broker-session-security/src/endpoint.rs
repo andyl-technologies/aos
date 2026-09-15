@@ -2,7 +2,7 @@
 //!
 //! Client and broker endpoint types own only their two local signing seeds.
 //! The seeds and purpose-specific hello and traffic finalizers remain
-//! crate-private; the public custody surface exposes no signing operation.
+//! crate-private; the internal custody surface exposes no generic signing operation.
 //! Every output is surrounded by protected-file and process-incarnation
 //! currentness checks; any failure permanently poisons the object.
 
@@ -306,7 +306,7 @@ impl ProtectedEndpointV1 {
 ///
 /// The type is intentionally non-cloneable and non-authorizing. It exposes no
 /// key material and no signing operation.
-pub struct ProtectedBrokerSessionClientV1 {
+pub(crate) struct ProtectedBrokerSessionClientV1 {
     inner: ProtectedEndpointV1,
 }
 
@@ -324,7 +324,7 @@ impl ProtectedBrokerSessionClientV1 {
     /// Returns [`BrokerSessionSecurityError`] unless the path, manifest, both
     /// client secrets, current process/kernel incarnation, and initial kernel
     /// entropy sample satisfy the complete protected profile.
-    pub fn load(path: impl AsRef<Path>) -> Result<Self, BrokerSessionSecurityError> {
+    pub(crate) fn load(path: impl AsRef<Path>) -> Result<Self, BrokerSessionSecurityError> {
         Ok(Self {
             inner: ProtectedEndpointV1::load(path.as_ref(), EndpointRole::Client)?,
         })
@@ -495,7 +495,7 @@ impl ProtectedBrokerSessionClientV1 {
 ///
 /// The type is intentionally non-cloneable and non-authorizing. It exposes no
 /// key material and no signing operation.
-pub struct ProtectedBrokerSessionBrokerV1 {
+pub(crate) struct ProtectedBrokerSessionBrokerV1 {
     inner: ProtectedEndpointV1,
 }
 
@@ -513,7 +513,7 @@ impl ProtectedBrokerSessionBrokerV1 {
     /// Returns [`BrokerSessionSecurityError`] unless the path, manifest, both
     /// broker secrets, current process/kernel incarnation, and initial kernel
     /// entropy sample satisfy the complete protected profile.
-    pub fn load(path: impl AsRef<Path>) -> Result<Self, BrokerSessionSecurityError> {
+    pub(crate) fn load(path: impl AsRef<Path>) -> Result<Self, BrokerSessionSecurityError> {
         Ok(Self {
             inner: ProtectedEndpointV1::load(path.as_ref(), EndpointRole::Broker)?,
         })

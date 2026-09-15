@@ -1,11 +1,12 @@
 //! Single-threaded namespace-helper process and its fixed launcher.
 
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
-use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
+use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::{Path, PathBuf};
 
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_linux::inherited_fd::claim_mount_helper_descriptor_table;
 use aos_sandbox_linux::inventory::{MountId, MountNamespace, MountObservation};
 use aos_sandbox_linux::mount::{DetachedMount, detach_child};
 use aos_sandbox_linux::path::{BeneathRoot, FileIdentity, ResolveOptions, ResolvedPath};
@@ -222,51 +223,63 @@ impl NamespaceHelper for PosixSpawnNamespaceHelper {
 /// Status zero means success; the exact bounded observation is returned on the
 /// dedicated report descriptor.
 ///
+/// # Safety
+///
+/// The caller must be the single-threaded startup owner of every present fixed
+/// helper descriptor from 3 through 9. No `File`, `OwnedFd`, borrowed I/O
+/// value, or other owner may already represent those entries, and no thread,
+/// signal handler, or concurrent code may mutate the descriptor table until
+/// this function has claimed it. The fixed launcher must also have closed every
+/// unrelated inherited descriptor.
+///
 /// # Errors
 ///
 /// Returns an error for arguments/environment, plan seals or decoding, an
 /// inexact descriptor table, identity mismatch, multiple threads, namespace
 /// entry, root confinement, mount mutation, or post-effect verification.
 #[allow(clippy::too_many_lines)]
-pub fn run_inherited() -> Result<u8> {
+pub unsafe fn run_inherited() -> Result<u8> {
     if std::env::args_os().count() != 1 || std::env::vars_os().next().is_some() {
         return Err(MountError::Worker(
             "mount helper accepts no arguments or environment".to_owned(),
         ));
     }
-    ensure_descriptor(PLAN_FD, true)?;
-    // SAFETY: the fixed spawn contract proves descriptor 3 is open and
-    // transfers unique child-side ownership to this helper.
-    let plan_fd = unsafe { OwnedFd::from_raw_fd(PLAN_FD) };
+    // SAFETY: the fixed posix_spawn contract maps only FDs 3 through 9, closes
+    // every unrelated inherited entry, supplies no environment, and transfers
+    // these entries before Rust constructs any owner in the helper. The helper
+    // entrypoint is single-threaded and no signal handler mutates its FD table.
+    let (plan_fd, pending_descriptors) = unsafe { claim_mount_helper_descriptor_table() }
+        .map_err(helper_linux_error)?
+        .into_plan_and_pending();
     let plan = SealedHelperPlan::read_inherited(plan_fd)?;
     validate_effect_clock_identity(&plan)?;
     let needs_detached = plan.roles.contains(DescriptorRoles::DETACHED_MOUNT);
-    ensure_descriptor(DETACHED_MOUNT_FD, needs_detached)?;
-    for fd in [
-        MOUNT_NAMESPACE_FD,
-        TARGET_ROOT_FD,
-        TARGET_SLOT_FD,
-        ATTACHMENT_ANCHOR_FD,
-        OBSERVATION_FD,
-    ] {
-        ensure_descriptor(fd, true)?;
-    }
+    let (
+        mut detached_mount,
+        mount_namespace,
+        target_root,
+        target_slot,
+        attachment_anchor,
+        observation_fd,
+    ) = pending_descriptors
+        .admit_plan_roles(needs_detached)
+        .map_err(helper_linux_error)?
+        .into_parts();
 
-    let mount_namespace = NamespaceFd::from_owned(adopt(MOUNT_NAMESPACE_FD)?, NamespaceKind::Mount)
+    let mount_namespace = NamespaceFd::from_owned(mount_namespace, NamespaceKind::Mount)
         .map_err(helper_linux_error)?;
     verify_namespace(
         mount_namespace.identity(),
         plan.mount_namespace,
         "mount namespace",
     )?;
-    let target_root = ResolvedPath::from_inherited(adopt(TARGET_ROOT_FD)?)
+    let target_root = ResolvedPath::from_inherited(target_root)
         .and_then(BeneathRoot::from_resolved)
         .map_err(helper_linux_error)?;
     verify_file(target_root.identity(), plan.target_root, "target root")?;
-    let target_slot =
-        ResolvedPath::from_inherited(adopt(TARGET_SLOT_FD)?).map_err(helper_linux_error)?;
+    let target_slot = ResolvedPath::from_inherited(target_slot).map_err(helper_linux_error)?;
     verify_file(target_slot.identity(), plan.target_slot, "target slot")?;
-    let attachment_anchor = ResolvedPath::from_inherited(adopt(ATTACHMENT_ANCHOR_FD)?)
+    let attachment_anchor = ResolvedPath::from_inherited(attachment_anchor)
         .and_then(BeneathRoot::from_resolved)
         .map_err(helper_linux_error)?;
     verify_file(
@@ -300,7 +313,7 @@ pub fn run_inherited() -> Result<u8> {
                     "install target is not the exact destination slot".to_owned(),
                 ));
             }
-            let mount = adopt_expected_detached(&plan)?;
+            let mount = adopt_expected_detached(&plan, detached_mount.take())?;
             validate_effect_deadline(&plan)?;
             mount.attach(&current).map_err(helper_linux_error)?;
             observe_published(&attachment_anchor, slot_path, &plan)?
@@ -336,12 +349,12 @@ pub fn run_inherited() -> Result<u8> {
                 predecessor_observation.mount_point.as_os_str().as_bytes(),
             )? {
                 ReplacementStackState::NeedsAttach => {
-                    let mount = adopt_expected_detached(&plan)?;
+                    let mount = adopt_expected_detached(&plan, detached_mount.take())?;
                     validate_effect_deadline(&plan)?;
                     mount.attach_beneath(&current).map_err(helper_linux_error)?;
                 }
                 ReplacementStackState::AlreadyAttached => {
-                    drop(adopt_expected_detached(&plan)?);
+                    drop(adopt_expected_detached(&plan, detached_mount.take())?);
                 }
             }
             validate_effect_deadline(&plan)?;
@@ -378,7 +391,7 @@ pub fn run_inherited() -> Result<u8> {
         }
     };
     verify_namespace_topology(&target_root, &attachment_anchor, &target_slot, &plan)?;
-    write_report(adopt(OBSERVATION_FD)?, &observation)?;
+    write_report(observation_fd, &observation)?;
     Ok(0)
 }
 
@@ -560,9 +573,13 @@ fn verify_descriptor_mount_ids(
     Ok(())
 }
 
-fn adopt_expected_detached(plan: &HelperPlan) -> Result<DetachedMount> {
-    let mount =
-        DetachedMount::from_inherited(adopt(DETACHED_MOUNT_FD)?).map_err(helper_linux_error)?;
+fn adopt_expected_detached(
+    plan: &HelperPlan,
+    descriptor: Option<OwnedFd>,
+) -> Result<DetachedMount> {
+    let descriptor = descriptor
+        .ok_or_else(|| MountError::Worker("helper detached mount is absent".to_owned()))?;
+    let mount = DetachedMount::from_inherited(descriptor).map_err(helper_linux_error)?;
     if mount.mount_id().get() != plan.expected_mount_id {
         return Err(MountError::Worker(
             "helper detached mount differs from the sealed successor".to_owned(),
@@ -954,25 +971,6 @@ fn verify_namespace(
         )));
     }
     Ok(())
-}
-
-fn ensure_descriptor(fd: i32, expected: bool) -> Result<()> {
-    // SAFETY: `fcntl(F_GETFD)` only inspects the numeric descriptor and does
-    // not borrow or transfer ownership.
-    let present = unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0;
-    if present != expected {
-        return Err(MountError::Worker(
-            "helper inherited descriptor table differs from sealed roles".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
-fn adopt(fd: i32) -> Result<OwnedFd> {
-    ensure_descriptor(fd, true)?;
-    // SAFETY: presence was checked immediately above and each fixed role is
-    // adopted exactly once along one closed action path.
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 fn helper_linux_error(error: aos_sandbox_linux::Error) -> MountError {

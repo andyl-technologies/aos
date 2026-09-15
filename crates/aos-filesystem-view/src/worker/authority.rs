@@ -52,7 +52,7 @@ impl FrozenFeatureSet {
     }
 }
 
-fn feature_set_commitment(features: &[FeatureRef]) -> [u8; 32] {
+pub(super) fn feature_set_commitment(features: &[FeatureRef]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"aos-filesystem-frozen-features-v1\0");
     hasher.update((features.len() as u64).to_be_bytes());
@@ -174,6 +174,14 @@ impl FuseCapabilities {
             passthrough,
             fallback_reads,
         }
+    }
+
+    pub(crate) const fn extended_attributes(self) -> bool {
+        self.extended_attributes
+    }
+
+    pub(crate) const fn requires_extended_operation_transport(self) -> bool {
+        self.extended_attributes || self.sparse_files || self.passthrough || self.fallback_reads
     }
 }
 
@@ -367,9 +375,10 @@ impl<'projection, 'index, 'bytes, 'presentation, 'plan>
 {
     /// Joins immutable projection and live attachment authority at one clock sample.
     ///
-    /// The current metadata transport has no ACL/xattr/sparse callbacks. Even if
-    /// a caller asserts those capability bits, admission rejects those semantics
-    /// until a transport-specific constructor replaces this dormant source seam.
+    /// The current metadata transport has no ACL/xattr/sparse callbacks. An
+    /// authenticated extended-attribute or sparse capability may admit the
+    /// corresponding dormant worker semantics, but the installed metadata-only
+    /// runner rejects the resulting connection before transport entry.
     ///
     /// # Errors
     ///
@@ -421,16 +430,13 @@ impl<'projection, 'index, 'bytes, 'presentation, 'plan>
             return Err(ConnectionAuthorityError::Lease);
         }
 
-        // The installed V1 C ABI cannot preserve these observable semantics.
-        // Claimed feature bits are not accepted as proof until a qualified ABI
-        // constructor exists, so this scan is deliberately fail-closed.
-        admit_current_transport(projection)?;
-        if authority.capabilities.posix_acl
-            || authority.capabilities.extended_attributes
-            || authority.capabilities.sparse_files
-        {
+        // POSIX ACL and named privileged-xattr profiles have no callback path in
+        // this tranche. Generic xattrs and sparse data require independently
+        // authenticated capability bits; run_metadata still refuses activation.
+        admit_transport_semantics(projection, authority.capabilities)?;
+        if authority.capabilities.posix_acl {
             return Err(ConnectionAuthorityError::Unsupported(
-                "unqualified ACL, xattr, or sparse transport capability",
+                "unqualified POSIX ACL transport capability",
             ));
         }
         let feature_set_commitment = authority.features.commitment;
@@ -647,7 +653,10 @@ impl<'projection, 'index, 'bytes, 'presentation, 'plan>
     ///
     /// The caller remains responsible for authenticating and durably reading the
     /// journal bytes. Restoration rebinds every decoded record to this exact
-    /// prepared connection and performs no backing-open or backing-close effect.
+    /// prepared connection. A later callback-state constructor must consume a
+    /// fresh worker-minted reducer brand and persist the rebranded snapshot
+    /// before any backing effect or callback reply. Restoration performs no
+    /// backing-open or backing-close effect.
     ///
     /// # Errors
     ///
@@ -705,8 +714,9 @@ impl<'projection, 'index, 'bytes, 'presentation, 'plan>
     }
 }
 
-fn admit_current_transport(
+fn admit_transport_semantics(
     projection: &ValidatedViewProjection<'_, '_>,
+    capabilities: FuseCapabilities,
 ) -> Result<(), ConnectionAuthorityError> {
     // Capability admission inspects exactly the visible source mappings. An
     // excluded source record is not observable and grants no worker authority.
@@ -724,20 +734,33 @@ fn admit_current_transport(
         if semantics.acl().is_some() {
             return Err(ConnectionAuthorityError::Unsupported("POSIX ACL"));
         }
-        if !semantics.xattrs().is_empty() {
+        if !semantics.xattrs().is_empty() && !capabilities.extended_attributes {
             return Err(ConnectionAuthorityError::Unsupported("extended attribute"));
+        }
+        for xattr in semantics.xattrs() {
+            let xattr = xattr.map_err(|_| ConnectionAuthorityError::Integrity)?;
+            if requires_named_xattr_profile(xattr.name()) {
+                return Err(ConnectionAuthorityError::Unsupported(
+                    "privileged extended-attribute profile",
+                ));
+            }
         }
         if matches!(
             semantics.body(),
             crate::IndexNodeBodyView::File(file)
                 if matches!(file.content(), IndexContentView::Sparse(_))
-        ) {
+        ) && !capabilities.sparse_files
+        {
             return Err(ConnectionAuthorityError::Unsupported(
                 "sparse file topology",
             ));
         }
     }
     Ok(())
+}
+
+fn requires_named_xattr_profile(name: &[u8]) -> bool {
+    name.starts_with(b"security.") || name.starts_with(b"trusted.") || name.starts_with(b"system.")
 }
 
 #[allow(clippy::too_many_arguments)]

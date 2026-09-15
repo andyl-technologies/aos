@@ -1,11 +1,14 @@
 //! Pure coordinator-to-node scheduling and reconciliation models.
 //!
-//! This module contains no transport, clock, lease-signing, or privileged
-//! effect implementation. Capability reports and node observations remain
+//! This module contains no transport, lease-signing, or privileged effect
+//! implementation. Capability reports and node observations remain
 //! untrusted until an authenticated carrier and the relevant durable controller
 //! state validate them. In particular, an assignment or reconciliation value
 //! from this module never confers, renews, releases, or transfers ownership
-//! authority.
+//! authority. Private sealed adapters bind authenticated peer, epoch, lease,
+//! signature, and replay facts to exact protected journal transactions; they
+//! expose no transport, signer, or production activation. Its dormant fixed
+//! owner only samples the host clock through a protected monotonic floor.
 
 pub mod assignment;
 pub mod capability;
@@ -85,4 +88,13 @@ pub use reducer_state::{
     DurableDrainAssignmentV1, DurableDrainObservationV1, DurableEvidenceBindingV1,
     DurablePublicationProjectionV1, DurableStagedChunkV1, DurableWatchEventV1,
     MultiNodeReducerStateV1, SnapshotTransferJournalStateV1, WatchJournalStateV1,
+};
+pub use store_authority::{
+    ProtectedAssignmentEffectReadyV1, ProtectedAssignmentRecoveryRequiredV1,
+    ProtectedAssignmentStoreCommitV1, ProtectedAssignmentWriteErrorV1,
+    ProtectedAssignmentWriteOutcomeV1, ProtectedAssignmentWriteResolutionV1,
+    ProtectedCheckpointCommitOutcomeV1, ProtectedMultiNodeAuthorityOpenErrorV1,
+    ProtectedMultiNodeAuthorityOwnerV1, ProtectedMultiNodeCurrentRecordV1,
+    ProtectedMultiNodeEvidenceSessionV1, ProtectedRecordCommitOutcomeV1,
+    ProtectedStoreRecoveryOutcomeV1, ProtectedStoreRecoveryRequiredV1,
 };

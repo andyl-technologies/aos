@@ -20,19 +20,26 @@ use aos_sandbox_core::{
     DecodeLimits, DescriptorRole, MediaType, ObjectDescriptor, ObjectDigest, decode_view_source,
     encode_view_source, model::ViewSource, validate_descriptor_role,
 };
+pub(crate) use aos_sandbox_protocol::mount_source_consumption_state::{
+    AssignmentBindingV1, DetachedMountIdentityV1, InstalledMountObservationV1, MountFaultPhaseV1,
+    MountPolicyV1, MountRecipeV1, MountResourceStateV1, MountResourceV1, MountSourceConsistencyV1,
+    NativeMutationV1, ObjectDescriptorV1, OperationCorrelationV1, OwnedMountAttributeV1,
+    PublicationCorrelationV1,
+};
+use aos_sandbox_protocol::mount_source_consumption_state::{
+    MOUNT_RESOURCE_KEY_PREFIX_V2 as KEY_PREFIX, decode_mount_resource_key_v2,
+    decode_mount_resource_value_v2, encode_mount_resource_value_v2, mount_resource_key_v2,
+};
 use aos_sandbox_protocol::{
     MountSourcePhysicalProofV1, SourceRealizationBindingV1, mount_source_physical_proof_digest_v1,
     mount_source_realization_handle_v1,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::source_pin::{SourcePinProofClassV1, SourceRealizationHandleV1};
 use crate::{MountError, Result};
 
-const KEY_PREFIX: &[u8] = b"aos.mount.resource.v2\0";
 const RETIRED_KEY_PREFIX: &[u8] = b"aos.mount.resource.v1\0";
 const RESOURCE_FAMILY_PREFIX: &[u8] = b"aos.mount.resource.";
-const FORMAT_VERSION: u16 = 2;
 
 /// Opaque, stable identity of one broker-owned mount resource.
 pub(crate) type MountHandleV1 = [u8; 32];
@@ -77,19 +84,11 @@ impl Default for MountResourceLimitsV1 {
     }
 }
 
-/// Binds a resource to one accepted controller assignment.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct AssignmentBindingV1 {
-    pub(crate) sandbox_id: [u8; 16],
-    pub(crate) incarnation_id: [u8; 16],
-    pub(crate) assignment_epoch: u64,
-    pub(crate) desired_generation: u64,
-    pub(crate) assignment_digest: [u8; 32],
-    pub(crate) namespace_generation: u64,
+trait AssignmentBindingV1Ext {
+    fn strictly_advances(&self, predecessor: &Self) -> bool;
 }
 
-impl AssignmentBindingV1 {
+impl AssignmentBindingV1Ext for AssignmentBindingV1 {
     fn strictly_advances(&self, predecessor: &Self) -> bool {
         self.sandbox_id == predecessor.sandbox_id
             && self.incarnation_id == predecessor.incarnation_id
@@ -99,48 +98,11 @@ impl AssignmentBindingV1 {
     }
 }
 
-/// Names each V1 mount attribute owned by the broker.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum OwnedMountAttributeV1 {
-    ReadOnly,
-    NoExec,
-    NoSuid,
-    NoDevice,
-    NoAtime,
-    Recursive,
+trait MountPolicyV1Ext {
+    fn validate(&self) -> Result<()>;
 }
 
-/// Selects one closed filesystem-view mutation mode admitted by V1.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum NativeMutationV1 {
-    ReadOnly,
-    ReadWrite,
-    PrivateCow,
-    AppendOnly,
-    Service,
-}
-
-/// Selects the source-coherency contract implemented by the Mount broker.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum MountSourceConsistencyV1 {
-    ImmutableRevision,
-    LocalLive,
-    BestEffortReplica,
-}
-
-/// Carries an explicit, canonical set of broker-owned mount attributes.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct MountPolicyV1 {
-    /// Strictly ordered, duplicate-free list in [`OwnedMountAttributeV1`] order.
-    pub(crate) attributes: Vec<OwnedMountAttributeV1>,
-    pub(crate) mutation: NativeMutationV1,
-}
-
-impl MountPolicyV1 {
+impl MountPolicyV1Ext for MountPolicyV1 {
     fn validate(&self) -> Result<()> {
         if self.attributes.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(state_error(
@@ -160,16 +122,13 @@ impl MountPolicyV1 {
     }
 }
 
-/// Owns the exact stable V1 representation of a portable object descriptor.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ObjectDescriptorV1 {
-    pub(crate) media_type: String,
-    pub(crate) sha256_digest: [u8; 32],
-    pub(crate) encoded_size: u64,
+pub(crate) trait ObjectDescriptorV1Ext: Sized {
+    fn to_runtime(&self) -> Result<ObjectDescriptor>;
+
+    fn from_runtime(descriptor: &ObjectDescriptor) -> Result<Self>;
 }
 
-impl ObjectDescriptorV1 {
+impl ObjectDescriptorV1Ext for ObjectDescriptorV1 {
     /// Converts and registry-validates this DTO for the filesystem-view role.
     pub(crate) fn to_runtime(&self) -> Result<ObjectDescriptor> {
         if self.sha256_digest == [0; 32] || self.encoded_size == 0 {
@@ -200,178 +159,6 @@ impl ObjectDescriptorV1 {
             encoded_size: descriptor.encoded_size(),
         })
     }
-}
-
-/// Describes the immutable source and destination of one handle.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct MountRecipeV1 {
-    pub(crate) attachment_id: [u8; 16],
-    pub(crate) destination_slot_id: [u8; 16],
-    pub(crate) view_revision: ObjectDescriptorV1,
-    pub(crate) source_generation: u64,
-    pub(crate) resource_attachment_generation: u64,
-    pub(crate) source_view_id: [u8; 16],
-    pub(crate) source_incarnation_id: Option<[u8; 16]>,
-    pub(crate) source_consistency: MountSourceConsistencyV1,
-    pub(crate) source_handle: Vec<u8>,
-    pub(crate) source_binding_digest: [u8; 32],
-    pub(crate) source_realization_handle: SourceRealizationHandleV1,
-    pub(crate) source_physical_proof_digest: [u8; 32],
-    pub(crate) source_kernel_boot_id: [u8; 16],
-    pub(crate) source_device: u64,
-    pub(crate) source_inode: u64,
-    pub(crate) source_proof_class: SourcePinProofClassV1,
-    pub(crate) source_unique_mount_id: u64,
-    pub(crate) source_provider_authority_id: [u8; 16],
-    pub(crate) source_provider_authority_generation: u64,
-    pub(crate) source_provider_authority_digest: [u8; 32],
-    pub(crate) source_provider_resource_id: [u8; 32],
-    pub(crate) source_provider_resource_generation: u64,
-    pub(crate) source_provider_resource_digest: [u8; 32],
-    pub(crate) source_provider_catalog_generation: u64,
-    pub(crate) source_provider_catalog_digest: [u8; 32],
-    pub(crate) policy: MountPolicyV1,
-}
-
-/// Correlates one accepted broker operation with its exact request.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct OperationCorrelationV1 {
-    pub(crate) operation_id: [u8; 16],
-    pub(crate) request_digest: [u8; 32],
-}
-
-/// Correlates an uncertain publication with an exact target and install request.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PublicationCorrelationV1 {
-    pub(crate) operation: OperationCorrelationV1,
-    pub(crate) target_mount_namespace_id: u64,
-    pub(crate) target_namespace_generation: u64,
-    pub(crate) replaces: Option<MountHandleV1>,
-}
-
-/// Identifies the detached mount retained by the descriptor store.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DetachedMountIdentityV1 {
-    pub(crate) unique_mount_id: u64,
-}
-
-/// Captures the independent identity observed after publication in the target.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct InstalledMountObservationV1 {
-    pub(crate) unique_mount_id: u64,
-    pub(crate) parent_mount_id: u64,
-    pub(crate) target_mount_namespace_id: u64,
-    pub(crate) device_major: u32,
-    pub(crate) device_minor: u32,
-    pub(crate) superblock_magic: u64,
-    pub(crate) superblock_flags: u32,
-    pub(crate) mount_attributes: u64,
-    pub(crate) propagation: u64,
-    pub(crate) root: Vec<u8>,
-    pub(crate) mount_point: Vec<u8>,
-    /// Domain-separated digest of the complete UID and GID maps.
-    pub(crate) identity_map_digest: [u8; 32],
-}
-
-/// Names the phase in which a terminal fault was recorded.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum MountFaultPhaseV1 {
-    Allocated,
-    Prepared,
-    Publishing,
-    Installed,
-    Detaching,
-    Draining,
-    Releasing,
-}
-
-/// Records the crash-recoverable lifecycle of one stable handle.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
-#[allow(clippy::large_enum_variant)]
-pub(crate) enum MountResourceStateV1 {
-    /// Durable pre-effect intent. No mount is assumed to exist yet.
-    Allocated { creation: OperationCorrelationV1 },
-    /// A detached mount is retained under the allocated descriptor-store key.
-    Prepared {
-        detached: DetachedMountIdentityV1,
-        creation: OperationCorrelationV1,
-    },
-    /// Publication may have taken effect and must be reconciled by correlation.
-    Publishing {
-        detached: DetachedMountIdentityV1,
-        publication: PublicationCorrelationV1,
-    },
-    /// Retains detached identity and an independent target-side observation.
-    Installed {
-        detached: DetachedMountIdentityV1,
-        installed: InstalledMountObservationV1,
-        publication: PublicationCorrelationV1,
-    },
-    /// An ordinary detach request may have removed the target-side mount.
-    Detaching {
-        detached: DetachedMountIdentityV1,
-        installed: InstalledMountObservationV1,
-        detachment: OperationCorrelationV1,
-    },
-    /// An atomically replaced predecessor is being detached and released.
-    Draining {
-        detached: DetachedMountIdentityV1,
-        installed: InstalledMountObservationV1,
-        replaced_by: MountHandleV1,
-    },
-    /// Descriptor-store removal may have completed and must be reconciled.
-    Releasing {
-        detached: DetachedMountIdentityV1,
-        installed: Option<InstalledMountObservationV1>,
-        release: OperationCorrelationV1,
-        replaced_by: Option<MountHandleV1>,
-    },
-    /// No live kernel or descriptor-store resource remains owned by the handle.
-    Released {
-        last_detached_mount_id: Option<u64>,
-        last_installed_mount_id: Option<u64>,
-    },
-    /// Reconciliation is required before release; V1 never retries a fault.
-    Faulted {
-        from: MountFaultPhaseV1,
-        creation: Option<OperationCorrelationV1>,
-        publication: Option<PublicationCorrelationV1>,
-        detachment: Option<OperationCorrelationV1>,
-        release: Option<OperationCorrelationV1>,
-        replaced_by: Option<MountHandleV1>,
-        detached: Option<DetachedMountIdentityV1>,
-        installed: Option<InstalledMountObservationV1>,
-        failure_digest: [u8; 32],
-    },
-}
-
-/// Stores one immutable recipe and its current durable lifecycle state.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct MountResourceV1 {
-    pub(crate) handle: MountHandleV1,
-    /// Opaque lookup key; it is never interpreted as a path or capability.
-    pub(crate) fd_store_key: [u8; 32],
-    /// Linux boot ID under which the kernel mount and stored descriptor exist.
-    pub(crate) kernel_boot_id: [u8; 16],
-    pub(crate) revision: u64,
-    pub(crate) binding: AssignmentBindingV1,
-    pub(crate) recipe: MountRecipeV1,
-    pub(crate) state: MountResourceStateV1,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct StoredMountResourceV1 {
-    version: u16,
-    resource: MountResourceV1,
 }
 
 /// Materializes and validates the broker's V1 mount-resource keyspace.
@@ -795,7 +582,13 @@ impl MountResourceTableV1 {
     }
 }
 
-impl MountResourceV1 {
+pub(crate) trait MountResourceV1Ext {
+    fn retains_source_reference(&self) -> bool;
+
+    fn validate(&self, limits: MountResourceLimitsV1) -> Result<()>;
+}
+
+impl MountResourceV1Ext for MountResourceV1 {
     /// Reports whether this durable phase still owns its source realization.
     pub(crate) fn retains_source_reference(&self) -> bool {
         !matches!(self.state, MountResourceStateV1::Released { .. })
@@ -963,7 +756,11 @@ fn validate_source_handle(
     Ok(())
 }
 
-impl MountResourceStateV1 {
+trait MountResourceStateV1Ext {
+    fn validate(&self, limits: MountResourceLimitsV1, own_handle: MountHandleV1) -> Result<()>;
+}
+
+impl MountResourceStateV1Ext for MountResourceStateV1 {
     fn validate(&self, limits: MountResourceLimitsV1, own_handle: MountHandleV1) -> Result<()> {
         if let Some(value) = creation(self) {
             validate_operation(value)?;
@@ -1640,11 +1437,8 @@ fn encoded_total(
 
 fn encode_value(resource: &MountResourceV1, limits: MountResourceLimitsV1) -> Result<Vec<u8>> {
     resource.validate(limits)?;
-    let bytes = serde_json::to_vec(&StoredMountResourceV1 {
-        version: FORMAT_VERSION,
-        resource: resource.clone(),
-    })
-    .map_err(|error| state_error(error.to_string()))?;
+    let bytes =
+        encode_mount_resource_value_v2(resource).map_err(|error| state_error(error.to_string()))?;
     if bytes.len() > limits.value_bytes {
         return Err(state_error(
             "mount resource value exceeds its configured bound",
@@ -1657,20 +1451,36 @@ fn decode_value(bytes: &[u8], limits: MountResourceLimitsV1) -> Result<MountReso
     if bytes.is_empty() || bytes.len() > limits.value_bytes {
         return Err(state_error("mount resource value length is invalid"));
     }
-    let stored: StoredMountResourceV1 =
-        serde_json::from_slice(bytes).map_err(|error| state_error(error.to_string()))?;
-    if stored.version != FORMAT_VERSION {
-        return Err(state_error("mount resource format version is unsupported"));
+    let resource =
+        decode_mount_resource_value_v2(bytes).map_err(|error| state_error(error.to_string()))?;
+    resource.validate(limits)?;
+    Ok(resource)
+}
+
+/// Validates one exact fresh Allocated Mount resource companion record.
+pub(crate) fn validate_source_consumption_record(
+    record: &JournalRecord,
+    expected: &MountResourceV1,
+) -> Result<()> {
+    if record.namespace() != RecordNamespace::Operation
+        || record.value().is_none()
+        || decode_key(record.key())? != Some(expected.handle)
+        || decode_value(
+            record
+                .value()
+                .ok_or_else(|| state_error("Mount consumption resource is a delete"))?,
+            MountResourceLimitsV1::default(),
+        )? != *expected
+    {
+        return Err(state_error(
+            "Mount consumption resource differs from the final Create",
+        ));
     }
-    stored.resource.validate(limits)?;
-    Ok(stored.resource)
+    Ok(())
 }
 
 fn encode_key(handle: MountHandleV1) -> Vec<u8> {
-    let mut key = Vec::with_capacity(KEY_PREFIX.len() + handle.len());
-    key.extend_from_slice(KEY_PREFIX);
-    key.extend_from_slice(&handle);
-    key
+    mount_resource_key_v2(handle)
 }
 
 fn decode_key(key: &[u8]) -> Result<Option<MountHandleV1>> {
@@ -1687,10 +1497,8 @@ fn decode_key(key: &[u8]) -> Result<Option<MountHandleV1>> {
     if !key.starts_with(KEY_PREFIX) {
         return Ok(None);
     }
-    let handle: MountHandleV1 = key
-        .get(KEY_PREFIX.len()..)
-        .and_then(|value| value.try_into().ok())
-        .ok_or_else(|| state_error("mount resource journal key has an invalid length"))?;
+    let handle: MountHandleV1 =
+        decode_mount_resource_key_v2(key).map_err(|error| state_error(error.to_string()))?;
     if handle == [0; 32] {
         return Err(state_error("mount resource journal handle is a sentinel"));
     }

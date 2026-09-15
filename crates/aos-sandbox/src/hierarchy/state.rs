@@ -1,7 +1,7 @@
 //! Atomic pure ownership of current tree state and idempotent transition history.
 //!
-//! This owner is source-only: a future journal adapter must persist the encoded
-//! successor and history record atomically before publishing it as current.
+//! This owner is source-only: the dormant protected-journal adapter persists
+//! encoded successor and history records atomically before publication.
 //! Each history request commitment rebinds the caller's normalized request to
 //! every reducer argument and compare-and-swap fence.
 

@@ -8,12 +8,15 @@
 //! adapter must durably persist [`FileCallbackState::registration_snapshot`].
 
 use aos_filesystem_view::{
-    BackingDisposition, BackingIdentity, DataError, DataPlane, DataReadRequest, DataReadResult,
-    DataReadScratch, FileAccessMode, FileOpenRequest, MetadataConnection, MonotonicClock,
-    PassthroughRegistrations, PendingFileReply, PreparedDataOpen, RegistrationAction,
-    RegistrationOperation, RegistrationPhase, ReleaseDisposition, RequestBudget, RequestControl,
-    VerifiedObjectReader, WorkerError,
+    BackingDisposition, BackingIdentity, CallbackReducerBrand, DataError, DataPlane,
+    DataReadRequest, DataReadResult, DataReadScratch, FileAccessMode, FileOpenRequest,
+    MetadataConnection, MonotonicClock, PassthroughRegistrations, PendingFileReply,
+    PreparedDataOpen, RegistrationAction, RegistrationOperation, RegistrationPhase,
+    ReleaseDisposition, RequestBudget, RequestControl, VerifiedObjectReader, WorkerError,
 };
+use sha2::{Digest as _, Sha256};
+
+pub(crate) mod broker_receipts;
 
 /// Reports flag normalization, worker, data, or publication failure.
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +24,9 @@ pub enum FileCallbackError {
     /// Raw open flags request unsupported or mutable semantics.
     #[error("unsupported immutable FUSE OPEN flags")]
     InvalidOpenFlags,
+    /// Raw open flags request a write or another filesystem mutation.
+    #[error("immutable FUSE OPEN requests a filesystem mutation")]
+    ReadOnlyFilesystem,
     /// The callback-state handle ceiling was exhausted.
     #[error("FUSE file callback handle ceiling exhausted")]
     HandleLimit,
@@ -33,6 +39,9 @@ pub enum FileCallbackError {
     /// The reply selected a disposition different from the prepared plan.
     #[error("FUSE OPEN reply disposition differs from prepared data authority")]
     DispositionMismatch,
+    /// The transport reported a raw handle different from the prepared reply.
+    #[error("FUSE OPEN reply handle differs from prepared worker identity")]
+    ReplyHandleMismatch,
     /// Backend-neutral worker validation failed.
     #[error("FUSE file worker failed: {0}")]
     Worker(#[from] WorkerError),
@@ -74,10 +83,34 @@ pub enum OpenReplySelection {
     },
 }
 
+/// Opaque broker-owned evidence of one completed backing registration.
+///
+/// Only the crate's future Linux broker boundary can construct this token from
+/// a completed descriptor-owning operation. Portable callback callers cannot
+/// turn a scalar selector into success evidence.
+#[must_use = "consume the completed backing-open receipt in callback state"]
+pub struct BackingOpenReceipt {
+    authority_binding: [u8; 32],
+    worker_brand: u64,
+    reducer_identity: [u8; 32],
+    callback_request_identity: [u8; 32],
+    raw_handle: u64,
+    broker_execution: [u8; 32],
+    operation: RegistrationOperation,
+    backing_id: u64,
+    backing: BackingIdentity,
+    broker_generation: u64,
+    broker_sequence: u64,
+    publication_generation: u64,
+    currentness_commitment: [u8; 32],
+    descriptor_commitment: [u8; 32],
+}
+
 /// Opaque successful registration of one verified backing on this connection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RegisteredBacking {
-    connection_brand: [u8; 32],
+    worker_brand: u64,
+    reducer_commitment: [u8; 32],
     operation: RegistrationOperation,
     backing_id: u64,
     backing: BackingIdentity,
@@ -85,16 +118,18 @@ pub struct RegisteredBacking {
 
 impl RegisteredBacking {
     fn from_durable_registration(
-        connection_brand: [u8; 32],
+        worker_brand: u64,
+        reducer_commitment: [u8; 32],
         operation: RegistrationOperation,
         backing_id: u64,
         backing: BackingIdentity,
     ) -> Result<Self, FileCallbackError> {
-        if connection_brand == [0; 32] || backing_id == 0 {
+        if worker_brand == 0 || reducer_commitment == [0; 32] || backing_id == 0 {
             return Err(FileCallbackError::Stale);
         }
         Ok(Self {
-            connection_brand,
+            worker_brand,
+            reducer_commitment,
             operation,
             backing_id,
             backing,
@@ -117,8 +152,13 @@ impl RegisteredBacking {
 /// Reports whether a synchronous reply became externally visible.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OpenPublication {
-    /// The transport proved that this exact selection became visible.
-    Published(OpenReplySelection),
+    /// The transport proved that this exact handle and selection became visible.
+    Published {
+        /// Exact raw file handle encoded in the successful reply.
+        raw_handle: u64,
+        /// Exact fallback or passthrough selection encoded in the reply.
+        selection: OpenReplySelection,
+    },
     /// The transport proved no reply became visible.
     Rejected,
     /// The transport cannot prove whether the reply became visible.
@@ -194,27 +234,22 @@ impl<'index> OpenFinishFailure<'index> {
 }
 
 /// Opaque broker observation that one connection-local backing close completed.
-pub struct BackingCloseConfirmation {
-    connection_brand: [u8; 32],
+#[must_use = "consume the completed backing-close receipt in callback state"]
+pub struct BackingCloseReceipt {
+    authority_binding: [u8; 32],
+    worker_brand: u64,
+    reducer_identity: [u8; 32],
+    callback_request_identity: [u8; 32],
+    raw_handle: u64,
+    broker_execution: [u8; 32],
     operation: RegistrationOperation,
     backing_id: u64,
-}
-
-impl BackingCloseConfirmation {
-    fn from_broker_observation(
-        connection_brand: [u8; 32],
-        operation: RegistrationOperation,
-        backing_id: u64,
-    ) -> Result<Self, FileCallbackError> {
-        if connection_brand == [0; 32] || backing_id == 0 {
-            return Err(FileCallbackError::Stale);
-        }
-        Ok(Self {
-            connection_brand,
-            operation,
-            backing_id,
-        })
-    }
+    backing: BackingIdentity,
+    broker_generation: u64,
+    broker_sequence: u64,
+    publication_generation: u64,
+    currentness_commitment: [u8; 32],
+    descriptor_commitment: [u8; 32],
 }
 
 /// Retains a rejected pending OPEN until its successful registration is closed.
@@ -222,20 +257,25 @@ impl BackingCloseConfirmation {
 pub struct RejectedOpenCleanup<'index> {
     worker: PendingFileReply<'index>,
     operation: RegistrationOperation,
-    connection_brand: [u8; 32],
+    worker_brand: u64,
+    reducer_identity: [u8; 32],
+    callback_request_identity: [u8; 32],
+    descriptor_commitment: [u8; 32],
 }
 
 /// Proves registration state was updated after a rejected-OPEN close.
 #[must_use = "persist registration state before aborting the worker reservation"]
 pub struct RejectedWorkerCleanup<'index> {
     worker: PendingFileReply<'index>,
-    connection_brand: [u8; 32],
+    worker_brand: u64,
+    reducer_commitment: [u8; 32],
 }
 
 /// Proves registration state was updated after an active-handle close.
 #[must_use = "persist registration state before releasing the worker handle"]
 pub struct WorkerReleasePermit {
-    connection_brand: [u8; 32],
+    worker_brand: u64,
+    reducer_commitment: [u8; 32],
     node_id: u64,
     raw_handle: u64,
 }
@@ -249,8 +289,18 @@ pub enum ReleasePlan {
     CloseBacking {
         /// Durable registration operation authorizing the close.
         operation: RegistrationOperation,
+        /// Exact qualified immutable backing whose descriptor is closing.
+        backing: BackingIdentity,
         /// Exact connection-local selector to close.
         backing_id: u64,
+        /// Diagnostic commitment to the worker-minted callback-reducer brand.
+        reducer_commitment: [u8; 32],
+        /// Exact active or rejected callback request authorizing this close.
+        callback_request_identity: [u8; 32],
+        /// Exact pending or active worker handle bound to the descriptor.
+        raw_handle: u64,
+        /// Exact descriptor identity retained from authenticated OPEN.
+        descriptor_commitment: [u8; 32],
     },
 }
 
@@ -259,9 +309,12 @@ pub enum ReleasePlan {
 pub struct PendingCallbackOpen<'index> {
     worker: PendingFileReply<'index>,
     data: PreparedDataOpen,
-    connection_brand: [u8; 32],
+    worker_brand: u64,
+    reducer_identity: [u8; 32],
+    callback_request_identity: [u8; 32],
     registration: Option<RegistrationOperation>,
     backing_id: Option<u64>,
+    descriptor_commitment: Option<[u8; 32]>,
 }
 
 impl PendingCallbackOpen<'_> {
@@ -293,7 +346,10 @@ struct ActiveCallbackOpen {
     node_id: u64,
     raw_handle: u64,
     data: PreparedDataOpen,
+    reducer_commitment: [u8; 32],
+    callback_request_identity: [u8; 32],
     registration: Option<RegistrationOperation>,
+    descriptor_commitment: Option<[u8; 32]>,
     release_pending: bool,
     release_requires_close: bool,
     release_close_recorded: bool,
@@ -304,7 +360,9 @@ pub struct FileCallbackState {
     active: Vec<ActiveCallbackOpen>,
     pending_handles: usize,
     maximum_handles: usize,
-    connection_brand: [u8; 32],
+    authority_binding: [u8; 32],
+    worker_brand: u64,
+    reducer_identity: [u8; 32],
     registrations: PassthroughRegistrations,
 }
 
@@ -318,6 +376,7 @@ impl FileCallbackState {
     pub fn for_connection(
         connection: &MetadataConnection<'_, '_, '_, '_>,
         registrations: PassthroughRegistrations,
+        reducer_brand: CallbackReducerBrand,
         maximum_handles: usize,
     ) -> Result<Self, FileCallbackError> {
         if maximum_handles == 0 {
@@ -330,18 +389,21 @@ impl FileCallbackState {
         if active.capacity() > maximum_handles {
             return Err(FileCallbackError::HandleLimit);
         }
-        let connection_brand = connection.connection_binding();
-        if connection_brand == [0; 32] {
+        let authority_binding = connection.connection_binding();
+        let worker_brand = connection.callback_instance_brand();
+        if authority_binding == [0; 32] || worker_brand == 0 {
             return Err(FileCallbackError::Stale);
         }
-        if registrations.authority_binding() != connection_brand {
-            return Err(FileCallbackError::Stale);
-        }
+        let reducer_binding = reducer_brand.bind_registrations(connection, registrations)?;
+        let reducer_identity = reducer_binding.commitment();
+        let registrations = reducer_binding.into_registrations();
         Ok(Self {
             active,
             pending_handles: 0,
             maximum_handles,
-            connection_brand,
+            authority_binding,
+            worker_brand,
+            reducer_identity,
             registrations,
         })
     }
@@ -372,6 +434,16 @@ impl FileCallbackState {
         }
         let request = normalize_open_flags(raw_flags)?;
         let mut worker = connection.prepare_open(node_id, request, budget, control)?;
+        let callback_request_identity = derive_callback_request_identity(
+            self.reducer_identity,
+            self.worker_brand,
+            node_id,
+            worker.raw_handle(),
+        );
+        if callback_request_identity == [0; 32] {
+            connection.abort_open(&mut worker)?;
+            return Err(FileCallbackError::Stale);
+        }
         let data = match data_plane.prepare_open(&worker, backing, clock.now_ns()) {
             Ok(data) => data,
             Err(error) => {
@@ -379,8 +451,8 @@ impl FileCallbackState {
                 return Err(error.into());
             }
         };
-        let (registration, backing_id) = match data.disposition() {
-            BackingDisposition::VerifiedFallback => (None, None),
+        let (registration, backing_id, descriptor_commitment) = match data.disposition() {
+            BackingDisposition::VerifiedFallback => (None, None, None),
             BackingDisposition::Passthrough(backing) => {
                 let action = match self.registrations.begin_open(backing, clock.now_ns()) {
                     Ok(action) => action,
@@ -390,10 +462,16 @@ impl FileCallbackState {
                     }
                 };
                 match action {
-                    RegistrationAction::OpenBacking { operation } => (Some(operation), None),
+                    RegistrationAction::OpenBacking { operation } => (Some(operation), None, None),
                     RegistrationAction::PublishCoalesced { operation } => {
                         let backing_id = self.registrations.backing_id(operation)?;
-                        (Some(operation), Some(backing_id))
+                        let descriptor_commitment =
+                            self.registrations.descriptor_commitment(operation)?;
+                        (
+                            Some(operation),
+                            Some(backing_id),
+                            Some(descriptor_commitment),
+                        )
                     }
                     _ => {
                         connection.abort_open(&mut worker)?;
@@ -409,9 +487,12 @@ impl FileCallbackState {
         Ok(PendingCallbackOpen {
             worker,
             data,
-            connection_brand: self.connection_brand,
+            worker_brand: self.worker_brand,
+            reducer_identity: self.reducer_identity,
+            callback_request_identity,
             registration,
             backing_id,
+            descriptor_commitment,
         })
     }
 
@@ -422,22 +503,45 @@ impl FileCallbackState {
     ///
     /// # Errors
     ///
-    /// Returns [`FileCallbackError`] unless `pending` owns an exact pending
-    /// registration on this connection and `backing_id` is nonzero.
+    /// Returns [`FileCallbackError`] unless `pending` owns the exact pending
+    /// registration named by nonforgeable broker completion evidence.
     pub fn record_backing_opened(
         &mut self,
         pending: &mut PendingCallbackOpen<'_>,
-        backing_id: u64,
+        receipt: BackingOpenReceipt,
     ) -> Result<RegisteredBacking, FileCallbackError> {
         self.validate_pending(pending)?;
         let operation = pending.registration.ok_or(FileCallbackError::Stale)?;
+        let backing = match pending.data.disposition() {
+            BackingDisposition::Passthrough(backing) => backing,
+            BackingDisposition::VerifiedFallback => return Err(FileCallbackError::Stale),
+        };
         if pending.backing_id.is_some()
             || self.registrations.phase(operation)? != RegistrationPhase::Pending
+            || receipt.authority_binding != self.authority_binding
+            || receipt.worker_brand != self.worker_brand
+            || receipt.reducer_identity != self.reducer_identity
+            || receipt.callback_request_identity != pending.callback_request_identity
+            || receipt.raw_handle != pending.worker.raw_handle()
+            || receipt.broker_execution == [0; 32]
+            || receipt.operation != operation
+            || receipt.backing != backing
+            || receipt.backing_id == 0
+            || receipt.broker_generation == 0
+            || receipt.broker_sequence == 0
+            || receipt.publication_generation == 0
+            || receipt.currentness_commitment == [0; 32]
+            || receipt.descriptor_commitment == [0; 32]
         {
             return Err(FileCallbackError::Stale);
         }
-        self.registrations.record_opened(operation, backing_id)?;
-        pending.backing_id = Some(backing_id);
+        self.registrations.record_opened(
+            operation,
+            receipt.backing_id,
+            receipt.descriptor_commitment,
+        )?;
+        pending.backing_id = Some(receipt.backing_id);
+        pending.descriptor_commitment = Some(receipt.descriptor_commitment);
         self.registered_backing(pending)
     }
 
@@ -461,11 +565,16 @@ impl FileCallbackState {
         if self.registrations.phase(operation)? != RegistrationPhase::Active
             || self.registrations.backing(operation)? != backing
             || self.registrations.backing_id(operation)? != backing_id
+            || self.registrations.descriptor_commitment(operation)?
+                != pending
+                    .descriptor_commitment
+                    .ok_or(FileCallbackError::Stale)?
         {
             return Err(FileCallbackError::Stale);
         }
         RegisteredBacking::from_durable_registration(
-            self.connection_brand,
+            self.worker_brand,
+            self.reducer_identity,
             operation,
             backing_id,
             backing,
@@ -511,7 +620,17 @@ impl FileCallbackState {
                 pending,
                 FileCallbackError::AmbiguousPublication,
             )),
-            OpenPublication::Published(selection) => {
+            OpenPublication::Published {
+                raw_handle,
+                selection,
+            } => {
+                if raw_handle != pending.worker.raw_handle() {
+                    return Err(self.fault_and_consume_pending(
+                        connection,
+                        pending,
+                        FileCallbackError::ReplyHandleMismatch,
+                    ));
+                }
                 match self.selection_matches(&pending, selection) {
                     Ok(true) => {}
                     Ok(false) => {
@@ -545,7 +664,10 @@ impl FileCallbackState {
                     node_id: open.node_id(),
                     raw_handle,
                     data: pending.data,
+                    reducer_commitment: pending.reducer_identity,
+                    callback_request_identity: pending.callback_request_identity,
                     registration: pending.registration,
+                    descriptor_commitment: pending.descriptor_commitment,
                     release_pending: false,
                     release_requires_close: false,
                     release_close_recorded: false,
@@ -562,18 +684,33 @@ impl FileCallbackState {
     ///
     /// # Errors
     ///
-    /// Returns [`FileCallbackError`] unless the confirmation matches the exact
+    /// Returns [`FileCallbackError`] unless the receipt matches the exact
     /// connection, operation, and selector retained by `cleanup`.
     pub fn record_rejected_backing_closed<'index>(
         &mut self,
         cleanup: RejectedOpenCleanup<'index>,
-        confirmation: BackingCloseConfirmation,
+        receipt: BackingCloseReceipt,
     ) -> Result<RejectedWorkerCleanup<'index>, FileCallbackError> {
-        if cleanup.connection_brand != self.connection_brand
-            || confirmation.connection_brand != self.connection_brand
-            || confirmation.operation != cleanup.operation
-            || confirmation.backing_id
-                != self.registrations.closing_backing_id(cleanup.operation)?
+        if cleanup.worker_brand != self.worker_brand
+            || cleanup.reducer_identity != self.reducer_identity
+            || receipt.authority_binding != self.authority_binding
+            || receipt.worker_brand != self.worker_brand
+            || receipt.reducer_identity != cleanup.reducer_identity
+            || receipt.callback_request_identity != cleanup.callback_request_identity
+            || receipt.raw_handle != cleanup.worker.raw_handle()
+            || receipt.broker_execution == [0; 32]
+            || receipt.operation != cleanup.operation
+            || self.registrations.backing(cleanup.operation)? != receipt.backing
+            || receipt.broker_generation == 0
+            || receipt.broker_sequence == 0
+            || receipt.publication_generation == 0
+            || receipt.currentness_commitment == [0; 32]
+            || receipt.descriptor_commitment != cleanup.descriptor_commitment
+            || receipt.descriptor_commitment
+                != self
+                    .registrations
+                    .descriptor_commitment(cleanup.operation)?
+            || receipt.backing_id != self.registrations.closing_backing_id(cleanup.operation)?
         {
             return Err(FileCallbackError::Stale);
         }
@@ -581,7 +718,8 @@ impl FileCallbackState {
             .record_rejected_open_closed(cleanup.operation)?;
         Ok(RejectedWorkerCleanup {
             worker: cleanup.worker,
-            connection_brand: self.connection_brand,
+            worker_brand: self.worker_brand,
+            reducer_commitment: self.reducer_identity,
         })
     }
 
@@ -596,7 +734,9 @@ impl FileCallbackState {
         mut cleanup: RejectedWorkerCleanup<'index>,
     ) -> Result<OpenCompletion<'index>, FileCallbackError> {
         self.validate_connection(connection)?;
-        if cleanup.connection_brand != self.connection_brand {
+        if cleanup.worker_brand != self.worker_brand
+            || cleanup.reducer_commitment != self.reducer_identity
+        {
             return Err(FileCallbackError::Stale);
         }
         connection.abort_open(&mut cleanup.worker)?;
@@ -613,7 +753,14 @@ impl FileCallbackState {
         &self,
         cleanup: &RejectedOpenCleanup<'_>,
     ) -> Result<ReleasePlan, FileCallbackError> {
-        if cleanup.connection_brand != self.connection_brand
+        if cleanup.worker_brand != self.worker_brand
+            || cleanup.reducer_identity != self.reducer_identity
+            || cleanup.callback_request_identity == [0; 32]
+            || cleanup.descriptor_commitment == [0; 32]
+            || cleanup.descriptor_commitment
+                != self
+                    .registrations
+                    .descriptor_commitment(cleanup.operation)?
             || self.registrations.retry_close(cleanup.operation)?
                 != (RegistrationAction::CloseBeforeRelease {
                     operation: cleanup.operation,
@@ -623,7 +770,12 @@ impl FileCallbackState {
         }
         Ok(ReleasePlan::CloseBacking {
             operation: cleanup.operation,
+            backing: self.registrations.backing(cleanup.operation)?,
             backing_id: self.registrations.closing_backing_id(cleanup.operation)?,
+            reducer_commitment: cleanup.reducer_identity,
+            callback_request_identity: cleanup.callback_request_identity,
+            raw_handle: cleanup.worker.raw_handle(),
+            descriptor_commitment: cleanup.descriptor_commitment,
         })
     }
 
@@ -641,32 +793,20 @@ impl FileCallbackState {
         cleanup: RejectedOpenCleanup<'_>,
     ) -> Result<(), FileCallbackError> {
         self.validate_connection(connection)?;
-        if cleanup.connection_brand != self.connection_brand {
+        if cleanup.worker_brand != self.worker_brand
+            || cleanup.reducer_identity != self.reducer_identity
+            || cleanup.callback_request_identity == [0; 32]
+            || cleanup.descriptor_commitment == [0; 32]
+            || cleanup.descriptor_commitment
+                != self
+                    .registrations
+                    .descriptor_commitment(cleanup.operation)?
+        {
             return Err(FileCallbackError::Stale);
         }
         self.registrations.record_ambiguous(cleanup.operation)?;
         connection.fault_pending_open_reply_ambiguity(&cleanup.worker)?;
         Err(FileCallbackError::AmbiguousPublication)
-    }
-
-    /// Converts a definite broker close observation into opaque cleanup evidence.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FileCallbackError::Stale`] for a zero or foreign selector.
-    pub fn observe_backing_close(
-        &self,
-        operation: RegistrationOperation,
-        backing_id: u64,
-    ) -> Result<BackingCloseConfirmation, FileCallbackError> {
-        if self.registrations.closing_backing_id(operation)? != backing_id {
-            return Err(FileCallbackError::Stale);
-        }
-        BackingCloseConfirmation::from_broker_observation(
-            self.connection_brand,
-            operation,
-            backing_id,
-        )
     }
 
     /// Executes one bounded fallback READ for an active inode/handle pair.
@@ -729,14 +869,39 @@ impl FileCallbackState {
         }
         let open = connection.resolve_open_for_release(node_id, raw_handle)?;
         let cleanup = data_plane.prepare_release(&open, &self.active[position].data)?;
-        let plan = match self.active[position].registration {
+        let registration = self.active[position].registration;
+        if let Some(operation) = registration {
+            let descriptor_commitment = self.active[position]
+                .descriptor_commitment
+                .ok_or(FileCallbackError::Stale)?;
+            let BackingDisposition::Passthrough(backing) = self.active[position].data.disposition()
+            else {
+                return Err(FileCallbackError::Stale);
+            };
+            if backing != self.registrations.backing(operation)?
+                || descriptor_commitment != self.registrations.descriptor_commitment(operation)?
+            {
+                return Err(FileCallbackError::Stale);
+            }
+        }
+        let plan = match registration {
             None => ReleasePlan::ReleaseWorker,
             Some(operation) => match self.registrations.begin_release(operation)? {
                 RegistrationAction::ReleaseWorkerOpen { .. } => ReleasePlan::ReleaseWorker,
-                RegistrationAction::CloseBeforeRelease { .. } => ReleasePlan::CloseBacking {
-                    operation,
-                    backing_id: self.registrations.closing_backing_id(operation)?,
-                },
+                RegistrationAction::CloseBeforeRelease { .. } => {
+                    let descriptor_commitment = self.active[position]
+                        .descriptor_commitment
+                        .ok_or(FileCallbackError::Stale)?;
+                    ReleasePlan::CloseBacking {
+                        operation,
+                        backing: self.registrations.backing(operation)?,
+                        backing_id: self.registrations.closing_backing_id(operation)?,
+                        reducer_commitment: self.reducer_identity,
+                        callback_request_identity: self.active[position].callback_request_identity,
+                        raw_handle,
+                        descriptor_commitment,
+                    }
+                }
                 _ => return Err(FileCallbackError::Stale),
             },
         };
@@ -744,6 +909,12 @@ impl FileCallbackState {
         self.active[position].release_requires_close =
             matches!(plan, ReleasePlan::CloseBacking { .. });
         self.active[position].release_close_recorded = false;
+        let cleanup = match (cleanup, plan) {
+            (ReleaseDisposition::CloseBacking(_), ReleasePlan::ReleaseWorker) => {
+                ReleaseDisposition::SharedBackingRetained
+            }
+            (cleanup, _) => cleanup,
+        };
         Ok((cleanup, plan))
     }
 
@@ -779,9 +950,20 @@ impl FileCallbackState {
         {
             return Err(FileCallbackError::Stale);
         }
+        let descriptor_commitment = active
+            .descriptor_commitment
+            .ok_or(FileCallbackError::Stale)?;
+        if descriptor_commitment != self.registrations.descriptor_commitment(operation)? {
+            return Err(FileCallbackError::Stale);
+        }
         Ok(ReleasePlan::CloseBacking {
             operation,
+            backing: self.registrations.backing(operation)?,
             backing_id: self.registrations.closing_backing_id(operation)?,
+            reducer_commitment: self.reducer_identity,
+            callback_request_identity: active.callback_request_identity,
+            raw_handle,
+            descriptor_commitment,
         })
     }
 
@@ -798,7 +980,7 @@ impl FileCallbackState {
         &mut self,
         node_id: u64,
         raw_handle: u64,
-        confirmation: BackingCloseConfirmation,
+        receipt: BackingCloseReceipt,
     ) -> Result<WorkerReleasePermit, FileCallbackError> {
         let position = self.active_position(node_id, raw_handle)?;
         let active = &self.active[position];
@@ -806,16 +988,30 @@ impl FileCallbackState {
         if !active.release_pending
             || !active.release_requires_close
             || active.release_close_recorded
-            || confirmation.connection_brand != self.connection_brand
-            || confirmation.operation != operation
-            || confirmation.backing_id != self.registrations.closing_backing_id(operation)?
+            || receipt.authority_binding != self.authority_binding
+            || receipt.worker_brand != self.worker_brand
+            || receipt.reducer_identity != self.reducer_identity
+            || receipt.callback_request_identity != active.callback_request_identity
+            || receipt.raw_handle != raw_handle
+            || receipt.broker_execution == [0; 32]
+            || receipt.operation != operation
+            || self.registrations.backing(operation)? != receipt.backing
+            || receipt.broker_generation == 0
+            || receipt.broker_sequence == 0
+            || receipt.publication_generation == 0
+            || receipt.currentness_commitment == [0; 32]
+            || active.descriptor_commitment != Some(receipt.descriptor_commitment)
+            || receipt.descriptor_commitment
+                != self.registrations.descriptor_commitment(operation)?
+            || receipt.backing_id != self.registrations.closing_backing_id(operation)?
         {
             return Err(FileCallbackError::Stale);
         }
         self.registrations.record_closed(operation)?;
         self.active[position].release_close_recorded = true;
         Ok(WorkerReleasePermit {
-            connection_brand: self.connection_brand,
+            worker_brand: self.worker_brand,
+            reducer_commitment: self.reducer_identity,
             node_id,
             raw_handle,
         })
@@ -848,7 +1044,8 @@ impl FileCallbackState {
         ) {
             (false, false, None) => {}
             (true, true, Some(permit))
-                if permit.connection_brand == self.connection_brand
+                if permit.worker_brand == self.worker_brand
+                    && permit.reducer_commitment == self.reducer_identity
                     && permit.node_id == node_id
                     && permit.raw_handle == raw_handle => {}
             _ => return Err(FileCallbackError::Stale),
@@ -882,6 +1079,11 @@ impl FileCallbackState {
             return Err(FileCallbackError::Stale);
         }
         let operation = active.registration.ok_or(FileCallbackError::Stale)?;
+        if active.descriptor_commitment
+            != Some(self.registrations.descriptor_commitment(operation)?)
+        {
+            return Err(FileCallbackError::Stale);
+        }
         self.registrations.record_ambiguous(operation)?;
         let open = connection.resolve_open_for_release(node_id, raw_handle)?;
         connection.fault_active_open_reply_ambiguity(&open)?;
@@ -898,6 +1100,15 @@ impl FileCallbackState {
         &self,
     ) -> Result<Vec<aos_filesystem_view::DurableRegistrationRecord>, FileCallbackError> {
         Ok(self.registrations.snapshot()?)
+    }
+
+    /// Returns the diagnostic commitment that scopes this callback reducer.
+    ///
+    /// Every nonempty [`Self::registration_snapshot`] already authenticates this
+    /// value. It does not authorize construction of another reducer.
+    #[must_use]
+    pub const fn reducer_commitment(&self) -> [u8; 32] {
+        self.reducer_identity
     }
 
     /// Returns the number of active adapter dispositions.
@@ -919,14 +1130,22 @@ impl FileCallbackState {
     ) -> Result<&ActiveCallbackOpen, FileCallbackError> {
         self.active
             .iter()
-            .find(|open| open.node_id == node_id && open.raw_handle == raw_handle)
+            .find(|open| {
+                open.node_id == node_id
+                    && open.raw_handle == raw_handle
+                    && open.reducer_commitment == self.reducer_identity
+            })
             .ok_or(FileCallbackError::Stale)
     }
 
     fn active_position(&self, node_id: u64, raw_handle: u64) -> Result<usize, FileCallbackError> {
         self.active
             .iter()
-            .position(|open| open.node_id == node_id && open.raw_handle == raw_handle)
+            .position(|open| {
+                open.node_id == node_id
+                    && open.raw_handle == raw_handle
+                    && open.reducer_commitment == self.reducer_identity
+            })
             .ok_or(FileCallbackError::Stale)
     }
 
@@ -934,13 +1153,18 @@ impl FileCallbackState {
         &self,
         connection: &MetadataConnection<'_, '_, '_, '_>,
     ) -> Result<(), FileCallbackError> {
-        (connection.connection_binding() == self.connection_brand)
+        (connection.connection_binding() == self.authority_binding
+            && connection.callback_instance_brand() == self.worker_brand)
             .then_some(())
             .ok_or(FileCallbackError::Stale)
     }
 
     fn validate_pending(&self, pending: &PendingCallbackOpen<'_>) -> Result<(), FileCallbackError> {
-        if pending.connection_brand != self.connection_brand || self.pending_handles == 0 {
+        if pending.worker_brand != self.worker_brand
+            || pending.reducer_identity != self.reducer_identity
+            || pending.callback_request_identity == [0; 32]
+            || self.pending_handles == 0
+        {
             return Err(FileCallbackError::Stale);
         }
         Ok(())
@@ -962,10 +1186,13 @@ impl FileCallbackState {
                 let Some(operation) = pending.registration else {
                     return Ok(false);
                 };
-                registration.connection_brand == self.connection_brand
+                registration.worker_brand == self.worker_brand
+                    && registration.reducer_commitment == self.reducer_identity
                     && registration.operation == operation
                     && registration.backing == expected
                     && pending.backing_id == Some(registration.backing_id)
+                    && pending.descriptor_commitment
+                        == Some(self.registrations.descriptor_commitment(operation)?)
                     && self.registrations.phase(operation)? == RegistrationPhase::Active
                     && self.registrations.backing(operation)? == expected
                     && self.registrations.backing_id(operation)? == registration.backing_id
@@ -994,7 +1221,8 @@ impl FileCallbackState {
             return Ok(OpenCompletion::RejectedCleanupRequired {
                 cleanup: RejectedWorkerCleanup {
                     worker: pending.worker,
-                    connection_brand: self.connection_brand,
+                    worker_brand: self.worker_brand,
+                    reducer_commitment: self.reducer_identity,
                 },
             });
         };
@@ -1019,11 +1247,21 @@ impl FileCallbackState {
                 Ok(OpenCompletion::RejectedCleanupRequired {
                     cleanup: RejectedWorkerCleanup {
                         worker: pending.worker,
-                        connection_brand: self.connection_brand,
+                        worker_brand: self.worker_brand,
+                        reducer_commitment: self.reducer_identity,
                     },
                 })
             }
             RegistrationPhase::Active => {
+                let descriptor_commitment = match pending.descriptor_commitment {
+                    Some(commitment) => commitment,
+                    None => {
+                        return Err(OpenFinishFailure::OwnershipReturned {
+                            error: FileCallbackError::Stale,
+                            pending,
+                        });
+                    }
+                };
                 let backing_id = match self.registrations.backing_id(operation) {
                     Ok(backing_id) => backing_id,
                     Err(error) => {
@@ -1048,7 +1286,8 @@ impl FileCallbackState {
                         Ok(OpenCompletion::RejectedCleanupRequired {
                             cleanup: RejectedWorkerCleanup {
                                 worker: pending.worker,
-                                connection_brand: self.connection_brand,
+                                worker_brand: self.worker_brand,
+                                reducer_commitment: self.reducer_identity,
                             },
                         })
                     }
@@ -1060,7 +1299,10 @@ impl FileCallbackState {
                             cleanup: RejectedOpenCleanup {
                                 worker: pending.worker,
                                 operation,
-                                connection_brand: self.connection_brand,
+                                worker_brand: self.worker_brand,
+                                reducer_identity: self.reducer_identity,
+                                callback_request_identity: pending.callback_request_identity,
+                                descriptor_commitment,
                             },
                         })
                     }
@@ -1117,23 +1359,41 @@ impl FileCallbackState {
     }
 }
 
+fn derive_callback_request_identity(
+    reducer_identity: [u8; 32],
+    worker_brand: u64,
+    node_id: u64,
+    raw_handle: u64,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"aos-filesystem-callback-request-v1\0");
+    hasher.update(reducer_identity);
+    hasher.update(worker_brand.to_be_bytes());
+    hasher.update(node_id.to_be_bytes());
+    hasher.update(raw_handle.to_be_bytes());
+    hasher.finalize().into()
+}
+
 /// Converts raw Linux open flags to the immutable worker profile.
 ///
 /// # Errors
 ///
-/// Returns [`FileCallbackError::InvalidOpenFlags`] for writes, creation,
-/// truncation, append, path-only/directory opens, or unknown semantic bits.
+/// Returns [`FileCallbackError::ReadOnlyFilesystem`] for writes, creation,
+/// truncation, or append. Returns [`FileCallbackError::InvalidOpenFlags`] for
+/// path-only/directory opens and unknown semantic bits.
 pub fn normalize_open_flags(raw: i32) -> Result<FileOpenRequest, FileCallbackError> {
     if raw < 0 {
         return Err(FileCallbackError::InvalidOpenFlags);
     }
     let access = raw & libc::O_ACCMODE;
     if access != libc::O_RDONLY {
-        return Err(FileCallbackError::InvalidOpenFlags);
+        return Err(FileCallbackError::ReadOnlyFilesystem);
     }
-    let forbidden =
-        libc::O_CREAT | libc::O_EXCL | libc::O_TRUNC | libc::O_APPEND | libc::O_DIRECTORY;
-    if raw & forbidden != 0 {
+    let mutations = libc::O_CREAT | libc::O_EXCL | libc::O_TRUNC | libc::O_APPEND;
+    if raw & mutations != 0 {
+        return Err(FileCallbackError::ReadOnlyFilesystem);
+    }
+    if raw & libc::O_DIRECTORY != 0 {
         return Err(FileCallbackError::InvalidOpenFlags);
     }
     let admitted =

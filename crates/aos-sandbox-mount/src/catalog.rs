@@ -39,7 +39,7 @@ use crate::host_scope::ObservedMountScope;
 use crate::source_pin::FixtureSourcePins;
 use crate::source_pin::{
     ReopenedSourcePins, ResolvedSourcePin, SourcePinProofClassV1, SourcePinResolver,
-    SourceRealizationEvidenceV1, UnavailableSourcePins,
+    SourcePinRowV1Ext, SourceRealizationEvidenceV1, UnavailableSourcePins,
 };
 use crate::{MountError, Result};
 

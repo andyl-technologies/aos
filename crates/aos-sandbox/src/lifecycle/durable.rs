@@ -19,14 +19,14 @@ use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, ResourceId, Revisio
 use sha2::{Digest as _, Sha256};
 
 use super::auxiliary_payload::{
-    decode_lifecycle_auxiliary_payload_v1, encode_lifecycle_auxiliary_payload_v1,
     LifecycleAuxiliaryPayloadV1, MAXIMUM_LIFECYCLE_AUXILIARY_PAYLOAD_BYTES,
+    decode_lifecycle_auxiliary_payload_v1, encode_lifecycle_auxiliary_payload_v1,
 };
 use super::{
-    encode_operation_record_v1, LifecycleCancelIdempotencyIndexV1, LifecycleCancelOutcomeV1,
-    LifecycleCancelRequestV1, LifecycleCancellationRecordV1, LifecycleHistoryV1,
-    LifecycleModelError, LifecycleOperationV1, LifecycleProtectedRetentionLedgerV1,
-    LifecycleRecordDigestV1, LifecycleSemanticCommitFactV1, MAXIMUM_LIFECYCLE_EXPECTATIONS,
+    LifecycleCancelIdempotencyIndexV1, LifecycleCancelOutcomeV1, LifecycleCancelRequestV1,
+    LifecycleCancellationRecordV1, LifecycleHistoryV1, LifecycleModelError, LifecycleOperationV1,
+    LifecycleProtectedRetentionLedgerV1, LifecycleRecordDigestV1, LifecycleSemanticCommitFactV1,
+    MAXIMUM_LIFECYCLE_EXPECTATIONS, encode_operation_record_v1,
 };
 
 const MAGIC: &[u8; 8] = b"AOSLIFA3";
@@ -642,7 +642,7 @@ impl LifecycleAuxiliaryHistoryV1 {
             LifecycleCancelOutcomeV1::AlreadyCommitted(_)
             | LifecycleCancelOutcomeV1::AlreadyTerminal(_) => current.clone(),
             LifecycleCancelOutcomeV1::Conflict => {
-                return Err(LifecycleModelError::InvalidTransition)
+                return Err(LifecycleModelError::InvalidTransition);
             }
         };
         let cancellation = LifecycleCancellationRecordV1::new(request, operation.clone(), outcome)

@@ -16,6 +16,8 @@ use super::codec::{HierarchyCodecError, tree_commitment_v1};
 use super::evidence::RetainedSnapshotManifestV1;
 use super::exports::SubtreeExportClosureV1;
 use super::graph::SandboxTreeV1;
+use super::protected_evidence::ProtectedCurrentEvidenceAuthorityV1;
+use super::protected_journal::CurrentHierarchyProtectedEvidenceV1;
 use super::realizer::{
     AttachmentDetachV1, AttachmentRealizationV1, RealizationStageV1, ReplacementTransactionV1,
     ViewRealizationPlanV1,
@@ -300,7 +302,7 @@ pub enum PreparedSnapshotRecoveryDecisionV1 {
 }
 
 /// Carries a fresh verified decision for one exact snapshot preparation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct VerifiedSnapshotRecoveryAuthorityV1 {
     project: ProjectId,
     snapshot: SnapshotId,
@@ -311,7 +313,8 @@ pub struct VerifiedSnapshotRecoveryAuthorityV1 {
 
 impl VerifiedSnapshotRecoveryAuthorityV1 {
     /// Creates evidence only after a trusted adapter verifies fresh authority.
-    pub(crate) const fn from_verified_parts(
+    pub(super) const fn from_verified_parts(
+        _authority: &ProtectedCurrentEvidenceAuthorityV1,
         project: ProjectId,
         snapshot: SnapshotId,
         preparation_commitment: ObjectDigest,
@@ -325,6 +328,26 @@ impl VerifiedSnapshotRecoveryAuthorityV1 {
             decision,
             authority_commitment,
         }
+    }
+
+    pub(super) const fn project(&self) -> ProjectId {
+        self.project
+    }
+
+    pub(super) const fn snapshot(&self) -> SnapshotId {
+        self.snapshot
+    }
+
+    pub(super) const fn preparation_commitment(&self) -> ObjectDigest {
+        self.preparation_commitment
+    }
+
+    pub(super) const fn decision(&self) -> PreparedSnapshotRecoveryDecisionV1 {
+        self.decision
+    }
+
+    pub(super) const fn authority_commitment(&self) -> ObjectDigest {
+        self.authority_commitment
     }
 }
 
@@ -361,8 +384,9 @@ impl PreparedSnapshotRollbackV1 {
 pub fn reconcile_snapshot_after_reboot(
     state: &DurableHierarchySnapshotStateV1,
     retained: Option<RetainedSnapshotManifestV1>,
-    authority: Option<VerifiedSnapshotRecoveryAuthorityV1>,
+    authority: Option<CurrentHierarchyProtectedEvidenceV1<'_, VerifiedSnapshotRecoveryAuthorityV1>>,
 ) -> SnapshotReconciliationV1 {
+    let authority = authority.map(CurrentHierarchyProtectedEvidenceV1::into_evidence);
     match (state, retained, authority) {
         (DurableHierarchySnapshotStateV1::Prepared(prepared), _, None) => {
             SnapshotReconciliationV1::AwaitFreshAuthority {
@@ -421,7 +445,7 @@ pub struct RealizationStageObservationV1 {
 }
 
 impl RealizationStageObservationV1 {
-    /// Creates an observation only from a future verified durable decoder.
+    /// Creates an observation only from the verified durable hierarchy decoder.
     pub(crate) const fn from_durable_parts(
         sequence: u64,
         stage: RealizationStageV1,
@@ -454,7 +478,7 @@ impl RealizationStageObservationV1 {
 }
 
 /// Retains a trusted current inventory proof for one exact stage transition.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct VerifiedStageTransitionV1 {
     attachment: AttachmentId,
     attachment_generation: DesiredGeneration,
@@ -466,7 +490,8 @@ pub struct VerifiedStageTransitionV1 {
 
 impl VerifiedStageTransitionV1 {
     /// Creates evidence only after a trusted inventory adapter verifies the transition.
-    pub(crate) fn from_verified_parts(
+    pub(super) fn from_verified_parts(
+        _authority: &ProtectedCurrentEvidenceAuthorityV1,
         attachment: AttachmentId,
         attachment_generation: DesiredGeneration,
         recipe_commitment: ObjectDigest,
@@ -482,6 +507,30 @@ impl VerifiedStageTransitionV1 {
             to,
             inventory_commitment,
         }
+    }
+
+    pub(super) const fn attachment(&self) -> AttachmentId {
+        self.attachment
+    }
+
+    pub(super) const fn attachment_generation(&self) -> DesiredGeneration {
+        self.attachment_generation
+    }
+
+    pub(super) const fn recipe_commitment(&self) -> ObjectDigest {
+        self.recipe_commitment
+    }
+
+    pub(super) const fn from(&self) -> RealizationStageV1 {
+        self.from
+    }
+
+    pub(super) const fn to(&self) -> RealizationStageV1 {
+        self.to
+    }
+
+    pub(super) const fn inventory_commitment(&self) -> ObjectDigest {
+        self.inventory_commitment
     }
 }
 
@@ -502,7 +551,7 @@ pub struct RetainedRealizationHeadV1 {
 }
 
 impl RetainedRealizationHeadV1 {
-    /// Creates a head only after a future durable adapter verifies protected state.
+    /// Creates a head for durable-adapter admission after protected verification.
     #[allow(clippy::too_many_arguments)]
     pub(crate) const fn from_verified_parts(
         project: ProjectId,
@@ -613,6 +662,82 @@ pub struct DurableRealizationProgressV1 {
 }
 
 impl DurableRealizationProgressV1 {
+    /// Reconstructs canonical durable progress and verifies every transition
+    /// and the complete history commitment without creating effect authority.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_canonical_parts(
+        project: ProjectId,
+        tree_generation: Revision,
+        attachment: AttachmentId,
+        attachment_generation: DesiredGeneration,
+        plan_commitment: ObjectDigest,
+        recipe_commitment: ObjectDigest,
+        replacement: Option<ReplacementTransactionV1>,
+        observations: Vec<RealizationStageObservationV1>,
+        history_commitment: ObjectDigest,
+    ) -> Result<Self, HierarchyRecoveryError> {
+        if project.as_bytes() == &[0; 16]
+            || tree_generation.get() == 0
+            || attachment.as_bytes() == &[0; 16]
+            || attachment_generation.get() == 0
+            || plan_commitment.as_bytes() == &[0; 32]
+            || recipe_commitment.as_bytes() == &[0; 32]
+            || history_commitment.as_bytes() == &[0; 32]
+            || observations.is_empty()
+            || observations.len() > MAXIMUM_REALIZATION_STAGE_HISTORY
+        {
+            return Err(HierarchyRecoveryError::CorruptProgress);
+        }
+        if let Some(replacement) = replacement {
+            if replacement.predecessor().as_bytes() == &[0; 16]
+                || replacement.successor() != attachment
+                || replacement.predecessor_generation().get() == 0
+                || replacement.predecessor_recipe_commitment().as_bytes() == &[0; 32]
+                || replacement.transaction_commitment().as_bytes() == &[0; 32]
+            {
+                return Err(HierarchyRecoveryError::CorruptProgress);
+            }
+        }
+        for (index, observation) in observations.iter().copied().enumerate() {
+            let sequence = u64::try_from(index)
+                .ok()
+                .and_then(|value| value.checked_add(1))
+                .ok_or(HierarchyRecoveryError::Capacity)?;
+            if observation.sequence != sequence
+                || observation.inventory_commitment.as_bytes() == &[0; 32]
+                || (index == 0 && observation.stage != RealizationStageV1::Planned)
+            {
+                return Err(HierarchyRecoveryError::CorruptProgress);
+            }
+            if index != 0 {
+                let prior = observations
+                    .get(index - 1)
+                    .ok_or(HierarchyRecoveryError::CorruptProgress)?;
+                if !realization_transition_is_valid(
+                    prior.stage,
+                    observation.stage,
+                    replacement.is_some(),
+                ) {
+                    return Err(HierarchyRecoveryError::InvalidTransition);
+                }
+            }
+        }
+        let progress = Self {
+            project,
+            tree_generation,
+            attachment,
+            attachment_generation,
+            plan_commitment,
+            recipe_commitment,
+            replacement,
+            observations,
+        };
+        if progress.history_commitment() != history_commitment {
+            return Err(HierarchyRecoveryError::CorruptProgress);
+        }
+        Ok(progress)
+    }
+
     /// Recovers and fully validates durable monotonic realization history.
     ///
     /// # Errors
@@ -745,6 +870,14 @@ impl DurableRealizationProgressV1 {
     pub fn advance(
         &mut self,
         expected_sequence: u64,
+        evidence: CurrentHierarchyProtectedEvidenceV1<'_, VerifiedStageTransitionV1>,
+    ) -> Result<(), HierarchyRecoveryError> {
+        self.advance_verified(expected_sequence, evidence.into_evidence())
+    }
+
+    fn advance_verified(
+        &mut self,
+        expected_sequence: u64,
         evidence: VerifiedStageTransitionV1,
     ) -> Result<(), HierarchyRecoveryError> {
         let current = self
@@ -794,7 +927,7 @@ impl DurableRealizationProgressV1 {
         expected_sequence: u64,
         observed: ObservedStageAdvanceV1,
     ) -> Result<(), HierarchyRecoveryError> {
-        self.advance(
+        self.advance_verified(
             expected_sequence,
             VerifiedStageTransitionV1 {
                 attachment: observed.attachment,
@@ -990,7 +1123,7 @@ pub enum RebootInventoryStateV1 {
 }
 
 /// Retains authenticated reboot inventory without exposing effect authority.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct RebootRealizationInventoryV1 {
     attachment: AttachmentId,
     attachment_generation: DesiredGeneration,
@@ -1001,8 +1134,9 @@ pub struct RebootRealizationInventoryV1 {
 }
 
 impl RebootRealizationInventoryV1 {
-    /// Creates inventory only after a future trusted observation adapter verifies it.
-    pub(crate) fn from_verified_parts(
+    /// Creates inventory only after a protected observation adapter verifies it.
+    pub(super) fn from_verified_parts(
+        _authority: &ProtectedCurrentEvidenceAuthorityV1,
         attachment: AttachmentId,
         attachment_generation: DesiredGeneration,
         recipe_commitment: ObjectDigest,
@@ -1019,10 +1153,34 @@ impl RebootRealizationInventoryV1 {
             inventory_commitment,
         }
     }
+
+    pub(super) const fn attachment(&self) -> AttachmentId {
+        self.attachment
+    }
+
+    pub(super) const fn attachment_generation(&self) -> DesiredGeneration {
+        self.attachment_generation
+    }
+
+    pub(super) const fn recipe_commitment(&self) -> ObjectDigest {
+        self.recipe_commitment
+    }
+
+    pub(super) const fn state(&self) -> RebootInventoryStateV1 {
+        self.state
+    }
+
+    pub(super) const fn recoverable_predecessor(&self) -> Option<ReplacementTransactionV1> {
+        self.recoverable_predecessor
+    }
+
+    pub(super) const fn inventory_commitment(&self) -> ObjectDigest {
+        self.inventory_commitment
+    }
 }
 
 /// Carries fresh authority for one exact published rollback.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct VerifiedPublishedRollbackAuthorityV1 {
     attachment: AttachmentId,
     attachment_generation: DesiredGeneration,
@@ -1032,7 +1190,8 @@ pub struct VerifiedPublishedRollbackAuthorityV1 {
 
 impl VerifiedPublishedRollbackAuthorityV1 {
     /// Creates evidence only after a trusted adapter authorizes rollback.
-    pub(crate) const fn from_verified_parts(
+    pub(super) const fn from_verified_parts(
+        _authority: &ProtectedCurrentEvidenceAuthorityV1,
         attachment: AttachmentId,
         attachment_generation: DesiredGeneration,
         recipe_commitment: ObjectDigest,
@@ -1044,6 +1203,22 @@ impl VerifiedPublishedRollbackAuthorityV1 {
             recipe_commitment,
             authority_commitment,
         }
+    }
+
+    pub(super) const fn attachment(&self) -> AttachmentId {
+        self.attachment
+    }
+
+    pub(super) const fn attachment_generation(&self) -> DesiredGeneration {
+        self.attachment_generation
+    }
+
+    pub(super) const fn recipe_commitment(&self) -> ObjectDigest {
+        self.recipe_commitment
+    }
+
+    pub(super) const fn authority_commitment(&self) -> ObjectDigest {
+        self.authority_commitment
     }
 }
 
@@ -1099,7 +1274,7 @@ pub enum PreparedRealizationRecoveryDecisionV1 {
 }
 
 /// Carries fresh authority for one exact prepared realization.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct VerifiedPreparedRealizationAuthorityV1 {
     attachment: AttachmentId,
     attachment_generation: DesiredGeneration,
@@ -1110,7 +1285,8 @@ pub struct VerifiedPreparedRealizationAuthorityV1 {
 
 impl VerifiedPreparedRealizationAuthorityV1 {
     /// Creates evidence only after a trusted recovery adapter authorizes it.
-    pub(crate) const fn from_verified_parts(
+    pub(super) const fn from_verified_parts(
+        _authority: &ProtectedCurrentEvidenceAuthorityV1,
         attachment: AttachmentId,
         attachment_generation: DesiredGeneration,
         recipe_commitment: ObjectDigest,
@@ -1124,6 +1300,26 @@ impl VerifiedPreparedRealizationAuthorityV1 {
             decision,
             authority_commitment,
         }
+    }
+
+    pub(super) const fn attachment(&self) -> AttachmentId {
+        self.attachment
+    }
+
+    pub(super) const fn attachment_generation(&self) -> DesiredGeneration {
+        self.attachment_generation
+    }
+
+    pub(super) const fn recipe_commitment(&self) -> ObjectDigest {
+        self.recipe_commitment
+    }
+
+    pub(super) const fn decision(&self) -> PreparedRealizationRecoveryDecisionV1 {
+        self.decision
+    }
+
+    pub(super) const fn authority_commitment(&self) -> ObjectDigest {
+        self.authority_commitment
     }
 }
 
@@ -1186,9 +1382,11 @@ pub enum PreparedRealizationRecoveryV1 {
 /// identify the same prepared recipe with nonzero commitments.
 pub fn reconcile_prepared_realization(
     progress: &DurableRealizationProgressV1,
-    inventory: RebootRealizationInventoryV1,
-    authority: VerifiedPreparedRealizationAuthorityV1,
+    inventory: CurrentHierarchyProtectedEvidenceV1<'_, RebootRealizationInventoryV1>,
+    authority: CurrentHierarchyProtectedEvidenceV1<'_, VerifiedPreparedRealizationAuthorityV1>,
 ) -> Result<PreparedRealizationRecoveryV1, HierarchyRecoveryError> {
+    let inventory = inventory.into_evidence();
+    let authority = authority.into_evidence();
     if progress.current_stage() != Some(RealizationStageV1::Prepared)
         || inventory.state != RebootInventoryStateV1::Prepared
         || inventory.attachment != progress.attachment
@@ -1383,9 +1581,11 @@ impl PublishedRollbackV1 {
 /// after the predecessor was reaped.
 pub fn published_rollback(
     progress: &DurableRealizationProgressV1,
-    inventory: RebootRealizationInventoryV1,
-    authority: VerifiedPublishedRollbackAuthorityV1,
+    inventory: CurrentHierarchyProtectedEvidenceV1<'_, RebootRealizationInventoryV1>,
+    authority: CurrentHierarchyProtectedEvidenceV1<'_, VerifiedPublishedRollbackAuthorityV1>,
 ) -> Result<PublishedRollbackV1, HierarchyRecoveryError> {
+    let inventory = inventory.into_evidence();
+    let authority = authority.into_evidence();
     if !matches!(
         progress.current_stage(),
         Some(
@@ -1455,13 +1655,14 @@ pub enum RebootReconciliationV1 {
 
 /// Reconciles durable progress with exact authenticated reboot inventory.
 ///
-/// No variant authorizes an effect. Mutation variants explicitly require a
-/// future caller to obtain fresh authority and revalidate inventory.
+/// No variant authorizes an effect. Mutation variants require a subsequent
+/// fixed-owner authority claim after this current inventory is consumed.
 #[must_use]
 pub fn reconcile_realization_after_reboot(
     progress: &DurableRealizationProgressV1,
-    inventory: RebootRealizationInventoryV1,
+    inventory: CurrentHierarchyProtectedEvidenceV1<'_, RebootRealizationInventoryV1>,
 ) -> RebootReconciliationV1 {
+    let inventory = inventory.into_evidence();
     if inventory.attachment != progress.attachment
         || inventory.attachment_generation != progress.attachment_generation
         || inventory.recipe_commitment != progress.recipe_commitment
@@ -1715,6 +1916,62 @@ impl RetainedDetachHeadV1 {
 }
 
 impl DurableDetachProgressV1 {
+    /// Reconstructs canonical detach progress and verifies every transition
+    /// and the complete history commitment without creating effect authority.
+    pub(crate) fn from_canonical_parts(
+        project: ProjectId,
+        tree_generation: Revision,
+        attachment: AttachmentId,
+        attachment_generation: DesiredGeneration,
+        detach_commitment: ObjectDigest,
+        observations: Vec<DetachStageObservationV1>,
+        history_commitment: ObjectDigest,
+    ) -> Result<Self, HierarchyRecoveryError> {
+        if project.as_bytes() == &[0; 16]
+            || tree_generation.get() == 0
+            || attachment.as_bytes() == &[0; 16]
+            || attachment_generation.get() == 0
+            || detach_commitment.as_bytes() == &[0; 32]
+            || history_commitment.as_bytes() == &[0; 32]
+            || observations.is_empty()
+            || observations.len() > MAXIMUM_REALIZATION_STAGE_HISTORY
+        {
+            return Err(HierarchyRecoveryError::CorruptProgress);
+        }
+        for (index, observation) in observations.iter().copied().enumerate() {
+            let sequence = u64::try_from(index)
+                .ok()
+                .and_then(|value| value.checked_add(1))
+                .ok_or(HierarchyRecoveryError::Capacity)?;
+            if observation.sequence != sequence
+                || observation.inventory_commitment.as_bytes() == &[0; 32]
+                || (index == 0 && observation.stage != DetachStageV1::Planned)
+            {
+                return Err(HierarchyRecoveryError::CorruptProgress);
+            }
+            if index != 0 {
+                let prior = observations
+                    .get(index - 1)
+                    .ok_or(HierarchyRecoveryError::CorruptProgress)?;
+                if !detach_transition_is_valid(prior.stage, observation.stage) {
+                    return Err(HierarchyRecoveryError::InvalidTransition);
+                }
+            }
+        }
+        let progress = Self {
+            project,
+            tree_generation,
+            attachment,
+            attachment_generation,
+            detach_commitment,
+            observations,
+        };
+        if progress.history_commitment() != history_commitment {
+            return Err(HierarchyRecoveryError::CorruptProgress);
+        }
+        Ok(progress)
+    }
+
     /// Creates planned durable detach progress from one exact recipe.
     ///
     /// # Errors
@@ -1806,8 +2063,9 @@ impl DurableDetachProgressV1 {
     pub fn advance_observed(
         &mut self,
         expected_sequence: u64,
-        inventory: VerifiedDetachRebootInventoryV1,
+        inventory: CurrentHierarchyProtectedEvidenceV1<'_, VerifiedDetachRebootInventoryV1>,
     ) -> Result<(), HierarchyRecoveryError> {
+        let inventory = inventory.into_evidence();
         let current = self
             .observations
             .last()
@@ -1972,7 +2230,7 @@ pub enum DetachReconciliationV1 {
 }
 
 /// Carries authenticated current detach inventory for reboot reconciliation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct VerifiedDetachRebootInventoryV1 {
     attachment: AttachmentId,
     attachment_generation: DesiredGeneration,
@@ -1983,7 +2241,8 @@ pub struct VerifiedDetachRebootInventoryV1 {
 
 impl VerifiedDetachRebootInventoryV1 {
     /// Creates evidence only after a trusted current-inventory observation.
-    pub(crate) const fn from_verified_parts(
+    pub(super) const fn from_verified_parts(
+        _authority: &ProtectedCurrentEvidenceAuthorityV1,
         attachment: AttachmentId,
         attachment_generation: DesiredGeneration,
         detach_commitment: ObjectDigest,
@@ -1998,14 +2257,35 @@ impl VerifiedDetachRebootInventoryV1 {
             inventory_commitment,
         }
     }
+
+    pub(super) const fn attachment(&self) -> AttachmentId {
+        self.attachment
+    }
+
+    pub(super) const fn attachment_generation(&self) -> DesiredGeneration {
+        self.attachment_generation
+    }
+
+    pub(super) const fn detach_commitment(&self) -> ObjectDigest {
+        self.detach_commitment
+    }
+
+    pub(super) const fn stage(&self) -> DetachStageV1 {
+        self.stage
+    }
+
+    pub(super) const fn inventory_commitment(&self) -> ObjectDigest {
+        self.inventory_commitment
+    }
 }
 
 /// Reconciles detach progress with one authenticated current stage observation.
 #[must_use]
 pub fn reconcile_detach_after_reboot(
     progress: &DurableDetachProgressV1,
-    inventory: VerifiedDetachRebootInventoryV1,
+    inventory: CurrentHierarchyProtectedEvidenceV1<'_, VerifiedDetachRebootInventoryV1>,
 ) -> DetachReconciliationV1 {
+    let inventory = inventory.into_evidence();
     let Some(current) = progress.current_stage() else {
         return DetachReconciliationV1::Conflict;
     };
@@ -2183,6 +2463,45 @@ impl RetainedRealizationTransactionHeadV1 {
 }
 
 impl DurableRealizationTransactionV1 {
+    /// Reconstructs one canonical durable transaction subset and verifies its
+    /// attachment ordering, terminal observations, and state commitment.
+    pub(crate) fn from_canonical_parts(
+        project: ProjectId,
+        tree_generation: Revision,
+        plan_commitment: ObjectDigest,
+        actions: Vec<TransactionActionObservationV1>,
+        state_commitment: ObjectDigest,
+    ) -> Result<Self, HierarchyRecoveryError> {
+        if project.as_bytes() == &[0; 16]
+            || tree_generation.get() == 0
+            || plan_commitment.as_bytes() == &[0; 32]
+            || state_commitment.as_bytes() == &[0; 32]
+            || actions.len() > super::realizer::MAXIMUM_REALIZATION_ACTIONS
+            || !actions
+                .windows(2)
+                .all(|pair| pair[0].attachment < pair[1].attachment)
+            || actions.iter().any(|action| {
+                action.attachment.as_bytes() == &[0; 16]
+                    || action.action_commitment.as_bytes() == &[0; 32]
+                    || action.inventory_commitment.as_bytes() == &[0; 32]
+            })
+        {
+            return Err(HierarchyRecoveryError::CorruptProgress);
+        }
+        let expected =
+            commit_transaction_state(project, tree_generation, plan_commitment, &actions);
+        if expected != state_commitment {
+            return Err(HierarchyRecoveryError::CorruptProgress);
+        }
+        Ok(Self {
+            project,
+            tree_generation,
+            plan_commitment,
+            actions,
+            state_commitment,
+        })
+    }
+
     /// Creates an empty durable transaction state for one exact plan.
     #[must_use]
     pub fn planned(plan: &ViewRealizationPlanV1) -> Self {

@@ -15,10 +15,9 @@ use aos_sandbox_core::{
 };
 
 use super::{
-    decode_operation_record_v1, encode_operation_record_v1, DesiredStateFenceV1,
-    LifecycleAuxiliaryKindV1, LifecycleBootInventoryDigestV1, LifecycleBootInventoryV1,
-    LifecycleCancelIdempotencyDigestV1, LifecycleCancelOutcomeV1, LifecycleCancelRequestV1,
-    LifecycleCancellationRecordV1, LifecycleCoordinationPhaseV1,
+    DesiredStateFenceV1, LifecycleAuxiliaryKindV1, LifecycleBootInventoryDigestV1,
+    LifecycleBootInventoryV1, LifecycleCancelIdempotencyDigestV1, LifecycleCancelOutcomeV1,
+    LifecycleCancelRequestV1, LifecycleCancellationRecordV1, LifecycleCoordinationPhaseV1,
     LifecycleCoordinationTransactionV1, LifecycleDatasetTransactionDigestV1, LifecycleModelError,
     LifecycleOperationV1, LifecycleQuiesceDigestV1, LifecycleRecordDigestV1, LifecycleResourceV1,
     LifecycleRetentionLedgerDigestV1, LifecycleRetentionLedgerEntryV1, LifecycleRetentionLedgerV1,
@@ -26,6 +25,7 @@ use super::{
     LifecycleSuspendObservationDigestV1, LifecycleSuspendObservationV1,
     LifecycleThawCompensationDigestV1, LifecycleTimeV1, LifecycleTransactionIdV1,
     LifecycleWriterFenceDigestV1, LiveRuntimeFenceV1, MAXIMUM_LIFECYCLE_EXPECTATIONS,
+    decode_operation_record_v1, encode_operation_record_v1,
 };
 
 /// Maximum canonical bytes retained by one auxiliary payload.

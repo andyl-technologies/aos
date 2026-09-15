@@ -43,8 +43,10 @@ fn run() -> Result<(), NetworkServiceError> {
     }
     let arguments = arguments()?;
 
-    // Descriptor 3 must be adopted before another operation can allocate it.
-    let mut listener = take_systemd_listener()?;
+    // SAFETY: PID 1 transfers the sole stable activation entry to this
+    // single-threaded entrypoint. No Rust owner has been constructed for FD 3,
+    // and no preceding operation opens, closes, or duplicates a descriptor.
+    let mut listener = unsafe { take_systemd_listener()? };
     let controller_cgroup = open_controller_cgroup()?;
     let catalog = NetworkNamespaceCatalogV1::open_root_owned(Path::new(STATE_ROOT))?;
     let mut service =

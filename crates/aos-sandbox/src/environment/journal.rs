@@ -352,6 +352,10 @@ impl EnvironmentBootRolloverAuthorityV1 {
         self.current
     }
 
+    pub(crate) fn predecessor_boots(&self) -> &[ObjectDigest] {
+        &self.predecessors
+    }
+
     pub(super) fn accepts_predecessor(&self, boot: super::EnvironmentBootIdV1) -> bool {
         self.predecessors.binary_search(&boot.digest()).is_ok()
     }

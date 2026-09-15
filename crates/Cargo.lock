@@ -783,6 +783,7 @@ name = "aos-sandbox"
 version = "0.1.0"
 dependencies = [
  "aos-proto",
+ "aos-sandbox-agent",
  "aos-sandbox-core",
  "aos-sandbox-linux",
  "aos-sandbox-ownership-protocol",
@@ -801,6 +802,17 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "aos-sandbox-agent"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox-core",
+ "ed25519-dalek",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -884,6 +896,8 @@ name = "aos-sandbox-host"
 version = "0.1.0"
 dependencies = [
  "aos-proto",
+ "aos-sandbox",
+ "aos-sandbox-agent",
  "aos-sandbox-broker",
  "aos-sandbox-core",
  "aos-sandbox-guardian",
@@ -924,6 +938,7 @@ dependencies = [
  "aos-sandbox-linux",
  "aos-sandbox-protocol",
  "aos-sandbox-source-provider-protocol",
+ "aos-sandbox-source-provider-security",
  "buffa",
  "ed25519-dalek",
  "hex",
@@ -1020,6 +1035,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-source-provider"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox",
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "aos-sandbox-source-provider-ledger",
+ "aos-sandbox-source-provider-protocol",
+ "aos-sandbox-source-provider-security",
+ "rustix 1.1.4",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-sandbox-source-provider-ledger"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-core",
+ "aos-sandbox-source-provider-protocol",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "aos-sandbox-source-provider-protocol"
 version = "0.1.0"
 dependencies = [
@@ -1034,11 +1073,15 @@ dependencies = [
 name = "aos-sandbox-source-provider-security"
 version = "0.1.0"
 dependencies = [
+ "aos-sandbox",
  "aos-sandbox-core",
  "aos-sandbox-linux",
+ "aos-sandbox-protocol",
+ "aos-sandbox-source-provider-ledger",
  "aos-sandbox-source-provider-protocol",
  "ed25519-dalek",
  "hmac 0.12.1",
+ "libc",
  "rustix 1.1.4",
  "sha2 0.10.9",
  "thiserror 2.0.18",

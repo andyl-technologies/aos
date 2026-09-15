@@ -12,8 +12,8 @@ use buffa::Message as _;
 use super::model::{ClientStateItem, OpaqueResponseBytesV1, OpaqueResponseKindV1};
 use super::registry::{checked_timestamp, validate_descriptor_media, validate_features};
 use super::resource::{
-    checked_conditions, exact_nonzero_id, validate_resource_size, InvalidPublicResource,
-    MAXIMUM_SAFE_MESSAGE_BYTES,
+    InvalidPublicResource, MAXIMUM_SAFE_MESSAGE_BYTES, checked_conditions, exact_nonzero_id,
+    validate_resource_size,
 };
 
 const MAXIMUM_COMMAND_ARGUMENTS: usize = 1_024;
@@ -79,6 +79,18 @@ impl TryFrom<Execution> for CheckedExecutionResourceV1 {
         exact_nonzero_id(&value.sandbox_incarnation_id)?;
         exact_nonzero_id(&value.audit_id)?;
         checked_version(&value.resource_version)?;
+        if value.desired_generation == 0
+            || value.observation_sequence == 0
+            || value.assignment_epoch == 0
+        {
+            return Err(InvalidPublicResource::Unspecified);
+        }
+        checked_timestamp(
+            value
+                .last_successful_reconciliation_time
+                .as_option()
+                .ok_or(InvalidPublicResource::Unspecified)?,
+        )?;
 
         let command = value
             .command
@@ -143,7 +155,14 @@ impl TryFrom<Execution> for CheckedExecutionResourceV1 {
                     .ok_or(InvalidPublicResource::Unspecified)?,
             )?;
         }
-        checked_conditions(&value.conditions)?;
+        let conditions = checked_conditions(&value.conditions)?;
+        super::proto_observation::checked_condition_observations(
+            &conditions,
+            &value.conditions,
+            value.desired_generation,
+            value.observation_sequence,
+        )
+        .map_err(|_| InvalidPublicResource::InvalidScalar)?;
         let mut public_wire = value.clone();
         public_wire.access = Default::default();
         Ok(Self {
@@ -199,7 +218,23 @@ impl TryFrom<FilesystemView> for CheckedFilesystemViewResourceV1 {
             .as_known()
             .filter(|phase| *phase != ViewPhase::VIEW_PHASE_UNSPECIFIED)
             .ok_or(InvalidPublicResource::UnknownRegistryValue)?;
-        checked_conditions(&value.conditions)?;
+        if value.desired_generation == 0 || value.observation_sequence == 0 {
+            return Err(InvalidPublicResource::Unspecified);
+        }
+        checked_timestamp(
+            value
+                .last_successful_reconciliation_time
+                .as_option()
+                .ok_or(InvalidPublicResource::Unspecified)?,
+        )?;
+        let conditions = checked_conditions(&value.conditions)?;
+        super::proto_observation::checked_condition_observations(
+            &conditions,
+            &value.conditions,
+            value.desired_generation,
+            value.observation_sequence,
+        )
+        .map_err(|_| InvalidPublicResource::InvalidScalar)?;
         Ok(Self(value))
     }
 }
@@ -236,10 +271,27 @@ impl TryFrom<Attachment> for CheckedAttachmentResourceV1 {
             .as_known()
             .filter(|phase| *phase != AttachmentPhase::ATTACHMENT_PHASE_UNSPECIFIED)
             .ok_or(InvalidPublicResource::UnknownRegistryValue)?;
-        if value.desired_generation == 0 || value.source_generation == 0 {
+        if value.desired_generation == 0
+            || value.source_generation == 0
+            || value.observation_sequence == 0
+            || value.assignment_epoch == 0
+        {
             return Err(InvalidPublicResource::Unspecified);
         }
-        checked_conditions(&value.conditions)?;
+        checked_timestamp(
+            value
+                .last_successful_reconciliation_time
+                .as_option()
+                .ok_or(InvalidPublicResource::Unspecified)?,
+        )?;
+        let conditions = checked_conditions(&value.conditions)?;
+        super::proto_observation::checked_condition_observations(
+            &conditions,
+            &value.conditions,
+            value.desired_generation,
+            value.observation_sequence,
+        )
+        .map_err(|_| InvalidPublicResource::InvalidScalar)?;
         Ok(Self(value))
     }
 }
@@ -278,10 +330,26 @@ impl TryFrom<Snapshot> for CheckedSnapshotResourceV1 {
                 *availability != SnapshotAvailability::SNAPSHOT_AVAILABILITY_UNSPECIFIED
             })
             .ok_or(InvalidPublicResource::UnknownRegistryValue)?;
-        checked_conditions(&value.conditions)?;
+        if value.desired_generation == 0 || value.observation_sequence == 0 {
+            return Err(InvalidPublicResource::Unspecified);
+        }
+        let conditions = checked_conditions(&value.conditions)?;
+        super::proto_observation::checked_condition_observations(
+            &conditions,
+            &value.conditions,
+            value.desired_generation,
+            value.observation_sequence,
+        )
+        .map_err(|_| InvalidPublicResource::InvalidScalar)?;
         checked_timestamp(
             value
                 .created_at
+                .as_option()
+                .ok_or(InvalidPublicResource::Unspecified)?,
+        )?;
+        checked_timestamp(
+            value
+                .last_successful_reconciliation_time
                 .as_option()
                 .ok_or(InvalidPublicResource::Unspecified)?,
         )?;
@@ -291,7 +359,10 @@ impl TryFrom<Snapshot> for CheckedSnapshotResourceV1 {
 
 checked_public_resource!(CheckedSnapshotResourceV1, Snapshot);
 
-/// Stores one deeply checked established non-secret capability summary.
+/// Stores one deeply checked established non-secret capability lifetime.
+///
+/// Capability validity is not a placement or lifecycle-reconciliation state;
+/// it is bounded by issuance time, expiry time, and revocation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CheckedCapabilityResourceV1(Capability);
 
@@ -335,7 +406,10 @@ impl TryFrom<Capability> for CheckedCapabilityResourceV1 {
 
 checked_public_resource!(CheckedCapabilityResourceV1, Capability);
 
-/// Stores one deeply checked public node-capability observation.
+/// Stores one deeply checked public node-capability sample.
+///
+/// A node-capability sample is not placed or lifecycle-reconciled. Its
+/// generation and observation timestamp identify the sampled inventory.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CheckedNodeCapabilitiesV1(NodeCapabilities);
 

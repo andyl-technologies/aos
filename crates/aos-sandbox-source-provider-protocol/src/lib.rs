@@ -30,6 +30,7 @@ mod accessors;
 pub mod codec;
 pub mod crypto;
 pub mod model;
+pub mod normalized_intent;
 pub mod proof;
 pub mod trust;
 pub mod verification;
@@ -53,12 +54,17 @@ pub use crypto::{
     SourceProviderSignatureError, SourceProviderSigningKeyV1, digest_acquire_request,
     digest_inventory, digest_inventory_request, digest_provider_proof, digest_provider_receipt,
     digest_release_receipt, digest_release_request, digest_signed_export_lease,
-    digest_signed_hello, digest_signed_request, empty_descriptor_set_commitment_v1,
-    provider_resource_commitment_v1, response_result_digest_v1, sign_export_lease, sign_hello,
-    sign_inventory, sign_provider_receipt, sign_release_receipt, sign_request,
-    sign_response_status, source_provider_session_binding_v1, verify_hello,
+    digest_signed_hello, digest_signed_release_receipt, digest_signed_request,
+    empty_descriptor_set_commitment_v1, provider_execution_commitment_v1,
+    provider_resource_commitment_v1, provider_response_artifact_digest_v1,
+    response_result_digest_v1, sign_export_lease, sign_hello, sign_inventory,
+    sign_provider_receipt, sign_release_receipt, sign_request, sign_response_status,
+    source_provider_session_binding_v1, verify_export_lease, verify_hello, verify_inventory,
+    verify_provider_receipt, verify_provider_receipt_and_lease, verify_release_receipt,
+    verify_request, verify_response_status,
 };
 pub use model::{
+    ACQUIRE_SOURCE_REQUEST_VERSION_V1, ACQUIRE_SOURCE_REQUEST_VERSION_V2,
     ALL_PROOF_CLASS_CAPABILITIES, AcquireSourceRequestV1, AcquireSourceResponseV1,
     InventoryLeaseStateV1, InventorySourceRequestV1, InventorySourceResponseV1,
     MAXIMUM_BINDING_BYTES, MAXIMUM_INVENTORY_ENTRIES, MAXIMUM_RECURSIVE_BYTE_COUNT,
@@ -69,7 +75,11 @@ pub use model::{
     SourceProviderMethod, SourceProviderPeerRole, SourceProviderReceiptV1,
     SourceProviderResponseStatusV1, SourceProviderStatus, SourceProviderValidationError,
     SourceReleaseReceiptV1, SourceResourceV1, SourceUseV1, digest_logical_binding_bytes,
-    prospective_mount_apply_template_digest_v1,
+    prospective_mount_apply_template_digest_v1, source_acquisition_id_v2,
+};
+pub use normalized_intent::{
+    MAXIMUM_NORMALIZED_ACQUISITION_INTENT_BYTES, NormalizedAcquisitionIntentError,
+    NormalizedAcquisitionIntentV1, NormalizedAcquisitionIntentV2,
 };
 pub use proof::{
     BestEffortReplicaProofV1, ImmutablePublisherTreeProofV1, LocalLiveExportProofV1,
@@ -96,6 +106,7 @@ pub use verification::{
     VerifiedSourceInventoryV1, VerifiedSourceProviderDispositionV1,
     VerifiedSourceProviderSequenceV1, VerifiedSourceReleaseV1,
     source_provider_acquire_intent_digest_v1, source_provider_inventory_intent_digest_v1,
-    source_provider_release_intent_digest_v1, source_root_descriptor_commitment_v1, verify_acquire,
-    verify_provider_request, verify_release, verify_source_inventory,
+    source_provider_release_intent_digest_v1, source_provider_request_attempt_digest_v1,
+    source_root_descriptor_commitment_v1, verify_acquire, verify_provider_request, verify_release,
+    verify_source_inventory,
 };

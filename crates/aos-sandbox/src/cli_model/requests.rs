@@ -2,6 +2,9 @@
 
 use std::fmt;
 
+use aos_proto::aos::sandbox::v1::ObjectDescriptor;
+use sha2::{Digest as _, Sha256};
+
 use super::execution::{CliIdentityV1, CreateExecutionCommandV1};
 use super::grammar::{
     CliIdempotencyKeyV1, CliResourceVersionV1, CliWaitDurationV1, CliWaitV1, InvalidCliGrammar,
@@ -577,6 +580,266 @@ pub enum ResolvedPublicMutationV1 {
 }
 
 impl ResolvedPublicMutationV1 {
+    /// Commits the exact mutation variant, resolved identities, and fences.
+    ///
+    /// This intentionally covers the authority-bearing projection rather than
+    /// duplicating request-body semantics. It prevents a resolver from
+    /// redirecting authenticated authority to another object, incarnation,
+    /// plan, revision, idempotency scope, or concurrency fence.
+    pub(crate) fn authority_binding(&self) -> aos_sandbox_core::ObjectDigest {
+        let mut binding = MutationAuthorityBindingV1::new();
+
+        match self {
+            Self::CreateSandbox(value) => {
+                binding.variant(0);
+                binding.identity(&value.project_id);
+                binding.parent(&value.parent);
+                binding.bytes(value.expected_project_version.as_bytes());
+                binding.controls(
+                    value.operation_timeout,
+                    &value.required_features,
+                    &value.idempotency_key,
+                    value.client_wait,
+                );
+            }
+            Self::UpdatePolicy {
+                sandbox_id,
+                expected_plan,
+                mutation,
+                ..
+            } => {
+                binding.variant(1);
+                binding.identity(sandbox_id);
+                binding.bytes(expected_plan.as_bytes());
+                binding.mutation_fence(mutation);
+            }
+            Self::Lifecycle {
+                sandbox_id,
+                action,
+                mutation,
+            } => {
+                binding.variant(2);
+                binding.identity(sandbox_id);
+                binding.variant(match action {
+                    ResolvedLifecycleActionV1::Start => 0,
+                    ResolvedLifecycleActionV1::Stop => 1,
+                    ResolvedLifecycleActionV1::Suspend => 2,
+                    ResolvedLifecycleActionV1::ResumeFrozen => 3,
+                    ResolvedLifecycleActionV1::ReconstructHibernated => 4,
+                });
+                binding.mutation_fence(mutation);
+            }
+            Self::DeleteSandbox {
+                sandbox_id,
+                scope,
+                mutation,
+                ..
+            } => {
+                binding.variant(3);
+                binding.identity(sandbox_id);
+                binding.variant(match scope {
+                    DeleteScopeV1::Single(_) => 0,
+                    DeleteScopeV1::Cascade(_) => 1,
+                });
+                binding.bytes(scope.expected_plan().as_bytes());
+                binding.mutation_fence(mutation);
+            }
+            Self::CreateExecution(value) => {
+                binding.variant(4);
+                binding.identity(&value.sandbox_id);
+                binding.execution_fence(&value.mutation);
+            }
+            Self::ExecutionControl(value) => {
+                binding.variant(5);
+                match value {
+                    super::execution::ExecutionControlCommandV1::Attach(execution) => {
+                        binding.variant(0);
+                        binding.identity(execution);
+                    }
+                    super::execution::ExecutionControlCommandV1::Resize { execution, .. } => {
+                        binding.variant(1);
+                        binding.identity(execution);
+                    }
+                    super::execution::ExecutionControlCommandV1::Signal { execution, .. } => {
+                        binding.variant(2);
+                        binding.identity(execution);
+                    }
+                    super::execution::ExecutionControlCommandV1::Cancel {
+                        execution,
+                        sandbox_id,
+                        mutation,
+                    } => {
+                        binding.variant(3);
+                        binding.identity(execution);
+                        binding.identity(sandbox_id);
+                        binding.execution_fence(mutation);
+                    }
+                }
+            }
+            Self::CreateView {
+                project_id,
+                revision,
+                expected_project_version,
+                idempotency_key,
+                operation_timeout,
+                required_features,
+                client_wait,
+            } => {
+                binding.variant(6);
+                binding.identity(project_id);
+                binding.descriptor(revision.as_proto());
+                binding.bytes(expected_project_version.as_bytes());
+                binding.controls(
+                    *operation_timeout,
+                    required_features,
+                    idempotency_key,
+                    *client_wait,
+                );
+            }
+            Self::AttachView {
+                sandbox_id,
+                view_id,
+                view_revision,
+                destination_slot_id,
+                mutation,
+                ..
+            } => {
+                binding.variant(7);
+                binding.identity(sandbox_id);
+                binding.identity(view_id);
+                binding.descriptor(view_revision.as_proto());
+                binding.identity(destination_slot_id);
+                binding.mutation_fence(mutation);
+            }
+            Self::ReplaceAttachment {
+                attachment_id,
+                new_view_id,
+                new_view_revision,
+                mutation,
+            } => {
+                binding.variant(8);
+                binding.identity(attachment_id);
+                binding.identity(new_view_id);
+                binding.descriptor(new_view_revision.as_proto());
+                binding.mutation_fence(mutation);
+            }
+            Self::DetachView {
+                attachment_id,
+                mutation,
+            } => {
+                binding.variant(9);
+                binding.identity(attachment_id);
+                binding.mutation_fence(mutation);
+            }
+            Self::ReleaseView { view_id, mutation } => {
+                binding.variant(10);
+                binding.identity(view_id);
+                binding.mutation_fence(mutation);
+            }
+            Self::CreateSnapshot {
+                sandbox_id,
+                mutation,
+                ..
+            } => {
+                binding.variant(11);
+                binding.identity(sandbox_id);
+                binding.mutation_fence(mutation);
+            }
+            Self::RestoreSnapshot {
+                snapshot_id,
+                target_sandbox_id,
+                mutation,
+                ..
+            } => {
+                binding.variant(12);
+                binding.identity(snapshot_id);
+                binding.identity(target_sandbox_id);
+                binding.mutation_fence(mutation);
+            }
+            Self::DeleteSnapshot {
+                snapshot_id,
+                mutation,
+            } => {
+                binding.variant(13);
+                binding.identity(snapshot_id);
+                binding.mutation_fence(mutation);
+            }
+            Self::ForkSnapshot {
+                snapshot_id,
+                target_project_id,
+                expected_project_version,
+                parent,
+                idempotency_key,
+                operation_timeout,
+                required_features,
+                client_wait,
+                ..
+            } => {
+                binding.variant(14);
+                binding.identity(snapshot_id);
+                binding.identity(target_project_id);
+                binding.bytes(expected_project_version.as_bytes());
+                binding.parent(parent);
+                binding.controls(
+                    *operation_timeout,
+                    required_features,
+                    idempotency_key,
+                    *client_wait,
+                );
+            }
+            Self::CachePin { object, mutation } => {
+                binding.variant(15);
+                binding.descriptor(object.as_proto());
+                binding.mutation_fence(mutation);
+            }
+            Self::CacheUnpin { object, mutation } => {
+                binding.variant(16);
+                binding.descriptor(object.as_proto());
+                binding.mutation_fence(mutation);
+            }
+            Self::Capability(command) => {
+                binding.variant(17);
+                match command {
+                    CapabilityCommandV1::Attenuate {
+                        parent_handle,
+                        attenuation,
+                        holder_channel,
+                        expected_parent_version,
+                        idempotency_key,
+                    } => {
+                        binding.variant(0);
+                        binding.bytes(parent_handle.expose_to_request());
+                        binding.bytes(attenuation.as_bytes());
+                        binding.bytes(holder_channel.as_bytes());
+                        binding.bytes(expected_parent_version.as_bytes());
+                        binding.bytes(idempotency_key.as_bytes());
+                    }
+                    CapabilityCommandV1::Inspect(handle) => {
+                        binding.variant(1);
+                        binding.bytes(handle.expose_to_request());
+                    }
+                    CapabilityCommandV1::Renew {
+                        handle, mutation, ..
+                    } => {
+                        binding.variant(2);
+                        binding.bytes(handle.expose_to_request());
+                        binding.mutation_fence(mutation);
+                    }
+                    CapabilityCommandV1::Revoke {
+                        capability_id,
+                        mutation,
+                    } => {
+                        binding.variant(3);
+                        binding.identity(capability_id);
+                        binding.mutation_fence(mutation);
+                    }
+                }
+            }
+        }
+
+        binding.finish()
+    }
+
     /// Checks that each action carries exactly its required authenticated fence.
     pub(crate) fn has_action_specific_fences(&self) -> bool {
         use MutationFenceRequirementV1 as R;
@@ -659,5 +922,119 @@ impl ResolvedPublicMutationV1 {
             | Self::Capability(CapabilityCommandV1::Attenuate { .. })
             | Self::Capability(CapabilityCommandV1::Inspect(_)) => None,
         }
+    }
+}
+
+struct MutationAuthorityBindingV1(Sha256);
+
+impl MutationAuthorityBindingV1 {
+    fn new() -> Self {
+        Self(Sha256::new_with_prefix(
+            b"aos.sandbox.cli.resolved-mutation-authority.v1\0",
+        ))
+    }
+
+    fn variant(&mut self, value: u8) {
+        self.0.update([value]);
+    }
+
+    fn bytes(&mut self, value: &[u8]) {
+        self.0.update((value.len() as u64).to_be_bytes());
+        self.0.update(value);
+    }
+
+    fn identity(&mut self, value: &CliIdentityV1) {
+        self.bytes(value.as_bytes());
+    }
+
+    fn descriptor(&mut self, value: &ObjectDescriptor) {
+        self.bytes(value.media_type.as_bytes());
+        self.bytes(&value.sha256);
+        self.0.update(value.encoded_size.to_be_bytes());
+    }
+
+    fn parent(&mut self, value: &OptionalParentFenceV1) {
+        match value {
+            OptionalParentFenceV1::Root => self.variant(0),
+            OptionalParentFenceV1::Child {
+                parent_id,
+                expected_parent_version,
+            } => {
+                self.variant(1);
+                self.identity(parent_id);
+                self.bytes(expected_parent_version.as_bytes());
+            }
+        }
+    }
+
+    fn mutation_fence(&mut self, value: &MutationFenceV1) {
+        self.bytes(value.expected_resource_version().as_bytes());
+        match (value.expected_incarnation(), value.expected_plan()) {
+            (Some(incarnation), None) => {
+                self.variant(1);
+                self.identity(incarnation);
+            }
+            (None, Some(plan)) => {
+                self.variant(2);
+                self.bytes(plan.as_bytes());
+            }
+            (None, None) => self.variant(0),
+            (Some(incarnation), Some(plan)) => {
+                self.variant(3);
+                self.identity(incarnation);
+                self.bytes(plan.as_bytes());
+            }
+        }
+        self.0
+            .update(value.operation_timeout().as_nanos().to_be_bytes());
+        self.features(value.required_features());
+        self.bytes(value.idempotency_key().as_bytes());
+        self.wait(value.client_wait());
+    }
+
+    fn execution_fence(&mut self, value: &super::execution::ExecutionMutationFenceV1) {
+        self.bytes(value.expected_resource_version().as_bytes());
+        self.identity(&value.expected_incarnation());
+        self.0
+            .update(value.operation_timeout().as_nanos().to_be_bytes());
+        self.features(value.required_features());
+        self.bytes(value.idempotency_key().as_bytes());
+        self.wait(value.client_wait());
+    }
+
+    fn controls(
+        &mut self,
+        operation_timeout: CliWaitDurationV1,
+        required_features: &CheckedFeatureSetV1,
+        idempotency_key: &CliIdempotencyKeyV1,
+        client_wait: CliWaitV1,
+    ) {
+        self.0.update(operation_timeout.as_nanos().to_be_bytes());
+        self.features(required_features);
+        self.bytes(idempotency_key.as_bytes());
+        self.wait(client_wait);
+    }
+
+    fn features(&mut self, value: &CheckedFeatureSetV1) {
+        self.0.update((value.as_slice().len() as u64).to_be_bytes());
+        for feature in value.as_slice() {
+            self.bytes(feature.namespace.as_bytes());
+            self.0.update(feature.major.to_be_bytes());
+            self.0.update(feature.minor.to_be_bytes());
+        }
+    }
+
+    fn wait(&mut self, value: CliWaitV1) {
+        match value {
+            CliWaitV1::ReturnOperation => self.variant(0),
+            CliWaitV1::Bounded(duration) => {
+                self.variant(1);
+                self.0.update(duration.as_nanos().to_be_bytes());
+            }
+        }
+    }
+
+    fn finish(self) -> aos_sandbox_core::ObjectDigest {
+        aos_sandbox_core::ObjectDigest::from_bytes(self.0.finalize().into())
     }
 }

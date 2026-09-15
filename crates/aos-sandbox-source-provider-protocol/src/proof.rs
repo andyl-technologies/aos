@@ -239,6 +239,12 @@ impl LocalLiveExportProofV1 {
             workspace_digest,
         })
     }
+
+    /// Returns the holder authority tuple authorized to consume this live export.
+    #[must_use]
+    pub const fn consumer_authority(&self) -> ([u8; 16], u64) {
+        (self.consumer_authority_id, self.consumer_generation)
+    }
 }
 
 /// Carries one immutable publisher tree selection.

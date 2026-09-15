@@ -70,7 +70,7 @@ impl CacheAuthorityScopeV1 {
     /// # Errors
     ///
     /// Returns [`CacheAuthorityError::InvalidScope`] for sentinel fields.
-    pub fn new(
+    pub(crate) fn new(
         partition: PhysicalPartitionId,
         subject: ObjectDigest,
         operation: Option<OperationId>,
@@ -164,7 +164,7 @@ impl<'authority, 'journal> CacheAuthorityOwner<'authority, 'journal> {
     ///
     /// Returns [`CacheAuthorityError`] for sentinel scope, invalid bounds, or
     /// unavailable protected authority.
-    pub fn new(
+    pub(crate) fn new(
         authority: &'authority ProtectedJournalAuthority<'journal>,
         owner_scope: ObjectDigest,
         maximum_record_bytes: usize,
@@ -189,7 +189,7 @@ impl<'authority, 'journal> CacheAuthorityOwner<'authority, 'journal> {
     ///
     /// Returns [`CacheAuthorityError`] when the key is absent, the record is
     /// not the canonical exact scope, or protected authority is unavailable.
-    pub fn verify_current_record(
+    pub(crate) fn verify_current_record(
         &self,
         purpose: CacheAuthorityPurposeV1,
         scope: CacheAuthorityScopeV1,
@@ -206,7 +206,7 @@ impl<'authority, 'journal> CacheAuthorityOwner<'authority, 'journal> {
             return Err(CacheAuthorityError::InvalidRecord);
         }
         let expected = self.canonical_record(purpose, scope);
-        if record != expected {
+        if record != expected.as_slice() {
             return Err(CacheAuthorityError::RecordMismatch);
         }
         let mut hasher = Sha256::new();
@@ -223,6 +223,47 @@ impl<'authority, 'journal> CacheAuthorityOwner<'authority, 'journal> {
             scope,
             record_digest,
         })
+    }
+
+    /// Derives and verifies one exact scope from its protected canonical record.
+    pub(crate) fn verify_current_record_for_purpose(
+        &self,
+        purpose: CacheAuthorityPurposeV1,
+        record_key: &[u8],
+    ) -> Result<VerifiedCacheCapabilityV1, CacheAuthorityError> {
+        let record = self
+            .authority
+            .get(record_key)?
+            .ok_or(CacheAuthorityError::RecordAbsent)?;
+        if record.len() != AUTHORITY_RECORD_BYTES
+            || &record[..8] != AUTHORITY_RECORD_MAGIC
+            || record[8..10] != 1_u16.to_be_bytes()
+            || record[10] != purpose as u8
+            || record[11..16] != [0; 5]
+            || record[16..48] != *self.owner_scope.as_bytes()
+        {
+            return Err(CacheAuthorityError::InvalidRecord);
+        }
+        let scope = CacheAuthorityScopeV1 {
+            partition: ObjectDigest::from_bytes(read_authority_array(record, 48)?),
+            subject: ObjectDigest::from_bytes(read_authority_array(record, 80)?),
+            operation: read_authority_array(record, 112)?,
+            plan: ObjectDigest::from_bytes(read_authority_array(record, 128)?),
+            root_custody: ObjectDigest::from_bytes(read_authority_array(record, 160)?),
+            generation: u64::from_be_bytes(read_authority_array(record, 192)?),
+            valid_until: u64::from_be_bytes(read_authority_array(record, 200)?),
+        };
+        if scope.partition.as_bytes() == &[0; 32]
+            || scope.subject.as_bytes() == &[0; 32]
+            || scope.plan.as_bytes() == &[0; 32]
+            || scope.root_custody.as_bytes() == &[0; 32]
+            || scope.generation == 0
+            || scope.valid_until == 0
+            || record != self.canonical_record(purpose, scope).as_slice()
+        {
+            return Err(CacheAuthorityError::InvalidRecord);
+        }
+        self.verify_current_record(purpose, scope, record_key)
     }
 
     /// Encodes the only protected journal value accepted for an exact scope.
@@ -289,7 +330,21 @@ impl<'authority, 'journal> CacheAuthorityOwner<'authority, 'journal> {
     }
 }
 
+fn read_authority_array<const N: usize>(
+    bytes: &[u8],
+    offset: usize,
+) -> Result<[u8; N], CacheAuthorityError> {
+    bytes
+        .get(offset..offset + N)
+        .and_then(|slice| slice.try_into().ok())
+        .ok_or(CacheAuthorityError::InvalidRecord)
+}
+
 impl VerifiedCacheCapabilityV1 {
+    pub(crate) const fn purpose(&self) -> CacheAuthorityPurposeV1 {
+        self.purpose
+    }
+
     pub(crate) const fn scope(&self) -> CacheAuthorityScopeV1 {
         self.scope
     }

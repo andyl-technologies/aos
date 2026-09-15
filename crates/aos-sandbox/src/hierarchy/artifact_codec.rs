@@ -1,19 +1,37 @@
 //! Canonical bounded encodings for hierarchy export, snapshot, and view facts.
 //!
-//! These encoders retain opaque commitments instead of decoding them into
-//! authority. A future durable adapter must verify protected or signed evidence
-//! before reconstructing the crate-private evidence types.
+//! These codecs retain opaque evidence commitments without decoding them into
+//! live authority. Protected-journal decoding reconstructs typed durable
+//! models, recomputes every locally derivable commitment, and requires exact
+//! canonical re-encoding before assigning a reducer phase.
+//!
+//! ```text
+//! artifact = magic || version:u16 || reserved:u16 || typed-body
+//! plan = project || tree-generation || observation || actions || order || digest
+//! progress = recipe-identity || monotonic-observations || history-digest
+//! head = recipe-identity || terminal-state || protected-head-digest
+//! ```
 
-use aos_sandbox_core::{ObjectDescriptor, ObjectDigest};
+use aos_sandbox_core::{
+    AssignmentEpoch, AttachmentId, AttachmentSlotId, DecodeLimits, DesiredGeneration, ExportId,
+    IncarnationId, NamespaceGeneration, NodeId, ObjectDescriptor, ObjectDigest, ProjectId,
+    Revision, SandboxId,
+};
 use sha2::{Digest as _, Sha256};
 
 use super::exports::{ExportSourceV1, SubtreeExportClosureV1};
 use super::history::{HierarchyHistoryCheckpointV1, RetainedHierarchyHeadV1};
-use super::realizer::{AttachmentRealizationV1, ReplacementTransactionV1, ViewRealizationPlanV1};
+use super::realizer::{
+    AttachmentDetachV1, AttachmentRealizationV1, MAXIMUM_REALIZATION_ACTIONS,
+    MAXIMUM_REALIZATION_DEPENDENCIES, RealizationStageV1, RealizationTransactionActionV1,
+    ReplacementTransactionV1, ViewRealizationPlanV1,
+};
 use super::recovery::{
-    CommittedHierarchySnapshotV1, DurableDetachProgressV1, DurableRealizationProgressV1,
-    DurableRealizationTransactionV1, PreparedHierarchySnapshotV1, RetainedDetachHeadV1,
-    RetainedRealizationHeadV1, RetainedRealizationTransactionHeadV1,
+    CommittedHierarchySnapshotV1, DetachStageObservationV1, DetachStageV1, DurableDetachProgressV1,
+    DurableRealizationProgressV1, DurableRealizationTransactionV1, PreparedHierarchySnapshotV1,
+    RealizationStageObservationV1, RetainedDetachHeadV1, RetainedRealizationHeadV1,
+    RetainedRealizationTransactionHeadV1, TransactionActionObservationV1,
+    TransactionActionOutcomeV1,
 };
 
 const EXPORT_MAGIC: &[u8; 8] = b"AOSHEX01";
@@ -427,6 +445,277 @@ pub fn encode_protected_transaction_head_v1(
     Ok(writer.finish())
 }
 
+/// Decodes and fully validates one canonical multi-action realization plan.
+///
+/// The decoder reconstructs typed intents and action models, recomputes every
+/// recipe, detach, ordering, and plan commitment, then requires exact canonical
+/// re-encoding. It does not reconstruct any of the live evidence capabilities
+/// from which the durable plan was originally derived.
+pub(crate) fn decode_realization_plan_v1(
+    bytes: &[u8],
+) -> Result<ViewRealizationPlanV1, HierarchyArtifactCodecError> {
+    let mut cursor = ArtifactCursor::new(bytes, REALIZATION_MAGIC)?;
+    let project = ProjectId::from_bytes(cursor.take::<16>()?);
+    let tree_generation = Revision::new(cursor.u64()?);
+    let observation_set_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+
+    let publication_count = cursor.bounded_count(MAXIMUM_REALIZATION_ACTIONS)?;
+    let mut publications = Vec::new();
+    publications
+        .try_reserve_exact(publication_count)
+        .map_err(|_| HierarchyArtifactCodecError::Capacity)?;
+    for _ in 0..publication_count {
+        publications.push(decode_publication(&mut cursor, project, tree_generation)?);
+    }
+
+    let detach_count = cursor.bounded_count(MAXIMUM_REALIZATION_ACTIONS)?;
+    let action_count = publication_count
+        .checked_add(detach_count)
+        .ok_or(HierarchyArtifactCodecError::Capacity)?;
+    if action_count > MAXIMUM_REALIZATION_ACTIONS {
+        return Err(HierarchyArtifactCodecError::Capacity);
+    }
+    let mut detaches = Vec::new();
+    detaches
+        .try_reserve_exact(detach_count)
+        .map_err(|_| HierarchyArtifactCodecError::Capacity)?;
+    for _ in 0..detach_count {
+        detaches.push(decode_detach(&mut cursor, project, tree_generation)?);
+    }
+
+    let publication_postorder = cursor.attachments(MAXIMUM_REALIZATION_ACTIONS)?;
+    let detach_postorder = cursor.attachments(MAXIMUM_REALIZATION_ACTIONS)?;
+    let execution_count = cursor.bounded_count(MAXIMUM_REALIZATION_ACTIONS)?;
+    let mut execution_order = Vec::new();
+    execution_order
+        .try_reserve_exact(execution_count)
+        .map_err(|_| HierarchyArtifactCodecError::Capacity)?;
+    for _ in 0..execution_count {
+        let discriminant = cursor.u8()?;
+        let attachment = AttachmentId::from_bytes(cursor.take::<16>()?);
+        let action = match discriminant {
+            0 => RealizationTransactionActionV1::Publish(attachment),
+            1 => RealizationTransactionActionV1::Detach(attachment),
+            _ => return Err(HierarchyArtifactCodecError::NonCanonical),
+        };
+        execution_order.push(action);
+    }
+    let plan_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    cursor.finish()?;
+
+    let plan = ViewRealizationPlanV1::new(project, publications, detaches)
+        .map_err(|_| HierarchyArtifactCodecError::InvalidModel)?;
+    if plan.tree_generation() != tree_generation
+        || plan.observation_set_commitment() != observation_set_commitment
+        || plan.publication_postorder() != publication_postorder.as_slice()
+        || plan.detach_postorder() != detach_postorder.as_slice()
+        || plan.execution_order() != execution_order.as_slice()
+        || plan.plan_commitment() != plan_commitment
+        || encode_realization_plan_v1(&plan)? != bytes
+    {
+        return Err(HierarchyArtifactCodecError::NonCanonical);
+    }
+    Ok(plan)
+}
+
+/// Decodes and fully validates canonical realization progress.
+pub(crate) fn decode_realization_progress_v1(
+    bytes: &[u8],
+) -> Result<DurableRealizationProgressV1, HierarchyArtifactCodecError> {
+    let mut cursor = ArtifactCursor::new(bytes, REALIZATION_PROGRESS_MAGIC)?;
+    let project = ProjectId::from_bytes(cursor.take::<16>()?);
+    let tree_generation = Revision::new(cursor.u64()?);
+    let attachment = AttachmentId::from_bytes(cursor.take::<16>()?);
+    let attachment_generation = DesiredGeneration::new(cursor.u64()?);
+    let plan_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let recipe_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let replacement = decode_replacement(&mut cursor)?;
+    let count = cursor.bounded_count(super::recovery::MAXIMUM_REALIZATION_STAGE_HISTORY)?;
+    let mut observations = Vec::new();
+    observations
+        .try_reserve_exact(count)
+        .map_err(|_| HierarchyArtifactCodecError::Capacity)?;
+    for _ in 0..count {
+        let sequence = cursor.u64()?;
+        let stage = decode_realization_stage(cursor.u8()?)?;
+        let inventory_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+        observations.push(RealizationStageObservationV1::from_durable_parts(
+            sequence,
+            stage,
+            inventory_commitment,
+        ));
+    }
+    let history_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    cursor.finish()?;
+    let progress = DurableRealizationProgressV1::from_canonical_parts(
+        project,
+        tree_generation,
+        attachment,
+        attachment_generation,
+        plan_commitment,
+        recipe_commitment,
+        replacement,
+        observations,
+        history_commitment,
+    )
+    .map_err(|_| HierarchyArtifactCodecError::InvalidModel)?;
+    if encode_realization_progress_v1(&progress)? != bytes {
+        return Err(HierarchyArtifactCodecError::NonCanonical);
+    }
+    Ok(progress)
+}
+
+/// Decodes and fully validates canonical detach progress.
+pub(crate) fn decode_detach_progress_v1(
+    bytes: &[u8],
+) -> Result<DurableDetachProgressV1, HierarchyArtifactCodecError> {
+    let mut cursor = ArtifactCursor::new(bytes, DETACH_PROGRESS_MAGIC)?;
+    let project = ProjectId::from_bytes(cursor.take::<16>()?);
+    let tree_generation = Revision::new(cursor.u64()?);
+    let attachment = AttachmentId::from_bytes(cursor.take::<16>()?);
+    let attachment_generation = DesiredGeneration::new(cursor.u64()?);
+    let detach_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let count = cursor.bounded_count(super::recovery::MAXIMUM_REALIZATION_STAGE_HISTORY)?;
+    let mut observations = Vec::new();
+    observations
+        .try_reserve_exact(count)
+        .map_err(|_| HierarchyArtifactCodecError::Capacity)?;
+    for _ in 0..count {
+        observations.push(DetachStageObservationV1::from_verified_parts(
+            cursor.u64()?,
+            decode_detach_stage(cursor.u8()?)?,
+            ObjectDigest::from_bytes(cursor.take::<32>()?),
+        ));
+    }
+    let history_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    cursor.finish()?;
+    let progress = DurableDetachProgressV1::from_canonical_parts(
+        project,
+        tree_generation,
+        attachment,
+        attachment_generation,
+        detach_commitment,
+        observations,
+        history_commitment,
+    )
+    .map_err(|_| HierarchyArtifactCodecError::InvalidModel)?;
+    if encode_detach_progress_v1(&progress)? != bytes {
+        return Err(HierarchyArtifactCodecError::NonCanonical);
+    }
+    Ok(progress)
+}
+
+/// Decodes and fully validates one canonical transaction-state subset.
+pub(crate) fn decode_realization_transaction_state_v1(
+    bytes: &[u8],
+) -> Result<DurableRealizationTransactionV1, HierarchyArtifactCodecError> {
+    let mut cursor = ArtifactCursor::new(bytes, TRANSACTION_STATE_MAGIC)?;
+    let project = ProjectId::from_bytes(cursor.take::<16>()?);
+    let tree_generation = Revision::new(cursor.u64()?);
+    let plan_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let count = cursor.bounded_count(MAXIMUM_REALIZATION_ACTIONS)?;
+    let mut actions = Vec::new();
+    actions
+        .try_reserve_exact(count)
+        .map_err(|_| HierarchyArtifactCodecError::Capacity)?;
+    for _ in 0..count {
+        let attachment = AttachmentId::from_bytes(cursor.take::<16>()?);
+        let action_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+        let outcome = match cursor.u8()? {
+            0 => TransactionActionOutcomeV1::Completed,
+            1 => TransactionActionOutcomeV1::Aborted,
+            2 => TransactionActionOutcomeV1::Faulted,
+            _ => return Err(HierarchyArtifactCodecError::NonCanonical),
+        };
+        let inventory_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+        actions.push(TransactionActionObservationV1::from_verified_parts(
+            attachment,
+            action_commitment,
+            outcome,
+            inventory_commitment,
+        ));
+    }
+    let state_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    cursor.finish()?;
+    let state = DurableRealizationTransactionV1::from_canonical_parts(
+        project,
+        tree_generation,
+        plan_commitment,
+        actions,
+        state_commitment,
+    )
+    .map_err(|_| HierarchyArtifactCodecError::InvalidModel)?;
+    if encode_realization_transaction_state_v1(&state)? != bytes {
+        return Err(HierarchyArtifactCodecError::NonCanonical);
+    }
+    Ok(state)
+}
+
+/// Decodes and fully validates one fixed realization head.
+pub(crate) fn decode_protected_realization_head_v1(
+    bytes: &[u8],
+) -> Result<RetainedRealizationHeadV1, HierarchyArtifactCodecError> {
+    let mut cursor = ArtifactCursor::new(bytes, REALIZATION_HEAD_MAGIC)?;
+    let head = RetainedRealizationHeadV1::from_verified_parts(
+        ProjectId::from_bytes(cursor.take::<16>()?),
+        Revision::new(cursor.u64()?),
+        AttachmentId::from_bytes(cursor.take::<16>()?),
+        DesiredGeneration::new(cursor.u64()?),
+        ObjectDigest::from_bytes(cursor.take::<32>()?),
+        ObjectDigest::from_bytes(cursor.take::<32>()?),
+        cursor.u64()?,
+        decode_realization_stage(cursor.u8()?)?,
+        ObjectDigest::from_bytes(cursor.take::<32>()?),
+        ObjectDigest::from_bytes(cursor.take::<32>()?),
+        ObjectDigest::from_bytes(cursor.take::<32>()?),
+    );
+    cursor.finish()?;
+    if encode_protected_realization_head_v1(head)? != bytes {
+        return Err(HierarchyArtifactCodecError::NonCanonical);
+    }
+    Ok(head)
+}
+
+/// Decodes and fully validates one fixed detach head.
+pub(crate) fn decode_protected_detach_head_v1(
+    bytes: &[u8],
+) -> Result<RetainedDetachHeadV1, HierarchyArtifactCodecError> {
+    let mut cursor = ArtifactCursor::new(bytes, DETACH_HEAD_MAGIC)?;
+    let head = RetainedDetachHeadV1::from_verified_parts(
+        ProjectId::from_bytes(cursor.take::<16>()?),
+        Revision::new(cursor.u64()?),
+        AttachmentId::from_bytes(cursor.take::<16>()?),
+        DesiredGeneration::new(cursor.u64()?),
+        ObjectDigest::from_bytes(cursor.take::<32>()?),
+        ObjectDigest::from_bytes(cursor.take::<32>()?),
+        ObjectDigest::from_bytes(cursor.take::<32>()?),
+    );
+    cursor.finish()?;
+    if encode_protected_detach_head_v1(head)? != bytes {
+        return Err(HierarchyArtifactCodecError::NonCanonical);
+    }
+    Ok(head)
+}
+
+/// Decodes and fully validates one fixed transaction head.
+pub(crate) fn decode_protected_transaction_head_v1(
+    bytes: &[u8],
+) -> Result<RetainedRealizationTransactionHeadV1, HierarchyArtifactCodecError> {
+    let mut cursor = ArtifactCursor::new(bytes, TRANSACTION_HEAD_MAGIC)?;
+    let head = RetainedRealizationTransactionHeadV1::from_verified_parts(
+        ProjectId::from_bytes(cursor.take::<16>()?),
+        Revision::new(cursor.u64()?),
+        ObjectDigest::from_bytes(cursor.take::<32>()?),
+        ObjectDigest::from_bytes(cursor.take::<32>()?),
+        ObjectDigest::from_bytes(cursor.take::<32>()?),
+    );
+    cursor.finish()?;
+    if encode_protected_transaction_head_v1(head)? != bytes {
+        return Err(HierarchyArtifactCodecError::NonCanonical);
+    }
+    Ok(head)
+}
+
 /// Returns a domain-separated commitment to canonical artifact bytes.
 ///
 /// # Errors
@@ -612,6 +901,159 @@ fn verify_exact(
     hierarchy_artifact_digest_v1(supplied)
 }
 
+fn decode_publication(
+    cursor: &mut ArtifactCursor<'_>,
+    project: ProjectId,
+    tree_generation: Revision,
+) -> Result<AttachmentRealizationV1, HierarchyArtifactCodecError> {
+    let intent_bytes = cursor.length_prefixed(MAXIMUM_HIERARCHY_ARTIFACT_BYTES)?;
+    let intent =
+        aos_sandbox_core::decode_attachment_intent_v1(intent_bytes, DecodeLimits::default())
+            .map_err(|_| HierarchyArtifactCodecError::NonCanonical)?;
+    if aos_sandbox_core::encode_attachment_intent_v1(&intent) != intent_bytes {
+        return Err(HierarchyArtifactCodecError::NonCanonical);
+    }
+    let consumer_node = NodeId::from_bytes(cursor.take::<16>()?);
+    let assignment_epoch = AssignmentEpoch::new(cursor.u64()?);
+    let observation_set_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let assignment_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let source_owner = SandboxId::from_bytes(cursor.take::<16>()?);
+    let source_owner_generation = DesiredGeneration::new(cursor.u64()?);
+    let source_export = ExportId::from_bytes(cursor.take::<16>()?);
+    let source_node = cursor.optional_bytes()?.map(NodeId::from_bytes);
+    let source_namespace_generation = cursor.optional_u64()?.map(NamespaceGeneration::new);
+    let source_assignment_epoch = cursor.optional_u64()?.map(AssignmentEpoch::new);
+    let source_handle_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let source_retention_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let request_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let policy_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let lease_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let inventory_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let replacement = decode_replacement(cursor)?;
+    let dependencies = cursor.attachments(MAXIMUM_REALIZATION_DEPENDENCIES)?;
+    let recipe_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+
+    AttachmentRealizationV1::from_canonical_parts(
+        project,
+        tree_generation,
+        intent,
+        consumer_node,
+        assignment_epoch,
+        observation_set_commitment,
+        assignment_commitment,
+        source_owner,
+        source_owner_generation,
+        source_export,
+        source_node,
+        source_namespace_generation,
+        source_assignment_epoch,
+        source_handle_commitment,
+        source_retention_commitment,
+        request_commitment,
+        policy_commitment,
+        lease_commitment,
+        inventory_commitment,
+        replacement,
+        dependencies,
+        recipe_commitment,
+    )
+    .map_err(|_| HierarchyArtifactCodecError::InvalidModel)
+}
+
+fn decode_detach(
+    cursor: &mut ArtifactCursor<'_>,
+    project: ProjectId,
+    tree_generation: Revision,
+) -> Result<AttachmentDetachV1, HierarchyArtifactCodecError> {
+    let attachment = AttachmentId::from_bytes(cursor.take::<16>()?);
+    let generation = DesiredGeneration::new(cursor.u64()?);
+    let consumer = SandboxId::from_bytes(cursor.take::<16>()?);
+    let consumer_incarnation = IncarnationId::from_bytes(cursor.take::<16>()?);
+    let consumer_node = NodeId::from_bytes(cursor.take::<16>()?);
+    let assignment_epoch = AssignmentEpoch::new(cursor.u64()?);
+    let observation_set_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let namespace_generation = NamespaceGeneration::new(cursor.u64()?);
+    let destination_slot = AttachmentSlotId::from_bytes(cursor.take::<16>()?);
+    let recipe_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let assignment_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let request_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let policy_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let inventory_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let detach_after = cursor.attachments(MAXIMUM_REALIZATION_DEPENDENCIES)?;
+    let detach_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+
+    AttachmentDetachV1::from_canonical_parts(
+        project,
+        tree_generation,
+        attachment,
+        generation,
+        consumer,
+        consumer_incarnation,
+        consumer_node,
+        assignment_epoch,
+        observation_set_commitment,
+        namespace_generation,
+        destination_slot,
+        recipe_commitment,
+        assignment_commitment,
+        request_commitment,
+        policy_commitment,
+        inventory_commitment,
+        detach_after,
+        detach_commitment,
+    )
+    .map_err(|_| HierarchyArtifactCodecError::InvalidModel)
+}
+
+fn decode_replacement(
+    cursor: &mut ArtifactCursor<'_>,
+) -> Result<Option<ReplacementTransactionV1>, HierarchyArtifactCodecError> {
+    match cursor.u8()? {
+        0 => Ok(None),
+        1 => {
+            let predecessor = AttachmentId::from_bytes(cursor.take::<16>()?);
+            let successor = AttachmentId::from_bytes(cursor.take::<16>()?);
+            let predecessor_generation = DesiredGeneration::new(cursor.u64()?);
+            let predecessor_recipe_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+            let transaction_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+            Ok(Some(ReplacementTransactionV1::from_durable_parts(
+                predecessor,
+                successor,
+                predecessor_generation,
+                predecessor_recipe_commitment,
+                transaction_commitment,
+            )))
+        }
+        _ => Err(HierarchyArtifactCodecError::NonCanonical),
+    }
+}
+
+fn decode_realization_stage(value: u8) -> Result<RealizationStageV1, HierarchyArtifactCodecError> {
+    match value {
+        0 => Ok(RealizationStageV1::Planned),
+        1 => Ok(RealizationStageV1::Prepared),
+        2 => Ok(RealizationStageV1::Published),
+        3 => Ok(RealizationStageV1::Verified),
+        4 => Ok(RealizationStageV1::Draining),
+        5 => Ok(RealizationStageV1::Reaped),
+        6 => Ok(RealizationStageV1::Aborted),
+        7 => Ok(RealizationStageV1::Faulted),
+        _ => Err(HierarchyArtifactCodecError::NonCanonical),
+    }
+}
+
+fn decode_detach_stage(value: u8) -> Result<DetachStageV1, HierarchyArtifactCodecError> {
+    match value {
+        0 => Ok(DetachStageV1::Planned),
+        1 => Ok(DetachStageV1::Detached),
+        2 => Ok(DetachStageV1::Verified),
+        3 => Ok(DetachStageV1::Completed),
+        4 => Ok(DetachStageV1::Aborted),
+        5 => Ok(DetachStageV1::Faulted),
+        _ => Err(HierarchyArtifactCodecError::NonCanonical),
+    }
+}
+
 fn encode_publication(
     writer: &mut ArtifactWriter,
     publication: &AttachmentRealizationV1,
@@ -668,6 +1110,128 @@ fn encode_replacement(
     writer.u64(replacement.predecessor_generation().get())?;
     writer.bytes(replacement.predecessor_recipe_commitment().as_bytes())?;
     writer.bytes(replacement.transaction_commitment().as_bytes())
+}
+
+struct ArtifactCursor<'bytes> {
+    bytes: &'bytes [u8],
+    offset: usize,
+}
+
+impl<'bytes> ArtifactCursor<'bytes> {
+    fn new(
+        bytes: &'bytes [u8],
+        expected_magic: &[u8; 8],
+    ) -> Result<Self, HierarchyArtifactCodecError> {
+        if bytes.len() > MAXIMUM_HIERARCHY_ARTIFACT_BYTES {
+            return Err(HierarchyArtifactCodecError::Capacity);
+        }
+        let mut cursor = Self { bytes, offset: 0 };
+        if cursor.take::<8>()? != *expected_magic
+            || u16::from_be_bytes(cursor.take::<2>()?) != VERSION
+            || cursor.take::<2>()? != [0; 2]
+        {
+            return Err(HierarchyArtifactCodecError::NonCanonical);
+        }
+        Ok(cursor)
+    }
+
+    fn take<const N: usize>(&mut self) -> Result<[u8; N], HierarchyArtifactCodecError> {
+        let end = self
+            .offset
+            .checked_add(N)
+            .ok_or(HierarchyArtifactCodecError::Capacity)?;
+        let value = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(HierarchyArtifactCodecError::NonCanonical)?
+            .try_into()
+            .map_err(|_| HierarchyArtifactCodecError::NonCanonical)?;
+        self.offset = end;
+        Ok(value)
+    }
+
+    fn take_slice(&mut self, length: usize) -> Result<&'bytes [u8], HierarchyArtifactCodecError> {
+        let end = self
+            .offset
+            .checked_add(length)
+            .ok_or(HierarchyArtifactCodecError::Capacity)?;
+        let value = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(HierarchyArtifactCodecError::NonCanonical)?;
+        self.offset = end;
+        Ok(value)
+    }
+
+    fn u8(&mut self) -> Result<u8, HierarchyArtifactCodecError> {
+        Ok(self.take::<1>()?[0])
+    }
+
+    fn u64(&mut self) -> Result<u64, HierarchyArtifactCodecError> {
+        Ok(u64::from_be_bytes(self.take::<8>()?))
+    }
+
+    fn bounded_count(&mut self, maximum: usize) -> Result<usize, HierarchyArtifactCodecError> {
+        let count = usize::try_from(u32::from_be_bytes(self.take::<4>()?))
+            .map_err(|_| HierarchyArtifactCodecError::Capacity)?;
+        if count > maximum {
+            return Err(HierarchyArtifactCodecError::Capacity);
+        }
+        Ok(count)
+    }
+
+    fn length_prefixed(
+        &mut self,
+        maximum: usize,
+    ) -> Result<&'bytes [u8], HierarchyArtifactCodecError> {
+        let length = self.bounded_count(maximum)?;
+        self.take_slice(length)
+    }
+
+    fn optional_bytes<const N: usize>(
+        &mut self,
+    ) -> Result<Option<[u8; N]>, HierarchyArtifactCodecError> {
+        let present = self.u8()?;
+        let value = self.take::<N>()?;
+        match (present, value == [0; N]) {
+            (0, true) => Ok(None),
+            (1, false) => Ok(Some(value)),
+            _ => Err(HierarchyArtifactCodecError::NonCanonical),
+        }
+    }
+
+    fn optional_u64(&mut self) -> Result<Option<u64>, HierarchyArtifactCodecError> {
+        let present = self.u8()?;
+        let value = self.u64()?;
+        match (present, value) {
+            (0, 0) => Ok(None),
+            (1, value) if value != 0 => Ok(Some(value)),
+            _ => Err(HierarchyArtifactCodecError::NonCanonical),
+        }
+    }
+
+    fn attachments(
+        &mut self,
+        maximum: usize,
+    ) -> Result<Vec<AttachmentId>, HierarchyArtifactCodecError> {
+        let count = self.bounded_count(maximum)?;
+        let mut attachments = Vec::new();
+        attachments
+            .try_reserve_exact(count)
+            .map_err(|_| HierarchyArtifactCodecError::Capacity)?;
+        for _ in 0..count {
+            attachments.push(AttachmentId::from_bytes(self.take::<16>()?));
+        }
+        Ok(attachments)
+    }
+
+    fn finish(self) -> Result<(), HierarchyArtifactCodecError> {
+        if self.offset == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(HierarchyArtifactCodecError::NonCanonical)
+        }
+    }
 }
 
 struct ArtifactWriter {

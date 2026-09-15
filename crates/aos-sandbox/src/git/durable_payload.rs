@@ -19,12 +19,13 @@ use super::format::{
 };
 use super::pack_format::decode_pack_generation_payload_v1;
 use super::{
-    decode_git_exchange_plan_v1, encode_pack_generation_v1, GitAtomicCasDigestV1, GitBoottimeV1,
-    GitCheapForkStatusV1, GitCheapForkV1, GitDurableRecordKindV1, GitExchangePlanV1,
-    GitExportGenerationDigestV1, GitExportHistoryRecordV1, GitModelError, GitObjectFormatV1,
-    GitPackConsumerV1, GitPackGenerationDigestV1, GitPackLeaseStatusV1, GitPackLeaseV1,
-    GitPublicationRecordV1, GitReceiveHistoryRecordV1, GitReceivePhaseV1, GitRefMapDigestV1,
-    GitRepositoryStateV1, GitRepositoryV1, GitTrustedValidatorV1, ImmutablePackGenerationV1,
+    GitAtomicCasDigestV1, GitBoottimeV1, GitCheapForkStatusV1, GitCheapForkV1,
+    GitDurableRecordKindV1, GitExchangePlanV1, GitExportGenerationDigestV1,
+    GitExportHistoryRecordV1, GitModelError, GitObjectFormatV1, GitPackConsumerV1,
+    GitPackGenerationDigestV1, GitPackLeaseStatusV1, GitPackLeaseV1, GitPublicationRecordV1,
+    GitReceiveHistoryRecordV1, GitReceivePhaseV1, GitRefMapDigestV1, GitRepositoryStateV1,
+    GitRepositoryV1, GitTrustedValidatorV1, ImmutablePackGenerationV1, decode_git_exchange_plan_v1,
+    encode_pack_generation_v1,
 };
 
 /// Maximum bytes in one reconstructing durable Git payload.

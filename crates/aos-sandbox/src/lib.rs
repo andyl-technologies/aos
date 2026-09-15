@@ -7,6 +7,12 @@
 //! before activating process-local holder channels. [`publisher_ingress`] owns
 //! inert execution/challenge audit records; Linux publisher control and sessions
 //! bind their registration to the original live process without granting effects.
+//! [`client_state`], [`cli_model`], and [`controller_query`] provide dormant pure
+//! client and observation projections. [`environment`], [`git`], [`hierarchy`],
+//! [`lifecycle`], [`policy_compiler`], and [`publisher_admission`] own inert
+//! RFC-0021 domain models and protected-journal seams. [`publisher_roots`] owns
+//! the portable root registry and retains live root custody only on Linux,
+//! without activating it.
 //! Raw Linux syscalls and
 //! privileged broker implementations deliberately live outside this crate.
 
@@ -24,7 +30,10 @@ pub mod attachment_state;
 pub mod attachment_verification;
 pub mod authority;
 pub mod cache_residency;
+pub mod cli_model;
+pub mod client_state;
 pub mod controller;
+pub mod controller_query;
 #[cfg(target_os = "linux")]
 pub mod controller_service;
 #[cfg(target_os = "linux")]
@@ -32,12 +41,16 @@ pub mod destination_slot_effect;
 #[cfg(target_os = "linux")]
 pub mod destination_slot_inventory;
 pub mod dispatch;
+pub mod environment;
 pub mod filesystem_view_state;
+pub mod git;
+pub mod hierarchy;
 #[cfg(target_os = "linux")]
 pub mod host_catalog_publication;
 #[cfg(target_os = "linux")]
 pub mod host_catalog_reconciliation;
 pub mod journal;
+pub mod lifecycle;
 #[cfg(target_os = "linux")]
 mod local_channel;
 #[cfg(target_os = "linux")]
@@ -47,6 +60,10 @@ pub mod local_sessions;
 #[cfg(target_os = "linux")]
 pub mod mount_attempt;
 #[cfg(target_os = "linux")]
+pub mod mount_manager_source_inventory;
+#[cfg(target_os = "linux")]
+pub mod mount_manager_startup;
+#[cfg(target_os = "linux")]
 pub mod mount_observation_state;
 #[cfg(target_os = "linux")]
 pub mod mount_preparation;
@@ -55,18 +72,22 @@ pub mod mount_source_acquisition_inventory;
 pub mod ownership_authority;
 pub mod ownership_resume;
 pub mod ownership_service;
+pub mod policy_compiler;
 pub mod publication;
+pub mod publisher_admission;
 pub mod publisher_authority;
 #[cfg(target_os = "linux")]
 pub mod publisher_control;
 pub mod publisher_ingress;
 pub mod publisher_policy;
+pub mod publisher_roots;
 #[cfg(target_os = "linux")]
 pub mod publisher_sessions;
 pub mod reconciler;
 #[cfg(target_os = "linux")]
 pub mod resource_inventory;
 pub mod runtime_authority;
+pub mod runtime_execution;
 #[cfg(target_os = "linux")]
 pub mod runtime_scope;
 pub mod sandbox_spec_state;
@@ -146,8 +167,14 @@ pub use host_catalog_reconciliation::{
     HostCatalogReconciliationV1,
 };
 pub use journal::{
-    CommitResult, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
-    JournalRecord, JournalTransaction, ProtectedJournalAuthority, ProtectedJournalPreflight,
+    CommitResult, FixedSourceProviderJournalHandoffV1, GlobalCapacityReservationPurposeV1,
+    GlobalCapacityReservationRecoveryBindingV1, GlobalCapacityReservationRequestV1,
+    GlobalCapacityReservationV1, IdempotencyKey, IdempotencyOutcome, Journal, JournalError,
+    JournalLimits, JournalRecord, JournalTransaction, MountManagerStartupPolicyReceiptV1,
+    MountSourceAcquisitionJournalAuthorityV2, MountSourceConsumptionCommitReceipt,
+    MountSourceConsumptionCompanionProjectionV2, MountSourceConsumptionJournalAuthorityV1,
+    MountSourceConsumptionPreflight, MountSourceMigrationJournalAuthorityV2,
+    PreparedGlobalCapacityReservationV1, ProtectedJournalAuthority, ProtectedJournalPreflight,
     ProtectedJournalSnapshot, RecordNamespace, RecoveryReport,
 };
 #[cfg(target_os = "linux")]
@@ -157,6 +184,15 @@ pub use mount_attempt::{
     MountAttemptError, MountAttemptInventoryObservationV1, MountAttemptInventoryStatusV1,
     MountCompletionOutcomeV1, MountDispatchClient, MountInventoryClient,
     MountInventorySnapshotOutcomeV1,
+};
+#[cfg(target_os = "linux")]
+pub use mount_manager_source_inventory::{
+    CapturedMountManagerStartupV1, MountManagerActivationDescriptorKindV1,
+    MountManagerActivationDescriptorV1, MountManagerActivationDescriptorsV1,
+    MountManagerExecutionDeathKindV1, MountManagerSourceAbsenceProjectionV1,
+    MountManagerSourceAbsenceV1, MountManagerSourceControlSessionV1,
+    MountManagerSourceInventoryError, MountManagerStartupCaptureOutcomeV1,
+    MountManagerStartupProtectedOpenReportV1, MountManagerStartupProtectedOwnerV1,
 };
 #[cfg(target_os = "linux")]
 pub use mount_observation_state::{

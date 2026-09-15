@@ -6,14 +6,14 @@
 //! candidate traffic state until the selected method body, error shape, and
 //! descriptor contract have all validated.
 //!
-//! The first supported method is Network 1.0 `InventoryResources`. Its request
-//! body defines only the common header. It has no catalog, effect, portable
-//! semantic, or durable-owner digest, so this module deliberately invents none.
-//! Retained evidence consists of the canonical envelope packet, the exact
-//! signed and semantically validated nested body bytes, a domain-separated
-//! packet digest, the signed ClientRecord bytes and digest, request/session/
-//! sequence/response-bound links, and the exact empty descriptor-role table.
+//! The bootstrap state machine specializes the mandatory first Network 1.0
+//! `InventoryResources` exchange. [`all_methods`] supplies the dormant uniform
+//! semantic, durability, replay, and recovery composition for every method in
+//! the closed Host, Storage, Mount, and Network profile. Neither path is wired
+//! to production dispatch.
 
+/// Holds dormant method-complete authenticated semantic composition.
+pub mod all_methods;
 /// Holds production-inert checkpoint companion drafts for sealed composition.
 #[doc(hidden)]
 pub mod checkpoint;

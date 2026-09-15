@@ -13,8 +13,8 @@ use aos_sandbox_core::{
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    environment_manifest_digest_v1, EnvironmentGenerationManifestV1, EnvironmentManifestDigestV1,
-    EnvironmentModelError, MAXIMUM_ENVIRONMENT_INPUTS,
+    EnvironmentGenerationManifestV1, EnvironmentManifestDigestV1, EnvironmentModelError,
+    MAXIMUM_ENVIRONMENT_INPUTS, environment_manifest_digest_v1,
 };
 
 /// Selects one exact immutable environment generation and facade view.

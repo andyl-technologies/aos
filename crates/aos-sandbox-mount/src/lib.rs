@@ -59,5 +59,15 @@ impl From<aos_sandbox::journal::JournalError> for MountError {
     }
 }
 
+impl From<aos_sandbox_protocol::mount_source_acquisition_state::MountSourceAcquisitionStateError>
+    for MountError
+{
+    fn from(
+        error: aos_sandbox_protocol::mount_source_acquisition_state::MountSourceAcquisitionStateError,
+    ) -> Self {
+        Self::State(error.to_string())
+    }
+}
+
 /// Convenience result type for mount broker operations.
 pub type Result<T> = std::result::Result<T, MountError>;

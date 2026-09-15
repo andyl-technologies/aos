@@ -344,6 +344,7 @@ pub(crate) fn decode_signer(
         2 => SourceProviderKeyUsageV1::ProviderHello,
         3 => SourceProviderKeyUsageV1::RootMountRecord,
         4 => SourceProviderKeyUsageV1::ProviderOutcome,
+        5 => SourceProviderKeyUsageV1::CatalogPublisher,
         _ => return Err(SourceProviderSecurityError::format("signer", "usage")),
     };
     if usage != expected_usage {

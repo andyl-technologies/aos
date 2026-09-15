@@ -274,7 +274,7 @@ fn ensure_timestamp_before_deadline(
     }
 }
 
-fn boottime_nanoseconds() -> Result<u64> {
+pub(crate) fn boottime_nanoseconds() -> Result<u64> {
     let mut time = MaybeUninit::<libc::timespec>::uninit();
     // SAFETY: time names writable output storage for CLOCK_BOOTTIME.
     let result = unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, time.as_mut_ptr()) };

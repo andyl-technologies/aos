@@ -1,8 +1,8 @@
 //! Non-authorizing recovery classification for lifecycle operations.
 
 use super::{
-    resume_ambiguous_attempt_v1, LifecycleAmbiguousResumeV1, LifecycleMethodSemanticCommitV1,
-    LifecycleOperationV1, LifecyclePhaseV1, LifecycleStepStateV1,
+    LifecycleAmbiguousResumeV1, LifecycleMethodSemanticCommitV1, LifecycleOperationV1,
+    LifecyclePhaseV1, LifecycleStepStateV1, resume_ambiguous_attempt_v1,
 };
 
 /// Classifies safe recovery work without carrying an executable request.

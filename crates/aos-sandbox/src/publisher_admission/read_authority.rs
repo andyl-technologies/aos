@@ -11,9 +11,9 @@ use aos_sandbox_core::{
     model::{CacheDomain, CacheDomainKind},
 };
 
-use crate::publisher_roots::{
-    AuthorizedPublicationRoot, PublicationRootId, PublicationRootRegistry,
-};
+use crate::publisher_roots::PublicationRootId;
+#[cfg(target_os = "linux")]
+use crate::publisher_roots::{AuthorizedPublicationRoot, PublicationRootRegistry};
 
 use super::digest_parts;
 
@@ -618,6 +618,7 @@ impl OpenForReadRequestV1 {
 
 /// Opaque pin retaining the exact catalog projection and live root custody.
 #[derive(Debug)]
+#[cfg(target_os = "linux")]
 pub struct AuthorizedCacheRead<'authority> {
     entry: &'authority CommittedReadEntryV1,
     _authority: CurrentReadAuthority<'authority>,
@@ -627,6 +628,7 @@ pub struct AuthorizedCacheRead<'authority> {
 
 /// Gives absent and concealed objects the identical external result.
 #[derive(Debug)]
+#[cfg(target_os = "linux")]
 pub enum CacheReadDecisionV1<'authority> {
     /// Current authorization and a retained catalog/root pin permit opening.
     Found(AuthorizedCacheRead<'authority>),
@@ -644,6 +646,7 @@ pub enum CacheReadDecisionV1<'authority> {
 /// disclosure; retirement remains blocked until catalog eviction and all pins
 /// release. A `Retired` root is always concealed.
 #[must_use]
+#[cfg(target_os = "linux")]
 pub fn authorize_cache_read_v1<'authority>(
     request: &OpenForReadRequestV1,
     authority: CurrentReadAuthority<'authority>,
@@ -688,6 +691,7 @@ pub fn authorize_cache_read_v1<'authority>(
     })
 }
 
+#[cfg(target_os = "linux")]
 impl AuthorizedCacheRead<'_> {
     /// Returns the exact pinned object descriptor.
     #[must_use]

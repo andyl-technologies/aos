@@ -66,6 +66,10 @@ pub struct FrozenEvictionPlanV1 {
 }
 
 impl FrozenEvictionPlanV1 {
+    pub(crate) const fn authority_binding(&self) -> (CacheAuthorityScopeV1, ObjectDigest) {
+        (self.authority_scope, self.authority_digest)
+    }
+
     pub(crate) fn recover_historical(
         operation: OperationId,
         partition: PhysicalPartitionId,
@@ -770,6 +774,9 @@ impl EvictionRetryAuthorityV1 {
         observation: ObjectDigest,
         now: u64,
     ) -> Result<Self, EvictionError> {
+        if progress.state != EvictionCandidateStateV1::UnlinkAmbiguous {
+            return Err(EvictionError::InvalidRetryAuthority);
+        }
         let scope = eviction_effect_scope(
             plan,
             progress,
@@ -804,7 +811,7 @@ impl EvictionRetryAuthorityV1 {
         Ok(authority)
     }
 
-    fn validate_current(
+    pub(crate) fn validate_current(
         self,
         owner: &CacheAuthorityOwner<'_, '_>,
         capability: &VerifiedCacheCapabilityV1,
@@ -812,14 +819,15 @@ impl EvictionRetryAuthorityV1 {
         progress: &EvictionProgressV1,
         now: u64,
     ) -> Result<(), EvictionError> {
-        if self.authority_scope
-            != eviction_effect_scope(
-                plan,
-                progress,
-                retry_subject(progress, self.old_attempt_fence, self.observation),
-                self.authority_scope.generation(),
-                self.authority_scope.valid_until(),
-            )?
+        if progress.state != EvictionCandidateStateV1::UnlinkAmbiguous
+            || self.authority_scope
+                != eviction_effect_scope(
+                    plan,
+                    progress,
+                    retry_subject(progress, self.old_attempt_fence, self.observation),
+                    self.authority_scope.generation(),
+                    self.authority_scope.valid_until(),
+                )?
             || self.current_authority != capability.record_digest()
         {
             return Err(EvictionError::InvalidRetryAuthority);
@@ -831,6 +839,30 @@ impl EvictionRetryAuthorityV1 {
             now,
         )?;
         Ok(())
+    }
+
+    pub(crate) fn matches_observation_and_successor(
+        self,
+        observation: &UnlinkObservationV1,
+        previous: &EvictionProgressV1,
+        next: &EvictionProgressV1,
+        catalog: Option<&CatalogEntryV1>,
+    ) -> bool {
+        observation.outcome == UnlinkOutcomeV1::StillPresentExact
+            && observation.evidence == self.observation
+            && self.plan_digest == previous.plan_digest
+            && self.deleting_catalog_digest == previous.current_catalog_digest
+            && next.plan_digest == previous.plan_digest
+            && next.candidate == previous.candidate
+            && next.state == EvictionCandidateStateV1::Deleting
+            && next.current_catalog_digest == previous.current_catalog_digest
+            && next.evidence == Some(observation.evidence)
+            && next.reclaimed_bytes == 0
+            && catalog.is_some_and(|entry| {
+                entry.descriptor == previous.candidate.descriptor
+                    && entry.presence == CatalogPresenceV1::Deleting
+                    && entry.digest == previous.current_catalog_digest
+            })
     }
 }
 
@@ -857,6 +889,59 @@ pub struct UnlinkObservationV1 {
 }
 
 impl UnlinkObservationV1 {
+    pub(crate) const fn authority_binding(&self) -> (CacheAuthorityScopeV1, ObjectDigest) {
+        (self.authority_scope, self.evidence)
+    }
+
+    pub(crate) fn matches_successor(
+        &self,
+        previous: &EvictionProgressV1,
+        next: &EvictionProgressV1,
+        catalog: Option<&CatalogEntryV1>,
+    ) -> bool {
+        if self.plan_digest != previous.plan_digest
+            || self.descriptor != previous.candidate.descriptor
+            || self.backing != previous.candidate.backing
+            || self.root_custody != previous.candidate.root_custody
+            || self.canonical_name != previous.candidate.canonical_name
+            || self.deleting_catalog_digest != previous.current_catalog_digest
+            || next.plan_digest != previous.plan_digest
+            || next.candidate != previous.candidate
+            || next.evidence != Some(self.evidence)
+            || next.reclaimed_bytes != 0
+        {
+            return false;
+        }
+        let deleting_catalog_unchanged = || {
+            catalog.is_some_and(|entry| {
+                entry.descriptor == previous.candidate.descriptor
+                    && entry.presence == CatalogPresenceV1::Deleting
+                    && entry.digest == previous.current_catalog_digest
+            })
+        };
+        match self.outcome {
+            UnlinkOutcomeV1::RemovedOrAlreadyAbsent => {
+                next.state == EvictionCandidateStateV1::RemovedAwaitingReclaim
+                    && next.current_catalog_digest == previous.current_catalog_digest
+                    && deleting_catalog_unchanged()
+            }
+            UnlinkOutcomeV1::Ambiguous | UnlinkOutcomeV1::StillPresentExact => {
+                next.state == EvictionCandidateStateV1::UnlinkAmbiguous
+                    && next.current_catalog_digest == previous.current_catalog_digest
+                    && deleting_catalog_unchanged()
+            }
+            UnlinkOutcomeV1::IdentityMismatch => {
+                next.state == EvictionCandidateStateV1::Quarantined
+                    && catalog.is_some_and(|entry| {
+                        entry.descriptor == previous.candidate.descriptor
+                            && entry.presence == CatalogPresenceV1::Quarantined
+                            && entry.predecessor == Some(previous.current_catalog_digest)
+                            && entry.digest == next.current_catalog_digest
+                    })
+            }
+        }
+    }
+
     /// Issues an unlink observation from the exact current protected scope.
     ///
     /// # Errors
@@ -902,7 +987,7 @@ impl UnlinkObservationV1 {
         })
     }
 
-    fn validate_current(
+    pub(crate) fn validate_current(
         &self,
         owner: &CacheAuthorityOwner<'_, '_>,
         capability: &VerifiedCacheCapabilityV1,
@@ -946,6 +1031,32 @@ pub struct ReclamationEvidenceV1 {
 }
 
 impl ReclamationEvidenceV1 {
+    pub(crate) const fn authority_binding(self) -> (CacheAuthorityScopeV1, ObjectDigest) {
+        (self.authority_scope, self.digest)
+    }
+
+    pub(crate) fn matches_successor(
+        self,
+        previous: &EvictionProgressV1,
+        next: &EvictionProgressV1,
+        catalog: Option<&CatalogEntryV1>,
+    ) -> bool {
+        self.plan_digest == previous.plan_digest
+            && self.backing == previous.candidate.backing
+            && self.reclaimable_bytes == previous.candidate.physical_bytes
+            && next.plan_digest == previous.plan_digest
+            && next.candidate == previous.candidate
+            && next.state == EvictionCandidateStateV1::Reclaimed
+            && next.evidence == Some(self.digest)
+            && next.reclaimed_bytes == self.reclaimable_bytes
+            && catalog.is_some_and(|entry| {
+                entry.descriptor == previous.candidate.descriptor
+                    && entry.presence == CatalogPresenceV1::Evicted
+                    && entry.predecessor == Some(previous.current_catalog_digest)
+                    && entry.digest == next.current_catalog_digest
+            })
+    }
+
     /// Issues exact allocated-byte reclamation evidence from protected state.
     ///
     /// # Errors
@@ -987,7 +1098,7 @@ impl ReclamationEvidenceV1 {
         })
     }
 
-    fn validate_current(
+    pub(crate) fn validate_current(
         self,
         owner: &CacheAuthorityOwner<'_, '_>,
         capability: &VerifiedCacheCapabilityV1,

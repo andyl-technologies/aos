@@ -22,6 +22,7 @@ use sha2::{Digest as _, Sha256};
 
 use aos_sandbox_core::{ObjectDigest, OperationId};
 
+use super::assignment::{AssignmentEffectPlanV1, AssignmentIntentV1};
 use super::evidence::AuthenticatedEvidenceContextV1;
 use super::reducer_state::{MultiNodeReducerStateV1, decode_state, encode_state};
 use super::store_authority::{
@@ -315,6 +316,7 @@ struct ProtectedStoreReceiptInnerV1 {
     protected_root_digest: ObjectDigest,
     opaque_receipt_commitment: ObjectDigest,
     replay_fence: ObjectDigest,
+    authority_binding_digest: Option<ObjectDigest>,
     context: AuthenticatedEvidenceContextV1,
 }
 
@@ -347,6 +349,7 @@ impl ProtectedStoreReceiptV1 {
                 protected_root_digest: grant.protected_root_digest(),
                 opaque_receipt_commitment: grant.opaque_receipt_commitment(),
                 replay_fence: grant.replay_fence(),
+                authority_binding_digest: grant.authority_binding_digest(),
                 context: grant.context(),
             },
         };
@@ -370,6 +373,11 @@ impl ProtectedStoreReceiptV1 {
             && self.issuance.protected_root_digest.as_bytes() != &[0; 32]
             && self.issuance.opaque_receipt_commitment.as_bytes() != &[0; 32]
             && self.issuance.replay_fence.as_bytes() != &[0; 32]
+            && self.issuance.context.replay_fence() == self.issuance.replay_fence
+            && self
+                .issuance
+                .authority_binding_digest
+                .is_none_or(|digest| digest.as_bytes() != &[0; 32])
             && self
                 .issuance
                 .context
@@ -592,11 +600,18 @@ impl ProtectedJournalRecordV1 {
             grant,
             verified_at_unix_seconds,
         )?;
+        let authority_shape_valid = match record.domain() {
+            MultiNodeJournalDomainV1::Assignment => {
+                receipt.issuance.authority_binding_digest.is_some()
+            }
+            _ => receipt.issuance.authority_binding_digest.is_none(),
+        };
         if !receipt.matches(
             ProtectedStoreObjectKindV1::Record,
             record_bytes,
             verified_at_unix_seconds,
-        ) {
+        ) || !authority_shape_valid
+        {
             return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
         }
         Ok(Self {
@@ -639,6 +654,12 @@ impl ProtectedJournalRecordV1 {
     #[must_use]
     pub fn replay_fence(&self) -> ObjectDigest {
         self.receipt.issuance.replay_fence
+    }
+
+    /// Returns the authenticated assignment carrier contract, when required.
+    #[must_use]
+    pub fn authority_binding_digest(&self) -> Option<ObjectDigest> {
+        self.receipt.issuance.authority_binding_digest
     }
 
     /// Returns the exact authenticated verifier context.
@@ -830,7 +851,8 @@ impl ProtectedJournalCheckpointV1 {
             ProtectedStoreObjectKindV1::Checkpoint,
             checkpoint_bytes,
             verified_at_unix_seconds,
-        ) {
+        ) || receipt.issuance.authority_binding_digest.is_some()
+        {
             return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
         }
         Ok(Self {
@@ -908,6 +930,7 @@ pub struct MultiNodeJournalReducerV1 {
     storage_replay_fence: Option<ObjectDigest>,
     durability_generation: u64,
     current_receipt_commitment: Option<ObjectDigest>,
+    current_authority_binding_digest: Option<ObjectDigest>,
 }
 
 impl MultiNodeJournalReducerV1 {
@@ -936,6 +959,7 @@ impl MultiNodeJournalReducerV1 {
             storage_replay_fence: None,
             durability_generation: 0,
             current_receipt_commitment: None,
+            current_authority_binding_digest: None,
         })
     }
 
@@ -978,6 +1002,7 @@ impl MultiNodeJournalReducerV1 {
             storage_replay_fence: Some(protected_checkpoint.replay_fence()),
             durability_generation: protected_checkpoint.durability_generation(),
             current_receipt_commitment: None,
+            current_authority_binding_digest: None,
         };
         for record in records {
             reducer.apply(record, coordinator_unix_seconds)?;
@@ -1031,6 +1056,8 @@ impl MultiNodeJournalReducerV1 {
         if protected_record.durability_generation() == self.durability_generation {
             return if self.current.as_ref() == Some(record)
                 && self.current_receipt_commitment == Some(protected_record.receipt_commitment())
+                && self.current_authority_binding_digest
+                    == protected_record.authority_binding_digest()
             {
                 Ok(JournalApplyOutcomeV1::Replay)
             } else {
@@ -1044,6 +1071,7 @@ impl MultiNodeJournalReducerV1 {
                 }
                 self.durability_generation = protected_record.durability_generation();
                 self.current_receipt_commitment = Some(protected_record.receipt_commitment());
+                self.current_authority_binding_digest = protected_record.authority_binding_digest();
                 return Ok(JournalApplyOutcomeV1::Replay);
             }
             if record.sequence() != current.sequence().saturating_add(1)
@@ -1063,6 +1091,7 @@ impl MultiNodeJournalReducerV1 {
         self.storage_replay_fence = Some(protected_record.replay_fence());
         self.durability_generation = protected_record.durability_generation();
         self.current_receipt_commitment = Some(protected_record.receipt_commitment());
+        self.current_authority_binding_digest = protected_record.authority_binding_digest();
         Ok(JournalApplyOutcomeV1::Applied)
     }
 
@@ -1154,6 +1183,7 @@ impl MultiNodeJournalReducerV1 {
         self.durability_generation = protected_checkpoint.durability_generation();
         self.current = None;
         self.current_receipt_commitment = None;
+        self.current_authority_binding_digest = None;
         Ok(())
     }
 
@@ -1183,6 +1213,100 @@ impl MultiNodeJournalReducerV1 {
     #[must_use]
     pub const fn restored_effect(&self) -> Option<DurableJournalEffectV1> {
         self.restored_effect
+    }
+
+    /// Issues a sealed semantic grant for the current prepared assignment effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidMultiNodeJournal::InvalidRecoveryTransition`] unless the
+    /// exact current row is protected, assignment-bound, and commits a prepared
+    /// operation and effect.
+    pub(super) fn issue_assignment_effect_grant(
+        &self,
+        plan: AssignmentEffectPlanV1,
+    ) -> Result<AssignmentEffectSemanticGrantV1, InvalidMultiNodeJournal> {
+        let record = self
+            .current
+            .as_ref()
+            .ok_or(InvalidMultiNodeJournal::InvalidRecoveryTransition)?;
+        let receipt_commitment = self
+            .current_receipt_commitment
+            .ok_or(InvalidMultiNodeJournal::InvalidRecoveryTransition)?;
+        let authority_binding_digest = self
+            .current_authority_binding_digest
+            .ok_or(InvalidMultiNodeJournal::InvalidRecoveryTransition)?;
+        let assignment = record
+            .state_payload()
+            .assignment_state()
+            .ok_or(InvalidMultiNodeJournal::InvalidRecoveryTransition)?;
+        let intent = assignment.intent();
+        if self.domain != MultiNodeJournalDomainV1::Assignment
+            || record.domain() != MultiNodeJournalDomainV1::Assignment
+            || record.effect_state() != JournalEffectStateV1::EffectPrepared
+            || record.payload_digest() != intent.assignment_digest()
+            || !plan.matches(record.operation(), intent, record.effect_digest())
+        {
+            return Err(InvalidMultiNodeJournal::InvalidRecoveryTransition);
+        }
+        Ok(AssignmentEffectSemanticGrantV1 {
+            plan,
+            record_digest: record.digest(),
+            receipt_commitment,
+            authority_binding_digest,
+        })
+    }
+}
+
+/// Carries one reducer-issued prepared-assignment semantic commitment.
+///
+/// Construction remains private to [`MultiNodeJournalReducerV1`]. The move-only
+/// grant prevents an effect from being authorized solely from caller-provided
+/// operation or digest scalars.
+#[must_use]
+pub(super) struct AssignmentEffectSemanticGrantV1 {
+    plan: AssignmentEffectPlanV1,
+    record_digest: ObjectDigest,
+    receipt_commitment: ObjectDigest,
+    authority_binding_digest: ObjectDigest,
+}
+
+impl AssignmentEffectSemanticGrantV1 {
+    pub(super) const fn operation(&self) -> OperationId {
+        self.plan.operation()
+    }
+
+    pub(super) const fn payload_digest(&self) -> ObjectDigest {
+        self.plan.intent().assignment_digest()
+    }
+
+    pub(super) const fn effect_digest(&self) -> ObjectDigest {
+        self.plan.effect_digest()
+    }
+
+    pub(super) const fn intent(&self) -> &AssignmentIntentV1 {
+        self.plan.intent()
+    }
+
+    pub(super) fn matches(
+        &self,
+        operation: OperationId,
+        intent: &AssignmentIntentV1,
+        effect_digest: ObjectDigest,
+    ) -> bool {
+        self.plan.matches(operation, intent, effect_digest)
+    }
+
+    pub(super) const fn record_digest(&self) -> ObjectDigest {
+        self.record_digest
+    }
+
+    pub(super) const fn receipt_commitment(&self) -> ObjectDigest {
+        self.receipt_commitment
+    }
+
+    pub(super) const fn authority_binding_digest(&self) -> ObjectDigest {
+        self.authority_binding_digest
     }
 }
 
@@ -1274,10 +1398,14 @@ impl PartialEffectRecoveryV1 {
                 )
             );
         if !valid
+            || record.domain() != self.journal_record.record().domain()
             || record.operation() != self.operation
             || record.payload_digest() != self.tuple_digest
             || record.effect_digest() != self.effect_digest
             || journal_record.storage_domain_digest() != self.journal_record.storage_domain_digest()
+            || journal_record.replay_fence() != self.journal_record.replay_fence()
+            || journal_record.authority_binding_digest()
+                != self.journal_record.authority_binding_digest()
             || journal_record.durability_generation() <= self.journal_record.durability_generation()
             || journal_record.context().node() != prior_context.node()
             || journal_record.context().lineage() != prior_context.lineage()
@@ -1285,6 +1413,9 @@ impl PartialEffectRecoveryV1 {
             || journal_record.context().disclosure_domain_digest()
                 != prior_context.disclosure_domain_digest()
             || journal_record.context().coordinator_epoch() != prior_context.coordinator_epoch()
+            || journal_record.context().carrier_binding_digest()
+                != prior_context.carrier_binding_digest()
+            || journal_record.context().replay_fence() != prior_context.replay_fence()
             || record.sequence() != self.journal_record.record().sequence().saturating_add(1)
             || record.predecessor_digest() != self.journal_record.record().digest()
         {

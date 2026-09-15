@@ -16,24 +16,28 @@ use std::os::fd::OwnedFd;
 use aos_sandbox::journal::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::path::ResolvedPath;
+use aos_sandbox_protocol::mount_source_consumption_state::{
+    SOURCE_PIN_SCHEMA_V1 as SCHEMA, decode_source_pin_key_v1, decode_source_pin_value_v1,
+    encode_source_pin_value_v1, source_pin_key_v1,
+};
+pub(crate) use aos_sandbox_protocol::mount_source_consumption_state::{
+    SourcePinLifecycleV1, SourcePinRowV1,
+};
 use aos_sandbox_protocol::{
     MountSourcePhysicalProofV1, MountSourceProviderHistoryV1, SourceRealizationBindingV1,
     mount_source_physical_proof_digest_v1, mount_source_provider_history_is_valid_v1,
     mount_source_realization_handle_v1,
 };
-use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::broker::fault_stale_boot_resources;
 use crate::keeper::{SourceCustodyEvidence, SourceDescriptorStore, SourcePinName};
 use crate::state::mount_resource_v1::{
     MountResourceLimitsV1, MountResourceStateV1, MountResourceTableV1, MountResourceV1,
+    MountResourceV1Ext, ObjectDescriptorV1Ext,
 };
 use crate::{MountError, Result};
 
-const SCHEMA: &str = "AOSMSP01";
-const FORMAT_VERSION: u16 = 1;
-const KEY_PREFIX: &[u8] = b"aos.mount.source-pin.v1\0";
 const MAXIMUM_BINDING_BYTES: usize = 64 * 1024;
 const MAXIMUM_VALUE_BYTES: usize = 128 * 1024;
 
@@ -71,54 +75,6 @@ impl SourceRealizationEvidenceV1 {
 }
 
 pub(crate) use aos_sandbox_protocol::MountSourceProofClassV1 as SourcePinProofClassV1;
-
-/// Records the durable lifecycle of one realization handle.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum SourcePinLifecycleV1 {
-    /// PID 1 custody exists and Mount resources may reference the pin.
-    Active,
-    /// New references are forbidden and acknowledged removal is pending.
-    Reaping,
-    /// Removal was acknowledged; the row remains as an anti-replay tombstone.
-    Released,
-}
-
-/// Persists exact logical, provider, physical, and admission authority.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct SourcePinRowV1 {
-    pub(crate) handle: SourceRealizationHandleV1,
-    pub(crate) revision: u64,
-    pub(crate) binding_bytes: Vec<u8>,
-    pub(crate) binding_digest: [u8; 32],
-    pub(crate) proof_class: SourcePinProofClassV1,
-    pub(crate) provider_authority_id: [u8; 16],
-    pub(crate) provider_authority_generation: u64,
-    pub(crate) provider_authority_digest: [u8; 32],
-    pub(crate) provider_resource_id: [u8; 32],
-    pub(crate) provider_resource_generation: u64,
-    pub(crate) provider_resource_digest: [u8; 32],
-    pub(crate) provider_catalog_generation: u64,
-    pub(crate) provider_catalog_digest: [u8; 32],
-    pub(crate) kernel_boot_id: [u8; 16],
-    pub(crate) device: u64,
-    pub(crate) inode: u64,
-    pub(crate) unique_mount_id: u64,
-    pub(crate) physical_proof_digest: [u8; 32],
-    pub(crate) admission_operation_id: [u8; 16],
-    pub(crate) admission_request_digest: [u8; 32],
-    pub(crate) current: bool,
-    pub(crate) lifecycle: SourcePinLifecycleV1,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct StoredSourcePinV1 {
-    schema: String,
-    version: u16,
-    row: SourcePinRowV1,
-}
 
 /// Materializes the bounded source-pin keyspace in the common Mount journal.
 #[derive(Debug)]
@@ -639,7 +595,20 @@ fn provider_history(row: &SourcePinRowV1) -> MountSourceProviderHistoryV1 {
     }
 }
 
-impl SourcePinRowV1 {
+pub(crate) trait SourcePinRowV1Ext: Sized {
+    fn active(
+        binding: &SourceRealizationBindingV1,
+        evidence: SourceRealizationEvidenceV1,
+        admission_operation_id: [u8; 16],
+        admission_request_digest: [u8; 32],
+    ) -> Result<Self>;
+
+    fn validate(&self) -> Result<()>;
+
+    fn evidence(&self) -> SourceRealizationEvidenceV1;
+}
+
+impl SourcePinRowV1Ext for SourcePinRowV1 {
     /// Constructs the sole Mount-owned Active row from authenticated evidence.
     pub(crate) fn active(
         binding: &SourceRealizationBindingV1,
@@ -1285,12 +1254,7 @@ fn validate_transition(current: &SourcePinRowV1, next: &SourcePinRowV1) -> Resul
 
 fn put_record(row: &SourcePinRowV1) -> Result<JournalRecord> {
     row.validate()?;
-    let value = serde_json::to_vec(&StoredSourcePinV1 {
-        schema: SCHEMA.to_owned(),
-        version: FORMAT_VERSION,
-        row: row.clone(),
-    })
-    .map_err(|error| state_error(error.to_string()))?;
+    let value = encode_source_pin_value_v1(row).map_err(|error| state_error(error.to_string()))?;
     if value.len() > MAXIMUM_VALUE_BYTES {
         return Err(state_error(
             "encoded source-pin row exceeds its fixed bound",
@@ -1312,40 +1276,38 @@ fn decode_value(bytes: &[u8]) -> Result<SourcePinRowV1> {
     if bytes.len() > MAXIMUM_VALUE_BYTES {
         return Err(state_error("source-pin row exceeds its fixed bound"));
     }
-    let stored: StoredSourcePinV1 =
-        serde_json::from_slice(bytes).map_err(|error| state_error(error.to_string()))?;
-    if stored.schema != SCHEMA || stored.version != FORMAT_VERSION {
-        return Err(state_error("source-pin schema or version is unsupported"));
+    let row = decode_source_pin_value_v1(bytes).map_err(|error| state_error(error.to_string()))?;
+    row.validate()?;
+    Ok(row)
+}
+
+/// Validates one exact fresh Active SourcePin companion record.
+pub(crate) fn validate_source_consumption_record(
+    record: &JournalRecord,
+    expected: &SourcePinRowV1,
+) -> Result<()> {
+    if record.namespace() != RecordNamespace::MountSourcePin
+        || record.value().is_none()
+        || decode_key(record.key())? != (expected.binding_digest, expected.handle)
+        || decode_value(
+            record
+                .value()
+                .ok_or_else(|| state_error("source-pin consumption record is a delete"))?,
+        )? != *expected
+    {
+        return Err(state_error(
+            "source-pin consumption record differs from authenticated acquisition evidence",
+        ));
     }
-    stored.row.validate()?;
-    if serde_json::to_vec(&stored).map_err(|error| state_error(error.to_string()))? != bytes {
-        return Err(state_error("source-pin row is not canonical JSON"));
-    }
-    Ok(stored.row)
+    Ok(())
 }
 
 fn encode_key(binding_digest: [u8; 32], handle: SourceRealizationHandleV1) -> Vec<u8> {
-    let mut key = Vec::with_capacity(KEY_PREFIX.len() + binding_digest.len() + handle.len());
-    key.extend_from_slice(KEY_PREFIX);
-    key.extend_from_slice(&binding_digest);
-    key.extend_from_slice(&handle);
-    key
+    source_pin_key_v1(binding_digest, handle)
 }
 
 fn decode_key(bytes: &[u8]) -> Result<([u8; 32], SourceRealizationHandleV1)> {
-    let suffix = bytes
-        .strip_prefix(KEY_PREFIX)
-        .ok_or_else(|| state_error("source-pin record uses an unknown key prefix"))?;
-    let key: [u8; 64] = suffix
-        .try_into()
-        .map_err(|_| state_error("source-pin record key has the wrong length"))?;
-    let binding_digest = key[..32]
-        .try_into()
-        .map_err(|_| state_error("source-pin binding key has the wrong length"))?;
-    let handle = key[32..]
-        .try_into()
-        .map_err(|_| state_error("source-pin handle key has the wrong length"))?;
-    Ok((binding_digest, handle))
+    decode_source_pin_key_v1(bytes).map_err(|error| state_error(error.to_string()))
 }
 
 fn physical_proof_digest(row: &SourcePinRowV1) -> [u8; 32] {

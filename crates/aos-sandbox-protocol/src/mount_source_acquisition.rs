@@ -67,6 +67,7 @@ pub struct ValidatedAcquireMountSourceRequest {
     source_binding: SourceRealizationBindingV1,
     requested_lease_seconds: u64,
     requested_maximum_submounts: u32,
+    recursive: bool,
     kernel_coupled: bool,
 }
 
@@ -182,6 +183,12 @@ impl ValidatedAcquireMountSourceRequest {
         self.requested_maximum_submounts
     }
 
+    /// Reports whether the prospective mount traverses provider submounts.
+    #[must_use]
+    pub const fn recursive(&self) -> bool {
+        self.recursive
+    }
+
     /// Reports whether the source requires a kernel-coupled provider grant.
     #[must_use]
     pub const fn kernel_coupled(&self) -> bool {
@@ -263,7 +270,7 @@ impl ValidatedMountSourceAcquisitionRecord {
         &self.acquisition_id
     }
 
-    /// Returns the monotonic AOSMSA01 row revision.
+    /// Returns the monotonic AOSMSA02 row revision.
     #[must_use]
     pub const fn revision(&self) -> u64 {
         self.revision
@@ -335,7 +342,7 @@ impl ValidatedMountSourceAcquisitionRecord {
         self.namespace_generation
     }
 
-    /// Returns the broker-authenticated AOSMSA01 row digest.
+    /// Returns the broker-authenticated AOSMSA02 row digest.
     #[must_use]
     pub const fn record_digest(&self) -> &[u8; 32] {
         &self.record_digest
@@ -544,7 +551,7 @@ pub fn decode_historical_acquire_mount_source_request(
             "source acquisition lease or topology bound",
         ));
     }
-    validate_prospective_create(
+    let recursive = validate_prospective_create(
         &request.prospective_mount_template,
         &fence,
         &source_binding,
@@ -568,6 +575,7 @@ pub fn decode_historical_acquire_mount_source_request(
             source_binding,
             requested_lease_seconds: request.requested_lease_seconds,
             requested_maximum_submounts: request.requested_maximum_submounts,
+            recursive,
             kernel_coupled: request.kernel_coupled,
         },
     })
@@ -750,7 +758,7 @@ pub fn decode_release_mount_source_acquisition_response(
 
 /// Decodes one bounded, strictly ordered acquisition inventory.
 ///
-/// This authenticates the AOSMSA01 evidence shape and exact row correlation,
+/// This authenticates the AOSMSA02 evidence shape and exact row correlation,
 /// but not the broker response syscall writer. Production currentness still
 /// requires Broker Session Authentication and deployment confinement.
 ///
@@ -1428,7 +1436,7 @@ fn validate_prospective_create(
     binding: &SourceRealizationBindingV1,
     requested_maximum_submounts: u32,
     kernel_coupled: bool,
-) -> Result<(), ProtocolValidationError> {
+) -> Result<bool, ProtocolValidationError> {
     let fields = decode_semantic_fields(bytes)?;
     let expected_descriptor = encode_descriptor(binding);
     let expected_source = encode_view_source(binding.source());
@@ -1494,7 +1502,7 @@ fn validate_prospective_create(
             "prospective_mount_template lease",
         ));
     }
-    Ok(())
+    Ok(recursive == Some(1))
 }
 
 fn decode_semantic_fields(

@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 
 use sha2::{Digest as _, Sha256};
 
-use aos_sandbox_core::state::{AssignmentPhase, DesiredSandboxState};
+use aos_sandbox_core::state::{AssignmentPhase, DesiredSandboxState, SuspensionMode};
 use aos_sandbox_core::{
     AssignmentEpoch, CanonicalAssignmentManifestV1, DesiredGeneration, IncarnationId, NodeId,
     ObjectDescriptor, ObjectDigest, ObservationSequence, OperationId, PortableMediaType, ProjectId,
@@ -145,6 +145,7 @@ impl VerifiedAssignmentAuthorityV1 {
         if node.as_bytes() == &[0; 16]
             || verifier_domain_digest.as_bytes() == &[0; 32]
             || replay_fence.as_bytes() == &[0; 32]
+            || replay_fence != verifier_context.replay_fence()
             || issuance_sequence == 0
             || verifier_context != context
             || sandbox.as_bytes() == &[0; 16]
@@ -254,6 +255,18 @@ impl VerifiedAssignmentAuthorityV1 {
         self.context.is_current_at(coordinator_unix_seconds)
             && coordinator_unix_seconds >= self.verified_at_unix_seconds
             && coordinator_unix_seconds <= self.valid_until_unix_seconds
+    }
+
+    /// Returns the immutable lease/Guardian evidence deadline.
+    #[must_use]
+    pub(super) const fn valid_until_unix_seconds(self) -> u64 {
+        self.valid_until_unix_seconds
+    }
+
+    /// Returns the exact verifier carrier/currentness context.
+    #[must_use]
+    pub(super) const fn context(self) -> AuthenticatedEvidenceContextV1 {
+        self.context
     }
 }
 
@@ -632,6 +645,94 @@ impl AssignmentIntentV1 {
     }
 }
 
+/// Carries one exact assignment effect selected by its typed intent reducer.
+///
+/// The move-only plan retains the complete intent. Its effect commitment is
+/// derived internally from that intent and the idempotent operation identity;
+/// callers cannot provide an independent digest to be echoed into durability.
+#[must_use]
+pub(super) struct AssignmentEffectPlanV1 {
+    operation: OperationId,
+    intent: AssignmentIntentV1,
+    effect_digest: ObjectDigest,
+}
+
+impl AssignmentEffectPlanV1 {
+    fn from_reducer(operation: OperationId, intent: AssignmentIntentV1) -> Option<Self> {
+        if operation.as_bytes() == &[0; 16] {
+            return None;
+        }
+        let effect_digest = assignment_effect_plan_digest(operation, &intent);
+        Some(Self {
+            operation,
+            intent,
+            effect_digest,
+        })
+    }
+
+    pub(super) const fn operation(&self) -> OperationId {
+        self.operation
+    }
+
+    pub(super) const fn intent(&self) -> &AssignmentIntentV1 {
+        &self.intent
+    }
+
+    pub(super) const fn effect_digest(&self) -> ObjectDigest {
+        self.effect_digest
+    }
+
+    pub(super) fn matches(
+        &self,
+        operation: OperationId,
+        intent: &AssignmentIntentV1,
+        effect_digest: ObjectDigest,
+    ) -> bool {
+        self.operation == operation
+            && &self.intent == intent
+            && self.effect_digest == effect_digest
+            && self.effect_digest == assignment_effect_plan_digest(self.operation, &self.intent)
+    }
+}
+
+fn assignment_effect_plan_digest(
+    operation: OperationId,
+    intent: &AssignmentIntentV1,
+) -> ObjectDigest {
+    let selected = intent.selected_capability_binding();
+    let lifecycle = match intent.desired_lifecycle() {
+        DesiredSandboxState::Running => [0, 0],
+        DesiredSandboxState::Suspended(SuspensionMode::MemoryResident) => [1, 0],
+        DesiredSandboxState::Suspended(SuspensionMode::Hibernate) => [1, 1],
+        DesiredSandboxState::Stopped => [2, 0],
+        DesiredSandboxState::Deleted => [3, 0],
+    };
+    let mut digest = Sha256::new();
+    digest.update(b"aos.sandbox.multi-node.assignment-effect-plan.v1\0");
+    digest.update(operation.as_bytes());
+    digest.update(intent.sandbox().as_bytes());
+    digest.update(intent.incarnation().as_bytes());
+    digest.update(intent.node().as_bytes());
+    digest.update(intent.epoch().get().to_be_bytes());
+    digest.update(intent.desired_generation().get().to_be_bytes());
+    digest.update(intent.assignment_digest().as_bytes());
+    digest.update(lifecycle);
+    digest.update(selected.lineage().boot().as_bytes());
+    digest.update(selected.lineage().generation().to_be_bytes());
+    digest.update(selected.sequence().get().to_be_bytes());
+    digest.update(selected.evidence_binding_digest().as_bytes());
+    digest.update(selected.canonical_frame_digest().as_bytes());
+    digest.update(selected.canonical_frame_bytes().to_be_bytes());
+    digest.update(selected.coordinator_epoch().to_be_bytes());
+    digest.update(selected.authenticated_at_unix_seconds().to_be_bytes());
+    digest.update(selected.valid_until_unix_seconds().to_be_bytes());
+    digest.update(selected.audience_digest().as_bytes());
+    digest.update(selected.disclosure_domain_digest().as_bytes());
+    digest.update(selected.carrier_binding_digest().as_bytes());
+    digest.update(selected.replay_fence().as_bytes());
+    ObjectDigest::from_bytes(digest.finalize().into())
+}
+
 /// Stores one complete assignment observation from a fixed node boot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NodeAssignmentObservationV1 {
@@ -737,12 +838,7 @@ impl NodeAssignmentObservationV1 {
         ) = grant.into_parts();
         let authority_matches = {
             evidence.node == self.node()
-                && evidence.context.lineage() == self.lineage()
-                && evidence.context.audience_digest() == self.context.audience_digest()
-                && evidence.context.disclosure_domain_digest()
-                    == self.context.disclosure_domain_digest()
-                && evidence.context.carrier_binding_digest()
-                    == self.context.carrier_binding_digest()
+                && evidence.context == self.context
                 && evidence.sandbox == self.sandbox
                 && evidence.incarnation == self.incarnation
                 && evidence.epoch == self.epoch
@@ -764,6 +860,7 @@ impl NodeAssignmentObservationV1 {
         };
         if verifier_domain_digest.as_bytes() == &[0; 32]
             || replay_fence.as_bytes() == &[0; 32]
+            || replay_fence != verifier_context.replay_fence()
             || issuance_sequence == 0
             || verifier_context != self.context
             || !authority_matches
@@ -929,6 +1026,7 @@ impl VerifiedAssignmentAcceptanceV1 {
         let acceptance_effect_digest = assignment_acceptance_effect_digest(&intent, authority);
         if verifier_domain_digest.as_bytes() == &[0; 32]
             || replay_fence.as_bytes() == &[0; 32]
+            || replay_fence != verifier_context.replay_fence()
             || issuance_sequence == 0
             || verifier_context != observation.context()
             || !observation.matches(&intent)
@@ -947,6 +1045,10 @@ impl VerifiedAssignmentAcceptanceV1 {
             || capability_observation.audience_digest() != observation.context().audience_digest()
             || capability_observation.disclosure_domain_digest()
                 != observation.context().disclosure_domain_digest()
+            || capability_observation.carrier_binding_digest()
+                != observation.context().carrier_binding_digest()
+            || capability_observation.replay_fence() != observation.context().replay_fence()
+            || authority.context() != observation.context()
             || !authority.is_current_for(&intent, observation.lineage(), coordinator_unix_seconds)
             || journal_record.record().domain() != MultiNodeJournalDomainV1::Assignment
             || journal_record.record().payload_digest() != intent.assignment_digest()
@@ -962,13 +1064,7 @@ impl VerifiedAssignmentAcceptanceV1 {
             || !journal_record
                 .context()
                 .is_current_at(coordinator_unix_seconds)
-            || journal_record.context().node() != observation.node()
-            || journal_record.context().lineage() != observation.lineage()
-            || journal_record.context().coordinator_epoch()
-                != observation.context().coordinator_epoch()
-            || journal_record.context().audience_digest() != observation.context().audience_digest()
-            || journal_record.context().disclosure_domain_digest()
-                != observation.context().disclosure_domain_digest()
+            || journal_record.context() != observation.context()
         {
             return Err(InvalidAssignmentModel::AuthorityMismatch);
         }
@@ -1240,6 +1336,18 @@ impl AssignmentObservationReducerV1 {
     #[must_use]
     pub const fn intent(&self) -> &AssignmentIntentV1 {
         &self.intent
+    }
+
+    /// Issues a typed semantic plan for this reducer's exact immutable intent.
+    ///
+    /// The plan grants no carrier or effect authority by itself. Protected-store
+    /// commit and effect-time carrier verification remain independently required.
+    pub(super) fn issue_effect_plan(
+        &self,
+        operation: OperationId,
+    ) -> Result<AssignmentEffectPlanV1, InvalidAssignmentModel> {
+        AssignmentEffectPlanV1::from_reducer(operation, self.intent.clone())
+            .ok_or(InvalidAssignmentModel::Unspecified)
     }
 
     /// Returns the latest observation while its carrier and authority evidence is current.
@@ -2434,6 +2542,7 @@ impl DurableSnapshotTransferCheckpointV1 {
             .ok_or(InvalidSnapshotTransfer::InvalidResumeCheckpoint)?;
         if verifier_domain_digest.as_bytes() == &[0; 32]
             || replay_fence.as_bytes() == &[0; 32]
+            || replay_fence != verifier_context.replay_fence()
             || issuance_sequence == 0
             || verifier_context != evidence_context
             || resume.identity() != manifest.identity()
@@ -2854,6 +2963,7 @@ impl DurableSnapshotDependencySetV1 {
             .ok_or(InvalidSnapshotTransfer::DependenciesNotCanonical)?;
         if verifier_domain_digest.as_bytes() == &[0; 32]
             || replay_fence.as_bytes() == &[0; 32]
+            || replay_fence != verifier_context.replay_fence()
             || issuance_sequence == 0
             || verifier_context != journal_record.context()
             || journal_record.record().domain() != MultiNodeJournalDomainV1::SnapshotTransfer
@@ -2973,6 +3083,7 @@ impl AtomicSnapshotPublicationV1 {
             .ok_or(InvalidSnapshotTransfer::RestoreAdmissionMismatch)?;
         if verifier_domain_digest.as_bytes() == &[0; 32]
             || replay_fence.as_bytes() == &[0; 32]
+            || replay_fence != verifier_context.replay_fence()
             || issuance_sequence == 0
             || verifier_context != evidence_context
             || publication_generation == 0
@@ -3304,6 +3415,7 @@ impl VerifiedRestoreAuthorizationV1 {
         ) = grant.into_parts();
         if verifier_domain_digest.as_bytes() == &[0; 32]
             || replay_fence.as_bytes() == &[0; 32]
+            || replay_fence != verifier_context.replay_fence()
             || issuance_sequence == 0
             || verifier_context != context
             || project.as_bytes() == &[0; 16]

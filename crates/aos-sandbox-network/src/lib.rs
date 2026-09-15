@@ -21,11 +21,18 @@
 //! exposing Apply or directly performing netlink, nftables, or BPF work.
 //! [`worker_runtime`] and [`kernel_mutator`] provide the fixed one-shot
 //! preparation effect path; [`namespace_observer`] and [`preparation_runtime`]
-//! provide observation, durable commit, and publication. Public Apply remains
-//! unadvertised pending production service/controller composition, protected
-//! retention authorization, lifecycle effects, and P0-06/MAC/VM qualification.
+//! provide observation, durable commit, and publication. [`advanced_policy`]
+//! adds source-only compilation, replacement recovery, and a durable worker
+//! handoff without activating a worker. Public Apply remains unadvertised
+//! pending production service/controller composition, protected retention
+//! authorization, lifecycle effects, and P0-06/MAC/VM qualification.
 
 pub mod activation;
+#[allow(
+    dead_code,
+    reason = "advanced policy remains a dormant source-only integration seam"
+)]
+pub mod advanced_policy;
 pub mod allocation;
 pub mod authorization;
 pub mod broker;

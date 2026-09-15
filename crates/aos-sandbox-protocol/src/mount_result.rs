@@ -40,6 +40,7 @@ pub struct ValidatedMountResult {
     attachment_lease_issued_seconds: i64,
     attachment_lease_expires_seconds: i64,
     state: MountState,
+    filesystem_worker_qualification_commitment: Option<[u8; 32]>,
 }
 
 impl ValidatedMountResult {
@@ -139,6 +140,12 @@ impl ValidatedMountResult {
     pub const fn state(&self) -> MountState {
         self.state
     }
+
+    /// Returns the dormant FUSE-worker qualification record commitment.
+    #[must_use]
+    pub const fn filesystem_worker_qualification_commitment(&self) -> Option<[u8; 32]> {
+        self.filesystem_worker_qualification_commitment
+    }
 }
 
 /// Decodes a successful Mount receipt and binds it to an exact Apply body.
@@ -207,6 +214,10 @@ pub fn decode_mount_result_for_apply(
     )?;
     let attachment_lease_id =
         exact_nonzero::<16>(&result.attachment_lease_id, "result.attachment_lease_id")?;
+    let filesystem_worker_qualification_commitment = optional_exact_nonzero::<32>(
+        &result.filesystem_worker_qualification_commitment,
+        "result.filesystem_worker_qualification_commitment",
+    )?;
     let state = result
         .state
         .as_known()
@@ -270,6 +281,7 @@ pub fn decode_mount_result_for_apply(
         attachment_lease_issued_seconds: result.attachment_lease_issued_seconds,
         attachment_lease_expires_seconds: result.attachment_lease_expires_seconds,
         state,
+        filesystem_worker_qualification_commitment,
     })
 }
 

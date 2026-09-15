@@ -21,8 +21,8 @@ use super::compaction::{
     decode_retired_pack, encode_retired_pack, encoded_retired_pack_length, preflight_retired_pack,
 };
 use super::durable_payload::{
-    decode_git_durable_payload_v1, encode_git_durable_payload_v1, GitDurablePayloadV1,
-    MAXIMUM_GIT_DURABLE_PAYLOAD_BYTES,
+    GitDurablePayloadV1, MAXIMUM_GIT_DURABLE_PAYLOAD_BYTES, decode_git_durable_payload_v1,
+    encode_git_durable_payload_v1,
 };
 use super::{
     GitDurableHistoryV1, GitJournalVerifierV1, GitModelError, GitPublicationRecordV1,

@@ -1,8 +1,8 @@
 //! Pure sandbox hierarchy and filesystem-view planning models.
 //!
-//! This module deliberately owns no journal, broker, descriptor, or runtime
-//! authority. Its bounded reducers validate controller inputs and produce
-//! inert facts for a future durable integration layer.
+//! The protected-journal adapter durably binds the bounded reducers while
+//! retaining exact postcommit facts. The module owns no broker, descriptor,
+//! service activation, or runtime-effect implementation.
 
 pub mod accounting;
 pub mod artifact_codec;
@@ -14,6 +14,8 @@ pub mod history;
 pub mod inspection;
 pub mod model;
 pub mod placement;
+mod protected_evidence;
+pub mod protected_journal;
 pub mod realizer;
 pub mod recovery;
 pub mod state;

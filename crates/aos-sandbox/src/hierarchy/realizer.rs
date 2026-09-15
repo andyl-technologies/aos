@@ -36,7 +36,7 @@ pub struct ReplacementTransactionV1 {
 }
 
 impl ReplacementTransactionV1 {
-    /// Creates a replacement fact only from a future durable transaction adapter.
+    /// Creates a replacement fact for verified durable-transaction admission.
     pub(crate) fn from_durable_parts(
         predecessor: AttachmentId,
         successor: AttachmentId,
@@ -174,6 +174,110 @@ impl AttachmentRealizationV1 {
             recipe_commitment,
             intent,
         })
+    }
+
+    /// Reconstructs one canonical durable recipe without promoting its
+    /// commitments back into live evidence authority.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_canonical_parts(
+        project: ProjectId,
+        tree_generation: Revision,
+        intent: AttachmentIntent,
+        consumer_node: NodeId,
+        assignment_epoch: AssignmentEpoch,
+        observation_set_commitment: ObjectDigest,
+        assignment_commitment: ObjectDigest,
+        source_owner: SandboxId,
+        source_owner_generation: DesiredGeneration,
+        source_export: ExportId,
+        source_node: Option<NodeId>,
+        source_namespace_generation: Option<NamespaceGeneration>,
+        source_assignment_epoch: Option<AssignmentEpoch>,
+        source_handle_commitment: ObjectDigest,
+        source_retention_commitment: ObjectDigest,
+        request_commitment: ObjectDigest,
+        policy_commitment: ObjectDigest,
+        stored_lease_commitment: ObjectDigest,
+        inventory_commitment: ObjectDigest,
+        replacement: Option<ReplacementTransactionV1>,
+        dependencies: Vec<AttachmentId>,
+        recipe_commitment: ObjectDigest,
+    ) -> Result<Self, RealizationPlanError> {
+        validate_dependencies(intent.id(), &dependencies)?;
+        let local_live = intent.consistency() == AttachmentConsistency::LocalLive;
+        let complete_live_source = source_node.is_some()
+            && source_namespace_generation.is_some()
+            && source_assignment_epoch.is_some();
+        if project.as_bytes() == &[0; 16]
+            || tree_generation.get() == 0
+            || consumer_node.as_bytes() == &[0; 16]
+            || assignment_epoch.get() == 0
+            || observation_set_commitment.as_bytes() == &[0; 32]
+            || assignment_commitment.as_bytes() == &[0; 32]
+            || source_owner.as_bytes() == &[0; 16]
+            || source_owner_generation.get() == 0
+            || source_export.as_bytes() == &[0; 16]
+            || source_handle_commitment.as_bytes() == &[0; 32]
+            || source_retention_commitment.as_bytes() == &[0; 32]
+            || request_commitment.as_bytes() == &[0; 32]
+            || policy_commitment.as_bytes() == &[0; 32]
+            || stored_lease_commitment.as_bytes() == &[0; 32]
+            || inventory_commitment.as_bytes() == &[0; 32]
+            || recipe_commitment.as_bytes() == &[0; 32]
+            || request_commitment != intent_commitment(&intent)
+            || stored_lease_commitment != lease_commitment(&intent)
+            || source_node.is_some_and(|value| value.as_bytes() == &[0; 16])
+            || source_namespace_generation.is_some_and(|value| value.get() == 0)
+            || source_assignment_epoch.is_some_and(|value| value.get() == 0)
+            || local_live != complete_live_source
+            || (!local_live
+                && (source_node.is_some()
+                    || source_namespace_generation.is_some()
+                    || source_assignment_epoch.is_some()))
+            || (local_live && source_node != Some(consumer_node))
+        {
+            return Err(RealizationPlanError::UnspecifiedIdentity);
+        }
+        if let Some(replacement) = replacement {
+            if replacement.predecessor().as_bytes() == &[0; 16]
+                || replacement.successor() != intent.id()
+                || replacement.predecessor_generation().get() == 0
+                || replacement.predecessor_recipe_commitment().as_bytes() == &[0; 32]
+                || replacement.transaction_commitment().as_bytes() == &[0; 32]
+                || !replacement_generation_is_valid(&intent, replacement)
+            {
+                return Err(RealizationPlanError::EvidenceConflict);
+            }
+        }
+
+        let action = Self {
+            project,
+            tree_generation,
+            intent,
+            consumer_node,
+            assignment_epoch,
+            observation_set_commitment,
+            assignment_commitment,
+            source_owner,
+            source_owner_generation,
+            source_export,
+            source_node,
+            source_namespace_generation,
+            source_assignment_epoch,
+            source_handle_commitment,
+            source_retention_commitment,
+            request_commitment,
+            policy_commitment,
+            lease_commitment: stored_lease_commitment,
+            inventory_commitment,
+            replacement,
+            dependencies,
+            recipe_commitment,
+        };
+        if canonical_recipe_commitment(&action)? != recipe_commitment {
+            return Err(RealizationPlanError::EvidenceConflict);
+        }
+        Ok(action)
     }
 
     /// Returns the project authority domain.
@@ -422,6 +526,77 @@ impl AttachmentDetachV1 {
             detach_after,
             detach_commitment,
         })
+    }
+
+    /// Reconstructs one canonical durable detach without fabricating its live
+    /// assignment, policy, or inventory evidence.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_canonical_parts(
+        project: ProjectId,
+        tree_generation: Revision,
+        attachment: AttachmentId,
+        generation: DesiredGeneration,
+        consumer: SandboxId,
+        consumer_incarnation: IncarnationId,
+        consumer_node: NodeId,
+        assignment_epoch: AssignmentEpoch,
+        observation_set_commitment: ObjectDigest,
+        namespace_generation: NamespaceGeneration,
+        destination_slot: AttachmentSlotId,
+        recipe_commitment: ObjectDigest,
+        assignment_commitment: ObjectDigest,
+        request_commitment: ObjectDigest,
+        policy_commitment: ObjectDigest,
+        inventory_commitment: ObjectDigest,
+        detach_after: Vec<AttachmentId>,
+        detach_commitment: ObjectDigest,
+    ) -> Result<Self, RealizationPlanError> {
+        validate_dependencies(attachment, &detach_after)?;
+        if project.as_bytes() == &[0; 16]
+            || tree_generation.get() == 0
+            || attachment.as_bytes() == &[0; 16]
+            || generation.get() == 0
+            || consumer.as_bytes() == &[0; 16]
+            || consumer_incarnation.as_bytes() == &[0; 16]
+            || consumer_node.as_bytes() == &[0; 16]
+            || assignment_epoch.get() == 0
+            || observation_set_commitment.as_bytes() == &[0; 32]
+            || namespace_generation.get() == 0
+            || destination_slot.as_bytes() == &[0; 16]
+            || recipe_commitment.as_bytes() == &[0; 32]
+            || assignment_commitment.as_bytes() == &[0; 32]
+            || request_commitment.as_bytes() == &[0; 32]
+            || policy_commitment.as_bytes() == &[0; 32]
+            || inventory_commitment.as_bytes() == &[0; 32]
+            || detach_commitment.as_bytes() == &[0; 32]
+        {
+            return Err(RealizationPlanError::UnspecifiedIdentity);
+        }
+
+        let detach = Self {
+            project,
+            tree_generation,
+            attachment,
+            generation,
+            consumer,
+            consumer_incarnation,
+            consumer_node,
+            assignment_epoch,
+            observation_set_commitment,
+            namespace_generation,
+            destination_slot,
+            recipe_commitment,
+            assignment_commitment,
+            request_commitment,
+            policy_commitment,
+            inventory_commitment,
+            detach_after,
+            detach_commitment,
+        };
+        if canonical_detach_commitment(&detach)? != detach_commitment {
+            return Err(RealizationPlanError::EvidenceConflict);
+        }
+        Ok(detach)
     }
 
     /// Returns the project authority domain.
@@ -1124,6 +1299,85 @@ fn commit_recipe(
     Ok(ObjectDigest::from_bytes(hasher.finalize().into()))
 }
 
+fn canonical_recipe_commitment(
+    action: &AttachmentRealizationV1,
+) -> Result<ObjectDigest, RealizationPlanError> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"aos.sandbox.attachment-realization-recipe.v1\0");
+    hasher.update(action.project.as_bytes());
+    hasher.update(action.tree_generation.get().to_be_bytes());
+    hasher.update(action.intent.id().as_bytes());
+    hasher.update(action.intent.desired_generation().get().to_be_bytes());
+    let (consumer, incarnation) = action.intent.consumer();
+    hasher.update(consumer.as_bytes());
+    hasher.update(incarnation.as_bytes());
+    hasher.update(
+        action
+            .intent
+            .expected_namespace_generation()
+            .get()
+            .to_be_bytes(),
+    );
+    hasher.update(action.intent.destination_slot().as_bytes());
+    let (view, revision) = action.intent.source_view();
+    hasher.update(view.as_bytes());
+    hasher.update(revision.get().to_be_bytes());
+    hasher.update(action.intent.view().digest().as_bytes());
+    hasher.update(action.intent.view().encoded_size().to_be_bytes());
+    hasher.update(action.consumer_node.as_bytes());
+    hasher.update(action.assignment_epoch.get().to_be_bytes());
+    hasher.update(action.observation_set_commitment.as_bytes());
+    hasher.update(action.assignment_commitment.as_bytes());
+    hasher.update(action.source_owner.as_bytes());
+    hasher.update(action.source_owner_generation.get().to_be_bytes());
+    hasher.update(action.source_export.as_bytes());
+    match action.source_node {
+        Some(node) => {
+            hasher.update([1]);
+            hasher.update(node.as_bytes());
+        }
+        None => hasher.update([0]),
+    }
+    match action.source_namespace_generation {
+        Some(generation) => {
+            hasher.update([1]);
+            hasher.update(generation.get().to_be_bytes());
+        }
+        None => hasher.update([0]),
+    }
+    match action.source_assignment_epoch {
+        Some(epoch) => {
+            hasher.update([1]);
+            hasher.update(epoch.get().to_be_bytes());
+        }
+        None => hasher.update([0]),
+    }
+    if action.intent.consistency() == AttachmentConsistency::LocalLive {
+        hasher.update([1]);
+        hasher.update(action.observation_set_commitment.as_bytes());
+    } else {
+        hasher.update([0]);
+    }
+    hasher.update(action.source_handle_commitment.as_bytes());
+    hasher.update(action.source_retention_commitment.as_bytes());
+    hasher.update(action.request_commitment.as_bytes());
+    hasher.update(action.policy_commitment.as_bytes());
+    hasher.update(action.lease_commitment.as_bytes());
+    hasher.update(action.inventory_commitment.as_bytes());
+    match action.replacement {
+        Some(transaction) => {
+            hasher.update([1]);
+            hasher.update(transaction.predecessor().as_bytes());
+            hasher.update(transaction.predecessor_generation().get().to_be_bytes());
+            hasher.update(transaction.predecessor_recipe_commitment().as_bytes());
+            hasher.update(transaction.transaction_commitment().as_bytes());
+        }
+        None => hasher.update([0]),
+    }
+    hash_attachments(&mut hasher, &action.dependencies)?;
+    Ok(ObjectDigest::from_bytes(hasher.finalize().into()))
+}
+
 fn commit_detach(
     tree_generation: Revision,
     assignment: &CurrentAssignmentEvidenceV1,
@@ -1151,6 +1405,31 @@ fn commit_detach(
     hasher.update(inventory.inventory_commitment().as_bytes());
     hasher.update(recipe_commitment.as_bytes());
     hash_attachments(&mut hasher, detach_after)?;
+    Ok(ObjectDigest::from_bytes(hasher.finalize().into()))
+}
+
+fn canonical_detach_commitment(
+    detach: &AttachmentDetachV1,
+) -> Result<ObjectDigest, RealizationPlanError> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"aos.sandbox.attachment-detach.v1\0");
+    hasher.update(detach.project.as_bytes());
+    hasher.update(detach.tree_generation.get().to_be_bytes());
+    hasher.update(detach.attachment.as_bytes());
+    hasher.update(detach.generation.get().to_be_bytes());
+    hasher.update(detach.consumer.as_bytes());
+    hasher.update(detach.consumer_incarnation.as_bytes());
+    hasher.update(detach.namespace_generation.get().to_be_bytes());
+    hasher.update(detach.destination_slot.as_bytes());
+    hasher.update(detach.consumer_node.as_bytes());
+    hasher.update(detach.assignment_epoch.get().to_be_bytes());
+    hasher.update(detach.observation_set_commitment.as_bytes());
+    hasher.update(detach.assignment_commitment.as_bytes());
+    hasher.update(detach.request_commitment.as_bytes());
+    hasher.update(detach.policy_commitment.as_bytes());
+    hasher.update(detach.inventory_commitment.as_bytes());
+    hasher.update(detach.recipe_commitment.as_bytes());
+    hash_attachments(&mut hasher, &detach.detach_after)?;
     Ok(ObjectDigest::from_bytes(hasher.finalize().into()))
 }
 

@@ -377,7 +377,7 @@ pub struct RetainedHierarchyHeadV1 {
 }
 
 impl RetainedHierarchyHeadV1 {
-    /// Creates a head only after a future durable adapter verifies protected state.
+    /// Creates a head for durable-adapter admission after protected verification.
     pub(crate) fn from_verified_parts(
         project: ProjectId,
         record_count: u64,

@@ -14,6 +14,8 @@ kernel-tests = ["aos-sandbox-linux/kernel-tests"]
 
 [dependencies]
 aos-proto = { path = "../aos-proto" }
+aos-sandbox.workspace = true
+aos-sandbox-agent.workspace = true
 aos-sandbox-broker.workspace = true
 aos-sandbox-core = { path = "../aos-sandbox-core" }
 aos-sandbox-linux = { path = "../aos-sandbox-linux" }
@@ -21,6 +23,7 @@ aos-sandbox-protocol = { path = "../aos-sandbox-protocol" }
 aos-systemd = { path = "../aos-systemd" }
 async-trait.workspace = true
 buffa = "0.3"
+ed25519-dalek.workspace = true
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -31,7 +34,6 @@ tokio.workspace = true
 
 [dev-dependencies]
 aos-sandbox-guardian.workspace = true
-ed25519-dalek.workspace = true
 tempfile = "3"
 
 [lints]

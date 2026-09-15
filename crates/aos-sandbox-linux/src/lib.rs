@@ -13,6 +13,7 @@
 //!
 //! - [`pidfd`] pins a process and obtains typed namespace descriptors;
 //! - [`inherited_fd`] safely duplicates unowned process-start descriptors;
+//! - [`fixed_spawn`] executes one absolute program with an exact inherited descriptor table;
 //! - [`path`] resolves descendants beneath a pre-opened directory;
 //! - [`cgroup`] checks exact and hinted descendant membership against retained cgroup-v2 anchors;
 //! - [`process`] executes fixed absolute programs with bounded output and time;
@@ -21,12 +22,14 @@
 //! - [`immutable_file`] pins descriptors and maps seal-proven immutable files;
 //! - [`netlink`] resolves descriptor-backed peer Network namespace IDs; and
 //! - [`seqpacket`] exchanges bounded records with kernel-pinned peer identity;
+//! - [`startup_fd_table`] exclusively claims and double-observes the initial descriptor table; and
 //! - [`unix_stream`] retains one connected stream and same-socket duplicates.
 
 #![cfg(target_os = "linux")]
 
 pub mod boot;
 pub mod cgroup;
+pub mod fixed_spawn;
 pub mod immutable_file;
 pub mod inherited_fd;
 pub mod inventory;
@@ -36,6 +39,7 @@ pub mod path;
 pub mod pidfd;
 pub mod process;
 pub mod seqpacket;
+pub mod startup_fd_table;
 mod uapi;
 pub mod unix_stream;
 

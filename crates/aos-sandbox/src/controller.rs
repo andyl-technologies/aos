@@ -12,6 +12,18 @@
 use aos_sandbox_core::{ObjectDigest, OperationId, RawPairedClockSample};
 use sha2::{Digest as _, Sha256};
 
+#[cfg(target_os = "linux")]
+use crate::cli_model::authorization_adapter::{
+    AuthenticatedCliChannelEvidenceV1, AuthenticatedCliIdentityEvidenceV1,
+    AuthenticatedCliSessionEvidenceV1, CliAuthorizationAdapterError,
+    CurrentProtectedCliAuthorizationV1, DecodedAuthenticatedCliRequestV1,
+    DormantAuthenticatedCliRequestV1,
+};
+#[cfg(target_os = "linux")]
+use crate::cli_model::{
+    AuditAuthorizationV1, AuthorizedResolvedMutationV1, RequestProvenanceV1,
+    ResolvedPublicMutationV1,
+};
 use crate::publisher_authority::{
     PublisherAuthorityError, PublisherAuthorityLimits, PublisherCapabilityRegistry,
 };
@@ -30,6 +42,8 @@ const REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-request.v1\0";
 const MAXIMUM_ACTIVATION_BYTES: usize = 1024 * 1024;
 const MAXIMUM_PENDING_OPERATIONS: usize = 1_000_000;
 const MAXIMUM_RECONCILIATION_QUANTUM: usize = 4096;
+#[cfg(target_os = "linux")]
+const DORMANT_CLI_OBSERVATION_SCHEMA_V1: &[u8] = b"aos.sandbox.cli.observation-schema.v1\0";
 
 /// Identifies one closed activated service method in request digests.
 ///
@@ -188,6 +202,105 @@ pub struct NodeController<C, E> {
     reconciler: Reconciler<E>,
 }
 
+/// Borrows the controller's sole protected journal for dormant CLI authorization.
+///
+/// Only [`NodeController::dormant_cli_authorization`] constructs this owner.
+/// It cannot be redirected to a caller-selected journal and exposes no journal
+/// accessor, command registration, route, or effect-dispatch operation. Its
+/// paired-clock adapter is the same protected deployment boundary used by the
+/// controller's ownership and runtime-currentness paths.
+#[cfg(target_os = "linux")]
+#[must_use = "the dormant CLI authorization owner must be used while borrowed"]
+pub(crate) struct DormantCliAuthorizationOwnerV1<'controller, 'clock, T> {
+    journal: &'controller mut crate::Journal,
+    protected_clock: &'clock mut T,
+}
+
+#[cfg(target_os = "linux")]
+impl<T> DormantCliAuthorizationOwnerV1<'_, '_, T>
+where
+    T: FnMut() -> Result<RawPairedClockSample, crate::ProtectedOwnershipClockError>,
+{
+    /// Authenticates, currently authorizes, resolves, and seals one CLI mutation.
+    ///
+    /// The authenticated local record supplies every transport identity. The
+    /// resolver receives only the nonforgeable provenance created after exact
+    /// request and protected-state binding, allowing it to construct required
+    /// action-specific fences before the same one-shot authority is consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CliAuthorizationAdapterError`] when live transport rechecking,
+    /// protected current authorization, exact binding, or mutation fencing fails.
+    pub(crate) fn authorize_mutation<F>(
+        &mut self,
+        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
+        resolve: F,
+    ) -> Result<AuthorizedResolvedMutationV1, CliAuthorizationAdapterError>
+    where
+        F: FnOnce(
+            &DecodedAuthenticatedCliRequestV1,
+            &RequestProvenanceV1,
+        ) -> ResolvedPublicMutationV1,
+    {
+        let request = self.authenticate_request(authenticated)?;
+        let mutation = resolve(request.decoded_request(), request.mutation_provenance()?);
+        request.authorize_mutation(mutation)
+    }
+
+    /// Authenticates and currently authorizes one exact CLI audit request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CliAuthorizationAdapterError`] when live transport rechecking,
+    /// protected current authorization, exact binding, or surface checks fail.
+    pub(crate) fn authorize_audit(
+        &mut self,
+        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
+    ) -> Result<AuditAuthorizationV1, CliAuthorizationAdapterError> {
+        self.authenticate_request(authenticated)?.authorize_audit()
+    }
+
+    fn authenticate_request(
+        &mut self,
+        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
+    ) -> Result<DormantAuthenticatedCliRequestV1, CliAuthorizationAdapterError> {
+        authenticated
+            .recheck_execution_scope()
+            .map_err(|_| CliAuthorizationAdapterError::InvalidAuthenticatedEvidence)?;
+
+        let principal = authenticated.scope().holder;
+        let session_id = authenticated.session_id();
+        let decoded =
+            DecodedAuthenticatedCliRequestV1::decode_authenticated(authenticated.payload())?;
+        let identity =
+            AuthenticatedCliIdentityEvidenceV1::from_verified_transport_identity(principal)?;
+        let session = AuthenticatedCliSessionEvidenceV1::from_verified_session(
+            principal,
+            session_id.as_bytes(),
+        )?;
+        let channel = AuthenticatedCliChannelEvidenceV1::from_verified_channel(
+            principal,
+            session_id.as_bytes(),
+            authenticated.channel_binding(),
+            authenticated.payload(),
+            DORMANT_CLI_OBSERVATION_SCHEMA_V1,
+        )?;
+        let authorization = CurrentProtectedCliAuthorizationV1::from_current_protected_capability(
+            self.journal,
+            PublisherAuthorityLimits::default(),
+            PublisherPolicyLimits::default(),
+            authenticated.capability_id(),
+            &mut *self.protected_clock,
+            &decoded,
+            &identity,
+            &channel,
+        )?;
+
+        DormantAuthenticatedCliRequestV1::bind(decoded, identity, session, channel, authorization)
+    }
+}
+
 impl<C, E> NodeController<C, E>
 where
     C: ActivatedOperationCompiler,
@@ -206,6 +319,27 @@ where
             limits,
             compiler,
             reconciler,
+        }
+    }
+
+    /// Borrows the sole controller journal for dormant authenticated CLI requests.
+    ///
+    /// This source-only factory registers no public command or route and grants
+    /// no effect authority. The returned owner can only derive CLI provenance
+    /// from an authenticated local-session record, a protected paired-clock
+    /// adapter, and current protected state. The adapter is retained rather
+    /// than accepting caller-shaped timestamps at individual authorizations.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn dormant_cli_authorization<'controller, 'clock, T>(
+        &'controller mut self,
+        protected_clock: &'clock mut T,
+    ) -> DormantCliAuthorizationOwnerV1<'controller, 'clock, T>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, crate::ProtectedOwnershipClockError>,
+    {
+        DormantCliAuthorizationOwnerV1 {
+            journal: self.reconciler.journal_mut(),
+            protected_clock,
         }
     }
 

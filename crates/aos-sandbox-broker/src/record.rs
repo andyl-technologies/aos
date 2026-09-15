@@ -973,6 +973,9 @@ fn encode_effect(
     intent: &BrokerEffectIntentV1,
     domain: BrokerDomain,
 ) -> Result<Vec<u8>, AuthorizationRecordError> {
+    if domain == BrokerDomain::Mount {
+        return encode_mount_effect_with_shared_codec(intent);
+    }
     let lease_bytes = encode_local_lease_record(&intent.local_lease_record);
     let receipt_length = u32::try_from(intent.receipt.len())
         .map_err(|_| AuthorizationRecordError::InvalidPayload)?;
@@ -1015,6 +1018,9 @@ fn decode_effect(
     bytes: &[u8],
     domain: BrokerDomain,
 ) -> Result<BrokerEffectIntentV1, AuthorizationRecordError> {
+    if domain == BrokerDomain::Mount {
+        return decode_mount_effect_with_shared_codec(bytes);
+    }
     let mut decoder = Decoder::new(bytes);
     if decoder.take::<8>()? != *domain.effect_magic() || decoder.u16()? != EFFECT_VERSION {
         return Err(AuthorizationRecordError::InvalidPayload);
@@ -1072,6 +1078,131 @@ fn decode_effect(
         effect_deadline_boottime_nanoseconds,
         local_lease_record,
         receipt,
+    };
+    intent.validate()?;
+    Ok(intent)
+}
+
+fn encode_mount_effect_with_shared_codec(
+    intent: &BrokerEffectIntentV1,
+) -> Result<Vec<u8>, AuthorizationRecordError> {
+    use aos_sandbox_protocol::mount_source_consumption_state::{
+        StructurallyDecodedMountEffectV1, structurally_encode_mount_effect_payload_v1,
+    };
+
+    let (target_tag, target_identity) = match intent.target {
+        BrokerGrantTarget::Assignment => (0, [0; 64]),
+        BrokerGrantTarget::Resource(handle) => {
+            let mut identity = [0; 64];
+            identity[..32].copy_from_slice(handle.as_bytes());
+            (1, identity)
+        }
+        BrokerGrantTarget::ResourcePair {
+            previous,
+            successor,
+        } => {
+            let mut identity = [0; 64];
+            identity[..32].copy_from_slice(previous.as_bytes());
+            identity[32..].copy_from_slice(successor.as_bytes());
+            (2, identity)
+        }
+    };
+    let local_lease_record = encode_local_lease_record(&intent.local_lease_record)
+        .try_into()
+        .map_err(|_| AuthorizationRecordError::InvalidPayload)?;
+    let structural = StructurallyDecodedMountEffectV1 {
+        // Payload encoding does not persist these wrapper fields.
+        key_id: [1; 16],
+        status: match intent.status {
+            BrokerEffectStatusV1::Pending => 0,
+            BrokerEffectStatusV1::Complete => 1,
+        },
+        verb: verb_code(BrokerDomain::Mount, intent.verb),
+        target_tag,
+        target_identity,
+        request_id: intent.request_id,
+        transport_request_digest: *intent.transport_request_digest.as_bytes(),
+        semantic_digest: *intent.request_digest.as_bytes(),
+        plan_digest: *intent.plan_digest.as_bytes(),
+        lease_digest: *intent.lease_digest.as_bytes(),
+        maximum_request_bytes: intent.maximum_request_bytes,
+        maximum_descriptors: intent.maximum_descriptors,
+        plan_expires_seconds: intent.plan_expires_seconds,
+        authority_expires_seconds: intent.authority_expires_seconds,
+        host_boot_id: intent.host_boot_id,
+        fail_stop_boottime_nanoseconds: intent.fail_stop_boottime_nanoseconds,
+        clock_provenance: intent.clock_provenance,
+        admitted_wall_seconds: intent.admitted_wall_seconds,
+        admitted_boottime_nanoseconds: intent.admitted_boottime_nanoseconds,
+        request_deadline_boottime_nanoseconds: intent.request_deadline_boottime_nanoseconds,
+        effect_deadline_boottime_nanoseconds: intent.effect_deadline_boottime_nanoseconds,
+        local_lease_record,
+        receipt: intent.receipt.clone(),
+        mac: [0; 32],
+    };
+    structurally_encode_mount_effect_payload_v1(&structural)
+        .map_err(|_| AuthorizationRecordError::InvalidPayload)
+}
+
+fn decode_mount_effect_with_shared_codec(
+    bytes: &[u8],
+) -> Result<BrokerEffectIntentV1, AuthorizationRecordError> {
+    use aos_sandbox_protocol::mount_source_consumption_state::structurally_decode_mount_effect_payload_v1;
+
+    let structural = structurally_decode_mount_effect_payload_v1(bytes, [1; 16], [0; 32])
+        .map_err(|_| AuthorizationRecordError::InvalidPayload)?;
+    let status = match structural.status {
+        0 => BrokerEffectStatusV1::Pending,
+        1 => BrokerEffectStatusV1::Complete,
+        _ => return Err(AuthorizationRecordError::InvalidPayload),
+    };
+    let verb = decode_verb(BrokerDomain::Mount, structural.verb)?;
+    let target = match structural.target_tag {
+        0 if structural.target_identity == [0; 64] => BrokerGrantTarget::Assignment,
+        1 if structural.target_identity[32..] == [0; 32] => {
+            BrokerGrantTarget::Resource(resource_handle(
+                structural.target_identity[..32]
+                    .try_into()
+                    .map_err(|_| AuthorizationRecordError::InvalidPayload)?,
+            )?)
+        }
+        2 => BrokerGrantTarget::ResourcePair {
+            previous: resource_handle(
+                structural.target_identity[..32]
+                    .try_into()
+                    .map_err(|_| AuthorizationRecordError::InvalidPayload)?,
+            )?,
+            successor: resource_handle(
+                structural.target_identity[32..]
+                    .try_into()
+                    .map_err(|_| AuthorizationRecordError::InvalidPayload)?,
+            )?,
+        },
+        _ => return Err(AuthorizationRecordError::InvalidPayload),
+    };
+    let intent = BrokerEffectIntentV1 {
+        status,
+        request_id: structural.request_id,
+        transport_request_digest: ObjectDigest::from_bytes(structural.transport_request_digest),
+        request_digest: ObjectDigest::from_bytes(structural.semantic_digest),
+        plan_digest: ObjectDigest::from_bytes(structural.plan_digest),
+        lease_digest: ObjectDigest::from_bytes(structural.lease_digest),
+        verb,
+        target,
+        maximum_request_bytes: structural.maximum_request_bytes,
+        maximum_descriptors: structural.maximum_descriptors,
+        plan_expires_seconds: structural.plan_expires_seconds,
+        authority_expires_seconds: structural.authority_expires_seconds,
+        host_boot_id: structural.host_boot_id,
+        fail_stop_boottime_nanoseconds: structural.fail_stop_boottime_nanoseconds,
+        clock_provenance: structural.clock_provenance,
+        admitted_wall_seconds: structural.admitted_wall_seconds,
+        admitted_boottime_nanoseconds: structural.admitted_boottime_nanoseconds,
+        request_deadline_boottime_nanoseconds: structural.request_deadline_boottime_nanoseconds,
+        effect_deadline_boottime_nanoseconds: structural.effect_deadline_boottime_nanoseconds,
+        local_lease_record: decode_local_lease_record(&structural.local_lease_record)
+            .map_err(|_| AuthorizationRecordError::InvalidPayload)?,
+        receipt: structural.receipt,
     };
     intent.validate()?;
     Ok(intent)

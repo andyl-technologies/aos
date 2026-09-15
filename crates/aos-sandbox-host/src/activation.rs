@@ -1,11 +1,10 @@
 //! Exact systemd socket-activation descriptor adoption.
 
-use std::os::fd::{FromRawFd as _, OwnedFd};
+use aos_sandbox_linux::inherited_fd::claim_systemd_activation_descriptor_range;
 
 use crate::transport::ActivatedSeqpacketListener;
 use crate::{HostError, Result};
 
-const ACTIVATION_FD: i32 = 3;
 const EXPECTED_FD_NAME: &str = "aos-sandbox-host";
 
 /// Adopts the sole listener described by systemd's activation environment.
@@ -19,11 +18,19 @@ const EXPECTED_FD_NAME: &str = "aos-sandbox-host";
 /// 3. It does not mutate the environment, so later child construction must use
 /// an explicit sanitized environment rather than inheriting activation state.
 ///
+/// # Safety
+///
+/// The caller must be the single-threaded startup owner of descriptor 3. No
+/// `File`, `OwnedFd`, borrowed I/O value, or other owner may already represent
+/// that entry, and no thread, signal handler, or concurrent code may open,
+/// close, duplicate, or replace it until this function returns. Activation
+/// environment validation cannot establish these ownership facts.
+///
 /// # Errors
 ///
 /// Returns an error for a missing/malformed/mismatched activation environment
 /// or an invalid inherited descriptor.
-pub fn take_systemd_listener() -> Result<ActivatedSeqpacketListener> {
+pub unsafe fn take_systemd_listener() -> Result<ActivatedSeqpacketListener> {
     let listen_pid = environment_u32("LISTEN_PID")?;
     let current_pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
         .map_err(|_| HostError::State("current PID does not fit u32".to_owned()))?;
@@ -45,11 +52,16 @@ pub fn take_systemd_listener() -> Result<ActivatedSeqpacketListener> {
         ));
     }
 
-    // SAFETY: systemd's validated LISTEN_PID/LISTEN_FDS contract transfers
-    // unique ownership of descriptor 3 to this process. The typed listener
-    // constructor immediately verifies the descriptor's kernel socket type,
-    // listening state, and close-on-exec flag.
-    let fd = unsafe { OwnedFd::from_raw_fd(ACTIVATION_FD) };
+    // SAFETY: the validated systemd contract transfers the sole activation
+    // entry to this single-threaded startup path before any Rust FD owner is
+    // constructed and before any code can mutate the descriptor table.
+    let mut descriptors = unsafe { claim_systemd_activation_descriptor_range(0, 1) }
+        .map_err(|error| HostError::State(error.to_string()))?
+        .into_descriptors()
+        .into_iter();
+    let fd = descriptors
+        .next()
+        .ok_or_else(|| HostError::State("activated listener is absent".to_owned()))?;
     ActivatedSeqpacketListener::from_owned(fd)
 }
 

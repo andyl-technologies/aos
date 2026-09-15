@@ -17,7 +17,7 @@
 
 use aos_proto::aos::sandbox::local::v1::{
     BrokerClientHello, BrokerDescriptorEntry, BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope,
-    BrokerResponseEnvelope, BrokerServerHello,
+    BrokerResponseEnvelope, BrokerServerHello, MountResult,
 };
 use aos_sandbox_core::{FeatureRef, validate_required_features};
 use buffa::Message as _;
@@ -233,9 +233,42 @@ impl CanonicalBrokerResponseEnvelopeV1 {
         self.encoded_len
     }
 
-    pub(crate) fn encoded_bytes(&self) -> &[u8] {
+    /// Returns the exact canonical response packet supplied to the decoder.
+    #[must_use]
+    pub fn encoded_bytes(&self) -> &[u8] {
         &self.encoded_bytes
     }
+}
+
+/// Commits a canonical Mount Apply outcome with its qualification field omitted.
+///
+/// This acyclic projection lets a signed qualification record bind the rest of
+/// the outcome while the full signed outcome independently embeds the digest of
+/// that complete qualification record.
+///
+/// # Errors
+///
+/// Returns [`BrokerSessionProjectionError`] unless `outcome` is a successful
+/// Mount Apply result whose nested body is canonical and has no unknown fields.
+pub fn mount_qualification_outcome_projection_v1(
+    outcome: &CanonicalBrokerResponseEnvelopeV1,
+) -> Result<[u8; 32], BrokerSessionProjectionError> {
+    if outcome.message.method.as_known() != Some(BrokerMethod::BROKER_METHOD_MOUNT_APPLY)
+        || outcome.message.error.as_option().is_some()
+    {
+        return Err(BrokerSessionProjectionError::InvalidSemantics);
+    }
+    let mut result = MountResult::decode_from_slice(&outcome.message.body)
+        .map_err(|error| BrokerSessionProjectionError::Malformed(error.to_string()))?;
+    if !result.__buffa_unknown_fields.is_empty() || result.encode_to_vec() != outcome.message.body {
+        return Err(BrokerSessionProjectionError::Noncanonical);
+    }
+    result.filesystem_worker_qualification_commitment.clear();
+
+    let mut projection = outcome.message.clone();
+    projection.body = result.encode_to_vec();
+    projection.signed_session_outcome.clear();
+    outcome_fields_digest_v1(&projection)
 }
 
 /// Digests one outbound ClientHello whose authentication field is still clear.

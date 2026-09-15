@@ -215,6 +215,10 @@ impl ProtectedSourceProviderFiles {
         &self.secrets[0]
     }
 
+    pub(crate) const fn outcome_key(&self) -> &RetainedSecret {
+        &self.secrets[1]
+    }
+
     pub(crate) fn revalidate(&self) -> Result<(), SourceProviderSecurityError> {
         if rustix::process::geteuid().as_raw() != 0
             || rustix::process::getegid().as_raw() != self.group

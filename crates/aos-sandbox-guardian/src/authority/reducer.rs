@@ -4,8 +4,8 @@
 //! exact Network lease gate, and requires a complete Host, Storage, Mount, and
 //! Network managed-state snapshot at every effect and recovery boundary. It
 //! performs no systemd, network, storage, mount, timer, or kernel operation.
-//! Opaque protected-current and post-effect values intentionally have no
-//! constructor in this source partition.
+//! Opaque protected-current and post-effect values are constructed only by the
+//! crate-sealed dormant protected owner; no production observer is activated.
 
 use aos_sandbox_core::{LeaseAssignment, NodeId, ObjectDigest};
 use sha2::{Digest as _, Sha256};
@@ -15,6 +15,11 @@ use super::ReadinessConfirmedGuardian;
 mod codec;
 mod commitment;
 mod effect;
+mod protected_store;
+pub use protected_store::{
+    DormantGuardianProtectedCommitV1, DormantGuardianProtectedOwnerErrorV1,
+    DormantGuardianProtectedOwnerV1,
+};
 
 use commitment::{
     admission_digest, authority_digest, guardian_outcome_digest, managed_snapshot_digest,
@@ -594,6 +599,14 @@ pub(crate) struct ProtectedGuardianTimerPolicyV1 {
 }
 
 impl ProtectedGuardianTimerPolicyV1 {
+    /// Mints the single installed fixed-margin policy inside the protected owner.
+    fn installed() -> Self {
+        Self {
+            early_freeze_margin_nanoseconds: PROTECTED_EARLY_FREEZE_MARGIN_NANOSECONDS,
+            digest: timer_policy_digest(PROTECTED_EARLY_FREEZE_MARGIN_NANOSECONDS),
+        }
+    }
+
     fn valid(self) -> bool {
         self.early_freeze_margin_nanoseconds == PROTECTED_EARLY_FREEZE_MARGIN_NANOSECONDS
             && self.digest == timer_policy_digest(self.early_freeze_margin_nanoseconds)
@@ -701,7 +714,8 @@ pub(crate) enum GuardianCauseKindV1 {
 
 /// Carries protected cause evidence that request bytes cannot fabricate.
 ///
-/// The future protected authority adapter is the sole constructor.
+/// The crate-sealed dormant fixed owner decodes it only inside a canonical
+/// admission carrier; reducer currentness checks remain the authority boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProtectedGuardianCauseEvidenceV1 {
     kind: GuardianCauseKindV1,
@@ -860,9 +874,9 @@ impl GuardianEffectAdmissionV1 {
 
 /// Carries fresh protected evidence required before any effect plan is exposed.
 ///
-/// No constructor is supplied here. Future adapters must derive this value by
-/// rereading durable admission, current authority, all four managed domains,
-/// the exact Network fence, worker state, and `CLOCK_BOOTTIME`.
+/// Construction is crate-sealed in the dormant fixed protected-store owner,
+/// which decodes a root-owned canonical carrier and requires the reducer to
+/// bind durable admission, managed domains, Network fence, worker, and clock.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProtectedGuardianCurrentV1 {
     admission_digest: ObjectDigest,
@@ -974,8 +988,9 @@ impl GuardianEffectPlanV1 {
 
 /// Carries two equal complete protected post-effect snapshots.
 ///
-/// The future protected observer is the sole constructor. Request and worker
-/// bytes cannot mint cleanup, containment, old-worker-death, or absence proof.
+/// The crate-sealed dormant fixed owner decodes the canonical observation.
+/// Request and worker bytes cannot mint cleanup, containment, old-worker-death,
+/// or absence proof, and no production observer is activated here.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ProtectedGuardianOutcomeV1 {
     admission_digest: ObjectDigest,
@@ -1032,8 +1047,9 @@ enum GuardianContainmentOverrideV1 {
 
 /// Carries protected proof that an in-flight admitted worker died.
 ///
-/// No constructor is supplied. A protected observer must bind the exact
-/// pending attempt, death evidence, and complete post-death current state.
+/// Construction is crate-sealed in the dormant fixed protected-store owner;
+/// reducer validation binds the exact attempt, death evidence, and complete
+/// post-death current state. No production observer is activated here.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ProtectedGuardianWorkerDeathSupersessionV1 {
     admission_digest: ObjectDigest,
@@ -1222,7 +1238,7 @@ pub(crate) struct GuardianRecoverySnapshotV1 {
 
 /// Authorizes one exact protected Guardian receipt-prefix compaction.
 ///
-/// No constructor is supplied in this dormant partition.
+/// Construction remains reserved for the protected authority integration.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ProtectedGuardianCompactionV1 {
     snapshot_digest: ObjectDigest,
@@ -1233,7 +1249,7 @@ pub(crate) struct ProtectedGuardianCompactionV1 {
 
 /// Owns a bounded checkpoint envelope awaiting protected durable storage.
 ///
-/// This in-memory value is not evidence of persistence. A future protected
+/// This in-memory value is not evidence of persistence. The private protected
 /// adapter must durably write and read back `checkpoint` before recovery.
 #[derive(Clone, Debug)]
 pub(crate) struct GuardianRecoveryStoreV1 {
@@ -2510,6 +2526,42 @@ impl GuardianAuthorityReducerV1 {
         }
     }
 
+    /// Replays one exact protected-journal edge against its predecessor.
+    pub(super) fn validates_journal_successor(
+        prior: &GuardianRecoverySnapshotV1,
+        next: &GuardianRecoverySnapshotV1,
+    ) -> bool {
+        let Ok(mut reducer) = Self::recover(prior.clone()) else {
+            return false;
+        };
+        if prior.digest == next.digest {
+            return guardian_snapshot_matches(&reducer, next);
+        }
+        if next.receipt_floor_sequence > prior.receipt_floor_sequence {
+            let Ok(authority) = reducer.mint_compaction(next.receipt_floor_sequence) else {
+                return false;
+            };
+            return reducer.compact_receipts(authority).is_ok()
+                && guardian_snapshot_matches(&reducer, next);
+        }
+        match (prior.pending, next.pending) {
+            (None, Some(pending)) => {
+                reducer.begin(pending.admission).is_ok()
+                    && guardian_snapshot_matches(&reducer, next)
+            }
+            (Some(pending), None) if pending.phase == GuardianReducerPhaseV1::Observed => {
+                reducer.commit_observed().is_ok() && guardian_snapshot_matches(&reducer, next)
+            }
+            (Some(prior_pending), Some(next_pending))
+                if prior_pending.admission.digest() == next_pending.admission.digest() =>
+            {
+                replay_guardian_pending_edge(&mut reducer, prior_pending, next_pending)
+                    && guardian_snapshot_matches(&reducer, next)
+            }
+            _ => false,
+        }
+    }
+
     /// Compacts an exact receipt prefix only with protected journal authority.
     pub(crate) fn compact_receipts(
         &mut self,
@@ -2551,12 +2603,187 @@ impl GuardianAuthorityReducerV1 {
         Ok(())
     }
 
+    /// Derives compaction authority from this exact in-memory protected head.
+    fn mint_compaction(
+        &self,
+        through_sequence: u64,
+    ) -> Result<ProtectedGuardianCompactionV1, GuardianReducerError> {
+        self.ensure_healthy()?;
+        let removed = self
+            .receipts
+            .iter()
+            .take_while(|receipt| receipt.sequence <= through_sequence)
+            .count();
+        if self.pending.is_some()
+            || through_sequence <= self.receipt_floor_sequence
+            || through_sequence >= self.highest_sequence
+            || removed == 0
+            || self.receipts[removed - 1].sequence != through_sequence
+        {
+            return Err(GuardianReducerError::CurrentnessMismatch);
+        }
+        Ok(ProtectedGuardianCompactionV1 {
+            snapshot_digest: self.snapshot_digest(),
+            through_sequence,
+            anchor_digest: guardian_compacted_anchor(
+                &self.compacted_receipt_index,
+                &self.receipts[..removed],
+            ),
+            replay_index_digest: guardian_replay_index(
+                &self.compacted_receipt_index,
+                &self.receipts,
+            ),
+        })
+    }
+
     fn ensure_healthy(&self) -> Result<(), GuardianReducerError> {
         if self.poisoned {
             Err(GuardianReducerError::Poisoned)
         } else {
             Ok(())
         }
+    }
+}
+
+fn guardian_snapshot_matches(
+    reducer: &GuardianAuthorityReducerV1,
+    expected: &GuardianRecoverySnapshotV1,
+) -> bool {
+    let candidate = reducer.snapshot();
+    codec::encode_snapshot(&candidate).ok() == codec::encode_snapshot(expected).ok()
+}
+
+fn replay_guardian_pending_edge(
+    reducer: &mut GuardianAuthorityReducerV1,
+    prior: PendingGuardianEffectV1,
+    next: PendingGuardianEffectV1,
+) -> bool {
+    match (prior.phase, next.phase) {
+        (
+            GuardianReducerPhaseV1::Frozen | GuardianReducerPhaseV1::ReissueFrozen,
+            GuardianReducerPhaseV1::EffectUnknown,
+        ) => next
+            .predecessor_current
+            .is_some_and(|current| reducer.prepare_effect(current).is_ok()),
+        (GuardianReducerPhaseV1::EffectUnknown, GuardianReducerPhaseV1::ReleaseFrozen) => {
+            let Some(mut current) = prior.predecessor_current else {
+                return false;
+            };
+            let (Some(released_time), Some(released_ordinal), Some(step_attempt_digest)) = (
+                next.released_boottime_nanoseconds,
+                next.released_observation_ordinal,
+                prior.step_attempt_digest,
+            ) else {
+                return false;
+            };
+            current.durable_reducer_digest = reducer.snapshot_digest();
+            let Ok(managed) = GuardianManagedSnapshotV1::new(
+                current.managed.assignment,
+                current.managed.entries,
+                released_time,
+                current.managed.session_digest,
+                current.managed.currentness_digest,
+            ) else {
+                return false;
+            };
+            current.managed = managed;
+            current.managed_snapshot_digest = managed.digest();
+            current.observed_boottime_nanoseconds = released_time;
+            current.observation_ordinal = released_ordinal;
+            let effect = GuardianEffectPreflightV1 {
+                admission_digest: prior.admission.digest(),
+                step_attempt_digest,
+                recovery_digest: reducer.snapshot_digest(),
+            };
+            reducer.freeze_release(effect, current).is_ok()
+        }
+        (GuardianReducerPhaseV1::ReleaseFrozen, GuardianReducerPhaseV1::PlanExposed) => {
+            let Some(mut current) = prior.predecessor_current else {
+                return false;
+            };
+            let (Some(released_time), Some(released_ordinal), Some(step_attempt_digest)) = (
+                prior.released_boottime_nanoseconds,
+                prior.released_observation_ordinal,
+                prior.step_attempt_digest,
+            ) else {
+                return false;
+            };
+            let Some(observation_ordinal) = released_ordinal.checked_add(1) else {
+                return false;
+            };
+            current.durable_reducer_digest = reducer.snapshot_digest();
+            let Ok(managed) = GuardianManagedSnapshotV1::new(
+                current.managed.assignment,
+                current.managed.entries,
+                released_time,
+                current.managed.session_digest,
+                current.managed.currentness_digest,
+            ) else {
+                return false;
+            };
+            current.managed = managed;
+            current.managed_snapshot_digest = managed.digest();
+            current.observed_boottime_nanoseconds = released_time;
+            current.observation_ordinal = observation_ordinal;
+            let release_digest =
+                guardian_plan_release_digest(prior.admission.digest(), step_attempt_digest);
+            let release = GuardianReleasePreflightV1 {
+                admission_digest: prior.admission.digest(),
+                step_attempt_digest,
+                release_digest,
+                recovery_digest: reducer.snapshot_digest(),
+            };
+            reducer.release_effect(release, current).is_ok()
+        }
+        (
+            GuardianReducerPhaseV1::ReleaseFrozen | GuardianReducerPhaseV1::PlanExposed,
+            GuardianReducerPhaseV1::Observed | GuardianReducerPhaseV1::ReissueFrozen,
+        ) if next.last_outcome.map(|outcome| outcome.digest)
+            != prior.last_outcome.map(|outcome| outcome.digest) =>
+        {
+            next.last_outcome
+                .is_some_and(|outcome| reducer.observe(outcome).is_ok())
+        }
+        (
+            GuardianReducerPhaseV1::EffectUnknown,
+            GuardianReducerPhaseV1::Frozen | GuardianReducerPhaseV1::ReissueFrozen,
+        ) if next.worker_death_supersession.is_none() => {
+            let Some(mut current) = prior.predecessor_current else {
+                return false;
+            };
+            let Some(ordinal) = current.observation_ordinal.checked_add(1) else {
+                return false;
+            };
+            current.durable_reducer_digest = reducer.snapshot_digest();
+            current.observation_ordinal = ordinal;
+            reducer.revalidate_unreleased(current).is_ok()
+        }
+        (
+            GuardianReducerPhaseV1::EffectUnknown | GuardianReducerPhaseV1::ReleaseFrozen,
+            GuardianReducerPhaseV1::ReissueFrozen,
+        ) if prior.worker_death_supersession.is_none()
+            && next.worker_death_supersession.is_some() =>
+        {
+            next.worker_death_supersession
+                .is_some_and(|evidence| reducer.supersede_worker_death(evidence).is_ok())
+        }
+        (GuardianReducerPhaseV1::ReleaseFrozen, GuardianReducerPhaseV1::ReissueFrozen) => next
+            .release_timer_handoffs
+            .iter()
+            .zip(prior.release_timer_handoffs.iter())
+            .find_map(|(next, prior)| prior.is_none().then_some(*next).flatten())
+            .is_some_and(|handoff| {
+                let release = GuardianReleasePreflightV1 {
+                    admission_digest: prior.admission.digest(),
+                    step_attempt_digest: handoff.step_attempt_digest,
+                    release_digest: handoff.release_digest,
+                    recovery_digest: reducer.snapshot_digest(),
+                };
+                reducer
+                    .handoff_release_timer(release, handoff.current)
+                    .is_ok()
+            }),
+        _ => false,
     }
 }
 

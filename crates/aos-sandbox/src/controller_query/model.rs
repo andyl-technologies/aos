@@ -101,6 +101,11 @@ define_binding_commitment!(
     "Commits negotiated observation schemas and required feature versions.",
     b"aos.sandbox.client.observation-schema.v1\0"
 );
+define_binding_commitment!(
+    WatchRequestCommitmentV1,
+    "Commits normalized watch semantics excluding the separately typed continuation cursor.",
+    b"aos.sandbox.client.watch-request.v1\0"
+);
 
 /// Binds an opaque response value to every semantic authorization dimension.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]

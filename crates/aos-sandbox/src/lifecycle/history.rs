@@ -7,9 +7,9 @@ use sha2::{Digest as _, Sha256};
 
 use super::format::record_digest;
 use super::{
-    decode_operation_record_v1, encode_operation_record_v1, LifecycleCancelIdempotencyIndexV1,
-    LifecycleCancelOutcomeV1, LifecycleCancelRequestV1, LifecycleIdempotencyIndexV1,
-    LifecycleModelError, LifecycleOperationV1, LifecycleRecordDigestV1,
+    LifecycleCancelIdempotencyIndexV1, LifecycleCancelOutcomeV1, LifecycleCancelRequestV1,
+    LifecycleIdempotencyIndexV1, LifecycleModelError, LifecycleOperationV1,
+    LifecycleRecordDigestV1, decode_operation_record_v1, encode_operation_record_v1,
 };
 
 /// Maximum records accepted by one replay.

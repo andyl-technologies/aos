@@ -1,12 +1,10 @@
 //! Exact systemd record-subject socket activation for `aos-netd`.
 
-use std::os::fd::{FromRawFd as _, OwnedFd};
-
+use aos_sandbox_linux::inherited_fd::claim_systemd_activation_descriptor_range;
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 
 use crate::service::NetworkServiceError;
 
-const ACTIVATION_FD: i32 = 3;
 const EXPECTED_FD_NAME: &str = "aos-netd";
 
 /// Adopts the sole record-subject listener supplied by systemd.
@@ -16,11 +14,19 @@ const EXPECTED_FD_NAME: &str = "aos-netd";
 /// `SOCK_SEQPACKET` listener with `SO_PASSCRED` and `SO_PASSPIDFD` enabled.
 /// This function must run before any thread or unrelated descriptor is created.
 ///
+/// # Safety
+///
+/// The caller must be the single-threaded startup owner of descriptor 3. No
+/// `File`, `OwnedFd`, borrowed I/O value, or other owner may already represent
+/// that entry, and no thread, signal handler, or concurrent code may open,
+/// close, duplicate, or replace it until this function returns. Activation
+/// environment validation cannot establish these ownership facts.
+///
 /// # Errors
 ///
 /// Returns [`NetworkServiceError`] when activation metadata is absent,
 /// malformed, or mismatched, or descriptor 3 violates the listener contract.
-pub fn take_systemd_listener() -> Result<RecordSubjectListener, NetworkServiceError> {
+pub unsafe fn take_systemd_listener() -> Result<RecordSubjectListener, NetworkServiceError> {
     let listen_pid = environment_u32("LISTEN_PID")?;
     let current_pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
         .map_err(|_| activation_error("current PID does not fit u32"))?;
@@ -38,10 +44,16 @@ pub fn take_systemd_listener() -> Result<RecordSubjectListener, NetworkServiceEr
         ));
     }
 
-    // SAFETY: the validated systemd LISTEN_PID/LISTEN_FDS contract transfers
-    // unique ownership of descriptor 3 to this single-threaded startup path.
-    // The typed constructor immediately verifies its socket and identity flags.
-    let fd = unsafe { OwnedFd::from_raw_fd(ACTIVATION_FD) };
+    // SAFETY: the validated systemd contract transfers the sole activation
+    // entry to this single-threaded startup path before any Rust FD owner is
+    // constructed and before any code can mutate the descriptor table.
+    let mut descriptors = unsafe { claim_systemd_activation_descriptor_range(0, 1) }
+        .map_err(|error| activation_error(error.to_string()))?
+        .into_descriptors()
+        .into_iter();
+    let fd = descriptors
+        .next()
+        .ok_or_else(|| activation_error("activated listener is absent"))?;
     RecordSubjectListener::from_owned(fd).map_err(Into::into)
 }
 

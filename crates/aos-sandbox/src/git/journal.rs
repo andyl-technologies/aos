@@ -366,6 +366,10 @@ impl GitBootRolloverAuthorityV1 {
         self.current
     }
 
+    pub(crate) fn predecessor_boots(&self) -> &[ObjectDigest] {
+        &self.predecessors
+    }
+
     pub(super) fn accepts_predecessor(&self, boot: super::GitBootIdV1) -> bool {
         self.predecessors.binary_search(&boot.digest()).is_ok()
     }

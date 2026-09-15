@@ -49,9 +49,9 @@ fn run() -> Result<()> {
             "mount broker must start with real and effective UID zero".to_owned(),
         ));
     }
-    // SAFETY: this is the single-threaded process entrypoint, before any code
-    // constructs Rust owners for systemd's contiguous activation descriptor
-    // table. systemd transfers that entire table to this service process.
+    // SAFETY: this is the single-threaded process entrypoint before any Rust
+    // owner is constructed for systemd's complete activation range. PID 1
+    // transfers that stable range exclusively to this service process.
     let activation = unsafe {
         SystemdFdStore::adopt_service_activation(EXPECTED_FD_NAME, MAXIMUM_RETAINED_MOUNTS)?
     };

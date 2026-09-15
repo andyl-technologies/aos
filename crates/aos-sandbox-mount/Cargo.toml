@@ -24,6 +24,7 @@ aos-sandbox-core.workspace = true
 aos-sandbox-linux.workspace = true
 aos-sandbox-protocol.workspace = true
 aos-sandbox-source-provider-protocol.workspace = true
+aos-sandbox-source-provider-security.workspace = true
 buffa.workspace = true
 libc.workspace = true
 rustix = { workspace = true, features = ["event", "fs", "net", "process", "time"] }

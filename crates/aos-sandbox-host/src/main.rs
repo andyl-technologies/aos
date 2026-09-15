@@ -46,9 +46,10 @@ fn run() -> Result<()> {
     }
     let (controller_identity, nspawn_executable, guardian_executable) = arguments()?;
 
-    // Adopt FD 3 before another dependency can allocate descriptors or create
-    // a thread.
-    let listener = take_systemd_listener()?;
+    // SAFETY: PID 1 transfers the sole stable activation entry to this
+    // single-threaded entrypoint. No Rust owner has been constructed for FD 3,
+    // and no preceding operation opens, closes, or duplicates a descriptor.
+    let listener = unsafe { take_systemd_listener()? };
     // This is intentionally non-authorizing. It exercises pidfs from inside
     // the deployed service sandbox, while shifted-payload ptrace access remains
     // an explicit readiness blocker. Observation stays available on failure.

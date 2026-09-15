@@ -6,6 +6,15 @@
 //! only when the broker canonically persists [`PassthroughRegistrations::snapshot`]
 //! before the corresponding external effect or reply. OS descriptors, journal
 //! fsync, and ioctl effects remain owned by that adapter.
+//!
+//! ```text
+//! record-count:u32be || repeated(
+//!   callback-reducer-commitment[32] || operation:u64be || phase:u8 ||
+//!   backing-id-or-zero:u64be ||
+//!   descriptor-commitment-or-zero[32] || references:u64be ||
+//!   canonical-backing-identity
+//! )
+//! ```
 
 use super::durable::{Cursor, DurableStateError, Writer};
 use super::{BackingIdentity, ConnectionLease, DataError, PreparedFuseConnection};
@@ -67,6 +76,7 @@ struct Registration {
     backing: BackingIdentity,
     phase: RegistrationPhase,
     backing_id: Option<u64>,
+    descriptor_commitment: Option<[u8; 32]>,
     references: u64,
 }
 
@@ -74,10 +84,12 @@ struct Registration {
 #[derive(Clone, Copy)]
 pub struct DurableRegistrationRecord {
     authority_binding: [u8; 32],
+    callback_reducer_commitment: [u8; 32],
     operation: RegistrationOperation,
     backing: BackingIdentity,
     phase: RegistrationPhase,
     backing_id: Option<u64>,
+    descriptor_commitment: Option<[u8; 32]>,
     references: u64,
 }
 
@@ -86,30 +98,40 @@ impl DurableRegistrationRecord {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_canonical_journal(
         authority_binding: [u8; 32],
+        callback_reducer_commitment: [u8; 32],
         operation: u64,
         backing: BackingIdentity,
         phase: RegistrationPhase,
         backing_id: Option<u64>,
+        descriptor_commitment: Option<[u8; 32]>,
         references: u64,
     ) -> Result<Self, DataError> {
         if authority_binding == [0; 32]
+            || callback_reducer_commitment == [0; 32]
             || operation == 0
             || references == 0
-            || (phase == RegistrationPhase::Pending && (backing_id.is_some() || references != 1))
+            || (phase == RegistrationPhase::Pending
+                && (backing_id.is_some() || descriptor_commitment.is_some() || references != 1))
             || (matches!(
                 phase,
                 RegistrationPhase::Active | RegistrationPhase::Closing
-            ) && !matches!(backing_id, Some(value) if value != 0))
+            ) && (!matches!(backing_id, Some(value) if value != 0)
+                || !matches!(descriptor_commitment, Some(value) if value != [0; 32])))
+            || matches!(backing_id, Some(0))
+            || backing_id.is_some() != descriptor_commitment.is_some()
+            || matches!(descriptor_commitment, Some(value) if value == [0; 32])
             || (phase == RegistrationPhase::Closing && references != 1)
         {
             return Err(DataError::IntegrityFailure);
         }
         Ok(Self {
             authority_binding,
+            callback_reducer_commitment,
             operation: RegistrationOperation(operation),
             backing,
             phase,
             backing_id,
+            descriptor_commitment,
             references,
         })
     }
@@ -118,6 +140,12 @@ impl DurableRegistrationRecord {
     #[must_use]
     pub const fn authority_binding(&self) -> [u8; 32] {
         self.authority_binding
+    }
+
+    /// Returns the worker-minted callback-reducer commitment for this record.
+    #[must_use]
+    pub const fn callback_reducer_commitment(&self) -> [u8; 32] {
+        self.callback_reducer_commitment
     }
 
     /// Returns the durable operation identity.
@@ -144,6 +172,12 @@ impl DurableRegistrationRecord {
         self.backing_id
     }
 
+    /// Returns the exact descriptor identity commitment, when known.
+    #[must_use]
+    pub const fn descriptor_commitment(&self) -> Option<[u8; 32]> {
+        self.descriptor_commitment
+    }
+
     /// Returns the exact number of associated worker opens.
     #[must_use]
     pub const fn references(&self) -> u64 {
@@ -154,6 +188,7 @@ impl DurableRegistrationRecord {
 /// Owns bounded durable registration state for one authority-bound connection.
 pub struct PassthroughRegistrations {
     authority_binding: [u8; 32],
+    callback_reducer_commitment: [u8; 32],
     lease: ConnectionLease,
     limits: RegistrationLimits,
     entries: Vec<Registration>,
@@ -189,6 +224,7 @@ impl PassthroughRegistrations {
         }
         Ok(Self {
             authority_binding,
+            callback_reducer_commitment: [0; 32],
             lease: connection.lease(),
             limits,
             entries,
@@ -209,8 +245,12 @@ impl PassthroughRegistrations {
             return Err(DataError::ResourceExhausted);
         }
         let mut previous = 0_u64;
+        let restored_reducer_commitment = records
+            .first()
+            .map_or([0; 32], |record| record.callback_reducer_commitment);
         for record in records {
             if record.authority_binding != authority_binding
+                || record.callback_reducer_commitment != restored_reducer_commitment
                 || record.operation.0 <= previous
                 || record.backing.authority_binding() != authority_binding
             {
@@ -228,6 +268,7 @@ impl PassthroughRegistrations {
                 backing: record.backing,
                 phase: record.phase,
                 backing_id: record.backing_id,
+                descriptor_commitment: record.descriptor_commitment,
                 references: record.references,
             });
             previous = record.operation.0;
@@ -235,6 +276,7 @@ impl PassthroughRegistrations {
         state.next_operation = previous
             .checked_add(1)
             .ok_or(DataError::ResourceExhausted)?;
+        state.callback_reducer_commitment = restored_reducer_commitment;
         Ok(state)
     }
 
@@ -242,6 +284,21 @@ impl PassthroughRegistrations {
     #[must_use]
     pub const fn authority_binding(&self) -> [u8; 32] {
         self.authority_binding
+    }
+
+    pub(super) const fn callback_reducer_commitment(&self) -> [u8; 32] {
+        self.callback_reducer_commitment
+    }
+
+    pub(super) fn bind_callback_reducer(&mut self, commitment: [u8; 32]) -> Result<(), DataError> {
+        if commitment == [0; 32]
+            || (self.callback_reducer_commitment != [0; 32]
+                && commitment == self.callback_reducer_commitment)
+        {
+            return Err(DataError::IntegrityFailure);
+        }
+        self.callback_reducer_commitment = commitment;
+        Ok(())
     }
 
     /// Returns the admitted table and aggregate-reference ceilings.
@@ -276,10 +333,12 @@ impl PassthroughRegistrations {
         for entry in &self.entries {
             records.push(DurableRegistrationRecord::from_canonical_journal(
                 self.authority_binding,
+                self.callback_reducer_commitment,
                 entry.operation.get(),
                 entry.backing,
                 entry.phase,
                 entry.backing_id,
+                entry.descriptor_commitment,
                 entry.references,
             )?);
         }
@@ -324,6 +383,29 @@ impl PassthroughRegistrations {
             .ok_or(DataError::IntegrityFailure)
     }
 
+    /// Returns the descriptor commitment for an active or closing operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DataError::IntegrityFailure`] when the operation is unknown,
+    /// pending, ambiguous, or lacks an exact nonzero descriptor commitment.
+    pub fn descriptor_commitment(
+        &self,
+        operation: RegistrationOperation,
+    ) -> Result<[u8; 32], DataError> {
+        let entry = self.entry(operation)?;
+        if !matches!(
+            entry.phase,
+            RegistrationPhase::Active | RegistrationPhase::Closing
+        ) {
+            return Err(DataError::IntegrityFailure);
+        }
+        entry
+            .descriptor_commitment
+            .filter(|commitment| *commitment != [0; 32])
+            .ok_or(DataError::IntegrityFailure)
+    }
+
     /// Enters pending state or coalesces with one active backing.
     ///
     /// The caller must persist [`Self::snapshot`] before executing
@@ -342,7 +424,8 @@ impl PassthroughRegistrations {
         if !self.lease.contains(monotonic_now_ns) {
             return Err(DataError::DeadlineExpired);
         }
-        if backing.authority_binding() != self.authority_binding
+        if self.callback_reducer_commitment == [0; 32]
+            || backing.authority_binding() != self.authority_binding
             || backing.evidence_commitment() == [0; 32]
         {
             return Err(DataError::IntegrityFailure);
@@ -381,30 +464,36 @@ impl PassthroughRegistrations {
             backing,
             phase: RegistrationPhase::Pending,
             backing_id: None,
+            descriptor_commitment: None,
             references: 1,
         });
         self.references = next_references;
         Ok(RegistrationAction::OpenBacking { operation })
     }
 
-    /// Records the exact selector returned by a successful backing open.
+    /// Records the exact selector and descriptor identity returned by backing open.
     ///
     /// The caller must persist [`Self::snapshot`] before publishing the selector.
     ///
     /// # Errors
     ///
     /// Returns [`DataError::IntegrityFailure`] for an unknown operation,
-    /// non-pending phase, or zero selector.
+    /// non-pending phase, zero selector, or zero descriptor commitment.
     pub fn record_opened(
         &mut self,
         operation: RegistrationOperation,
         backing_id: u64,
+        descriptor_commitment: [u8; 32],
     ) -> Result<(), DataError> {
         let entry = self.entry_mut(operation)?;
-        if entry.phase != RegistrationPhase::Pending || backing_id == 0 {
+        if entry.phase != RegistrationPhase::Pending
+            || backing_id == 0
+            || descriptor_commitment == [0; 32]
+        {
             return Err(DataError::IntegrityFailure);
         }
         entry.backing_id = Some(backing_id);
+        entry.descriptor_commitment = Some(descriptor_commitment);
         entry.phase = RegistrationPhase::Active;
         Ok(())
     }
@@ -423,6 +512,7 @@ impl PassthroughRegistrations {
         let entry = &self.entries[position];
         if entry.phase != RegistrationPhase::Pending
             || entry.backing_id.is_some()
+            || entry.descriptor_commitment.is_some()
             || entry.references != 1
         {
             return Err(DataError::IntegrityFailure);
@@ -514,6 +604,7 @@ impl PassthroughRegistrations {
         let position = self.position(operation)?;
         if self.entries[position].phase != RegistrationPhase::Closing
             || self.entries[position].backing_id.is_none()
+            || self.entries[position].descriptor_commitment.is_none()
             || self.entries[position].references != 1
         {
             return Err(DataError::IntegrityFailure);
@@ -586,13 +677,22 @@ pub(super) fn encode_canonical_records(
 ) -> Result<(), DurableStateError> {
     writer.u32(u32::try_from(records.len()).map_err(|_| DurableStateError::ResourceExhausted)?)?;
     let mut previous = 0_u64;
+    let reducer_commitment = records
+        .first()
+        .map_or([0; 32], |record| record.callback_reducer_commitment);
     for record in records {
-        if record.authority_binding != authority_binding || record.operation.get() <= previous {
+        if record.authority_binding != authority_binding
+            || record.callback_reducer_commitment == [0; 32]
+            || record.callback_reducer_commitment != reducer_commitment
+            || record.operation.get() <= previous
+        {
             return Err(DurableStateError::Integrity);
         }
+        writer.bytes(&record.callback_reducer_commitment)?;
         writer.u64(record.operation.get())?;
         writer.u8(registration_phase_code(record.phase))?;
         writer.u64(record.backing_id.unwrap_or(0))?;
+        writer.bytes(&record.descriptor_commitment.unwrap_or([0; 32]))?;
         writer.u64(record.references)?;
         record.backing.encode_canonical(writer)?;
         previous = record.operation.get();
@@ -618,6 +718,7 @@ pub(super) fn decode_canonical_records(
     }
     let mut previous = 0_u64;
     for _ in 0..count {
+        let callback_reducer_commitment = cursor.array()?;
         let operation = cursor.u64()?;
         if operation <= previous {
             return Err(DurableStateError::Integrity);
@@ -627,14 +728,20 @@ pub(super) fn decode_canonical_records(
             0 => None,
             value => Some(value),
         };
+        let descriptor_commitment = match cursor.array()? {
+            value if value == [0; 32] => None,
+            value => Some(value),
+        };
         let references = cursor.u64()?;
         let backing = BackingIdentity::decode_canonical(cursor, authority_binding)?;
         records.push(DurableRegistrationRecord::from_canonical_journal(
             authority_binding,
+            callback_reducer_commitment,
             operation,
             backing,
             phase,
             backing_id,
+            descriptor_commitment,
             references,
         )?);
         previous = operation;

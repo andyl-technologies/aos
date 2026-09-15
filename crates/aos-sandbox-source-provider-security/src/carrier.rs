@@ -1,18 +1,146 @@
 //! Sealed descriptor-subject carrier operations for SourceProvider records.
 
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd as _, OwnedFd};
 
 use aos_sandbox_linux::seqpacket::SeqpacketError;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_protocol::MAXIMUM_FRAME_BYTES;
+use aos_sandbox_source_provider_protocol::{
+    SourceRootObservationV1, source_root_descriptor_commitment_v1,
+};
+use rustix::fs::{FileType, OFlags};
+use rustix::io::FdFlags;
 
 use crate::SourceProviderSecurityError;
 use crate::execution::ProcessExecutionEvidenceV1;
+
+/// Owns one provider SourceRoot descriptor observed twice for an exact send handoff.
+///
+/// Construction performs kernel-backed checks and exposes no descriptor
+/// extraction. Provider send methods consume the value, match its observation
+/// to the committed receipt, and reobserve it immediately around `sendmsg`.
+pub struct ProviderSourceRootHandoffV1 {
+    descriptor: OwnedFd,
+    snapshot: ProviderSourceRootSnapshotV1,
+    observation: SourceRootObservationV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProviderSourceRootSnapshotV1 {
+    boot_id: [u8; 16],
+    status_flags: OFlags,
+    descriptor_flags: FdFlags,
+    device: u64,
+    inode: u64,
+    mode: u32,
+    mount_id: u64,
+    mount_namespace_id: u64,
+    mount_attributes: u64,
+}
+
+impl core::fmt::Debug for ProviderSourceRootHandoffV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("ProviderSourceRootHandoffV1([validated descriptor])")
+    }
+}
+
+impl ProviderSourceRootHandoffV1 {
+    /// Observes and seals one provider SourceRoot descriptor for a reply handoff.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] unless two consecutive kernel
+    /// observations establish the same `O_PATH`, close-on-exec, directory,
+    /// read-only mount, namespace, device, inode, mount ID, and current boot.
+    pub fn observe(descriptor: OwnedFd) -> Result<Self, SourceProviderSecurityError> {
+        let first = provider_source_root_snapshot(&descriptor)?;
+        let second = provider_source_root_snapshot(&descriptor)?;
+        if first != second {
+            return Err(SourceProviderSecurityError::DescriptorObservation);
+        }
+        let observation = SourceRootObservationV1::new(
+            first.boot_id,
+            first.device,
+            first.inode,
+            first.mount_id,
+            true,
+            true,
+            true,
+        )
+        .map_err(|_| SourceProviderSecurityError::DescriptorObservation)?;
+        Ok(Self {
+            descriptor,
+            snapshot: first,
+            observation,
+        })
+    }
+
+    pub(crate) const fn observation(&self) -> &SourceRootObservationV1 {
+        &self.observation
+    }
+
+    pub(crate) fn revalidate(&self) -> Result<(), SourceProviderSecurityError> {
+        let first = provider_source_root_snapshot(&self.descriptor)?;
+        let second = provider_source_root_snapshot(&self.descriptor)?;
+        if first == self.snapshot
+            && second == self.snapshot
+            && source_root_descriptor_commitment_v1(&self.observation)
+                != aos_sandbox_core::ObjectDigest::from_bytes([0; 32])
+        {
+            Ok(())
+        } else {
+            Err(SourceProviderSecurityError::DescriptorObservation)
+        }
+    }
+
+    pub(crate) const fn descriptor(&self) -> &OwnedFd {
+        &self.descriptor
+    }
+}
 
 pub(crate) struct ReceivedSourceProviderRecordV1 {
     pub(crate) payload: Vec<u8>,
     pub(crate) descriptors: Vec<OwnedFd>,
     pub(crate) execution: ProcessExecutionEvidenceV1,
+}
+
+fn provider_source_root_snapshot(
+    descriptor: &OwnedFd,
+) -> Result<ProviderSourceRootSnapshotV1, SourceProviderSecurityError> {
+    let boot_id = crate::CurrentKernelBootV1::capture()?.boot_id();
+    let status_flags = rustix::fs::fcntl_getfl(descriptor)
+        .map_err(|_| SourceProviderSecurityError::DescriptorObservation)?;
+    let descriptor_flags = rustix::io::fcntl_getfd(descriptor)
+        .map_err(|_| SourceProviderSecurityError::DescriptorObservation)?;
+    let stat = rustix::fs::fstat(descriptor)
+        .map_err(|_| SourceProviderSecurityError::DescriptorObservation)?;
+    let mount_id = aos_sandbox_linux::inventory::MountId::from_fd(descriptor.as_fd())
+        .map_err(|_| SourceProviderSecurityError::DescriptorObservation)?;
+    let mount = aos_sandbox_linux::inventory::MountNamespace::current()
+        .observe(mount_id)
+        .map_err(|_| SourceProviderSecurityError::DescriptorObservation)?;
+    if !status_flags.contains(OFlags::PATH)
+        || !descriptor_flags.contains(FdFlags::CLOEXEC)
+        || FileType::from_raw_mode(stat.st_mode) != FileType::Directory
+        || stat.st_dev == 0
+        || stat.st_ino == 0
+        || mount.device_major != rustix::fs::major(stat.st_dev)
+        || mount.device_minor != rustix::fs::minor(stat.st_dev)
+        || !mount.is_read_only()
+    {
+        return Err(SourceProviderSecurityError::DescriptorObservation);
+    }
+    Ok(ProviderSourceRootSnapshotV1 {
+        boot_id,
+        status_flags,
+        descriptor_flags,
+        device: stat.st_dev,
+        inode: stat.st_ino,
+        mode: stat.st_mode,
+        mount_id: mount_id.get(),
+        mount_namespace_id: mount.mount_namespace_id,
+        mount_attributes: mount.mount_attributes,
+    })
 }
 
 pub(crate) struct InertSourceProviderCarrierV1 {
@@ -60,6 +188,33 @@ impl InertSourceProviderCarrierV1 {
             ));
         }
         match self.socket.send(payload) {
+            Ok(()) => {
+                self.interrupted_retries = 0;
+                Ok(())
+            }
+            Err(SeqpacketError::WouldBlock) => Err(CarrierFailureV1::Retryable),
+            Err(SeqpacketError::Interrupted) => self.interrupted_retry(),
+            Err(_) => {
+                self.close();
+                Err(CarrierFailureV1::Fatal(
+                    SourceProviderSecurityError::SessionContinuity,
+                ))
+            }
+        }
+    }
+
+    pub(crate) fn send_optional_source_root(
+        &mut self,
+        payload: &[u8],
+        source_root: Option<&OwnedFd>,
+    ) -> Result<(), CarrierFailureV1> {
+        let result = match source_root {
+            Some(source_root) => self
+                .socket
+                .send_with_descriptors(payload, &[source_root.as_fd()]),
+            None => return self.send(payload),
+        };
+        match result {
             Ok(()) => {
                 self.interrupted_retries = 0;
                 Ok(())

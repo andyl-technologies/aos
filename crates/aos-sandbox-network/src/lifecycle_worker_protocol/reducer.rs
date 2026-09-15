@@ -3,8 +3,8 @@
 //! This module closes Arm, Renew, Disarm, and Destroy over one exact namespace,
 //! link, bpffs, tc-BPF, assignment, lease, session, and currentness identity.
 //! It performs no kernel operation and exposes no service method. Effect plans
-//! require opaque protected-current evidence for which this source partition
-//! deliberately supplies no constructor.
+//! require opaque protected-current evidence decoded only by the dormant fixed
+//! protected-store owner. No production kernel observer is activated here.
 
 use aos_sandbox_core::{BrokerAssignment, ObjectDigest};
 use sha2::{Digest as _, Sha256};
@@ -15,6 +15,11 @@ use crate::namespace_catalog::{
 };
 
 mod codec;
+mod protected_store;
+pub use protected_store::{
+    DormantNetworkLifecycleOwnerErrorV1, DormantNetworkLifecycleProtectedCommitV1,
+    DormantNetworkLifecycleProtectedOwnerV1,
+};
 mod validation;
 
 use validation::{
@@ -364,9 +369,9 @@ impl NetworkLifecycleIntentV1 {
 
 /// Carries an opaque protected-current observation required at an effect edge.
 ///
-/// This dormant module deliberately defines no constructor. A future protected
-/// adapter must mint it from fresh journal, session, lease, clock, namespace,
-/// and kernel observations rather than from request bytes.
+/// Construction is crate-sealed in the dormant fixed protected-store owner;
+/// reducer validation binds the journal, session, lease, clock, namespace, and
+/// kernel observations rather than trusting request bytes.
 #[derive(Debug)]
 pub(crate) struct ProtectedNetworkLifecycleCurrentV1 {
     intent_digest: ObjectDigest,
@@ -530,8 +535,9 @@ pub(crate) enum NetworkLifecycleEffectStepV1 {
 
 /// Carries a stable protected residual inventory after one step or crash.
 ///
-/// No constructor is supplied. A future protected observer must bind the exact
-/// catalog row and all four kernel object classes in two equal observations.
+/// Construction is crate-sealed in the dormant fixed protected-store owner.
+/// The reducer binds the exact catalog row and all four kernel object classes
+/// in two equal observations; no production observer is activated here.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NetworkLifecycleResidualV1 {
     intent_digest: ObjectDigest,
@@ -630,8 +636,9 @@ pub(crate) enum NetworkLifecycleObservationDispositionV1 {
 
 /// Binds independent absence evidence for every Network kernel object class.
 ///
-/// This source partition supplies no constructor. The future protected kernel
-/// observer must mint all four evidence commitments from one stable inventory.
+/// Construction is crate-sealed in the dormant fixed protected-store owner.
+/// The reducer requires all four evidence commitments from one stable
+/// inventory; no production kernel observer is activated here.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NetworkLifecycleCleanupObservationV1 {
     namespace_absence_digest: ObjectDigest,
@@ -867,7 +874,7 @@ pub(crate) struct ProtectedNetworkLifecycleCompactionV1 {
 
 /// Owns a bounded checkpoint envelope awaiting protected durable storage.
 ///
-/// This in-memory value is not evidence of persistence. A future protected
+/// This in-memory value is not evidence of persistence. The private protected
 /// adapter must durably write and read back `checkpoint` before recovery.
 #[derive(Clone, Debug)]
 pub(crate) struct NetworkLifecycleRecoveryStoreV1 {
@@ -1968,6 +1975,41 @@ impl NetworkLifecycleReducerV1 {
         }
     }
 
+    /// Replays one exact protected-journal edge against its predecessor.
+    pub(super) fn validates_journal_successor(
+        prior: &NetworkLifecycleRecoverySnapshotV1,
+        next: &NetworkLifecycleRecoverySnapshotV1,
+    ) -> bool {
+        let Ok(mut reducer) = Self::recover(prior.clone()) else {
+            return false;
+        };
+        if prior.digest == next.digest {
+            return network_snapshot_matches(&reducer, next);
+        }
+        if next.receipt_floor_sequence > prior.receipt_floor_sequence {
+            let Ok(authority) = reducer.mint_compaction(next.receipt_floor_sequence) else {
+                return false;
+            };
+            return reducer.compact_receipts(authority).is_ok()
+                && network_snapshot_matches(&reducer, next);
+        }
+        match (prior.pending, next.pending) {
+            (None, Some(pending)) => {
+                reducer.begin(pending.intent).is_ok() && network_snapshot_matches(&reducer, next)
+            }
+            (Some(pending), None) if pending.phase == NetworkLifecycleReducerPhaseV1::Observed => {
+                reducer.commit_observed().is_ok() && network_snapshot_matches(&reducer, next)
+            }
+            (Some(prior_pending), Some(next_pending))
+                if prior_pending.intent.digest() == next_pending.intent.digest() =>
+            {
+                replay_network_pending_edge(&mut reducer, prior_pending, next_pending)
+                    && network_snapshot_matches(&reducer, next)
+            }
+            _ => false,
+        }
+    }
+
     /// Compacts an exact receipt prefix only with protected journal authority.
     pub(crate) fn compact_receipts(
         &mut self,
@@ -2010,12 +2052,154 @@ impl NetworkLifecycleReducerV1 {
         Ok(())
     }
 
+    /// Derives compaction authority from this exact protected reducer head.
+    fn mint_compaction(
+        &self,
+        through_sequence: u64,
+    ) -> Result<ProtectedNetworkLifecycleCompactionV1, NetworkLifecycleReducerError> {
+        self.ensure_healthy()?;
+        let removed = self
+            .receipts
+            .iter()
+            .take_while(|receipt| receipt.operation_sequence <= through_sequence)
+            .count();
+        if self.pending.is_some()
+            || through_sequence <= self.receipt_floor_sequence
+            || through_sequence >= self.highest_sequence
+            || removed == 0
+            || self.receipts[removed - 1].operation_sequence != through_sequence
+        {
+            return Err(NetworkLifecycleReducerError::CurrentnessMismatch);
+        }
+        Ok(ProtectedNetworkLifecycleCompactionV1 {
+            snapshot_digest: self.snapshot_digest(),
+            through_sequence,
+            anchor_digest: receipt_compacted_anchor(
+                &self.compacted_receipt_index,
+                &self.receipts[..removed],
+            ),
+            replay_index_digest: receipt_replay_index_digest(
+                &self.compacted_receipt_index,
+                &self.receipts,
+            ),
+        })
+    }
+
     fn ensure_healthy(&self) -> Result<(), NetworkLifecycleReducerError> {
         if self.poisoned {
             Err(NetworkLifecycleReducerError::Poisoned)
         } else {
             Ok(())
         }
+    }
+}
+
+fn network_snapshot_matches(
+    reducer: &NetworkLifecycleReducerV1,
+    expected: &NetworkLifecycleRecoverySnapshotV1,
+) -> bool {
+    let candidate = reducer.snapshot();
+    codec::encode_snapshot(&candidate).ok() == codec::encode_snapshot(expected).ok()
+}
+
+fn replay_network_pending_edge(
+    reducer: &mut NetworkLifecycleReducerV1,
+    prior: PendingNetworkLifecycleV1,
+    next: PendingNetworkLifecycleV1,
+) -> bool {
+    match (prior.phase, next.phase) {
+        (
+            NetworkLifecycleReducerPhaseV1::Prepared,
+            NetworkLifecycleReducerPhaseV1::EffectUnknown,
+        ) => {
+            let Some(attempt) = next.step_attempt else {
+                return false;
+            };
+            let residual = attempt.predecessor_residual;
+            let current = ProtectedNetworkLifecycleCurrentV1 {
+                intent_digest: prior.intent.digest(),
+                durable_reducer_digest: reducer.snapshot_digest(),
+                fence_digest: prior.intent.fence().digest(),
+                kernel_digest: prior.intent.kernel().digest(),
+                observed_boottime_nanoseconds: residual.observed_boottime_nanoseconds,
+                observation_ordinal: residual.observation_ordinal,
+                residual,
+            };
+            reducer.prepare_effect(current).is_ok()
+        }
+        (
+            NetworkLifecycleReducerPhaseV1::EffectUnknown,
+            NetworkLifecycleReducerPhaseV1::ReleaseFrozen,
+        ) => {
+            let Some(attempt) = prior.step_attempt else {
+                return false;
+            };
+            let (Some(released_time), Some(released_ordinal)) = (
+                next.last_released_boottime_nanoseconds,
+                next.last_released_observation_ordinal,
+            ) else {
+                return false;
+            };
+            let mut residual = attempt.predecessor_residual;
+            residual.observed_boottime_nanoseconds = released_time;
+            residual.observation_ordinal = released_ordinal;
+            residual.first_snapshot_digest = attempt.predecessor_residual.first_snapshot_digest;
+            residual.second_snapshot_digest = attempt.predecessor_residual.second_snapshot_digest;
+            residual.digest = residual_digest(residual);
+            let current = ProtectedNetworkLifecycleCurrentV1 {
+                intent_digest: prior.intent.digest(),
+                durable_reducer_digest: reducer.snapshot_digest(),
+                fence_digest: prior.intent.fence().digest(),
+                kernel_digest: prior.intent.kernel().digest(),
+                observed_boottime_nanoseconds: released_time,
+                observation_ordinal: released_ordinal,
+                residual,
+            };
+            let preflight = NetworkLifecycleEffectPreflightV1 {
+                intent_digest: prior.intent.digest(),
+                step_attempt_digest: attempt.digest,
+                recovery_digest: reducer.snapshot_digest(),
+            };
+            reducer.freeze_release(preflight, current).is_ok()
+        }
+        (
+            NetworkLifecycleReducerPhaseV1::ReleaseFrozen,
+            NetworkLifecycleReducerPhaseV1::Prepared | NetworkLifecycleReducerPhaseV1::Observed,
+        ) if next.last_observation.map(|observation| observation.digest)
+            != prior.last_observation.map(|observation| observation.digest) =>
+        {
+            next.last_observation
+                .is_some_and(|observation| reducer.observe(observation).is_ok())
+        }
+        (
+            NetworkLifecycleReducerPhaseV1::EffectUnknown,
+            NetworkLifecycleReducerPhaseV1::Prepared,
+        ) => {
+            let Some(attempt) = prior.step_attempt else {
+                return false;
+            };
+            let Some(ordinal) = attempt
+                .predecessor_residual
+                .observation_ordinal
+                .checked_add(1)
+            else {
+                return false;
+            };
+            let mut residual = attempt.predecessor_residual;
+            residual.observation_ordinal = ordinal;
+            residual.digest = residual_digest(residual);
+            let current = ProtectedNetworkLifecycleCurrentV1 {
+                intent_digest: prior.intent.digest(),
+                durable_reducer_digest: reducer.snapshot_digest(),
+                fence_digest: prior.intent.fence().digest(),
+                kernel_digest: prior.intent.kernel().digest(),
+                observed_boottime_nanoseconds: residual.observed_boottime_nanoseconds,
+                observation_ordinal: ordinal,
+                residual,
+            };
+            reducer.revalidate_unreleased(current).is_ok()
+        }
+        _ => false,
     }
 }
 

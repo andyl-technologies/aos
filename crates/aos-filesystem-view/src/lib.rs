@@ -2,11 +2,11 @@
 //!
 //! This crate validates hostile portable tree graphs, translates portable
 //! identities, compiles canonical View projections, joins connection authority,
-//! plans bounded immutable reads, and builds a replaceable architecture-neutral
-//! structural index. Pure worker lifecycle reducers cover restart, quarantine,
-//! repair, and attachment reconciliation. The crate owns no mount, network,
-//! cache, OS descriptor, or publication effect; privileged realization remains
-//! separate.
+//! plans bounded immutable reads and extended-attribute replies, and builds a
+//! replaceable architecture-neutral structural index. Pure worker lifecycle
+//! reducers cover restart, quarantine, repair, and attachment reconciliation.
+//! The crate owns no mount, network, cache, OS descriptor, or publication effect;
+//! privileged realization remains separate.
 
 mod graph;
 mod index;
@@ -46,19 +46,23 @@ pub use view_projection::{
 };
 pub use worker::{
     AttachmentHealth, AuthenticatedConnectionJoin, BackingDisposition, BackingIdentity,
-    ConnectionAuthorityError, ConnectionLease, ConsumerEvidence, DataError, DataOpenPolicy,
-    DataPlane, DataPlaneLimits, DataReadRequest, DataReadResult, DataReadScratch,
-    DurableLifecycleEvent, DurableRegistrationRecord, DurableStateCodec, DurableStateError,
-    DurableStateLimits, FileAccessMode, FileContentAuthority, FileOpenRequest, FrozenFeatureSet,
-    FuseCapabilities, InitReply, InitRequest, InventoryEvidence, LifecycleError, LookupReply,
-    MetadataConnection, MonotonicClock, MountPolicy, ObjectReadRequest, ObjectReadResult,
-    OpenDirectoryReply, OpenFileReply, PassthroughRegistrations, PendingDirectoryReply,
-    PendingFileReply, PreparedDataOpen, PreparedFuseConnection, ProcessEvidence, PublicationHealth,
-    ReadDirEntry, ReadDirPage, ReadDirPageEntries, ReadSegment, ReadlinkReply,
+    CallbackReducerBinding, CallbackReducerBrand, ConnectionAuthorityError, ConnectionLease,
+    ConsumerEvidence, DataError, DataOpenPolicy, DataPlane, DataPlaneLimits, DataReadRequest,
+    DataReadResult, DataReadScratch, DormantFilesystemWorkerPreparation, DurableLifecycleEvent,
+    DurableRegistrationRecord, DurableStateCodec, DurableStateError, DurableStateLimits,
+    ExtendedAttributeError, ExtendedAttributeLimits, ExtendedAttributeReply,
+    ExtendedAttributeScratch, ExtendedAttributeSize, ExtendedAttributeState, FileAccessMode,
+    FileContentAuthority, FileOpenRequest, FrozenFeatureSet, FuseCapabilities, InitReply,
+    InitRequest, InventoryEvidence, LifecycleError, LookupReply, MetadataConnection,
+    MonotonicClock, MountPolicy, ObjectReadRequest, ObjectReadResult, OpenDirectoryReply,
+    OpenFileReply, PassthroughRegistrations, PendingDirectoryReply, PendingFileReply,
+    PendingFuseConnectionQualification, PreparedDataOpen, PreparedFuseConnection, ProcessEvidence,
+    ProtectedFuseConnectionQualification, PublicationHealth, QualificationAdmission,
+    QualificationError, ReadDirEntry, ReadDirPage, ReadDirPageEntries, ReadSegment, ReadlinkReply,
     ReconciliationAction, RegistrationAction, RegistrationLimits, RegistrationOperation,
     RegistrationPhase, RejectedOperation, ReleaseDisposition, RepairEvidence, ReplyScratch,
     RequestBudget, RequestCheckpoint, RequestControl, RequestControlState, TeardownSummary,
     Uninterrupted, UserNamespaceIdentity, VerifiedBackingEvidence, VerifiedObjectReader,
     WorkerAttributes, WorkerError, WorkerLifecycle, WorkerLifecycleSnapshot, WorkerLimits,
-    WorkerPhase,
+    WorkerPhase, admit_fuse_connection_qualification,
 };

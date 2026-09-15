@@ -83,6 +83,30 @@ pub struct CanonicalPrecatalogMountCreateV1 {
     digest: ObjectDigest,
 }
 
+/// Retains the exact 27 canonical `AOSMSEM1` field values.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecodedCanonicalMountSemanticsV1 {
+    fields: [Vec<u8>; 27],
+}
+
+impl DecodedCanonicalMountSemanticsV1 {
+    /// Borrows one canonical field by its one-based tag.
+    #[must_use]
+    pub fn field(&self, tag: u8) -> Option<&[u8]> {
+        tag.checked_sub(1)
+            .and_then(|index| self.fields.get(usize::from(index)))
+            .map(Vec::as_slice)
+    }
+
+    /// Borrows all fields in exact tag order.
+    #[must_use]
+    #[doc(hidden)]
+    pub const fn fields(&self) -> &[Vec<u8>; 27] {
+        &self.fields
+    }
+}
+
 impl CanonicalPrecatalogMountCreateV1 {
     /// Returns the exact deadline-free pre-catalog `AOSMSEM1` bytes.
     #[must_use]
@@ -195,6 +219,90 @@ pub fn final_mount_create_matches_precatalog_template_v1(
     canonical_mount_semantics_v1(request, Some(catalog), descriptor_roles)?;
     let projected = canonical_precatalog_mount_create_template_v1(request, descriptor_roles)?;
     Ok(projected.canonical_bytes() == expected_template)
+}
+
+/// Projects canonical final Create semantics back to the pre-catalog form.
+///
+/// This byte-only verifier is used by protected durable-state owners that do
+/// not retain the original protobuf request. It accepts exactly fields 1
+/// through 27 in order and replaces only the required nonzero field-13 catalog
+/// commitment with the canonical empty value.
+///
+/// # Errors
+///
+/// Returns [`MountSemanticError::InvalidTarget`] for malformed field framing,
+/// a missing or zero catalog commitment, unknown/trailing fields, or an
+/// encoding beyond the canonical Mount ceiling.
+pub fn project_final_mount_create_semantics_v1(
+    bytes: &[u8],
+) -> Result<Vec<u8>, MountSemanticError> {
+    let decoded = decode_canonical_mount_semantics_v1(bytes)?;
+    let mut projected = Vec::with_capacity(bytes.len());
+    for expected_tag in 1_u8..=27 {
+        let value = decoded
+            .field(expected_tag)
+            .ok_or(MountSemanticError::InvalidTarget)?;
+        projected.push(expected_tag);
+        if expected_tag == 13 {
+            if value.len() != 32 || value.iter().all(|byte| *byte == 0) {
+                return Err(MountSemanticError::InvalidTarget);
+            }
+            projected.extend_from_slice(&0_u32.to_be_bytes());
+        } else {
+            let length =
+                u32::try_from(value.len()).map_err(|_| MountSemanticError::InvalidTarget)?;
+            projected.extend_from_slice(&length.to_be_bytes());
+            projected.extend_from_slice(value);
+        }
+    }
+    Ok(projected)
+}
+
+/// Structurally decodes the complete canonical `AOSMSEM1` field sequence.
+///
+/// # Errors
+///
+/// Returns [`MountSemanticError::InvalidTarget`] for an over-limit value,
+/// missing, reordered, duplicated, truncated, or trailing fields.
+pub fn decode_canonical_mount_semantics_v1(
+    bytes: &[u8],
+) -> Result<DecodedCanonicalMountSemanticsV1, MountSemanticError> {
+    if bytes.len() > MAXIMUM_CANONICAL_BYTES {
+        return Err(MountSemanticError::InvalidTarget);
+    }
+    let mut fields = Vec::with_capacity(27);
+    let mut cursor = 0usize;
+    for expected_tag in 1_u8..=27 {
+        if bytes.get(cursor).copied() != Some(expected_tag) {
+            return Err(MountSemanticError::InvalidTarget);
+        }
+        let length = bytes
+            .get(cursor + 1..cursor + 5)
+            .and_then(|value| value.try_into().ok())
+            .map(u32::from_be_bytes)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or(MountSemanticError::InvalidTarget)?;
+        let start = cursor
+            .checked_add(5)
+            .ok_or(MountSemanticError::InvalidTarget)?;
+        let end = start
+            .checked_add(length)
+            .ok_or(MountSemanticError::InvalidTarget)?;
+        fields.push(
+            bytes
+                .get(start..end)
+                .ok_or(MountSemanticError::InvalidTarget)?
+                .to_vec(),
+        );
+        cursor = end;
+    }
+    if cursor != bytes.len() {
+        return Err(MountSemanticError::InvalidTarget);
+    }
+    let fields = fields
+        .try_into()
+        .map_err(|_| MountSemanticError::InvalidTarget)?;
+    Ok(DecodedCanonicalMountSemanticsV1 { fields })
 }
 
 fn encode_mount_semantics(

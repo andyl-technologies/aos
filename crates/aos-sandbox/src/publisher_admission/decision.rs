@@ -15,17 +15,23 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(target_os = "linux")]
+use aos_sandbox_core::RawPairedClockSample;
 use aos_sandbox_core::format::{
     encode_publisher_admission_request_v1, encode_publisher_domain_plan,
 };
-use aos_sandbox_core::{ObjectDigest, OperationId, PublicationReservationId, RawPairedClockSample};
+use aos_sandbox_core::{ObjectDigest, OperationId, PublicationReservationId};
 
+#[cfg(target_os = "linux")]
 use crate::ownership_authority::ProtectedOwnershipClockError;
+#[cfg(target_os = "linux")]
 use crate::publisher_control::RuntimeJoinedPublisherRequest;
+#[cfg(target_os = "linux")]
 use crate::publisher_roots::{
     AuthorizedPublicationRoot, CurrentPublicationRoot, PublicationRootCustody,
     PublicationRootRegistry,
 };
+#[cfg(target_os = "linux")]
 use crate::runtime_authority::RuntimeAuthorityStateV1;
 
 use super::accounting::{AccountingError, CapacityPolicyV1, PublicationAccounting};
@@ -44,6 +50,7 @@ use super::payload::{
 use super::source::{AuthorizedSourceRelease, SourceReleaseError};
 
 const DECISION_DOMAIN: &[u8] = b"aos.sandbox.publisher.admission-decision.v1\0";
+#[cfg(target_os = "linux")]
 const RUNTIME_DOMAIN: &[u8] = b"aos.sandbox.publisher.runtime-join.v1\0";
 const ARTIFACT_DOMAIN: &[u8] = b"aos.sandbox.publisher.prepared-artifact.v1\0";
 const PERMIT_DOMAIN: &[u8] = b"aos.sandbox.publisher.completion-permit.v1\0";
@@ -62,6 +69,7 @@ pub(crate) struct SourceRegistryOwnerToken(());
 /// challenge audit receipts, and persisted runtime observations cannot create
 /// this value.
 #[derive(Debug)]
+#[cfg(target_os = "linux")]
 pub struct AdmittedPublisherPlan<'authority, 'request> {
     decision: AdmissionDecisionV1,
     challenge: ChallengeConsumptionV1,
@@ -74,6 +82,7 @@ pub struct AdmittedPublisherPlan<'authority, 'request> {
     _root: &'authority CurrentPublicationRoot<'authority>,
 }
 
+#[cfg(target_os = "linux")]
 impl<'authority, 'request> AdmittedPublisherPlan<'authority, 'request> {
     pub(super) fn from_runtime_join(
         execution: LivePublisherExecution<'authority, 'request>,
@@ -378,6 +387,7 @@ impl CompletionEffectObservationV1 {
 /// and root borrows. It cannot be decoded, persisted, or retained after any of
 /// those authorities changes.
 #[derive(Debug)]
+#[cfg(target_os = "linux")]
 pub struct MaterializationAuthority<'authority, 'request> {
     decision: &'authority AdmissionDecisionV1,
     committed: CommittedAdmissionFrontier,
@@ -397,6 +407,7 @@ impl ArtifactPreparation {
     ///
     /// Returns [`AdmissionError`] for sentinel/mismatched facts, wrong size or
     /// content, equal names, or a non-SHA-256 seal sentinel.
+    #[cfg(target_os = "linux")]
     pub(crate) fn for_authority(
         authority: &MaterializationAuthority<'_, '_>,
         observation: FreshSealedArtifactObservation,
@@ -508,6 +519,7 @@ pub struct CommittedCatalogObservation {
 /// while the live executor, root descriptor, physical effect, catalog, ledger,
 /// and protected-store borrows are still retained.
 #[must_use = "completion authority must be observed and durably settled"]
+#[cfg(target_os = "linux")]
 pub struct CompletionAuthorityV1<'owners, 'authority, 'request> {
     permit: RetainedCompletionPermit<'authority, 'request>,
     _effect: CompletionEffectCustodyV1,
@@ -517,12 +529,13 @@ pub struct CompletionAuthorityV1<'owners, 'authority, 'request> {
     primary: ProtectedMutationBranchV1,
     poison: ProtectedMutationBranchV1,
     receipt: Option<CompletionReceiptV1>,
-    store: &'owners mut dyn ProtectedStoreSettlementV1,
+    store: &'owners mut dyn CapacityProtectedStoreSettlementV1,
     settled: bool,
 }
 
 /// Retains an observed completion until one protected branch is acknowledged.
 #[must_use = "observed completion must settle to acknowledged success or poison"]
+#[cfg(target_os = "linux")]
 pub struct CompletionSettlementV1<'owners, 'authority, 'request> {
     // Declaration order keeps the live executor, descriptor root, and physical
     // effect inside `authority` until its poison-on-drop transaction finishes.
@@ -543,7 +556,7 @@ pub struct CatalogEvictionAuthorizationV1<'catalog> {
     ledger: &'catalog mut AdmissionLedger,
     custody: Option<super::ExclusiveCatalogEvictionCustody<'catalog>>,
     poison: Option<ProtectedMutationBranchV1>,
-    store: &'catalog mut dyn ProtectedStoreSettlementV1,
+    store: &'catalog mut dyn StateOnlyProtectedStoreSettlementV1,
     settled: bool,
 }
 
@@ -560,7 +573,7 @@ impl Drop for CatalogEvictionAuthorizationV1<'_> {
             self.settled = true;
             return;
         };
-        let receipt = self.store.settle(None, &poison.mutations);
+        let receipt = self.store.settle(None, poison);
         let acknowledged = match receipt {
             ProtectedStoreSettlementReceiptV1::Poisoned(token) => poison.acknowledge(token).is_ok(),
             ProtectedStoreSettlementReceiptV1::Primary(_) => false,
@@ -640,10 +653,12 @@ impl CatalogEvictionCommitV1<'_> {
     fn settle_store(&mut self, primary: bool) -> Option<ProtectedStoreSettlementReceiptV1> {
         let primary = primary.then(|| self.primary.as_ref()).flatten();
         let observation = self.observation.as_mut()?;
-        Some(observation.authorization.store.settle(
-            primary.map(|branch| branch.mutations.as_slice()),
-            &observation.authorization.poison.as_ref()?.mutations,
-        ))
+        Some(
+            observation
+                .authorization
+                .store
+                .settle(primary, observation.authorization.poison.as_ref()?),
+        )
     }
 
     fn install_primary(&mut self, token: ProtectedStoreCommitToken) -> Result<(), AdmissionError> {
@@ -747,7 +762,7 @@ pub(crate) struct RootRetirementCommitV1<'registry> {
     staged_registry: crate::publisher_roots::PublicationRootRegistry,
     poison: Option<ProtectedMutationBranchV1>,
     retired: crate::publisher_roots::PublicationRootRecordV1,
-    store: &'registry mut dyn ProtectedStoreSettlementV1,
+    store: &'registry mut dyn StateOnlyProtectedStoreSettlementV1,
     settled: bool,
 }
 
@@ -762,12 +777,8 @@ impl RootRetirementCommitV1<'_> {
         mut self,
     ) -> Result<crate::publisher_roots::PublicationRootRecordV1, AdmissionError> {
         let receipt = self.store.settle(
-            Some(&self.primary.mutations),
-            &self
-                .poison
-                .as_ref()
-                .ok_or(AdmissionError::Poisoned)?
-                .mutations,
+            Some(&self.primary),
+            self.poison.as_ref().ok_or(AdmissionError::Poisoned)?,
         );
         match receipt {
             ProtectedStoreSettlementReceiptV1::Primary(token) => {
@@ -807,7 +818,7 @@ impl Drop for RootRetirementCommitV1<'_> {
             self.registry.poison();
             return;
         };
-        let receipt = self.store.settle(None, &poison.mutations);
+        let receipt = self.store.settle(None, poison);
         let acknowledged = match receipt {
             ProtectedStoreSettlementReceiptV1::Poisoned(token) => poison.acknowledge(token).is_ok(),
             ProtectedStoreSettlementReceiptV1::Primary(_) => false,
@@ -856,6 +867,7 @@ impl CommittedCatalogObservation {
 
 impl CompletionResult {
     /// Captures one terminal observation from the trusted catalog adapter.
+    #[cfg(target_os = "linux")]
     const fn observed(
         permit: &RetainedCompletionPermit<'_, '_>,
         observation: CommittedCatalogObservation,
@@ -921,10 +933,11 @@ impl CompletionResult {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl CompletionAuthorityV1<'_, '_, '_> {
     fn settle_store(&mut self, primary_allowed: bool) -> ProtectedStoreSettlementReceiptV1 {
-        let primary = primary_allowed.then_some(self.primary.mutations.as_slice());
-        self.store.settle(primary, &self.poison.mutations)
+        let primary = primary_allowed.then_some(&self.primary);
+        self.store.settle(primary, &self.poison)
     }
 
     fn install_primary(&mut self, token: ProtectedStoreCommitToken) -> Result<(), AdmissionError> {
@@ -960,6 +973,7 @@ impl CompletionAuthorityV1<'_, '_, '_> {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for CompletionAuthorityV1<'_, '_, '_> {
     fn drop(&mut self) {
         if self.settled {
@@ -981,6 +995,7 @@ impl Drop for CompletionAuthorityV1<'_, '_, '_> {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl<'owners, 'authority, 'request> CompletionSettlementV1<'owners, 'authority, 'request> {
     /// Captures the durable no-replace and catalog outcome without releasing custody.
     pub(crate) fn from_durable_adapter(
@@ -1071,6 +1086,7 @@ pub struct PermitIssueResult {
 /// exact protected permit snapshot while retaining the short live-executor and
 /// root-custody borrows; terminal commit rechecks that snapshot against the
 /// ledger before accepting the result.
+#[cfg(target_os = "linux")]
 pub struct RetainedCompletionPermit<'authority, 'request> {
     permit: CompletionPermitV1,
     _execution: LivePublisherExecution<'authority, 'request>,
@@ -1082,10 +1098,12 @@ pub struct RetainedCompletionPermit<'authority, 'request> {
 /// The future ingress adapter may mint this only immediately after
 /// [`RuntimeJoinedPublisherRequest::recheck`] succeeds on its protected clock.
 #[derive(Debug)]
+#[cfg(target_os = "linux")]
 pub struct LivePublisherExecution<'execution, 'request> {
     joined: &'execution RuntimeJoinedPublisherRequest<'request>,
 }
 
+#[cfg(target_os = "linux")]
 impl<'execution, 'request> LivePublisherExecution<'execution, 'request> {
     /// Rechecks and consumes a mutable joined request into one fresh-use token.
     ///
@@ -1113,10 +1131,11 @@ impl<'execution, 'request> LivePublisherExecution<'execution, 'request> {
 
 /// Proves that the current in-memory frontier was acknowledged by protection.
 ///
-/// Only the future protected-store adapter can mint this opaque value after an
-/// atomic commit and durability synchronization. Every use rechecks its exact
-/// checkpoint, sequence, and chain head, so a stale frontier cannot authorize
-/// work after any subsequent ledger mutation.
+/// Only the crate-sealed protected-journal settlement owner can mint this
+/// opaque value after an atomic commit and durability synchronization. Every
+/// use rechecks its exact checkpoint, sequence, and chain head, so a stale
+/// frontier cannot authorize work after any subsequent ledger mutation. The
+/// owner remains dormant and is not a production activation path.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommittedAdmissionFrontier {
     sequence: u64,
@@ -1178,11 +1197,25 @@ pub(crate) enum ProtectedStoreSettlementReceiptV1 {
 /// primary branch or the poison branch is durably synchronized. If `primary`
 /// is absent, only the poison branch is legal. Unrecoverable storage loss is a
 /// process-fatal condition rather than a returned, reusable authority state.
-pub(crate) trait ProtectedStoreSettlementV1 {
+pub(crate) trait StateOnlyProtectedStoreSettlementV1 {
     fn settle(
         &mut self,
-        primary: Option<&[LedgerMutation]>,
-        poison: &[LedgerMutation],
+        primary: Option<&ProtectedMutationBranchV1>,
+        poison: &ProtectedMutationBranchV1,
+    ) -> ProtectedStoreSettlementReceiptV1;
+}
+
+/// Settles a permit-terminal transition with its exact capacity reservation.
+///
+/// Only the protected publisher journal's capacity-bearing adapter implements
+/// this trait. A state-only store can therefore never commit completion,
+/// terminal repair, or their poison alternative without atomic reservation
+/// deletion.
+pub(crate) trait CapacityProtectedStoreSettlementV1 {
+    fn settle(
+        &mut self,
+        primary: Option<&ProtectedMutationBranchV1>,
+        poison: &ProtectedMutationBranchV1,
     ) -> ProtectedStoreSettlementReceiptV1;
 }
 
@@ -1254,6 +1287,7 @@ impl PermitIssueResult {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl RetainedCompletionPermit<'_, '_> {
     /// Returns the exact one-shot permit identity.
     #[must_use]
@@ -1865,6 +1899,7 @@ impl AdmissionLedger {
     ///
     /// Returns [`AdmissionError`] when realtime acquisition fails or any exact
     /// request, runtime, source, root, policy, or bound differs.
+    #[cfg(target_os = "linux")]
     pub(crate) fn derive_admission<'authority, 'request, E>(
         &self,
         committed: &CommittedAdmissionFrontier,
@@ -2094,7 +2129,7 @@ impl AdmissionLedger {
         &'registry mut self,
         registry: &'registry mut crate::publisher_roots::PublicationRootRegistry,
         root_id: crate::publisher_roots::PublicationRootId,
-        store: &'registry mut dyn ProtectedStoreSettlementV1,
+        store: &'registry mut dyn StateOnlyProtectedStoreSettlementV1,
     ) -> Result<RootRetirementCommitV1<'registry>, AdmissionError> {
         self.ensure_healthy()?;
         let mut staged_ledger = self.clone();
@@ -2134,6 +2169,7 @@ impl AdmissionLedger {
     ///
     /// Returns [`AdmissionError`] for poisoned authority, conflicts, capacity,
     /// bounds, epoch mismatch, or encoding failure.
+    #[cfg(target_os = "linux")]
     pub fn admit<E>(
         &mut self,
         admitted: AdmittedPublisherPlan<'_, '_>,
@@ -2146,6 +2182,7 @@ impl AdmissionLedger {
         Ok(result)
     }
 
+    #[cfg(target_os = "linux")]
     fn admit_in_place(
         &mut self,
         admitted: AdmittedPublisherPlan<'_, '_>,
@@ -2276,6 +2313,7 @@ impl AdmissionLedger {
     ///
     /// Returns [`AdmissionError`] for absent/mismatched state, outstanding-permit
     /// capacity, poisoned authority, identity conflict, or encoding failure.
+    #[cfg(target_os = "linux")]
     pub fn issue_completion_permit<'authority, 'request, E>(
         &mut self,
         committed: &CommittedAdmissionFrontier,
@@ -2369,6 +2407,7 @@ impl AdmissionLedger {
     }
 
     /// Revalidates every revocable authority required to start new work.
+    #[cfg(target_os = "linux")]
     fn validate_current_operation<E>(
         &self,
         execution: &LivePublisherExecution<'_, '_>,
@@ -2434,6 +2473,7 @@ impl AdmissionLedger {
     /// absent, the executor/artifact differs, or failover recovery has made the
     /// effect uncertain. Revocation-pending permits remain usable because their
     /// already-issued completion obligation cannot be cancelled retroactively.
+    #[cfg(target_os = "linux")]
     pub fn authorize_retained_completion<'authority, 'request>(
         &self,
         committed: &CommittedAdmissionFrontier,
@@ -2499,6 +2539,7 @@ impl AdmissionLedger {
     /// outstanding record, the physical and catalog intent match its prepared
     /// artifact and retained root, and both protected branches fit all bounds.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(target_os = "linux")]
     pub(crate) fn authorize_completion<'owners, 'authority, 'request>(
         &'owners mut self,
         committed: &CommittedAdmissionFrontier,
@@ -2506,7 +2547,7 @@ impl AdmissionLedger {
         effect: CompletionEffectCustodyV1,
         intended_entry: super::CommittedReadEntryV1,
         catalog: &'owners mut super::ReadCatalogProjectionV1,
-        store: &'owners mut dyn ProtectedStoreSettlementV1,
+        store: &'owners mut dyn CapacityProtectedStoreSettlementV1,
     ) -> Result<CompletionAuthorityV1<'owners, 'authority, 'request>, AdmissionError> {
         self.ensure_healthy()?;
         self.require_committed(committed)?;
@@ -2607,6 +2648,7 @@ impl AdmissionLedger {
     ///
     /// Returns [`AdmissionError`] unless every current authority exactly matches
     /// the retained admitted decision and original canonical request.
+    #[cfg(target_os = "linux")]
     pub(crate) fn authorize_materialization<'authority, 'request, E>(
         &'authority self,
         committed: &CommittedAdmissionFrontier,
@@ -2853,7 +2895,7 @@ impl AdmissionLedger {
         committed: &CommittedAdmissionFrontier,
         catalog: &'catalog mut super::ReadCatalogProjectionV1,
         operation: OperationId,
-        store: &'catalog mut dyn ProtectedStoreSettlementV1,
+        store: &'catalog mut dyn StateOnlyProtectedStoreSettlementV1,
     ) -> Result<CatalogEvictionAuthorizationV1<'catalog>, AdmissionError> {
         self.ensure_healthy()?;
         self.require_committed(committed)?;
@@ -3659,6 +3701,7 @@ impl AdmissionLedger {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn runtime_join_digest(joined: &RuntimeJoinedPublisherRequest<'_>) -> ObjectDigest {
     let binding = joined.runtime().binding();
     digest_parts(

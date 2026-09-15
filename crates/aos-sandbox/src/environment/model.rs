@@ -554,6 +554,19 @@ pub struct EnvironmentGenerationCheckpointV1 {
 }
 
 impl EnvironmentGenerationHistoryV1 {
+    /// Reconstructs immutable generation history from structurally protected
+    /// current records during adapter bootstrap.
+    pub(crate) fn from_protected_manifests(
+        manifests: Vec<EnvironmentGenerationManifestV1>,
+    ) -> Result<Self, EnvironmentHistoryError> {
+        let mut history = Self::default();
+        for manifest in manifests {
+            let digest = environment_manifest_digest_v1(&manifest)?;
+            history.apply(manifest, digest)?;
+        }
+        Ok(history)
+    }
+
     /// Replays canonical manifests under exact lineage and aggregate ceilings.
     ///
     /// # Errors

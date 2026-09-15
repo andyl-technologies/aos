@@ -9,10 +9,10 @@ use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    decode_lifecycle_auxiliary_record_v1, encode_lifecycle_auxiliary_record_v1,
     LifecycleAuxiliaryCheckpointV1, LifecycleAuxiliaryHistoryV1, LifecycleModelError,
     LifecycleReplayVerificationV1, MAXIMUM_LIFECYCLE_AUXILIARY_BYTES,
     MAXIMUM_LIFECYCLE_AUXILIARY_PAYLOAD_BYTES, MAXIMUM_LIFECYCLE_AUXILIARY_RECORDS,
+    decode_lifecycle_auxiliary_record_v1, encode_lifecycle_auxiliary_record_v1,
 };
 
 const MAGIC: &[u8; 8] = b"AOSLIFCP";

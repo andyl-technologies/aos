@@ -16,6 +16,53 @@ use aos_sandbox_core::{
 use super::*;
 
 const MAGIC: &[u8; 10] = b"AOSNLSNP01";
+const INTENT_MAGIC: &[u8; 9] = b"AOSNINT01";
+const CURRENT_MAGIC: &[u8; 9] = b"AOSNCUR01";
+const OBSERVATION_MAGIC: &[u8; 9] = b"AOSNOBS01";
+
+pub(super) fn decode_protected_intent(
+    bytes: &[u8],
+) -> Result<NetworkLifecycleIntentV1, NetworkLifecycleReducerError> {
+    let mut input = Reader::new(bytes);
+    if input.array::<9>()? != *INTENT_MAGIC {
+        return Err(NetworkLifecycleReducerError::ObservationMismatch);
+    }
+    let value = decode_intent(&mut input)?;
+    input.finish()?;
+    Ok(value)
+}
+
+pub(super) fn decode_protected_current(
+    bytes: &[u8],
+) -> Result<ProtectedNetworkLifecycleCurrentV1, NetworkLifecycleReducerError> {
+    let mut input = Reader::new(bytes);
+    if input.array::<9>()? != *CURRENT_MAGIC {
+        return Err(NetworkLifecycleReducerError::ObservationMismatch);
+    }
+    let value = ProtectedNetworkLifecycleCurrentV1 {
+        intent_digest: input.digest()?,
+        durable_reducer_digest: input.digest()?,
+        fence_digest: input.digest()?,
+        kernel_digest: input.digest()?,
+        residual: decode_residual(&mut input)?,
+        observed_boottime_nanoseconds: input.u64()?,
+        observation_ordinal: input.u64()?,
+    };
+    input.finish()?;
+    Ok(value)
+}
+
+pub(super) fn decode_protected_observation(
+    bytes: &[u8],
+) -> Result<ProtectedNetworkLifecycleObservationV1, NetworkLifecycleReducerError> {
+    let mut input = Reader::new(bytes);
+    if input.array::<9>()? != *OBSERVATION_MAGIC {
+        return Err(NetworkLifecycleReducerError::ObservationMismatch);
+    }
+    let value = decode_observation(&mut input)?;
+    input.finish()?;
+    Ok(value)
+}
 
 pub(super) fn encode_snapshot(
     snapshot: &NetworkLifecycleRecoverySnapshotV1,

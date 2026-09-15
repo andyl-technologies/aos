@@ -1061,7 +1061,7 @@ pub fn verify_provider_request(
     }
 
     let signed_request_digest = digest_signed_request(signed_request);
-    let attempt_digest = request_attempt_digest(
+    let attempt_digest = source_provider_request_attempt_digest_v1(
         signed_request.signer(),
         signed_request.method(),
         common.request_id,
@@ -1359,7 +1359,13 @@ fn require_traffic_sequence(sequence: u64) -> Result<(), SourceProviderVerificat
     }
 }
 
-fn request_attempt_digest(
+/// Computes the stable signer/method/request-ID attempt identity.
+///
+/// This helper is pure and nonauthorizing. Durable owners use it to recompute
+/// retained identities during hostile recovery; protected currentness and
+/// signature verification remain separate requirements.
+#[must_use]
+pub fn source_provider_request_attempt_digest_v1(
     signer: &crate::crypto::SourceProviderSigningKeyV1,
     method: SourceProviderMethod,
     request_id: [u8; 16],
@@ -2110,7 +2116,6 @@ fn verify_provider_selection(
         .ok_or(SourceProviderVerificationError::Bounds)?;
     if lease.issued_seconds() > context.now_seconds
         || context.now_seconds >= lease.expires_seconds()
-        || lease.expires_seconds() > request.deadline_seconds()
         || lease.expires_seconds() > context.maximum_lease_expiry_seconds
         || duration == 0
         || duration > request.requested_lease_seconds()

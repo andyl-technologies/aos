@@ -142,11 +142,22 @@ impl BackingIdentity {
         self.evidence.logical_content
     }
 
+    /// Returns the catalog generation authenticated with this backing.
+    #[must_use]
+    pub const fn publication_generation(&self) -> u64 {
+        self.evidence.publication_generation
+    }
+
     pub(super) const fn authority_binding(&self) -> [u8; 32] {
         self.authority_binding
     }
 
-    pub(super) fn evidence_commitment(&self) -> [u8; 32] {
+    /// Returns the complete non-authorizing identity commitment.
+    ///
+    /// This digest is suitable for exact broker-operation binding. It does not
+    /// expose or substitute for the verifier-issued backing evidence.
+    #[must_use]
+    pub fn evidence_commitment(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(b"aos-filesystem-verified-backing-v1\0");
         hasher.update(self.evidence.logical_content);
@@ -213,6 +224,8 @@ pub enum BackingDisposition {
 pub enum ReleaseDisposition {
     /// No external backing selector was retained.
     FallbackComplete,
+    /// A coalesced passthrough registration remains live for another open.
+    SharedBackingRetained,
     /// The broker must close the selector associated with this backing identity.
     CloseBacking(BackingIdentity),
 }

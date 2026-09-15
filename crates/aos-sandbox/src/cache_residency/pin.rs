@@ -209,6 +209,10 @@ pub struct ReleasedCachePinV1 {
 }
 
 impl CachePinV1 {
+    pub(crate) const fn authority_binding(&self) -> (CacheAuthorityScopeV1, ObjectDigest) {
+        (self.authority_scope, self.evidence)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn recover_historical(
         id: CachePinId,
@@ -679,6 +683,10 @@ pub struct PinDrainEvidenceV1 {
 }
 
 impl PinDrainEvidenceV1 {
+    pub(crate) const fn authority_binding(self) -> (CacheAuthorityScopeV1, ObjectDigest) {
+        (self.authority_scope, self.digest)
+    }
+
     pub(crate) const fn valid_until(self) -> u64 {
         self.authority_scope.valid_until()
     }

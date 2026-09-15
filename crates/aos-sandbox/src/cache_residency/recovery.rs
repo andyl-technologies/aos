@@ -126,6 +126,14 @@ pub struct CacheScrubRecordV1 {
 }
 
 impl CacheAtomicObjectPayloadV1 {
+    pub(crate) fn canonical_record_digest(
+        &self,
+        limits: CacheRecoveryLimitsV1,
+    ) -> Result<ObjectDigest, RecoveryError> {
+        self.validate(limits)?;
+        Ok(self.record.digest)
+    }
+
     /// Rebinds a record header to these exact canonical component bytes.
     ///
     /// The supplied record contributes transition metadata; its prior payload
@@ -1001,6 +1009,67 @@ impl CacheRecoveryInventoryV1 {
         limits: CacheRecoveryLimitsV1,
         now: u64,
     ) -> Result<Self, RecoveryError> {
+        Self::from_authorized(
+            partition,
+            typed_checkpoint_bytes,
+            prior_typed_checkpoint_bytes,
+            floor,
+            records,
+            limits,
+            capability.scope().valid_until(),
+            capability.record_digest(),
+            |authority_scope| {
+                owner.validate_for_effect_at(
+                    capability,
+                    CacheAuthorityPurposeV1::Replay,
+                    authority_scope,
+                    now,
+                )?;
+                Ok(())
+            },
+        )
+    }
+
+    pub(crate) fn from_authority_session(
+        partition: PhysicalPartitionId,
+        typed_checkpoint_bytes: &[u8],
+        prior_typed_checkpoint_bytes: Option<&[u8]>,
+        floor: CacheHistoryFloorV1,
+        records: impl IntoIterator<Item = Vec<u8>>,
+        limits: CacheRecoveryLimitsV1,
+        authority_scope: CacheAuthorityScopeV1,
+        authority_record: ObjectDigest,
+    ) -> Result<Self, RecoveryError> {
+        Self::from_authorized(
+            partition,
+            typed_checkpoint_bytes,
+            prior_typed_checkpoint_bytes,
+            floor,
+            records,
+            limits,
+            authority_scope.valid_until(),
+            authority_record,
+            |derived| {
+                if derived != authority_scope {
+                    return Err(RecoveryError::AnchorMismatch);
+                }
+                Ok(())
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_authorized(
+        partition: PhysicalPartitionId,
+        typed_checkpoint_bytes: &[u8],
+        prior_typed_checkpoint_bytes: Option<&[u8]>,
+        floor: CacheHistoryFloorV1,
+        records: impl IntoIterator<Item = Vec<u8>>,
+        limits: CacheRecoveryLimitsV1,
+        authority_valid_until: u64,
+        authority_record: ObjectDigest,
+        validate_authority: impl FnOnce(CacheAuthorityScopeV1) -> Result<(), RecoveryError>,
+    ) -> Result<Self, RecoveryError> {
         let limits = limits.validate()?;
         let typed_checkpoint = decode_typed_checkpoint(partition, typed_checkpoint_bytes, limits)?;
         match prior_typed_checkpoint_bytes {
@@ -1201,17 +1270,14 @@ impl CacheRecoveryInventoryV1 {
         let (catalog_projection, reservation_projection, pin_projection, progress_projection) =
             projections.digests();
         let head_sequence = expected_sequence.saturating_sub(1);
-        let subject = replay_subject(
+        // Protected authority binds the immutable replay anchor. The journal
+        // CAS/hash chain and inventory binding authenticate the evolving suffix.
+        let subject = replay_authority_subject(
             typed_checkpoint_digest,
             floor.digest,
-            head_sequence,
-            expected_predecessor,
-            record_count,
-            catalog_projection,
-            reservation_projection,
-            pin_projection,
-            progress_projection,
-            global.digest,
+            floor.first_retained_sequence,
+            floor.retained_history_root,
+            partition.digest(),
         );
         let authority_scope = CacheAuthorityScopeV1::new(
             partition,
@@ -1219,15 +1285,10 @@ impl CacheRecoveryInventoryV1 {
             None,
             typed_checkpoint_digest,
             partition.backing().root(),
-            head_sequence,
-            capability.scope().valid_until(),
+            floor.first_retained_sequence,
+            authority_valid_until,
         )?;
-        owner.validate_for_effect_at(
-            capability,
-            CacheAuthorityPurposeV1::Replay,
-            authority_scope,
-            now,
-        )?;
+        validate_authority(authority_scope)?;
         let reconstructed = latest.into_values().collect::<Vec<_>>();
         let mut recovered_family_heads = Vec::with_capacity(family_heads.len());
         for ((subject, kind), (generation, record_digest)) in family_heads {
@@ -1252,7 +1313,7 @@ impl CacheRecoveryInventoryV1 {
             reconstructed,
             family_heads: recovered_family_heads,
             global,
-            replay_authority: capability.record_digest(),
+            replay_authority: authority_record,
             replay_binding: ObjectDigest::from_bytes([0; 32]),
         };
         inventory.replay_binding = replay_inventory_binding(&inventory);

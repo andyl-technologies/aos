@@ -2,13 +2,14 @@
 //!
 //! These modules describe assignment-bound identity, immutable project service
 //! discovery, mediated egress, explicitly allocated ingress, checked quotas,
-//! deterministic lowering, and a pure replacement reducer. They deliberately
-//! expose no socket, journal, worker, kernel, or service integration. A later
-//! owner must persist each accepted reducer transition atomically and must
-//! revalidate external currentness immediately before releasing an effect.
+//! deterministic lowering, a pure replacement reducer, and a dormant canonical
+//! worker handoff. They deliberately expose no socket, live worker, kernel, or
+//! service integration. A protected owner must persist each accepted reducer
+//! transition atomically and revalidate currentness before releasing an effect.
 
 pub mod compiler;
 pub mod egress;
+pub mod handoff;
 pub mod identity;
 pub mod ingress;
 pub mod quota;
@@ -20,6 +21,7 @@ pub use compiler::{
     compile_advanced_network_policy_v1,
 };
 pub use egress::{MediatedEgressDestinationV1, MediatedEgressPolicyV1};
+pub use handoff::{AdvancedNetworkPolicyWorkerHandoffV1, AdvancedNetworkPolicyWorkerOperationV1};
 pub use identity::{
     AdvancedNetworkIdentityV1, NetworkAllocationIdentityV1, NetworkPolicyRevisionV1,
     ProtectedCurrentnessWitnessV1, ProtectedRecoveryAuthoritiesV1,

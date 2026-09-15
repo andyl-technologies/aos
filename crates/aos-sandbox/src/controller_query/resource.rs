@@ -12,8 +12,8 @@ use aos_proto::aos::sandbox::v1::{
 use buffa::Message as _;
 
 use super::model::{
-    ClientStateItem, InvalidQueryModel, OpaqueResponseBytesV1, OpaqueResponseKindV1,
-    MAXIMUM_PUBLIC_RESOURCE_BYTES,
+    ClientStateItem, InvalidQueryModel, MAXIMUM_PUBLIC_RESOURCE_BYTES, OpaqueResponseBytesV1,
+    OpaqueResponseKindV1,
 };
 use super::registry::{checked_timestamp, validate_descriptor_media, validate_features};
 

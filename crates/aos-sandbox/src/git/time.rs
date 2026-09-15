@@ -79,7 +79,7 @@ impl GitBoottimeV1 {
 
 /// Proves a monotonic observation came from the trusted journal clock boundary.
 ///
-/// The handle has no public scalar constructor. A dormant journal verifier may
+/// The handle has no public scalar constructor. The dormant journal verifier may
 /// issue it after sampling and authenticating the current boot clock.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GitTrustedBoottimeV1 {

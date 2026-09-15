@@ -3,8 +3,8 @@
 //! A dispatch can be minted only from the move-only value produced while an
 //! exact lifecycle record crosses its durable `Ambiguous` boundary. The wire
 //! record carries no descriptor number, PID, path, unit name, or caller-chosen
-//! cgroup identity. Its closed roles require a future fixed mutation worker to
-//! receive exactly the broker's retained target Network namespace.
+//! cgroup identity. Its closed roles bind the existing fixed mutation-worker
+//! path to exactly the broker's retained target Network namespace.
 //!
 //! ```text
 //! AOSNLW01 | version:u16 | worker-role:u8 | descriptor-role:u8 | total:u32
@@ -17,9 +17,10 @@
 //! This module deliberately performs no syscall and launches no helper. It
 //! exposes a non-clone ordered-step authorization whose next visible step is
 //! returned only after another current-fence and effect-time check.
-//! Its private dormant reducer defines bounded canonical recovery checkpoints,
-//! but the envelopes do not prove durability without future protected storage
-//! write and readback.
+//! Its dormant reducer defines bounded canonical recovery checkpoints, and the
+//! publicly re-exported opaque protected owner uses a crate-sealed adapter to
+//! require atomic protected write and exact readback. No production activation
+//! is introduced here.
 
 use aos_sandbox_broker::{
     BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1, BrokerLocalRecordDomain,
@@ -48,11 +49,11 @@ use aos_sandbox_linux::pidfd::NamespaceIdentity;
 
 mod codec;
 mod execution;
-#[allow(
-    dead_code,
-    reason = "the lifecycle authority reducer remains dormant until protected adapter integration"
-)]
 mod reducer;
+pub use reducer::{
+    DormantNetworkLifecycleOwnerErrorV1, DormantNetworkLifecycleProtectedCommitV1,
+    DormantNetworkLifecycleProtectedOwnerV1,
+};
 
 pub use codec::MAXIMUM_NETWORK_LIFECYCLE_WORKER_REQUEST_BYTES;
 use codec::{

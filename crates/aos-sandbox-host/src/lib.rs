@@ -25,6 +25,8 @@ pub mod activation;
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
+/// Source-only RFC-0021 adapters that are not connected to service dispatch.
+pub mod dormant_runtime_backend;
 #[cfg(test)]
 mod observation;
 pub mod peer;

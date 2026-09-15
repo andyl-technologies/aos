@@ -65,12 +65,14 @@ pub struct PublicationRootRegistryCheckpointV1 {
 /// This borrow prevents registry mutation while admission or materialization
 /// checks it. Per-root generation and global registry generation are distinct.
 #[derive(Debug)]
+#[cfg(target_os = "linux")]
 pub struct CurrentPublicationRoot<'registry> {
     registry: &'registry PublicationRootRegistry,
     root: &'registry super::AuthorizedPublicationRoot<'registry>,
     checkpoint: PublicationRootRegistryCheckpointV1,
 }
 
+#[cfg(target_os = "linux")]
 impl CurrentPublicationRoot<'_> {
     /// Returns the exact selected active root authority.
     #[must_use]
@@ -235,6 +237,7 @@ impl PublicationRootRegistry {
     ///
     /// Returns [`PublicationRootRegistryError`] unless the supplied live root
     /// is the registry's exact current active head.
+    #[cfg(target_os = "linux")]
     pub fn select_current<'registry>(
         &'registry self,
         root: &'registry super::AuthorizedPublicationRoot<'registry>,

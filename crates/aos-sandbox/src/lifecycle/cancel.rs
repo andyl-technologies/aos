@@ -6,8 +6,9 @@ use aos_sandbox_core::{ObjectDigest, OperationId, PrincipalId, ProjectId, Revisi
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    encode_operation_record_v1, LifecycleMethodSemanticCommitV1, LifecycleModelError,
-    LifecycleOperationV1, LifecycleRecordDigestV1, LifecycleTerminalResultV1, LifecycleTimeV1,
+    LifecycleMethodSemanticCommitV1, LifecycleModelError, LifecycleOperationV1,
+    LifecycleRecordDigestV1, LifecycleTerminalResultV1, LifecycleTimeV1,
+    encode_operation_record_v1,
 };
 
 /// Maximum cancellation keys retained by one replay checkpoint.

@@ -170,32 +170,21 @@ fn insert_unique<const N: usize>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn replay_subject(
+pub(super) fn replay_authority_subject(
     checkpoint: ObjectDigest,
     floor: ObjectDigest,
-    head_sequence: u64,
-    head: ObjectDigest,
-    record_count: usize,
-    catalog: ObjectDigest,
-    reservation: ObjectDigest,
-    pins: ObjectDigest,
-    progress: ObjectDigest,
-    global: ObjectDigest,
+    first_retained_sequence: u64,
+    retained_history_root: ObjectDigest,
+    partition: ObjectDigest,
 ) -> ObjectDigest {
     use sha2::{Digest as _, Sha256};
     let mut hasher = Sha256::new();
-    hasher.update(b"aos.sandbox.cache.recovery-replay-subject.v1\0");
+    hasher.update(b"aos.sandbox.cache.recovery-replay-authority.v1\0");
     hasher.update(checkpoint.as_bytes());
     hasher.update(floor.as_bytes());
-    hasher.update(head_sequence.to_be_bytes());
-    hasher.update(head.as_bytes());
-    hasher.update((record_count as u64).to_be_bytes());
-    hasher.update(catalog.as_bytes());
-    hasher.update(reservation.as_bytes());
-    hasher.update(pins.as_bytes());
-    hasher.update(progress.as_bytes());
-    hasher.update(global.as_bytes());
+    hasher.update(first_retained_sequence.to_be_bytes());
+    hasher.update(retained_history_root.as_bytes());
+    hasher.update(partition.as_bytes());
     ObjectDigest::from_bytes(hasher.finalize().into())
 }
 

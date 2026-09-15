@@ -6,7 +6,9 @@ mod remote_process;
 mod self_process;
 
 pub use boot::CurrentKernelBootV1;
-pub use death::DeadProviderExecutionV1;
+pub use death::{
+    DeadProviderExecutionProjectionV2, DeadProviderExecutionV1, ProviderExecutionDeathKindV2,
+};
 pub(crate) use remote_process::ProcessExecutionEvidenceV1;
 pub(crate) use self_process::RetainedSelfExecutionV1;
 

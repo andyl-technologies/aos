@@ -31,6 +31,21 @@ use rustix::fs::{
 };
 use sha2::{Digest, Sha256};
 
+pub(crate) mod mount_manager_startup;
+pub use mount_manager_startup::MountManagerStartupPolicyReceiptV1;
+mod capacity_reservation;
+pub(crate) use capacity_reservation::capacity_reservation_identity_is_exact_v1;
+pub use capacity_reservation::{
+    GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
+    GlobalCapacityReservationRequestV1, GlobalCapacityReservationV1,
+    PreparedGlobalCapacityReservationV1,
+};
+mod mount_source_consumption;
+pub use mount_source_consumption::{
+    MountSourceConsumptionCommitReceipt, MountSourceConsumptionCompanionProjectionV2,
+    MountSourceConsumptionPreflight,
+};
+
 const MAGIC: &[u8; 8] = b"AOSJRN01";
 const FORMAT_VERSION: u16 = 1;
 const HEADER_BYTES: usize = 72;
@@ -170,6 +185,14 @@ pub enum RecordNamespace {
     AttachmentSourceAttempt = 43,
     /// Exact completion evidence for attachment-source custody attempts.
     AttachmentSourceCompletion = 44,
+    /// Protected one-shot Mount-manager startup inventory and custody authority.
+    MountManagerStartupAuthority = 45,
+    /// Durable global space held for an admitted operation's terminal record.
+    GlobalCapacityReservation = 46,
+    /// Protected canonical full histories for authenticated broker sessions.
+    BrokerSessionTraffic = 47,
+    /// Monotone protected authorization-time observations for dormant CLI binding.
+    CliAuthorizationTime = 48,
 }
 
 impl RecordNamespace {
@@ -219,6 +242,10 @@ impl RecordNamespace {
             42 => Ok(Self::MountSourceAcquisitionInventory),
             43 => Ok(Self::AttachmentSourceAttempt),
             44 => Ok(Self::AttachmentSourceCompletion),
+            45 => Ok(Self::MountManagerStartupAuthority),
+            46 => Ok(Self::GlobalCapacityReservation),
+            47 => Ok(Self::BrokerSessionTraffic),
+            48 => Ok(Self::CliAuthorizationTime),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -515,6 +542,17 @@ pub struct Journal {
 pub struct ProtectedJournalAuthority<'journal> {
     journal: &'journal mut Journal,
     namespace: RecordNamespace,
+    scope: ProtectedAuthorityScope,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProtectedAuthorityScope {
+    SingleNamespace,
+    FixedMountSourceAcquisition,
+    MountSourceConsumption,
+    MountSourceMigration,
+    MountManagerStartup,
+    CapacityReservation(GlobalCapacityReservationPurposeV1),
 }
 
 /// Proves the protected authority snapshot observed at one journal sequence.
@@ -528,6 +566,18 @@ pub struct ProtectedJournalSnapshot {
     instance: Arc<JournalAuthorityInstance>,
     namespace: RecordNamespace,
     sequence: u64,
+    scope: ProtectedAuthorityScope,
+}
+
+impl ProtectedJournalSnapshot {
+    /// Returns the exact protected journal sequence captured by this token.
+    ///
+    /// The number is diagnostic without the opaque token. Callers must still
+    /// validate the complete snapshot immediately before relying on it.
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
 }
 
 /// Proves successful preflight at one protected authority snapshot.
@@ -539,6 +589,169 @@ pub struct ProtectedJournalSnapshot {
 pub struct ProtectedJournalPreflight {
     snapshot: ProtectedJournalSnapshot,
     transaction_digest: [u8; 32],
+}
+
+/// Seals one current claim over the fixed provider journal for session handoff.
+///
+/// The move-only value has no public constructor or projection. It carries no
+/// record, mutation, signing, or transport authority and is accepted only by
+/// the fixed provider security owner.
+#[must_use = "a fixed provider journal handoff must be consumed by its session owner"]
+pub struct FixedSourceProviderJournalHandoffV1<'authority, 'journal> {
+    authority: &'authority ProtectedJournalAuthority<'journal>,
+    sequence: u64,
+}
+
+impl core::fmt::Debug for FixedSourceProviderJournalHandoffV1<'_, '_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("FixedSourceProviderJournalHandoffV1([protected handoff])")
+    }
+}
+
+impl FixedSourceProviderJournalHandoffV1<'_, '_> {
+    /// Consumes and revalidates the exact fixed journal borrow.
+    ///
+    /// The retained immutable borrow prevents an intervening commit through
+    /// the same owner while this handoff exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after owner replacement, reopen, compaction, or any
+    /// mismatch with the fixed namespace-41 storage boundary.
+    #[doc(hidden)]
+    pub fn validate_current(self) -> Result<(), JournalError> {
+        self.authority
+            .validate_fixed_source_provider_session_handoff(&self)
+    }
+}
+
+/// Borrows the fixed Mount journal for one authenticated AOSMSA migration.
+///
+/// The move-only wrapper exposes only namespace-40 replay, snapshot, preflight,
+/// commit, and readback. Its raw purpose claim and journal never escape the
+/// fixed Mount-manager owner.
+#[must_use = "a Mount migration authority must remain live through readback"]
+pub struct MountSourceMigrationJournalAuthorityV2<'journal> {
+    authority: ProtectedJournalAuthority<'journal>,
+}
+
+/// Lends the exact fixed Mount namespace-40 owner without allowing it to escape.
+#[must_use = "the fixed Mount source authority must remain owner-scoped"]
+pub struct MountSourceAcquisitionJournalAuthorityV2<'journal> {
+    authority: ProtectedJournalAuthority<'journal>,
+}
+
+impl core::fmt::Debug for MountSourceAcquisitionJournalAuthorityV2<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("MountSourceAcquisitionJournalAuthorityV2([protected authority])")
+    }
+}
+
+impl<'journal> MountSourceAcquisitionJournalAuthorityV2<'journal> {
+    pub(crate) fn claim(journal: &'journal mut Journal) -> Result<Self, JournalError> {
+        Ok(Self {
+            authority: journal.claim_fixed_mount_source_acquisition_authority()?,
+        })
+    }
+
+    /// Runs one operation with a nonescaping exact fixed namespace-40 claim.
+    ///
+    /// The higher-ranked borrow prevents the raw claim, any borrowed record,
+    /// or a security session facade tied to it from surviving this call.
+    #[doc(hidden)]
+    pub fn with_authority<R>(
+        &mut self,
+        operation: impl for<'borrow> FnOnce(&'borrow mut ProtectedJournalAuthority<'journal>) -> R,
+    ) -> R {
+        operation(&mut self.authority)
+    }
+}
+
+impl core::fmt::Debug for MountSourceMigrationJournalAuthorityV2<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("MountSourceMigrationJournalAuthorityV2([protected authority])")
+    }
+}
+
+impl<'journal> MountSourceMigrationJournalAuthorityV2<'journal> {
+    pub(crate) fn claim(journal: &'journal mut Journal) -> Result<Self, JournalError> {
+        Ok(Self {
+            authority: journal.claim_mount_source_migration_authority()?,
+        })
+    }
+
+    /// Iterates the exact current namespace-40 record set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if fixed protected authority is stale or poisoned.
+    #[doc(hidden)]
+    pub fn records(&self) -> Result<impl Iterator<Item = (&[u8], &[u8])>, JournalError> {
+        self.authority.mount_source_acquisition_records()
+    }
+
+    /// Captures the exact fixed-journal generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if fixed protected authority is stale or poisoned.
+    #[doc(hidden)]
+    pub fn snapshot(&self) -> Result<ProtectedJournalSnapshot, JournalError> {
+        self.authority.snapshot()
+    }
+
+    /// Revalidates one exact migration snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after any append, compaction, reopen, or owner change.
+    #[doc(hidden)]
+    pub fn validate_snapshot(
+        &self,
+        snapshot: &ProtectedJournalSnapshot,
+    ) -> Result<(), JournalError> {
+        self.authority
+            .validate_mount_source_acquisition_snapshot(snapshot)
+    }
+
+    /// Preflights one namespace-40-only replacement transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, foreign, stale, or oversized input.
+    #[doc(hidden)]
+    pub fn preflight(
+        &self,
+        transaction: &JournalTransaction,
+    ) -> Result<ProtectedJournalPreflight, JournalError> {
+        self.authority
+            .preflight_transactions(core::slice::from_ref(transaction))
+    }
+
+    /// Revalidates the exact preflight immediately before its effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after drift or transaction substitution.
+    #[doc(hidden)]
+    pub fn validate_preflight(
+        &self,
+        preflight: &ProtectedJournalPreflight,
+        transaction: &JournalTransaction,
+    ) -> Result<(), JournalError> {
+        self.authority
+            .validate_preflight_for_effect(preflight, core::slice::from_ref(transaction))
+    }
+
+    /// Commits the exact preflighted namespace-40 replacement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale preflight, I/O failure, or ambiguity.
+    #[doc(hidden)]
+    pub fn commit(&mut self, transaction: &JournalTransaction) -> Result<(), JournalError> {
+        self.authority.commit(transaction)
+    }
 }
 
 struct JournalAuthorityInstance;
@@ -844,21 +1057,123 @@ impl Journal {
         namespace: RecordNamespace,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
-        let has_foreign_history = self
-            .committed_namespaces
-            .iter()
-            .any(|committed_namespace| *committed_namespace != namespace);
-        let has_foreign_state = self
-            .state
-            .keys()
-            .any(|(record_namespace, _)| *record_namespace != namespace);
-        if has_foreign_history || has_foreign_state {
+        if namespace == RecordNamespace::MountSourceAcquisition {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        capacity_reservation::validate_all_reservations(&self.state)?;
+        let has_foreign_history = self.committed_namespaces.iter().any(|committed_namespace| {
+            *committed_namespace != namespace
+                && *committed_namespace != RecordNamespace::GlobalCapacityReservation
+        });
+        let has_foreign_state = self.state.keys().any(|(record_namespace, _)| {
+            *record_namespace != namespace
+                && *record_namespace != RecordNamespace::GlobalCapacityReservation
+        });
+        if has_foreign_history
+            || has_foreign_state
+            || !capacity_reservation::all_reservations_owned_by(&self.state, namespace)?
+        {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
 
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace,
+            scope: ProtectedAuthorityScope::SingleNamespace,
+        })
+    }
+
+    fn claim_fixed_mount_source_acquisition_authority(
+        &mut self,
+    ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
+        self.ensure_protected_authority()?;
+        Ok(ProtectedJournalAuthority {
+            journal: self,
+            namespace: RecordNamespace::MountSourceAcquisition,
+            scope: ProtectedAuthorityScope::FixedMountSourceAcquisition,
+        })
+    }
+
+    /// Claims the closed journal group used by atomic Mount source consumption.
+    ///
+    /// Owner reads and ordinary commits remain restricted to namespace 40.
+    /// The guard additionally permits its single purpose-built four-PUT edge
+    /// over namespaces 40, 39, 3, and 2. Other namespaces already retained by
+    /// the broker remain inaccessible through this purpose-limited guard.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError::ProtectedBoundary`] for an unprotected journal,
+    /// [`JournalError::Poisoned`] after ambiguous durability.
+    #[doc(hidden)]
+    pub(crate) fn claim_mount_source_consumption_authority(
+        &mut self,
+    ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
+        self.ensure_protected_authority()?;
+        Ok(ProtectedJournalAuthority {
+            journal: self,
+            namespace: RecordNamespace::MountSourceAcquisition,
+            scope: ProtectedAuthorityScope::MountSourceConsumption,
+        })
+    }
+
+    fn claim_mount_source_migration_authority(
+        &mut self,
+    ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
+        self.ensure_protected_authority()?;
+        Ok(ProtectedJournalAuthority {
+            journal: self,
+            namespace: RecordNamespace::MountSourceAcquisition,
+            scope: ProtectedAuthorityScope::MountSourceMigration,
+        })
+    }
+
+    /// Claims the closed journal group used by Mount-manager startup capture.
+    ///
+    /// The guard exposes no generic record or transaction operations. Its
+    /// purpose-specific implementation reads only namespaces 45, 40, 39, and
+    /// 2, and may append only one fully derived namespace-45 capture record.
+    /// Other broker namespaces remain inaccessible through the guard.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError::ProtectedBoundary`] for an unprotected journal,
+    /// or [`JournalError::Poisoned`] after ambiguous durability.
+    #[doc(hidden)]
+    pub(crate) fn claim_mount_manager_startup_authority(
+        &mut self,
+    ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
+        self.ensure_protected_authority()?;
+        Ok(ProtectedJournalAuthority {
+            journal: self,
+            namespace: RecordNamespace::MountManagerStartupAuthority,
+            scope: ProtectedAuthorityScope::MountManagerStartup,
+        })
+    }
+
+    /// Claims one closed cross-namespace capacity-reserved transaction protocol.
+    ///
+    /// The returned guard exposes capacity-specific admission, recovery, and
+    /// settlement. `RuntimeExecution` additionally permits ordinary owner-only
+    /// Effect reads and transactions; `PublisherCompletion` remains fully
+    /// composite and exposes no generic domain access. Neither path admits
+    /// namespace 46 through generic transaction methods.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unprotected or poisoned journal or malformed
+    /// retained global reservation provenance.
+    pub(crate) fn claim_global_capacity_reservation_authority(
+        &mut self,
+        purpose: GlobalCapacityReservationPurposeV1,
+    ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
+        self.ensure_protected_authority()?;
+        capacity_reservation::validate_all_reservations(&self.state)?;
+
+        Ok(ProtectedJournalAuthority {
+            journal: self,
+            namespace: purpose.owner_namespace(),
+            scope: ProtectedAuthorityScope::CapacityReservation(purpose),
         })
     }
 
@@ -966,8 +1281,24 @@ impl Journal {
         &mut self,
         transaction: &JournalTransaction,
     ) -> Result<CommitResult, JournalError> {
+        self.commit_with_capacity_scope(transaction, None, false)
+    }
+
+    fn commit_with_capacity_scope(
+        &mut self,
+        transaction: &JournalTransaction,
+        settling_reservation: Option<[u8; 32]>,
+        allow_capacity_records: bool,
+    ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
         validate_transaction(transaction, self.limits)?;
+        let has_capacity_records = transaction
+            .records()
+            .iter()
+            .any(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation);
+        if has_capacity_records != allow_capacity_records {
+            return Err(JournalError::ProtectedBoundary);
+        }
         if self.transaction_ids.contains(transaction.id()) {
             return Err(JournalError::DuplicateTransaction);
         }
@@ -1003,6 +1334,17 @@ impl Journal {
         if expected_length > self.limits.maximum_journal_bytes {
             return Err(JournalError::JournalTooLarge);
         }
+        validate_reserved_capacity(
+            &self.state,
+            self.materialized_bytes,
+            transaction.records(),
+            settling_reservation,
+            expected_length,
+            self.committed_transactions
+                .checked_add(1)
+                .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
+            self.limits,
+        )?;
 
         let durable_bytes = match append_and_sync(&mut self.file, &frames) {
             Ok(bytes) => bytes,
@@ -1052,6 +1394,15 @@ impl Journal {
         &self,
         transactions: &[JournalTransaction],
     ) -> Result<(), JournalError> {
+        self.preflight_transactions_with_capacity_scope(transactions, None, false)
+    }
+
+    fn preflight_transactions_with_capacity_scope(
+        &self,
+        transactions: &[JournalTransaction],
+        settling_reservation: Option<[u8; 32]>,
+        allow_capacity_records: bool,
+    ) -> Result<(), JournalError> {
         self.ensure_healthy()?;
 
         let mut state = self.state.clone();
@@ -1063,6 +1414,13 @@ impl Journal {
         let mut expected_length = self.file.metadata()?.len();
 
         for transaction in transactions {
+            let has_capacity_records = transaction
+                .records()
+                .iter()
+                .any(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation);
+            if has_capacity_records != allow_capacity_records {
+                return Err(JournalError::ProtectedBoundary);
+            }
             validate_transaction(transaction, self.limits)?;
             if !transaction_ids.insert(transaction.id) {
                 return Err(JournalError::DuplicateTransaction);
@@ -1090,6 +1448,18 @@ impl Journal {
             if expected_length > self.limits.maximum_journal_bytes {
                 return Err(JournalError::JournalTooLarge);
             }
+
+            validate_reserved_capacity(
+                &state,
+                materialized_bytes,
+                transaction.records(),
+                settling_reservation,
+                expected_length,
+                committed_transactions
+                    .checked_add(1)
+                    .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
+                self.limits,
+            )?;
 
             for record in transaction.records() {
                 apply_record(&mut state, &mut idempotency, record)?;
@@ -1171,6 +1541,306 @@ impl Journal {
 }
 
 impl ProtectedJournalAuthority<'_> {
+    /// Validates the fixed provider namespace-41 storage boundary.
+    ///
+    /// This purpose check compares the retained protected directory descriptor
+    /// with a fresh no-symlink resolution of the compiled-in provider state
+    /// root and requires the exact journal basename. It grants no record or
+    /// mutation authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless this is the current dedicated namespace-41
+    /// claim over `/var/lib/aos/source-provider/provider.journal`.
+    #[doc(hidden)]
+    pub fn validate_fixed_source_provider_storage(&self) -> Result<(), JournalError> {
+        self.validate_source_provider_authority()?;
+        self.validate_fixed_storage("/var/lib/aos/source-provider", "provider.journal")
+    }
+
+    fn validate_fixed_storage(&self, directory: &str, name: &str) -> Result<(), JournalError> {
+        let retained = self
+            .journal
+            .protected
+            .as_ref()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        if retained.expected_uid != 0 || retained.name != name {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let fixed = resolve_protected_directory_from_root(Path::new(directory), 0)?;
+        let retained_stat = fstat(&retained.directory).map_err(rustix_io)?;
+        let fixed_stat = fstat(&fixed).map_err(rustix_io)?;
+        if retained_stat.st_dev != fixed_stat.st_dev || retained_stat.st_ino != fixed_stat.st_ino {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+
+    /// Mints one move-only handoff from the exact current fixed provider claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the fixed path, basename, namespace, journal
+    /// instance, and current sequence are all protected and current.
+    #[doc(hidden)]
+    pub fn fixed_source_provider_session_handoff(
+        &self,
+    ) -> Result<FixedSourceProviderJournalHandoffV1<'_, '_>, JournalError> {
+        self.validate_fixed_source_provider_storage()?;
+        Ok(FixedSourceProviderJournalHandoffV1 {
+            authority: self,
+            sequence: self.journal.next_sequence,
+        })
+    }
+
+    /// Revalidates a fixed provider session handoff before it is consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after another append, compaction, reopen, or owner
+    /// replacement, or for a handoff minted by another journal.
+    #[doc(hidden)]
+    pub fn validate_fixed_source_provider_session_handoff(
+        &self,
+        handoff: &FixedSourceProviderJournalHandoffV1<'_, '_>,
+    ) -> Result<(), JournalError> {
+        self.validate_fixed_source_provider_storage()?;
+        if !core::ptr::eq(handoff.authority, self) || handoff.sequence != self.journal.next_sequence
+        {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
+        Ok(())
+    }
+
+    /// Validates this guard as the exact namespace-40 Mount source authority.
+    ///
+    /// This purpose check is public only so security custody in another crate
+    /// can reject a generic protected guard before interpreting `AOSMSA02`
+    /// bytes. It grants no record, mutation, or snapshot authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the guard is healthy and names namespace 40.
+    #[doc(hidden)]
+    pub fn validate_mount_source_acquisition_authority(&self) -> Result<(), JournalError> {
+        self.journal.ensure_protected_authority()?;
+        if !matches!(
+            (self.namespace, self.scope),
+            (
+                RecordNamespace::MountSourceAcquisition,
+                ProtectedAuthorityScope::SingleNamespace
+                    | ProtectedAuthorityScope::FixedMountSourceAcquisition
+                    | ProtectedAuthorityScope::MountSourceConsumption
+                    | ProtectedAuthorityScope::MountSourceMigration
+            ) | (
+                RecordNamespace::MountManagerStartupAuthority,
+                ProtectedAuthorityScope::MountManagerStartup
+            )
+        ) {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        self.validate_fixed_storage("/var/lib/aos/sandbox-mount", "mount.journal")
+    }
+
+    /// Iterates exact current namespace-40 records through an approved owner or startup scope.
+    ///
+    /// This method does not expose other namespaces admitted by a purpose guard.
+    /// Callers must run the canonical AOSMSA02 graph validator before relying
+    /// on any returned bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless this is the sealed namespace-40 owner,
+    /// Mount-consumption, or Mount-manager-startup scope.
+    #[doc(hidden)]
+    pub fn mount_source_acquisition_records(
+        &self,
+    ) -> Result<impl Iterator<Item = (&[u8], &[u8])>, JournalError> {
+        self.validate_mount_source_acquisition_authority()?;
+        Ok(self
+            .journal
+            .records(RecordNamespace::MountSourceAcquisition))
+    }
+
+    /// Returns one exact current namespace-40 value through an approved scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless this is an approved namespace-40 owner or
+    /// purpose guard.
+    #[doc(hidden)]
+    pub fn mount_source_acquisition_get(&self, key: &[u8]) -> Result<Option<&[u8]>, JournalError> {
+        self.validate_mount_source_acquisition_authority()?;
+        Ok(self
+            .journal
+            .get(RecordNamespace::MountSourceAcquisition, key))
+    }
+
+    /// Validates the mutation-owning single-namespace AOSMSA02 authority.
+    ///
+    /// Purpose-scoped composite guards may read namespace 40 for correlation,
+    /// but cannot be substituted for the owner that commits row-only or
+    /// request/head lifecycle transitions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the guard is the exact namespace-40 owner scope.
+    #[doc(hidden)]
+    pub fn validate_mount_source_acquisition_owner_authority(&self) -> Result<(), JournalError> {
+        self.validate_mount_source_acquisition_authority()?;
+        if self.namespace != RecordNamespace::MountSourceAcquisition
+            || !matches!(
+                self.scope,
+                ProtectedAuthorityScope::SingleNamespace
+                    | ProtectedAuthorityScope::FixedMountSourceAcquisition
+            )
+        {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        Ok(())
+    }
+
+    /// Reports whether this protected journal generation retained one transaction identity.
+    ///
+    /// The identity is diagnostic unless the caller also validates the exact
+    /// deterministic AOSMSA02 transaction shape and every current record.
+    /// Compaction changes the authority instance and removes old provenance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the guard is the sealed namespace-40 authority.
+    #[doc(hidden)]
+    pub fn contains_mount_source_acquisition_transaction(
+        &self,
+        transaction_id: &[u8; 16],
+    ) -> Result<bool, JournalError> {
+        self.validate_mount_source_acquisition_authority()?;
+        Ok(self.journal.transaction_ids.contains(transaction_id))
+    }
+
+    /// Validates an exact current namespace-40 snapshot and guard.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the guard names namespace 40 and the snapshot
+    /// has the same journal instance, purpose scope, namespace, and sequence.
+    #[doc(hidden)]
+    pub fn validate_mount_source_acquisition_snapshot(
+        &self,
+        snapshot: &ProtectedJournalSnapshot,
+    ) -> Result<(), JournalError> {
+        self.validate_mount_source_acquisition_authority()?;
+        self.validate_snapshot(snapshot)
+    }
+
+    /// Validates this guard as the exact namespace-41 provider authority.
+    ///
+    /// This purpose check is public only so the provider owner and independent
+    /// security custody can reject a generic protected guard before decoding
+    /// `AOSSPL01`. It grants no record, mutation, or snapshot authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the guard is healthy, purpose scoped,
+    /// and names [`RecordNamespace::SourceProviderAuthority`].
+    #[doc(hidden)]
+    pub fn validate_source_provider_authority(&self) -> Result<(), JournalError> {
+        self.journal.ensure_protected_authority()?;
+        if self.namespace != RecordNamespace::SourceProviderAuthority
+            || self.scope != ProtectedAuthorityScope::SingleNamespace
+        {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        Ok(())
+    }
+
+    /// Validates an exact current namespace-41 snapshot and guard.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the guard is the dedicated namespace-41 scope
+    /// and the snapshot has the same journal instance, scope, and sequence.
+    #[doc(hidden)]
+    pub fn validate_source_provider_authority_snapshot(
+        &self,
+        snapshot: &ProtectedJournalSnapshot,
+    ) -> Result<(), JournalError> {
+        self.validate_source_provider_authority()?;
+        self.validate_snapshot(snapshot)
+    }
+
+    /// Validates this guard as the exact namespace-45 startup authority.
+    ///
+    /// This sealed purpose check prevents caller-shaped activation metadata in
+    /// any other protected namespace from authorizing manager custody or
+    /// absence. It grants no descriptor or mutation authority by itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the guard is healthy, purpose scoped, and names
+    /// [`RecordNamespace::MountManagerStartupAuthority`].
+    #[doc(hidden)]
+    pub fn validate_mount_manager_startup_authority(&self) -> Result<(), JournalError> {
+        self.journal.ensure_protected_authority()?;
+        if self.namespace != RecordNamespace::MountManagerStartupAuthority
+            || self.scope != ProtectedAuthorityScope::MountManagerStartup
+        {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        Ok(())
+    }
+
+    /// Validates an exact current namespace-45 snapshot and guard.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the guard is the dedicated namespace-45 scope
+    /// and the snapshot has the same journal instance, scope, and sequence.
+    #[doc(hidden)]
+    pub fn validate_mount_manager_startup_snapshot(
+        &self,
+        snapshot: &ProtectedJournalSnapshot,
+    ) -> Result<(), JournalError> {
+        self.validate_mount_manager_startup_authority()?;
+        self.validate_snapshot(snapshot)
+    }
+
+    /// Validates the exact namespace-40 authority used by startup absence proof.
+    ///
+    /// This sealed crate-local check prevents a generic protected authority for
+    /// another namespace from authenticating shaped `AOSMSA02` bytes. Both the
+    /// dedicated namespace scope and the purpose-scoped composite Mount source
+    /// authority are accepted; the snapshot must still name this exact journal
+    /// instance, scope, namespace, and sequence.
+    pub(crate) fn validate_mount_source_inventory_snapshot(
+        &self,
+        snapshot: &ProtectedJournalSnapshot,
+    ) -> Result<(), JournalError> {
+        self.validate_mount_source_acquisition_snapshot(snapshot)
+    }
+
+    /// Validates a namespace-40 snapshot's immutable journal provenance.
+    ///
+    /// Unlike an effect snapshot, this accepts a later sequence in the same
+    /// uncompacted journal. The inventory capability separately compares its
+    /// exact acquisition row, allowing a canonical proof batch to be consumed
+    /// across unrelated row commits without surviving compaction or target-row
+    /// replacement.
+    pub(crate) fn validate_mount_source_inventory_origin(
+        &self,
+        snapshot: &ProtectedJournalSnapshot,
+    ) -> Result<(), JournalError> {
+        self.validate_mount_source_acquisition_authority()?;
+        if !Arc::ptr_eq(&self.journal.authority_instance, &snapshot.instance)
+            || snapshot.namespace != self.namespace
+            || snapshot.scope != self.scope
+            || snapshot.sequence > self.journal.snapshot_sequence()
+        {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
+        Ok(())
+    }
+
     /// Returns the current authority value for a logical key.
     ///
     /// The returned value borrows this guard, so it cannot remain live across a
@@ -1182,6 +1852,7 @@ impl ProtectedJournalAuthority<'_> {
     /// or [`JournalError::ProtectedBoundary`] if retained protected-open
     /// provenance is absent.
     pub fn get(&self, key: &[u8]) -> Result<Option<&[u8]>, JournalError> {
+        self.validate_generic_authority_read()?;
         self.journal.ensure_protected_authority()?;
         Ok(self.journal.get(self.namespace, key))
     }
@@ -1197,6 +1868,7 @@ impl ProtectedJournalAuthority<'_> {
     /// or [`JournalError::ProtectedBoundary`] if retained protected-open
     /// provenance is absent.
     pub fn records(&self) -> Result<impl Iterator<Item = (&[u8], &[u8])>, JournalError> {
+        self.validate_generic_authority_read()?;
         self.journal.ensure_protected_authority()?;
         Ok(self.journal.records(self.namespace))
     }
@@ -1213,6 +1885,7 @@ impl ProtectedJournalAuthority<'_> {
     /// or [`JournalError::ProtectedBoundary`] if retained protected-open
     /// provenance is absent.
     pub fn is_materialized_empty(&self) -> Result<bool, JournalError> {
+        self.validate_generic_authority_read()?;
         self.journal.ensure_protected_authority()?;
         Ok(self.journal.is_materialized_empty())
     }
@@ -1229,6 +1902,7 @@ impl ProtectedJournalAuthority<'_> {
     /// or [`JournalError::ProtectedBoundary`] if retained protected-open
     /// provenance is absent.
     pub fn snapshot(&self) -> Result<ProtectedJournalSnapshot, JournalError> {
+        self.validate_generic_authority_read()?;
         self.journal.ensure_protected_authority()?;
         Ok(self.current_snapshot())
     }
@@ -1250,6 +1924,7 @@ impl ProtectedJournalAuthority<'_> {
         &self,
         snapshot: &ProtectedJournalSnapshot,
     ) -> Result<(), JournalError> {
+        self.validate_generic_authority_read()?;
         self.journal.ensure_protected_authority()?;
         self.validate_snapshot(snapshot)
     }
@@ -1269,6 +1944,7 @@ impl ProtectedJournalAuthority<'_> {
         &self,
         transactions: &[JournalTransaction],
     ) -> Result<ProtectedJournalPreflight, JournalError> {
+        self.validate_generic_authority_mutation()?;
         self.journal.ensure_protected_authority()?;
         self.validate_transaction_namespaces(transactions)?;
         self.journal.preflight_transactions(transactions)?;
@@ -1303,6 +1979,7 @@ impl ProtectedJournalAuthority<'_> {
         preflight: &ProtectedJournalPreflight,
         transactions: &[JournalTransaction],
     ) -> Result<(), JournalError> {
+        self.validate_generic_authority_mutation()?;
         self.journal.ensure_protected_authority()?;
         self.validate_transaction_namespaces(transactions)?;
         self.validate_snapshot(&preflight.snapshot)?;
@@ -1327,9 +2004,348 @@ impl ProtectedJournalAuthority<'_> {
         &mut self,
         transaction: &JournalTransaction,
     ) -> Result<CommitResult, JournalError> {
+        self.validate_generic_authority_mutation()?;
         self.journal.ensure_protected_authority()?;
         self.validate_transaction_namespace(transaction)?;
         self.journal.commit(transaction)
+    }
+
+    /// Prepares capacity reservation bound to this protected owner namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the request names this exact single-namespace
+    /// authority and all durable reservation fields and bounds are valid.
+    pub fn prepare_global_capacity_reservation_v1(
+        &self,
+        request: GlobalCapacityReservationRequestV1,
+        admission_transaction_id: [u8; 16],
+    ) -> Result<PreparedGlobalCapacityReservationV1, JournalError> {
+        let purpose = self.validate_capacity_authority()?;
+        if request.purpose != purpose || request.owner_namespace != self.namespace {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        self.journal
+            .prepare_global_capacity_reservation_v1(request, admission_transaction_id)
+    }
+
+    /// Preflights one owner admission transaction and its exact capacity record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign record, a different reservation record or
+    /// transaction ID, or any ordinary or outstanding-capacity bound failure.
+    pub fn preflight_global_capacity_reservation_v1(
+        &self,
+        prepared: &PreparedGlobalCapacityReservationV1,
+        transaction: &JournalTransaction,
+    ) -> Result<ProtectedJournalPreflight, JournalError> {
+        let purpose = self.validate_capacity_transaction_namespaces(transaction)?;
+        if prepared.request.purpose != purpose
+            || prepared.request.owner_namespace != self.namespace
+            || transaction.id() != &prepared.admission_transaction_id
+            || transaction
+                .records()
+                .iter()
+                .filter(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation)
+                .ne([prepared.record()])
+        {
+            return Err(JournalError::AuthorityPreflightMismatch);
+        }
+        self.journal.preflight_transactions_with_capacity_scope(
+            std::slice::from_ref(transaction),
+            None,
+            true,
+        )?;
+        Ok(ProtectedJournalPreflight {
+            snapshot: self.current_snapshot(),
+            transaction_digest: authority_preflight_digest(std::slice::from_ref(transaction)),
+        })
+    }
+
+    /// Atomically commits owner admission and its exact capacity reservation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the preflight is stale, admission differs, or the
+    /// durable append cannot preserve every outstanding reservation.
+    pub fn commit_global_capacity_reservation_v1(
+        &mut self,
+        preflight: &ProtectedJournalPreflight,
+        prepared: PreparedGlobalCapacityReservationV1,
+        transaction: &JournalTransaction,
+    ) -> Result<(CommitResult, GlobalCapacityReservationV1), JournalError> {
+        let purpose = self.validate_capacity_transaction_namespaces(transaction)?;
+        self.validate_snapshot(&preflight.snapshot)?;
+        if preflight.transaction_digest
+            != authority_preflight_digest(std::slice::from_ref(transaction))
+            || prepared.request.purpose != purpose
+            || prepared.request.owner_namespace != self.namespace
+        {
+            return Err(JournalError::AuthorityPreflightMismatch);
+        }
+        self.journal
+            .commit_global_capacity_reservation_v1(prepared, transaction)
+    }
+
+    /// Recovers one exact owner-bound capacity settlement authority after replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the retained reservation is canonical and owned
+    /// by this exact protected namespace.
+    pub fn recover_global_capacity_reservation_v1(
+        &self,
+        reservation_id: [u8; 32],
+    ) -> Result<GlobalCapacityReservationV1, JournalError> {
+        let purpose = self.validate_capacity_authority()?;
+        let reservation = self
+            .journal
+            .recover_global_capacity_reservation_v1(reservation_id)?;
+        if reservation.request.purpose != purpose
+            || reservation.request.owner_namespace != self.namespace
+        {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        Ok(reservation)
+    }
+
+    /// Looks up one exact owner-bound capacity reservation after replay.
+    ///
+    /// `Ok(None)` is an authenticated absence. Malformed records, replay
+    /// provenance failures, and authority failures remain errors and must not
+    /// be interpreted as absence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the purpose authority and every retained
+    /// namespace-46 record involved in the lookup remain valid.
+    pub fn lookup_global_capacity_reservation_v1(
+        &self,
+        reservation_id: [u8; 32],
+    ) -> Result<Option<GlobalCapacityReservationV1>, JournalError> {
+        let purpose = self.validate_capacity_authority()?;
+        let reservation = self
+            .journal
+            .lookup_global_capacity_reservation_v1(reservation_id)?;
+        let Some(reservation) = reservation else {
+            return Ok(None);
+        };
+        if reservation.request.purpose != purpose
+            || reservation.request.owner_namespace != self.namespace
+        {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        Ok(Some(reservation))
+    }
+
+    /// Validates the complete retained reservation set for this purpose owner.
+    ///
+    /// This closes cold replay over namespace 46 without exposing reservation
+    /// values as caller-mintable authority. Every retained record is decoded
+    /// and provenance-checked before its identity is compared with `expected`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, foreign, duplicated, missing, or orphan
+    /// reservations, or when protected journal currentness is unavailable.
+    pub fn validate_global_capacity_reservation_set_v1(
+        &self,
+        expected: &BTreeSet<[u8; 32]>,
+    ) -> Result<(), JournalError> {
+        let purpose = self.validate_capacity_authority()?;
+        let mut retained = BTreeSet::new();
+        for (key, value) in self
+            .journal
+            .records(RecordNamespace::GlobalCapacityReservation)
+        {
+            let (request, _admission_transaction, reservation_id) =
+                capacity_reservation::decode_reservation(value)?;
+            let reservation = self
+                .journal
+                .lookup_global_capacity_reservation_v1(reservation_id)?
+                .ok_or(JournalError::MalformedRecord(
+                    "capacity reservation disappeared during protected replay",
+                ))?;
+            if key
+                != capacity_reservation::reservation_key_for_validation(reservation_id).as_slice()
+                || request.purpose != purpose
+                || request.owner_namespace != self.namespace
+                || reservation.request() != request
+                || !retained.insert(reservation_id)
+            {
+                return Err(JournalError::MalformedRecord(
+                    "capacity reservation set is not canonical",
+                ));
+            }
+        }
+        if &retained != expected {
+            return Err(JournalError::MalformedRecord(
+                "capacity reservation set differs from protected owners",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Recovers one reservation from its stable binding and protected record.
+    ///
+    /// The caller does not supply the original owner digest or admission
+    /// transaction ID. Both are decoded from the canonical namespace-46 record
+    /// and authenticated by replay provenance before the complete stable
+    /// binding is compared.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the reservation is current, canonical, owned by
+    /// this purpose guard, and exactly matches every supplied stable field.
+    pub fn recover_global_capacity_reservation_by_binding_v1(
+        &self,
+        reservation_id: [u8; 32],
+        binding: &GlobalCapacityReservationRecoveryBindingV1,
+    ) -> Result<GlobalCapacityReservationV1, JournalError> {
+        let purpose = self.validate_capacity_authority()?;
+        if binding.purpose != purpose {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        let reservation = self
+            .journal
+            .recover_global_capacity_reservation_v1(reservation_id)?;
+        if reservation.request.purpose != purpose
+            || reservation.request.owner_namespace != self.namespace
+            || !reservation.matches_recovery_binding(binding)
+        {
+            return Err(JournalError::AuthorityPreflightMismatch);
+        }
+        Ok(reservation)
+    }
+
+    /// Recovers the unique reservation matching a complete stable binding.
+    ///
+    /// Namespace-46 enumeration remains inside this sealed purpose guard. Every
+    /// record is canonically decoded and replay-provenanced; zero or multiple
+    /// stable matches fail closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign purpose, malformed retained record, or
+    /// when the binding has anything other than one exact current match.
+    pub fn recover_unique_global_capacity_reservation_v1(
+        &self,
+        binding: &GlobalCapacityReservationRecoveryBindingV1,
+    ) -> Result<GlobalCapacityReservationV1, JournalError> {
+        let purpose = self.validate_capacity_authority()?;
+        if binding.purpose != purpose {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        let reservation = self
+            .journal
+            .recover_unique_global_capacity_reservation_v1(binding)?;
+        if reservation.request.purpose != purpose
+            || reservation.request.owner_namespace != self.namespace
+        {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        Ok(reservation)
+    }
+
+    /// Preflights an exact terminal or poison transaction against held capacity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the reservation is current, its sole deletion is
+    /// present, all other records belong to the owner, and one retained branch fits.
+    pub fn preflight_reserved_terminal_v1(
+        &self,
+        reservation: &GlobalCapacityReservationV1,
+        transaction: &JournalTransaction,
+    ) -> Result<ProtectedJournalPreflight, JournalError> {
+        let purpose = self.validate_capacity_transaction_namespaces(transaction)?;
+        if reservation.request.purpose != purpose
+            || reservation.request.owner_namespace != self.namespace
+        {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        capacity_reservation::validate_settlement_shape(self.journal, reservation, transaction)?;
+        self.journal.preflight_transactions_with_capacity_scope(
+            std::slice::from_ref(transaction),
+            Some(reservation.reservation_id),
+            true,
+        )?;
+        Ok(ProtectedJournalPreflight {
+            snapshot: self.current_snapshot(),
+            transaction_digest: authority_preflight_digest(std::slice::from_ref(transaction)),
+        })
+    }
+
+    /// Commits one preflighted terminal branch and consumes its reservation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale preflight, altered records, foreign ownership,
+    /// exceeded retained branch bounds, or an ambiguous durable append.
+    pub fn commit_reserved_terminal_v1(
+        &mut self,
+        preflight: &ProtectedJournalPreflight,
+        reservation: GlobalCapacityReservationV1,
+        transaction: &JournalTransaction,
+    ) -> Result<CommitResult, JournalError> {
+        let purpose = self.validate_capacity_transaction_namespaces(transaction)?;
+        self.validate_snapshot(&preflight.snapshot)?;
+        if reservation.request.purpose != purpose
+            || reservation.request.owner_namespace != self.namespace
+            || preflight.transaction_digest
+                != authority_preflight_digest(std::slice::from_ref(transaction))
+        {
+            return Err(JournalError::AuthorityPreflightMismatch);
+        }
+        self.journal
+            .settle_global_capacity_reservation_v1(reservation, transaction)
+    }
+
+    fn validate_capacity_transaction_namespaces(
+        &self,
+        transaction: &JournalTransaction,
+    ) -> Result<GlobalCapacityReservationPurposeV1, JournalError> {
+        let purpose = self.validate_capacity_authority()?;
+        let mut publisher_authority = false;
+        let mut authority_publication = false;
+        let mut effect = false;
+        let mut capacity_record = false;
+        for record in transaction.records() {
+            if !purpose.permits(record.namespace()) {
+                return Err(JournalError::ForeignAuthorityNamespace);
+            }
+            match record.namespace() {
+                RecordNamespace::PublisherAuthority => publisher_authority = true,
+                RecordNamespace::AuthorityPublication => authority_publication = true,
+                RecordNamespace::Effect => effect = true,
+                RecordNamespace::GlobalCapacityReservation => capacity_record = true,
+                _ => return Err(JournalError::ForeignAuthorityNamespace),
+            }
+        }
+        let closed_shape = match purpose {
+            GlobalCapacityReservationPurposeV1::PublisherCompletion => {
+                publisher_authority && authority_publication
+            }
+            GlobalCapacityReservationPurposeV1::RuntimeExecution => effect,
+        };
+        if !closed_shape || !capacity_record {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        Ok(purpose)
+    }
+
+    fn validate_capacity_authority(
+        &self,
+    ) -> Result<GlobalCapacityReservationPurposeV1, JournalError> {
+        self.journal.ensure_protected_authority()?;
+        let ProtectedAuthorityScope::CapacityReservation(purpose) = self.scope else {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        };
+        if self.namespace != purpose.owner_namespace() {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        Ok(purpose)
     }
 
     fn current_snapshot(&self) -> ProtectedJournalSnapshot {
@@ -1337,6 +2353,7 @@ impl ProtectedJournalAuthority<'_> {
             instance: Arc::clone(&self.journal.authority_instance),
             namespace: self.namespace,
             sequence: self.journal.snapshot_sequence(),
+            scope: self.scope,
         }
     }
 
@@ -1344,6 +2361,7 @@ impl ProtectedJournalAuthority<'_> {
         if !Arc::ptr_eq(&self.journal.authority_instance, &snapshot.instance)
             || snapshot.namespace != self.namespace
             || snapshot.sequence != self.journal.snapshot_sequence()
+            || snapshot.scope != self.scope
         {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
@@ -1374,6 +2392,35 @@ impl ProtectedJournalAuthority<'_> {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
 
+        Ok(())
+    }
+
+    fn validate_generic_authority_read(&self) -> Result<(), JournalError> {
+        if self.namespace == RecordNamespace::MountManagerStartupAuthority
+            || self.scope == ProtectedAuthorityScope::MountManagerStartup
+            || self.scope
+                == ProtectedAuthorityScope::CapacityReservation(
+                    GlobalCapacityReservationPurposeV1::PublisherCompletion,
+                )
+        {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        Ok(())
+    }
+
+    fn validate_generic_authority_mutation(&self) -> Result<(), JournalError> {
+        self.validate_generic_authority_read()?;
+        if !matches!(
+            self.scope,
+            ProtectedAuthorityScope::SingleNamespace
+                | ProtectedAuthorityScope::FixedMountSourceAcquisition
+                | ProtectedAuthorityScope::MountSourceMigration
+                | ProtectedAuthorityScope::CapacityReservation(
+                    GlobalCapacityReservationPurposeV1::RuntimeExecution
+                )
+        ) {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
         Ok(())
     }
 }
@@ -1664,6 +2711,127 @@ fn validate_transaction(
         }
     }
     Ok(())
+}
+
+pub(super) fn encoded_transaction_record_bytes(
+    transaction: &JournalTransaction,
+) -> Result<u64, JournalError> {
+    transaction
+        .records()
+        .iter()
+        .try_fold(0_u64, |total, record| {
+            let encoded = encode_record(record)?;
+            total
+                .checked_add(encoded.len() as u64)
+                .ok_or(JournalError::JournalTooLarge)
+        })
+}
+
+fn validate_reserved_capacity(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    prospective_materialized_bytes: usize,
+    records: &[JournalRecord],
+    settling_reservation: Option<[u8; 32]>,
+    prospective_journal_bytes: u64,
+    prospective_transactions: usize,
+    limits: JournalLimits,
+) -> Result<(), JournalError> {
+    let mut reservations = BTreeMap::new();
+    for ((namespace, key), value) in state {
+        if *namespace == RecordNamespace::GlobalCapacityReservation {
+            let decoded = capacity_reservation::decode_capacity_record(key, value)?;
+            if reservations
+                .insert(decoded.reservation_id, decoded)
+                .is_some()
+            {
+                return Err(JournalError::MalformedRecord(
+                    "duplicate global capacity reservation",
+                ));
+            }
+        }
+    }
+    for record in records {
+        if record.namespace() != RecordNamespace::GlobalCapacityReservation {
+            continue;
+        }
+        match record.value() {
+            Some(value) => {
+                let decoded = capacity_reservation::decode_capacity_record(record.key(), value)?;
+                if reservations
+                    .insert(decoded.reservation_id, decoded)
+                    .is_some()
+                {
+                    return Err(JournalError::DuplicateRecordKey);
+                }
+            }
+            None => {
+                let identifier = settling_reservation.ok_or(JournalError::ProtectedBoundary)?;
+                if record.key()
+                    != capacity_reservation::reservation_key_for_validation(identifier).as_slice()
+                    || reservations.remove(&identifier).is_none()
+                {
+                    return Err(JournalError::MalformedRecord(
+                        "capacity settlement does not remove its exact reservation",
+                    ));
+                }
+            }
+        }
+    }
+    let (reserved_records, reserved_bytes) =
+        reservations
+            .values()
+            .try_fold((0_usize, 0_u64), |(records, bytes), reservation| {
+                Ok::<_, JournalError>((
+                    records
+                        .checked_add(reservation.maximum_records)
+                        .ok_or(JournalError::LimitExceeded("reserved record count"))?,
+                    bytes
+                        .checked_add(reservation.maximum_bytes)
+                        .ok_or(JournalError::JournalTooLarge)?,
+                ))
+            })?;
+    let projected_entries = projected_materialized_record_count(state, records)?;
+    if prospective_materialized_bytes
+        .checked_add(
+            usize::try_from(reserved_bytes)
+                .map_err(|_| JournalError::LimitExceeded("reserved materialized bytes"))?,
+        )
+        .is_none_or(|bytes| bytes > limits.maximum_materialized_bytes)
+        || projected_entries
+            .checked_add(reserved_records)
+            .is_none_or(|count| count > limits.maximum_materialized_records)
+        || prospective_journal_bytes
+            .checked_add(reserved_bytes)
+            .is_none_or(|bytes| bytes > limits.maximum_journal_bytes)
+        || prospective_transactions
+            .checked_add(reservations.len())
+            .is_none_or(|count| count > limits.maximum_transactions)
+    {
+        return Err(JournalError::LimitExceeded(
+            "outstanding global capacity reservations",
+        ));
+    }
+    Ok(())
+}
+
+fn projected_materialized_record_count(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    records: &[JournalRecord],
+) -> Result<usize, JournalError> {
+    let mut entries = state.len();
+    for record in records {
+        let key = (record.namespace(), record.key().to_vec());
+        match (state.contains_key(&key), record.value().is_some()) {
+            (false, true) => {
+                entries = entries
+                    .checked_add(1)
+                    .ok_or(JournalError::LimitExceeded("materialized record count"))?;
+            }
+            (true, false) => entries = entries.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(entries)
 }
 
 fn validate_limits(limits: JournalLimits) -> Result<(), JournalError> {

@@ -754,6 +754,9 @@ message MountResult {
   int64 attachment_lease_issued_seconds = 14;
   int64 attachment_lease_expires_seconds = 15;
   bytes source_handle = 16; // Exact canonical Apply echo.
+  // Optional dormant FUSE-worker qualification record commitment. Production
+  // Mount does not emit this field until qualification provisioning activates.
+  bytes filesystem_worker_qualification_commitment = 17; // Exactly 32 bytes when present.
 }
 
 enum MountState {

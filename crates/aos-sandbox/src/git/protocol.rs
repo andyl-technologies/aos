@@ -13,11 +13,11 @@ use aos_sandbox_core::{
 use sha2::{Digest as _, Sha256};
 
 use super::model::{
-    git_ref_map_digest_v1, GitAdvertisedRefV1, GitAncestryReportV1, GitAtomicCasDigestV1,
-    GitChannelBindingDigestV1, GitDescriptorRoleV1, GitDescriptorV1, GitExportGenerationV1,
-    GitGraphCompletenessV1, GitModelError, GitObjectDatabaseDigestV1, GitObjectFormatV1,
-    GitObjectGraphEvidenceV1, GitObjectIdV1, GitQuarantineDigestV1, GitRefMapDigestV1,
-    GitRefNameV1, GitRepositoryV1, GitValidationPolicyDigestV1, GitWholeObjectDatabaseV1,
+    GitAdvertisedRefV1, GitAncestryReportV1, GitAtomicCasDigestV1, GitChannelBindingDigestV1,
+    GitDescriptorRoleV1, GitDescriptorV1, GitExportGenerationV1, GitGraphCompletenessV1,
+    GitModelError, GitObjectDatabaseDigestV1, GitObjectFormatV1, GitObjectGraphEvidenceV1,
+    GitObjectIdV1, GitQuarantineDigestV1, GitRefMapDigestV1, GitRefNameV1, GitRepositoryV1,
+    GitValidationPolicyDigestV1, GitWholeObjectDatabaseV1, git_ref_map_digest_v1,
 };
 
 /// Maximum ref compare-and-swap transitions in one receive.

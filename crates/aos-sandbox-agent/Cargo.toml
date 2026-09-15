@@ -1,0 +1,15 @@
+[package]
+name = "aos-sandbox-agent"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-proto = { path = "../aos-proto" }
+aos-sandbox-core = { path = "../aos-sandbox-core" }
+ed25519-dalek.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

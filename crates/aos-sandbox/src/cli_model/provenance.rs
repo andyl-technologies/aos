@@ -57,6 +57,24 @@ impl CanonicalRequestDigestV1 {
     }
 }
 
+/// Commits the closed typed meaning decoded from authenticated request bytes.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) struct AuthenticatedRequestSemanticsDigestV1(ObjectDigest);
+
+impl AuthenticatedRequestSemanticsDigestV1 {
+    /// Constructs a semantic commitment inside the closed request decoder.
+    #[must_use]
+    pub(crate) const fn from_decoded(digest: ObjectDigest) -> Self {
+        Self(digest)
+    }
+}
+
+impl fmt::Debug for AuthenticatedRequestSemanticsDigestV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthenticatedRequestSemanticsDigestV1(<redacted>)")
+    }
+}
+
 impl fmt::Debug for CanonicalRequestDigestV1 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("CanonicalRequestDigestV1(<redacted>)")
@@ -70,21 +88,24 @@ pub struct RequestProvenanceV1 {
     authorization: AuthorizationRevisionDigestV1,
     schema: ObservationSchemaDigestV1,
     normalized_request: CanonicalRequestDigestV1,
+    semantics: AuthenticatedRequestSemanticsDigestV1,
 }
 
 impl RequestProvenanceV1 {
-    /// Constructs provenance only inside the future authenticated request adapter.
+    /// Constructs provenance only inside the authenticated request adapter.
     pub(crate) const fn from_authenticated(
         principal: QueryPrincipalDigestV1,
         authorization: AuthorizationRevisionDigestV1,
         schema: ObservationSchemaDigestV1,
         normalized_request: CanonicalRequestDigestV1,
+        semantics: AuthenticatedRequestSemanticsDigestV1,
     ) -> Self {
         Self {
             principal,
             authorization,
             schema,
             normalized_request,
+            semantics,
         }
     }
 
@@ -97,12 +118,14 @@ impl RequestProvenanceV1 {
         AuthorizationRevisionDigestV1,
         ObservationSchemaDigestV1,
         CanonicalRequestDigestV1,
+        AuthenticatedRequestSemanticsDigestV1,
     ) {
         (
             self.principal,
             self.authorization,
             self.schema,
             self.normalized_request,
+            self.semantics,
         )
     }
 }
@@ -158,7 +181,7 @@ impl AuthorizedResolvedMutationV1 {
 pub struct AuditAuthorizationV1(RequestProvenanceV1);
 
 impl AuditAuthorizationV1 {
-    /// Derives audit authorization inside the future authorization adapter.
+    /// Derives audit authorization inside the authenticated request adapter.
     pub(crate) const fn from_authorized(provenance: RequestProvenanceV1) -> Self {
         Self(provenance)
     }

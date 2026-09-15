@@ -829,6 +829,31 @@ impl CanonicalNodeSemanticCodecV1 {
         Ok(body)
     }
 
+    /// Decodes the exact capability snapshot carried by a protected bootstrap.
+    pub(super) fn decode_protected_bootstrap_capabilities(
+        &self,
+        context: AuthenticatedEvidenceContextV1,
+        frame: &CanonicalNodeFrameV1<'_>,
+        current_unix_seconds: u64,
+    ) -> Result<NodeCapabilitySnapshotV1, InvalidMultiNodeProtocol> {
+        if frame.kind() != CanonicalNodeFrameKindV1::GetCapabilitiesResponse
+            || frame.frame_digest() != context.canonical_frame_digest()
+            || frame.binding_digest() != context.carrier_binding_digest()
+            || frame.audience_digest() != context.audience_digest()
+            || frame.disclosure_domain_digest() != context.disclosure_domain_digest()
+            || u32::try_from(frame.bytes().len())
+                .map_err(|_| InvalidMultiNodeProtocol::InvalidFrameLimits)?
+                != context.canonical_frame_bytes()
+            || !context.is_current_at(current_unix_seconds)
+        {
+            return Err(InvalidMultiNodeProtocol::SessionMismatch);
+        }
+        match self.decode_response(context, frame, current_unix_seconds)? {
+            NodeResponseBodyV1::Capabilities(snapshot) => Ok(*snapshot),
+            _ => Err(InvalidMultiNodeProtocol::MethodMismatch),
+        }
+    }
+
     fn encode_response(
         &self,
         body: &NodeResponseBodyV1,

@@ -25,9 +25,9 @@ use aos_sandbox_core::{
 use super::model::{
     EnvironmentDescriptorRoleV1, EnvironmentFacadeV1, EnvironmentGenerationManifestV1,
     EnvironmentInputCommitmentV1, EnvironmentManifestDigestV1, EnvironmentModelError,
-    EnvironmentPredecessorV1, EnvironmentTargetSystemV1, SelectedEnvironmentOutputV1,
-    MAXIMUM_ENVIRONMENT_INPUTS, MAXIMUM_INLINE_ENVIRONMENT_BYTES, MAXIMUM_SELECTED_OUTPUT_BYTES,
-    MAXIMUM_TARGET_SYSTEM_BYTES,
+    EnvironmentPredecessorV1, EnvironmentTargetSystemV1, MAXIMUM_ENVIRONMENT_INPUTS,
+    MAXIMUM_INLINE_ENVIRONMENT_BYTES, MAXIMUM_SELECTED_OUTPUT_BYTES, MAXIMUM_TARGET_SYSTEM_BYTES,
+    SelectedEnvironmentOutputV1,
 };
 
 const MAGIC: &[u8; 8] = b"AOSENVG1";

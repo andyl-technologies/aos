@@ -55,7 +55,13 @@ const HELLO_SIGNATURE_DOMAIN: &[u8] = b"aos-source-provider-hello-signature-v1\0
 const STATUS_SIGNATURE_DOMAIN: &[u8] = b"aos-source-provider-status-signature-v1\0";
 const SIGNED_REQUEST_DIGEST_DOMAIN: &[u8] = b"aos-source-provider-signed-request-v1\0";
 const SIGNED_HELLO_DIGEST_DOMAIN: &[u8] = b"aos-source-provider-signed-hello-v1\0";
+const SIGNED_RELEASE_RECEIPT_DIGEST_DOMAIN: &[u8] =
+    b"aos-source-provider-signed-release-receipt-v1\0";
 const SESSION_BINDING_DOMAIN: &[u8] = b"aos-source-provider-session-binding-v1\0";
+const PROVIDER_EXECUTION_COMMITMENT_DOMAIN: &[u8] =
+    b"aos-source-provider-execution-commitment-v1\0";
+const PROVIDER_RESPONSE_ARTIFACT_DOMAIN: &[u8] =
+    b"aos.sandbox.source-provider.ledger.response-artifact.v1\0";
 const RESPONSE_RESULT_DOMAIN: &[u8] = b"aos-source-provider-response-result-v1\0";
 const EMPTY_DESCRIPTOR_SET_DOMAIN: &[u8] = b"aos-source-provider-descriptor-set-v1\0";
 const SIGNED_MAGIC: &[u8; 8] = b"AOSSPX01";
@@ -73,6 +79,8 @@ pub enum SourceProviderKeyUsageV1 {
     RootMountRecord = 3,
     /// Authenticates provider statuses, leases, receipts, and inventories.
     ProviderOutcome = 4,
+    /// Authenticates provider catalog publications for one protected namespace.
+    CatalogPublisher = 5,
 }
 
 /// Binds a stable authority and key generation to one SourceProvider use.
@@ -164,6 +172,24 @@ impl SourceProviderSigningKeyV1 {
     #[must_use]
     pub const fn authority_digest(&self) -> ObjectDigest {
         self.authority_digest
+    }
+
+    /// Returns the stable signing-key ID.
+    #[must_use]
+    pub const fn key_id(&self) -> [u8; 16] {
+        self.key_id
+    }
+
+    /// Returns the signing-key generation.
+    #[must_use]
+    pub const fn key_generation(&self) -> u64 {
+        self.key_generation
+    }
+
+    /// Returns the Ed25519 public-key fingerprint.
+    #[must_use]
+    pub const fn public_key_digest(&self) -> ObjectDigest {
+        self.public_key_digest
     }
 
     /// Returns the key usage.
@@ -422,6 +448,15 @@ pub fn digest_release_receipt(value: &SourceReleaseReceiptV1) -> ObjectDigest {
     domain_digest(RELEASE_DIGEST_DOMAIN, &encode_release_receipt(value))
 }
 
+/// Computes the domain-separated digest of an exact signed release receipt.
+#[must_use]
+pub fn digest_signed_release_receipt(value: &SignedSourceReleaseReceiptV1) -> ObjectDigest {
+    domain_digest(
+        SIGNED_RELEASE_RECEIPT_DIGEST_DOMAIN,
+        &value.to_canonical_bytes(),
+    )
+}
+
 /// Computes the domain-separated digest of one provider inventory.
 #[must_use]
 pub fn digest_inventory(value: &SourceProviderInventoryV1) -> ObjectDigest {
@@ -454,6 +489,45 @@ pub fn source_provider_session_binding_v1(
     preimage.extend_from_slice(&(server.len() as u32).to_be_bytes());
     preimage.extend_from_slice(&server);
     domain_digest(SESSION_BINDING_DOMAIN, &preimage)
+}
+
+/// Commits one exact durable provider execution identity for recovery fencing.
+///
+/// The digest is nonauthorizing. Security custody must still prove that the
+/// committed process execution died while the exact protected session record
+/// remains current.
+#[must_use]
+pub fn provider_execution_commitment_v1(
+    boot_id: [u8; 16],
+    process_id: u32,
+    start_time_ticks: u64,
+    process_instance: [u8; 16],
+) -> ObjectDigest {
+    let mut preimage = Vec::with_capacity(44);
+    preimage.extend_from_slice(&boot_id);
+    preimage.extend_from_slice(&process_id.to_be_bytes());
+    preimage.extend_from_slice(&start_time_ticks.to_be_bytes());
+    preimage.extend_from_slice(&process_instance);
+    domain_digest(PROVIDER_EXECUTION_COMMITMENT_DOMAIN, &preimage)
+}
+
+/// Computes the canonical durable digest of one exact provider response frame.
+///
+/// The preimage is the literal domain, method byte, three zero bytes, response
+/// length in big-endian order, and exact canonical response bytes. The helper
+/// is pure and grants no replay, signing, or send authority.
+#[must_use]
+pub fn provider_response_artifact_digest_v1(
+    method: SourceProviderMethod,
+    bytes: &[u8],
+) -> ObjectDigest {
+    let mut hasher = Sha256::new();
+    hasher.update(PROVIDER_RESPONSE_ARTIFACT_DOMAIN);
+    hasher.update([method as u8]);
+    hasher.update([0; 3]);
+    hasher.update((bytes.len() as u32).to_be_bytes());
+    hasher.update(bytes);
+    ObjectDigest::from_bytes(hasher.finalize().into())
 }
 
 /// Commits exact optional nested-result bytes for one status and method.
@@ -570,7 +644,11 @@ pub fn sign_response_status(
 ///
 /// Returns [`SourceProviderSignatureError`] for wrong key use, weak key
 /// material, fingerprint mismatch, or an invalid signature.
-pub(crate) fn verify_response_status(
+///
+/// This check is purely cryptographic and grants no protected-state,
+/// currentness, persistence, effect, or send authority. Callers must resolve
+/// `public_key` through their own protected trust boundary.
+pub fn verify_response_status(
     value: &SignedSourceProviderStatusV1,
     public_key: &[u8; 32],
 ) -> Result<(), SourceProviderSignatureError> {
@@ -614,14 +692,18 @@ pub fn sign_request(
     })
 }
 
-/// Verifies one canonical Root Mount provider query.
+/// Verifies one canonical Root Mount provider query signature.
 ///
 /// # Errors
 ///
 /// Returns [`SourceProviderSignatureError`] for malformed subject, a holder
 /// authority that differs from the signer, a weak or mismatched key, or an
 /// invalid strict Ed25519 signature.
-pub(crate) fn verify_request(
+///
+/// This check is purely cryptographic and grants no protected-state,
+/// currentness, persistence, effect, or send authority. Callers must resolve
+/// `public_key` through their own protected trust boundary.
+pub fn verify_request(
     value: &SignedSourceProviderRequestV1,
     public_key: &[u8; 32],
 ) -> Result<(), SourceProviderSignatureError> {
@@ -707,7 +789,11 @@ macro_rules! typed_sign_verify {
         ///
         /// Returns [`SourceProviderSignatureError`] for wrong key use,
         /// authority/fingerprint mismatch, invalid key, or invalid signature.
-        pub(crate) fn $verify(
+        ///
+        /// This check is purely cryptographic and grants no protected-state,
+        /// currentness, persistence, effect, or send authority. Callers must
+        /// resolve `public_key` through their own protected trust boundary.
+        pub fn $verify(
             value: &$signed,
             public_key: &[u8; 32],
         ) -> Result<(), SourceProviderSignatureError> {
@@ -773,7 +859,10 @@ pub fn sign_provider_receipt(
     signing_key: &SigningKey,
 ) -> Result<SignedSourceProviderReceiptV1, SourceProviderSignatureError> {
     require_usage(&signer, SourceProviderKeyUsageV1::ProviderOutcome)?;
-    receipt_lease(&receipt)?;
+    let nested_lease = receipt_lease(&receipt)?;
+    if !provider_matches(nested_lease.subject().provider(), &signer) {
+        return Err(SourceProviderSignatureError::SignerMismatch);
+    }
     let signature = sign_bytes(
         RECEIPT_SIGNATURE_DOMAIN,
         2,
@@ -788,17 +877,27 @@ pub fn sign_provider_receipt(
     })
 }
 
-/// Verifies one successful receipt and its embedded provider export lease.
+/// Verifies one successful receipt and its embedded lease cross-links.
 ///
 /// # Errors
 ///
-/// Returns [`SourceProviderSignatureError`] for an invalid nested lease,
-/// signer/authority mismatch, wrong key/fingerprint, or invalid signature.
-pub(crate) fn verify_provider_receipt(
+/// Returns [`SourceProviderSignatureError`] for malformed or mismatched nested
+/// lease bytes, signer/authority mismatch, wrong key/fingerprint, or invalid
+/// receipt signature. The nested lease signature is deliberately not checked
+/// with `public_key`: it may name an older retained ProviderOutcome key.
+///
+/// This check is purely cryptographic and grants no protected-state,
+/// currentness, persistence, effect, or send authority. Callers must resolve
+/// `public_key` through their own protected trust boundary.
+pub fn verify_provider_receipt(
     value: &SignedSourceProviderReceiptV1,
     public_key: &[u8; 32],
 ) -> Result<(), SourceProviderSignatureError> {
     require_usage(&value.signer, SourceProviderKeyUsageV1::ProviderOutcome)?;
+    let nested_lease = receipt_lease(&value.receipt)?;
+    if !provider_matches(nested_lease.subject().provider(), &value.signer) {
+        return Err(SourceProviderSignatureError::SignerMismatch);
+    }
     verify_bytes(
         RECEIPT_SIGNATURE_DOMAIN,
         2,
@@ -807,6 +906,26 @@ pub(crate) fn verify_provider_receipt(
         &value.signature,
         public_key,
     )
+}
+
+/// Verifies one receipt and its nested lease with independently resolved keys.
+///
+/// # Errors
+///
+/// Returns [`SourceProviderSignatureError`] when either signature, signer,
+/// authority, fingerprint, canonical nested frame, or receipt/lease cross-link
+/// is invalid.
+///
+/// This check is purely cryptographic and grants no protected-state,
+/// currentness, persistence, effect, or send authority. Callers must resolve
+/// both keys through retained protected trust history.
+pub fn verify_provider_receipt_and_lease(
+    value: &SignedSourceProviderReceiptV1,
+    receipt_public_key: &[u8; 32],
+    lease_public_key: &[u8; 32],
+) -> Result<(), SourceProviderSignatureError> {
+    verify_provider_receipt(value, receipt_public_key)?;
+    verify_export_lease(&receipt_lease(&value.receipt)?, lease_public_key)
 }
 
 fn validate_request_subject(
@@ -1014,6 +1133,7 @@ pub(crate) fn decode_signer(
         2 => SourceProviderKeyUsageV1::ProviderHello,
         3 => SourceProviderKeyUsageV1::RootMountRecord,
         4 => SourceProviderKeyUsageV1::ProviderOutcome,
+        5 => SourceProviderKeyUsageV1::CatalogPublisher,
         _ => return Err(SourceProviderSignatureError::InvalidEnvelope),
     };
     if bytes[113..120].iter().any(|byte| *byte != 0) {

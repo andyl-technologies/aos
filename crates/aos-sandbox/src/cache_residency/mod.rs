@@ -21,10 +21,13 @@
 pub mod accounting;
 pub mod admission;
 pub mod catalog;
+mod controller_adapter;
 pub mod domain;
 pub mod eviction;
 pub mod format;
 pub mod pin;
+mod protected_journal;
+mod protected_owner;
 pub mod read_authority;
 pub mod recovery;
 pub mod scrub;
@@ -42,6 +45,10 @@ pub use catalog::{
     BackingObjectIdentityV1, CatalogEntryV1, CatalogError, CatalogPresenceV1, CoalescingOutcomeV1,
     ImmutableSealV1, LookupMemoLimitsV1, LookupMemoV1, LookupMemoValueV1, SealProfileV1,
     canonical_name_digest,
+};
+pub use controller_adapter::{
+    CacheResidencyAuthorityRequestV1, CacheResidencyControllerCommitV1,
+    CacheResidencyControllerRecordV1, cache_residency_controller_commit_v1,
 };
 pub use domain::{
     AuthorizedLookupKey, BackingIsolationV1, CacheAuthorityError, CacheAuthorityOwner,
@@ -66,6 +73,25 @@ pub use pin::{
     CachePinId, CachePinKindV1, CachePinLedgerV1, CachePinV1, PinCompactionFloorV1,
     PinDrainEvidenceV1, PinDrainOutcomeV1, PinError, ReleasedCachePinV1,
     decode_pin_compaction_floor, encode_pin_compaction_floor,
+};
+pub use protected_journal::{
+    AppliedCacheResidencyTransactionV1, CacheResidencyColdObservationV1,
+    CacheResidencyColdRecoveryV1, CacheResidencyCommitOutcomeV1, CacheResidencyOutcomeUnknownV1,
+    CacheResidencyPostcommitCapabilityV1, CacheResidencyProtectedJournalEnvelopeV1,
+    CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedJournalKeyV1,
+    CacheResidencyProtectedJournalProjectionV1, CacheResidencyProtectedJournalSchemaV1,
+    CacheResidencyProtectedJournalSnapshotV1, CacheResidencyProtectedJournalV1,
+    CacheResidencyProtectedRecordKindV1, CacheResidencyRecoveryV1, CacheResidencyReplayValidatorV1,
+    CacheResidencyTransactionKindV1, PreparedCacheResidencyTransactionV1,
+    ValidatedCacheResidencyPostcommitV1, cache_residency_protected_key_v1,
+};
+pub(crate) use protected_journal::{
+    CacheResidencyReplayPartitionEvidenceV1, cache_residency_reducer_envelope_v1,
+};
+pub use protected_owner::{
+    CacheResidencyAuthorizedControllerV1, CacheResidencyAuthorizedPayloadV1,
+    CacheResidencyProtectedColdOutcomeV1, CacheResidencyProtectedOpenReportV1,
+    CacheResidencyProtectedOwnerV1,
 };
 pub use read_authority::{
     CurrentReadAuthorityV1, DescriptorHandoffPlanV1, DescriptorHandoffReceiptV1,

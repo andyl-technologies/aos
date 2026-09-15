@@ -73,6 +73,10 @@ pub struct ScrubEvidenceV1 {
 }
 
 impl ScrubEvidenceV1 {
+    pub(crate) const fn authority_binding(&self) -> (CacheAuthorityScopeV1, ObjectDigest) {
+        (self.authority_scope, self.authority_record)
+    }
+
     /// Constructs evidence from repeated trusted physical observations.
     ///
     /// # Errors

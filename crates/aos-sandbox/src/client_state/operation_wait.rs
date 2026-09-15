@@ -12,8 +12,8 @@ use crate::controller_query::observation::{
     CheckedConditionObservationV1, CheckedOperationObservationV1,
 };
 use crate::controller_query::resource::{
-    operation_phase_can_follow, operation_progress_stage, CheckedOperationPhaseV1,
-    CheckedOperationResourceV1, CheckedResourceReferenceV1,
+    CheckedOperationPhaseV1, CheckedOperationResourceV1, CheckedResourceReferenceV1,
+    operation_phase_can_follow, operation_progress_stage,
 };
 
 /// Maximum operation observations in one wait.

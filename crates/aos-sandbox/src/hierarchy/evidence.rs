@@ -1,9 +1,10 @@
-//! Opaque evidence admitted by future trusted controller adapters.
+//! Opaque evidence admitted by protected replay and controller adapters.
 //!
 //! Public consumers can inspect these values but cannot construct them from
 //! request scalars. Crate-internal journal, signature, and inventory adapters
 //! are the only intended minting sites once the dormant integration is wired.
 
+use super::protected_evidence::ProtectedCurrentEvidenceAuthorityV1;
 use aos_sandbox_core::{
     AssignmentEpoch, AttachmentId, AttachmentSlotId, DesiredGeneration, ExportId, IncarnationId,
     NamespaceGeneration, NodeId, ObjectDescriptor, ObjectDigest, ProjectId, Revision, SandboxId,
@@ -33,7 +34,8 @@ pub struct VerifiedInspectionGrantV1 {
 
 impl VerifiedInspectionGrantV1 {
     /// Creates evidence only after a trusted adapter verifies current grant state.
-    pub(crate) fn from_verified_parts(
+    pub(super) fn from_verified_parts(
+        _authority: &ProtectedCurrentEvidenceAuthorityV1,
         project: ProjectId,
         observer: SandboxId,
         observer_generation: DesiredGeneration,
@@ -113,7 +115,8 @@ pub struct RetainedSnapshotManifestV1 {
 impl RetainedSnapshotManifestV1 {
     /// Creates evidence only after manifest verification and retention pinning.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_verified_parts(
+    pub(super) fn from_verified_parts(
+        _authority: &ProtectedCurrentEvidenceAuthorityV1,
         project: ProjectId,
         sandbox: SandboxId,
         snapshot: SnapshotId,
@@ -209,7 +212,8 @@ pub struct CurrentLiveInspectionObservationV1 {
 impl CurrentLiveInspectionObservationV1 {
     /// Creates evidence only after current assignment and inventory validation.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_verified_parts(
+    pub(super) fn from_verified_parts(
+        _authority: &ProtectedCurrentEvidenceAuthorityV1,
         project: ProjectId,
         sandbox: SandboxId,
         desired_generation: DesiredGeneration,
@@ -305,7 +309,8 @@ pub struct CurrentAssignmentEvidenceV1 {
 impl CurrentAssignmentEvidenceV1 {
     /// Creates evidence only after a trusted assignment observation is current.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_verified_parts(
+    pub(super) fn from_verified_parts(
+        _authority: &ProtectedCurrentEvidenceAuthorityV1,
         project: ProjectId,
         sandbox: SandboxId,
         desired_generation: DesiredGeneration,
@@ -406,7 +411,8 @@ pub struct RetainedViewSourceEvidenceV1 {
 impl RetainedViewSourceEvidenceV1 {
     /// Creates evidence only after catalog, export, and retention verification.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_verified_parts(
+    pub(super) fn from_verified_parts(
+        _authority: &ProtectedCurrentEvidenceAuthorityV1,
         project: ProjectId,
         owner: SandboxId,
         owner_generation: DesiredGeneration,
@@ -558,7 +564,8 @@ pub struct CurrentSlotInventoryEvidenceV1 {
 impl CurrentSlotInventoryEvidenceV1 {
     /// Creates evidence only after current descriptor-based inventory validation.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_verified_parts(
+    pub(super) fn from_verified_parts(
+        _authority: &ProtectedCurrentEvidenceAuthorityV1,
         sandbox: SandboxId,
         incarnation: IncarnationId,
         namespace_generation: NamespaceGeneration,
@@ -649,7 +656,8 @@ pub struct VerifiedAttachmentAuthorityV1 {
 
 impl VerifiedAttachmentAuthorityV1 {
     /// Creates evidence only after policy, lease, and request authorization.
-    pub(crate) fn from_verified_parts(
+    pub(super) fn from_verified_parts(
+        _authority: &ProtectedCurrentEvidenceAuthorityV1,
         attachment: AttachmentId,
         desired_generation: DesiredGeneration,
         request_commitment: ObjectDigest,
@@ -707,7 +715,8 @@ pub struct VerifiedDetachAuthorityV1 {
 
 impl VerifiedDetachAuthorityV1 {
     /// Creates evidence only after current detach authorization.
-    pub(crate) fn from_verified_parts(
+    pub(super) fn from_verified_parts(
+        _authority: &ProtectedCurrentEvidenceAuthorityV1,
         attachment: AttachmentId,
         attachment_generation: DesiredGeneration,
         request_commitment: ObjectDigest,
@@ -761,7 +770,8 @@ pub struct VerifiedDetachCompletionV1 {
 
 impl VerifiedDetachCompletionV1 {
     /// Creates evidence only after current inventory proves terminal absence.
-    pub(crate) const fn from_verified_parts(
+    pub(super) const fn from_verified_parts(
+        _authority: &ProtectedCurrentEvidenceAuthorityV1,
         project: ProjectId,
         tree_generation: Revision,
         attachment: AttachmentId,
@@ -845,7 +855,8 @@ pub struct VerifiedRealizationTransactionCompletionV1 {
 
 impl VerifiedRealizationTransactionCompletionV1 {
     /// Creates evidence only after every action has a verified terminal head.
-    pub(crate) const fn from_verified_parts(
+    pub(super) const fn from_verified_parts(
+        _authority: &ProtectedCurrentEvidenceAuthorityV1,
         project: ProjectId,
         tree_generation: Revision,
         plan_commitment: ObjectDigest,

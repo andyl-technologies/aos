@@ -16,6 +16,58 @@ use aos_sandbox_core::{
 use super::*;
 
 const MAGIC: &[u8; 10] = b"AOSGDSNP01";
+const ADMISSION_MAGIC: &[u8; 9] = b"AOSGADM01";
+const CURRENT_MAGIC: &[u8; 9] = b"AOSGCUR01";
+const OUTCOME_MAGIC: &[u8; 9] = b"AOSGOUT01";
+const WORKER_DEATH_MAGIC: &[u8; 9] = b"AOSGDEA01";
+
+pub(super) fn decode_protected_admission(
+    bytes: &[u8],
+) -> Result<GuardianEffectAdmissionV1, GuardianReducerError> {
+    let mut input = Reader::new(bytes);
+    if input.array::<9>()? != *ADMISSION_MAGIC {
+        return Err(GuardianReducerError::ObservationMismatch);
+    }
+    let value = decode_admission(&mut input)?;
+    input.finish()?;
+    Ok(value)
+}
+
+pub(super) fn decode_protected_current(
+    bytes: &[u8],
+) -> Result<ProtectedGuardianCurrentV1, GuardianReducerError> {
+    let mut input = Reader::new(bytes);
+    if input.array::<9>()? != *CURRENT_MAGIC {
+        return Err(GuardianReducerError::ObservationMismatch);
+    }
+    let value = decode_current(&mut input)?;
+    input.finish()?;
+    Ok(value)
+}
+
+pub(super) fn decode_protected_outcome(
+    bytes: &[u8],
+) -> Result<ProtectedGuardianOutcomeV1, GuardianReducerError> {
+    let mut input = Reader::new(bytes);
+    if input.array::<9>()? != *OUTCOME_MAGIC {
+        return Err(GuardianReducerError::ObservationMismatch);
+    }
+    let value = decode_outcome(&mut input)?;
+    input.finish()?;
+    Ok(value)
+}
+
+pub(super) fn decode_protected_worker_death(
+    bytes: &[u8],
+) -> Result<ProtectedGuardianWorkerDeathSupersessionV1, GuardianReducerError> {
+    let mut input = Reader::new(bytes);
+    if input.array::<9>()? != *WORKER_DEATH_MAGIC {
+        return Err(GuardianReducerError::ObservationMismatch);
+    }
+    let value = decode_supersession(&mut input)?;
+    input.finish()?;
+    Ok(value)
+}
 
 pub(super) fn encode_snapshot(
     snapshot: &GuardianRecoverySnapshotV1,

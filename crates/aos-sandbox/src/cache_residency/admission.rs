@@ -45,6 +45,22 @@ pub struct SourceAuthorizationV1 {
 }
 
 impl SourceAuthorizationV1 {
+    pub(crate) fn authority_binding(
+        &self,
+        partition: PhysicalPartitionId,
+    ) -> Result<(CacheAuthorityScopeV1, ObjectDigest), AdmissionError> {
+        let scope = CacheAuthorityScopeV1::new(
+            partition,
+            source_authority_subject(&self.descriptor, self.source_revision, self.source_seal),
+            None,
+            self.source_revision,
+            partition.backing().root(),
+            self.authority_generation,
+            self.valid_until,
+        )?;
+        Ok((scope, self.release_digest))
+    }
+
     pub(crate) fn recover_historical(
         release_digest: ObjectDigest,
         source_revision: ObjectDigest,
@@ -183,6 +199,18 @@ pub struct ImmutableAdmissionPlanV1 {
 }
 
 impl ImmutableAdmissionPlanV1 {
+    pub(crate) fn authority_scope(&self) -> Result<CacheAuthorityScopeV1, AdmissionError> {
+        Ok(CacheAuthorityScopeV1::new(
+            self.partition,
+            self.digest,
+            Some(self.operation),
+            self.digest,
+            self.root_custody,
+            self.root_generation,
+            self.source.valid_until,
+        )?)
+    }
+
     /// Constructs a validated immutable admission plan.
     ///
     /// # Errors
@@ -846,15 +874,7 @@ impl CacheAdmissionStateV1 {
         }
         plan.source
             .validate_current(owner, source_capability, plan.partition, now)?;
-        let admission_scope = CacheAuthorityScopeV1::new(
-            plan.partition,
-            plan.digest,
-            Some(plan.operation),
-            plan.digest,
-            plan.root_custody,
-            plan.root_generation,
-            plan.source.valid_until,
-        )?;
+        let admission_scope = plan.authority_scope()?;
         owner.validate_for_effect_at(
             admission_capability,
             CacheAuthorityPurposeV1::Admission,
