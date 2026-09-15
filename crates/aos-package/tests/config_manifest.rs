@@ -41,10 +41,10 @@ fn shared_fixture_inputs_are_exactly_the_five_declared_inputs() {
         keys,
         [
             "base_lib",
-            "config_modules",
             "evaluator",
             "host_nix",
-            "instance_facts"
+            "instance_facts",
+            "package_modules"
         ]
     );
 }

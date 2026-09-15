@@ -855,18 +855,12 @@ in {
       emittedUserStoreRecords = lib.concatMap (user:
         storeRecordsInString userOwnership.${user.name} "${user.home}\n${user.shell}")
       users;
-      emittedProjectionStoreRecords = lib.concatLists (lib.mapAttrsToList (package: binding:
-        storeRecordsInString package (builtins.toJSON {
-          inherit (binding) desired credentials;
-        }))
-      exposeProjectionBindings);
       storeRecords =
         packageStoreRecords
         ++ etcStoreRecords
         ++ emittedEtcStoreRecords
         ++ emittedJobStoreRecords
-        ++ emittedUserStoreRecords
-        ++ emittedProjectionStoreRecords;
+        ++ emittedUserStoreRecords;
       storePaths =
         builtins.sort (a: b: a < b)
         (lib.unique (builtins.map (record: record.path) storeRecords));
@@ -931,15 +925,6 @@ in {
         presets = presetOwnership;
         storePaths = storeOwnership;
       };
-      exposeProjectionBindings = builtins.listToAttrs (lib.concatMap (package:
-        if
-          builtins.hasAttr package config
-          && config.${package} ? _aosExposeConfigProjection
-        then [
-          (lib.nameValuePair package config.${package}._aosExposeConfigProjection)
-        ]
-        else [])
-      provenance.packageNames);
     in ({
         schema = "aos.config-manifest/v1";
         inherit etc users presets storePaths;
@@ -957,14 +942,8 @@ in {
               store_path = evaluatorPath;
               store_hash = evaluatorStoreHash;
             };
-            config_modules = {
-              closure_hash = hashIdentity "[]";
-              count = 0;
-              store_paths = [];
-              nar_hashes = [];
-              package_names = [];
-              origins = [];
-              module_abi_compat = [];
+            package_modules = {
+              modules = [];
             };
             host_nix = {
               content_hash = hashIdentity "{}";
@@ -985,14 +964,9 @@ in {
         packages = [];
         packageOutputs = {};
         graph.edges = {};
-        config = builtins.mapAttrs (_: binding: binding.desired) exposeProjectionBindings;
-        credentials = builtins.mapAttrs (_: binding: binding.credentials) exposeProjectionBindings;
+        config = {};
+        credentials = {};
         inherit ownership;
-      }
-      // lib.optionalAttrs (exposeProjectionBindings != {}) {
-        configProjectionBindings = builtins.mapAttrs (_: binding:
-          builtins.removeAttrs binding ["desired" "credentials"])
-        exposeProjectionBindings;
       });
 
     # Route builder-side systemd assembly through the emitted manifest. The
