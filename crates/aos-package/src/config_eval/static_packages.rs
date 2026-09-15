@@ -211,7 +211,7 @@ fn host_expectation() -> Result<StaticAbilityContractExpectation> {
     })
 }
 
-fn checked_host_selection() -> Result<(
+pub(crate) fn checked_host_selection() -> Result<(
     aos_ability_model::ArtifactReference,
     CheckedStaticAbilityContract,
 )> {

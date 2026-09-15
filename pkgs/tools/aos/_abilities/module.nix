@@ -9,6 +9,7 @@
     ./package-attestation-quote.nix
     ./package-profile-convergence.nix
     ./provisioning-metadata.nix
+    ./registry-snapshot.nix
     ./release-coordinator/module.nix
   ];
 }
