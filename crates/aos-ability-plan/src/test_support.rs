@@ -4,6 +4,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
+use aos_ability_model::ArtifactReference;
 use aos_ability_model::document::PackageSubject;
 use aos_ability_model::{
     AbilityValue, AggregationContract, AggregationScope, BindingId, DeploymentObligation,
@@ -651,7 +653,20 @@ impl CompositionEvaluator for EmptyTransitionEvaluator {
     }
 }
 
-fn key(value: &str) -> LocalKey {
+#[cfg(test)]
+pub(crate) fn module_locator(artifact: ArtifactReference) -> ModuleLocator {
+    ModuleLocator {
+        artifact,
+        path: RelativePath::new("default.nix").expect("valid static fixture module path"),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn ability_value(value: serde_json::Value) -> AbilityValue {
+    AbilityValue::new(value).expect("test value must use the canonical ability dialect")
+}
+
+pub(crate) fn key(value: &str) -> LocalKey {
     LocalKey::new(value).expect("valid static planning fixture key")
 }
 

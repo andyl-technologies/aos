@@ -1003,11 +1003,11 @@ pub fn checked_planned_provider_chain() -> CheckedEffectPlan {
         .expect("static planned-provider chain must pass production validation")
 }
 
-fn operation_node(name: &str) -> PlanNodeKey {
+pub(crate) fn operation_node(name: &str) -> PlanNodeKey {
     PlanNodeKey::Operation { key: scoped(name) }
 }
 
-fn scoped(name: &str) -> ScopedOperationKey {
+pub(crate) fn scoped(name: &str) -> ScopedOperationKey {
     ScopedOperationKey {
         scope: ScopePath::root(),
         key: key(name),
@@ -1179,11 +1179,11 @@ pub fn test_manager_provider(artifact: ArtifactReference) -> ProviderImplementat
     }
 }
 
-fn key(value: &str) -> LocalKey {
+pub(crate) fn key(value: &str) -> LocalKey {
     LocalKey::new(value).expect("valid static test key")
 }
 
-fn digest(digit: char) -> Sha256Digest {
+pub(crate) fn digest(digit: char) -> Sha256Digest {
     Sha256Digest::parse(&format!("sha256:{}", digit.to_string().repeat(64)))
         .expect("valid static test digest")
 }

@@ -5,8 +5,8 @@ use std::num::NonZeroU32;
 
 use aos_ability_model::document::{DesiredInstance, PackageSubject};
 use aos_ability_model::{
-    AbilityValue, AccessMode, AggregationContract, AggregationScope, ArtifactReference,
-    AuthorityGrant, BindingRequest, DeploymentObligation, DesiredStateDocument, ExportDeclaration,
+    AbilityValue, AccessMode, AggregationContract, AggregationScope, AuthorityGrant,
+    BindingRequest, DeploymentObligation, DesiredStateDocument, ExportDeclaration,
     GuaranteeDeclaration, HandlerDescriptor, InstanceId, InterfaceName, LocalKey, ModuleLocator,
     ObligationKind, PackageDocument, PackageImplementation, ProviderImplementation,
     ProviderImplementationReference, RelativePath, RequestId, RequiredFeature,
@@ -16,6 +16,7 @@ use aos_ability_model::{
 use aos_ability_validate::ValidationContext;
 use aos_contract::Sha256Digest;
 
+use crate::test_support::{ability_value as value, key, module_locator};
 use crate::{
     BindingCandidate, CandidateOrder, CompositionContext, CompositionError, CompositionEvaluator,
     CompositionFragment, CompositionLimits, EnabledProviderSelection, EvaluationError,
@@ -1426,17 +1427,6 @@ fn empty_grant(principal: InstanceId) -> AuthorityGrant {
     }
 }
 
-fn value(value: serde_json::Value) -> AbilityValue {
-    AbilityValue::new(value).expect("test value must use the canonical ability dialect")
-}
-
-fn module_locator(artifact: ArtifactReference) -> ModuleLocator {
-    ModuleLocator {
-        artifact,
-        path: RelativePath::new("default.nix").expect("valid test module path"),
-    }
-}
-
 fn two_obligations(request: &RequestId) -> Vec<DeploymentObligation> {
     vec![
         DeploymentObligation {
@@ -1454,10 +1444,6 @@ fn two_obligations(request: &RequestId) -> Vec<DeploymentObligation> {
             description: "external provider is unavailable".to_string(),
         },
     ]
-}
-
-fn key(value: &str) -> LocalKey {
-    LocalKey::new(value).expect("valid static planner-test key")
 }
 
 fn test_feature_guarantees() -> Vec<aos_ability_model::GuaranteeKey> {
