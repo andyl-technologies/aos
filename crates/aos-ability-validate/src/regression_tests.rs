@@ -1837,7 +1837,7 @@ fn advisory_requirement(
 ) -> RequirementDeclaration {
     RequirementDeclaration {
         alias: key("advisory"),
-        accepted_interfaces: vec![interface.clone()],
+        accepted_interfaces: vec![interface.clone().into()],
         methods: vec![key("observe")],
         guarantees: Vec::new(),
         strength: RequirementStrength::Advisory,

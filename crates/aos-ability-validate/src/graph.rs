@@ -200,6 +200,16 @@ impl ValidationContext {
         self.interfaces.get(key)
     }
 
+    /// Returns authenticated interfaces admitted by one provider-neutral selector.
+    pub fn interfaces_matching(
+        &self,
+        selector: &aos_ability_model::InterfaceSelector,
+    ) -> impl Iterator<Item = (&InterfaceKey, &InterfaceDocument)> {
+        self.interfaces
+            .iter()
+            .filter(|(key, _)| selector.matches(key))
+    }
+
     /// Validates one package contract against its retained public interfaces.
     ///
     /// Interfaces named only by unresolved requirements may be absent because

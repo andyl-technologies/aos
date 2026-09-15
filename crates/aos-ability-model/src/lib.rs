@@ -50,8 +50,8 @@ pub use document::{
 };
 pub use identity::{
     AggregateId, EnvironmentId, ExecutionStage, IncarnationId, InstanceId, InterfaceKey,
-    InterfaceName, LocalKey, OperationId, PlanId, RelativePath, RequestId, ResourceId, RevisionId,
-    ScopePath, ScopedOperationKey, TransactionId,
+    InterfaceName, InterfaceSelector, LocalKey, OperationId, PlanId, RelativePath, RequestId,
+    ResourceId, RevisionId, ScopePath, ScopedOperationKey, TransactionId,
 };
 pub use interface::*;
 pub use limits::{ABILITY_LIMITS_V1, LimitProfile};

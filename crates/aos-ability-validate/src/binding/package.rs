@@ -27,7 +27,12 @@ pub(super) fn validate_declared_root_requests(
             .get(&request_id)
             .map(|index| &requests[*index])
             .is_some_and(|request| {
-                request.accepted_interfaces == requirement.accepted_interfaces
+                request.accepted_interfaces.len() == requirement.accepted_interfaces.len()
+                    && request
+                        .accepted_interfaces
+                        .iter()
+                        .zip(&requirement.accepted_interfaces)
+                        .all(|(interface, selector)| selector.matches(interface))
                     && request.methods == requirement.methods
                     && request.guarantees == requirement.guarantees
             });
@@ -294,7 +299,8 @@ fn validate_requirement(
                 DiagnosticClass::IncompatibleInterface,
                 DiagnosticPhase::Binding,
                 path.child("accepted_interfaces").components().to_vec(),
-                "package requirement must name at least one exact accepted interface".to_string(),
+                "package requirement must name at least one accepted interface selector"
+                    .to_string(),
             ),
         );
     }
@@ -310,7 +316,7 @@ fn validate_requirement(
         diagnostics,
     );
     for interface in &requirement.accepted_interfaces {
-        if !allow_external_interfaces && context.interface(interface).is_none() {
+        if !allow_external_interfaces && context.interfaces_matching(interface).next().is_none() {
             push_diagnostic(
                 diagnostics,
                 diagnostic(
@@ -350,8 +356,8 @@ fn validate_requirement_fallback(
     path: &SchemaPath,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    for interface_key in &requirement.accepted_interfaces {
-        let Some(interface) = context.interface(interface_key) else {
+    for selector in &requirement.accepted_interfaces {
+        let Some((_, interface)) = context.interfaces_matching(selector).next() else {
             continue;
         };
         if fallback.outputs.len() != interface.interface.outputs.len()

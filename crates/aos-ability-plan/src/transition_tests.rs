@@ -1980,7 +1980,7 @@ fn lifecycle_planning_snapshot(
         let implementation = &mut pure_package.implementation.providers[0];
         implementation.requirements = vec![RequirementDeclaration {
             alias: manager_alias.clone(),
-            accepted_interfaces: vec![interface.clone()],
+            accepted_interfaces: vec![interface.clone().into()],
             methods: vec![key("observe"), key("start")],
             guarantees: stage_guarantees.clone(),
             strength: RequirementStrength::Required,

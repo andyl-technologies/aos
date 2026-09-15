@@ -16,11 +16,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 
-use aos_ability_model::{RequiredFeature, ABILITY_LIMITS_V1};
-use aos_contract::limits::JsonLimits;
+use aos_ability_model::{ABILITY_LIMITS_V1, RequiredFeature};
 use aos_contract::Sha256Digest;
+use aos_contract::limits::JsonLimits;
 use aos_doc_model::{
-    ability_reference_supported_features, PackageAbilityReference, MAX_ABILITY_REFERENCE_BYTES,
+    MAX_ABILITY_REFERENCE_BYTES, PackageAbilityReference, ability_reference_supported_features,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -343,11 +343,29 @@ impl ReferenceInspectionView {
         }
 
         for requirement in &reference.requirements {
-            for key in &requirement.accepted_interfaces {
-                let node_key = NodeKey::Interface(key.clone());
-                nodes
-                    .entry(node_key.clone())
-                    .or_insert_with(|| InspectionNode::InterfaceReference { key: key.clone() });
+            for selector in &requirement.accepted_interfaces {
+                let retained = reference.interfaces.values().find_map(|document| {
+                    let key = document.interface_key().ok()?;
+                    selector.matches(&key).then_some((key, document))
+                });
+                let node_key = if let Some((key, document)) = retained {
+                    let node_key = NodeKey::Interface(key.clone());
+                    nodes
+                        .entry(node_key.clone())
+                        .or_insert_with(|| InspectionNode::Interface {
+                            key,
+                            descriptor: document.interface.clone(),
+                        });
+                    node_key
+                } else {
+                    let node_key = NodeKey::InterfaceSelector(selector.clone());
+                    nodes.entry(node_key.clone()).or_insert_with(|| {
+                        InspectionNode::InterfaceReference {
+                            selector: selector.clone(),
+                        }
+                    });
+                    node_key
+                };
                 edges.insert(InspectionEdge {
                     from: package.clone(),
                     to: node_key,
@@ -600,8 +618,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn public_reference_query_retains_shared_identity_relations_and_limits(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn public_reference_query_retains_shared_identity_relations_and_limits()
+    -> Result<(), Box<dyn std::error::Error>> {
         let reference = reference();
         let input = ReferenceInspectionInput::new(reference.clone())?;
         let input_bytes = input.canonical_bytes()?;
@@ -642,8 +660,8 @@ mod tests {
     }
 
     #[test]
-    fn canonical_reference_query_matches_the_cross_frontend_golden_slice(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn canonical_reference_query_matches_the_cross_frontend_golden_slice()
+    -> Result<(), Box<dyn std::error::Error>> {
         let input_bytes =
             include_bytes!("../../../tests/abilities/fixtures/reference-inspection-input.json");
         let query_bytes =

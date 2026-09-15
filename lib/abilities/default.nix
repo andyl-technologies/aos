@@ -466,7 +466,17 @@
     left.name
     == right.name
     && left.abi == right.abi
-    && left.descriptor == right.descriptor;
+    && (!(right ? descriptor) || left.descriptor == right.descriptor);
+
+  interfaceSelectorMatches = selector: interface: sameInterface interface selector;
+
+  interfaceSelector = args: let
+    checked = requireAttrs "interface selector" ["name" "abi"] args;
+  in {
+    interface = requireQualifiedName "interface selector name" checked.name;
+    abi = requireU32Positive "interface selector ABI" checked.abi;
+    descriptor = null;
+  };
 
   normalizeRequirement = alias: value: let
     checked =
@@ -492,10 +502,17 @@
     else {
       alias = requireLocalKey "requirement alias" alias;
       accepted_interfaces = [
-        (interfaceKey {
+        ({
           name = checked.interface;
-          inherit (checked) abi descriptor;
-        })
+          inherit (checked) abi;
+        }
+        // (
+          if (checked.descriptor or null) == null
+          then {}
+          else {
+            descriptor = requireDigest "requirement '${alias}' interface descriptor" checked.descriptor;
+          }
+        ))
       ];
       methods = uniqueSortedStrings "requirement '${alias}' methods" checked.methods;
       guarantees = canonicalGuarantees "requirement '${alias}' guarantees" (checked.guarantees or []);
@@ -1536,8 +1553,10 @@ in rec {
     descriptorFor
     guaranteeIdentity
     interfaceIdentity
+    interfaceSelector
     interfaceDocumentFromDeclaration
     interfaceDeclarationFromDocument
+    interfaceSelectorMatches
     ;
   types = abilityTypes;
   interfaces = rec {

@@ -479,6 +479,41 @@ pub struct InterfaceKey {
     pub descriptor: Sha256Digest,
 }
 
+/// Selects a provider-neutral interface by ABI and, when known, exact semantics.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InterfaceSelector {
+    /// Names the interface within its namespace.
+    pub name: InterfaceName,
+    /// Identifies the caller-visible ABI family.
+    pub abi: NonZeroU32,
+    /// Pins exact semantics when the declaring package owns the interface document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor: Option<Sha256Digest>,
+}
+
+impl InterfaceSelector {
+    /// Reports whether this selector admits one authenticated interface key.
+    #[must_use]
+    pub fn matches(&self, interface: &InterfaceKey) -> bool {
+        self.name == interface.name
+            && self.abi == interface.abi
+            && self
+                .descriptor
+                .is_none_or(|descriptor| descriptor == interface.descriptor)
+    }
+}
+
+impl From<InterfaceKey> for InterfaceSelector {
+    fn from(interface: InterfaceKey) -> Self {
+        Self {
+            name: interface.name,
+            abi: interface.abi,
+            descriptor: Some(interface.descriptor),
+        }
+    }
+}
+
 /// Returns the explicit canonical ordering for environment identities.
 #[must_use]
 pub fn compare_environment_ids(left: &EnvironmentId, right: &EnvironmentId) -> Ordering {
@@ -578,6 +613,40 @@ mod tests {
         assert!(InterfaceName::new("nginx.virtual-host").is_ok());
         assert!(InterfaceName::new("virtual-host").is_err());
         assert!(InterfaceName::new("nginx..virtual-host").is_err());
+    }
+
+    #[test]
+    fn interface_selectors_support_provider_neutral_and_exact_matching() {
+        let name = InterfaceName::new("aos.network-ingress-policy").expect("valid interface");
+        let first_descriptor = Sha256Digest::parse(
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .expect("valid digest");
+        let second_descriptor = Sha256Digest::parse(
+            "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        )
+        .expect("valid digest");
+        let first = InterfaceKey {
+            name: name.clone(),
+            abi: NonZeroU32::new(1).expect("nonzero ABI"),
+            descriptor: first_descriptor.clone(),
+        };
+        let second = InterfaceKey {
+            name: name.clone(),
+            abi: NonZeroU32::new(1).expect("nonzero ABI"),
+            descriptor: second_descriptor,
+        };
+        let provider_neutral = InterfaceSelector {
+            name,
+            abi: NonZeroU32::new(1).expect("nonzero ABI"),
+            descriptor: None,
+        };
+        let exact = InterfaceSelector::from(first.clone());
+
+        assert!(provider_neutral.matches(&first));
+        assert!(provider_neutral.matches(&second));
+        assert!(exact.matches(&first));
+        assert!(!exact.matches(&second));
     }
 
     #[test]

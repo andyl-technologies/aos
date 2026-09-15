@@ -840,7 +840,12 @@ fn configure_oscillating_requirement(fixture: &mut PlannerFixture) -> Oscillatin
     let provider_implementation = &mut package.implementation.providers[0];
     provider_implementation.requirements = vec![RequirementDeclaration {
         alias: lower_alias,
-        accepted_interfaces: lower_request.accepted_interfaces.clone(),
+        accepted_interfaces: lower_request
+            .accepted_interfaces
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect(),
         methods: lower_request.methods.clone(),
         guarantees: Vec::new(),
         strength: RequirementStrength::Advisory,
@@ -950,7 +955,12 @@ fn configure_recursive_fallback(fixture: &mut PlannerFixture) -> RecursiveFallba
     let recursive_implementation = &mut recursive_package.implementation.providers[0];
     recursive_implementation.requirements = vec![RequirementDeclaration {
         alias: lower_alias,
-        accepted_interfaces: lower_request.accepted_interfaces.clone(),
+        accepted_interfaces: lower_request
+            .accepted_interfaces
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect(),
         methods: lower_request.methods.clone(),
         guarantees: Vec::new(),
         strength: RequirementStrength::Required,

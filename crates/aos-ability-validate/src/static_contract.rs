@@ -956,7 +956,7 @@ mod tests {
             .expect("fixture interface must have an exact key");
         package.requirements = vec![RequirementDeclaration {
             alias: LocalKey::new("package-required").expect("fixture alias must be valid"),
-            accepted_interfaces: vec![accepted_interface.clone()],
+            accepted_interfaces: vec![accepted_interface.clone().into()],
             methods: Vec::new(),
             guarantees: Vec::new(),
             strength: RequirementStrength::Required,
@@ -966,7 +966,7 @@ mod tests {
         let provider = &mut package.implementation.providers[0];
         provider.requirements = vec![RequirementDeclaration {
             alias: LocalKey::new("provider-required").expect("fixture alias must be valid"),
-            accepted_interfaces: vec![accepted_interface],
+            accepted_interfaces: vec![accepted_interface.into()],
             methods: Vec::new(),
             guarantees: Vec::new(),
             strength: RequirementStrength::Required,

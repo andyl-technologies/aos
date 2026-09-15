@@ -393,7 +393,9 @@
             lib.abilities.interfaceDocumentFromDeclaration interface
           );
         in
-          builtins.elem identity requirement.accepted_interfaces)
+          builtins.any
+          (selector: lib.abilities.interfaceSelectorMatches selector identity)
+          requirement.accepted_interfaces)
         (builtins.attrValues semanticInterfaces);
   in
     lib.abilities.types.localKey.check child.localRequestKey
@@ -418,7 +420,9 @@
     in
       internalRequirement
       != null
-      && builtins.elem interfaceIdentity internalRequirement.requirement.accepted_interfaces
+      && builtins.any
+      (selector: lib.abilities.interfaceSelectorMatches selector interfaceIdentity)
+      internalRequirement.requirement.accepted_interfaces
       && builtins.all (method: builtins.elem method entry.implementation.methods) internalRequirement.requirement.methods
       && builtins.all (guarantee: builtins.elem guarantee entry.implementation.guarantees) internalRequirement.requirement.guarantees
       && entry.interface.requestType.check entry.request.parameters)

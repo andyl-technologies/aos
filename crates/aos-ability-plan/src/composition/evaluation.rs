@@ -471,7 +471,13 @@ fn validate_fragment(
         if request.id.scope != child_scope {
             mismatches.push("scope".to_string());
         }
-        if request.accepted_interfaces != requirement.accepted_interfaces {
+        if request.accepted_interfaces.len() != requirement.accepted_interfaces.len()
+            || !request
+                .accepted_interfaces
+                .iter()
+                .zip(&requirement.accepted_interfaces)
+                .all(|(interface, selector)| selector.matches(interface))
+        {
             mismatches.push("interfaces".to_string());
         }
         if request.methods != requirement.methods {

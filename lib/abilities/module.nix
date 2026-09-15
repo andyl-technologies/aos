@@ -241,6 +241,14 @@
   lifetimeType = abilityTypes.lifetime;
 
   interfaceKeyType = abilityTypes.interfaceKey;
+  interfaceSelectorType = strictSubmodule {
+    name = mkOption {type = qualifiedNameType;};
+    abi = mkOption {type = positiveU32Type;};
+    descriptor = mkOption {
+      type = moduleTypes.nullOr digestType;
+      default = null;
+    };
+  };
   uniqueValues = values:
     builtins.length values
     == builtins.length (builtins.attrNames (builtins.listToAttrs (builtins.map (value: {
@@ -394,7 +402,7 @@
       default = [];
     };
     guarantees = mkOption {
-      type = moduleTypes.listOf guaranteeReferenceType;
+      type = canonicalRequirementListType guaranteeReferenceType;
       default = [];
     };
     outcome = mkOption {type = authoredOutcomeType;};
@@ -444,7 +452,7 @@
     lifecycle = mkOption {type = authoredLifecycleType;};
     aggregation = mkOption {type = authoredAggregationType;};
     guarantees = mkOption {
-      type = moduleTypes.listOf guaranteeReferenceType;
+      type = canonicalRequirementListType guaranteeReferenceType;
       default = [];
     };
     requiredFeatures = mkOption {
@@ -464,7 +472,7 @@
 
   projectedRequirementType = strictSubmodule {
     alias = mkOption {type = localKeyType;};
-    accepted_interfaces = mkOption {type = moduleTypes.listOf interfaceKeyType;};
+    accepted_interfaces = mkOption {type = moduleTypes.listOf interfaceSelectorType;};
     methods = mkOption {
       type = moduleTypes.listOf localKeyType;
       default = [];
@@ -489,13 +497,13 @@
 
   implementationRequirementType = strictSubmodule {
     alias = mkOption {type = localKeyType;};
-    accepted_interfaces = mkOption {type = moduleTypes.listOf interfaceKeyType;};
+    accepted_interfaces = mkOption {type = moduleTypes.listOf interfaceSelectorType;};
     methods = mkOption {
       type = moduleTypes.listOf localKeyType;
       default = [];
     };
     guarantees = mkOption {
-      type = moduleTypes.listOf guaranteeReferenceType;
+      type = canonicalRequirementListType guaranteeReferenceType;
       default = [];
     };
     strength = mkOption {
@@ -575,7 +583,7 @@
       identity.name
       == requirement.interface
       && identity.abi == requirement.abi
-      && identity.descriptor == requirement.descriptor)
+      && (requirement.descriptor == null || identity.descriptor == requirement.descriptor))
     (builtins.attrValues configuredInterfaces));
   typeAccepts = optionType: value:
     (builtins.tryEval (builtins.deepSeq
@@ -658,7 +666,7 @@
       description = "Exact interface methods supported by this implementation.";
     };
     guarantees = mkOption {
-      type = moduleTypes.listOf guaranteeReferenceType;
+      type = canonicalRequirementListType guaranteeReferenceType;
       default = [];
       description = "Exact interface guarantees supplied by this implementation.";
     };
@@ -815,8 +823,9 @@
       description = "Required interface ABI.";
     };
     descriptor = mkOption {
-      type = digestType;
-      description = "Exact accepted interface descriptor.";
+      type = moduleTypes.nullOr digestType;
+      default = null;
+      description = "Optional exact semantic pin for a package-owned interface.";
     };
     methods = mkOption {
       type = canonicalRequirementListType localKeyType;
@@ -824,7 +833,7 @@
       description = "Interface methods the consumer may invoke.";
     };
     guarantees = mkOption {
-      type = moduleTypes.listOf guaranteeReferenceType;
+      type = canonicalRequirementListType guaranteeReferenceType;
       default = [];
       description = "Guarantees the selected implementation must provide.";
     };

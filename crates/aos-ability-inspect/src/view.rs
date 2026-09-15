@@ -22,9 +22,10 @@ use aos_ability_model::document::ProviderState;
 use aos_ability_model::{
     AbilityActivationMode, AbilityValue, AccessMode, AggregateId, ArtifactReference, AuthorityRole,
     BindingId, BindingSource, DependencyKind, InstanceId, InterfaceDescriptor, InterfaceKey,
-    LocalKey, MethodSemantics, OperationPhase, PlanId, PlanNodeKey, RecoveryContract, RequestId,
-    RequiredFeature, ResourceId, ResourceLifetime, ResultProducerKey, RevisionId,
-    ScopedOperationKey, ValueExpression, ValueSchema, ValueVisibility, VersionedDocument,
+    InterfaceSelector, LocalKey, MethodSemantics, OperationPhase, PlanId, PlanNodeKey,
+    RecoveryContract, RequestId, RequiredFeature, ResourceId, ResourceLifetime, ResultProducerKey,
+    RevisionId, ScopedOperationKey, ValueExpression, ValueSchema, ValueVisibility,
+    VersionedDocument,
 };
 use aos_ability_validate::CheckedEffectPlan;
 use aos_contract::Sha256Digest;
@@ -101,6 +102,8 @@ pub enum ViewAnchor {
 pub enum NodeKey {
     /// Names one exact public interface descriptor.
     Interface(InterfaceKey),
+    /// Names one provider-neutral interface requirement.
+    InterfaceSelector(InterfaceSelector),
     /// Names one authenticated package manifest.
     Package(Sha256Digest),
     /// Names one consumer request.
@@ -163,8 +166,8 @@ pub enum InspectionNode {
     /// Identifies a public interface accepted by a package requirement when
     /// the reference does not carry that interface's complete descriptor.
     InterfaceReference {
-        /// Identifies the exact accepted interface contract.
-        key: InterfaceKey,
+        /// Selects the accepted interface without duplicating its provider-owned schema.
+        selector: InterfaceSelector,
     },
     /// Describes one exact package subject without embedding its payload.
     Package {
@@ -311,7 +314,7 @@ impl InspectionNode {
     pub fn key(&self) -> NodeKey {
         match self {
             Self::Interface { key, .. } => NodeKey::Interface(key.clone()),
-            Self::InterfaceReference { key } => NodeKey::Interface(key.clone()),
+            Self::InterfaceReference { selector } => NodeKey::InterfaceSelector(selector.clone()),
             Self::Package { digest, .. } => NodeKey::Package(*digest),
             Self::Request { id, .. } => NodeKey::Request(id.clone()),
             Self::Binding { id, .. } => NodeKey::Binding(id.clone()),
@@ -576,7 +579,7 @@ fn build_view(
             insert_edge(
                 &mut edges,
                 NodeKey::Package(digest),
-                NodeKey::Interface(interface.clone()),
+                NodeKey::InterfaceSelector(interface.clone()),
                 InspectionRelation::RequiresInterface,
             );
         }
