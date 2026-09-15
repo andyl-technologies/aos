@@ -36,6 +36,7 @@
   bash,
   python3-pefile,
   python3-pyelftools,
+  aos-systemd-provider,
 }: let
   version = "261.2";
 
@@ -73,6 +74,8 @@ in
   mkDerivation {
     pname = "systemd";
     inherit version;
+    abilities = ./_systemd-abilities.nix;
+    abilityDeps = [aos-systemd-provider];
 
     # Keep UKI construction and kernel installation in `tools`, including
     # kernel-install's Python hook. PID 1 and boot-time generators do not need
@@ -428,6 +431,9 @@ in
           done
           sed -i "1c #!${python3}/bin/python3" \
             "$out/lib/kernel/install.d/60-ukify.install"
+
+          mkdir -p "$out/share/aos/providers"
+          cp ${./_systemd-provider.nix} "$out/share/aos/providers/systemd.nix"
         '';
       }
       {
