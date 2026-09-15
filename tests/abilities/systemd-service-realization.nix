@@ -43,6 +43,7 @@
         watchdog = requirement serviceManagement.interfaces.watchdog ["observe"];
         manager-identity = requirement serviceManagement.interfaces.managerIdentity ["observe"];
         socket-activation = requirement serviceManagement.interfaces.socketActivation ["observe"];
+        terminal = requirement serviceManagement.interfaces.terminal ["observe"];
       };
       requests = {
         lifecycle = {
@@ -151,6 +152,21 @@
             ];
           };
         };
+        terminal = {
+          requirement = "terminal";
+          consumer = "application";
+          scope = ["main"];
+          parameters = {
+            service = "main";
+            enabled = true;
+            device = "/dev/tty1";
+            reset = true;
+            hangup = true;
+            deallocate = true;
+            send_hangup_on_stop = true;
+            start_when_idle = true;
+          };
+        };
       };
     };
   };
@@ -200,6 +216,12 @@
             "test:socket-activation" = {
               request = "consumer:socket-activation";
               implementation = "systemd:service-socket-activation";
+              providerInstance = "systemd:manager";
+              slot = "main";
+            };
+            "test:terminal" = {
+              request = "consumer:terminal";
+              implementation = "systemd:service-terminal";
               providerInstance = "systemd:manager";
               slot = "main";
             };
@@ -316,6 +338,13 @@ in
   assert templates "StandardOutput" serviceSection == ["journal"];
   assert templates "StandardError" serviceSection == ["journal+console"];
   assert templates "RestartPreventExitStatus" serviceSection == ["3" "SIGABRT"];
+  assert templates "Type" serviceSection == ["idle"];
+  assert builtins.length (templates "TTYPath" serviceSection) == 1;
+  assert lib.hasInfix "@@AOS_SYSTEMD_SUBSTITUTION:" (builtins.head (templates "TTYPath" serviceSection));
+  assert templates "TTYReset" serviceSection == ["yes"];
+  assert templates "TTYVHangup" serviceSection == ["yes"];
+  assert templates "TTYVTDisallocate" serviceSection == ["yes"];
+  assert templates "SendSIGHUP" serviceSection == ["yes"];
   assert executable.source.artifact == artifact // {package = "consumer";};
   assert executable.source.relative_path == "bin/example";
   assert lib.hasInfix "@@AOS_SYSTEMD_SUBSTITUTION:" execStart.value.template;
