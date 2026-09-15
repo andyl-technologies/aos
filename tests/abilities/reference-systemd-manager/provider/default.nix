@@ -1,5 +1,8 @@
 ##! Pure graph author for real native systemd-manager matrix operations.
-{systemdManager}: let
+{
+  resourceRevision,
+  systemdManager,
+}: let
   units = {
     primary = "aos-matrix-primary.service";
     secondary = "aos-matrix-secondary.service";
@@ -12,10 +15,11 @@
       key = builtins.replaceStrings ["." "_"] ["-" "-"] unit;
     })
     units;
-  revision = configuration: unit: "sha256:${builtins.hashString "sha256" (builtins.toJSON {
-    inherit unit;
-    inherit (configuration) action revision;
-  })}";
+  revision = configuration: unit:
+    resourceRevision {
+      inherit unit;
+      inherit (configuration) action revision;
+    };
   compose = context: let
     owned = resources context.provider;
     managerReferences =

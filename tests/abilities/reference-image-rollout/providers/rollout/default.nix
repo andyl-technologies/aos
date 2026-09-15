@@ -1,11 +1,12 @@
 ##! Pure single-host A/B rollout strategy for production activation tests.
-{rolloutEffects}: let
+{
+  resourceRevision,
+  rolloutEffects,
+}: let
   resourceFor = provider: {
     inherit provider;
     key = "machine";
   };
-
-  revisionFor = value: "sha256:${builtins.hashString "sha256" (builtins.toJSON value)}";
 
   effectRequest = context: {
     id = {
@@ -40,7 +41,7 @@
     resources = [
       {
         inherit resource;
-        revision = revisionFor request;
+        revision = resourceRevision request;
       }
     ];
     outputs = [

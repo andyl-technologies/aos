@@ -1,11 +1,12 @@
 ##! Exact-method A/B rollout strategy for release qualification.
-{rolloutEffects}: let
+{
+  resourceRevision,
+  rolloutEffects,
+}: let
   resourceFor = provider: {
     inherit provider;
     key = "machine";
   };
-
-  revisionFor = value: "sha256:${builtins.hashString "sha256" (builtins.toJSON value)}";
 
   effectRequest = context: {
     id = {
@@ -42,7 +43,7 @@
         inherit resource;
         # The selector is part of qualification desired state, so every exact
         # method produces a distinct update transition and plan identity.
-        revision = revisionFor context.configuration;
+        revision = resourceRevision context.configuration;
       }
     ];
     outputs = [

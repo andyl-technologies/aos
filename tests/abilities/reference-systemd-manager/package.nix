@@ -5,7 +5,7 @@
   packageRuntime,
   qualificationObserver ? null,
 }: let
-  inherit (lib.abilities) types;
+  inherit (lib.abilities) resourceRevision types;
   providerArtifact = ./provider;
   systemdManager = {
     name = "aos.systemd-manager";
@@ -118,7 +118,10 @@
     fallback = null;
     guarantees = [localManager];
   };
-  provider = import ./provider/default.nix {systemdManager = systemdManagerIdentity;};
+  provider = import ./provider/default.nix {
+    inherit resourceRevision;
+    systemdManager = systemdManagerIdentity;
+  };
   packageRuntimeSelector = lib.abilities.packageOutput {
     package = "aos";
     output = "packageRuntime";
