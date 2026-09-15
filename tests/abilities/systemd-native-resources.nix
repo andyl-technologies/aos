@@ -20,6 +20,11 @@
     };
   mountEffectsKey = effectsKey "systemd:mount-resource" "esp";
   swapEffectsKey = effectsKey "systemd:swap-resource" "main";
+  selectedSystemdProvider = import ./_selected-package-provider.nix {
+    inherit lib;
+    package = pkgs.systemd;
+    implementation = "mount-resource";
+  };
   evaluation = lib.evalModules {
     inherit lib;
     modules = [
@@ -64,19 +69,15 @@
               slot = "tunnel";
             };
           };
+          instances."systemd:manager" = {};
         };
       }
     ];
     packageModules = [
       {
         name = "systemd";
-        module = {
-          imports = [
-            ../../pkgs/system/_systemd-abilities.nix
-            ../../pkgs/system/_systemd-provider.nix
-          ];
-          config.aos.abilities.instances.manager = {};
-        };
+        inherit (pkgs.systemd) version;
+        module = pkgs.systemd.module + "/module.nix";
       }
       {
         name = "consumer";
@@ -126,9 +127,9 @@
         };
       }
     ];
+    selectedProviderModules = [selectedSystemdProvider];
     specialArgs = {
       inherit pkgs;
-      packageName = "systemd";
       artifactLocatorFor = _: throw "native-resource realization contains no artifacts";
       provenance = {
         dependencyOwnersOfAttr = _: _: [];

@@ -10,6 +10,11 @@
     providerInstance = "systemd:manager";
     key = "operators";
   };
+  selectedSystemdProvider = import ./_selected-package-provider.nix {
+    inherit lib;
+    package = pkgs.systemd;
+    implementation = "group-resolution";
+  };
   evaluation = lib.evalModules {
     inherit lib;
     modules = [
@@ -36,19 +41,15 @@
               slot = "operators";
             };
           };
+          instances."systemd:manager" = {};
         };
       }
     ];
     packageModules = [
       {
         name = "systemd";
-        module = {
-          imports = [
-            ../../pkgs/system/_systemd-abilities.nix
-            ../../pkgs/system/_systemd-provider.nix
-          ];
-          aos.abilities.instances.manager = {};
-        };
+        inherit (pkgs.systemd) version;
+        module = pkgs.systemd.module + "/module.nix";
       }
       {
         name = "consumer";
@@ -74,9 +75,9 @@
         };
       }
     ];
+    selectedProviderModules = [selectedSystemdProvider];
     specialArgs = {
       inherit pkgs;
-      packageName = "systemd";
       artifactLocatorFor = _: throw "identity realization contains no artifacts";
       provenance = {
         dependencyOwnersOfAttr = _: _: [];

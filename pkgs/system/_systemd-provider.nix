@@ -711,7 +711,9 @@
   in {
     schema = "aos.systemd.packaged-unit-realization/v1";
     source = {
-      artifact = sourceLocator.artifactReference;
+      artifact =
+        {_type = "aos-artifact-reference";}
+        // sourceLocator.artifactReference;
       inherit (parameters.source) unit_file;
     };
     systemd_unit.unit_name = parameters.source.unit_name;
