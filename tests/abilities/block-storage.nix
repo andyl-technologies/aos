@@ -148,7 +148,8 @@
       }
       {
         name = "aos";
-        module = ../../pkgs/tools/aos/_abilities/provisioning-metadata.nix;
+        version = pkgs.aos.version;
+        module = pkgs.aos.module + "/module.nix";
       }
       {
         name = "network-provider";
@@ -329,4 +330,14 @@ in
   assert abilities.implementations."aos-zfs-provider:storage-pool-effects".providerModule == null;
   assert abilities.implementations."aos-zfs-provider:storage-dataset-effects".providerModule == null;
   assert abilities.implementations."aos-storage-provisioning-provider:storage-provisioning".handlerDescriptor == null;
-  assert abilities.implementations."aos-storage-provisioning-provider:storage-provisioning-effects".providerModule == null; true
+  assert abilities.implementations."aos-storage-provisioning-provider:storage-provisioning-effects".providerModule == null;
+  assert abilities.implementations."aos:storage-provisioning-platform-detector".handlerDescriptor.entryPoint
+  == "libexec/aos-storage-provisioning-platform-detector";
+  assert abilities.implementations."aos:storage-provisioning-input-authorizer".handlerDescriptor.entryPoint
+  == "libexec/aos-storage-provisioning-input-authorizer";
+  assert abilities.implementations."aos:storage-provisioning-plan-observer".handlerDescriptor.entryPoint
+  == "libexec/aos-storage-provisioning-plan-observer";
+  assert abilities.implementations."aos:storage-provisioning-configuration-evaluator".handlerDescriptor.entryPoint
+  == "libexec/aos-storage-provisioning-configuration-evaluator";
+  assert abilities.implementations."aos:storage-provisioning-network-seeder".handlerDescriptor.entryPoint
+  == "libexec/aos-storage-provisioning-network-seeder"; true

@@ -603,7 +603,7 @@ in
           mv \
             "$out/bin/aos-metadata-provisioning-provider" \
             "$metadataRuntime/libexec/.aos-metadata-provisioning-provider-unwrapped"
-          cat > "$metadataRuntime/libexec/aos-metadata-provisioning-provider" <<'METADATA_PROVIDER'
+          cat > "$metadataRuntime/libexec/.aos-metadata-provider" <<'METADATA_PROVIDER'
       #!${bash}/bin/bash
       export PATH=${lib.escapeShellArg (runtimeBinPath metadataRuntimeTools)}
       export AOS_METADATA_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"
@@ -611,9 +611,18 @@ in
       export AOS_METADATA_MOUNT="${util-linux}/bin/mount"
       export AOS_METADATA_UMOUNT="${util-linux}/bin/umount"
       export AOS_METADATA_LSBLK="${util-linux}/bin/lsblk"
-      exec "$metadataRuntime/libexec/.aos-metadata-provisioning-provider-unwrapped" "$@"
+      exec -a "$0" "$metadataRuntime/libexec/.aos-metadata-provisioning-provider-unwrapped" "$@"
       METADATA_PROVIDER
-          chmod +x "$metadataRuntime/libexec/aos-metadata-provisioning-provider"
+          chmod +x "$metadataRuntime/libexec/.aos-metadata-provider"
+          for role in \
+            storage-provisioning-platform-detector \
+            storage-provisioning-input-authorizer \
+            storage-provisioning-plan-observer \
+            storage-provisioning-configuration-evaluator \
+            storage-provisioning-network-seeder
+          do
+            ln -s .aos-metadata-provider "$metadataRuntime/libexec/aos-$role"
+          done
 
           # Give the shared binary the private entry-point name so
           # current_exe() resolves to the exact signed handler path. The public
@@ -691,7 +700,16 @@ in
         PATH=/unreachable "$packageRuntime/bin/.aos-package-runtime-unwrapped" __eval --help > /dev/null
         PATH=/unreachable "$packageRuntime/bin/aos-package-runtime" __eval --help > /dev/null
         PATH=/unreachable "$metadataRuntime/bin/aos-metadata-runtime" --help > /dev/null
-        test -x "$metadataRuntime/libexec/aos-metadata-provisioning-provider"
+        for role in \
+          storage-provisioning-platform-detector \
+          storage-provisioning-input-authorizer \
+          storage-provisioning-plan-observer \
+          storage-provisioning-configuration-evaluator \
+          storage-provisioning-network-seeder
+        do
+          test -x "$metadataRuntime/libexec/aos-$role"
+        done
+        test ! -e "$metadataRuntime/libexec/aos-metadata-provisioning-provider"
       ''}
 
           # This deterministic signer/fixture process exists only for the
