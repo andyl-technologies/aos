@@ -79,15 +79,19 @@ in {
     APM = "${pkgs.aos.apm}/bin/apm"
 
 
-    def apply_k3s_module(machine, name, module):
+    def apply_k3s_module(machine, name, module, replace=False):
         encoded = base64.b64encode(module.encode()).decode()
         path = f"/run/{name}.nix"
         cache = f"/run/{name}-cache"
+        edit = (
+            f"{APM} config replace {name}.nix {path}"
+            if replace
+            else f"{APM} config add {path} --name {name}.nix"
+        )
         machine.succeed(
             f"mkdir -p {cache} && "
             f"printf '%s' '{encoded}' | base64 -d > {path} && "
-            f"XDG_CACHE_HOME={cache} {APM} config add "
-            f"{path} --name {name}.nix && "
+            f"XDG_CACHE_HOME={cache} {edit} && "
             f"XDG_CACHE_HOME={cache} {APM} config apply "
             f"--eval-root /run/{name}-eval || {{ "
             "systemctl status --no-pager -l aos-activate.service; "
@@ -340,5 +344,74 @@ in {
         f"expected exactly one node (control-plane is invisible by design),"
         f" got {out!r}"
     )
+
+    # Replace the selected package module through the normal activation path.
+    # The K3s-owned object controller must create the successor object, release
+    # both predecessor objects, and leave the running control plane untouched.
+    k3s_invocation = controlplane.succeed(
+        "systemctl show -p InvocationID --value k3s.service"
+    ).strip()
+    apply_k3s_module(controlplane, "k3s-control-plane", """{
+      aos.apm.desiredPackages = [ "k3s-control-plane" ];
+      k3s = {
+        enable = true;
+        token.ref = "system-credential:k3s-token";
+        node.ip = "192.168.50.10";
+        networking.flannelInterface = "eth0";
+        integrations = {
+          resourceGrants = [
+            {
+              contribution = "revision-probe-successor";
+              apiVersion = "v1";
+              kind = "Namespace";
+              name = "aos-revision-probe-successor";
+              namespace = null;
+            }
+          ];
+          resources.revision-probe-successor = {
+            apiVersion = "v1";
+            kind = "Namespace";
+            name = "aos-revision-probe-successor";
+            namespace = null;
+            priority = 50;
+            spec = {};
+          };
+        };
+      };
+    }
+    """, replace=True)
+
+    successor_object = {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {"name": "aos-revision-probe-successor"},
+        "spec": {},
+    }
+    successor_revision = "sha256:" + hashlib.sha256(json.dumps(
+        successor_object, sort_keys=True, separators=(",", ":")
+    ).encode()).hexdigest()
+    controlplane.wait_until_succeeds(
+        "test \"$(${pkgs.k3s}/bin/kubectl "
+        "--kubeconfig=/etc/rancher/k3s/k3s.yaml "
+        "get namespace aos-revision-probe-successor -o json "
+        "| ${pkgs.jq}/bin/jq -er "
+        "'.metadata.annotations[\"aos.andyl.com/object-revision\"]')\" "
+        f"= {shlex.quote(successor_revision)}",
+        timeout=60,
+    )
+    for predecessor in (
+        "aos-revision-probe",
+        "aos-revision-probe-secondary",
+    ):
+        controlplane.wait_until_succeeds(
+            "test -z \"$(${pkgs.k3s}/bin/kubectl "
+            "--kubeconfig=/etc/rancher/k3s/k3s.yaml "
+            f"get namespace {shlex.quote(predecessor)} "
+            "--ignore-not-found=true -o name)\"",
+            timeout=60,
+        )
+    assert controlplane.succeed(
+        "systemctl show -p InvocationID --value k3s.service"
+    ).strip() == k3s_invocation
   '';
 }
