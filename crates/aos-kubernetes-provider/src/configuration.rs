@@ -22,7 +22,6 @@ use super::{
     read_bounded, require_resource,
 };
 
-const EFFECTS_INTERFACE_NAME: &str = "aos.k3s.configuration-effects";
 const OBSERVATION_SCHEMA: &str = "aos.ability.k3s-configuration-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.k3s.configuration-context/v1";
 const REALIZATION_SCHEMA: &str = "aos.k3s.configuration-realization/v1";
@@ -79,16 +78,8 @@ struct K3sConfigurationObservation<'a> {
     content_digest: Option<Sha256Digest>,
 }
 
-pub(super) fn handles_interface(interface: &str) -> bool {
-    interface == EFFECTS_INTERFACE_NAME
-}
-
 pub(super) fn admit(request: AdmissionRequest) -> Result<AdmissionResult, KubernetesProviderError> {
-    validate_configuration_method(
-        request.method.interface.name.as_str(),
-        request.method.method.as_str(),
-        &request.semantics,
-    )?;
+    validate_configuration_method(request.method.method.as_str(), &request.semantics)?;
     let desired: K3sConfiguration = decode(&request.resource_spec.value)?;
     let realization: K3sConfigurationRealization = decode(&request.resource_spec.realization)?;
     validate_configuration(&desired)?;
@@ -128,22 +119,14 @@ pub(super) fn admit(request: AdmissionRequest) -> Result<AdmissionResult, Kubern
 }
 
 pub(super) fn invoke(invocation: Invocation) -> Result<InvocationResult, KubernetesProviderError> {
-    validate_configuration_method(
-        invocation.method.interface.name.as_str(),
-        invocation.method.method.as_str(),
-        &invocation.semantics,
-    )?;
+    validate_configuration_method(invocation.method.method.as_str(), &invocation.semantics)?;
     let context = bound_target_context(&invocation)?;
     let desired: K3sConfiguration = decode(&context.resource_spec.value)?;
     let realization: K3sConfigurationRealization = decode(&context.resource_spec.realization)?;
     let provider_context: K3sConfigurationContext = decode(&context.provider_context)?;
     validate_configuration(&desired)?;
     validate_configuration_prerequisites(&invocation.request.resources, &desired)?;
-    validate_selected_inputs(
-        invocation.method.interface.name.as_str(),
-        &invocation.request.inputs,
-        &desired,
-    )?;
+    validate_selected_inputs(&invocation.request.inputs, &desired)?;
     validate_configuration_realization(&realization)?;
     if provider_context.schema != CONTEXT_SCHEMA || provider_context.path != realization.path {
         return Err(invalid(
@@ -234,12 +217,10 @@ pub(super) fn invoke(invocation: Invocation) -> Result<InvocationResult, Kuberne
 }
 
 fn validate_configuration_method(
-    interface: &str,
     method: &str,
     semantics: &MethodSemantics,
 ) -> Result<(), KubernetesProviderError> {
-    let method_allowed =
-        interface == EFFECTS_INTERFACE_NAME && matches!(method, "apply" | "observe" | "release");
+    let method_allowed = matches!(method, "apply" | "observe" | "release");
     if !method_allowed {
         return Err(invalid("method does not belong to K3s configuration"));
     }
@@ -285,7 +266,6 @@ fn validate_configuration_prerequisites(
 }
 
 fn validate_selected_inputs(
-    _interface: &str,
     inputs: &AbilityValue,
     desired: &K3sConfiguration,
 ) -> Result<(), KubernetesProviderError> {
@@ -468,12 +448,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn handler_accepts_only_the_package_owned_terminal_interface() {
+    fn handler_accepts_only_configuration_methods_with_exact_semantics() {
         let apply = MethodSemantics::ordinary(AccessMode::ExclusiveWrite);
 
-        assert!(validate_configuration_method(EFFECTS_INTERFACE_NAME, "apply", &apply).is_ok());
-        assert!(validate_configuration_method("aos.k3s.configuration", "apply", &apply).is_err());
-        assert!(validate_configuration_method("aos.k3s.integration", "apply", &apply).is_err());
+        assert!(validate_configuration_method("apply", &apply).is_ok());
+        assert!(validate_configuration_method("unknown", &apply).is_err());
     }
 
     #[test]

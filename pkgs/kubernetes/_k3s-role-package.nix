@@ -117,7 +117,9 @@ mkDerivation {
         ln -s ${launcher}/bin/k3s-${pname}-start "$out/bin/k3s-role-start"
         ln -s ${k3s}/bin/k3s "$out/libexec/k3s"
         ln -s ${aos-kubernetes-provider}/bin/aos-kubernetes-provider \
-          "$out/libexec/aos-kubernetes-provider"
+          "$out/libexec/aos-kubernetes-object-effects"
+        ln -s ${aos-kubernetes-provider}/bin/aos-kubernetes-provider \
+          "$out/libexec/aos-k3s-configuration-effects"
         cp ${./_k3s-config/object-provider.nix} \
           "$out/share/${pname}/object-provider.nix"
         cp ${./_k3s-config/configuration-provider.nix} \
