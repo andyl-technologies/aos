@@ -110,13 +110,13 @@
         };
         directories.managed = [
           {
-            name = "named";
+            path = "named";
             purpose = "runtime";
             mode = "0750";
             retention = "restart";
           }
           {
-            name = "bind";
+            path = "bind";
             purpose = "state";
             mode = "0750";
             retention = "persistent";

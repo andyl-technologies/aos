@@ -31,6 +31,22 @@
       stop_timeout_millis = 1000;
     };
   };
+  nestedDirectoryService = minimalService // {
+    directories.managed = [{
+      path = "rancher/k3s";
+      purpose = "state";
+      mode = "0755";
+      retention = "persistent";
+    }];
+  };
+  escapedDirectoryService = minimalService // {
+    directories.managed = [{
+      path = "../k3s";
+      purpose = "state";
+      mode = "0755";
+      retention = "persistent";
+    }];
+  };
   evaluateAs = type: value:
     (lib.evalModules {
       modules = [
@@ -327,7 +343,7 @@
       };
       directories.managed = [
         {
-          name = "worker-runtime";
+          path = "worker-runtime";
           purpose = "runtime";
           mode = "0750";
           retention = "restart";
@@ -335,7 +351,7 @@
           group = resultOf "group" "group-name";
         }
         {
-          name = "worker-runtime";
+          path = "worker-runtime";
           purpose = "state";
           mode = "0700";
           retention = "persistent";
@@ -1107,6 +1123,8 @@ in
     access = "read-write";
     relative_path = "../containerd.sock";
   };
+  assert succeedsAs serviceTypes.serviceDeclaration nestedDirectoryService;
+  assert !succeedsAs serviceTypes.serviceDeclaration escapedDirectoryService;
   assert succeedsAs serviceTypes.filesystemReadiness {scope = "local-filesystems";};
   assert succeedsAs serviceTypes.namedCredential {
     name = "hub-jwt";
