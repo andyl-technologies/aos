@@ -9,6 +9,7 @@ anyhow.workspace = true
 aos-ability-model.workspace = true
 aos-contract.workspace = true
 aos-provider-protocol.workspace = true
+aos-storage-provisioning.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
@@ -27,3 +28,7 @@ path = "src/bin/zfs_pool.rs"
 [[bin]]
 name = "aos-zfs-dataset-provider"
 path = "src/bin/zfs_dataset.rs"
+
+[[bin]]
+name = "aos-storage-provisioning-provider"
+path = "src/bin/storage_provisioning.rs"

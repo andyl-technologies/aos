@@ -313,6 +313,7 @@ dependencies = [
  "aos-ability-model",
  "aos-contract",
  "aos-provider-protocol",
+ "aos-storage-provisioning",
  "serde",
  "serde_json",
 ]
@@ -795,6 +796,7 @@ dependencies = [
  "aos-provider-protocol",
  "aos-registry-surface",
  "aos-remote",
+ "aos-storage-provisioning",
  "aos-systemd",
  "async-trait",
  "base64 0.22.1",
@@ -1006,6 +1008,16 @@ dependencies = [
  "tracing",
  "uuid",
  "zstd",
+]
+
+[[package]]
+name = "aos-storage-provisioning"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

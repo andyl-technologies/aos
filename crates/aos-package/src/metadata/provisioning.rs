@@ -11,13 +11,14 @@ use std::process::Command;
 use std::str::FromStr;
 
 use anyhow::{Context, Result, bail};
+use rand::RngCore as _;
 use serde::{Deserialize, Serialize};
 
 use crate::config_trust::{CONFIG_SIGNATURE_NAMESPACE, authenticate_config_payload};
 
 use super::repart::{
-    FALLBACK_LABEL, OPERATOR_LABEL, PENDING_LABEL, ProvisioningPlan, generate_marker_uuid,
-    normalize_marker_uuid, render_provisioning_plan,
+    FALLBACK_LABEL, OPERATOR_LABEL, PENDING_LABEL, ProvisioningPlan, normalize_marker_uuid,
+    render_provisioning_plan,
 };
 use super::stash::{Stash, sha256_hex};
 
@@ -27,6 +28,36 @@ pub const RAW_USER_DATA_FILE: &str = "user-data";
 pub const RAW_USER_DATA_SIGNATURE_FILE: &str = "user-data.sig";
 /// Authorization record consumed by stage 2.
 pub const PROVISIONING_RESULT_FILE: &str = ".provisioning-result.json";
+
+fn generate_marker_uuid() -> String {
+    let mut bytes = [0_u8; 16];
+    // This UUID is generated once while authoring the durable provisioning
+    // plan and is then carried as checked input. It is not a simulation or
+    // replay decision.
+    #[allow(clippy::disallowed_methods)]
+    rand::rng().fill_bytes(&mut bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
+    )
+}
 
 /// Trust policy applied to `host.nix`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

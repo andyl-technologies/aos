@@ -11,5 +11,6 @@ pub mod engine;
 pub mod process;
 pub mod state;
 pub mod storage_format;
+pub mod storage_provisioning;
 pub mod zfs_dataset;
 pub mod zfs_pool;

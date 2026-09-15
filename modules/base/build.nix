@@ -1007,6 +1007,7 @@ in {
       # through the packages that ship their authenticated provider modules.
       pkgs.aos-cryptsetup-provider
       pkgs.aos-storage-format-provider
+      pkgs.aos-storage-provisioning-provider
       pkgs.aos-zfs-provider
       # Kernel-tunable effects are selected through the provider package that
       # ships both its authenticated module and handler.
