@@ -157,6 +157,8 @@
     == requestSchemas.storageAllocation.fields.owner.value
     && outputSchema "groupResolution" "resolve" "group-name"
     == requestSchemas.storageAllocation.fields.group.value
+    && outputSchema "groupMembership" "reconcile" "membership-resource"
+    == lib.abilities.types.resourceReference._abilitySchema
     && interfaces.persistentStorageAllocation.document.interface.outputs.planned-path.schema
     == requestSchemas.principalResolution.fields.home_directory;
   lifecycleContractsAreExecutable =
@@ -1149,6 +1151,8 @@ in
   assert !interfaces.principalResolution.document.interface.lifecycle.releases_ephemeral_on_disable;
   assert interfaces.groupResolution.methods == ["observe" "resolve"];
   assert !interfaces.groupResolution.document.interface.lifecycle.releases_ephemeral_on_disable;
+  assert interfaces.groupMembership.methods == ["observe" "reconcile" "release"];
+  assert interfaces.groupMembership.document.interface.lifecycle.releases_ephemeral_on_disable;
   assert interfaces.storageAllocation.document.interface.methods.allocate.outputs.storage-path.lifetime == "instance";
   assert interfaces.storageAllocation.document.interface.methods.allocate.outputs.storage-path.phase == "runtime";
   assert interfaces.storageAllocation.document.interface.outputs.planned-path.phase == "planning";

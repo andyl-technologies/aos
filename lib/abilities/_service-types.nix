@@ -1400,6 +1400,18 @@
   groupResolution = types.record {
     fields = identityResolutionFields;
   };
+  groupMembership = types.record {
+    fields = {
+      name = localKey;
+      group = types.deferredResult types.resourceReference;
+      principals = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+        unique = true;
+        canonicalOrder = true;
+      };
+    };
+  };
   producerState = types.enum ["absent" "failed" "ready" "unknown"];
   producerObservation = schema: expectedType: outputType:
     types.record {
@@ -1464,6 +1476,11 @@
       (types.enum ["aos.ability.group-resolution-observation/v1"])
       groupResolution
       groupName;
+    groupMembership =
+      producerObservation
+      (types.enum ["aos.ability.group-membership-observation/v1"])
+      groupMembership
+      types.resourceReference;
     scheduledActivation =
       producerObservation
       (types.enum ["aos.ability.scheduled-activation-observation/v1"])
@@ -1710,6 +1727,7 @@ in {
     rootDirectoryView
     principalResolution
     groupResolution
+    groupMembership
     scheduledActivation
     pathActivation
     mountResource

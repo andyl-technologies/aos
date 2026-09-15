@@ -1068,6 +1068,20 @@
       outputDescription = "Returns the provider-resolved runtime group name.";
       outputType = serviceTypes.groupName;
     };
+    groupMembership = producer {
+      alias = "group-membership";
+      name = "aos.identity.group-membership";
+      description = "Reconciles exact principal membership in one provider-neutral runtime group.";
+      requestType = serviceTypes.groupMembership;
+      observationType = serviceTypes.producerObservations.groupMembership;
+      action = "reconcile";
+      actionDescription = "Adds declared principals to the exact group and removes principals previously owned by this request.";
+      observationDescription = "Observes whether the exact declared group membership is present.";
+      outputName = "membership-resource";
+      outputDescription = "References the exact retained group membership resource.";
+      outputType = serviceTypes.resourceReference;
+      releaseDescription = "Removes only the group memberships established by this request.";
+    };
     scheduledActivation = producer {
       alias = "scheduled-activation";
       name = "aos.activation.schedule";
