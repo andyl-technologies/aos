@@ -8,7 +8,7 @@
   - [Use the repository CLI](aos/cli.md)
   - [Manage packages](aos/packages.md)
   - [Configure package registries](aos/registries.md)
-  - [Understand the package sandbox](aos/package-sandbox.md)
+  - [Understand native package runtime policy](aos/package-sandbox.md)
   - [Use Secure Boot and verify package trust](aos/secure-boot.md)
   - [Control access](aos/access-control.md)
   - [Harden an AOS host](aos/security-hardening.md)

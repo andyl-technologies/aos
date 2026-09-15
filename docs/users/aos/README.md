@@ -59,8 +59,8 @@ consumption, and on-host activation as distinct installed capabilities.
   packages, profiles, and package rollback.
 - [Configure package registries](registries.md) covers the built-in registry,
   other public and internal registries, priorities, credentials, and trust.
-- [Understand the package sandbox](package-sandbox.md) explains the runtime
-  boundary for exposed services and how to inspect its effective policy.
+- [Understand native package runtime policy](package-sandbox.md) explains how
+  typed package requests become concrete host resources.
 - [Operate an AOS host](operations.md) covers services, logs, storage,
   packages, monitoring, and maintenance.
 - [Upgrade and roll back a host](upgrades.md) covers the independent image and
