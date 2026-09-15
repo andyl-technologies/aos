@@ -730,6 +730,7 @@ dependencies = [
  "aos-ability-model",
  "aos-contract",
  "aos-provider-protocol",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

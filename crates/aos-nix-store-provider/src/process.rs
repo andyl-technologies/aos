@@ -2,12 +2,14 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, Read as _, Write as _};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail, ensure};
 
+use crate::artifact::ArtifactStoreCommands;
 use crate::handler::{
     Executable, RegistrationRecord, StoreCommands, deadline, monotonic_now, parse_registration,
     remaining,
@@ -75,21 +77,106 @@ impl StoreCommands for ProcessStoreCommands {
     }
 }
 
+impl ArtifactStoreCommands for ProcessStoreCommands {
+    fn add_fixed(
+        &self,
+        executable: &Path,
+        source: &Path,
+        remaining_millis: u64,
+    ) -> Result<PathBuf> {
+        let source = source
+            .to_str()
+            .context("transaction blob input path is not UTF-8")?;
+        let output = run_path_command(
+            executable,
+            &["--add-fixed", "sha256", source],
+            &[],
+            remaining_millis,
+        )?;
+        parse_one_path(&output, "added fixed-output store path")
+    }
+
+    fn dump(&self, executable: &Path, store_path: &Path, remaining_millis: u64) -> Result<Vec<u8>> {
+        let store_path = store_path
+            .to_str()
+            .context("content-addressed store path is not UTF-8")?;
+        run_path_command(executable, &["--dump", store_path], &[], remaining_millis)
+    }
+
+    fn references(
+        &self,
+        executable: &Path,
+        store_path: &Path,
+        remaining_millis: u64,
+    ) -> Result<Vec<PathBuf>> {
+        let store_path = store_path
+            .to_str()
+            .context("content-addressed store path is not UTF-8")?;
+        let output = run_path_command(
+            executable,
+            &["--query", "--references", store_path],
+            &[],
+            remaining_millis,
+        )?;
+        let text = std::str::from_utf8(&output).context("Nix reference output is not UTF-8")?;
+        ensure!(
+            text.is_empty() || text.ends_with('\n'),
+            "Nix reference output has a truncated final line"
+        );
+        Ok(text.lines().map(PathBuf::from).collect())
+    }
+
+    fn is_valid(
+        &self,
+        executable: &Path,
+        store_path: &Path,
+        remaining_millis: u64,
+    ) -> Result<bool> {
+        let store_path = store_path
+            .to_str()
+            .context("content-addressed store path is not UTF-8")?;
+        let invalid = run_path_command(
+            executable,
+            &["--check-validity", "--print-invalid", store_path],
+            &[],
+            remaining_millis,
+        )?;
+        Ok(invalid.is_empty())
+    }
+}
+
 fn run_command(
     executable: &Executable,
     arguments: &[&str],
     input: &[u8],
     remaining_millis: u64,
 ) -> Result<Vec<u8>> {
+    run_path_command(&executable.path(), arguments, input, remaining_millis)
+}
+
+fn run_path_command(
+    executable: &Path,
+    arguments: &[&str],
+    input: &[u8],
+    remaining_millis: u64,
+) -> Result<Vec<u8>> {
     ensure!(remaining_millis > 0, "Nix store command deadline expired");
-    let mut child = Command::new(executable.path())
+    let mut child = Command::new(executable)
         .args(arguments)
         .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("starting exact Nix store executable")?;
+        .context("starting bundled Nix store executable")?;
+    collect_child(&mut child, input, remaining_millis)
+}
+
+fn collect_child(
+    child: &mut std::process::Child,
+    input: &[u8],
+    remaining_millis: u64,
+) -> Result<Vec<u8>> {
     let mut stdin = child.stdin.take().context("capturing Nix store stdin")?;
     let mut stdout = child.stdout.take().context("capturing Nix store stdout")?;
     let mut stderr = child.stderr.take().context("capturing Nix store stderr")?;
@@ -128,6 +215,14 @@ fn run_command(
         String::from_utf8_lossy(&stderr)
     );
     Ok(stdout)
+}
+
+fn parse_one_path(output: &[u8], label: &str) -> Result<PathBuf> {
+    let text = std::str::from_utf8(output).with_context(|| format!("{label} is not UTF-8"))?;
+    let mut lines = text.lines();
+    let path = lines.next().with_context(|| format!("{label} is empty"))?;
+    ensure!(lines.next().is_none(), "{label} contains multiple paths");
+    Ok(PathBuf::from(path))
 }
 
 fn read_bounded(reader: &mut impl io::Read) -> io::Result<Vec<u8>> {

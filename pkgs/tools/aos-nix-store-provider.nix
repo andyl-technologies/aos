@@ -7,6 +7,7 @@
   mkCargoDummySource,
   aosWorkspaceSource,
   aosWorkspaceVendor,
+  nix,
   patchelf,
 }: let
   version = "0.1.0";
@@ -68,7 +69,7 @@ in
     cargoTestFlags = "-p aos-nix-store-provider";
     doCheck = true;
     buildDeps = [patchelf];
-    runtimeDeps = [];
+    runtimeDeps = [nix];
 
     abilities = ./_aos-nix-store-provider-module.nix;
 
@@ -79,7 +80,8 @@ in
     '';
 
     postInstall = ''
-      mkdir -p "$out/share/aos/providers"
+      mkdir -p "$out/libexec" "$out/share/aos/providers"
+      ln -s ${nix}/bin/nix-store "$out/libexec/nix-store"
       cp ${./_nix-store-provider.nix} \
         "$out/share/aos/providers/nix-store-database.nix"
       test -x "$out/bin/aos-nix-store-provider"

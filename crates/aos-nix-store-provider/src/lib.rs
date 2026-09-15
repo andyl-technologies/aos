@@ -1,12 +1,13 @@
-//! Nix store database ability provider.
+//! Package-owned Nix store ability provider.
 //!
-//! The provider admits one exact local database request, validates the selected
-//! `nix-store` executable, and compares the requested registration stream with
-//! the live database. Effects initialize the database and load that same stream
-//! through the selected executable.
+//! The provider owns local database convergence and persistent content-addressed
+//! objects. Database effects use an explicitly realized `nix-store` executable;
+//! object effects use the exact executable bundled into the authenticated
+//! provider artifact and retain objects through resource-owned GC roots.
 
 #![forbid(unsafe_code)]
 
 pub mod handler;
 
+mod artifact;
 mod process;
