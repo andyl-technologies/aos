@@ -14,55 +14,22 @@ from pathlib import PurePosixPath
 from typing import Any
 
 
-PROVIDER_ORACLES = {
-    "credential-delivery": {
-        "roots": ["/var/lib/aos/ability-runtime/credentials"],
-        "live": "filesystem",
-    },
-    "foreground-process": {
-        "roots": ["/var/lib/aos/ability-runtime/foreground-process"],
-        "live": "foreground-process",
-    },
-    "host-network-policy": {
-        "roots": ["/var/lib/aos/ability-runtime/network-policy"],
-        "live": "network",
-    },
-    "host-storage": {
-        "roots": ["/var/lib/aos/ability-runtime/storage"],
-        "live": "filesystem",
-    },
-    "managed-configuration": {
-        "roots": ["/var/lib/aos/ability-runtime/managed-configuration"],
-        "live": "filesystem",
-    },
-    "network-endpoint": {
-        "roots": ["/var/lib/aos/ability-runtime/endpoints"],
-        "live": "network",
-    },
-    "nginx-validation": {
-        "roots": ["/var/lib/aos/ability-runtime/nginx/associations"],
-        "live": "filesystem",
-    },
-    "systemd-bootstrap": {
-        "roots": ["/etc/aos/ability-revisions"],
-        "live": "systemd",
-    },
-    "systemd-manager": {
-        "roots": ["/etc/aos/ability-revisions"],
-        "live": "systemd",
-    },
-    "service-management": {
-        "roots": ["/etc/aos/ability-revisions"],
-        "live": "systemd",
-    },
-    "kubernetes-object": {"roots": [], "live": "kubernetes"},
-    "image-rollout": {
-        "roots": [
-            "/var/lib/profiles/image/ability-rollouts",
-            "/boot/loader/entries",
-        ],
-        "live": "rollout",
-    },
+PROVIDER_STATE_ROOTS = {
+    "credential-delivery": ["/var/lib/aos/ability-runtime/credentials"],
+    "foreground-process": ["/var/lib/aos/ability-runtime/foreground-process"],
+    "host-network-policy": ["/var/lib/aos/ability-runtime/network-policy"],
+    "host-storage": ["/var/lib/aos/ability-runtime/storage"],
+    "managed-configuration": ["/var/lib/aos/ability-runtime/managed-configuration"],
+    "network-endpoint": ["/var/lib/aos/ability-runtime/endpoints"],
+    "nginx-validation": ["/var/lib/aos/ability-runtime/nginx/associations"],
+    "systemd-bootstrap": ["/etc/aos/ability-revisions"],
+    "systemd-manager": ["/etc/aos/ability-revisions"],
+    "service-management": ["/etc/aos/ability-revisions"],
+    "kubernetes-object": [],
+    "image-rollout": [
+        "/var/lib/profiles/image/ability-rollouts",
+        "/boot/loader/entries",
+    ],
 }
 INJECTED_MARKERS: dict[bytes, dict[str, Any]] = {}
 
@@ -389,7 +356,7 @@ def install_absent_foreground_resource(operation: dict[str, Any]) -> None:
     source_receipts = [
         (path, document)
         for path, document in provider_documents(
-            PROVIDER_ORACLES["foreground-process"]["roots"]
+            PROVIDER_STATE_ROOTS["foreground-process"]
         )
         if document.get("schema") == "aos.ability.foreground-process-state/v1"
         and document.get("request", {}).get("resource") != resource
@@ -525,7 +492,7 @@ def ownership_inventory(adapter: str, resource: dict[str, Any]) -> dict[str, Any
     """Finds at most one provider marker carrying the exact resource identity."""
 
     identities = []
-    for path, document in provider_documents(PROVIDER_ORACLES[adapter]["roots"]):
+    for path, document in provider_documents(PROVIDER_STATE_ROOTS[adapter]):
         if _contains_resource(document, resource):
             identities.append({"path": path, "resource": resource})
     identities.sort(key=lambda identity: identity["path"])
@@ -541,7 +508,7 @@ def resource_documents(
 
     return [
         (path, document)
-        for path, document in provider_documents(PROVIDER_ORACLES[adapter]["roots"])
+        for path, document in provider_documents(PROVIDER_STATE_ROOTS[adapter])
         if _contains_resource(document, resource)
     ]
 
