@@ -9,6 +9,7 @@
   ...
 }: let
   cfg = config.aos.config.unitGraph;
+  abilityTypes = lib.abilities.types;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
   interfaces = serviceManagement.interfaces;
@@ -376,6 +377,11 @@
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
   options.aos.config.unitGraph = {
+    enable = lib.mkOption {
+      type = abilityTypes.boolean;
+      default = false;
+      description = "Enable the AOS on-host configuration control plane.";
+    };
     manifest = lib.mkOption {
       type = serviceTypes.hostPath;
       default = "/run/aos/manifest.json";
@@ -390,7 +396,7 @@ in {
 
   config = lib.mkMerge [
     {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);}
-    (lib.mkIf (config.aos.abilities.environment != null) {
+    (lib.mkIf (cfg.enable && config.aos.abilities.environment != null) {
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}]
         ++ builtins.map (entry: entry.configured) contributions
