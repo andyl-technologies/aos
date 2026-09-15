@@ -27,7 +27,7 @@ use crate::process::ProcessStoreCommands;
 #[cfg(test)]
 use crate::process::argument_batches;
 
-const INTERFACE_NAME: &str = "aos.nix.store-database";
+const INTERFACE_NAME: &str = "aos.nix.store-database-effects";
 const REALIZATION_SCHEMA: &str = "aos.nix.store-database-realization/v1";
 const OBSERVATION_SCHEMA: &str = "aos.ability.nix-store-database-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.nix.store-database-context/v1";

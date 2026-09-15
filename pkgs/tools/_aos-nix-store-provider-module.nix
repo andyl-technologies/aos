@@ -4,6 +4,8 @@
 
   interfaceName = "aos.nix.store-database";
   interfaceAlias = "nix-store-database";
+  effectsName = "aos.nix.store-database-effects";
+  effectsAlias = "nix-store-database-effects";
   providerArtifact = lib.abilities.packageOutput {};
 
   registrationInput = types.record {
@@ -112,27 +114,59 @@
   };
   document = interfaceDocumentFromDeclaration declaration;
   identity = interfaceIdentity document;
+  effectsDeclaration = declareInterface {
+    name = effectsName;
+    description = "Executes admitted Nix store database operations for one exact controller-owned resource.";
+    abi = 1;
+    inherit requestType methods lifecycle;
+    outputs = {};
+    guarantees = [];
+    aggregation = aggregation // {controllerGroup = effectsAlias;};
+  };
+  effectsIdentity = interfaceIdentity (interfaceDocumentFromDeclaration effectsDeclaration);
 in {
   config.aos.abilities = {
-    interfaces.${interfaceAlias} = declaration;
+    interfaces = {
+      ${interfaceAlias} = declaration;
+      ${effectsAlias} = effectsDeclaration;
+    };
 
     implementations.${interfaceAlias} = {
-      description = "Converges a local Nix store database with the selected Nix executable.";
+      description = "Converges a local Nix store database through the checked package-owned controller.";
       interface = interfaceAlias;
       artifact = providerArtifact;
       methods = builtins.attrNames methods;
       guarantees = [];
+      requirements.effects = {
+        alias = "effects";
+        description = "Invokes the package-owned terminal Nix store database handler.";
+        accepted_interfaces = [effectsIdentity];
+        methods = builtins.attrNames methods;
+        guarantees = [];
+        strength = "required";
+        fallback = null;
+      };
       providerModule = {
         artifact = providerArtifact;
         path = "share/aos/providers/nix-store-database.nix";
       };
+      desiredType = realizationType;
+      requiredFeatures = [];
+    };
+
+    implementations.${effectsAlias} = {
+      description = "Executes authorized Nix store database operations through the package-owned handler.";
+      interface = effectsAlias;
+      artifact = providerArtifact;
+      methods = builtins.attrNames methods;
+      guarantees = [];
       handlerDescriptor = {
         artifact = providerArtifact;
         entryPoint = "bin/aos-nix-store-provider";
         arguments = requestType;
         result = observationType;
       };
-      desiredType = realizationType;
+      desiredType = null;
       requiredFeatures = [];
     };
 

@@ -2,13 +2,16 @@
 {
   config,
   lib,
+  packageName,
   ...
 }: let
   interfaceAlias = "nix-store-database";
-  qualifiedAlias = "aos-nix-store-provider:${interfaceAlias}";
+  qualifiedAlias = "${packageName}:${interfaceAlias}";
   declaration = config.aos.abilities.interfaces.${qualifiedAlias};
   document = lib.abilities.interfaceDocumentFromDeclaration declaration;
   identity = lib.abilities.interfaceIdentity document;
+  controller = config.aos.abilities.implementations.${qualifiedAlias};
+  effectsInterface = builtins.head controller.requirements.effects.accepted_interfaces;
 
   emptyResult = {
     requests = {};
@@ -66,9 +69,16 @@
         })
         entries);
     };
+  effectRequest = key: resource: {
+    requirement = "effects";
+    scope = [key];
+    slot = key;
+    parameters = resource.value;
+  };
   compose = {resources, ...}:
     emptyResult
     // {
+      requests = builtins.mapAttrs effectRequest resources;
       realizations =
         builtins.mapAttrs (_: _: {
           schema = "aos.nix.store-database-realization/v1";
@@ -80,8 +90,37 @@
         })
         resources;
     };
+  transition = context:
+    lib.abilities.resourceControllerTransition {
+      inherit context;
+      terminalInterface = effectsInterface;
+      actions = {
+        create = {
+          method = "converge";
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        update = {
+          method = "converge";
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        unchanged = null;
+        remove = null;
+        reconcile-stopped = {
+          method = "converge";
+          phase = "recovering";
+          access = "exclusive-write";
+        };
+        reconcile-divergent = {
+          method = "converge";
+          phase = "recovering";
+          access = "exclusive-write";
+        };
+      };
+    };
 in {
   config.aos.abilities.implementations.${interfaceAlias} = {
-    inherit provide compose;
+    inherit provide compose transition;
   };
 }

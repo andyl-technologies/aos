@@ -1,5 +1,10 @@
 ##! Checks the store-database provider package through the standard fixed point.
 {lib}: let
+  childRequestKey = lib.abilities.compositionRequestKey {
+    implementation = "aos-nix-store-provider:nix-store-database";
+    providerInstance = "aos-nix-store-provider:manager";
+    key = "database";
+  };
   consumer = {config, ...}: let
     serviceManagement = lib.abilities.interfaces.serviceManagement;
   in {
@@ -40,6 +45,12 @@
             providerInstance = "aos-nix-store-provider:manager";
             slot = "database";
           };
+          bindings."test:nix-store-database-effects" = {
+            request = childRequestKey;
+            implementation = "aos-nix-store-provider:nix-store-database-effects";
+            providerInstance = "aos-nix-store-provider:manager";
+            slot = "database";
+          };
         };
       }
     ];
@@ -61,9 +72,60 @@
   abilities = evaluated.config.aos.abilities;
   desired = builtins.head (builtins.attrValues abilities.desiredResources);
   readiness = abilities.compositionOutputs."consumer:database".readiness-resource;
+  transition = abilities.implementations."aos-nix-store-provider:nix-store-database".transition;
+  effectsInterface = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration abilities.interfaces."aos-nix-store-provider:nix-store-database-effects"
+  );
+  transitionMethods = kind: let
+    active = builtins.elem kind ["create" "update" "reconcile-stopped" "reconcile-divergent"];
+    binding = {
+      id = "nix-store-database-effects";
+      request.consumer = desired.resource.provider;
+      interface = effectsInterface;
+      caller_grant = {
+        methods = ["converge" "observe"];
+        resources = [
+          {
+            resource = desired.resource;
+            access = "exclusive-write";
+            operations = ["converge"];
+          }
+        ];
+      };
+    };
+    fragment = transition {
+      provider = desired.resource.provider;
+      operation_scope = ["nix-store-database"];
+      changes = [
+        {
+          inherit kind;
+          resource = desired.resource;
+          current = null;
+          desired = null;
+        }
+      ];
+      authorized_bindings = lib.optional active {
+        authority.role = "desired";
+        inherit binding;
+      };
+      controllers = lib.optional active {
+        resource = desired.resource;
+        controller = {
+          provider = desired.resource.provider;
+          group = "nix-store-database";
+        };
+      };
+    };
+  in
+    builtins.map (operation: operation.method) fragment.operations;
 in
   assert abilities.interfaces ? "aos-nix-store-provider:nix-store-database";
-  assert builtins.attrNames abilities.implementations == ["aos-nix-store-provider:nix-store-database"];
+  assert builtins.attrNames abilities.implementations
+  == [
+    "aos-nix-store-provider:nix-store-database"
+    "aos-nix-store-provider:nix-store-database-effects"
+  ];
+  assert abilities.compositionRequests.${childRequestKey}.parameters == desired.value;
   assert desired.kind == "aos.nix.store-database";
   assert desired.lifetime == "instance";
   assert desired.value
@@ -87,4 +149,10 @@ in
   assert readiness.value.resource == desired.resource;
   assert readiness.value.operations == ["observe"];
   assert readiness.phase == "planning";
-  assert readiness.lifetime == "instance"; true
+  assert readiness.lifetime == "instance";
+  assert transitionMethods "create" == ["converge"];
+  assert transitionMethods "update" == ["converge"];
+  assert transitionMethods "reconcile-stopped" == ["converge"];
+  assert transitionMethods "reconcile-divergent" == ["converge"];
+  assert transitionMethods "unchanged" == [];
+  assert transitionMethods "remove" == []; true
