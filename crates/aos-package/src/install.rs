@@ -997,7 +997,7 @@ fn verify_package_provenance_entries_from_cache_inner<'a>(
         let Some(provenance_ref) = meta.attestation.provenance.as_deref() else {
             if package_requires_provenance(meta) {
                 anyhow::bail!(
-                    "package '{}' uses RFC-0001 exposed or permission metadata but does not declare provenance",
+                    "package '{}' uses authenticated BPF, documentation, or contract metadata but does not declare provenance",
                     meta.name
                 );
             }
@@ -2484,7 +2484,7 @@ mod tests {
         };
 
         let err = verify_secondary_artifact_downloads(&[result], &[artifact])
-            .expect_err("referenced expose image should be rejected");
+            .expect_err("secondary artifact with references should be rejected");
 
         assert!(err.to_string().contains("empty reference set"));
     }

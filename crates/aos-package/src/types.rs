@@ -533,7 +533,8 @@ pub fn option_path_root(path: &str) -> &str {
 
 /// Returns whether package metadata must be backed by DSSE provenance.
 ///
-/// BPF-LSM metadata and package documents require provenance.
+/// BPF-LSM policy, package documentation, and package contracts require
+/// provenance.
 pub(crate) fn package_requires_provenance(meta: &PackageMeta) -> bool {
     meta.bpf_lsm
         .as_ref()
@@ -547,10 +548,10 @@ pub(crate) fn package_requires_provenance(meta: &PackageMeta) -> bool {
 /// # Errors
 ///
 /// Returns an error when the entry requires a newer format, names an
-/// unsupported feature, uses RFC-0001 metadata without declaring its feature
-/// gate, names invalid package requirements, or requests `CAP_SYS_MODULE`
-/// inside the workload instead of using the host-fulfilled `kernel-modules`
-/// permission.
+/// unsupported feature, uses authenticated metadata without declaring its
+/// feature gate, names invalid package requirements, or requests
+/// `CAP_SYS_MODULE` inside the workload instead of using the host-fulfilled
+/// `kernel-modules` permission.
 pub fn validate_supported_package_meta(meta: &PackageMeta) -> Result<()> {
     validate_supported_package_meta_with(meta, PACKAGE_META_FORMAT, SUPPORTED_PACKAGE_FEATURES)
 }

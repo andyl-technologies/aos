@@ -24,7 +24,7 @@
 //! [versions.platforms.x86_64-linux.references]
 //! hashes = ["r4q1m2kp8v3x"]
 //! min-format = 1
-//! requires-features = ["expose-v1", "permissions-v1"]
+//! requires-features = ["abilities-v1", "attestation-v1"]
 //! # nar_hash/nar_size may appear in pre-RFC-0005 registries; newer ones
 //! # publish the output's content binding in the store/ graph instead.
 //! ```
@@ -57,10 +57,10 @@ type PackageMetaValidator = fn(&PackageMeta) -> Result<()>;
 // …}` paths are unchanged. The canonical structs carry the RFC-0005 `store/`
 // graph fields (`source_drv`/`source_nar_hash`, legacy `nar_hash`/`nar_size`),
 // the RFC-0006 Secure Boot image facts (`sb_signer_cert_sha256`/`sbat`/
-// `expected_pcr11`), and the RFC-0001 package-sandboxing metadata (the
-// structural `references` gate plus the `expose`/`permissions`/`bpf_lsm`/
-// attestation fields and their helper impls such as `PlatformEntry::attestation`
-// and the `ReferenceField` accessors).
+// `expected_pcr11`), and authenticated package metadata (the structural
+// `references` gate plus BPF-LSM, attestation, documentation, and package
+// contract fields and helpers such as `PlatformEntry::attestation` and the
+// `ReferenceField` accessors).
 pub use aos_registry_surface::manifest::{
     ImageCompression, ImageDelivery, ImageEntry, ImageInfoReference, ImageStoreReference,
     ImageTarget, ImageUkiIdentity, ImageVerificationState, PackageHeader, PackageToml,
@@ -352,7 +352,7 @@ fn package_metas_for_platform(
                 && !plat.references.is_gate()
             {
                 bail!(
-                    "package '{}' uses RFC-0001 metadata without the structural references gate",
+                    "package '{}' uses authenticated metadata without the structural references gate",
                     meta.name
                 );
             }
@@ -917,7 +917,7 @@ requires-features = ["attestation-v1"]
 
     #[test]
     fn parse_attestation_metadata_requires_own_feature_gate() {
-        let content = ATTESTATION_TOML.replace("attestation-v1", "permissions-v1");
+        let content = ATTESTATION_TOML.replace("attestation-v1", "unknown-feature-v1");
 
         let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
         assert!(format!("{err:#}").contains("attestation-v1"));
