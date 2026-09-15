@@ -93,6 +93,7 @@ in {
     fixture.testPrelude
     + # python
     ''
+      import sys
       import types
       from pathlib import Path
 
@@ -141,6 +142,28 @@ in {
           ),
           EFFECT_FLIGHT.__dict__,
       )
+      PROVIDER_STATE_COMMON = types.ModuleType("native_adapter_evidence_common")
+      sys.modules[PROVIDER_STATE_COMMON.__name__] = PROVIDER_STATE_COMMON
+      exec(
+          compile(
+              ${builtins.toJSON (builtins.readFile ../../qualification/providers/native_adapter_evidence_common.py)},
+              "native_adapter_evidence_common.py",
+              "exec",
+          ),
+          PROVIDER_STATE_COMMON.__dict__,
+      )
+      PROVIDER_STATE_VALIDATOR = types.ModuleType(
+          "native_adapter_provider_state_evidence"
+      )
+      sys.modules[PROVIDER_STATE_VALIDATOR.__name__] = PROVIDER_STATE_VALIDATOR
+      exec(
+          compile(
+              ${builtins.toJSON (builtins.readFile ../../qualification/providers/native_adapter_provider_state_evidence.py)},
+              "native_adapter_provider_state_evidence.py",
+              "exec",
+          ),
+          PROVIDER_STATE_VALIDATOR.__dict__,
+      )
       PROVIDER_STATE_EVIDENCE = types.ModuleType("ability_provider_state_evidence")
       exec(
           compile(
@@ -169,7 +192,7 @@ in {
       MATRIX_SPEC = json.loads(Path(MATRIX_SPEC_PATH).read_text())
       COHORT_CELLS = json.loads(Path(COHORT_CELLS_PATH).read_text())
       STATE_BUILDER = PROVIDER_STATE_EVIDENCE.ProviderStateEvidence(
-          MATRIX_SPEC, COHORT_CELLS
+          MATRIX_SPEC, COHORT_CELLS, PROVIDER_STATE_VALIDATOR
       )
 
       ${domainScript}
