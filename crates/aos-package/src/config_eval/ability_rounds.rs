@@ -12,7 +12,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use anyhow::Result;
-use aos_ability_model::{ABILITY_LIMITS_V1, AbilityValue, LocalKey, ModuleLocator};
+use aos_ability_model::{
+    ABILITY_LIMITS_V1, AbilityValue, LocalKey, ModuleLocator, RequirementDeclaration,
+};
 use aos_contract::{Sha256Digest, canonical};
 use serde::{Deserialize, Serialize};
 
@@ -32,18 +34,36 @@ pub struct PendingAbilityRequest {
     pub provider_instance: String,
     /// Names the emitting implementation's nested requirement alias.
     pub requirement: String,
+    /// Names the package-authored aggregation slot for the child request.
+    pub slot: String,
     /// Carries the deterministic globally qualified request key.
     pub request: String,
     /// Retains the exact internally derived request declaration.
     pub declaration: AbilityValue,
 }
 
+/// Retains one exact nested requirement activated by provider composition.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingAbilityRequirement {
+    /// Names the requirement inside the selected implementation.
+    pub alias: String,
+    /// Names the exact selected implementation that activated it.
+    pub implementation: String,
+    /// Carries the canonical signed-package requirement contract.
+    pub requirement: RequirementDeclaration,
+}
+
 /// Carries the unresolved child projection from one complete module evaluation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PendingAbilityProjection {
     /// Maps each exact qualified request key to its origin and declaration.
     pub requests: BTreeMap<String, PendingAbilityRequest>,
+    /// Retains exact nested requirement declarations keyed by derived identity.
+    pub requirements: BTreeMap<String, PendingAbilityRequirement>,
+    /// Lists provider instances available in this complete module fixed point.
+    pub provider_instances: Vec<String>,
 }
 
 impl PendingAbilityProjection {
@@ -51,6 +71,22 @@ impl PendingAbilityProjection {
         if self.requests.len() as u64 > ABILITY_LIMITS_V1.max_collection_items {
             return Err(AbilityRoundError::Limit {
                 limit: "pending child request count",
+            });
+        }
+        if self.requirements.len() as u64 > ABILITY_LIMITS_V1.max_collection_items
+            || self.provider_instances.len() as u64 > ABILITY_LIMITS_V1.max_collection_items
+        {
+            return Err(AbilityRoundError::Limit {
+                limit: "pending child selection input count",
+            });
+        }
+        if self
+            .provider_instances
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(AbilityRoundError::InvalidProjection {
+                reason: "provider instance keys are not in strict canonical order".to_string(),
             });
         }
 
@@ -78,12 +114,39 @@ impl PendingAbilityProjection {
             for (field, value) in [
                 ("local request key", request.local_request_key.as_str()),
                 ("requirement", request.requirement.as_str()),
+                ("slot", request.slot.as_str()),
             ] {
                 if LocalKey::new(value.to_string()).is_err() {
                     return Err(AbilityRoundError::InvalidProjection {
                         reason: format!("pending child {field} is not a canonical local key"),
                     });
                 }
+            }
+            let declaration = request.declaration.as_json();
+            let requirement_key = declaration
+                .get("requirement")
+                .and_then(|value| value.as_str());
+            let consumer = declaration.get("consumer").and_then(|value| value.as_str());
+            let Some(requirement) = requirement_key.and_then(|key| self.requirements.get(key))
+            else {
+                return Err(AbilityRoundError::InvalidProjection {
+                    reason: format!(
+                        "pending child request {:?} names an absent nested requirement",
+                        request.request
+                    ),
+                });
+            };
+            if requirement.implementation != request.implementation
+                || requirement.alias != request.requirement
+                || requirement.requirement.alias.as_str() != request.requirement
+                || consumer != Some(request.provider_instance.as_str())
+            {
+                return Err(AbilityRoundError::InvalidProjection {
+                    reason: format!(
+                        "pending child request {:?} disagrees with its exact origin or requirement",
+                        request.request
+                    ),
+                });
             }
         }
 
@@ -387,6 +450,14 @@ fn validate_and_extend(
     let mut by_request = BTreeMap::new();
     let mut binding_keys = BTreeSet::new();
     for binding in selected {
+        let Some(pending_request) = pending.requests.get(&binding.request) else {
+            return Err(AbilityRoundError::InvalidSelection {
+                reason: format!(
+                    "binding {:?} selects a request outside the current pending projection",
+                    binding.key
+                ),
+            });
+        };
         if binding.key.is_empty()
             || binding.request.is_empty()
             || binding.implementation.is_empty()
@@ -395,6 +466,14 @@ fn validate_and_extend(
         {
             return Err(AbilityRoundError::InvalidSelection {
                 reason: "a selected binding contains an empty identity component".to_string(),
+            });
+        }
+        if binding.slot != pending_request.slot {
+            return Err(AbilityRoundError::InvalidSelection {
+                reason: format!(
+                    "binding {:?} changes the package-authored slot for pending request {:?}",
+                    binding.key, binding.request
+                ),
             });
         }
         if !binding_keys.insert(binding.key.clone()) {
@@ -503,7 +582,7 @@ mod tests {
     use std::collections::{BTreeMap, VecDeque};
 
     use anyhow::bail;
-    use aos_ability_model::{ArtifactReference, RelativePath};
+    use aos_ability_model::{ArtifactReference, RelativePath, RequirementStrength};
 
     use super::*;
 
@@ -544,8 +623,8 @@ mod tests {
         ) -> Result<Vec<SelectedAbilityBinding>> {
             Ok(pending
                 .requests
-                .keys()
-                .map(|request| selected(request))
+                .values()
+                .map(|request| selected(&request.request, &request.slot))
                 .collect())
         }
     }
@@ -614,6 +693,32 @@ mod tests {
 
         let error = resolve_ability_rounds(&evaluator, &MissingResolver, 4)
             .expect_err("an incomplete selection must fail closed");
+
+        assert!(matches!(error, AbilityRoundError::InvalidSelection { .. }));
+    }
+
+    #[test]
+    fn resolver_cannot_change_the_package_authored_slot() {
+        struct ChangedSlotResolver;
+
+        impl AbilityRoundResolver for ChangedSlotResolver {
+            fn select(
+                &self,
+                pending: &PendingAbilityProjection,
+            ) -> Result<Vec<SelectedAbilityBinding>> {
+                Ok(pending
+                    .requests
+                    .keys()
+                    .map(|request| selected(request, "changed-slot"))
+                    .collect())
+            }
+        }
+
+        let evaluator =
+            ScriptedEvaluation::new(vec![AbilityRoundEvaluation::Pending(pending(&["child-a"]))]);
+
+        let error = resolve_ability_rounds(&evaluator, &ChangedSlotResolver, 4)
+            .expect_err("provider selection must retain the child request slot");
 
         assert!(matches!(error, AbilityRoundError::InvalidSelection { .. }));
     }
@@ -712,6 +817,7 @@ mod tests {
                             implementation: "provider:recursive".to_string(),
                             provider_instance: "provider:instance".to_string(),
                             requirement: "lower".to_string(),
+                            slot: "main".to_string(),
                             request: (*request).to_string(),
                             declaration: AbilityValue::new(serde_json::json!({
                                 "package": null,
@@ -725,16 +831,32 @@ mod tests {
                     )
                 })
                 .collect::<BTreeMap<_, _>>(),
+            requirements: BTreeMap::from([(
+                "derived:lower".to_string(),
+                PendingAbilityRequirement {
+                    alias: "lower".to_string(),
+                    implementation: "provider:recursive".to_string(),
+                    requirement: RequirementDeclaration {
+                        alias: LocalKey::new("lower".to_string()).expect("test requirement alias"),
+                        accepted_interfaces: Vec::new(),
+                        methods: Vec::new(),
+                        guarantees: Vec::new(),
+                        strength: RequirementStrength::Required,
+                        fallback: None,
+                    },
+                },
+            )]),
+            provider_instances: vec!["provider:instance".to_string()],
         }
     }
 
-    fn selected(request: &str) -> SelectedAbilityBinding {
+    fn selected(request: &str, slot: &str) -> SelectedAbilityBinding {
         SelectedAbilityBinding {
             key: format!("binding-{request}"),
             request: request.to_string(),
             implementation: "lower:implementation".to_string(),
             provider_instance: "lower:instance".to_string(),
-            slot: "main".to_string(),
+            slot: slot.to_string(),
             provider_module: Some(SelectedProviderModule {
                 package: "lower".to_string(),
                 locator: ModuleLocator {
