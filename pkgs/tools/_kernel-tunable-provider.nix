@@ -1,8 +1,15 @@
-##! Selected pure composition for kernel-tunable convergence.
-{lib, ...}: let
+##! Selected pure controller for kernel-tunable convergence.
+{
+  config,
+  lib,
+  packageName,
+  ...
+}: let
   alias = "kernel-tunables";
   interface = lib.abilities.interfaces.kernelTunables.interface;
   identity = interface.identity;
+  controller = config.aos.abilities.implementations."${packageName}:${alias}";
+  effectsInterface = builtins.head controller.requirements.effects.accepted_interfaces;
   emptyResult = {
     requests = {};
     outputs = {};
@@ -55,17 +62,57 @@
         })
         entries);
     };
+  effectRequest = key: resource: {
+    requirement = "effects";
+    scope = [key];
+    slot = key;
+    parameters = resource.value;
+  };
   compose = {resources, ...}:
     emptyResult
     // {
+      requests = builtins.mapAttrs effectRequest resources;
       realizations =
         builtins.mapAttrs (_: _: {
           schema = "aos.kernel.tunables-realization/v1";
         })
         resources;
     };
+  transition = context:
+    lib.abilities.resourceControllerTransition {
+      inherit context;
+      terminalInterface = effectsInterface;
+      actions = {
+        create = {
+          method = "apply";
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        update = {
+          method = "apply";
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        unchanged = null;
+        remove = {
+          method = "remove";
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        reconcile-stopped = {
+          method = "apply";
+          phase = "recovering";
+          access = "exclusive-write";
+        };
+        reconcile-divergent = {
+          method = "apply";
+          phase = "recovering";
+          access = "exclusive-write";
+        };
+      };
+    };
 in {
   config.aos.abilities.implementations.${alias} = {
-    inherit provide compose;
+    inherit provide compose transition;
   };
 }
