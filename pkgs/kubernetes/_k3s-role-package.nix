@@ -107,7 +107,7 @@ mkDerivation {
   src = null;
   runtimeDeps = common.runtimePath ++ [ aos-kubernetes-provider ];
 
-  abilities = ./_k3s-config/module.nix;
+  abilities = ./_k3s-config;
 
   phases = [
     {
