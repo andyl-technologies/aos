@@ -106,6 +106,32 @@ in
       self,
       pkgs,
     }: let
+      serviceManagement = lib.abilities.interfaces.serviceManagement;
+      environmentId = lib.abilities.environmentId {
+        authority = "deployment";
+        key = "etcd-test";
+        stage = "host";
+      };
+      credentialProvider = lib.abilities.instanceId {
+        environment = environmentId;
+        key = "credential-provider";
+      };
+      credential = name:
+        lib.abilities.resourceReference {
+          interface = serviceManagement.interfaces.credentialDelivery.identity;
+          resource = {
+            provider = credentialProvider;
+            key = name;
+          };
+          operations = ["observe"];
+          lifetime = "persistent";
+        };
+      tls = prefix: {
+        enable = true;
+        certificate.resource = credential "${prefix}-certificate";
+        privateKey.resource = credential "${prefix}-private-key";
+        trustedCa.resource = credential "${prefix}-trusted-ca";
+      };
       evalConfig = etcdConfig:
         lib.evalModules {
           modules = [
@@ -151,6 +177,52 @@ in
           snapshotCount = 1000;
         };
       };
+      evaluateTls = clientTls: peerTls: let
+        clientScheme =
+          if clientTls
+          then "https"
+          else "http";
+        peerScheme =
+          if peerTls
+          then "https"
+          else "http";
+      in
+        evalConfig {
+          enable = true;
+          name = "node-a";
+          client = {
+            listenUrls = ["${clientScheme}://127.0.0.1:12379"];
+            advertiseUrls = ["${clientScheme}://127.0.0.1:12379"];
+            tls =
+              if clientTls
+              then tls "client"
+              else {};
+          };
+          peer = {
+            listenUrls = ["${peerScheme}://127.0.0.1:12380"];
+            advertiseUrls = ["${peerScheme}://127.0.0.1:12380"];
+            tls =
+              if peerTls
+              then tls "peer"
+              else {};
+          };
+          cluster.members.node-a.peerUrls = ["${peerScheme}://127.0.0.1:12380"];
+        };
+      tlsEvaluations = {
+        neither = evaluateTls false false;
+        client = evaluateTls true false;
+        peer = evaluateTls false true;
+        both = evaluateTls true true;
+      };
+      credentialRequests = evaluation:
+        builtins.filter
+        (name: lib.hasPrefix "etcd:credential-" name)
+        (builtins.attrNames evaluation.config.aos.abilities.requests);
+      qualifiedResultOf = request: output: {
+        _type = "aos-request-output-reference";
+        inherit request output;
+      };
+      disabled = evalConfig {};
       invalidMember = evalConfig {
         name = "missing";
         cluster.members.node-a.peerUrls = ["http://127.0.0.1:2380"];
@@ -169,7 +241,10 @@ in
         ];
       };
       abilities = evaluated.config.aos.abilities;
+      disabledAbilities = disabled.config.aos.abilities;
       requests = builtins.attrNames abilities.requests;
+      mainStorageMounts = abilities.requests."etcd:main-storage".parameters.mounts;
+      disabledRequirements = builtins.attrNames disabledAbilities.requirementTemplates;
       configurationSource = abilities.requests."etcd:server-configuration".parameters.source;
       runtimeConfig = builtins.toFile "etcd-runtime-check.json" (builtins.toJSON {
         name = "node-a";
@@ -187,10 +262,34 @@ in
         && !assertionsHold invalidMember
         && !assertionsHold invalidTls
         && !assertionsHold invalidDuplicate
+        && disabledAbilities.instances == {}
+        && disabledAbilities.requests == {}
+        && builtins.elem "etcd:credential-delivery" disabledRequirements
+        && builtins.elem "etcd:service-lifecycle" disabledRequirements
         && builtins.elem "etcd:main-lifecycle" requests
         && builtins.elem "etcd:main-dependencies" requests
         && builtins.elem "etcd:main-readiness" requests
         && builtins.elem "etcd:server-configuration" requests
+        && builtins.all assertionsHold (builtins.attrValues tlsEvaluations)
+        && credentialRequests tlsEvaluations.neither == []
+        && credentialRequests tlsEvaluations.client
+        == [
+          "etcd:credential-client-certificate"
+          "etcd:credential-client-private-key"
+          "etcd:credential-client-trusted-ca"
+        ]
+        && credentialRequests tlsEvaluations.peer
+        == [
+          "etcd:credential-peer-certificate"
+          "etcd:credential-peer-private-key"
+          "etcd:credential-peer-trusted-ca"
+        ]
+        && builtins.length (credentialRequests tlsEvaluations.both) == 6
+        && builtins.map (mount: mount.source) mainStorageMounts
+        == [
+          (qualifiedResultOf "etcd:data-storage" "planned-path")
+          (qualifiedResultOf "etcd:runtime-storage" "planned-path")
+        ]
         && configurationSource.kind == "structured-value"
         && configurationSource.format == "json"
         && !(lib.hasInfix "/var/lib/aos-pkg-etcd" (builtins.toJSON configurationSource));

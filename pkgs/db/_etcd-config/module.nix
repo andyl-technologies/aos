@@ -324,12 +324,12 @@
         storage.mounts = [
           {
             name = "data";
-            source = resultOf "data-storage" "storage-path";
+            source = resultOf "data-storage" "planned-path";
             access = "read-write";
           }
           {
             name = "runtime";
-            source = resultOf "runtime-storage" "storage-path";
+            source = resultOf "runtime-storage" "planned-path";
             access = "read-write";
           }
         ];
@@ -392,24 +392,14 @@
       };
     };
   in [dataStorage runtimeStorage networkReadiness configurationRequest credentialRequests serviceRequest];
-  tlsVariants = [
-    {
-      client = false;
-      peer = false;
-    }
-    {
-      client = true;
-      peer = false;
-    }
-    {
-      client = false;
-      peer = true;
-    }
-    {
-      client = true;
-      peer = true;
-    }
-  ];
+  staticAbilityFragments =
+    builtins.map
+    (fragment: (serviceManagement.splitContribution fragment).declarations)
+    (abilityFragmentsFor true true);
+  configuredAbilityFragments =
+    builtins.map
+    (fragment: (serviceManagement.splitContribution fragment).configured)
+    (abilityFragmentsFor cfg.client.tls.enable cfg.peer.tls.enable);
 in {
   options.etcd = {
     enable = mkOption {
@@ -514,88 +504,81 @@ in {
     };
   };
 
-  config = lib.mkMerge (
-    [
-      {
-        assertions = [
-          {
-            assertion = localMember != null;
-            message = "etcd.cluster.members must contain the local etcd.name";
-          }
-          {
-            assertion = localMember == null || localMember.peerUrls == cfg.peer.advertiseUrls;
-            message = "the local etcd cluster member peerUrls must equal etcd.peer.advertiseUrls";
-          }
-          {
-            assertion = allUnique cfg.client.listenUrls && allUnique cfg.client.advertiseUrls;
-            message = "etcd client endpoint lists must not contain duplicates";
-          }
-          {
-            assertion = allUnique cfg.peer.listenUrls && allUnique cfg.peer.advertiseUrls;
-            message = "etcd peer endpoint lists must not contain duplicates";
-          }
-          {
-            assertion = !cfg.client.tls.enable || (allScheme "https" cfg.client.listenUrls && allScheme "https" cfg.client.advertiseUrls);
-            message = "etcd client endpoints must all use HTTPS when client TLS is enabled";
-          }
-          {
-            assertion = cfg.client.tls.enable || (allScheme "http" cfg.client.listenUrls && allScheme "http" cfg.client.advertiseUrls);
-            message = "etcd client endpoints must all use HTTP when client TLS is disabled";
-          }
-          {
-            assertion = !cfg.peer.tls.enable || (allScheme "https" cfg.peer.listenUrls && allScheme "https" cfg.peer.advertiseUrls);
-            message = "etcd peer endpoints must all use HTTPS when peer TLS is enabled";
-          }
-          {
-            assertion = cfg.peer.tls.enable || (allScheme "http" cfg.peer.listenUrls && allScheme "http" cfg.peer.advertiseUrls);
-            message = "etcd peer endpoints must all use HTTP when peer TLS is disabled";
-          }
-          {
-            assertion = !cfg.client.tls.enable || builtins.all (value: value != null) [cfg.client.tls.certificate.resource cfg.client.tls.privateKey.resource cfg.client.tls.trustedCa.resource];
-            message = "etcd client TLS requires certificate, private-key, and trusted-CA references";
-          }
-          {
-            assertion = !cfg.peer.tls.enable || builtins.all (value: value != null) [cfg.peer.tls.certificate.resource cfg.peer.tls.privateKey.resource cfg.peer.tls.trustedCa.resource];
-            message = "etcd peer TLS requires certificate, private-key, and trusted-CA references";
-          }
-          {
-            assertion = builtins.all (memberValue: allUnique memberValue.peerUrls) clusterMembers;
-            message = "each etcd cluster member must advertise unique peer endpoints";
-          }
-          {
-            assertion = builtins.all (memberValue:
-              allScheme (
-                if cfg.peer.tls.enable
-                then "https"
-                else "http"
-              )
-              memberValue.peerUrls)
-            clusterMembers;
-            message = "all etcd cluster member peer endpoints must follow the configured peer TLS scheme";
-          }
-          {
-            assertion =
-              if cfg.storage.autoCompaction.mode == "revision"
-              then builtins.match "[1-9][0-9]*" cfg.storage.autoCompaction.retention != null
-              else builtins.match "[1-9][0-9]*(ms|s|m|h)" cfg.storage.autoCompaction.retention != null;
-            message = "etcd auto-compaction retention must be a positive revision or duration matching its mode";
-          }
-        ];
-      }
-      (lib.mkIf cfg.enable {aos.abilities.instances.etcd = {};})
-    ]
-    ++ builtins.map (variant:
-      lib.mkIf
-      (
-        cfg.enable
-        && cfg.client.tls.enable == variant.client
-        && cfg.peer.tls.enable == variant.peer
-      )
-      (lib.mkMerge (
-        builtins.map
-        (fragment: {aos.abilities = fragment;})
-        (abilityFragmentsFor variant.client variant.peer)
-      )))
-    tlsVariants
-  );
+  config = lib.mkMerge [
+    {
+      assertions = [
+        {
+          assertion = localMember != null;
+          message = "etcd.cluster.members must contain the local etcd.name";
+        }
+        {
+          assertion = localMember == null || localMember.peerUrls == cfg.peer.advertiseUrls;
+          message = "the local etcd cluster member peerUrls must equal etcd.peer.advertiseUrls";
+        }
+        {
+          assertion = allUnique cfg.client.listenUrls && allUnique cfg.client.advertiseUrls;
+          message = "etcd client endpoint lists must not contain duplicates";
+        }
+        {
+          assertion = allUnique cfg.peer.listenUrls && allUnique cfg.peer.advertiseUrls;
+          message = "etcd peer endpoint lists must not contain duplicates";
+        }
+        {
+          assertion = !cfg.client.tls.enable || (allScheme "https" cfg.client.listenUrls && allScheme "https" cfg.client.advertiseUrls);
+          message = "etcd client endpoints must all use HTTPS when client TLS is enabled";
+        }
+        {
+          assertion = cfg.client.tls.enable || (allScheme "http" cfg.client.listenUrls && allScheme "http" cfg.client.advertiseUrls);
+          message = "etcd client endpoints must all use HTTP when client TLS is disabled";
+        }
+        {
+          assertion = !cfg.peer.tls.enable || (allScheme "https" cfg.peer.listenUrls && allScheme "https" cfg.peer.advertiseUrls);
+          message = "etcd peer endpoints must all use HTTPS when peer TLS is enabled";
+        }
+        {
+          assertion = cfg.peer.tls.enable || (allScheme "http" cfg.peer.listenUrls && allScheme "http" cfg.peer.advertiseUrls);
+          message = "etcd peer endpoints must all use HTTP when peer TLS is disabled";
+        }
+        {
+          assertion = !cfg.client.tls.enable || builtins.all (value: value != null) [cfg.client.tls.certificate.resource cfg.client.tls.privateKey.resource cfg.client.tls.trustedCa.resource];
+          message = "etcd client TLS requires certificate, private-key, and trusted-CA references";
+        }
+        {
+          assertion = !cfg.peer.tls.enable || builtins.all (value: value != null) [cfg.peer.tls.certificate.resource cfg.peer.tls.privateKey.resource cfg.peer.tls.trustedCa.resource];
+          message = "etcd peer TLS requires certificate, private-key, and trusted-CA references";
+        }
+        {
+          assertion = builtins.all (memberValue: allUnique memberValue.peerUrls) clusterMembers;
+          message = "each etcd cluster member must advertise unique peer endpoints";
+        }
+        {
+          assertion = builtins.all (memberValue:
+            allScheme (
+              if cfg.peer.tls.enable
+              then "https"
+              else "http"
+            )
+            memberValue.peerUrls)
+          clusterMembers;
+          message = "all etcd cluster member peer endpoints must follow the configured peer TLS scheme";
+        }
+        {
+          assertion =
+            if cfg.storage.autoCompaction.mode == "revision"
+            then builtins.match "[1-9][0-9]*" cfg.storage.autoCompaction.retention != null
+            else builtins.match "[1-9][0-9]*(ms|s|m|h)" cfg.storage.autoCompaction.retention != null;
+          message = "etcd auto-compaction retention must be a positive revision or duration matching its mode";
+        }
+      ];
+    }
+    (lib.mkMerge (builtins.map
+      (fragment: {aos.abilities = fragment;})
+      staticAbilityFragments))
+    (lib.mkIf cfg.enable {
+      aos.abilities = lib.mkMerge (
+        [{instances.etcd = {};}]
+        ++ configuredAbilityFragments
+      );
+    })
+  ];
 }
