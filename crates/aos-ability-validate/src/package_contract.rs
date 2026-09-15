@@ -5,10 +5,13 @@
 //! named only by deployment requirements unresolved, while every exported or
 //! implemented interface must be present in this local catalog.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::document::DocumentError;
-use aos_ability_model::{InterfaceDocument, PackageDocument, RequiredFeature, decode_canonical};
+use aos_ability_model::{
+    GuaranteeKey, InterfaceDocument, InterfaceKey, LocalKey, PackageDocument, RequiredFeature,
+    decode_canonical,
+};
 use thiserror::Error;
 
 use crate::{CheckedPackageDocument, ValidationContext, ValidationErrors};
@@ -31,6 +34,25 @@ impl CheckedPackageContract {
     #[must_use]
     pub const fn validation_context(&self) -> &ValidationContext {
         &self.context
+    }
+
+    /// Returns package-local interface aliases and their checked documents.
+    #[must_use]
+    pub fn retained_interfaces(&self) -> BTreeMap<&LocalKey, &InterfaceDocument> {
+        self.package()
+            .interfaces
+            .iter()
+            .filter_map(|(alias, key)| self.context.interface(key).map(|document| (alias, document)))
+            .collect()
+    }
+
+    /// Returns one checked retained interface by its package-local alias.
+    #[must_use]
+    pub fn retained_interface(&self, alias: &LocalKey) -> Option<&InterfaceDocument> {
+        self.package()
+            .interfaces
+            .get(alias)
+            .and_then(|key| self.context.interface(key))
     }
 }
 
@@ -58,6 +80,9 @@ pub enum PackageContractValidationError {
     /// The package disagreed with the validated retained interfaces.
     #[error("validating ability package semantics")]
     PackageSemantics(#[source] ValidationErrors),
+    /// Package-local declarations disagreed with the retained semantic catalog.
+    #[error("validating package-local ability declarations")]
+    LocalDeclarations(#[source] anyhow::Error),
 }
 
 /// Validates one canonical package manifest and its retained public interfaces.
@@ -106,7 +131,83 @@ where
         .validate_package_contract(package)
         .map_err(PackageContractValidationError::PackageSemantics)?;
 
+    validate_local_declarations(package.document(), &context)
+        .map_err(PackageContractValidationError::LocalDeclarations)?;
+
     Ok(CheckedPackageContract { package, context })
+}
+
+fn validate_local_declarations(
+    package: &PackageDocument,
+    context: &ValidationContext,
+) -> anyhow::Result<()> {
+    let retained = package
+        .interfaces
+        .iter()
+        .map(|(alias, key)| {
+            let document = context.interface(key).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "package interface alias '{}' has no exact retained document",
+                    alias.as_str()
+                )
+            })?;
+            let actual = document.interface_key()?;
+            anyhow::ensure!(
+                actual == *key,
+                "package interface alias '{}' differs from its retained document",
+                alias.as_str()
+            );
+            Ok(key.clone())
+        })
+        .collect::<anyhow::Result<BTreeSet<InterfaceKey>>>()?;
+    anyhow::ensure!(
+        retained.len() == context.interface_catalog().len(),
+        "retained interface catalog contains documents not owned by a package interface alias"
+    );
+
+    let declared_guarantees = package
+        .guarantees
+        .values()
+        .map(|declaration| declaration.key())
+        .collect::<anyhow::Result<BTreeSet<GuaranteeKey>>>()?;
+    anyhow::ensure!(
+        declared_guarantees.len() == package.guarantees.len(),
+        "package guarantee aliases derive duplicate semantic identities"
+    );
+
+    let mut referenced_guarantees = BTreeSet::new();
+    for key in &retained {
+        let document = context
+            .interface(key)
+            .ok_or_else(|| anyhow::anyhow!("checked retained interface disappeared"))?;
+        referenced_guarantees.extend(document.interface.guarantees.iter().cloned());
+        for method in document.interface.methods.values() {
+            referenced_guarantees.extend(method.guarantees.iter().cloned());
+        }
+    }
+    for requirement in package.requirements.iter().chain(
+        package
+            .implementation
+            .providers
+            .iter()
+            .flat_map(|provider| &provider.requirements),
+    ) {
+        referenced_guarantees.extend(requirement.guarantees.iter().cloned());
+    }
+    anyhow::ensure!(
+        declared_guarantees == referenced_guarantees,
+        "package guarantee declarations must exactly cover all referenced guarantee identities"
+    );
+
+    let module_artifact = package.package_module.artifact.identity();
+    anyhow::ensure!(
+        package
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.identity() == module_artifact),
+        "package module artifact is absent from the retained artifact catalog"
+    );
+    Ok(())
 }
 
 fn supported_features() -> Result<BTreeSet<RequiredFeature>, PackageContractValidationError> {
@@ -124,7 +225,7 @@ fn supported_features() -> Result<BTreeSet<RequiredFeature>, PackageContractVali
 
 #[cfg(test)]
 mod tests {
-    use aos_ability_model::encode_canonical;
+    use aos_ability_model::{GuaranteeDeclaration, InterfaceName, LocalKey, encode_canonical};
 
     use super::validate_package_contract;
 
@@ -136,6 +237,13 @@ mod tests {
         let interfaces = fixture
             .interfaces
             .iter()
+            .filter(|document| {
+                let key = document.interface_key().expect("fixture interface identity");
+                fixture.binding_inputs.packages[0]
+                    .interfaces
+                    .values()
+                    .any(|declared| declared == &key)
+            })
             .map(|document| encode_canonical(document).expect("fixture interface must encode"))
             .collect::<Vec<_>>();
 
@@ -152,6 +260,13 @@ mod tests {
         let interfaces = fixture
             .interfaces
             .iter()
+            .filter(|document| {
+                let key = document.interface_key().expect("fixture interface identity");
+                fixture.binding_inputs.packages[0]
+                    .interfaces
+                    .values()
+                    .any(|declared| declared == &key)
+            })
             .map(|document| encode_canonical(document).expect("fixture interface must encode"))
             .collect::<Vec<_>>();
 
@@ -159,5 +274,58 @@ mod tests {
             .expect_err("semantic export mismatch must fail closed");
 
         assert!(format!("{error:?}").contains("package export lacks a matching exact"));
+    }
+
+    #[test]
+    fn rejects_an_unreferenced_package_guarantee_declaration() {
+        let fixture = crate::test_support::stateful_owner_plan_fixture();
+        let mut package = fixture.binding_inputs.packages[0].clone();
+        package.guarantees.insert(
+            LocalKey::new("unused").expect("valid alias"),
+            GuaranteeDeclaration {
+                name: InterfaceName::new("test.unused").expect("valid name"),
+                version: 1.try_into().expect("nonzero version"),
+                semantics: "unused semantic promise".to_string(),
+                description: "Unused documentation.".to_string(),
+            },
+        );
+        let package = encode_canonical(&package).expect("mutated package must encode");
+        let interfaces = retained_interface_bytes(&fixture);
+
+        let error = validate_package_contract(&package, &interfaces)
+            .expect_err("unreferenced guarantee declaration must fail closed");
+
+        assert!(format!("{error:?}").contains("exactly cover"));
+    }
+
+    #[test]
+    fn rejects_a_package_module_missing_from_retained_artifacts() {
+        let fixture = crate::test_support::stateful_owner_plan_fixture();
+        let mut package = fixture.binding_inputs.packages[0].clone();
+        package.artifacts.clear();
+        let package = encode_canonical(&package).expect("mutated package must encode");
+        let interfaces = retained_interface_bytes(&fixture);
+
+        let error = validate_package_contract(&package, &interfaces)
+            .expect_err("unretained package module must fail closed");
+
+        assert!(format!("{error:?}").contains("package module artifact"));
+    }
+
+    fn retained_interface_bytes(
+        fixture: &crate::test_support::PlanFixture,
+    ) -> Vec<Vec<u8>> {
+        fixture
+            .interfaces
+            .iter()
+            .filter(|document| {
+                let key = document.interface_key().expect("fixture interface identity");
+                fixture.binding_inputs.packages[0]
+                    .interfaces
+                    .values()
+                    .any(|declared| declared == &key)
+            })
+            .map(|document| encode_canonical(document).expect("fixture interface must encode"))
+            .collect()
     }
 }

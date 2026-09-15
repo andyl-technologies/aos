@@ -6,6 +6,7 @@
     name = "aos.guarantee.readiness";
     version = 1;
     semantics = "the provider reports readiness for the requested revision";
+    description = "Reports readiness for the requested revision.";
   };
 
   interface = abilities.define {

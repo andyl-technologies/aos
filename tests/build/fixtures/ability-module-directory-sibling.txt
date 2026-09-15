@@ -1,0 +1,1 @@
+This file sits outside the declared module directory and must not be retained.

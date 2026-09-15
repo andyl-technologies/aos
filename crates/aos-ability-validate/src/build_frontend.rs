@@ -9,7 +9,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
     ArtifactClosureMemberInput, ArtifactReference, artifact_closure_identity,
     artifact_content_identity, encode_canonical,
@@ -658,11 +658,33 @@ pub fn validate_package_source(manifest: &Path, interface_directory: &Path) -> R
         })
         .collect::<Result<Vec<_>>>()?;
 
-    validate_ability_contract(AbilityContractData::PackageSource {
+    let checked = validate_ability_contract(AbilityContractData::PackageSource {
         manifest: &manifest_bytes,
         retained_interfaces: &interfaces,
     })
     .context("ability package failed shared Rust semantic validation")?;
+    let crate::CheckedAbilityContract::PackageSource(contract) = checked else {
+        bail!("package-source validation returned the wrong checked contract family");
+    };
+    validate_module_locator_target(&contract.package().package_module)
+        .context("validating package ability module locator")?;
+    for provider in &contract.package().implementation.providers {
+        if let Some(locator) = &provider.provider_module {
+            validate_module_locator_target(locator)
+                .context("validating provider ability module locator")?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_module_locator_target(locator: &aos_ability_model::ModuleLocator) -> Result<()> {
+    let root = Path::new(&locator.artifact.store_path);
+    let target = root.join(locator.path.as_str());
+    ensure!(
+        target.is_file(),
+        "ability module locator target {} is not a regular file",
+        target.display()
+    );
     Ok(())
 }
 

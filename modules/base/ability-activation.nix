@@ -23,24 +23,13 @@
       architecture = "arm64";
     }
     else throw "bootable static ability contracts require a supported Linux image platform";
-  abilityPackages =
-    builtins.filter (
-      package:
-        builtins.isAttrs package
-        && package ? abilityContract
-    )
-    config.environment.systemPackages;
   staticAbilityContractSource = oci.mkStaticAbilityContract {
     pname = "aos-host-static-abilities";
     artifactClass = "bootable";
     executionStage = "host";
     platform = bootPlatform;
-    packages =
-      map (package: {
-        payload = package;
-        manifest = package.abilities.contract;
-      })
-      abilityPackages;
+    packageRoots = config.environment.systemPackages;
+    packageRegistry = pkgs;
     runtimeRoots = config.environment.systemPackages;
   };
   # The base library captures the image-built contract under this key. Runtime

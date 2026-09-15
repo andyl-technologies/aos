@@ -16,6 +16,8 @@
   };
   effects = import ./effects;
   diagnostics = import ./diagnostic.nix;
+  packageOutputSelectors = import ./package-output-selectors.nix {inherit diagnostics;};
+  inherit (packageOutputSelectors) normalizePackageOutputSelectors;
 
   fail = message:
     diagnostics.throw "value-type-mismatch" "abilities: ${message}";
@@ -74,6 +76,13 @@
 
   descriptorFor = domain: document: "sha256:${builtins.hashString "sha256" (builtins.toJSON {inherit domain document;})}";
 
+  guaranteeIdentity = declaration: {
+    inherit (declaration) name version;
+    descriptor = descriptorFor "aos.ability.execution-guarantee/v1" {
+      inherit (declaration) name version semantics;
+    };
+  };
+
   normalizeSemanticValue = value:
     if
       builtins.isAttrs value
@@ -111,11 +120,6 @@
   }: {
     inherit name abi description requestType configurationType outputs methods lifecycle aggregation guarantees requiredFeatures;
   };
-
-  interfaceDeclarationFromDefinition = requiredFeatures: definition: let
-    export = requireMarker "interface definition" "aos-ability-export" definition;
-  in
-    export._interface_declaration // {inherit requiredFeatures;};
 
   makeInterfaceDocument = requiredFeatures: export: {
     schema = "aos.ability.interface/v1";
@@ -197,130 +201,6 @@
       requiredFeatures = document.required_features;
     };
 
-  implementationFromDefinition = interfaceAlias: entry: let
-    definition = requireMarker "implementation definition" "aos-ability-export" entry.definition;
-  in {
-    _legacy = true;
-    description = null;
-    interface = interfaceAlias;
-    methods = builtins.attrNames (definition._interface_declaration.methods or {});
-    guarantees = definition._interface_declaration.guarantees or [];
-    inherit
-      (definition)
-      requirements
-      state_format
-      compose
-      transition
-      provide
-      ;
-    artifact = entry.artifact or null;
-    artifacts = entry.artifacts or [];
-    handlerDescriptor = entry.handler or null;
-    providerModule = entry.providerModule or null;
-    desiredType =
-      if entry ? desiredType
-      then entry.desiredType
-      else definition._interface_declaration.requestType or null;
-    requiredFeatures = entry.requiredFeatures or [];
-    qualification = entry.qualification or null;
-  };
-
-  projectDefinitions = entries: {
-    interfaces =
-      builtins.mapAttrs (
-        _: entry:
-          interfaceDeclarationFromDefinition (entry.requiredFeatures or []) entry.definition
-      )
-      entries;
-    implementations = builtins.mapAttrs implementationFromDefinition entries;
-  };
-
-  exportForImplementation = document: implementationName: implementation: {
-    _type = "aos-ability-export";
-    interface = {
-      inherit (document.interface) name abi;
-      descriptor = null;
-    };
-    request_schema = document.interface.request;
-    configuration_schema = document.interface.configuration or null;
-    inherit (document.interface) outputs methods lifecycle guarantees;
-    aggregation = document.interface.aggregation;
-    inherit (implementation) requirements state_format compose transition provide;
-    compose_entry =
-      if implementation.compose == null
-      then null
-      else "compose";
-    transition_entry =
-      if implementation.transition == null
-      then null
-      else "transition";
-    desired_schema =
-      if implementation.desired_type == null
-      then null
-      else schemas.validateSchema "implementation '${implementationName}' desired type" implementation.desired_type;
-    owns_resource_kinds = builtins.attrNames (builtins.listToAttrs (builtins.map
-      (method: {
-        name = method.target_resource;
-        value = true;
-      })
-      (builtins.filter
-        (method: method.semantics.required_target_access == "exclusive-write")
-        (builtins.map
-          (name: document.interface.methods.${name})
-          implementation.methods))));
-    handler =
-      if implementation.handlerDescriptor == null
-      then null
-      else implementationName;
-  };
-
-  qualifyPackageAbilities = packageName: abilities: let
-    checkedPackageName =
-      if abilityTypes.packageName.check packageName
-      then packageName
-      else fail "ability package name is invalid";
-    qualify = name: "${checkedPackageName}:${requireLocalKey "package-local ability alias" name}";
-    qualifyAttrs = transform: values:
-      builtins.listToAttrs (builtins.map (name: {
-        name = qualify name;
-        value = transform values.${name};
-      }) (builtins.attrNames values));
-    qualifyDeferredResults = value:
-      if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
-      then value // {request = qualify value.request;}
-      else if builtins.isAttrs value
-      then builtins.mapAttrs (_: qualifyDeferredResults) value
-      else if builtins.isList value
-      then builtins.map qualifyDeferredResults value
-      else value;
-  in {
-    environment = abilities.environment or null;
-    interfaces = qualifyAttrs (value: value) (abilities.interfaces or {});
-    implementations = qualifyAttrs (value:
-      value
-      // {
-        interface = qualify value.interface;
-        package = packageName;
-      }) (abilities.implementations or {});
-    requirementTemplates = qualifyAttrs (value: value) (abilities.requirementTemplates or {});
-    instances = qualifyAttrs (value:
-      value
-      // {
-        implementation =
-          if value.implementation == null
-          then null
-          else qualify value.implementation;
-      }) (abilities.instances or {});
-    requests = qualifyAttrs (value:
-      (qualifyDeferredResults value)
-      // {
-        requirement = qualify value.requirement;
-        package = packageName;
-      }) (abilities.requests or {});
-    bindings = abilities.bindings or {};
-    desiredResources = abilities.desiredResources or {};
-  };
-
   requireU32Positive = context: value:
     if positiveU32Type.check value
     then value
@@ -391,9 +271,19 @@
     else left.descriptor < right.descriptor;
 
   canonicalGuarantees = context: values: let
+    project = value: let
+      checked = requireAttrs context (
+        if value ? semantics
+        then ["description" "name" "semantics" "version"]
+        else ["descriptor" "name" "version"]
+      ) value;
+    in
+      if value ? semantics
+      then guaranteeIdentity checked
+      else guaranteeKey context checked;
     checked =
       if builtins.isList values
-      then builtins.map (guaranteeKey context) values
+      then builtins.map project values
       else fail "${context} must be a list";
     sorted = builtins.sort guaranteeLessThan checked;
   in
@@ -1625,12 +1515,10 @@ in rec {
     expand
     transition
     descriptorFor
+    guaranteeIdentity
     interfaceIdentity
     interfaceDocumentFromDeclaration
     interfaceDeclarationFromDocument
-    projectDefinitions
-    exportForImplementation
-    qualifyPackageAbilities
     ;
   types = abilityTypes;
   interfaces = rec {
@@ -1656,8 +1544,10 @@ in rec {
         schemas
         evalModules
         interfaceDocumentFromDeclaration
+        guaranteeIdentity
         interfaceIdentity
         normalizeSemanticValue
+        normalizePackageOutputSelectors
         resourceRevision
         ;
       coreInterfaces =
@@ -1673,20 +1563,27 @@ in rec {
     (builtins.attrNames values);
 
   guarantee = value: let
-    checked = requireAttrs "guarantee" ["name" "version" "semantics"] value;
-    document = {
-      name = requireQualifiedName "guarantee name" checked.name;
-      version = requireU32Positive "guarantee version" checked.version;
-      semantics =
-        if builtins.isString (checked.semantics or null) && checked.semantics != ""
-        then checked.semantics
-        else fail "guarantee semantics must be a non-empty string";
-    };
-  in
-    guaranteeKey "guarantee" {
-      inherit (document) name version;
-      descriptor = descriptorFor "aos.ability.execution-guarantee/v1" document;
-    };
+    checked = requireAttrs "guarantee" ["description" "name" "semantics" "version"] value;
+  in {
+    name = requireQualifiedName "guarantee name" checked.name;
+    version = requireU32Positive "guarantee version" checked.version;
+    semantics =
+      if
+        builtins.isString checked.semantics
+        && checked.semantics != ""
+        && builtins.stringLength checked.semantics <= maxStringLength
+        && builtins.match "[^[:cntrl:]]+" checked.semantics != null
+      then checked.semantics
+      else fail "guarantee semantics must be non-empty, control-free, and within the string limit";
+    description =
+      if
+        builtins.isString checked.description
+        && checked.description != ""
+        && builtins.stringLength checked.description <= maxStringLength
+        && builtins.match "[^[:cntrl:]]+" checked.description != null
+      then checked.description
+      else fail "guarantee description must be non-empty, control-free, and within the string limit";
+  };
 
   resultOf = request: output: {
     _type = "aos-request-output-reference";
@@ -1749,6 +1646,13 @@ in rec {
     _type = "aos-package-output-selector";
     package = requireLocalKey "package output package" (checked.package or "self");
     output = requireLocalKey "package output output" (checked.output or "out");
+  };
+
+  configArtifact = args: let
+    checked = requireAttrs "configuration artifact selector" ["name"] args;
+  in {
+    _type = "aos-config-artifact-selector";
+    name = requireLocalKey "configuration artifact name" checked.name;
   };
 
   pinInterface = args: let

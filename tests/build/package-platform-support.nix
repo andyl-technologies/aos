@@ -143,6 +143,48 @@
       };
     };
   } ["aos"];
+  companionProbe = support.releaseDerivations "x86_64-linux" {
+    example = {
+      type = "derivation";
+      drvPath = "/nix/store/22222222222222222222222222222222-example.drv";
+      outPath = "/nix/store/33333333333333333333333333333333-example";
+      out = "/nix/store/33333333333333333333333333333333-example";
+      outputs = ["out"];
+      src = nestedSource;
+      pname = "example";
+      version = "1";
+      meta = {
+        description = "companion fixture";
+        license = "MIT";
+        maintainers = ["AOS test"];
+        aos.platformSupport = {disposition = "target";};
+      };
+      abilities.projection.artifactOutputs.module = {
+        derivation = "/nix/store/44444444444444444444444444444444-example-module.drv";
+        storePath = "/nix/store/55555555555555555555555555555555-example-module";
+      };
+    };
+  } ["example"];
+  abilityModulePayload = abilities:
+    pkgs.mkDerivation {
+      pname = "ability-module-layout-probe";
+      version = "1";
+      src = null;
+      inherit abilities;
+      phases = [
+        {
+          name = "install";
+          script = ''
+            mkdir -p "$out"
+            echo unchanged > "$out/payload"
+          '';
+        }
+      ];
+    };
+  fileModulePayload = abilityModulePayload ./fixtures/ability-module-file.nix;
+  directoryModulePayload = abilityModulePayload ./fixtures/ability-module-directory;
+  fileModuleArtifact = fileModulePayload.abilities.projection.artifactOutputs.module.output;
+  directoryModuleArtifact = directoryModulePayload.abilities.projection.artifactOutputs.module.output;
   sourceRoots = (builtins.head derivationProbe.packages).source_store_paths;
   nestedSourceRoot = builtins.unsafeDiscardStringContext (toString (builtins.path {
     path = nestedSource;
@@ -187,6 +229,21 @@ in
     "/nix/store/11111111111111111111111111111111-source"
     nestedSourceRoot
   ];
+  assert (builtins.head companionProbe.packages).outputs
+  == [
+    {
+      name = "out";
+      store_path = "/nix/store/33333333333333333333333333333333-example";
+    }
+    {
+      name = "module";
+      derivation = "/nix/store/44444444444444444444444444444444-example-module.drv";
+      store_path = "/nix/store/55555555555555555555555555555555-example-module";
+    }
+  ];
+  assert fileModulePayload.drvPath == directoryModulePayload.drvPath;
+  assert fileModulePayload.abilities.projection.value.package_module.path == "module.nix";
+  assert directoryModulePayload.abilities.projection.value.package_module.path == "module.nix";
   assert releaseSourcesComplete;
   assert builtins.length (releasePackageByName "aos").source_store_paths >= 2;
   assert builtins.length (releasePackageByName "docker-compose").source_store_paths >= 2;
@@ -243,6 +300,10 @@ in
         {
           name = "check";
           script = ''
+            test "$(find ${fileModuleArtifact} -mindepth 1 -maxdepth 1 -printf '%f\n')" = module.nix
+            test -f ${directoryModuleArtifact}/module.nix
+            test -f ${directoryModuleArtifact}/private.nix
+            test "$(find ${directoryModuleArtifact} -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)" = "$(printf 'module.nix\nprivate.nix')"
             mkdir -p "$out"
             cat > "$out/result" <<'EOF'
             schema=${support.schema}

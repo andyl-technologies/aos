@@ -153,14 +153,12 @@ in
         providerGraph = [provider];
       };
       buildDeps = [
+        buildPkgs.aos-ability-contract-validator
         buildPkgs.bash
         buildPkgs.binutils
         buildPkgs.coreutils
-        buildPkgs.gawk
         buildPkgs.grep
         buildPkgs.jq
-        buildPkgs.nix
-        buildPkgs.sed
         buildPkgs.strace
         graphFixture
         inspector
@@ -178,31 +176,6 @@ in
             set -eu
             mkdir -p "$out" work/closures
 
-            canonical_json() {
-              source=$1
-              destination=$2
-              jq -cS . "$source" > "$destination.with-newline"
-              size=$(stat -c %s "$destination.with-newline")
-              [ "$size" -gt 1 ]
-              truncate -s $((size - 1)) "$destination.with-newline"
-              mv "$destination.with-newline" "$destination"
-            }
-
-            domain_digest() {
-              domain=$1
-              document=$2
-              { printf '%s\0' "$domain"; cat "$document"; } \
-                | sha256sum | cut -d ' ' -f 1
-            }
-
-            store_hash() {
-              base=''${1##*/}
-              hash=''${base%%-*}
-              printf '%s' "$hash" | grep -Eq '^[0-9abcdfghijklmnpqrsvwxyz]{32}$' \
-                || { echo "artifact consumption audit: invalid store path: $1" >&2; exit 1; }
-              printf '%s' "$hash"
-            }
-
             jq -r .artifactSpecsJson "$NIX_ATTRS_JSON_FILE" > work/specs.json
             jq -r .templateJson "$NIX_ATTRS_JSON_FILE" > work/template.json
             : > work/references.jsonl
@@ -211,61 +184,16 @@ in
               key=$(jq -r ".[$spec].key" work/specs.json)
               root_path=$(jq -r ".[$spec].path" work/specs.json)
               graph=$(jq -r ".[$spec].graph" work/specs.json)
-              jq -c --arg graph "$graph" '.[$graph][]' "$NIX_ATTRS_JSON_FILE" > work/exported-graph.jsonl
-              jq -s . work/exported-graph.jsonl > work/exported-graph.json
-
-              # A .drv export graph can contain realized input outputs that
-              # are disconnected from the root's ordinary reference edges.
-              jq -c --arg root "$root_path" \
-                -f ${../../pkgs/build-support/_ability-closure-graph.jq} \
-                work/exported-graph.json > work/graph.jsonl
+              ${buildPkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+                resolve-exported-artifact "$root_path" "$graph" "$NIX_ATTRS_JSON_FILE" \
+                "work/$key-artifact.json"
 
               if [ "$key" = consumer ]; then
-                jq -s 'map(.path)' work/graph.jsonl > work/consumer-closure-paths.json
+                jq '.closure_paths' "work/$key-artifact.json" > work/consumer-closure-paths.json
               fi
 
-              : > work/closure-members.jsonl
-              while IFS= read -r member; do
-                member_path=$(printf '%s\n' "$member" | jq -r .path)
-                member_nar=$(printf '%s\n' "$member" | jq -r .narHash)
-                member_nar_hex=$(nix --extra-experimental-features nix-command hash convert \
-                  --hash-algo sha256 --to base16 "$member_nar")
-                references='[]'
-                while IFS= read -r reference; do
-                  [ -n "$reference" ] || continue
-                  # Registry reference lists omit a member's own edge while retaining the member.
-                  [ "$reference" != "$member_path" ] || continue
-                  reference_hash=$(store_hash "$reference")
-                  references=$(printf '%s\n' "$references" \
-                    | jq -c --arg value "$reference_hash" '. + [$value] | sort | unique')
-                done <<EOF
-            $(printf '%s\n' "$member" | jq -r '.references[]')
-            EOF
-                jq -cn \
-                  --arg store_path "$member_path" \
-                  --arg nar_hash "sha256:$member_nar_hex" \
-                  --argjson nar_size "$(printf '%s\n' "$member" | jq -r .narSize)" \
-                  --argjson references "$references" \
-                  '{store_path:$store_path,nar_hash:$nar_hash,nar_size:$nar_size}
-                   + if $references == [] then {} else {references:$references} end' \
-                  >> work/closure-members.jsonl
-              done < work/graph.jsonl
-
-              jq -cs 'sort_by(.store_path)' work/closure-members.jsonl > work/closure.json
-              canonical_json work/closure.json work/closure.canonical.json
-              closure="sha256:$(domain_digest aos.ability.closure/v1 work/closure.canonical.json)"
-              root_member=$(jq -ce --arg path "$root_path" 'select(.path == $path)' work/graph.jsonl)
-              root_nar=$(printf '%s\n' "$root_member" | jq -r .narHash)
-              root_nar_hex=$(nix --extra-experimental-features nix-command hash convert \
-                --hash-algo sha256 --to base16 "$root_nar")
-              jq -cn --arg store_path "$root_path" --arg nar_hash "sha256:$root_nar_hex" \
-                '{store_path:$store_path,nar_hash:$nar_hash}' > work/artifact-content.json
-              canonical_json work/artifact-content.json work/artifact-content.canonical.json
-              content="sha256:$(domain_digest aos.ability.artifact/v1 work/artifact-content.canonical.json)"
-
-              jq -cn --arg key "$key" --arg content "$content" --arg store_path "$root_path" \
-                --arg nar_hash "sha256:$root_nar_hex" --arg closure "$closure" \
-                '{key:$key,value:{content:$content,store_path:$store_path,nar_hash:$nar_hash,closure:$closure}}' \
+              jq -c --arg key "$key" \
+                '{key:$key,value:.artifact}' "work/$key-artifact.json" \
                 >> work/references.jsonl
             done
 

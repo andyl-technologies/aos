@@ -126,24 +126,13 @@
     # PCR-policy public key — RFC-0006 phase 3).
     ++ initrdExtraPackages;
   uniqueInitrdPackages = lib.unique initrdPackages;
-  initrdAbilityPackages =
-    builtins.filter (
-      package:
-        builtins.isAttrs package
-        && package ? abilityContract
-    )
-    uniqueInitrdPackages;
   initrdStaticAbilityContract = oci.mkStaticAbilityContract {
     pname = "aos-initrd-static-abilities";
     artifactClass = "bootable";
     executionStage = "initrd";
     platform = bootPlatform;
-    packages =
-      map (package: {
-        payload = package;
-        manifest = package.abilities.contract;
-      })
-      initrdAbilityPackages;
+    packageRoots = uniqueInitrdPackages;
+    packageRegistry = pkgs;
     runtimeRoots = uniqueInitrdPackages;
   };
 

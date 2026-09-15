@@ -10,11 +10,13 @@
   abilityTypes,
   schemas,
   evalModules,
+  guaranteeIdentity,
   interfaceDocumentFromDeclaration,
   interfaceIdentity,
   normalizeSemanticValue,
   resourceRevision,
   coreInterfaces,
+  normalizePackageOutputSelectors,
 }: let
   strictSubmodule = options: let
     submoduleType = moduleTypes.submodule {
@@ -92,6 +94,11 @@
     builtins.isString value
     && builtins.stringLength value > 0
     && builtins.stringLength value <= 4096);
+  guaranteeTextType = checkedType "guarantee text" "non-empty control-free guarantee text" (value:
+    builtins.isString value
+    && builtins.stringLength value > 0
+    && builtins.stringLength value <= abilityTypes.limits.maxStringLength
+    && builtins.match "[^[:cntrl:]]+" value != null);
 
   packageForDefinition = definition:
     if builtins.match "package:.+" (definition.provenance or "") == null
@@ -101,6 +108,24 @@
     if package == null
     then name
     else "${package}:${name}";
+  qualifyGuarantees = package: guarantees:
+    builtins.map (qualify package) guarantees;
+  qualifyRequirementGuarantees = package: requirement:
+    requirement // {guarantees = qualifyGuarantees package (requirement.guarantees or []);};
+  qualifyInterfaceGuarantees = package: interface:
+    interface
+    // {
+      guarantees = qualifyGuarantees package (interface.guarantees or []);
+      methods = builtins.mapAttrs (_: method:
+        method // {guarantees = qualifyGuarantees package (method.guarantees or []);})
+      (interface.methods or {});
+    };
+  qualifyImplementationGuarantees = package: implementation:
+    implementation
+    // {
+      guarantees = qualifyGuarantees package (implementation.guarantees or []);
+      requirements = builtins.mapAttrs (_: qualifyRequirementGuarantees package) (implementation.requirements or {});
+    };
   qualifyDeferredResults = package: value:
     if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
     then value // {request = qualify package value.request;}
@@ -112,9 +137,14 @@
   qualifyAbilityValue = collection: package: value:
     if package == null
     then value
+    else if collection == "interfaces"
+    then qualifyInterfaceGuarantees package value
     else if collection == "implementations"
     then
-      value
+      (normalizePackageOutputSelectors {
+        owner = package;
+        value = qualifyImplementationGuarantees package value;
+      })
       // {package = package;}
       // (
         if value ? interface
@@ -123,7 +153,10 @@
       )
     else if collection == "instances"
     then
-      (qualifyDeferredResults package value)
+      (normalizePackageOutputSelectors {
+        owner = package;
+        value = qualifyDeferredResults package value;
+      })
       // (
         if !(value ? implementation)
         then {}
@@ -136,7 +169,10 @@
       )
     else if collection == "requests"
     then
-      (qualifyDeferredResults package value)
+      (normalizePackageOutputSelectors {
+        owner = package;
+        value = qualifyDeferredResults package value;
+      })
       // {package = package;}
       // (
         if value ? requirement
@@ -148,6 +184,8 @@
         then {consumer = qualify package value.consumer;}
         else {}
       )
+    else if collection == "requirementTemplates"
+    then qualifyRequirementGuarantees package value
     else value;
   abilityMapType = collection: elementType: let
     base = moduleTypes.attrsOf elementType;
@@ -290,7 +328,7 @@
       description = "Operations a caller may authorize through this method.";
     };
     guarantees = mkOption {
-      type = moduleTypes.listOf guaranteeType;
+      type = moduleTypes.listOf guaranteeKeyType;
       default = [];
       description = "Guarantees promised by the method.";
     };
@@ -356,7 +394,7 @@
       default = [];
     };
     guarantees = mkOption {
-      type = moduleTypes.listOf guaranteeType;
+      type = moduleTypes.listOf guaranteeReferenceType;
       default = [];
     };
     outcome = mkOption {type = authoredOutcomeType;};
@@ -411,7 +449,7 @@
     lifecycle = mkOption {type = authoredLifecycleType;};
     aggregation = mkOption {type = authoredAggregationType;};
     guarantees = mkOption {
-      type = moduleTypes.listOf guaranteeType;
+      type = moduleTypes.listOf guaranteeReferenceType;
       default = [];
     };
     requiredFeatures = mkOption {
@@ -440,7 +478,32 @@
       default = [];
     };
     guarantees = mkOption {
-      type = moduleTypes.listOf guaranteeType;
+      type = moduleTypes.listOf guaranteeKeyType;
+      default = [];
+    };
+    strength = mkOption {
+      type = moduleTypes.enum ["required" "advisory"];
+      default = "required";
+    };
+    fallback = mkOption {
+      type = moduleTypes.nullOr (strictSubmodule {
+        outputs = mkOption {
+          type = moduleTypes.attrsOf canonicalValueType;
+          default = {};
+        };
+      });
+    };
+  };
+
+  implementationRequirementType = strictSubmodule {
+    alias = mkOption {type = localKeyType;};
+    accepted_interfaces = mkOption {type = moduleTypes.listOf interfaceKeyType;};
+    methods = mkOption {
+      type = moduleTypes.listOf localKeyType;
+      default = [];
+    };
+    guarantees = mkOption {
+      type = moduleTypes.listOf guaranteeReferenceType;
       default = [];
     };
     strength = mkOption {
@@ -483,7 +546,7 @@
         lifecycle = mkOption {type = projectedLifecycleType;};
         aggregation = mkOption {type = projectedAggregationType;};
         guarantees = mkOption {
-          type = moduleTypes.listOf guaranteeType;
+          type = moduleTypes.listOf guaranteeKeyType;
           default = [];
         };
       };
@@ -599,7 +662,7 @@
       description = "Package-local alias of the provider-neutral interface declaration.";
     };
     requirements = mkOption {
-      type = moduleTypes.attrsOf projectedRequirementType;
+      type = moduleTypes.attrsOf implementationRequirementType;
       default = {};
       description = "Provider dependencies on other exact interfaces.";
     };
@@ -608,7 +671,7 @@
       description = "Exact interface methods supported by this implementation.";
     };
     guarantees = mkOption {
-      type = moduleTypes.listOf guaranteeType;
+      type = moduleTypes.listOf guaranteeReferenceType;
       default = [];
       description = "Exact interface guarantees supplied by this implementation.";
     };
@@ -723,9 +786,67 @@
       descriptor = digestType;
     };
   };
+
+  guaranteeKeyType = strictSubmodule {
+    name = mkOption {
+      type = qualifiedNameType;
+      description = "Provider-neutral guarantee name.";
+    };
+    version = mkOption {
+      type = positiveU32Type;
+      description = "Guarantee version.";
+    };
+    descriptor = mkOption {
+      type = digestType;
+      description = "Exact semantic guarantee descriptor.";
+    };
+  };
   requirementGuaranteesType = canonicalRequirementListType guaranteeType;
   requirementGuaranteesSchema =
     abilityTypes.schemaOf "requirement guarantees" requirementGuaranteesType;
+
+  guaranteeReferenceType = moduleTypes.addCheck moduleTypes.str (value:
+    localKeyType.check value || declarationKeyType.check value);
+
+  guaranteeDeclarationType = strictSubmodule {
+    name = mkOption {
+      type = qualifiedNameType;
+      description = "Provider-neutral guarantee name.";
+    };
+    version = mkOption {
+      type = positiveU32Type;
+      description = "Guarantee version.";
+    };
+    semantics = mkOption {
+      type = guaranteeTextType;
+      description = "Canonical public meaning from which the guarantee descriptor is derived.";
+    };
+    description = mkOption {
+      type = guaranteeTextType;
+      description = "Human-readable guarantee documentation excluded from semantic identity.";
+    };
+  };
+
+  resolveGuaranteeReference = reference:
+    if config == null || !(builtins.hasAttr reference config.aos.abilities.guarantees)
+    then throw "Ability guarantee reference '${reference}' has no exact package declaration."
+    else guaranteeIdentity config.aos.abilities.guarantees.${reference};
+  resolveRequirementGuarantees = requirement:
+    requirement // {guarantees = builtins.map resolveGuaranteeReference requirement.guarantees;};
+  resolveInterfaceGuarantees = interface:
+    interface
+    // {
+      guarantees = builtins.map resolveGuaranteeReference interface.guarantees;
+      methods = builtins.mapAttrs (_: method:
+        method // {guarantees = builtins.map resolveGuaranteeReference method.guarantees;})
+      interface.methods;
+    };
+  resolveImplementationGuarantees = implementation:
+    implementation
+    // {
+      guarantees = builtins.map resolveGuaranteeReference implementation.guarantees;
+      requirements = builtins.mapAttrs (_: resolveRequirementGuarantees) implementation.requirements;
+    };
 
   requirementBaseType = strictSubmodule {
     description = mkOption {
@@ -749,7 +870,7 @@
       description = "Interface methods the consumer may invoke.";
     };
     guarantees = mkOption {
-      type = requirementGuaranteesType;
+      type = moduleTypes.listOf guaranteeReferenceType;
       default = [];
       description = "Guarantees the selected implementation must provide.";
     };
@@ -1210,19 +1331,26 @@ in {
       internal = true;
       description = "Deployment-owned environment identity, absent during static package projection.";
     };
+    guarantees = mkOption {
+      type = abilityMapType "guarantees" guaranteeDeclarationType;
+      default = {};
+      contributable = true;
+      description = "Package-owned guarantee declarations keyed by their package-local alias.";
+    };
     interfaces = mkOption {
       type = abilityMapType "interfaces" interfaceDeclarationType;
       default = {};
       contributable = true;
       apply = interfaces: let
-        declaredNames = builtins.map (declaration: declaration.name) (builtins.attrValues interfaces);
+        resolved = builtins.mapAttrs (_: resolveInterfaceGuarantees) interfaces;
+        declaredNames = builtins.map (declaration: declaration.name) (builtins.attrValues resolved);
         targetsExist = builtins.all (declaration:
           builtins.all (method: builtins.elem method.targetResource declaredNames)
           (builtins.attrValues declaration.methods))
-        (builtins.attrValues interfaces);
+        (builtins.attrValues resolved);
       in
         if config == null || config.aos.abilities.environment == null || targetsExist
-        then interfaces
+        then resolved
         else throw "An ability method targets an interface that is absent from the final fixed point.";
       description = "Provider-neutral interface declarations available independently of implementations.";
     };
@@ -1230,15 +1358,18 @@ in {
       type = abilityMapType "implementations" implementationType;
       default = {};
       contributable = true;
+      apply = builtins.mapAttrs (_: resolveImplementationGuarantees);
       description = "Package-owned ability implementations available to provider discovery.";
     };
     requirementTemplates = mkOption {
       type = abilityMapType "requirementTemplates" requirementBaseType;
       default = {};
       contributable = true;
-      apply = requirements:
-        if builtins.all requirementAccepted (builtins.attrValues requirements)
-        then requirements
+      apply = requirements: let
+        resolved = builtins.mapAttrs (_: resolveRequirementGuarantees) requirements;
+      in
+        if builtins.all requirementAccepted (builtins.attrValues resolved)
+        then resolved
         else throw "An ability requirement fallback does not match its declared interface output type.";
       description = "Package-owned ability requirements available to configured instances.";
     };
