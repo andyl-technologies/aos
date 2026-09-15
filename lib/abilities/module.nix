@@ -160,7 +160,10 @@
         then {
           interface =
             if builtins.isString value.interface
-            then qualify package value.interface
+            then
+              if declarationKeyType.check value.interface || builtins.hasAttr value.interface coreInterfaces
+              then value.interface
+              else qualify package value.interface
             else value.interface;
         }
         else {}
@@ -255,7 +258,7 @@
   lifetimeType = abilityTypes.lifetime;
 
   interfaceKeyType = abilityTypes.interfaceKey;
-  implementationInterfaceType = moduleTypes.either declarationKeyType interfaceKeyType;
+  implementationInterfaceType = moduleTypes.either localKeyType (moduleTypes.either declarationKeyType interfaceKeyType);
   interfaceSelectorType = strictSubmodule {
     name = mkOption {type = qualifiedNameType;};
     abi = mkOption {type = positiveU32Type;};
