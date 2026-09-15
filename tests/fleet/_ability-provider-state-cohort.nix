@@ -159,6 +159,7 @@ in {
     '';
 
   qualification = {
+    inherit qualifiedCells;
     candidateRuntimeCompanions = fixture.qualificationCandidateRuntimeCompanions;
     extraClosures = fixture.qualificationExtraClosures ++ extraClosures ++ [matrixSpec cohortCells];
     setupBody = fixture.qualificationSetupBody + qualificationSetupBody;

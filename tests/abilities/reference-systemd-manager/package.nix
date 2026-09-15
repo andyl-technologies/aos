@@ -192,7 +192,7 @@
         implementations.systemd-manager.qualification = {
           adapter = "systemd-manager";
           observationKind = "systemd";
-          scope = "host-manager";
+          scope = "host-system-manager";
           conformanceFamilies = [
             "authority-revocation"
             "dependent-effect"

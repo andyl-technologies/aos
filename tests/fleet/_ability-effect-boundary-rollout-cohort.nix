@@ -171,6 +171,7 @@ in {
     '';
 
   qualification = {
+    qualifiedCells = [cellId];
     inherit extraClosures setupBody;
     candidateRuntimeCompanions = rollout.qualificationCandidateRuntimeCompanions;
   };

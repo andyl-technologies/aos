@@ -11,15 +11,14 @@
     guestTools = qualificationImage;
     effectQualification = true;
   };
-  matrix = nativeAdapterMatrix;
-  cells = import ./_ability-cancellation-cells.nix {
-    inherit lib matrix;
+  subjects = import ./_qualification-subjects.nix {
+    inherit lib;
+    matrix = nativeAdapterMatrix;
   };
-  qualifiedCells =
-    builtins.filter (
-      cellId: builtins.head (lib.splitString "/" cellId) != "systemd-bootstrap"
-    )
-    cells.groups.systemd;
+  qualifiedCells = subjects.select {
+    scopes = ["host-manager" "host-system-manager"];
+    accepts = subject: subject.scenario.disposition.kind == "cancellation-route";
+  };
 in
   import ./_ability-cancellation-cohort.nix {
     inherit lib mkSystem pkgs fixture nativeAdapterMatrix qualifiedCells;

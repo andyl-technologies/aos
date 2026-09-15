@@ -325,9 +325,11 @@
               };
             }
           ]
-          ++ builtins.map
-          (intent: {config = intent;})
-          selectionEvaluation.config.aos.abilities.stages.initrd.intent
+          ++ [
+            {
+              config = lib.mkMerge selectionEvaluation.config.aos.abilities.stages.initrd.intent;
+            }
+          ]
           ++ selectionEvaluation.config.aos.abilities.stages.initrd.modules;
         inherit pkgs lib operatorModules;
         runtimeModules =
@@ -338,13 +340,13 @@
               instances = synthesizedProviderInstancesFor abilityBindings;
             };
           };
-        packageModules = initrdPackageModules;
-        selectedProviderModules = selectedProviderModulesFor abilityBindings;
+         packageModules = initrdPackageModules;
+         selectedProviderModules = selectedProviderModulesFor abilityBindings;
          specialArgs = moduleSpecialArgs;
        };
-      initrdAbilityEvaluation = import ./lib/build/selected-ability-bindings.nix {inherit lib;} {
-        evaluate = evaluateSelectedInitrd;
-      };
+     initrdAbilityEvaluation = import ./lib/build/selected-ability-bindings.nix {inherit lib;} {
+       evaluate = evaluateSelectedInitrd;
+     };
     # Determine the resolved image ABI from the complete caller module list.
     # The base library bundles only source-backed system modules, so without
     # carrying this value explicitly an inline image override would leave the
@@ -525,11 +527,7 @@
         packageChecks = qualificationRequirementChecks "package-function";
       }
     else null;
-  nativeAbilityScenarioIds = [
-    "ability-crucible-baseline"
-    "ability-native-adapter-matrix"
-    "ability-native-recovery"
-  ];
+  nativeAbilityScenarioIds = builtins.attrNames nativeAbilityScenarios;
   qualificationRequirementChecks = scenarioId:
     (builtins.head (
       builtins.filter (
@@ -582,17 +580,20 @@
     inherit lib mkSystem pkgs;
     qualificationImage = true;
   };
-  nativeAdapterPrimaryCells = [
-    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/interrupt-after-durable-intent"
-    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/lose-external-result"
-    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/interrupt-after-durable-outcome"
-    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/reject-foreign-resource-mutation"
-    "service-management/aos.service-management/abi-1/reload/block-dependent-effect"
-  ];
-  nativeEffectBoundaryCells = import ./tests/fleet/_ability-effect-boundary-cells.nix {
+  qualificationSubjects = import ./tests/fleet/_qualification-subjects.nix {
     inherit lib;
     matrix = nativeAdapterMatrix;
   };
+  effectCellAccepted = subject:
+    builtins.elem subject.scenario.failure ["injected-interruption" "lost-result"]
+    && subject.scenario.boundary != "before-acquisition";
+  providerStateCellAccepted = subject:
+    subject.scenario.family == "provider-state-transfer";
+  cancellationCellAccepted = subject:
+    subject.scenario.disposition.kind == "cancellation-route";
+  providerNegativeCellAccepted = subject:
+    builtins.elem subject.scenario.family ["dependent-effect" "foreign-resource"];
+
   nativeEffectReferenceCohort = import ./tests/fleet/ability-native-effect-boundaries-reference.nix {
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
@@ -601,17 +602,17 @@
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
+  nativeEffectRolloutCells = qualificationSubjects.select {
+    scopes = ["host-machine"];
+    accepts = effectCellAccepted;
+  };
   nativeEffectRolloutCohorts = map (cellId:
     import ./tests/fleet/_ability-effect-boundary-rollout-cohort.nix {
       inherit lib mkSystem pkgs cellId nativeAdapterMatrix;
       systems = discoverSystems;
     })
-  nativeEffectBoundaryCells.groups.rollout;
+  nativeEffectRolloutCells;
 
-  nativeProviderStateCells = import ./tests/fleet/_ability-provider-state-cells.nix {
-    inherit lib;
-    matrix = nativeAdapterMatrix;
-  };
   nativeProviderStateReferenceCohort = import ./tests/fleet/ability-native-provider-state-reference.nix {
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
@@ -620,20 +621,21 @@
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
-  nativeCancellationCells = import ./tests/fleet/_ability-cancellation-cells.nix {
-    inherit lib;
-    matrix = nativeAdapterMatrix;
+  nativeProviderStateRolloutCells = qualificationSubjects.select {
+    scopes = ["host-machine"];
+    accepts = providerStateCellAccepted;
   };
-  nativeCancellationSystemdCells = nativeCancellationCells.groups.systemd;
+  nativeProviderStateRolloutCohorts = map (cellId:
+    import ./tests/fleet/_ability-provider-state-rollout-cohort.nix {
+      inherit lib mkSystem pkgs cellId nativeAdapterMatrix;
+      systems = discoverSystems;
+    })
+  nativeProviderStateRolloutCells;
+
   nativeCancellationSystemdCohort = import ./tests/fleet/ability-native-cancellation-systemd.nix {
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
-  nativeCancellationRolloutCohorts = map (cellId:
-    import ./tests/fleet/_ability-cancellation-rollout-cohort.nix {
-      inherit lib mkSystem pkgs cellId nativeAdapterMatrix;
-    })
-  nativeCancellationCells.groups.rollout;
   nativeCancellationReferenceCohort = import ./tests/fleet/ability-native-cancellation-reference.nix {
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
@@ -642,11 +644,16 @@
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
-
-  nativeProviderNegativeCells = import ./tests/fleet/_ability-provider-negative-cells.nix {
-    inherit lib;
-    matrix = nativeAdapterMatrix;
+  nativeCancellationRolloutCells = qualificationSubjects.select {
+    scopes = ["host-machine"];
+    accepts = cancellationCellAccepted;
   };
+  nativeCancellationRolloutCohorts = map (cellId:
+    import ./tests/fleet/_ability-cancellation-rollout-cohort.nix {
+      inherit lib mkSystem pkgs cellId nativeAdapterMatrix;
+    })
+  nativeCancellationRolloutCells;
+
   nativeProviderNegativeReference = import ./tests/fleet/ability-native-provider-negative-reference.nix {
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
@@ -659,90 +666,34 @@
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
-  nativeAdapterRoleScenarios = [
-    "revoke-caller-before-acquisition"
-    "revoke-caller-after-acquisition"
-    "revoke-caller-before-external-effect"
-    "revoke-provider-before-acquisition"
-    "revoke-provider-after-acquisition"
-    "revoke-provider-before-external-effect"
-    "revoke-enforcement-before-acquisition"
-    "revoke-enforcement-after-acquisition"
-    "revoke-enforcement-before-external-effect"
-    "revoke-assignment-before-acquisition"
-    "revoke-assignment-after-acquisition"
-    "revoke-assignment-before-external-effect"
-  ];
-  nativeAdapterRoleCells = map (cell: cell.id) (
-    builtins.filter (cell:
-      builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) nativeAdapterRoleScenarios)
-    nativeAdapterMatrix.cells
+  nativeProviderNegativeRolloutCells = qualificationSubjects.select {
+    scopes = ["host-machine"];
+    accepts = providerNegativeCellAccepted;
+  };
+  nativeProviderNegativeRolloutMethods = lib.unique (
+    map (
+      cellId: builtins.elemAt (lib.splitString "/" cellId) 3
+    )
+    nativeProviderNegativeRolloutCells
   );
-  nativeAdapterReplacementScenarios = [
-    "replace-executor-incarnation"
-    "replace-provider-incarnation"
-  ];
-  nativeAdapterReplacementCells = map (cell: cell.id) (
-    builtins.filter (cell:
-      builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) nativeAdapterReplacementScenarios)
-    nativeAdapterMatrix.cells
-  );
-  nativeAdapterFailureControlScenarios = [
-    "expire-attempt-deadline"
-    "fail-cleanup"
-    "fail-release"
-  ];
-  nativeAdapterFailureControlCells = map (cell: cell.id) (
-    builtins.filter (cell:
-      builtins.elem
-      (builtins.elemAt (lib.splitString "/" cell.id) 4)
-      nativeAdapterFailureControlScenarios)
-    nativeAdapterMatrix.cells
-  );
-  nativeAdapterInterruptionCells = map (cell: cell.id) (
-    builtins.filter (cell:
-      builtins.elemAt (lib.splitString "/" cell.id) 4 == "interrupt-before-acquisition")
-    nativeAdapterMatrix.cells
-  );
+  nativeProviderNegativeRollouts =
+    map (method: let
+      cellIds = builtins.filter (
+        cellId: builtins.elemAt (lib.splitString "/" cellId) 3 == method
+      ) nativeProviderNegativeRolloutCells;
+      cohort = import ./tests/fleet/_ability-provider-negative-rollout-cohort.nix {
+        inherit lib mkSystem method pkgs cellIds nativeAdapterMatrix;
+        systems = discoverSystems;
+      };
+    in {
+      id = "provider-negative-rollout-${method}";
+      qualifiedCells = cellIds;
+      inherit (cohort) testScript;
+      inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+    })
+    nativeProviderNegativeRolloutMethods;
 
-  nativeAdapterQualifiedCells = let
-    selected =
-      nativeAdapterPrimaryCells
-      ++ nativeAdapterInterruptionCells
-      ++ nativeAdapterRoleCells
-      ++ nativeAdapterReplacementCells
-      ++ nativeAdapterFailureControlCells
-      ++ nativeEffectBoundaryCells.groups.reference
-      ++ nativeEffectBoundaryCells.groups.systemdManager
-      ++ nativeEffectBoundaryCells.groups.rollout
-      ++ nativeEffectBoundaryCells.groups.foreground
-      ++ nativeProviderStateCells.all
-      ++ nativeCancellationSystemdCells
-      ++ nativeCancellationCells.groups.reference
-      ++ nativeCancellationCells.groups.foreground
-      ++ nativeCancellationCells.groups.rollout
-      ++ nativeProviderNegativeCells.all;
-    cellsById = builtins.listToAttrs (map (cell: {
-        name = cell.id;
-        value = cell;
-      })
-      nativeAdapterMatrix.cells);
-    postconditions =
-      builtins.foldl' (
-        count: cellId: count + builtins.length cellsById.${cellId}.postconditions
-      )
-      0
-      selected;
-    expectedPostconditions =
-      builtins.foldl' (
-        count: cell: count + builtins.length cell.postconditions
-      )
-      0
-      nativeAdapterMatrix.applicable_cells;
-  in
-    assert builtins.length selected == nativeAdapterMatrix.required_production_vm_cells;
-    assert builtins.length (lib.unique selected) == nativeAdapterMatrix.required_production_vm_cells;
-    assert postconditions == expectedPostconditions; selected;
+  nativeAdapterQualifiedCells = nativeAdapterMatrix.applicable_cell_ids;
 
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline =
@@ -764,14 +715,14 @@
         [
           {
             id = "provider-effect-boundaries-reference";
-            qualifiedCells = nativeEffectBoundaryCells.groups.reference ++ nativeEffectBoundaryCells.groups.systemdManager;
+            qualifiedCells = nativeEffectReferenceCohort.qualification.qualifiedCells;
             inherit (nativeEffectReferenceCohort) testScript;
             inherit (nativeEffectReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
         ]
         ++ lib.imap (index: cohort: predecessorMatrixCohort {
           id = "provider-effect-boundary-rollout-${builtins.toString index}";
-          qualifiedCells = [(builtins.elemAt nativeEffectBoundaryCells.groups.rollout index)];
+          qualifiedCells = cohort.qualification.qualifiedCells;
           inherit (cohort) testScript;
           inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
         })
@@ -779,46 +730,53 @@
         ++ [
           {
             id = "provider-effect-boundaries-foreground";
-            qualifiedCells = nativeEffectBoundaryCells.groups.foreground;
+            qualifiedCells = nativeEffectForegroundCohort.qualification.qualifiedCells;
             inherit (nativeEffectForegroundCohort) testScript;
             inherit (nativeEffectForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
           {
             id = "provider-state-reference";
-            qualifiedCells = nativeProviderStateCells.groups.reference;
+            qualifiedCells = nativeProviderStateReferenceCohort.qualification.qualifiedCells;
             inherit (nativeProviderStateReferenceCohort) testScript;
             inherit (nativeProviderStateReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
         ]
+        ++ lib.imap (index: cohort: predecessorMatrixCohort {
+          id = "provider-state-rollout-${builtins.toString index}";
+          qualifiedCells = cohort.qualification.qualifiedCells;
+          inherit (cohort) testScript;
+          inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+        })
+        nativeProviderStateRolloutCohorts
         ++ [
           {
             id = "provider-state-foreground";
-            qualifiedCells = nativeProviderStateCells.groups.foreground;
+            qualifiedCells = nativeProviderStateForegroundCohort.qualification.qualifiedCells;
             inherit (nativeProviderStateForegroundCohort) testScript;
             inherit (nativeProviderStateForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
           {
             id = "provider-cancellation-systemd";
-            qualifiedCells = nativeCancellationSystemdCells;
+            qualifiedCells = nativeCancellationSystemdCohort.qualification.qualifiedCells;
             inherit (nativeCancellationSystemdCohort) testScript;
             inherit (nativeCancellationSystemdCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
           {
             id = "supported-cancellation-reference";
-            qualifiedCells = nativeCancellationCells.groups.reference;
+            qualifiedCells = nativeCancellationReferenceCohort.qualification.qualifiedCells;
             inherit (nativeCancellationReferenceCohort) testScript;
             inherit (nativeCancellationReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
           {
             id = "supported-cancellation-foreground";
-            qualifiedCells = nativeCancellationCells.groups.foreground;
+            qualifiedCells = nativeCancellationForegroundCohort.qualification.qualifiedCells;
             inherit (nativeCancellationForegroundCohort) testScript;
             inherit (nativeCancellationForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
         ]
         ++ lib.imap (index: cohort: predecessorMatrixCohort {
           id = "provider-cancellation-rollout-${builtins.toString index}";
-          qualifiedCells = [(builtins.elemAt nativeCancellationCells.groups.rollout index)];
+          qualifiedCells = cohort.qualification.qualifiedCells;
           inherit (cohort) testScript;
           inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
         })
@@ -826,27 +784,71 @@
         ++ [
           {
             id = "provider-negative-reference";
-            qualifiedCells = nativeProviderNegativeCells.groups.reference;
+            qualifiedCells = nativeProviderNegativeReference.qualification.qualifiedCells;
             inherit (nativeProviderNegativeReference) testScript;
             inherit (nativeProviderNegativeReference.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
           {
             id = "provider-negative-foreground";
-            qualifiedCells = nativeProviderNegativeCells.groups.foreground-process;
+            qualifiedCells = nativeProviderNegativeForeground.qualification.qualifiedCells;
             inherit (nativeProviderNegativeForeground) testScript;
             inherit (nativeProviderNegativeForeground.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
           {
             id = "provider-negative-systemd-manager";
-            qualifiedCells = nativeProviderNegativeCells.groups.systemd-manager;
+            qualifiedCells = nativeProviderNegativeSystemdManager.qualification.qualifiedCells;
             inherit (nativeProviderNegativeSystemdManager) testScript;
             inherit (nativeProviderNegativeSystemdManager.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
-        ];
+        ]
+        ++ map predecessorMatrixCohort nativeProviderNegativeRollouts;
 
       inherit (nativeAdapterMatrixCohort) testScript;
       inherit (nativeAdapterMatrixCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
     };
+    ability-native-image-rollout =
+      mkNativeAbilityScenario {
+        scenarioId = "ability-native-image-rollout";
+        source = ./tests/fleet/ability-native-image-rollout.nix;
+        cohorts = [
+          {
+            id = "healthy";
+            requiredInputs = ["predecessor-image"];
+            execution = {
+              bootInput = "predecessor-image";
+              fixtureRole = "healthy";
+              recordsGuestKernel = true;
+            };
+            report = {
+              kind = "release-transition";
+              evidenceVariable = "ROLLOUT_BRANCH_EVIDENCE";
+              expectedEvidence = {
+                branch = "healthy";
+                outcome = "candidate-healthy";
+                retired = true;
+              };
+            };
+          }
+          {
+            id = "fallback";
+            requiredInputs = ["predecessor-image"];
+            execution = {
+              bootInput = "predecessor-image";
+              fixtureRole = "fallback";
+              recordsGuestKernel = false;
+            };
+            report = {
+              kind = "release-transition";
+              evidenceVariable = "ROLLOUT_BRANCH_EVIDENCE";
+              expectedEvidence = {
+                branch = "fallback";
+                outcome = "predecessor-fallback";
+                retired = false;
+              };
+            };
+          }
+        ];
+      };
     ability-native-recovery =
       mkNativeAbilityScenario {
         scenarioId = "ability-native-recovery";
@@ -2096,6 +2098,7 @@ in {
     fleet = let
       base = discoverFleetTests // crucibleFleetChecks;
       runtimeConfigNames = [
+        "ability-native-image-rollout"
         "ability-native-power-loss"
         "apm-desired-sequencing"
         "apm-sysroot-lock"

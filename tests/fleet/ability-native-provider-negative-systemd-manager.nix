@@ -11,13 +11,20 @@
     guestTools = qualificationImage;
     effectQualification = true;
   };
-  matrix = nativeAdapterMatrix;
-  cells = import ./_ability-provider-negative-cells.nix {inherit lib matrix;};
+  subjects = import ./_qualification-subjects.nix {
+    inherit lib;
+    matrix = nativeAdapterMatrix;
+  };
+  qualifiedCells = subjects.select {
+    scopes = ["host-system-manager"];
+    accepts = subject:
+      builtins.elem subject.scenario.family ["dependent-effect" "foreign-resource"];
+  };
 in
   import ./_ability-provider-negative-cohort.nix {
     inherit lib mkSystem pkgs fixture nativeAdapterMatrix;
     name = "ability-native-provider-negative-systemd-manager";
-    qualifiedCells = cells.groups.systemd-manager;
+    inherit qualifiedCells;
     domainScript = ''
       runtime.wait_until_succeeds(
           "systemctl is-active --quiet aos-graph-compile.service", timeout=300

@@ -11,15 +11,21 @@
     guestTools = qualificationImage;
     effectQualification = true;
   };
-  matrix = nativeAdapterMatrix;
-  cells = import ./_ability-effect-boundary-cells.nix {
-    inherit lib matrix;
+  subjects = import ./_qualification-subjects.nix {
+    inherit lib;
+    matrix = nativeAdapterMatrix;
+  };
+  qualifiedCells = subjects.select {
+    scopes = ["host-filesystem" "host-manager" "host-process" "host-resource" "host-system-manager"];
+    accepts = subject:
+      builtins.elem subject.scenario.failure ["injected-interruption" "lost-result"]
+      && subject.scenario.boundary != "before-acquisition";
   };
 in
   import ./_ability-effect-boundary-cohort.nix {
     inherit lib mkSystem pkgs fixture nativeAdapterMatrix;
     name = "ability-native-effect-boundaries-reference";
-    qualifiedCells = cells.groups.reference ++ cells.groups.systemdManager;
+    inherit qualifiedCells;
     domainScript = ''
       runtime.wait_until_succeeds(
           "systemctl is-active --quiet aos-graph-compile.service", timeout=300

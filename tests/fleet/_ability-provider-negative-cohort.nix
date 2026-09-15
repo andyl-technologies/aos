@@ -129,6 +129,7 @@ in {
     '';
 
   qualification = {
+    inherit qualifiedCells;
     candidateRuntimeCompanions = fixture.qualificationCandidateRuntimeCompanions;
     extraClosures = fixture.qualificationExtraClosures ++ providerOracleClosures ++ extraClosures ++ [matrixSpec cohortCells];
     setupBody = fixture.qualificationSetupBody + qualificationSetupBody;

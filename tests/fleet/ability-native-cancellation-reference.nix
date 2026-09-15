@@ -11,15 +11,19 @@
     guestTools = qualificationImage;
     effectQualification = true;
   };
-  matrix = nativeAdapterMatrix;
-  cells = import ./_ability-cancellation-cells.nix {
-    inherit lib matrix;
+  subjects = import ./_qualification-subjects.nix {
+    inherit lib;
+    matrix = nativeAdapterMatrix;
+  };
+  qualifiedCells = subjects.select {
+    scopes = ["host-filesystem" "host-process" "host-resource"];
+    accepts = subject: subject.scenario.disposition.kind == "cancellation-route";
   };
 in
   import ./_ability-cancellation-cohort.nix {
     inherit lib mkSystem pkgs fixture nativeAdapterMatrix;
     name = "ability-native-cancellation-reference";
-    qualifiedCells = cells.groups.reference;
+    inherit qualifiedCells;
     domainScript = ''
       runtime.wait_until_succeeds(
           "systemctl is-active --quiet aos-graph-compile.service", timeout=300

@@ -11,15 +11,19 @@
     guestTools = qualificationImage;
     providerStateQualification = true;
   };
-  matrix = nativeAdapterMatrix;
-  cells = import ./_ability-provider-state-cells.nix {
-    inherit lib matrix;
+  subjects = import ./_qualification-subjects.nix {
+    inherit lib;
+    matrix = nativeAdapterMatrix;
+  };
+  qualifiedCells = subjects.select {
+    scopes = ["host-filesystem" "host-manager" "host-process" "host-resource" "host-system-manager"];
+    accepts = subject: subject.scenario.family == "provider-state-transfer";
   };
 in
   import ./_ability-provider-state-cohort.nix {
     inherit lib mkSystem pkgs fixture nativeAdapterMatrix;
     name = "ability-native-provider-state-reference";
-    qualifiedCells = cells.groups.reference;
+    inherit qualifiedCells;
     domainScript = ''
       runtime.wait_until_succeeds(
           "systemctl is-active --quiet aos-graph-compile.service", timeout=300
