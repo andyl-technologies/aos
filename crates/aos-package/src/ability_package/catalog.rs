@@ -63,10 +63,10 @@ impl VerifiedAbilityPackageSet {
         let mut interfaces = BTreeMap::new();
         for sealed in &self.packages {
             let companion = Path::new(sealed.retention.companion_store_path());
-            for export in &sealed.package.exports {
+            for interface in sealed.package.interfaces.values() {
                 let path = companion
                     .join("interfaces")
-                    .join(format!("{}.json", export.interface.descriptor.hex()));
+                    .join(format!("{}.json", interface.descriptor.hex()));
                 let bytes = read_bounded_regular_file(&path, "ability interface document")?;
                 let document = aos_ability_model::decode_canonical::<InterfaceDocument>(
                     &bytes,
@@ -77,9 +77,9 @@ impl VerifiedAbilityPackageSet {
                 let key = document
                     .interface_key()
                     .context("computing retained ability interface descriptor")?;
-                if key != export.interface {
+                if &key != interface {
                     bail!(
-                        "ability interface document {} does not match package export",
+                        "ability interface document {} does not match package declaration",
                         path.display()
                     );
                 }
