@@ -1709,13 +1709,11 @@ mod tests {
                 ExportDeclaration {
                     name: key("handler"),
                     interface: selected_interface.clone(),
-                    aggregation: None,
                     implementation: selected_reference.descriptor,
                 },
                 ExportDeclaration {
                     name: key("owner"),
                     interface: owner_interface_key.clone(),
-                    aggregation: None,
                     implementation: owner_reference.descriptor,
                 },
             ],

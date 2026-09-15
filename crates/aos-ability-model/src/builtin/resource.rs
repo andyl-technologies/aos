@@ -38,8 +38,8 @@ pub use network_policy::{
     HOST_NETWORK_POLICY_LOOPBACK_TCP_INGRESS_GUARANTEE_SEMANTICS,
     HOST_NETWORK_POLICY_OBSERVATION_SCHEMA, host_network_policy_handler,
     host_network_policy_handler_key, host_network_policy_interface,
-    host_network_policy_interface_key, host_network_policy_loopback_tcp_ingress_guarantee,
-    host_network_policy_loopback_tcp_egress_guarantee, host_network_policy_provider,
+    host_network_policy_interface_key, host_network_policy_loopback_tcp_egress_guarantee,
+    host_network_policy_loopback_tcp_ingress_guarantee, host_network_policy_provider,
 };
 pub use postgresql::{
     POSTGRESQL_CONFIGURATION_REVISION_OUTPUT, POSTGRESQL_EFFECTS_INTERFACE_NAME,
@@ -62,8 +62,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        HostStorageAction, InterfaceDocument, OperationFamily, ResourceLifetime, ServiceAction,
-        ValuePhase, ValueSchema, ValueVisibility,
+        AccessMode, InterfaceDocument, MethodSemantics, ResourceLifetime, ValuePhase, ValueSchema,
+        ValueVisibility,
     };
 
     #[test]
@@ -111,10 +111,8 @@ mod tests {
         );
         assert!(document.interface.methods["release"].outputs.is_empty());
         assert_eq!(
-            document.interface.methods["observe"].operation_family,
-            OperationFamily::HostStorage {
-                action: HostStorageAction::Observe,
-            }
+            document.interface.methods["observe"].semantics,
+            MethodSemantics::ordinary(AccessMode::Read)
         );
     }
 
@@ -174,10 +172,8 @@ mod tests {
             ResourceLifetime::Persistent
         );
         assert_eq!(
-            document.interface.methods["restart"].operation_family,
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Restart,
-            }
+            document.interface.methods["restart"].semantics,
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite)
         );
         let encoded = crate::encode_canonical(&document).unwrap();
         let text = std::str::from_utf8(&encoded).unwrap();

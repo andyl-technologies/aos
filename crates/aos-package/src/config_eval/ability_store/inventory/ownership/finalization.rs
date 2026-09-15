@@ -236,12 +236,7 @@ impl NativeInventoryState {
             .iter()
             .filter(|(key, operation)| {
                 successful_operations.contains_key(*key)
-                    && matches!(
-                        operation.operation.family,
-                        aos_ability_model::OperationFamily::ServiceLifecycle {
-                            action: aos_ability_model::ServiceAction::Stop
-                        }
-                    )
+                    && operation.semantics.stops_provider
                     && operation.operation.accesses.iter().any(|access| {
                         access.resource == operation.operation.target.resource
                             && access.mode.is_write()
@@ -277,12 +272,7 @@ impl NativeInventoryState {
                         && operation.operation.target.resource == *resource
                         && operation.owner.as_ref() == Some(&receipt.source)
                         && operation.owner_handler.as_ref() == Some(&receipt.source_handler)
-                        && matches!(
-                            operation.operation.family,
-                            aos_ability_model::OperationFamily::ServiceLifecycle {
-                                action: aos_ability_model::ServiceAction::Stop
-                            }
-                        )
+                        && operation.semantics.stops_provider
                 })
                 .map(|(key, _)| key)
                 .collect::<Vec<_>>();
@@ -309,12 +299,7 @@ impl NativeInventoryState {
                 .filter(|(key, operation)| {
                     successful_operations.contains_key(*key)
                         && operation.operation.target.resource == *resource
-                        && matches!(
-                            operation.operation.family,
-                            aos_ability_model::OperationFamily::ServiceLifecycle {
-                                action: aos_ability_model::ServiceAction::Stop
-                            }
-                        )
+                        && operation.semantics.stops_provider
                 })
                 .map(|(key, _)| key)
                 .collect::<Vec<_>>();
@@ -336,12 +321,7 @@ impl NativeInventoryState {
                 .filter(|(key, operation)| {
                     successful_operations.contains_key(*key)
                         && operation.operation.target.resource == *resource
-                        && matches!(
-                            operation.operation.family,
-                            aos_ability_model::OperationFamily::ServiceLifecycle {
-                                action: aos_ability_model::ServiceAction::Stop
-                            }
-                        )
+                        && operation.semantics.stops_provider
                 })
                 .map(|(_, operation)| operation)
                 .collect::<Vec<_>>();

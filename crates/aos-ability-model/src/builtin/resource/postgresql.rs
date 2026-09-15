@@ -5,9 +5,10 @@ use std::collections::BTreeMap;
 use anyhow::Result;
 
 use crate::{
-    ArtifactReference, HandlerDescriptor, InterfaceDocument, InterfaceKey, InterfaceName,
-    LifecycleSemantics, LocalKey, OperationFamily, OutputDescriptor, ProviderImplementation,
-    ResourceLifetime, ServiceAction, StringSyntax, ValuePhase, ValueSchema, ValueVisibility,
+    AccessMode, ArtifactReference, HandlerDescriptor, InterfaceDocument, InterfaceKey,
+    InterfaceName, LifecycleSemantics, LocalKey, MethodSemantics, OutputDescriptor,
+    ProviderImplementation, ResourceLifetime, StringSyntax, ValuePhase, ValueSchema,
+    ValueVisibility,
 };
 
 use super::common::{
@@ -76,7 +77,7 @@ pub fn postgresql_effects_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "materialize",
-            OperationFamily::PrepareManagedConfiguration,
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             request.clone(),
             evidence.clone(),
             BTreeMap::from([(
@@ -87,7 +88,7 @@ pub fn postgresql_effects_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "observe",
-            OperationFamily::ObserveReadiness,
+            MethodSemantics::ordinary(AccessMode::Read),
             request.clone(),
             evidence.clone(),
             BTreeMap::from([
@@ -108,9 +109,7 @@ pub fn postgresql_effects_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "start",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Start,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             request.clone(),
             evidence.clone(),
             BTreeMap::new(),
@@ -118,9 +117,7 @@ pub fn postgresql_effects_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "restart",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Restart,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             request.clone(),
             evidence.clone(),
             BTreeMap::new(),
@@ -128,9 +125,7 @@ pub fn postgresql_effects_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "stop",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Stop,
-            },
+            MethodSemantics::provider_stop(),
             request.clone(),
             evidence,
             BTreeMap::new(),

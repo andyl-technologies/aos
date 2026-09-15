@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use anyhow::Result;
 
 use crate::{
-    ArtifactReference, HandlerDescriptor, HostStorageAction, InterfaceDocument, InterfaceKey,
-    InterfaceName, LifecycleSemantics, LocalKey, OperationFamily, OutputDescriptor,
+    AccessMode, ArtifactReference, HandlerDescriptor, InterfaceDocument, InterfaceKey,
+    InterfaceName, LifecycleSemantics, LocalKey, MethodSemantics, OutputDescriptor,
     ProviderImplementation, ResourceLifetime, StringSyntax, ValuePhase, ValueSchema,
     ValueVisibility,
 };
@@ -41,9 +41,7 @@ pub fn host_storage_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "ensure",
-            OperationFamily::HostStorage {
-                action: HostStorageAction::Ensure,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             host_storage_request_schema()?,
             host_storage_observation_schema()?,
             BTreeMap::from([(
@@ -59,9 +57,7 @@ pub fn host_storage_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "observe",
-            OperationFamily::HostStorage {
-                action: HostStorageAction::Observe,
-            },
+            MethodSemantics::ordinary(AccessMode::Read),
             host_storage_request_schema()?,
             host_storage_observation_schema()?,
             BTreeMap::from([(
@@ -77,9 +73,7 @@ pub fn host_storage_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "release",
-            OperationFamily::HostStorage {
-                action: HostStorageAction::Release,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             host_storage_request_schema()?,
             host_storage_observation_schema()?,
             BTreeMap::new(),

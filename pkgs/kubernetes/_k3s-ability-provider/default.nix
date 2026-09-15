@@ -262,11 +262,11 @@ in rec {
       attempt_timeout_millis = 120000;
       total_recovery_millis = 120000;
     };
-    operation = binding: method: family: resource: mode: {
+    operation = binding: method: resource: mode: {
       key = scopedKey "${method}-${resource.key}";
       branch_context = [];
       inherit (binding) interface;
-      inherit method family recovery deadline controller;
+      inherit method recovery deadline controller;
       binding = binding.id;
       authority = "caller";
       phase = "converging";
@@ -285,11 +285,7 @@ in rec {
       accesses = [{inherit resource mode;}];
     };
     starts = builtins.map (change:
-      operation systemd "start" {
-        kind = "service-lifecycle";
-        action = "start";
-      }
-      change.resource "exclusive-write")
+      operation systemd "start" change.resource "exclusive-write")
     serviceChanged;
     needsKubernetes = objectChanged != [] || objectRemoved != [];
     readinessResources =
@@ -300,28 +296,16 @@ in rec {
       ]
       else [resourceFor context "server-service"];
     ready = map (resource:
-      operation systemd "observe-manager" {kind = "observe-readiness";} resource "read")
+      operation systemd "observe-manager" resource "read")
     readinessResources;
     applies = builtins.map (change:
-      operation kubernetes "apply" {
-        kind = "kubernetes-object";
-        action = "apply";
-      }
-      change.resource "exclusive-write")
+      operation kubernetes "apply" change.resource "exclusive-write")
     objectChanged;
     deletes = builtins.map (change:
-      operation kubernetes "delete" {
-        kind = "kubernetes-object";
-        action = "delete";
-      }
-      change.resource "exclusive-write")
+      operation kubernetes "delete" change.resource "exclusive-write")
     objectRemoved;
     stops = builtins.map (change:
-      operation systemd "stop" {
-        kind = "service-lifecycle";
-        action = "stop";
-      }
-      change.resource "exclusive-write")
+      operation systemd "stop" change.resource "exclusive-write")
     serviceRemoved;
     readinessEdges = builtins.concatMap (readiness:
       builtins.map (objectOperation: {
@@ -410,10 +394,6 @@ in rec {
       // {
         key = apply.key // {key = "observe-before-${apply.target.resource.key}";};
         method = "observe";
-        family = {
-          kind = "kubernetes-object";
-          action = "observe";
-        };
         target = apply.target // {operations = ["observe"];};
         accesses = builtins.map (entry: entry // {mode = "read";}) apply.accesses;
         recovery =
@@ -530,10 +510,6 @@ in rec {
       // {
         key = operation.key // {key = "state-start-${operation.target.resource.key}";};
         method = "start";
-        family = {
-          kind = "service-lifecycle";
-          action = "start";
-        };
         target = operation.target // {operations = ["start"];};
         accesses = builtins.map (access: access // {mode = "exclusive-write";}) operation.accesses;
       };

@@ -4,9 +4,8 @@ use std::collections::BTreeMap;
 
 use aos_ability_model::{
     AbilityValue, AccessMode, ArtifactReference, AuthorityGrant, AuthorityRole, Binding,
-    CredentialAction, HostStorageAction, InterfaceDocument, InterfaceKey, KubernetesObjectAction,
-    MethodReference, NetworkEndpointAction, NetworkPolicyAction, Operation, OperationFamily,
-    ResourceId, ResourceLifetime, ResourceReference, ValueSchema, compare_resource_ids,
+    InterfaceDocument, InterfaceKey, MethodReference, MethodSemantics, Operation, ResourceId,
+    ResourceLifetime, ResourceReference, ValueSchema, compare_resource_ids,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -89,8 +88,8 @@ pub(crate) fn authorize_invocation(
         .get(&method.method)
         .ok_or(InvocationAuthorizationError::MissingMethod)?;
 
-    if operation.target.interface != method.interface
-        || descriptor.target_resource != operation.target.interface.name
+    if descriptor.target_resource != operation.target.interface.name
+        || !interfaces.contains_key(&operation.target.interface)
     {
         return Err(InvocationAuthorizationError::TargetMismatch);
     }
@@ -121,7 +120,7 @@ pub(crate) fn authorize_invocation(
     if operation.target.resource.provider != binding.provider && !mediated_owner_target {
         return Err(InvocationAuthorizationError::TargetScopeEscape);
     }
-    let required_access = required_target_access(&descriptor.operation_family);
+    let required_access = required_target_access(&descriptor.semantics);
     if !operation.accesses.iter().any(|access| {
         access.resource == operation.target.resource && access.mode.permits(required_access)
     }) {
@@ -152,54 +151,8 @@ pub(crate) fn authorize_invocation(
     Ok(())
 }
 
-pub(crate) const fn required_target_access(family: &OperationFamily) -> AccessMode {
-    match family {
-        OperationFamily::VerifyArtifact
-        | OperationFamily::Credential {
-            action: CredentialAction::Acquire,
-        }
-        | OperationFamily::ValidateCandidate
-        | OperationFamily::ObserveReadiness
-        | OperationFamily::NetworkEndpoint {
-            action: NetworkEndpointAction::Observe,
-        }
-        | OperationFamily::HostStorage {
-            action: HostStorageAction::Observe,
-        }
-        | OperationFamily::HostNetworkPolicy {
-            action: NetworkPolicyAction::Observe,
-        }
-        | OperationFamily::ImageRollout {
-            action:
-                aos_ability_model::ImageRolloutAction::ObserveBoot
-                | aos_ability_model::ImageRolloutAction::ObserveHealth,
-        } => AccessMode::Read,
-        OperationFamily::KubernetesObject {
-            action: KubernetesObjectAction::Observe,
-        } => AccessMode::Read,
-        OperationFamily::RecordGenerationAssociation => AccessMode::SharedWrite,
-        OperationFamily::PrepareManagedConfiguration
-        | OperationFamily::Credential {
-            action: CredentialAction::Deliver,
-        }
-        | OperationFamily::PublishConfiguration
-        | OperationFamily::PrepareManagerConfiguration
-        | OperationFamily::ServiceLifecycle { .. }
-        | OperationFamily::KubernetesObject {
-            action: KubernetesObjectAction::Apply | KubernetesObjectAction::Delete,
-        }
-        | OperationFamily::NetworkEndpoint {
-            action: NetworkEndpointAction::Materialize | NetworkEndpointAction::Release,
-        }
-        | OperationFamily::HostStorage {
-            action: HostStorageAction::Ensure | HostStorageAction::Release,
-        }
-        | OperationFamily::HostNetworkPolicy {
-            action: NetworkPolicyAction::Apply | NetworkPolicyAction::Remove,
-        }
-        | OperationFamily::ImageRollout { .. }
-        | OperationFamily::ReleaseResource => AccessMode::ExclusiveWrite,
-    }
+pub(crate) const fn required_target_access(semantics: &MethodSemantics) -> AccessMode {
+    semantics.required_target_access
 }
 
 fn invocation_grant(
@@ -349,15 +302,9 @@ mod tests {
     #[test]
     fn native_resource_observation_is_read_only() {
         for family in [
-            OperationFamily::NetworkEndpoint {
-                action: NetworkEndpointAction::Observe,
-            },
-            OperationFamily::HostStorage {
-                action: HostStorageAction::Observe,
-            },
-            OperationFamily::HostNetworkPolicy {
-                action: NetworkPolicyAction::Observe,
-            },
+            MethodSemantics::ordinary(AccessMode::Read),
+            MethodSemantics::ordinary(AccessMode::Read),
+            MethodSemantics::ordinary(AccessMode::Read),
         ] {
             assert_eq!(required_target_access(&family), AccessMode::Read);
         }
@@ -366,24 +313,12 @@ mod tests {
     #[test]
     fn native_resource_mutation_requires_exclusive_access() {
         for family in [
-            OperationFamily::NetworkEndpoint {
-                action: NetworkEndpointAction::Materialize,
-            },
-            OperationFamily::NetworkEndpoint {
-                action: NetworkEndpointAction::Release,
-            },
-            OperationFamily::HostStorage {
-                action: HostStorageAction::Ensure,
-            },
-            OperationFamily::HostStorage {
-                action: HostStorageAction::Release,
-            },
-            OperationFamily::HostNetworkPolicy {
-                action: NetworkPolicyAction::Apply,
-            },
-            OperationFamily::HostNetworkPolicy {
-                action: NetworkPolicyAction::Remove,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
         ] {
             assert_eq!(required_target_access(&family), AccessMode::ExclusiveWrite);
         }

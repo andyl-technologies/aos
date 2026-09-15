@@ -1272,6 +1272,13 @@ fn planner_fixture_with_contract(
     let mut source = aos_ability_validate::test_support::plan_fixture();
     source.interfaces[0].interface.configuration = configuration;
     source.interfaces[0].interface.guarantees = guarantees.clone();
+    source.interfaces[0].interface.aggregation = AggregationContract {
+        scope: AggregationScope::ProviderInstance,
+        key: key("slot"),
+        controller_group: key("aggregate"),
+        reject_slot_collisions: true,
+        merge_contract: None,
+    };
     source.refresh_interface();
     let context = source.context;
     let interface = source.binding_plan.bindings[0].interface.clone();
@@ -1315,13 +1322,6 @@ fn planner_fixture_with_contract(
         exports: vec![ExportDeclaration {
             name: key("provider"),
             interface: interface.clone(),
-            aggregation: Some(AggregationContract {
-                scope: AggregationScope::ProviderInstance,
-                key: key("slot"),
-                controller_group: key("aggregate"),
-                reject_slot_collisions: true,
-                merge_contract: None,
-            }),
             implementation: descriptor,
         }],
         requirements: Vec::new(),

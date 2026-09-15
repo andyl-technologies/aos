@@ -493,7 +493,7 @@
       else "exclusive-write";
     stopsProvider = name == "stop";
   };
-  method = targetResource: operationFamily: name: {
+  method = targetResource: name: {
     inherit targetResource;
     semantics = methodSemantics name;
     parameters = types.boolean;
@@ -511,11 +511,11 @@
     };
   };
 
-  methodWithOutputs = targetResource: operationFamily: name: outputs:
-    (method targetResource operationFamily name) // {inherit outputs;};
+  methodWithOutputs = targetResource: name: outputs:
+    (method targetResource name) // {inherit outputs;};
 
-  foregroundProcessMethod = operationFamily: name:
-    (method foregroundProcess.name operationFamily name)
+  foregroundProcessMethod = name:
+    (method foregroundProcess.name name)
     // {
       outcome = {
         completionEvidence = foregroundProcessObservation;
@@ -525,12 +525,12 @@
       };
     };
 
-  validationMethod = operationFamily: name:
-    (method nginxValidation.name operationFamily name)
+  validationMethod = name:
+    (method nginxValidation.name name)
     // {parameters = nginxValidationRequest;};
 
-  credentialEffectMethod = operationFamily: name: outputs:
-    (methodWithOutputs credentialDeliveryEffects.name operationFamily name outputs)
+  credentialEffectMethod = name: outputs:
+    (methodWithOutputs credentialDeliveryEffects.name name outputs)
     // {
       parameters = credentialRequest;
       outcome = {
@@ -541,7 +541,7 @@
       };
     };
 
-  endpointEffectMethod = operationFamily: name: outputs: {
+  endpointEffectMethod = name: outputs: {
     targetResource = endpointEffects.name;
     inherit outputs;
     semantics = methodSemantics name;
@@ -556,7 +556,7 @@
     };
   };
 
-  networkPolicyEffectMethod = operationFamily: name: parameters: outputs: guarantees: {
+  networkPolicyEffectMethod = name: parameters: outputs: guarantees: {
     targetResource = networkPolicyEffects.name;
     inherit parameters outputs guarantees;
     semantics = methodSemantics name;
@@ -732,9 +732,9 @@ in {
           group = "managed-configuration-effects";
           handler = "managed-configuration-terminal";
           methods = {
-            prepare = method managedConfigurationEffects.name {kind = "prepare-managed-configuration";} "prepare";
-            publish = method managedConfigurationEffects.name {kind = "publish-configuration";} "publish";
-            release = method managedConfigurationEffects.name {kind = "release-resource";} "release";
+            prepare = method managedConfigurationEffects.name "prepare";
+            publish = method managedConfigurationEffects.name "publish";
+            release = method managedConfigurationEffects.name "release";
           };
         };
         handler = {
@@ -794,21 +794,13 @@ in {
           requestSchema = credentialRequest;
           selectedLifecycle = credentialEffectsLifecycle;
           methods = {
-            acquire =
-              credentialEffectMethod {
-                kind = "credential";
-                action = "acquire";
-              } "acquire" {
-                credential-view = runtimeMethodOutput credentialView;
-              };
-            deliver =
-              credentialEffectMethod {
-                kind = "credential";
-                action = "deliver";
-              } "deliver" {
-                credential-view = runtimeMethodOutput credentialView;
-              };
-            release = credentialEffectMethod {kind = "release-resource";} "release" {};
+            acquire = credentialEffectMethod "acquire" {
+              credential-view = runtimeMethodOutput credentialView;
+            };
+            deliver = credentialEffectMethod "deliver" {
+              credential-view = runtimeMethodOutput credentialView;
+            };
+            release = credentialEffectMethod "release" {};
           };
         };
         handler = {
@@ -833,15 +825,9 @@ in {
           selectedLifecycle = foregroundProcessLifecycle;
           guarantees = [foregroundProcessSupervisionGuarantee];
           methods = {
-            observe = foregroundProcessMethod {kind = "observe-readiness";} "observe";
-            start = foregroundProcessMethod {
-              kind = "service-lifecycle";
-              action = "start";
-            } "start";
-            stop = foregroundProcessMethod {
-              kind = "service-lifecycle";
-              action = "stop";
-            } "stop";
+            observe = foregroundProcessMethod "observe";
+            start = foregroundProcessMethod "start";
+            stop = foregroundProcessMethod "stop";
           };
         };
         handler = {
@@ -890,23 +876,11 @@ in {
           guarantees = builtins.attrValues serviceManagementContract.features;
           selectedLifecycle = serviceManagementContract.lifecycle;
           methods = {
-            observe = method serviceManagement.name {kind = "observe-readiness";} "observe";
-            reload = method serviceManagement.name {
-              kind = "service-lifecycle";
-              action = "reload";
-            } "reload";
-            restart = method serviceManagement.name {
-              kind = "service-lifecycle";
-              action = "restart";
-            } "restart";
-            start = method serviceManagement.name {
-              kind = "service-lifecycle";
-              action = "start";
-            } "start";
-            stop = method serviceManagement.name {
-              kind = "service-lifecycle";
-              action = "stop";
-            } "stop";
+            observe = method serviceManagement.name "observe";
+            reload = method serviceManagement.name "reload";
+            restart = method serviceManagement.name "restart";
+            start = method serviceManagement.name "start";
+            stop = method serviceManagement.name "stop";
           };
         };
         handler = {

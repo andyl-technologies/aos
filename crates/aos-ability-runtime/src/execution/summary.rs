@@ -1,8 +1,10 @@
 //! Read-only summaries of durable operation and transaction outcomes.
 
+use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
-use aos_ability_model::{OperationId, PlanId, TransactionId};
+use aos_ability_model::{LocalKey, OperationId, PlanId, ResourceReference, TransactionId};
+use aos_ability_validate::CheckedEffectPlan;
 
 pub use aos_ability_model::document::TerminalResult;
 
@@ -51,6 +53,7 @@ pub struct OperationSummary {
     pub(super) status: OperationStatus,
     pub(super) attempt: Option<NonZeroU32>,
     pub(super) elapsed_millis: u64,
+    pub(super) retained_resources: BTreeMap<LocalKey, ResourceReference>,
 }
 
 impl OperationSummary {
@@ -76,6 +79,12 @@ impl OperationSummary {
     #[must_use]
     pub const fn elapsed_millis(&self) -> u64 {
         self.elapsed_millis
+    }
+
+    /// Returns validated retained-resource results without exposing other outputs.
+    #[must_use]
+    pub fn retained_resources(&self) -> &BTreeMap<LocalKey, ResourceReference> {
+        &self.retained_resources
     }
 }
 
@@ -150,6 +159,7 @@ impl ExecutionTransaction<'_> {
                     status,
                     attempt: history.current_attempt(),
                     elapsed_millis: history.elapsed_millis(),
+                    retained_resources: retained_resource_outputs(self.plan(), history),
                 }
             })
             .collect::<Vec<_>>();
@@ -164,6 +174,37 @@ impl ExecutionTransaction<'_> {
             total_recovery_millis: self.total_recovery_millis(),
         }
     }
+}
+
+pub(super) fn retained_resource_outputs(
+    plan: &CheckedEffectPlan,
+    history: &OperationHistory,
+) -> BTreeMap<LocalKey, ResourceReference> {
+    let Some(operation) = plan.operation(&history.operation_id().operation) else {
+        return BTreeMap::new();
+    };
+    let Some(method) = plan
+        .interfaces()
+        .get(&operation.interface)
+        .and_then(|interface| interface.interface.methods.get(&operation.method))
+    else {
+        return BTreeMap::new();
+    };
+    let Some((_evidence, outputs)) = history.original_completion() else {
+        return BTreeMap::new();
+    };
+
+    method
+        .outputs
+        .iter()
+        .filter(|(_name, descriptor)| descriptor.is_retained_resource())
+        .filter_map(|(name, _descriptor)| {
+            let value = outputs.get(name)?;
+            serde_json::from_value(value.as_json().clone())
+                .ok()
+                .map(|reference| (name.clone(), reference))
+        })
+        .collect()
 }
 
 pub(super) fn operation_status(history: &OperationHistory) -> OperationStatus {

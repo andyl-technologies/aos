@@ -356,7 +356,15 @@ fn build_verified_planning_fixture(
     include_discarded_policy: bool,
     kind: PlanningFixtureKind,
 ) -> (ValidationContext, VerifiedPlanningSnapshot) {
-    let source = aos_ability_validate::test_support::plan_fixture();
+    let mut source = aos_ability_validate::test_support::plan_fixture();
+    source.interfaces[0].interface.aggregation = AggregationContract {
+        scope: AggregationScope::ProviderInstance,
+        key: key("slot"),
+        controller_group: key("aggregate"),
+        reject_slot_collisions: true,
+        merge_contract: None,
+    };
+    source.refresh_interface();
     let stateful = kind == PlanningFixtureKind::StatefulSelected;
     let context = if stateful {
         ValidationContext::new(
@@ -426,13 +434,6 @@ fn build_verified_planning_fixture(
         exports: vec![ExportDeclaration {
             name: key("provider"),
             interface: interface.clone(),
-            aggregation: Some(AggregationContract {
-                scope: AggregationScope::ProviderInstance,
-                key: key("slot"),
-                controller_group: key("aggregate"),
-                reject_slot_collisions: true,
-                merge_contract: None,
-            }),
             implementation: descriptor,
         }],
         requirements: Vec::new(),

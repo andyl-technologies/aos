@@ -11,9 +11,22 @@ use aos_ability_model::builtin::{
     ab_image_rollout_provider,
 };
 use aos_ability_model::{
-    AbilityValue, ImageRolloutAction, LocalKey, MethodReference, Operation, OperationFamily,
-    ProviderAssignment, ProviderImplementationReference, ResourceAccess, ResourceId, RevisionId,
+    AbilityValue, LocalKey, MethodReference, Operation, ProviderAssignment,
+    ProviderImplementationReference, ResourceAccess, ResourceId, RevisionId,
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ImageRolloutAction {
+    Retain,
+    Prepare,
+    Drain,
+    Select,
+    ObserveBoot,
+    ObserveHealth,
+    Withdraw,
+    Hold,
+    Retire,
+}
 use aos_ability_plan::AbRolloutRequest;
 use aos_ability_runtime::adapter::{
     AdapterCompletion, AdapterRecord, CancellationDisposition, CatalogReservation,
@@ -646,10 +659,8 @@ fn completion_if_ready(
 }
 
 fn require_operation(operation: &Operation) -> Result<ImageRolloutAction, io::Error> {
-    let OperationFamily::ImageRollout { action } = operation.family else {
-        return Err(invalid("operation is not an image rollout"));
-    };
-    Ok(action)
+    method_action(operation.method.as_str())
+        .ok_or_else(|| invalid("unsupported image rollout method"))
 }
 
 fn method_action(method: &str) -> Option<ImageRolloutAction> {

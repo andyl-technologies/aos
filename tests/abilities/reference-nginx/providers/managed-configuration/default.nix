@@ -228,7 +228,7 @@ in rec {
       if builtins.length controllers == 1
       then (builtins.head controllers).controller
       else throw "managed-configuration transition requires one resource controller";
-    operation = authorityRole: change: method: family: phase: let
+    operation = authorityRole: change: method: phase: let
       terminal = terminalFor authorityRole change method;
     in {
       key = scopedKey "${method}-${change.resource.key}";
@@ -236,7 +236,7 @@ in rec {
       binding = terminal.id;
       authority = "caller";
       interface = terminal.interface;
-      inherit method family phase;
+      inherit method phase;
       input_phase = "planning";
       target = {
         interface = terminal.interface;
@@ -278,15 +278,18 @@ in rec {
     };
     prepares =
       builtins.map
-      (change: operation "desired" change "prepare" {kind = "prepare-managed-configuration";} "preparing")
+      (change:
+        operation "desired" change "prepare" "preparing")
       changed;
     publishes =
       builtins.map
-      (change: operation "desired" change "publish" {kind = "publish-configuration";} "publishing")
+      (change:
+        operation "desired" change "publish" "publishing")
       changed;
     releases =
       builtins.map
-      (change: operation "teardown" change "release" {kind = "release-resource";} "converging")
+      (change:
+        operation "teardown" change "release" "converging")
       removed;
     edges =
       builtins.map

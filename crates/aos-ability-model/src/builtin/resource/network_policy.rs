@@ -7,10 +7,9 @@ use anyhow::Result;
 use aos_contract::Sha256Digest;
 
 use crate::{
-    ArtifactReference, GuaranteeKey, HandlerDescriptor, InterfaceDocument, InterfaceKey,
-    InterfaceName, LifecycleSemantics, LocalKey, NetworkPolicyAction, OperationFamily,
-    OutputDescriptor, ProviderImplementation, ResourceLifetime, ValuePhase, ValueSchema,
-    ValueVisibility,
+    AccessMode, ArtifactReference, GuaranteeKey, HandlerDescriptor, InterfaceDocument,
+    InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey, MethodSemantics, OutputDescriptor,
+    ProviderImplementation, ResourceLifetime, ValuePhase, ValueSchema, ValueVisibility,
 };
 
 use super::common::{
@@ -66,9 +65,7 @@ pub fn host_network_policy_interface() -> Result<InterfaceDocument> {
         guaranteed_policy_method(
             &interface_name,
             "apply",
-            OperationFamily::HostNetworkPolicy {
-                action: NetworkPolicyAction::Apply,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             host_network_policy_request_schema(true)?,
             host_network_policy_observation_schema()?,
             BTreeMap::from([(
@@ -80,9 +77,7 @@ pub fn host_network_policy_interface() -> Result<InterfaceDocument> {
         guaranteed_policy_method(
             &interface_name,
             "observe",
-            OperationFamily::HostNetworkPolicy {
-                action: NetworkPolicyAction::Observe,
-            },
+            MethodSemantics::ordinary(AccessMode::Read),
             host_network_policy_request_schema(true)?,
             host_network_policy_observation_schema()?,
             BTreeMap::from([(
@@ -94,9 +89,7 @@ pub fn host_network_policy_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "remove",
-            OperationFamily::HostNetworkPolicy {
-                action: NetworkPolicyAction::Remove,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             host_network_policy_request_schema(false)?,
             host_network_policy_observation_schema()?,
             BTreeMap::new(),
@@ -247,20 +240,14 @@ fn host_network_policy_observation_schema() -> Result<ValueSchema> {
 fn guaranteed_policy_method(
     interface: &InterfaceName,
     name: &str,
-    operation_family: OperationFamily,
+    semantics: MethodSemantics,
     parameters: ValueSchema,
     evidence: ValueSchema,
     outputs: BTreeMap<LocalKey, OutputDescriptor>,
     guarantees: Vec<GuaranteeKey>,
 ) -> Result<(LocalKey, crate::MethodDescriptor)> {
-    let (key, mut method) = resource_method(
-        interface,
-        name,
-        operation_family,
-        parameters,
-        evidence,
-        outputs,
-    )?;
+    let (key, mut method) =
+        resource_method(interface, name, semantics, parameters, evidence, outputs)?;
     method.guarantees = guarantees;
 
     Ok((key, method))

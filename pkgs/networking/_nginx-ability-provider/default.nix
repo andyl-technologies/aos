@@ -889,7 +889,6 @@ in rec {
       expectedInterface,
       resource,
       method,
-      family,
       phase,
       inputPhase,
       inputs,
@@ -902,7 +901,7 @@ in rec {
       binding = binding.id;
       authority = "caller";
       interface = binding.interface;
-      inherit method family phase inputs;
+      inherit method phase inputs;
       input_phase = inputPhase;
       target = {
         interface = binding.interface;
@@ -948,10 +947,6 @@ in rec {
         requestKey = "storage";
         expectedInterface = storageEffects;
         resource = change.resource;
-        family = {
-          kind = "host-storage";
-          action = method;
-        };
         phase =
           if authorityRole == "teardown"
           then "converging"
@@ -983,10 +978,6 @@ in rec {
         requestKey = "endpoint";
         expectedInterface = endpointEffects;
         resource = change.resource;
-        family = {
-          kind = "network-endpoint";
-          action = method;
-        };
         phase =
           if authorityRole == "teardown"
           then "converging"
@@ -1019,10 +1010,6 @@ in rec {
         requestKey = "network-policy";
         expectedInterface = networkPolicyEffects;
         resource = change.resource;
-        family = {
-          kind = "host-network-policy";
-          action = method;
-        };
         phase =
           if authorityRole == "teardown"
           then "converging"
@@ -1076,7 +1063,6 @@ in rec {
       authority = "caller";
       interface = validation.interface;
       method = "validate";
-      family = {kind = "validate-candidate";};
       phase = "preparing";
       input_phase = "runtime";
       target = {
@@ -1119,7 +1105,6 @@ in rec {
       authority = "caller";
       interface = validation.interface;
       method = "record";
-      family = {kind = "record-generation-association";};
       phase = "converging";
       input_phase = "planning";
       target = {
@@ -1162,10 +1147,6 @@ in rec {
       authority = "caller";
       interface = serviceTerminal.interface;
       method = action;
-      family = {
-        kind = "service-lifecycle";
-        inherit action;
-      };
       phase = "converging";
       input_phase = "planning";
       target = {
@@ -1209,7 +1190,6 @@ in rec {
       authority = "caller";
       interface = serviceTerminal.interface;
       method = "observe";
-      family = {kind = "observe-readiness";};
       phase = "converging";
       input_phase = "planning";
       target = {
@@ -1251,7 +1231,6 @@ in rec {
       authority = "caller";
       interface = validation.interface;
       method = "release";
-      family = {kind = "release-resource";};
       phase = "converging";
       input_phase = "planning";
       target = {
@@ -1688,42 +1667,22 @@ in rec {
       if operation.interface.name == "aos.foreground-process" && operation.method == "observe"
       then {
         method = "start";
-        family = {
-          kind = "foreground-process";
-          action = "start";
-        };
       }
       else if operation.interface.name == "aos.host-storage-effects" && operation.method == "observe"
       then {
         method = "ensure";
-        family = {
-          kind = "host-storage";
-          action = "ensure";
-        };
       }
       else if operation.interface.name == "aos.network-endpoint-effects" && operation.method == "observe"
       then {
         method = "materialize";
-        family = {
-          kind = "network-endpoint";
-          action = "materialize";
-        };
       }
       else if operation.interface.name == "aos.host-network-policy-effects" && operation.method == "observe"
       then {
         method = "apply";
-        family = {
-          kind = "host-network-policy";
-          action = "apply";
-        };
       }
       else if operation.interface.name == "aos.service-management" && operation.method == "reload"
       then {
         method = "start";
-        family = {
-          kind = "service-lifecycle";
-          action = "start";
-        };
       }
       else null;
     hasMethod = operation: method:
@@ -1761,7 +1720,7 @@ in rec {
       operation
       // {
         key = operation.key // {key = "state-${state.method}-${operation.target.resource.key}";};
-        inherit (state) method family;
+        inherit (state) method;
         target = operation.target // {operations = [state.method];};
         accesses = builtins.map (access: access // {mode = "exclusive-write";}) operation.accesses;
         recovery =

@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex, Weak};
 use aos_ability_model::{
     AccessMode, ArtifactReference, BindingId, DependencyKind, InstanceId, Operation, OperationId,
     PlanNodeKey, ProviderAdoptionAuthorization, RequiredFeature, ResourceAccess, ResourceId,
-    RevisionId, ScopedOperationKey, ServiceAction, TransactionId,
+    RevisionId, ScopedOperationKey, TransactionId,
 };
 use aos_ability_plan::{RuntimeResourceState, TransitionReconciliation};
 use aos_ability_runtime::bundle::ReloadablePlanBundle;
@@ -684,6 +684,7 @@ pub(super) struct ActiveNativeConsumer {
 #[derive(Clone, Debug)]
 struct NativeOperationClaim {
     operation: Operation,
+    semantics: aos_ability_model::MethodSemantics,
     binding: BindingId,
     consumer: InstanceId,
     provider: InstanceId,
@@ -1001,6 +1002,16 @@ impl NativeInventoryState {
             let (owner, owner_handler) = owner_claim
                 .map(|(owner, handler)| (Some(owner), Some(handler)))
                 .unwrap_or((None, None));
+            let semantics = plan
+                .operation_method(operation)
+                .ok_or_else(|| {
+                    GenerationAbilityStoreError::Conflict(format!(
+                        "checked operation {:?} has no exact method descriptor",
+                        operation.key
+                    ))
+                })?
+                .semantics
+                .clone();
             let admits_receipt_source = matches!(
                 plan.binding_plan().binding_authority(&operation.binding),
                 Some(BindingAuthorityKind::Teardown { .. })
@@ -1018,6 +1029,7 @@ impl NativeInventoryState {
                 operation.key.clone(),
                 NativeOperationClaim {
                     operation: operation.clone(),
+                    semantics,
                     binding: binding.id.clone(),
                     consumer: binding.request.consumer.clone(),
                     provider: binding.provider.clone(),
@@ -1026,18 +1038,7 @@ impl NativeInventoryState {
                     owner_handler,
                     resources,
                     desired_revisions: desired_revisions.clone(),
-                    retains_consumer: operation
-                        .accesses
-                        .iter()
-                        .any(|access| access.mode.is_write())
-                        && matches!(
-                            operation.family,
-                            aos_ability_model::OperationFamily::ServiceLifecycle {
-                                action: ServiceAction::Start
-                                    | ServiceAction::Reload
-                                    | ServiceAction::Restart
-                            }
-                        ),
+                    retains_consumer: operation_retains_consumer(plan, operation),
                     admits_receipt_source,
                 },
             );
@@ -1052,12 +1053,7 @@ impl NativeInventoryState {
             if operation.retains_consumer {
                 counts.0 += 1;
             }
-            if matches!(
-                operation.operation.family,
-                aos_ability_model::OperationFamily::ServiceLifecycle {
-                    action: ServiceAction::Stop
-                }
-            ) {
+            if operation.semantics.stops_provider {
                 counts.1 += 1;
             }
         }
@@ -1096,12 +1092,7 @@ impl NativeInventoryState {
         }
         for operation in operations.values().filter(|operation| {
             operation.operation.target.lifetime == aos_ability_model::ResourceLifetime::Persistent
-                && matches!(
-                    operation.operation.family,
-                    aos_ability_model::OperationFamily::ServiceLifecycle {
-                        action: ServiceAction::Stop
-                    }
-                )
+                && operation.semantics.stops_provider
                 && operation.operation.accesses.iter().any(|access| {
                     access.resource == operation.operation.target.resource && access.mode.is_write()
                 })
@@ -1569,12 +1560,7 @@ fn validate_retained_native_consumer_claim(
             .accesses
             .iter()
             .any(|access| access.resource == consumer.logical && access.mode.is_write())
-        || !matches!(
-            operation.family,
-            aos_ability_model::OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Start | ServiceAction::Reload | ServiceAction::Restart
-            }
-        )
+        || !operation_retains_consumer(plan, operation)
         || consumer.owner != expected_owner
         || expected_owner_handler.as_ref() != owner_handler
         || consumer.desired_revision != expected_revision
@@ -1585,6 +1571,18 @@ fn validate_retained_native_consumer_claim(
         ));
     }
     Ok(())
+}
+
+fn operation_retains_consumer(plan: &CheckedEffectPlan, operation: &Operation) -> bool {
+    plan.interfaces()
+        .get(&operation.interface)
+        .and_then(|interface| interface.interface.methods.get(&operation.method))
+        .is_some_and(|method| {
+            method
+                .outputs
+                .values()
+                .any(|output| output.is_retained_resource())
+        })
 }
 
 pub(super) fn retained_consumer_owner_handler<'a>(

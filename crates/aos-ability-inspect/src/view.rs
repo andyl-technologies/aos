@@ -22,9 +22,9 @@ use aos_ability_model::document::ProviderState;
 use aos_ability_model::{
     AbilityActivationMode, AbilityValue, AccessMode, AggregateId, ArtifactReference, AuthorityRole,
     BindingId, BindingSource, DependencyKind, InstanceId, InterfaceDescriptor, InterfaceKey,
-    LocalKey, OperationFamily, OperationPhase, PlanId, PlanNodeKey, RecoveryContract, RequestId,
-    RequiredFeature, ResourceId, ResourceLifetime, RevisionId, ScopedOperationKey, ValueExpression,
-    ValueSchema, VersionedDocument,
+    LocalKey, MethodSemantics, OperationPhase, PlanId, PlanNodeKey, RecoveryContract, RequestId,
+    RequiredFeature, ResourceId, ResourceLifetime, ResultProducerKey, RevisionId,
+    ScopedOperationKey, ValueExpression, ValueSchema, ValueVisibility, VersionedDocument,
 };
 use aos_ability_validate::CheckedEffectPlan;
 use aos_contract::Sha256Digest;
@@ -241,8 +241,10 @@ pub enum InspectionNode {
         interface: InterfaceKey,
         /// Names the exact called method.
         method: LocalKey,
-        /// Retains the high-level semantic family.
-        family: OperationFamily,
+        /// Retains the method's provider-neutral execution semantics.
+        semantics: MethodSemantics,
+        /// Reports sensitive references derived from checked inputs and output visibility.
+        sensitive_references: bool,
         /// Places the operation in the durable transition phase.
         phase: OperationPhase,
         /// Retains the bounded recovery contract without request values.
@@ -785,7 +787,22 @@ fn insert_plan_nodes(
                 authority: operation.authority,
                 interface: operation.interface.clone(),
                 method: operation.method.clone(),
-                family: operation.family.clone(),
+                semantics: plan
+                    .operation_method(operation)
+                    .ok_or(InspectionViewError::MissingOperationInputSchema)?
+                    .semantics
+                    .clone(),
+                sensitive_references: plan
+                    .interfaces()
+                    .get(&operation.interface)
+                    .and_then(|interface| interface.interface.methods.get(&operation.method))
+                    .is_some_and(|method| {
+                        expression_uses_sensitive_reference(
+                            plan,
+                            &method.parameters,
+                            &operation.inputs,
+                        )
+                    }),
                 phase: operation.phase,
                 recovery: operation.recovery.clone(),
                 semantic_digest: semantic_digest("operation", operation)?,
@@ -861,6 +878,117 @@ fn insert_plan_nodes(
         );
     }
     Ok(())
+}
+
+fn expression_uses_sensitive_reference(
+    plan: &CheckedEffectPlan,
+    schema: &ValueSchema,
+    expression: &ValueExpression,
+) -> bool {
+    let schema = match schema {
+        ValueSchema::Optional { value } if !matches!(expression, ValueExpression::Literal { value } if value.as_json().is_null()) => {
+            value.as_ref()
+        }
+        _ => schema,
+    };
+
+    match expression {
+        ValueExpression::ResourceReference { .. } => true,
+        ValueExpression::AggregateOutput { reference } => plan
+            .interfaces()
+            .get(&reference.interface)
+            .and_then(|interface| interface.interface.outputs.get(&reference.port))
+            .is_some_and(|output| {
+                output.visibility != ValueVisibility::Public
+                    || schema_contains_sensitive_reference(&output.schema)
+            }),
+        ValueExpression::OperationResult { reference } => match &reference.producer {
+            ResultProducerKey::Operation { key } => plan
+                .operation(key)
+                .and_then(|operation| {
+                    plan.interfaces()
+                        .get(&operation.interface)
+                        .and_then(|interface| interface.interface.methods.get(&operation.method))
+                })
+                .and_then(|method| method.outputs.get(&reference.output))
+                .is_some_and(|output| {
+                    output.visibility != ValueVisibility::Public
+                        || schema_contains_sensitive_reference(&output.schema)
+                }),
+            ResultProducerKey::Merge { key } => plan
+                .merge(key)
+                .and_then(|merge| merge.outputs.get(&reference.output))
+                .is_some_and(|output| {
+                    output.descriptor.visibility != ValueVisibility::Public
+                        || schema_contains_sensitive_reference(&output.descriptor.schema)
+                }),
+        },
+        ValueExpression::List { items } => {
+            let ValueSchema::List { element, .. } = schema else {
+                return false;
+            };
+            items
+                .iter()
+                .any(|item| expression_uses_sensitive_reference(plan, element, item))
+        }
+        ValueExpression::Object { fields } => match schema {
+            ValueSchema::Map { value, .. } => fields
+                .values()
+                .any(|field| expression_uses_sensitive_reference(plan, value, field)),
+            ValueSchema::Record {
+                fields: field_schemas,
+                ..
+            } => fields.iter().any(|(name, field)| {
+                field_schemas
+                    .get(name.as_str())
+                    .is_some_and(|field_schema| {
+                        expression_uses_sensitive_reference(plan, field_schema, field)
+                    })
+            }),
+            ValueSchema::TaggedUnion { variants, tag } => expression_tag(fields, tag)
+                .and_then(|variant| variants.get(variant))
+                .is_some_and(|variant_schema| {
+                    expression_uses_sensitive_reference(plan, variant_schema, expression)
+                }),
+            _ => false,
+        },
+        ValueExpression::Literal { value } => {
+            !value.as_json().is_null() && schema_contains_sensitive_reference(schema)
+        }
+        ValueExpression::ArtifactReference { .. } => false,
+    }
+}
+
+fn expression_tag<'a>(
+    fields: &'a BTreeMap<String, ValueExpression>,
+    tag: &LocalKey,
+) -> Option<&'a str> {
+    let ValueExpression::Literal { value } = fields.get(tag.as_str())? else {
+        return None;
+    };
+    value.as_json().as_str()
+}
+
+fn schema_contains_sensitive_reference(schema: &ValueSchema) -> bool {
+    match schema {
+        ValueSchema::ResourceReference
+        | ValueSchema::ProviderAssignment
+        | ValueSchema::OperationResultReference => true,
+        ValueSchema::List { element, .. }
+        | ValueSchema::Map { value: element, .. }
+        | ValueSchema::Optional { value: element } => schema_contains_sensitive_reference(element),
+        ValueSchema::Record { fields, .. } => {
+            fields.values().any(schema_contains_sensitive_reference)
+        }
+        ValueSchema::TaggedUnion { variants, .. } => {
+            variants.values().any(schema_contains_sensitive_reference)
+        }
+        ValueSchema::Boolean
+        | ValueSchema::Integer { .. }
+        | ValueSchema::String { .. }
+        | ValueSchema::StringEnum { .. }
+        | ValueSchema::ArtifactReference => false,
+    }
 }
 
 fn insert_package_artifacts(

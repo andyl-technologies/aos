@@ -26,13 +26,13 @@ use aos_ability_model::document::{
 };
 use aos_ability_model::{
     AbilityValue, AccessMode, AggregateId, Binding, BindingId, BindingRequest,
-    ContributionPermission, CredentialAction, DesiredStateDocument, EnvironmentDocument,
-    EnvironmentId, ExecutionStage, ImplementationKind, InstanceId, InterfaceDescriptor,
-    InterfaceDocument, InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey, MethodDescriptor,
-    OperationFamily, OutcomeSemantics, OutputDescriptor, PackageDocument, ProviderImplementation,
+    ContributionPermission, DesiredStateDocument, EnvironmentDocument, EnvironmentId,
+    ExecutionStage, ImplementationKind, InstanceId, InterfaceDescriptor, InterfaceDocument,
+    InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey, MethodDescriptor, MethodSemantics,
+    OutcomeSemantics, OutputDescriptor, PackageDocument, ProviderImplementation,
     ProviderImplementationReference, RequiredFeature, ResourceId, ResourceLifetime,
-    ResourcePermission, RevisionId, ScopePath, ServiceAction, StringConstraint, StringSyntax,
-    ValuePhase, ValueSchema, ValueVisibility, VersionedDocument,
+    ResourcePermission, RevisionId, ScopePath, StringConstraint, StringSyntax, ValuePhase,
+    ValueSchema, ValueVisibility, VersionedDocument,
 };
 use aos_ability_plan::{
     BindingCandidate, CandidateSelection, CompositionError, EnabledProviderSelection,
@@ -2103,13 +2103,13 @@ fn interface_document(
 ) -> Result<InterfaceDocument> {
     let interface_name = InterfaceName::new(name)?;
     let validation_parameters = nginx_validation_request_schema()?;
-    let methods = reference_method_families(name)
+    let methods = reference_method_semantics(name)
         .into_iter()
-        .map(|(method, operation_family)| {
+        .map(|(method, semantics)| {
             Ok((
                 key(method)?,
                 MethodDescriptor {
-                    operation_family,
+                    semantics,
                     parameters: if name == "aos.nginx-validation" {
                         validation_parameters.clone()
                     } else {
@@ -2212,59 +2212,56 @@ fn nginx_validation_request_schema() -> Result<ValueSchema> {
     })
 }
 
-fn reference_method_families(name: &str) -> Vec<(&'static str, OperationFamily)> {
+fn reference_method_semantics(name: &str) -> Vec<(&'static str, MethodSemantics)> {
     match name {
         "aos.credential-delivery-effects" => vec![
-            (
-                "acquire",
-                OperationFamily::Credential {
-                    action: CredentialAction::Acquire,
-                },
-            ),
+            ("acquire", MethodSemantics::ordinary(AccessMode::Read)),
             (
                 "deliver",
-                OperationFamily::Credential {
-                    action: CredentialAction::Deliver,
-                },
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             ),
-            ("release", OperationFamily::ReleaseResource),
+            (
+                "release",
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            ),
         ],
         "aos.nginx-validation" => vec![
-            ("record", OperationFamily::RecordGenerationAssociation),
-            ("release", OperationFamily::ReleaseResource),
-            ("validate", OperationFamily::ValidateCandidate),
+            ("record", MethodSemantics::ordinary(AccessMode::SharedWrite)),
+            (
+                "release",
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            ),
+            ("validate", MethodSemantics::ordinary(AccessMode::Read)),
         ],
         "aos.managed-configuration-effects" => vec![
-            ("prepare", OperationFamily::PrepareManagedConfiguration),
-            ("publish", OperationFamily::PublishConfiguration),
-            ("release", OperationFamily::ReleaseResource),
+            (
+                "prepare",
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            ),
+            (
+                "publish",
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            ),
+            (
+                "release",
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            ),
         ],
         "aos.service-management" => vec![
-            ("observe", OperationFamily::ObserveReadiness),
+            ("observe", MethodSemantics::ordinary(AccessMode::Read)),
             (
                 "reload",
-                OperationFamily::ServiceLifecycle {
-                    action: ServiceAction::Reload,
-                },
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             ),
             (
                 "restart",
-                OperationFamily::ServiceLifecycle {
-                    action: ServiceAction::Restart,
-                },
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             ),
             (
                 "start",
-                OperationFamily::ServiceLifecycle {
-                    action: ServiceAction::Start,
-                },
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             ),
-            (
-                "stop",
-                OperationFamily::ServiceLifecycle {
-                    action: ServiceAction::Stop,
-                },
-            ),
+            ("stop", MethodSemantics::provider_stop()),
         ],
         _ => Vec::new(),
     }

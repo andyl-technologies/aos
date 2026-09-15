@@ -8,7 +8,7 @@ use anyhow::Result;
 use crate::{
     ArtifactReference, ImplementationKind, IndeterminateSemantics, InterfaceDescriptor,
     InterfaceDocument, InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey, MethodDescriptor,
-    OperationFamily, OutcomeSemantics, OutputDescriptor, ProviderImplementation, ValueSchema,
+    MethodSemantics, OutcomeSemantics, OutputDescriptor, ProviderImplementation, ValueSchema,
     VersionedDocument,
 };
 
@@ -46,7 +46,7 @@ pub(super) fn revisioned_observation_schema<const N: usize>(
 pub(crate) fn resource_method(
     interface: &InterfaceName,
     name: &str,
-    operation_family: OperationFamily,
+    semantics: MethodSemantics,
     parameters: ValueSchema,
     evidence: ValueSchema,
     outputs: BTreeMap<LocalKey, OutputDescriptor>,
@@ -55,7 +55,7 @@ pub(crate) fn resource_method(
     Ok((
         method.clone(),
         MethodDescriptor {
-            operation_family,
+            semantics,
             parameters,
             target_resource: interface.clone(),
             outputs,

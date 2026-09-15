@@ -311,7 +311,6 @@
       requestKey,
       resourceId,
       method,
-      family,
       phase,
       inputPhase,
       inputs,
@@ -325,7 +324,7 @@
       binding = terminal.id;
       authority = "caller";
       interface = terminal.interface;
-      inherit method family phase inputs;
+      inherit method phase inputs;
       input_phase = inputPhase;
       target = {
         interface = terminal.interface;
@@ -426,10 +425,6 @@
         requestKey = "endpoint";
         resourceId = endpointResource;
         method = endpointMethod;
-        family = {
-          kind = "network-endpoint";
-          action = endpointMethod;
-        };
         phase = "preparing";
         inputPhase = "planning";
         inputs = literal allocationContract;
@@ -444,10 +439,6 @@
         requestKey = "storage";
         resourceId = storageResource;
         method = storageMethod;
-        family = {
-          kind = "host-storage";
-          action = storageMethod;
-        };
         phase = "preparing";
         inputPhase = "planning";
         inputs = literal {
@@ -467,10 +458,6 @@
         requestKey = "credential";
         resourceId = credentialResource;
         method = credentialMethod;
-        family = {
-          kind = "credential";
-          action = credentialMethod;
-        };
         phase = "preparing";
         inputPhase = "planning";
         inputs = literal {
@@ -488,10 +475,6 @@
         requestKey = "network-policy";
         resourceId = policyResource;
         method = policyMethod;
-        family = {
-          kind = "host-network-policy";
-          action = policyMethod;
-        };
         phase = "publishing";
         inputPhase = "runtime";
         inputs = object {
@@ -510,7 +493,6 @@
         requestKey = "postgresql-terminal";
         resourceId = postgresqlResource;
         method = "materialize";
-        family = {kind = "prepare-managed-configuration";};
         phase = "preparing";
         inputPhase = "runtime";
         inputs = postgresqlRuntimeInput;
@@ -522,10 +504,6 @@
         requestKey = "postgresql-terminal";
         resourceId = postgresqlResource;
         method = lifecycleMethod;
-        family = {
-          kind = "service-lifecycle";
-          action = lifecycleMethod;
-        };
         phase = "converging";
         inputPhase = "planning";
         inputs = lifecycleInput;
@@ -537,7 +515,6 @@
         requestKey = "postgresql-terminal";
         resourceId = postgresqlResource;
         method = "observe";
-        family = {kind = "observe-readiness";};
         phase = "converging";
         inputPhase = "runtime";
         inputs = postgresqlRuntimeInput;
@@ -633,10 +610,6 @@
         requestKey = "postgresql-terminal";
         resourceId = postgresqlResource;
         method = "stop";
-        family = {
-          kind = "service-lifecycle";
-          action = "stop";
-        };
         phase = "converging";
         inputPhase = "planning";
         inputs = literal {
@@ -656,10 +629,6 @@
         requestKey = "network-policy";
         resourceId = policyResource;
         method = "remove";
-        family = {
-          kind = "host-network-policy";
-          action = "remove";
-        };
         phase = "converging";
         inputPhase = "planning";
         inputs = literal {
@@ -675,10 +644,6 @@
         requestKey = "endpoint";
         resourceId = endpointResource;
         method = "materialize";
-        family = {
-          kind = "network-endpoint";
-          action = "materialize";
-        };
         phase = "preparing";
         inputPhase = "planning";
         inputs = literal allocationContract;
@@ -690,10 +655,6 @@
         requestKey = "endpoint";
         resourceId = endpointResource;
         method = "release";
-        family = {
-          kind = "network-endpoint";
-          action = "release";
-        };
         phase = "converging";
         inputPhase = "planning";
         inputs = literal allocationContract;
@@ -705,7 +666,6 @@
         requestKey = "credential";
         resourceId = credentialResource;
         method = "release";
-        family = {kind = "release-resource";};
         phase = "converging";
         inputPhase = "planning";
         inputs = literal {
@@ -720,10 +680,6 @@
         requestKey = "storage";
         resourceId = storageResource;
         method = "release";
-        family = {
-          kind = "host-storage";
-          action = "release";
-        };
         phase = "converging";
         inputPhase = "planning";
         inputs = literal {

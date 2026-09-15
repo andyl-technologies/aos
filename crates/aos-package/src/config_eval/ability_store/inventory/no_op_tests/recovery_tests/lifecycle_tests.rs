@@ -2,9 +2,7 @@
 
 use super::*;
 
-fn checked_materialize_lifecycle_plan(
-    action: aos_ability_model::ServiceAction,
-) -> aos_ability_validate::CheckedEffectPlan {
+fn checked_materialize_lifecycle_plan(method: &str) -> aos_ability_validate::CheckedEffectPlan {
     let mut fixture = stateful_owner_plan_fixture();
     let operation_template = fixture.effect_plan.operations[0].clone();
     let terminal_binding_index = fixture
@@ -22,11 +20,8 @@ fn checked_materialize_lifecycle_plan(
     let old_implementation = fixture.binding_plan.bindings[terminal_binding_index]
         .implementation
         .clone();
-    let lifecycle_method = match action {
-        aos_ability_model::ServiceAction::Start => key("start"),
-        aos_ability_model::ServiceAction::Restart => key("restart"),
-        _ => panic!("lifecycle recovery fixture requires Start or Restart"),
-    };
+    assert!(matches!(method, "start" | "restart"));
+    let lifecycle_method = key(method);
     let materialize_method = key("materialize");
     let observe_method = key("observe");
 
@@ -42,14 +37,14 @@ fn checked_materialize_lifecycle_plan(
         .cloned()
         .expect("stateful fixture observation method");
     let mut materialize_descriptor = method_template.clone();
-    materialize_descriptor.operation_family =
-        aos_ability_model::OperationFamily::PrepareManagedConfiguration;
+    materialize_descriptor.semantics =
+        aos_ability_model::MethodSemantics::ordinary(AccessMode::ExclusiveWrite);
     materialize_descriptor.permitted_operations = vec![materialize_method.clone()];
     materialize_descriptor.outcome.indeterminate =
         aos_ability_model::IndeterminateSemantics::Reconcile;
     let mut lifecycle_descriptor = method_template;
-    lifecycle_descriptor.operation_family =
-        aos_ability_model::OperationFamily::ServiceLifecycle { action };
+    lifecycle_descriptor.semantics =
+        aos_ability_model::MethodSemantics::ordinary(AccessMode::ExclusiveWrite);
     lifecycle_descriptor.permitted_operations = vec![lifecycle_method.clone()];
     lifecycle_descriptor.outcome.indeterminate =
         aos_ability_model::IndeterminateSemantics::Reconcile;
@@ -156,7 +151,6 @@ fn checked_materialize_lifecycle_plan(
     materialize.key.key = materialize_method.clone();
     materialize.interface = terminal_interface.clone();
     materialize.method = materialize_method.clone();
-    materialize.family = aos_ability_model::OperationFamily::PrepareManagedConfiguration;
     materialize.phase = aos_ability_model::OperationPhase::Preparing;
     materialize.input_phase = aos_ability_model::ValuePhase::Planning;
     materialize.target.interface = terminal_interface.clone();
@@ -171,7 +165,6 @@ fn checked_materialize_lifecycle_plan(
     lifecycle.key.key = lifecycle_method.clone();
     lifecycle.interface = terminal_interface.clone();
     lifecycle.method = lifecycle_method.clone();
-    lifecycle.family = aos_ability_model::OperationFamily::ServiceLifecycle { action };
     lifecycle.phase = aos_ability_model::OperationPhase::Converging;
     lifecycle.input_phase = aos_ability_model::ValuePhase::Planning;
     lifecycle.target.interface = terminal_interface.clone();
@@ -236,13 +229,13 @@ fn checked_assignment_for_operation(
 }
 
 fn exercise_live_materialize_lifecycle_transaction(
-    action: aos_ability_model::ServiceAction,
+    method: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let generation = root.path().join("gen-1");
     std::fs::create_dir(&generation)?;
     let transaction_id = aos_ability_model::TransactionId(key("lifecycle"));
-    let plan = checked_materialize_lifecycle_plan(action);
+    let plan = checked_materialize_lifecycle_plan(method);
     let switch_lock = Arc::new(acquire_switch_lock_pub(&root.path().join("switch.lock"))?);
     let state = NativeInventoryState::for_generation(
         &generation,
@@ -283,8 +276,10 @@ fn exercise_live_materialize_lifecycle_transaction(
 
     let materialize = &plan.operations()[0];
     assert_eq!(
-        materialize.family,
-        aos_ability_model::OperationFamily::PrepareManagedConfiguration
+        plan.operation_method(materialize)
+            .expect("materialize method")
+            .semantics,
+        aos_ability_model::MethodSemantics::ordinary(AccessMode::ExclusiveWrite)
     );
     let materialize_id = aos_ability_model::OperationId {
         plan: plan.id(),
@@ -334,8 +329,10 @@ fn exercise_live_materialize_lifecycle_transaction(
 
     let lifecycle = &plan.operations()[1];
     assert_eq!(
-        lifecycle.family,
-        aos_ability_model::OperationFamily::ServiceLifecycle { action }
+        plan.operation_method(lifecycle)
+            .expect("lifecycle method")
+            .semantics,
+        aos_ability_model::MethodSemantics::ordinary(AccessMode::ExclusiveWrite)
     );
     let lifecycle_id = aos_ability_model::OperationId {
         plan: plan.id(),
@@ -403,7 +400,7 @@ fn exercise_live_materialize_lifecycle_transaction(
 #[test]
 fn materialize_then_start_or_restart_replays_through_the_same_live_transaction()
 -> Result<(), Box<dyn std::error::Error>> {
-    exercise_live_materialize_lifecycle_transaction(aos_ability_model::ServiceAction::Start)?;
-    exercise_live_materialize_lifecycle_transaction(aos_ability_model::ServiceAction::Restart)?;
+    exercise_live_materialize_lifecycle_transaction("start")?;
+    exercise_live_materialize_lifecycle_transaction("restart")?;
     Ok(())
 }

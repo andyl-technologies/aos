@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use anyhow::Result;
 
 use crate::{
-    ArtifactReference, HandlerDescriptor, ImageRolloutAction, InterfaceDocument, InterfaceKey,
-    InterfaceName, LifecycleSemantics, LocalKey, OperationFamily, OutputDescriptor,
+    AccessMode, ArtifactReference, HandlerDescriptor, InterfaceDocument, InterfaceKey,
+    InterfaceName, LifecycleSemantics, LocalKey, MethodSemantics, OutputDescriptor,
     ProviderImplementation, RequiredFeature, ResourceLifetime, ValuePhase, ValueSchema,
     ValueVisibility,
 };
@@ -57,54 +57,18 @@ pub fn ab_image_rollout_interface() -> Result<InterfaceDocument> {
         lifetime,
     };
     let methods = [
-        (
-            "retain",
-            ImageRolloutAction::Retain,
-            ResourceLifetime::Transaction,
-        ),
-        (
-            "prepare",
-            ImageRolloutAction::Prepare,
-            ResourceLifetime::Transaction,
-        ),
-        (
-            "drain",
-            ImageRolloutAction::Drain,
-            ResourceLifetime::Attempt,
-        ),
-        (
-            "select",
-            ImageRolloutAction::Select,
-            ResourceLifetime::Transaction,
-        ),
-        (
-            "observe-boot",
-            ImageRolloutAction::ObserveBoot,
-            ResourceLifetime::Attempt,
-        ),
-        (
-            "observe-health",
-            ImageRolloutAction::ObserveHealth,
-            ResourceLifetime::Attempt,
-        ),
-        (
-            "withdraw",
-            ImageRolloutAction::Withdraw,
-            ResourceLifetime::Transaction,
-        ),
-        (
-            "hold",
-            ImageRolloutAction::Hold,
-            ResourceLifetime::Persistent,
-        ),
-        (
-            "retire",
-            ImageRolloutAction::Retire,
-            ResourceLifetime::Persistent,
-        ),
+        ("retain", ResourceLifetime::Transaction),
+        ("prepare", ResourceLifetime::Transaction),
+        ("drain", ResourceLifetime::Attempt),
+        ("select", ResourceLifetime::Transaction),
+        ("observe-boot", ResourceLifetime::Attempt),
+        ("observe-health", ResourceLifetime::Attempt),
+        ("withdraw", ResourceLifetime::Transaction),
+        ("hold", ResourceLifetime::Persistent),
+        ("retire", ResourceLifetime::Persistent),
     ]
     .into_iter()
-    .map(|(name, action, lifetime)| {
+    .map(|(name, lifetime)| {
         let mut outputs = BTreeMap::from([(
             LocalKey::new(AB_IMAGE_ROLLOUT_STATE_OUTPUT)?,
             output(lifetime),
@@ -123,7 +87,11 @@ pub fn ab_image_rollout_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             name,
-            OperationFamily::ImageRollout { action },
+            MethodSemantics::ordinary(if matches!(name, "observe-boot" | "observe-health") {
+                AccessMode::Read
+            } else {
+                AccessMode::ExclusiveWrite
+            }),
             request.clone(),
             observation.clone(),
             outputs,

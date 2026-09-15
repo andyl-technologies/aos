@@ -442,9 +442,8 @@ fn mixed_source_and_candidate_receipts_fail_atomically() {
         fixture.candidate.clone(),
         "adopt-second",
     );
-    candidate_operation.operation.family = aos_ability_model::OperationFamily::ServiceLifecycle {
-        action: ServiceAction::Start,
-    };
+    candidate_operation.semantics =
+        aos_ability_model::MethodSemantics::ordinary(AccessMode::ExclusiveWrite);
     let (stop_key, mut stop_operation) = operation_claim(
         &fixture.plan,
         second_resource.clone(),
@@ -452,9 +451,7 @@ fn mixed_source_and_candidate_receipts_fail_atomically() {
         fixture.source.clone(),
         "stop-second",
     );
-    stop_operation.operation.family = aos_ability_model::OperationFamily::ServiceLifecycle {
-        action: ServiceAction::Stop,
-    };
+    stop_operation.semantics = aos_ability_model::MethodSemantics::provider_stop();
     stop_operation.owner_handler = Some(fixture.source_owner.handler.clone());
     stop_operation.retains_consumer = false;
     fixture

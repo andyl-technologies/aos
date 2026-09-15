@@ -226,9 +226,6 @@ pub fn systemd_manager_plan_fixture() -> PlanFixture {
 
     let operation = &mut fixture.effect_plan.operations[0];
     operation.method = key("start");
-    operation.family = OperationFamily::ServiceLifecycle {
-        action: ServiceAction::Start,
-    };
     operation.input_phase = ValuePhase::Planning;
     operation.target.operations = vec![key("start")];
     operation.inputs = ValueExpression::Literal {
@@ -353,13 +350,11 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
             ExportDeclaration {
                 name: key("handler"),
                 interface: terminal_interface.clone(),
-                aggregation: None,
                 implementation: terminal_reference.descriptor,
             },
             ExportDeclaration {
                 name: key("owner"),
                 interface: owner_interface_key.clone(),
-                aggregation: None,
                 implementation: owner_reference.descriptor,
             },
         ],
@@ -674,7 +669,6 @@ pub fn plan_fixture() -> PlanFixture {
         authority: AuthorityRole::Caller,
         interface: interface_key.clone(),
         method: key("observe"),
-        family: OperationFamily::ObserveReadiness,
         phase: OperationPhase::Converging,
         input_phase: ValuePhase::Observation,
         target: ResourceReference {
@@ -966,7 +960,7 @@ fn interface_document() -> InterfaceDocument {
             methods: BTreeMap::from([(
                 key("observe"),
                 MethodDescriptor {
-                    operation_family: OperationFamily::ObserveReadiness,
+                    semantics: MethodSemantics::ordinary(AccessMode::Read),
                     parameters: ValueSchema::Boolean,
                     target_resource: InterfaceName::new("test.service")
                         .expect("valid test resource interface"),
@@ -994,6 +988,13 @@ fn interface_document() -> InterfaceDocument {
                 releases_ephemeral_on_disable: true,
                 retains_persistent_by_default: true,
                 persistent_delete_method: None,
+            },
+            aggregation: AggregationContract {
+                scope: AggregationScope::ProviderInstance,
+                key: key("slot"),
+                controller_group: key("test-service"),
+                reject_slot_collisions: true,
+                merge_contract: None,
             },
             guarantees: Vec::new(),
         },

@@ -103,7 +103,7 @@
       else "exclusive-write";
     stopsProvider = name == "stop";
   };
-  method = target: name: family: parameters: outputs: evidence: {
+  method = target: name: parameters: outputs: evidence: {
     targetResource = target;
     semantics = methodSemantics name;
     inherit parameters outputs;
@@ -115,11 +115,7 @@
   kubernetesMethods = builtins.listToAttrs (builtins.map (name: {
     inherit name;
     value =
-      method kubernetesEffectsName name {
-        kind = "kubernetes-object";
-        action = name;
-      }
-      types.boolean {
+      method kubernetesEffectsName name types.boolean {
         observation = output kubernetesObservation "observation";
       }
       kubernetesObservation;
@@ -127,26 +123,15 @@
 
   bootstrapMethods = {
     observe-manager =
-      method systemdBootstrapName "observe-manager" {
-        kind = "observe-readiness";
-      }
-      types.boolean {
+      method systemdBootstrapName "observe-manager" types.boolean {
         cluster-assignment = output types.providerAssignment "observation";
       }
       types.boolean;
     start =
-      method systemdBootstrapName "start" {
-        kind = "service-lifecycle";
-        action = "start";
-      }
-      types.boolean {}
+      method systemdBootstrapName "start" types.boolean {}
       types.boolean;
     stop =
-      method systemdBootstrapName "stop" {
-        kind = "service-lifecycle";
-        action = "stop";
-      }
-      types.boolean {}
+      method systemdBootstrapName "stop" types.boolean {}
       types.boolean;
   };
 

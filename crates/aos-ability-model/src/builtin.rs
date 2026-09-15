@@ -12,11 +12,11 @@ use aos_contract::Sha256Digest;
 use serde::Serialize;
 
 use crate::{
-    AggregationContract, AggregationScope, ArtifactReference, ExecutionStage, GuaranteeKey,
-    HandlerDescriptor, ImplementationKind, IndeterminateSemantics, InterfaceDescriptor,
-    InterfaceDocument, InterfaceKey, InterfaceName, KubernetesObjectAction, LifecycleSemantics,
-    LocalKey, MethodDescriptor, OperationFamily, OutcomeSemantics, OutputDescriptor,
-    ProviderImplementation, ResourceLifetime, ServiceAction, StringSyntax, ValuePhase, ValueSchema,
+    AccessMode, AggregationContract, AggregationScope, ArtifactReference, ExecutionStage,
+    GuaranteeKey, HandlerDescriptor, ImplementationKind, IndeterminateSemantics,
+    InterfaceDescriptor, InterfaceDocument, InterfaceKey, InterfaceName, LifecycleSemantics,
+    LocalKey, MethodDescriptor, MethodSemantics, OutcomeSemantics, OutputDescriptor,
+    ProviderImplementation, ResourceLifetime, StringSyntax, ValuePhase, ValueSchema,
     ValueVisibility, VersionedDocument,
 };
 
@@ -310,31 +310,34 @@ pub fn kubernetes_object_interface() -> Result<InterfaceDocument> {
         visibility: ValueVisibility::Protected,
         lifetime: ResourceLifetime::Attempt,
     };
-    let methods = [
-        ("apply", KubernetesObjectAction::Apply),
-        ("delete", KubernetesObjectAction::Delete),
-        ("observe", KubernetesObjectAction::Observe),
-    ]
-    .into_iter()
-    .map(|(name, action)| {
-        let method = LocalKey::new(name)?;
-        let descriptor = MethodDescriptor {
-            operation_family: OperationFamily::KubernetesObject { action },
-            parameters: ValueSchema::Boolean,
-            target_resource: interface_name.clone(),
-            outputs: BTreeMap::from([(LocalKey::new("observation")?, observation_output.clone())]),
-            permitted_operations: vec![method.clone()],
-            guarantees: Vec::new(),
-            outcome: OutcomeSemantics {
-                completion_evidence: kubernetes_object_observation_schema()?,
-                observation_evidence: kubernetes_object_observation_schema()?,
-                supports_rejected_before_effect: true,
-                indeterminate: IndeterminateSemantics::Reconcile,
-            },
-        };
-        Ok((method, descriptor))
-    })
-    .collect::<Result<BTreeMap<_, _>>>()?;
+    let methods = ["apply", "delete", "observe"]
+        .into_iter()
+        .map(|name| {
+            let method = LocalKey::new(name)?;
+            let descriptor = MethodDescriptor {
+                semantics: MethodSemantics::ordinary(if name == "observe" {
+                    AccessMode::Read
+                } else {
+                    AccessMode::ExclusiveWrite
+                }),
+                parameters: ValueSchema::Boolean,
+                target_resource: interface_name.clone(),
+                outputs: BTreeMap::from([(
+                    LocalKey::new("observation")?,
+                    observation_output.clone(),
+                )]),
+                permitted_operations: vec![method.clone()],
+                guarantees: Vec::new(),
+                outcome: OutcomeSemantics {
+                    completion_evidence: kubernetes_object_observation_schema()?,
+                    observation_evidence: kubernetes_object_observation_schema()?,
+                    supports_rejected_before_effect: true,
+                    indeterminate: IndeterminateSemantics::Reconcile,
+                },
+            };
+            Ok((method, descriptor))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
 
     Ok(InterfaceDocument {
         schema: InterfaceDocument::SCHEMA.to_string(),
@@ -481,40 +484,41 @@ pub fn systemd_manager_interface() -> Result<InterfaceDocument> {
         lifetime: ResourceLifetime::Attempt,
     };
     let methods = [
-        ("observe", OperationFamily::ObserveReadiness),
+        ("observe", MethodSemantics::ordinary(AccessMode::Read)),
         (
             "reload",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Reload,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
         ),
         (
             "restart",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Restart,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
         ),
         (
             "start",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Start,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
         ),
-        (
-            "stop",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Stop,
-            },
-        ),
+        ("stop", MethodSemantics::provider_stop()),
     ]
     .into_iter()
-    .map(|(name, family)| {
+    .map(|(name, semantics)| {
         let method = LocalKey::new(name)?;
+        let mut outputs = BTreeMap::from([(LocalKey::new("active")?, active_output.clone())]);
+        if matches!(name, "reload" | "restart" | "start") {
+            outputs.insert(
+                LocalKey::new("retained-resource")?,
+                OutputDescriptor {
+                    schema: ValueSchema::ResourceReference,
+                    phase: ValuePhase::Runtime,
+                    visibility: ValueVisibility::Protected,
+                    lifetime: ResourceLifetime::Instance,
+                },
+            );
+        }
         let descriptor = MethodDescriptor {
-            operation_family: family,
+            semantics,
             parameters: systemd_unit_schema()?,
             target_resource: interface_name.clone(),
-            outputs: BTreeMap::from([(LocalKey::new("active")?, active_output.clone())]),
+            outputs,
             permitted_operations: vec![method.clone()],
             guarantees: Vec::new(),
             outcome: OutcomeSemantics {
@@ -574,27 +578,20 @@ pub fn systemd_manager_interface_key() -> Result<InterfaceKey> {
 pub fn foreground_process_interface() -> Result<InterfaceDocument> {
     let interface_name = InterfaceName::new(FOREGROUND_PROCESS_INTERFACE_NAME)?;
     let methods = [
-        ("observe", OperationFamily::ObserveReadiness),
+        ("observe", MethodSemantics::ordinary(AccessMode::Read)),
         (
             "start",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Start,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
         ),
-        (
-            "stop",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Stop,
-            },
-        ),
+        ("stop", MethodSemantics::provider_stop()),
     ]
     .into_iter()
-    .map(|(name, family)| {
+    .map(|(name, semantics)| {
         let method = LocalKey::new(name)?;
         Ok((
             method.clone(),
             MethodDescriptor {
-                operation_family: family,
+                semantics,
                 parameters: ValueSchema::Boolean,
                 target_resource: interface_name.clone(),
                 outputs: BTreeMap::new(),
@@ -708,12 +705,12 @@ pub fn systemd_provider_bootstrap_interface() -> Result<InterfaceDocument> {
         lifetime: ResourceLifetime::Attempt,
     };
     let method = |name: &str,
-                  operation_family: OperationFamily,
+                  semantics: MethodSemantics,
                   outputs: BTreeMap<LocalKey, OutputDescriptor>|
      -> Result<(LocalKey, MethodDescriptor)> {
         let method = LocalKey::new(name)?;
         let descriptor = MethodDescriptor {
-            operation_family,
+            semantics,
             parameters: ValueSchema::Boolean,
             target_resource: interface_name.clone(),
             outputs,
@@ -731,7 +728,7 @@ pub fn systemd_provider_bootstrap_interface() -> Result<InterfaceDocument> {
     let methods = [
         method(
             "observe-manager",
-            OperationFamily::ObserveReadiness,
+            MethodSemantics::ordinary(AccessMode::Read),
             BTreeMap::from([(
                 LocalKey::new(SYSTEMD_PROVIDER_BOOTSTRAP_ASSIGNMENT_OUTPUT)?,
                 assignment_output,
@@ -739,18 +736,10 @@ pub fn systemd_provider_bootstrap_interface() -> Result<InterfaceDocument> {
         )?,
         method(
             "start",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Start,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             BTreeMap::new(),
         )?,
-        method(
-            "stop",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Stop,
-            },
-            BTreeMap::new(),
-        )?,
+        method("stop", MethodSemantics::provider_stop(), BTreeMap::new())?,
     ]
     .into_iter()
     .collect();
@@ -1161,7 +1150,10 @@ mod tests {
 
         assert_eq!(document.interface.methods.len(), 3);
         assert_eq!(document.interface.request, ValueSchema::Boolean);
-        assert_eq!(observe.operation_family, OperationFamily::ObserveReadiness);
+        assert_eq!(
+            observe.semantics,
+            MethodSemantics::ordinary(AccessMode::Read)
+        );
         let assignment = observe
             .outputs
             .get(SYSTEMD_PROVIDER_BOOTSTRAP_ASSIGNMENT_OUTPUT)

@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use anyhow::Result;
 
 use crate::{
-    ArtifactReference, CredentialAction, HandlerDescriptor, InterfaceDocument, InterfaceKey,
-    InterfaceName, LifecycleSemantics, LocalKey, OperationFamily, OutputDescriptor,
+    AccessMode, ArtifactReference, HandlerDescriptor, InterfaceDocument, InterfaceKey,
+    InterfaceName, LifecycleSemantics, LocalKey, MethodSemantics, OutputDescriptor,
     ProviderImplementation, ResourceLifetime, StringSyntax, ValuePhase, ValueSchema,
     ValueVisibility,
 };
@@ -49,9 +49,7 @@ pub fn credential_delivery_effects_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "acquire",
-            OperationFamily::Credential {
-                action: CredentialAction::Acquire,
-            },
+            MethodSemantics::ordinary(AccessMode::Read),
             credential_delivery_request_schema()?,
             credential_delivery_observation_schema()?,
             BTreeMap::from([(
@@ -62,9 +60,7 @@ pub fn credential_delivery_effects_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "deliver",
-            OperationFamily::Credential {
-                action: CredentialAction::Deliver,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             credential_delivery_request_schema()?,
             credential_delivery_observation_schema()?,
             BTreeMap::from([(LocalKey::new(CREDENTIAL_VIEW_OUTPUT)?, credential_output)]),
@@ -72,7 +68,7 @@ pub fn credential_delivery_effects_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "release",
-            OperationFamily::ReleaseResource,
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             credential_delivery_request_schema()?,
             credential_delivery_observation_schema()?,
             BTreeMap::new(),

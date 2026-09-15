@@ -419,6 +419,7 @@ impl<'a> TransitionPlanner<'a> {
         }
 
         let document = merge_fragments(
+            self.context,
             binding_plan,
             inputs
                 .authority

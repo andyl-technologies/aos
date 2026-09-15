@@ -172,6 +172,11 @@ fn operation_claim(
         operation.key.clone(),
         NativeOperationClaim {
             operation,
+            semantics: plan
+                .operation_method(&plan.operations()[0])
+                .expect("fixture method")
+                .semantics
+                .clone(),
             binding: binding.clone(),
             consumer: owner.provider.clone(),
             provider: owner.provider.clone(),
@@ -209,14 +214,7 @@ fn inventory_state(
         .collect();
     let desired_owner_selections = operations
         .values()
-        .filter(|operation| {
-            !matches!(
-                operation.operation.family,
-                aos_ability_model::OperationFamily::ServiceLifecycle {
-                    action: ServiceAction::Stop
-                }
-            )
-        })
+        .filter(|operation| !operation.semantics.stops_provider)
         .filter_map(|operation| {
             Some(NativeProviderSelection {
                 resource: operation.operation.target.resource.clone(),
@@ -349,14 +347,9 @@ impl AdoptionInventoryFixture {
 
     fn disable_adoption(&mut self) {
         self.state.adoptions.clear();
-        self.state.operations.retain(|_, operation| {
-            !matches!(
-                operation.operation.family,
-                aos_ability_model::OperationFamily::ServiceLifecycle {
-                    action: ServiceAction::Stop
-                }
-            )
-        });
+        self.state
+            .operations
+            .retain(|_, operation| !operation.semantics.stops_provider);
         self.state
             .dispatch_positions
             .retain(|operation, _| self.state.operations.contains_key(operation));
@@ -566,9 +559,8 @@ fn adoption_inventory_fixture() -> AdoptionInventoryFixture {
         candidate.clone(),
         "adopt",
     );
-    candidate_operation.operation.family = aos_ability_model::OperationFamily::ServiceLifecycle {
-        action: ServiceAction::Start,
-    };
+    candidate_operation.semantics =
+        aos_ability_model::MethodSemantics::ordinary(AccessMode::ExclusiveWrite);
     let (stop_key, mut stop_operation) = operation_claim(
         &plan,
         resource.clone(),
@@ -576,9 +568,7 @@ fn adoption_inventory_fixture() -> AdoptionInventoryFixture {
         source.clone(),
         "stop",
     );
-    stop_operation.operation.family = aos_ability_model::OperationFamily::ServiceLifecycle {
-        action: ServiceAction::Stop,
-    };
+    stop_operation.semantics = aos_ability_model::MethodSemantics::provider_stop();
     stop_operation.owner_handler = Some(source_owner.handler.clone());
     stop_operation.retains_consumer = false;
     let operations = BTreeMap::from([
@@ -625,14 +615,12 @@ fn handler_only_adoption_inventory_fixture() -> AdoptionInventoryFixture {
     );
     candidate.handler_package = aos_contract::Sha256Digest::of_bytes("replacement handler package");
     fixture.state.adoptions[0].candidate = candidate;
-    for operation in fixture.state.operations.values_mut().filter(|operation| {
-        !matches!(
-            operation.operation.family,
-            aos_ability_model::OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Stop
-            }
-        )
-    }) {
+    for operation in fixture
+        .state
+        .operations
+        .values_mut()
+        .filter(|operation| !operation.semantics.stops_provider)
+    {
         operation.owner = Some(fixture.candidate.clone());
         operation.owner_handler =
             Some(handler_from_endpoint(&fixture.state.adoptions[0].candidate));
@@ -653,14 +641,12 @@ fn handler_package_only_adoption_inventory_fixture() -> AdoptionInventoryFixture
     let mut candidate = fixture.state.adoptions[0].source.clone();
     candidate.handler_package = aos_contract::Sha256Digest::of_bytes("replacement handler package");
     fixture.state.adoptions[0].candidate = candidate;
-    for operation in fixture.state.operations.values_mut().filter(|operation| {
-        !matches!(
-            operation.operation.family,
-            aos_ability_model::OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Stop
-            }
-        )
-    }) {
+    for operation in fixture
+        .state
+        .operations
+        .values_mut()
+        .filter(|operation| !operation.semantics.stops_provider)
+    {
         operation.binding = fixture.state.adoptions[0].candidate.handler_binding.clone();
         operation.operation.binding = operation.binding.clone();
         operation.owner = Some(fixture.candidate.clone());
@@ -690,14 +676,12 @@ fn owner_only_adoption_inventory_fixture() -> AdoptionInventoryFixture {
     candidate.handler_implementation = fixture.source_owner.handler.implementation.clone();
     candidate.handler_package = fixture.source_owner.handler.package;
     fixture.state.adoptions[0].candidate = candidate;
-    for operation in fixture.state.operations.values_mut().filter(|operation| {
-        !matches!(
-            operation.operation.family,
-            aos_ability_model::OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Stop
-            }
-        )
-    }) {
+    for operation in fixture
+        .state
+        .operations
+        .values_mut()
+        .filter(|operation| !operation.semantics.stops_provider)
+    {
         operation.owner_handler =
             Some(handler_from_endpoint(&fixture.state.adoptions[0].candidate));
     }

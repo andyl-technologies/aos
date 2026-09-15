@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use anyhow::Result;
 
 use crate::{
-    ArtifactReference, HandlerDescriptor, InterfaceDocument, InterfaceKey, InterfaceName,
-    LifecycleSemantics, LocalKey, NetworkEndpointAction, OperationFamily, OutputDescriptor,
+    AccessMode, ArtifactReference, HandlerDescriptor, InterfaceDocument, InterfaceKey,
+    InterfaceName, LifecycleSemantics, LocalKey, MethodSemantics, OutputDescriptor,
     ProviderImplementation, ResourceLifetime, ValuePhase, ValueSchema, ValueVisibility,
 };
 
@@ -49,9 +49,7 @@ pub fn network_endpoint_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "materialize",
-            OperationFamily::NetworkEndpoint {
-                action: NetworkEndpointAction::Materialize,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             network_endpoint_request_schema()?,
             network_endpoint_observation_schema()?,
             BTreeMap::from([(
@@ -62,9 +60,7 @@ pub fn network_endpoint_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "observe",
-            OperationFamily::NetworkEndpoint {
-                action: NetworkEndpointAction::Observe,
-            },
+            MethodSemantics::ordinary(AccessMode::Read),
             network_endpoint_request_schema()?,
             network_endpoint_observation_schema()?,
             BTreeMap::from([(LocalKey::new(NETWORK_ENDPOINT_OUTPUT)?, endpoint_output)]),
@@ -72,9 +68,7 @@ pub fn network_endpoint_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "release",
-            OperationFamily::NetworkEndpoint {
-                action: NetworkEndpointAction::Release,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             network_endpoint_request_schema()?,
             network_endpoint_observation_schema()?,
             BTreeMap::new(),

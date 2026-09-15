@@ -12,22 +12,23 @@
       key = builtins.replaceStrings ["." "_"] ["-" "-"] unit;
     })
     units;
-  revision = configuration: unit:
-    "sha256:${builtins.hashString "sha256" (builtins.toJSON {
-      inherit unit;
-      inherit (configuration) action revision;
-    })}";
+  revision = configuration: unit: "sha256:${builtins.hashString "sha256" (builtins.toJSON {
+    inherit unit;
+    inherit (configuration) action revision;
+  })}";
   compose = context: let
     owned = resources context.provider;
-    managerReferences = builtins.mapAttrs (_: resource: {
-      source = "resource-reference";
-      reference = {
-        interface = systemdManager;
-        inherit resource;
-        operations = ["observe" "reload" "restart" "start" "stop"];
-        lifetime = "instance";
-      };
-    }) owned;
+    managerReferences =
+      builtins.mapAttrs (_: resource: {
+        source = "resource-reference";
+        reference = {
+          interface = systemdManager;
+          inherit resource;
+          operations = ["observe" "reload" "restart" "start" "stop"];
+          lifetime = "instance";
+        };
+      })
+      owned;
   in {
     schema = "aos.ability.composition-fragment/v1";
     requests = [
@@ -86,7 +87,8 @@ in {
       then (builtins.head context.after.instances).configuration
       else (builtins.head context.before.instances).configuration;
     selected = builtins.filter (entry:
-      entry.binding.request.consumer == context.provider
+      entry.binding.request.consumer
+      == context.provider
       && entry.binding.request.key == "manager")
     context.authorized_bindings;
     binding =
@@ -112,13 +114,6 @@ in {
       authority = "caller";
       interface = binding.interface;
       inherit method;
-      family =
-        if method == "observe"
-        then {kind = "observe-readiness";}
-        else {
-          kind = "service-lifecycle";
-          action = method;
-        };
       phase = "converging";
       input_phase = "planning";
       target = {
@@ -166,20 +161,32 @@ in {
     primary = operation "matrix-primary" owned.primary units.primary method;
     secondary = operation "matrix-secondary" owned.secondary units.secondary method;
     witness = operation "matrix-witness" owned.witness units.witness "start";
-    operations = [primary secondary] ++ (if method == "observe" then [witness] else []);
-    edges = [
-      {
-        from = node "matrix-primary";
-        to = node "matrix-secondary";
-        kind = "required-success";
-      }
-    ] ++ (if method == "observe" then [
-      {
-        from = node "matrix-secondary";
-        to = node "matrix-witness";
-        kind = "required-success";
-      }
-    ] else []);
+    operations =
+      [primary secondary]
+      ++ (
+        if method == "observe"
+        then [witness]
+        else []
+      );
+    edges =
+      [
+        {
+          from = node "matrix-primary";
+          to = node "matrix-secondary";
+          kind = "required-success";
+        }
+      ]
+      ++ (
+        if method == "observe"
+        then [
+          {
+            from = node "matrix-secondary";
+            to = node "matrix-witness";
+            kind = "required-success";
+          }
+        ]
+        else []
+      );
   in {
     schema = "aos.ability.transition-fragment/v1";
     inherit operations edges;

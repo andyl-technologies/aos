@@ -12,15 +12,15 @@ use aos_ability_model::{
     AbilityActivationMode, AccessMode, ArtifactReference, AuthorityGrant, AuthorityRole, Binding,
     BindingId, BranchMembership, DecisionNode, DecisionPredicate, DependencyKind, Diagnostic,
     DiagnosticClass, DiagnosticCode, DiagnosticPhase, EffectPlanDocument, LocalKey, MergeNode,
-    Operation, OperationFamily, OperationResultReference, OutputDescriptor, PlanId, PlanNodeKey,
-    ResourceId, ResourceReference, ResultProducerKey, RetryPolicy, ScopedOperationKey,
-    ValueExpression, ValueSchema, ValueVisibility, VersionedDocument, compare_edges,
-    compare_operation_keys, compare_plan_node_keys, compare_resource_ids,
+    Operation, OperationResultReference, OutputDescriptor, PlanId, PlanNodeKey, ResourceId,
+    ResourceReference, ResultProducerKey, RetryPolicy, ScopedOperationKey, ValueExpression,
+    ValueSchema, ValueVisibility, VersionedDocument, compare_edges, compare_operation_keys,
+    compare_plan_node_keys, compare_resource_ids,
 };
 use serde_json::Value;
 
 use crate::ValidationErrors;
-use crate::authority::{ArtifactIndex, authorize_invocation, required_target_access};
+use crate::authority::{ArtifactIndex, authorize_invocation};
 use crate::error::push_diagnostic;
 use crate::graph::{
     BindingProviderState, CheckedBindingPlan, CheckedEffectPlan, ValidationContext,
