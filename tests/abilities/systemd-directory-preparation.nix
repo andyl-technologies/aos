@@ -5,6 +5,11 @@
 }: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   interfaces = serviceManagement.interfaces;
+  selectedSystemdProvider = import ./_selected-package-provider.nix {
+    inherit lib;
+    package = pkgs.systemd;
+    implementation = "service-lifecycle";
+  };
   requirement = selected: methods: {
     interface = selected.identity.name;
     inherit (selected.identity) abi descriptor;
@@ -24,7 +29,7 @@
     start = [
       {
         executable = {
-          artifact = lib.abilities.packageOutput {};
+          artifact = lib.abilities.packageOutput {package = "consumer";};
           entry_point = "bin/prepared";
           arguments = [];
         };
@@ -90,10 +95,7 @@
       slot = "prepared";
     };
   };
-  evaluate = {
-    bindings,
-    includeFilesystemProvider,
-  }:
+  evaluate = bindings:
     lib.evalModules {
       inherit lib;
       modules = [
@@ -106,40 +108,25 @@
               key = "systemd-directory-preparation";
               stage = "host";
             };
+            instances."systemd:manager" = {};
             inherit bindings;
           };
         }
       ];
-      packageModules =
-        [
-          {
-            name = "systemd";
-            module = {
-              imports = [
-                ../../pkgs/system/_systemd-abilities.nix
-                ../../pkgs/system/_systemd-provider.nix
-              ];
-              config.aos.abilities.instances.manager = {};
-            };
-          }
-          {
-            name = "consumer";
-            module = consumerModule;
-          }
-        ]
-        ++ lib.optional includeFilesystemProvider {
-          name = "aos-filesystem-provider";
-          module = {
-            imports = [
-              ../../pkgs/filesystem/_aos-filesystem-provider/module.nix
-              ../../pkgs/filesystem/_aos-filesystem-provider/provider.nix
-            ];
-            config.aos.abilities.instances.filesystem = {};
-          };
-        };
+      packageModules = [
+        {
+          name = "systemd";
+          inherit (pkgs.systemd) version;
+          module = pkgs.systemd.module + "/module.nix";
+        }
+        {
+          name = "consumer";
+          module = consumerModule;
+        }
+      ];
+      selectedProviderModules = [selectedSystemdProvider];
       specialArgs = {
         inherit pkgs;
-        packageName = "systemd";
         artifactLocatorFor = _: throw "directory preparation fixture does not resolve artifacts";
         provenance = {
           dependencyOwnersOfAttr = _: _: [];
@@ -147,80 +134,29 @@
         };
       };
     };
-  pendingEvaluation = evaluate {
-    bindings = baseBindings;
-    includeFilesystemProvider = false;
-  };
+  pendingEvaluation = evaluate baseBindings;
   pendingRequests = pendingEvaluation.config.aos.abilities.compositionPendingRequests;
   pendingChildren = builtins.attrValues pendingRequests;
-  child = builtins.head (builtins.filter
+  directoryChildren =
+    builtins.filter
     (candidate: candidate.requirement == "directory-preparation")
-    pendingChildren);
+    pendingChildren;
+  child = builtins.head (builtins.filter
+    (candidate: candidate.implementation == "systemd:service-lifecycle")
+    directoryChildren);
   effectsChild = builtins.head (builtins.filter
     (candidate: candidate.requirement == "service-effects")
     pendingChildren);
-  childRequestKey = child.request;
-  preparedEvaluation = evaluate {
-    includeFilesystemProvider = true;
-    bindings =
-      baseBindings
-      // {
-        "test:directory-preparation" = {
-          request = childRequestKey;
-          implementation = "aos-filesystem-provider:filesystem-entry";
-          providerInstance = "aos-filesystem-provider:filesystem";
-          slot = child.slot;
-        };
-        "test:service-effects" = {
-          request = effectsChild.request;
-          implementation = "systemd:systemd-service-effects";
-          providerInstance = "systemd:manager";
-          slot = effectsChild.slot;
-        };
-      };
-  };
-  filesystemEffectsChild = builtins.head (builtins.attrValues preparedEvaluation.config.aos.abilities.compositionPendingRequests);
-  resolvedEvaluation = evaluate {
-    includeFilesystemProvider = true;
-    bindings =
-      baseBindings
-      // {
-        "test:directory-preparation" = {
-          request = childRequestKey;
-          implementation = "aos-filesystem-provider:filesystem-entry";
-          providerInstance = "aos-filesystem-provider:filesystem";
-          slot = child.slot;
-        };
-        "test:service-effects" = {
-          request = effectsChild.request;
-          implementation = "systemd:systemd-service-effects";
-          providerInstance = "systemd:manager";
-          slot = effectsChild.slot;
-        };
-        "test:filesystem-effects" = {
-          request = filesystemEffectsChild.request;
-          implementation = "aos-filesystem-provider:filesystem-entry-effects";
-          providerInstance = "aos-filesystem-provider:filesystem";
-          slot = filesystemEffectsChild.slot;
-        };
-      };
-  };
-  abilities = resolvedEvaluation.config.aos.abilities;
-  serviceResource = builtins.head (builtins.filter
-    (resource: resource.kind == "aos.service.instance")
-    (builtins.attrValues abilities.desiredResources));
-  childOutput = abilities.compositionOutputs.${childRequestKey}.entry-resource;
-  serviceSection = builtins.head (
-    builtins.filter
-    (section: section.name == "Service")
-    (builtins.head serviceResource.realization.units).sections
-  );
+  directoryOwners = builtins.sort builtins.lessThan (builtins.map
+    (candidate: candidate.implementation)
+    directoryChildren);
 in
-  assert builtins.length (builtins.attrNames pendingRequests) == 2;
+  assert directoryChildren != [];
+  assert lib.unique (builtins.map (candidate: candidate.requirement) pendingChildren)
+  == ["directory-preparation" "service-effects"];
+  assert directoryOwners == ["systemd:service-directories" "systemd:service-lifecycle"];
+  assert effectsChild.implementation == "systemd:service-lifecycle";
   assert child.declaration.parameters.destination == "/var/lib/prepared/data";
   assert child.declaration.parameters.owner == "data-owner";
   assert child.declaration.parameters.group == "data-group";
-  assert abilities.compositionPendingRequests == {};
-  assert childOutput.value._type == "aos-resource-reference";
-  assert serviceResource.realization.prerequisites == [childOutput.value];
-  assert !(builtins.any (directive: directive.name == "StateDirectory") serviceSection.directives); true
+  assert child.declaration.parameters.entry.kind == "directory"; true

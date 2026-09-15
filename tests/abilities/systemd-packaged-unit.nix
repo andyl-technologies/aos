@@ -3,9 +3,24 @@
   lib,
   pkgs,
 }: let
-  interfaceModule = ../../pkgs/system/_systemd-abilities.nix;
-  providerModule = ../../pkgs/system/_systemd-provider.nix;
-  artifact = lib.abilities.packageOutput {};
+  interfaceModule = pkgs.systemd.module + "/module.nix";
+  selectedSystemdProvider = import ./_selected-package-provider.nix {
+    inherit lib;
+    package = pkgs.systemd;
+    implementation = "systemd-packaged-unit";
+    artifactLocators.${
+      builtins.toJSON {
+        output = artifact.output;
+        package = artifact.package;
+      }
+    } = let
+      located = artifactLocatorFor artifact;
+    in {
+      inherit (located) path;
+      artifactReference = builtins.removeAttrs located.artifactReference ["_type"];
+    };
+  };
+  artifact = lib.abilities.packageOutput {package = "consumer";};
   artifactLocatorFor = selector:
     if (selector._type or null) != "aos-package-output-selector"
     then throw "provider attempted to resolve a materialized artifact reference"
@@ -19,28 +34,12 @@
       };
       path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
     };
-  interfaceEvaluation = lib.evalModules {
-    inherit lib;
-    modules = [lib.abilities.module];
-    packageModules = [
-      {
-        name = "systemd";
-        module = interfaceModule;
-      }
-    ];
-    specialArgs = {
-      inherit pkgs artifactLocatorFor;
-      provenance = {
-        dependencyOwnersOfAttr = _: _: [];
-        ownerOfListAttr = _: _: _: "@test";
-      };
-    };
-  };
-  declaration = interfaceEvaluation.config.aos.abilities.interfaces."systemd:systemd-packaged-unit";
-  identity = lib.abilities.interfaceIdentity (
-    lib.abilities.interfaceDocumentFromDeclaration declaration
-  );
-  consumerModuleFor = unitFile: {
+  consumerModuleFor = unitFile: {config, ...}: let
+    declaration = config.aos.abilities.interfaces."systemd:systemd-packaged-unit";
+    identity = lib.abilities.interfaceIdentity (
+      lib.abilities.interfaceDocumentFromDeclaration declaration
+    );
+  in {
     config.aos.abilities = {
       requirementTemplates.unit = {
         interface = identity.name;
@@ -99,6 +98,7 @@
               key = "systemd-packaged-unit";
               stage = "host";
             };
+            instances."systemd:manager" = {};
             inherit bindings;
           };
         }
@@ -106,18 +106,16 @@
       packageModules = [
         {
           name = "systemd";
-          module = {
-            imports = [interfaceModule providerModule];
-            config.aos.abilities.instances.manager = {};
-          };
+          inherit (pkgs.systemd) version;
+          module = interfaceModule;
         }
         {
           name = "consumer";
           module = consumerModule;
         }
       ];
+      selectedProviderModules = [selectedSystemdProvider];
       specialArgs = {
-        packageName = "systemd";
         inherit pkgs;
         provenance = {
           dependencyOwnersOfAttr = _: _: [];
@@ -129,7 +127,8 @@
 
   pending = evaluate (consumerModuleFor "lib/systemd/system/example.service") baseBindings;
   effectsChild = builtins.head (builtins.attrValues pending.config.aos.abilities.compositionPendingRequests);
-  resolvedBindings = baseBindings
+  resolvedBindings =
+    baseBindings
     // {
       "test:unit-effects" = {
         request = effectsChild.request;
@@ -154,6 +153,7 @@
     true);
 
   abilities = evaluation.config.aos.abilities;
+  declaration = abilities.interfaces."systemd:systemd-packaged-unit";
   desired = builtins.head (builtins.attrValues abilities.desiredResources);
   dependencyReference = abilities.compositionOutputs."consumer:unit".unit-resource.value;
   deferredDependency = {
@@ -161,20 +161,29 @@
     request = "consumer:unit";
     output = "unit-resource";
   };
-  targetResource = desired // {
-    value = desired.value // {
-      dependencies = desired.value.dependencies // {after = [deferredDependency];};
+  targetResource =
+    desired
+    // {
+      value =
+        desired.value
+        // {
+          dependencies = desired.value.dependencies // {after = [deferredDependency];};
+        };
     };
-  };
-  prerequisiteResource = desired // {
-    value = desired.value // {
-      prerequisites = [deferredDependency];
+  prerequisiteResource =
+    desired
+    // {
+      value =
+        desired.value
+        // {
+          prerequisites = [deferredDependency];
+        };
     };
-  };
   composeFor = resolvedResources: compositionOutputs: resource: let
-    provider = import providerModule {
+    provider = import selectedSystemdProvider.module {
       inherit lib pkgs artifactLocatorFor;
       packageName = "systemd";
+      outputs = selectedSystemdProvider.outputs;
       config.aos.abilities = {
         inherit resolvedResources compositionOutputs;
         interfaces."systemd:systemd-packaged-unit" = declaration;
@@ -187,16 +196,20 @@
     composition.realizations.test;
   validDependency = composeFor abilities.resolvedResources abilities.compositionOutputs targetResource;
   prerequisite = composeFor abilities.resolvedResources abilities.compositionOutputs prerequisiteResource;
-  missingReference = dependencyReference // {
-    resource = dependencyReference.resource // {key = "missing";};
-  };
+  missingReference =
+    dependencyReference
+    // {
+      resource = dependencyReference.resource // {key = "missing";};
+    };
   missingResource = builtins.tryEval (builtins.deepSeq (
       composeFor abilities.resolvedResources abilities.compositionOutputs (
         targetResource
         // {
-          value = targetResource.value // {
-            dependencies = targetResource.value.dependencies // {after = [missingReference];};
-          };
+          value =
+            targetResource.value
+            // {
+              dependencies = targetResource.value.dependencies // {after = [missingReference];};
+            };
         }
       )
     )
@@ -223,16 +236,20 @@
       composeFor abilities.resolvedResources abilities.compositionOutputs (
         targetResource
         // {
-          value = targetResource.value // {
-            dependencies = targetResource.value.dependencies // {
-              after = [
-                (dependencyReference
-                  // {
-                    interface = dependencyReference.interface // {name = "aos.other.resource";};
-                  })
-              ];
+          value =
+            targetResource.value
+            // {
+              dependencies =
+                targetResource.value.dependencies
+                // {
+                  after = [
+                    (dependencyReference
+                      // {
+                        interface = dependencyReference.interface // {name = "aos.other.resource";};
+                      })
+                  ];
+                };
             };
-          };
         }
       )
     )
@@ -241,11 +258,15 @@
       composeFor abilities.resolvedResources abilities.compositionOutputs (
         targetResource
         // {
-          value = targetResource.value // {
-            dependencies = targetResource.value.dependencies // {
-              after = [(dependencyReference // {operations = [];})];
+          value =
+            targetResource.value
+            // {
+              dependencies =
+                targetResource.value.dependencies
+                // {
+                  after = [(dependencyReference // {operations = [];})];
+                };
             };
-          };
         }
       )
     )
@@ -286,7 +307,8 @@ in
   assert declaration.methods.remove.semantics.stopsProvider;
   assert !(declaration.methods.remove.outputs ? retained-resource);
   assert lib.hasInfix "@@AOS_SYSTEMD_SUBSTITUTION:" after.template;
-  assert builtins.attrValues after.substitutions == [
+  assert builtins.attrValues after.substitutions
+  == [
     {
       prefix = "";
       suffix = "";

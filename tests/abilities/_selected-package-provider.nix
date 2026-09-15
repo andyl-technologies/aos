@@ -3,6 +3,7 @@
   lib,
   package,
   implementation,
+  artifactLocators ? {},
 }: let
   provider =
     lib.findFirst
@@ -15,7 +16,8 @@
   selectedOutput =
     if locator.artifact.package != package.pname
     then throw "${package.pname}:${implementation} selects another package's provider module"
-    else package.${locator.artifact.output}
+    else
+      package.${locator.artifact.output}
       or (throw "${package.pname}:${implementation} selects an absent package output");
   root = builtins.toString selectedOutput;
 in {
@@ -27,5 +29,5 @@ in {
     self = root;
     dependencies = {};
   };
-  artifactLocators = {};
+  inherit artifactLocators;
 }

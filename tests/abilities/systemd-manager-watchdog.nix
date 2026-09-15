@@ -4,6 +4,11 @@
   pkgs,
 }: let
   controllerName = "systemd:systemd-manager-watchdog";
+  selectedSystemdProvider = import ./_selected-package-provider.nix {
+    inherit lib;
+    package = pkgs.systemd;
+    implementation = "systemd-manager-watchdog";
+  };
   baseBindings = {
     "test:watchdog" = {
       request = "consumer:watchdog";
@@ -50,6 +55,7 @@
               key = "systemd-manager-watchdog";
               stage = "host";
             };
+            instances."systemd:manager" = {};
             inherit bindings;
           };
         }
@@ -57,22 +63,17 @@
       packageModules = [
         {
           name = "systemd";
-          module = {
-            imports = [
-              ../../pkgs/system/_systemd-abilities.nix
-              ../../pkgs/system/_systemd-provider.nix
-            ];
-            config.aos.abilities.instances.manager = {};
-          };
+          inherit (pkgs.systemd) version;
+          module = pkgs.systemd.module + "/module.nix";
         }
         {
           name = "consumer";
           module = consumer;
         }
       ];
+      selectedProviderModules = [selectedSystemdProvider];
       specialArgs = {
         inherit pkgs;
-        packageName = "systemd";
         provenance = {
           dependencyOwnersOfAttr = _: _: [];
           ownerOfListAttr = _: _: _: "@test";
@@ -98,7 +99,8 @@ in
   assert child.requirement == "manager-watchdog-effects";
   assert abilities.compositionPendingRequests == {};
   assert resource.value.enabled;
-  assert resource.realization == {
+  assert resource.realization
+  == {
     schema = "aos.systemd.manager-watchdog-realization/v1";
     enabled = true;
     runtime_timeout_millis = 30000;
