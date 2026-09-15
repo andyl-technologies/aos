@@ -30,9 +30,9 @@ use super::activation::{ActivateConfigParams, ActivationFailure};
 use super::execution_observer::AbilityExecutionBoundaryObserver;
 use super::handler_dispatch::HandlerDispatcher;
 use super::materialize::ConfigManifest;
-use super::rollout_boot::authenticate_single_image_rollout_fragment;
 use super::transaction_store::{AbilityTransactionSession, RetainedAbilityDiagnosticSource};
 use crate::config::ApmConfig;
+use crate::sysroot::image_rollout::authenticate_single_image_rollout_fragment;
 use crate::types::ProfileScope;
 
 const EVALUATOR_CACHE: &str = "/var/cache/aos-ability-evaluator";

@@ -1,4 +1,4 @@
-//! Boot-time lookup for the retained image-rollout transaction.
+//! Checked-plan lookup for the package-owned image rollout backend.
 //!
 //! The generic validators authenticate the complete package, binding, and
 //! effect graph. This module identifies the package-owned native rollout
@@ -10,7 +10,7 @@ use anyhow::{Context as _, Result, ensure};
 use aos_ability_model::{AbilityValue, BindingId, Operation, ValueExpression, VersionedDocument};
 use aos_ability_validate::CheckedEffectPlan;
 
-use crate::sysroot::image_rollout::AbRolloutRequest;
+use super::AbRolloutRequest;
 
 const ROLLOUT_HANDLER_ENTRY_POINT: &str = "libexec/aos-image-rollout-provider";
 
@@ -21,7 +21,7 @@ const ROLLOUT_HANDLER_ENTRY_POINT: &str = "libexec/aos-image-rollout-provider";
 /// Returns an error unless exactly one checked binding selects the authenticated
 /// package handler, every operation for its resource uses that binding, and all
 /// of those operations carry the same literal request.
-pub(super) fn authenticate_single_image_rollout_fragment(
+pub(crate) fn authenticate_single_image_rollout_fragment(
     plan: &CheckedEffectPlan,
 ) -> Result<AbRolloutRequest> {
     let rollout_operations = plan
