@@ -1135,6 +1135,7 @@
     serviceInterfaces.networkReadiness
     serviceInterfaces.filesystemReadiness
     serviceInterfaces.activationMilestone
+    serviceInterfaces.runtimeEntryPopulation
   ];
   readinessEffectsRequest = selected:
     types.record {

@@ -10,7 +10,7 @@
       imports = [../../modules/security/polkit.nix];
       aos.security.polkit.enable = true;
     };
-    packages = [pkgs.polkit pkgs.systemd];
+    packages = [pkgs.polkit pkgs.dbus pkgs.systemd];
   };
   config = evaluated.config;
   requests = config.aos.abilities.requests;
@@ -41,18 +41,12 @@ in
   == [
     {
       _type = "aos-request-output-reference";
-      request = "polkit:dbus-socket";
-      output = "unit-resource";
+      request = "polkit:system-bus-availability";
+      output = "readiness-resource";
     }
   ];
-  assert dependencies.wants
-  == [
-    {
-      _type = "aos-request-output-reference";
-      request = "polkit:login-manager";
-      output = "unit-resource";
-    }
-  ];
+  assert dependencies.wants == [];
+  assert requests."polkit:system-bus-availability".parameters.scope == "system-bus";
   assert requests."polkit:polkit-resources".parameters.memory_swap_max_bytes.value
   == 33554432;
   assert requests."polkit:polkit-resources".parameters.locked_memory_bytes.value == 0;

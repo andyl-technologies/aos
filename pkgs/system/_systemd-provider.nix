@@ -54,10 +54,12 @@
   networkReadinessAlias = serviceInterfaces.networkReadiness.alias;
   filesystemReadinessAlias = serviceInterfaces.filesystemReadiness.alias;
   activationMilestoneAlias = serviceInterfaces.activationMilestone.alias;
+  runtimeEntryPopulationAlias = serviceInterfaces.runtimeEntryPopulation.alias;
   readinessControllers = [
     serviceInterfaces.networkReadiness
     serviceInterfaces.filesystemReadiness
     serviceInterfaces.activationMilestone
+    serviceInterfaces.runtimeEntryPopulation
   ];
   nativeResourceInterfaces = [
     serviceInterfaces.mountResource
@@ -327,6 +329,8 @@
       }.${
         parameters.milestone
       }
+    else if selected.alias == runtimeEntryPopulationAlias
+    then "systemd-tmpfiles-setup.service"
     else throw "systemd readiness controller does not map ${selected.identity.name}";
 
   provideManagerWatchdog = context: let
@@ -796,7 +800,11 @@
   readinessProviderImplementations = builtins.listToAttrs (builtins.map (selected: {
       name = selected.alias;
       value = {
-        provide = provideReadiness selected "readiness-resource";
+        provide = provideReadiness selected (
+          if selected.alias == runtimeEntryPopulationAlias
+          then "lifecycle-resource"
+          else "readiness-resource"
+        );
         transition = _: {
         schema = "aos.ability.transition-fragment/v1";
         operations = [];
