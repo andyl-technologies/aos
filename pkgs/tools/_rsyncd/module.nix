@@ -11,49 +11,66 @@
   serviceTypes = serviceManagement.types;
   abilityTypes = lib.abilities.types;
 
-  positiveInt = types.addCheck types.int (value: value > 0);
-  moduleName = types.strMatching "[A-Za-z0-9][A-Za-z0-9_.-]*";
-  secretRef = types.submodule ({...}: {
-    config._module.strict = true;
-    options = {
-      resource = mkOption {
-        type = types.nullOr (abilityTypes.deferredResult abilityTypes.resourceReference);
+  positiveInt = abilityTypes.integer {
+    minimum = 1;
+    maximum = 2147483647;
+  };
+  boundedText = abilityTypes.string {
+    maxLength = 4096;
+    syntax = null;
+  };
+  authUser = abilityTypes.refined {
+    name = "rsync authentication user";
+    description = "a bounded rsync authentication user name";
+    type = abilityTypes.string {
+      maxLength = 128;
+      syntax = null;
+    };
+    predicate = value: builtins.match "[A-Za-z0-9][A-Za-z0-9_.@-]*" value != null;
+  };
+  secretRef = abilityTypes.record {
+    fields = {
+      resource = {
+        type = abilityTypes.optional (abilityTypes.deferredResult abilityTypes.resourceReference);
         default = null;
         description = "Typed resource reference for the rsync secrets file.";
       };
-      encrypted = mkOption {
-        type = types.bool;
+      encrypted = {
+        type = abilityTypes.boolean;
         default = false;
         description = "Whether the referenced secrets file requires encrypted delivery.";
       };
     };
-  });
-  moduleType = types.submodule ({name, ...}: {
-    config._module.strict = true;
-    options = {
-      name = mkOption {
-        type = moduleName;
-        default = name;
-        readOnly = true;
+  };
+  moduleType = abilityTypes.record {
+    fields = {
+      comment = {
+        type = boundedText;
+        optional = true;
       };
-      comment = mkOption {
-        type = types.str;
-        default = "AOS rsync module ${name}";
-      };
-      readOnly = mkOption {
-        type = types.bool;
+      readOnly = {
+        type = abilityTypes.boolean;
         default = true;
       };
-      authUsers = mkOption {
-        type = types.listOf (types.strMatching "[A-Za-z0-9][A-Za-z0-9_.@-]*");
+      authUsers = {
+        type = abilityTypes.list {
+          element = authUser;
+          maxItems = 1024;
+        };
         default = [];
       };
-      maxConnections = mkOption {
+      maxConnections = {
         type = positiveInt;
         default = 8;
       };
     };
-  });
+  };
+  moduleMap = abilityTypes.map {
+    keyMaxLength = 128;
+    keySyntax = "local-key-v1";
+    maxEntries = 1024;
+    value = moduleType;
+  };
   bool = value:
     if value
     then "yes"
@@ -75,7 +92,7 @@
       (executionPath (resultOf "export-${name}" "storage-path"))
       (literal ''
 
-        comment = ${module.comment}
+        comment = ${module.comment or "AOS rsync module ${name}"}
         read only = ${bool module.readOnly}
         max connections = ${toString module.maxConnections}
         ${lib.optionalString (module.authUsers != []) "auth users = ${lib.concatStringsSep ", " module.authUsers}"}
@@ -336,7 +353,7 @@ in {
       description = "Address on which rsyncd listens.";
     };
     modules = mkOption {
-      type = types.attrsOf moduleType;
+      type = moduleMap;
       default = {};
       description = "Exports rooted below persistent rsyncd storage.";
     };

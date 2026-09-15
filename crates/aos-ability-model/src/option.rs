@@ -722,6 +722,14 @@ pub fn validate_package_option_declarations(
     declarations: &[PackageOptionDeclaration],
     limits: &LimitProfile,
 ) -> Result<(), DocumentError> {
+    let bounded_prose = |value: &str| {
+        !value.trim().is_empty()
+            && value.len() as u64 <= limits.max_string_bytes
+            && !value
+                .chars()
+                .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    };
+
     if declarations.len() as u64 > limits.max_collection_items {
         return Err(DocumentError::Limit {
             label: PackageDocument::SCHEMA.to_string(),
@@ -748,14 +756,8 @@ pub fn validate_package_option_declarations(
         let strings_are_valid = !declaration.type_signature.is_empty()
             && declaration.type_signature.len() as u64 <= limits.max_string_bytes
             && !declaration.type_signature.chars().any(char::is_control)
-            && !declaration.description.is_empty()
-            && declaration.description.len() as u64 <= limits.max_string_bytes
-            && !declaration.description.chars().any(char::is_control)
-            && declaration.deprecated.as_ref().is_none_or(|value| {
-                !value.is_empty()
-                    && value.len() as u64 <= limits.max_string_bytes
-                    && !value.chars().any(char::is_control)
-            });
+            && bounded_prose(&declaration.description)
+            && declaration.deprecated.as_deref().is_none_or(bounded_prose);
         let structured_type_is_valid = declaration.structured_type.is_within_limits(limits);
         let replacement_is_valid = declaration.replacement.as_ref().is_none_or(|path| {
             !path.is_empty()
@@ -767,11 +769,7 @@ pub fn validate_package_option_declarations(
         });
         let documented_value_is_valid = |value: &DocumentedValue| match value {
             DocumentedValue::Literal { value } => declaration.structured_type.admits(value),
-            DocumentedValue::Text { text } => {
-                !text.is_empty()
-                    && text.len() as u64 <= limits.max_string_bytes
-                    && !text.chars().any(char::is_control)
-            }
+            DocumentedValue::Text { text } => bounded_prose(text),
         };
         if !path_is_valid
             || !strings_are_valid

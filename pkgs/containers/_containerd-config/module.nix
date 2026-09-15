@@ -412,7 +412,7 @@ in {
       description = "Plugins whose initialization failure aborts startup.";
     };
     snapshotter = mkOption {
-      type = types.enum ["overlayfs" "native"];
+      type = types.enum ["native" "overlayfs"];
       default = "overlayfs";
       description = "Default CRI image snapshotter.";
     };
