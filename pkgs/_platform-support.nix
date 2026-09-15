@@ -790,10 +790,8 @@ let
     "storage/_longhorn-config/module.nix" = "linux-only-config-source";
     "storage/_mariadb/module.nix" = "linux-only-config-source";
     "storage/_mariadb-tests/lifecycle.nix" = "linux-only-test-source";
-    "storage/_postgresql-config/module.nix" = "linux-only-config-source";
-    "storage/_postgresql-tests/expose.nix" = "linux-only-test-source";
+    "storage/_postgresql/module.nix" = "linux-only-config-source";
     "storage/_postgresql-tests/lifecycle.nix" = "linux-only-test-source";
-    "storage/_postgresql-tests/module.nix" = "linux-only-test-source";
     "system/_dbus-conf-xsl/make-session-conf.xsl" = "target-independent-source";
     "system/_dbus-conf-xsl/make-system-conf.xsl" = "target-independent-source";
     "tests/_aos-registry-server-config/module.nix" = "linux-only-config-source";

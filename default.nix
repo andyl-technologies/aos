@@ -2115,8 +2115,7 @@ in {
           integration.krb5-config
           integration.mariadb-config-module-contract
           integration.openldap-config
-          integration.postgresql-expose-contract
-          integration.postgresql-module-contract
+          integration.postgresql-ability-module-contract
           integration.rsync-config
           config-source-gc
           config-provenance
