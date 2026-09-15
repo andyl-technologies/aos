@@ -456,7 +456,7 @@
         ++ builtins.concatLists (builtins.map
           (name: nodesAt (path ++ [(keySegment name)]) concrete.value current.${name})
           (builtins.attrNames current))
-      else if concrete.kind == "record"
+      else if builtins.elem concrete.kind ["record" "document-record"]
       then
         [
           {
@@ -516,7 +516,8 @@
     declaration,
   }: let
     source = declaration.source or {};
-    credentialFragments = builtins.filter
+    credentialFragments =
+      builtins.filter
       (fragment: (fragment.kind or null) == "credential-content")
       (source.fragments or []);
     protectedMode = builtins.elem (declaration.mode or null) ["0400" "0600"];
@@ -524,7 +525,8 @@
       resource = fragment.resource or {};
       path = fragment.path or {};
     in
-      (resource._type or null) == "aos-request-output-reference"
+      (resource._type or null)
+      == "aos-request-output-reference"
       && (path._type or null) == "aos-request-output-reference"
       && resource.request == path.request
       && resource.output == "retained-resource"
@@ -573,10 +575,7 @@
       if !uniqueBy "key" producers
       then throw "producer request keys must be unique"
       else {
-        requirementTemplates =
-          if producers == []
-          then {}
-          else {${selectedInterface.alias} = requirementFor selectedInterface selectedMethods;};
+        requirementTemplates.${selectedInterface.alias} = requirementFor selectedInterface selectedMethods;
         requests = builtins.listToAttrs (builtins.map (producer: {
             name = producer.key;
             value = {
