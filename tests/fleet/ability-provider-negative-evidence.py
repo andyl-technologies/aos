@@ -45,18 +45,18 @@ ORACLE_KINDS = {
     "service-management": "systemd-unit",
 }
 ENTRY_POINTS = {
-    "credential-delivery": "libexec/aos-credential-delivery-handler-v1",
-    "foreground-process": "libexec/aos-foreground-process-handler-v1",
-    "host-network-policy": "libexec/aos-host-network-policy-handler-v1",
-    "host-storage": "libexec/aos-host-storage-handler-v1",
-    "image-rollout": "libexec/aos-ab-image-rollout-handler-v1",
-    "kubernetes-object": "libexec/aos-kubernetes-object-handler-v1",
+    "credential-delivery": "libexec/aos-credential-delivery-handler",
+    "foreground-process": "libexec/aos-foreground-process-handler",
+    "host-network-policy": "libexec/aos-host-network-policy-handler",
+    "host-storage": "libexec/aos-host-storage-handler",
+    "image-rollout": "libexec/aos-ab-image-rollout-handler",
+    "kubernetes-object": "libexec/aos-kubernetes-object-handler",
     "managed-configuration": "bin/.aos-package-runtime-unwrapped",
-    "network-endpoint": "libexec/aos-network-endpoint-handler-v1",
+    "network-endpoint": "libexec/aos-network-endpoint-handler",
     "nginx-validation": "bin/nginx",
-    "postgresql": "libexec/aos-postgresql-handler-v1",
+    "postgresql": "libexec/aos-postgresql-handler",
     "systemd-bootstrap": "bin/.aos-package-runtime-unwrapped",
-    "systemd-manager": "libexec/aos-systemd-manager-handler-v1",
+    "systemd-manager": "libexec/aos-systemd-manager-handler",
     "service-management": "bin/.aos-package-runtime-unwrapped",
 }
 

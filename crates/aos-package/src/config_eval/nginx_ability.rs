@@ -9,9 +9,9 @@
 //! formats are:
 //!
 //! ```text
-//! {"schema":"aos.ability.nginx-request/v3",...}
-//! {"schema":"aos.ability.nginx-validation/v3",...}
-//! {"schema":"aos.ability.nginx-generation-association/v3",...}
+//! {"schema":"aos.ability.nginx-request/v1",...}
+//! {"schema":"aos.ability.nginx-validation/v1",...}
+//! {"schema":"aos.ability.nginx-generation-association/v1",...}
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -59,9 +59,9 @@ pub(super) const INTERFACE_DESCRIPTOR: &str =
     "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1";
 const HANDLER_KEY: &str = "nginx-terminal";
 const ENTRY_POINT: &str = "bin/nginx";
-const REQUEST_SCHEMA: &str = "aos.ability.nginx-request/v3";
-const VALIDATION_SCHEMA: &str = "aos.ability.nginx-validation/v3";
-const ASSOCIATION_SCHEMA: &str = "aos.ability.nginx-generation-association/v3";
+const REQUEST_SCHEMA: &str = "aos.ability.nginx-request/v1";
+const VALIDATION_SCHEMA: &str = "aos.ability.nginx-validation/v1";
+const ASSOCIATION_SCHEMA: &str = "aos.ability.nginx-generation-association/v1";
 const MAX_ASSOCIATION_BYTES: u64 = ABILITY_LIMITS_V1.max_document_bytes;
 
 /// Binds a logical nginx resource to exact candidate bytes and one generation.
@@ -1717,8 +1717,8 @@ mod tests {
         assert!(parsed.candidate);
         assert_eq!(parsed.credential_views.len(), 1);
 
-        let legacy = boolean_value(true).expect("legacy Boolean is canonical");
-        assert!(decode_validation_input(&legacy, &NginxAction::Validate).is_err());
+        let boolean = boolean_value(true).expect("Boolean input is canonical");
+        assert!(decode_validation_input(&boolean, &NginxAction::Validate).is_err());
         assert!(decode_validation_input(&typed, &NginxAction::Record).is_err());
     }
 

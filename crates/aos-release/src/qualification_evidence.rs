@@ -144,8 +144,8 @@ pub const NATIVE_ADAPTER_MATRIX_OBSERVATION_V1: &str =
 const NATIVE_ADAPTER_MATRIX_SCHEMA_V1: &str = "aos.qualification.native-adapter-matrix/v1";
 const NATIVE_ADAPTER_MATRIX_SUBJECT_V1: &str = "aos.qualification.native-adapter-subject/v1";
 const NATIVE_ADAPTER_SURFACE_V1: &str = "aos.qualification.native-adapter-surface/v1";
-const NATIVE_ADAPTER_POSTCONDITION_PROBE_V2: &str =
-    "aos.release.native-adapter-postcondition-probe/v2";
+const NATIVE_ADAPTER_POSTCONDITION_PROBE_V1: &str =
+    "aos.release.native-adapter-postcondition-probe/v1";
 const NATIVE_ADAPTER_CELL_COHORT_SUBJECT_V1: &str =
     "aos.release.native-adapter-cell-cohort-subject/v1";
 /// Canonical schema for a typed native adapter matrix execution environment.
@@ -1310,7 +1310,7 @@ fn validate_native_adapter_postcondition_probe(
         .ok_or_else(|| anyhow::anyhow!("native adapter matrix postcondition has no probe class"))?;
     let expected_disposition = native_adapter_expected_disposition(cell)
         .ok_or_else(|| anyhow::anyhow!("native adapter matrix scenario has no disposition"))?;
-    if probe.schema_version != NATIVE_ADAPTER_POSTCONDITION_PROBE_V2
+    if probe.schema_version != NATIVE_ADAPTER_POSTCONDITION_PROBE_V1
         || probe.kind != expected_kind
         || probe.cell_id != cell.id
         || probe.cell_digest != cell_digest

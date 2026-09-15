@@ -21,10 +21,9 @@ pub const CREDENTIAL_DELIVERY_EFFECTS_INTERFACE_NAME: &str = "aos.credential-del
 /// Names the secret-free workload view emitted by acquire and deliver.
 pub const CREDENTIAL_VIEW_OUTPUT: &str = "credential-view";
 /// Names the native credential-delivery handler.
-pub const CREDENTIAL_DELIVERY_HANDLER_KEY: &str = "native-credential-delivery-v1";
+pub const CREDENTIAL_DELIVERY_HANDLER_KEY: &str = "native-credential-delivery";
 /// Names the credential handler executable retained in package metadata.
-pub const CREDENTIAL_DELIVERY_HANDLER_ENTRY_POINT: &str =
-    "libexec/aos-credential-delivery-handler-v1";
+pub const CREDENTIAL_DELIVERY_HANDLER_ENTRY_POINT: &str = "libexec/aos-credential-delivery-handler";
 /// Carries exact credential version and workload-view evidence without secret bytes.
 pub const CREDENTIAL_DELIVERY_OBSERVATION_SCHEMA: &str =
     "aos.ability.credential-delivery-observation/v1";

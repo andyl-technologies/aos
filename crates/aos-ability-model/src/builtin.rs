@@ -36,10 +36,10 @@ pub const SYSTEMD_PROVIDER_BOOTSTRAP_INTERFACE_NAME: &str = "aos.systemd-provide
 pub const SYSTEMD_PROVIDER_BOOTSTRAP_ASSIGNMENT_OUTPUT: &str = "cluster-assignment";
 
 /// Names the terminal handler catalog entry for the native systemd adapter.
-pub const SYSTEMD_MANAGER_HANDLER_KEY: &str = "native-systemd-manager-v1";
+pub const SYSTEMD_MANAGER_HANDLER_KEY: &str = "native-systemd-manager";
 
 /// Names the terminal handler entry point retained in package metadata.
-pub const SYSTEMD_MANAGER_HANDLER_ENTRY_POINT: &str = "libexec/aos-systemd-manager-handler-v1";
+pub const SYSTEMD_MANAGER_HANDLER_ENTRY_POINT: &str = "libexec/aos-systemd-manager-handler";
 
 /// Carries the exact durable evidence schema emitted by the systemd adapter.
 pub const SYSTEMD_OBSERVATION_SCHEMA: &str = "aos.ability.systemd-observation/v1";
@@ -63,20 +63,19 @@ pub const FOREGROUND_PROCESS_OBSERVATION_SCHEMA: &str =
     "aos.ability.foreground-process-observation/v1";
 
 /// Names the terminal handler catalog entry for foreground process effects.
-pub const FOREGROUND_PROCESS_HANDLER_KEY: &str = "native-foreground-process-v1";
+pub const FOREGROUND_PROCESS_HANDLER_KEY: &str = "native-foreground-process";
 
 /// Names the inert handler marker retained in application-container metadata.
-pub const FOREGROUND_PROCESS_HANDLER_ENTRY_POINT: &str =
-    "libexec/aos-foreground-process-handler-v1";
+pub const FOREGROUND_PROCESS_HANDLER_ENTRY_POINT: &str = "libexec/aos-foreground-process-handler";
 
 /// Names the native Kubernetes object-effects interface.
 pub const KUBERNETES_OBJECT_INTERFACE_NAME: &str = "aos.kubernetes-object-effects";
 
 /// Names the terminal handler catalog entry for Kubernetes object effects.
-pub const KUBERNETES_OBJECT_HANDLER_KEY: &str = "native-kubernetes-object-v1";
+pub const KUBERNETES_OBJECT_HANDLER_KEY: &str = "native-kubernetes-object";
 
 /// Names the terminal handler entry point retained in package metadata.
-pub const KUBERNETES_OBJECT_HANDLER_ENTRY_POINT: &str = "libexec/aos-kubernetes-object-handler-v1";
+pub const KUBERNETES_OBJECT_HANDLER_ENTRY_POINT: &str = "libexec/aos-kubernetes-object-handler";
 
 /// Carries the exact durable evidence schema emitted by the Kubernetes adapter.
 pub const KUBERNETES_OBJECT_OBSERVATION_SCHEMA: &str =

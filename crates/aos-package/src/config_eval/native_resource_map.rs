@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! {
-//!   "schema": "aos.ability.native-resource-map/v4",
+//!   "schema": "aos.ability.native-resource-map/v1",
 //!   "desired_state": "sha256:<64 lowercase hex characters>",
 //!   "entries": [
 //!     {
@@ -55,7 +55,7 @@ pub struct NativeResourceMap {
 
 impl NativeResourceMap {
     /// Current native resource-map schema.
-    pub const SCHEMA: &'static str = "aos.ability.native-resource-map/v4";
+    pub const SCHEMA: &'static str = "aos.ability.native-resource-map/v1";
 
     /// Constructs and validates a canonically ordered native resource map.
     ///

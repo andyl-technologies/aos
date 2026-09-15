@@ -127,7 +127,7 @@
     distribution = upgradePostgresql;
   };
   adoptionInterruptedControl = mkControl {
-    name = "ability-reference-postgresql-control-adoption-v2-interrupted";
+    name = "ability-reference-postgresql-control-adoption-candidate-interrupted";
     distribution = upgradePostgresql;
     faultPoint = "hold-quarantine-after-start";
   };
@@ -173,7 +173,7 @@
       };
     };
   upgradeProviderSource = mkProviderSource "upgrade";
-  adoptionV1ProviderSource = mkProviderSource "adoption-v1";
+  adoptionSourceProviderSource = mkProviderSource "adoption-source";
   faultProviderSources = builtins.listToAttrs (map (faultPoint: {
       name = faultPoint;
       value = mkProviderSource faultPoint;
@@ -221,14 +221,14 @@
             definition = terminalExport {
               selected = credentialEffects;
               group = "credential";
-              handler = "native-credential-delivery-v1";
+              handler = "native-credential-delivery";
               requestSchema = credentialRequest;
               methods = credentialMethods;
               persistent = false;
             };
             handler = {
               artifact = packageRuntimeSelector;
-              entryPoint = "libexec/aos-credential-delivery-handler-v1";
+              entryPoint = "libexec/aos-credential-delivery-handler";
               arguments = credentialRequest;
               result = credentialObservation;
             };
@@ -238,14 +238,14 @@
             definition = terminalExport {
               selected = endpointEffects;
               group = "endpoint";
-              handler = "native-network-endpoint-v1";
+              handler = "native-network-endpoint";
               requestSchema = endpointRequest;
               methods = endpointMethods;
               persistent = false;
             };
             handler = {
               artifact = packageRuntimeSelector;
-              entryPoint = "libexec/aos-network-endpoint-handler-v1";
+              entryPoint = "libexec/aos-network-endpoint-handler";
               arguments = endpointRequest;
               result = endpointObservation;
             };
@@ -255,7 +255,7 @@
             definition = terminalExport {
               selected = networkPolicyEffects;
               group = "network-policy";
-              handler = "native-host-network-policy-v1";
+              handler = "native-host-network-policy";
               requestSchema = networkPolicyRequest false;
               methods = networkPolicyMethods;
               persistent = false;
@@ -263,7 +263,7 @@
             };
             handler = {
               artifact = packageRuntimeSelector;
-              entryPoint = "libexec/aos-host-network-policy-handler-v1";
+              entryPoint = "libexec/aos-host-network-policy-handler";
               arguments = networkPolicyRequest false;
               result = networkPolicyObservation;
             };
@@ -273,14 +273,14 @@
             definition = terminalExport {
               selected = postgresqlEffects;
               group = "postgresql-terminal";
-              handler = "native-postgresql-v1";
+              handler = "native-postgresql";
               requestSchema = postgresqlRequest;
               methods = postgresqlMethods;
               persistent = true;
             };
             handler = {
               artifact = packageRuntimeSelector;
-              entryPoint = "libexec/aos-postgresql-handler-v1";
+              entryPoint = "libexec/aos-postgresql-handler";
               arguments = postgresqlRequest;
               result = postgresqlObservation;
             };
@@ -290,7 +290,7 @@
             definition = terminalExport {
               selected = storageEffects;
               group = "storage";
-              handler = "native-host-storage-v1";
+              handler = "native-host-storage";
               requestSchema = storageRequest;
               methods = storageMethods;
               persistent = true;
@@ -303,7 +303,7 @@
             };
             handler = {
               artifact = packageRuntimeSelector;
-              entryPoint = "libexec/aos-host-storage-handler-v1";
+              entryPoint = "libexec/aos-host-storage-handler";
               arguments = storageRequest;
               result = storageObservation;
             };
@@ -341,15 +341,15 @@
     selectedPostgresql = upgradePostgresql;
     selectedProviderSource = upgradeProviderSource;
   };
-  adoptionV1Suite = mkSuite {
-    pname = "ability-reference-postgresql-adoption-v1";
+  adoptionSourceSuite = mkSuite {
+    pname = "ability-reference-postgresql-adoption-source";
     selectedControl = control;
     selectedPostgresql = postgresql;
-    selectedProviderSource = adoptionV1ProviderSource;
+    selectedProviderSource = adoptionSourceProviderSource;
     stateFormat = compatibleStateFormat;
   };
-  adoptionV2Suite = mkSuite {
-    pname = "ability-reference-postgresql-adoption-v2";
+  adoptionCandidateSuite = mkSuite {
+    pname = "ability-reference-postgresql-adoption-candidate";
     selectedControl = upgradeControl;
     selectedPostgresql = upgradePostgresql;
     selectedProviderSource = upgradeProviderSource;
@@ -363,7 +363,7 @@
     stateFormat = incompatibleStateFormat;
   };
   adoptionInterruptedSuite = mkSuite {
-    pname = "ability-reference-postgresql-adoption-v2-interrupted";
+    pname = "ability-reference-postgresql-adoption-candidate-interrupted";
     selectedControl = adoptionInterruptedControl;
     selectedPostgresql = upgradePostgresql;
     selectedProviderSource = faultProviderSources."hold-quarantine-after-start";
@@ -383,8 +383,8 @@ in {
   inherit
     adoptionIncompatibleSuite
     adoptionInterruptedSuite
-    adoptionV1Suite
-    adoptionV2Suite
+    adoptionSourceSuite
+    adoptionCandidateSuite
     control
     faultControls
     faultSuites

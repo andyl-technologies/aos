@@ -493,63 +493,63 @@ switch_postgresql_host(
     "adoption-remove",
 )
 
-activation_adoption_v1 = generate_postgresql_activation(
-    "/run/postgresql-adoption-v1",
+activation_adoption_source = generate_postgresql_activation(
+    "/run/postgresql-adoption-source",
     "ability_app",
     "ability_role",
     ADOPTION_CREDENTIAL_VERSION,
     ADOPTION_CONFIGURATION,
-    "/run/postgresql-authority-adoption-v1",
-    postgresql_artifact="adoption-v1",
+    "/run/postgresql-authority-adoption-source",
+    postgresql_artifact="adoption-source",
 )
 provision_postgresql_authority(
-    activation_adoption_v1,
-    "/run/postgresql-authority-adoption-v1",
+    activation_adoption_source,
+    "/run/postgresql-authority-adoption-source",
 )
 adoption_host(
-    "/run/postgresql-host-adoption-v1.nix",
-    activation_adoption_v1,
-    "adoption-v1",
+    "/run/postgresql-host-adoption-source.nix",
+    activation_adoption_source,
+    "adoption-source",
 )
-generation_adoption_v1 = switch_postgresql_host(
-    "/run/postgresql-host-adoption-v1.nix",
-    "adoption-v1",
+generation_adoption_source = switch_postgresql_host(
+    "/run/postgresql-host-adoption-source.nix",
+    "adoption-source",
 )
-transaction_adoption_v1, _, bundle_adoption_v1, _ = transaction_document(
-    generation_adoption_v1
+transaction_adoption_source, _, bundle_adoption_source, _ = transaction_document(
+    generation_adoption_source
 )
-planning_adoption_v1 = bundle_adoption_v1["desired"]["snapshot_digest"]
-details_adoption_v1 = assert_cluster_layout(
-    resource_states(activation_adoption_v1)
+planning_adoption_source = bundle_adoption_source["desired"]["snapshot_digest"]
+details_adoption_source = assert_cluster_layout(
+    resource_states(activation_adoption_source)
 )
-secret_adoption_v1 = "/run/postgresql-adoption-v1/test-only/credential.secret"
+secret_adoption_source = "/run/postgresql-adoption-source/test-only/credential.secret"
 application_psql(
-    details_adoption_v1,
-    secret_adoption_v1,
+    details_adoption_source,
+    secret_adoption_source,
     "DROP TABLE IF EXISTS ability_provider_adoption; "
     "CREATE TABLE ability_provider_adoption(value text); "
     "INSERT INTO ability_provider_adoption VALUES "
     "('retained-through-provider-replacement')",
 )
-adoption_system_identifier = details_adoption_v1["data_system_identifier"]
-adoption_data_path = details_adoption_v1["data_path"]
-owner_adoption_v1 = owner_for_activation(activation_adoption_v1)
-resource_adoption_v1 = postgresql_resource(activation_adoption_v1)
-owners_adoption_v1 = owner_inventory(resource_adoption_v1)
-foreign_resource_adoption_v1, foreign_snapshot_adoption_v1 = (
-    postgresql_state_snapshot(activation_adoption_v1)
+adoption_system_identifier = details_adoption_source["data_system_identifier"]
+adoption_data_path = details_adoption_source["data_path"]
+owner_adoption_source = owner_for_activation(activation_adoption_source)
+resource_adoption_source = postgresql_resource(activation_adoption_source)
+owners_adoption_source = owner_inventory(resource_adoption_source)
+foreign_resource_adoption_source, foreign_snapshot_adoption_source = (
+    postgresql_state_snapshot(activation_adoption_source)
 )
-row_digest_adoption_v1 = adoption_row_digest(
-    details_adoption_v1,
-    secret_adoption_v1,
+row_digest_adoption_source = adoption_row_digest(
+    details_adoption_source,
+    secret_adoption_source,
 )
 assert_established_owner_provenance(
-    owner_adoption_v1,
-    f"gen-{generation_adoption_v1}",
-    transaction_adoption_v1,
-    bundle_adoption_v1,
+    owner_adoption_source,
+    f"gen-{generation_adoption_source}",
+    transaction_adoption_source,
+    bundle_adoption_source,
     "start",
-    resource_adoption_v1,
+    resource_adoption_source,
     ADOPTION_START_OPERATION,
 )
 
@@ -562,8 +562,8 @@ activation_adoption_incompatible = generate_postgresql_activation(
     ADOPTION_CONFIGURATION,
     "/run/postgresql-authority-adoption-incompatible",
     postgresql_artifact="adoption-incompatible",
-    provider_adoption_from="adoption-v1",
-    provider_adoption_current_planning=planning_adoption_v1,
+    provider_adoption_from="adoption-source",
+    provider_adoption_current_planning=planning_adoption_source,
 )
 provision_postgresql_authority(
     activation_adoption_incompatible,
@@ -621,15 +621,15 @@ subject_adoption_incompatible = postgresql_rejection_subject(
     policy_adoption_incompatible,
     rejection_evidence_adoption_incompatible,
 )
-owners_after_incompatible = owner_inventory(resource_adoption_v1)
+owners_after_incompatible = owner_inventory(resource_adoption_source)
 foreign_resource_after_incompatible, foreign_snapshot_after_incompatible = (
-    postgresql_state_snapshot(activation_adoption_v1)
+    postgresql_state_snapshot(activation_adoption_source)
 )
 row_digest_after_incompatible = adoption_row_digest(
-    details_adoption_v1,
-    secret_adoption_v1,
+    details_adoption_source,
+    secret_adoption_source,
 )
-assert foreign_resource_after_incompatible == foreign_resource_adoption_v1
+assert foreign_resource_after_incompatible == foreign_resource_adoption_source
 
 
 def reject_incompatible_adoption_method(method):
@@ -644,8 +644,8 @@ def reject_incompatible_adoption_method(method):
         ADOPTION_CONFIGURATION,
         authority_root,
         postgresql_artifact="adoption-incompatible",
-        provider_adoption_from="adoption-v1",
-        provider_adoption_current_planning=planning_adoption_v1,
+        provider_adoption_from="adoption-source",
+        provider_adoption_current_planning=planning_adoption_source,
         provider_adoption_method=method,
     )
     provision_postgresql_authority(activation, authority_root)
@@ -696,160 +696,160 @@ additional_incompatible_attempts = {
 
 # A normal compatible replacement changes both the owner and the real
 # PostgreSQL executable while retaining the cluster identity and SQL data.
-activation_adoption_v2 = generate_postgresql_activation(
-    "/run/postgresql-adoption-v2",
+activation_adoption_candidate = generate_postgresql_activation(
+    "/run/postgresql-adoption-candidate",
     "ability_app",
     "ability_role",
     ADOPTION_CREDENTIAL_VERSION,
     ADOPTION_CONFIGURATION,
-    "/run/postgresql-authority-adoption-v2",
-    postgresql_artifact="adoption-v2",
-    provider_adoption_from="adoption-v1",
-    provider_adoption_current_planning=planning_adoption_v1,
+    "/run/postgresql-authority-adoption-candidate",
+    postgresql_artifact="adoption-candidate",
+    provider_adoption_from="adoption-source",
+    provider_adoption_current_planning=planning_adoption_source,
 )
 provision_postgresql_authority(
-    activation_adoption_v2,
-    "/run/postgresql-authority-adoption-v2",
+    activation_adoption_candidate,
+    "/run/postgresql-authority-adoption-candidate",
 )
 adoption_host(
-    "/run/postgresql-host-adoption-v2.nix",
-    activation_adoption_v2,
-    "adoption-v2",
+    "/run/postgresql-host-adoption-candidate.nix",
+    activation_adoption_candidate,
+    "adoption-candidate",
 )
-generation_adoption_v2 = switch_postgresql_host(
-    "/run/postgresql-host-adoption-v2.nix",
-    "adoption-v2",
+generation_adoption_candidate = switch_postgresql_host(
+    "/run/postgresql-host-adoption-candidate.nix",
+    "adoption-candidate",
 )
-transaction_adoption_v2, root_adoption_v2, bundle_adoption_v2, _ = transaction_document(
-    generation_adoption_v2
+transaction_adoption_candidate, root_adoption_candidate, bundle_adoption_candidate, _ = transaction_document(
+    generation_adoption_candidate
 )
-bundle_bytes_adoption_v2 = runtime.succeed(
-    f"{COREUTILS}/cat {shlex.quote(root_adoption_v2 + '/plan-bundle.json')}"
+bundle_bytes_adoption_candidate = runtime.succeed(
+    f"{COREUTILS}/cat {shlex.quote(root_adoption_candidate + '/plan-bundle.json')}"
 ).encode()
-assert_adoption_current_planning(bundle_adoption_v2, planning_adoption_v1)
-planning_adoption_v2 = bundle_adoption_v2["desired"]["snapshot_digest"]
-contract_adoption_v2 = adoption_contract(bundle_adoption_v2)
-assert owner_adoption_v1["identity"] == endpoint_identity(
-    contract_adoption_v2["source"]
+assert_adoption_current_planning(bundle_adoption_candidate, planning_adoption_source)
+planning_adoption_candidate = bundle_adoption_candidate["desired"]["snapshot_digest"]
+contract_adoption_candidate = adoption_contract(bundle_adoption_candidate)
+assert owner_adoption_source["identity"] == endpoint_identity(
+    contract_adoption_candidate["source"]
 )
-owner_adoption_v2 = owner_for_activation(activation_adoption_v2)
-assert_owner_endpoint(owner_adoption_v2, contract_adoption_v2["candidate"])
-resource_adoption_v2 = postgresql_resource(activation_adoption_v2)
-subject_adoption_v2 = postgresql_cohort_subject(
-    bundle_adoption_v2,
+owner_adoption_candidate = owner_for_activation(activation_adoption_candidate)
+assert_owner_endpoint(owner_adoption_candidate, contract_adoption_candidate["candidate"])
+resource_adoption_candidate = postgresql_resource(activation_adoption_candidate)
+subject_adoption_candidate = postgresql_cohort_subject(
+    bundle_adoption_candidate,
     "materialize",
-    bundle_bytes_adoption_v2,
+    bundle_bytes_adoption_candidate,
 )
-assert_adoption_replacement_edges(bundle_adoption_v2, resource_adoption_v2)
+assert_adoption_replacement_edges(bundle_adoption_candidate, resource_adoption_candidate)
 assert_established_owner_provenance(
-    owner_adoption_v2,
-    f"gen-{generation_adoption_v2}",
-    transaction_adoption_v2,
-    bundle_adoption_v2,
+    owner_adoption_candidate,
+    f"gen-{generation_adoption_candidate}",
+    transaction_adoption_candidate,
+    bundle_adoption_candidate,
     "restart",
-    resource_adoption_v2,
+    resource_adoption_candidate,
     ADOPTION_RESTART_OPERATION,
 )
-details_adoption_v2 = assert_cluster_layout(
-    resource_states(activation_adoption_v2)
+details_adoption_candidate = assert_cluster_layout(
+    resource_states(activation_adoption_candidate)
 )
-secret_adoption_v2 = "/run/postgresql-adoption-v2/test-only/credential.secret"
-assert details_adoption_v2["postgres_executable"] != (
-    details_adoption_v1["postgres_executable"]
+secret_adoption_candidate = "/run/postgresql-adoption-candidate/test-only/credential.secret"
+assert details_adoption_candidate["postgres_executable"] != (
+    details_adoption_source["postgres_executable"]
 )
-assert details_adoption_v2["data_path"] == adoption_data_path
+assert details_adoption_candidate["data_path"] == adoption_data_path
 assert_adoption_data(
-    details_adoption_v2,
-    secret_adoption_v2,
+    details_adoption_candidate,
+    secret_adoption_candidate,
     adoption_system_identifier,
 )
-row_digest_adoption_v2 = adoption_row_digest(
-    details_adoption_v2,
-    secret_adoption_v2,
+row_digest_adoption_candidate = adoption_row_digest(
+    details_adoption_candidate,
+    secret_adoption_candidate,
 )
-owners_adoption_v2 = owner_inventory(resource_adoption_v2)
-foreign_resource_adoption_v2, foreign_snapshot_adoption_v2 = (
-    postgresql_state_snapshot(activation_adoption_v2)
+owners_adoption_candidate = owner_inventory(resource_adoption_candidate)
+foreign_resource_adoption_candidate, foreign_snapshot_adoption_candidate = (
+    postgresql_state_snapshot(activation_adoption_candidate)
 )
-timeline_adoption_v2 = operation_timeline(
-    generation_adoption_v2,
-    transaction_adoption_v2,
-    subject_adoption_v2["operation"],
+timeline_adoption_candidate = operation_timeline(
+    generation_adoption_candidate,
+    transaction_adoption_candidate,
+    subject_adoption_candidate["operation"],
 )
-journal_digest_adoption_v2 = transaction_journal_digest(root_adoption_v2)
+journal_digest_adoption_candidate = transaction_journal_digest(root_adoption_candidate)
 
 # Return to v1 so the interrupted transition has a unique source artifact.
-activation_adoption_v1_return = generate_postgresql_activation(
-    "/run/postgresql-adoption-v1-return",
+activation_adoption_source_return = generate_postgresql_activation(
+    "/run/postgresql-adoption-source-return",
     "ability_app",
     "ability_role",
     ADOPTION_CREDENTIAL_VERSION,
     ADOPTION_CONFIGURATION,
-    "/run/postgresql-authority-adoption-v1-return",
-    postgresql_artifact="adoption-v1",
-    provider_adoption_from="adoption-v2",
-    provider_adoption_current_planning=planning_adoption_v2,
+    "/run/postgresql-authority-adoption-source-return",
+    postgresql_artifact="adoption-source",
+    provider_adoption_from="adoption-candidate",
+    provider_adoption_current_planning=planning_adoption_candidate,
 )
 provision_postgresql_authority(
-    activation_adoption_v1_return,
-    "/run/postgresql-authority-adoption-v1-return",
+    activation_adoption_source_return,
+    "/run/postgresql-authority-adoption-source-return",
 )
 adoption_host(
-    "/run/postgresql-host-adoption-v1-return.nix",
-    activation_adoption_v1_return,
-    "adoption-v1",
+    "/run/postgresql-host-adoption-source-return.nix",
+    activation_adoption_source_return,
+    "adoption-source",
 )
-generation_adoption_v1_return = switch_postgresql_host(
-    "/run/postgresql-host-adoption-v1-return.nix",
-    "adoption-v1-return",
+generation_adoption_source_return = switch_postgresql_host(
+    "/run/postgresql-host-adoption-source-return.nix",
+    "adoption-source-return",
 )
 (
-    transaction_adoption_v1_return,
+    transaction_adoption_source_return,
     _,
-    bundle_adoption_v1_return,
+    bundle_adoption_source_return,
     _,
-) = transaction_document(generation_adoption_v1_return)
+) = transaction_document(generation_adoption_source_return)
 assert_adoption_current_planning(
-    bundle_adoption_v1_return,
-    planning_adoption_v2,
+    bundle_adoption_source_return,
+    planning_adoption_candidate,
 )
-planning_adoption_v1_return = bundle_adoption_v1_return["desired"][
+planning_adoption_source_return = bundle_adoption_source_return["desired"][
     "snapshot_digest"
 ]
-details_adoption_v1_return = assert_cluster_layout(
-    resource_states(activation_adoption_v1_return)
+details_adoption_source_return = assert_cluster_layout(
+    resource_states(activation_adoption_source_return)
 )
-owner_adoption_v1_return = owner_for_activation(
-    activation_adoption_v1_return
+owner_adoption_source_return = owner_for_activation(
+    activation_adoption_source_return
 )
-resource_adoption_v1_return = postgresql_resource(
-    activation_adoption_v1_return
+resource_adoption_source_return = postgresql_resource(
+    activation_adoption_source_return
 )
 assert_adoption_replacement_edges(
-    bundle_adoption_v1_return,
-    resource_adoption_v1_return,
+    bundle_adoption_source_return,
+    resource_adoption_source_return,
 )
-establishment_adoption_v1_return = assert_established_owner_provenance(
-    owner_adoption_v1_return,
-    f"gen-{generation_adoption_v1_return}",
-    transaction_adoption_v1_return,
-    bundle_adoption_v1_return,
+establishment_adoption_source_return = assert_established_owner_provenance(
+    owner_adoption_source_return,
+    f"gen-{generation_adoption_source_return}",
+    transaction_adoption_source_return,
+    bundle_adoption_source_return,
     "restart",
-    resource_adoption_v1_return,
+    resource_adoption_source_return,
     ADOPTION_RESTART_OPERATION,
 )
 assert_adoption_data(
-    details_adoption_v1_return,
-    "/run/postgresql-adoption-v1-return/test-only/credential.secret",
+    details_adoption_source_return,
+    "/run/postgresql-adoption-source-return/test-only/credential.secret",
     adoption_system_identifier,
 )
-owners_adoption_v1_return = owner_inventory(resource_adoption_v1_return)
+owners_adoption_source_return = owner_inventory(resource_adoption_source_return)
 foreign_resource_before_interrupted, foreign_snapshot_before_interrupted = (
-    postgresql_state_snapshot(activation_adoption_v1_return)
+    postgresql_state_snapshot(activation_adoption_source_return)
 )
-row_digest_adoption_v1_return = adoption_row_digest(
-    details_adoption_v1_return,
-    "/run/postgresql-adoption-v1-return/test-only/credential.secret",
+row_digest_adoption_source_return = adoption_row_digest(
+    details_adoption_source_return,
+    "/run/postgresql-adoption-source-return/test-only/credential.secret",
 )
 
 # Interrupt the candidate after PostgreSQL starts but before the effect is
@@ -861,9 +861,9 @@ activation_adoption_interrupted = generate_postgresql_activation(
     ADOPTION_CREDENTIAL_VERSION,
     ADOPTION_CONFIGURATION,
     "/run/postgresql-authority-adoption-interrupted",
-    postgresql_artifact="adoption-v2-interrupted",
-    provider_adoption_from="adoption-v1",
-    provider_adoption_current_planning=planning_adoption_v1_return,
+    postgresql_artifact="adoption-candidate-interrupted",
+    provider_adoption_from="adoption-source",
+    provider_adoption_current_planning=planning_adoption_source_return,
 )
 provision_postgresql_authority(
     activation_adoption_interrupted,
@@ -873,7 +873,7 @@ interrupted_host = "/run/postgresql-host-adoption-interrupted.nix"
 adoption_host(
     interrupted_host,
     activation_adoption_interrupted,
-    "adoption-v2-interrupted",
+    "adoption-candidate-interrupted",
 )
 interrupted_marker = state_path(
     resource_entries(activation_adoption_interrupted)["postgresql"]
@@ -904,7 +904,7 @@ pending_bundle_bytes = runtime.succeed(
 contract_interrupted = adoption_contract(pending_bundle)
 assert_adoption_current_planning(
     pending_bundle,
-    planning_adoption_v1_return,
+    planning_adoption_source_return,
 )
 assert_owner_endpoint(owner_interrupted, contract_interrupted["candidate"])
 resource_adoption_interrupted = postgresql_resource(
@@ -962,10 +962,10 @@ assert receipt_interrupted["source_handler"] == endpoint_handler(
     contract_interrupted["source"]
 )
 assert receipt_interrupted["source_generation"] == (
-    f"gen-{generation_adoption_v1_return}"
+    f"gen-{generation_adoption_source_return}"
 )
 assert receipt_interrupted["source_establishment"] == (
-    establishment_adoption_v1_return
+    establishment_adoption_source_return
 ), receipt_interrupted
 assert receipt_interrupted["source_generation"] == (
     receipt_interrupted["source_establishment"]["generation"]
@@ -1012,7 +1012,7 @@ clean_interrupted = json.loads(runtime.succeed(
     timeout=600,
 ))
 retained_interrupted = clean_interrupted["configuration"]["generations_after"]
-assert generation_adoption_v1_return in retained_interrupted, clean_interrupted
+assert generation_adoption_source_return in retained_interrupted, clean_interrupted
 assert int(pending_generation.removeprefix("gen-")) in retained_interrupted, (
     clean_interrupted
 )
@@ -1106,7 +1106,7 @@ clean_completed = json.loads(runtime.succeed(
     f"{APM} --json clean --system --generations --keep 1",
     timeout=600,
 ))
-assert generation_adoption_v1_return in clean_completed["configuration"][
+assert generation_adoption_source_return in clean_completed["configuration"][
     "removed_generations"
 ], clean_completed
 runtime.succeed(f"{APM} gc", timeout=600)
@@ -1115,95 +1115,95 @@ runtime.succeed(f"test -e {shlex.quote(candidate_state_artifact)}")
 
 # Reinstalling v1 and explicitly adopting from the recovered candidate keeps
 # the same target state after the old implementation was collected.
-activation_adoption_final_v1 = generate_postgresql_activation(
-    "/run/postgresql-adoption-final-v1",
+activation_adoption_final = generate_postgresql_activation(
+    "/run/postgresql-adoption-final",
     "ability_app",
     "ability_role",
     ADOPTION_CREDENTIAL_VERSION,
     ADOPTION_CONFIGURATION,
-    "/run/postgresql-authority-adoption-final-v1",
-    postgresql_artifact="adoption-v1",
-    provider_adoption_from="adoption-v2-interrupted",
+    "/run/postgresql-authority-adoption-final",
+    postgresql_artifact="adoption-source",
+    provider_adoption_from="adoption-candidate-interrupted",
     provider_adoption_current_planning=pending_bundle["desired"]["snapshot_digest"],
 )
 provision_postgresql_authority(
-    activation_adoption_final_v1,
-    "/run/postgresql-authority-adoption-final-v1",
+    activation_adoption_final,
+    "/run/postgresql-authority-adoption-final",
 )
 adoption_host(
-    "/run/postgresql-host-adoption-final-v1.nix",
-    activation_adoption_final_v1,
-    "adoption-v1",
+    "/run/postgresql-host-adoption-final.nix",
+    activation_adoption_final,
+    "adoption-source",
 )
-generation_adoption_final_v1 = switch_postgresql_host(
-    "/run/postgresql-host-adoption-final-v1.nix",
-    "adoption-final-v1",
+generation_adoption_final = switch_postgresql_host(
+    "/run/postgresql-host-adoption-final.nix",
+    "adoption-final",
 )
 (
-    transaction_adoption_final_v1,
-    root_adoption_final_v1,
-    bundle_adoption_final_v1,
+    transaction_adoption_final,
+    root_adoption_final,
+    bundle_adoption_final,
     _,
-) = transaction_document(generation_adoption_final_v1)
-bundle_bytes_adoption_final_v1 = runtime.succeed(
+) = transaction_document(generation_adoption_final)
+bundle_bytes_adoption_final = runtime.succeed(
     f"{COREUTILS}/cat "
-    f"{shlex.quote(root_adoption_final_v1 + '/plan-bundle.json')}"
+    f"{shlex.quote(root_adoption_final + '/plan-bundle.json')}"
 ).encode()
 assert_adoption_current_planning(
-    bundle_adoption_final_v1,
+    bundle_adoption_final,
     pending_bundle["desired"]["snapshot_digest"],
 )
-owner_adoption_final_v1 = owner_for_activation(
-    activation_adoption_final_v1
+owner_adoption_final = owner_for_activation(
+    activation_adoption_final
 )
 assert_owner_endpoint(
-    owner_adoption_final_v1,
-    adoption_contract(bundle_adoption_final_v1)["candidate"],
+    owner_adoption_final,
+    adoption_contract(bundle_adoption_final)["candidate"],
 )
-resource_adoption_final_v1 = postgresql_resource(
-    activation_adoption_final_v1
+resource_adoption_final = postgresql_resource(
+    activation_adoption_final
 )
-subject_adoption_final_v1 = postgresql_cohort_subject(
-    bundle_adoption_final_v1,
+subject_adoption_final = postgresql_cohort_subject(
+    bundle_adoption_final,
     "restart",
-    bundle_bytes_adoption_final_v1,
+    bundle_bytes_adoption_final,
 )
 assert_adoption_replacement_edges(
-    bundle_adoption_final_v1,
-    resource_adoption_final_v1,
+    bundle_adoption_final,
+    resource_adoption_final,
 )
 assert_established_owner_provenance(
-    owner_adoption_final_v1,
-    f"gen-{generation_adoption_final_v1}",
-    transaction_adoption_final_v1,
-    bundle_adoption_final_v1,
+    owner_adoption_final,
+    f"gen-{generation_adoption_final}",
+    transaction_adoption_final,
+    bundle_adoption_final,
     "restart",
-    resource_adoption_final_v1,
+    resource_adoption_final,
     ADOPTION_RESTART_OPERATION,
 )
-details_adoption_final_v1 = assert_cluster_layout(
-    resource_states(activation_adoption_final_v1)
+details_adoption_final = assert_cluster_layout(
+    resource_states(activation_adoption_final)
 )
 assert_adoption_data(
-    details_adoption_final_v1,
-    "/run/postgresql-adoption-final-v1/test-only/credential.secret",
+    details_adoption_final,
+    "/run/postgresql-adoption-final/test-only/credential.secret",
     adoption_system_identifier,
 )
-row_digest_adoption_final_v1 = adoption_row_digest(
-    details_adoption_final_v1,
-    "/run/postgresql-adoption-final-v1/test-only/credential.secret",
+row_digest_adoption_final = adoption_row_digest(
+    details_adoption_final,
+    "/run/postgresql-adoption-final/test-only/credential.secret",
 )
-owners_adoption_final_v1 = owner_inventory(resource_adoption_final_v1)
-foreign_resource_adoption_final_v1, foreign_snapshot_adoption_final_v1 = (
-    postgresql_state_snapshot(activation_adoption_final_v1)
+owners_adoption_final = owner_inventory(resource_adoption_final)
+foreign_resource_adoption_final, foreign_snapshot_adoption_final = (
+    postgresql_state_snapshot(activation_adoption_final)
 )
-timeline_adoption_final_v1 = operation_timeline(
-    generation_adoption_final_v1,
-    transaction_adoption_final_v1,
-    subject_adoption_final_v1["operation"],
+timeline_adoption_final = operation_timeline(
+    generation_adoption_final,
+    transaction_adoption_final,
+    subject_adoption_final["operation"],
 )
-journal_digest_adoption_final_v1 = transaction_journal_digest(
-    root_adoption_final_v1
+journal_digest_adoption_final = transaction_journal_digest(
+    root_adoption_final
 )
 
 # Exercise exact lifecycle methods after the retained provider has settled.
@@ -1224,7 +1224,7 @@ activation_adoption_stopped = generate_postgresql_activation(
     ADOPTION_CONFIGURATION,
     "/run/postgresql-authority-adoption-stopped",
     lifecycle="remove",
-    postgresql_artifact="adoption-v1",
+    postgresql_artifact="adoption-source",
 )
 provision_postgresql_authority(
     activation_adoption_stopped,
@@ -1233,7 +1233,7 @@ provision_postgresql_authority(
 adoption_host(
     "/run/postgresql-host-adoption-stopped.nix",
     activation_adoption_stopped,
-    "adoption-v1",
+    "adoption-source",
 )
 generation_adoption_stopped = switch_postgresql_host(
     "/run/postgresql-host-adoption-stopped.nix",
@@ -1248,13 +1248,13 @@ generation_adoption_stopped = switch_postgresql_host(
 stopped_postgresql_state = [
     state
     for state in all_runtime_states("postgresql")
-    if state["resource"] == resource_adoption_final_v1
+    if state["resource"] == resource_adoption_final
 ]
 assert len(stopped_postgresql_state) == 1, stopped_postgresql_state
 assert stopped_postgresql_state[0]["details"]["phase"] == "stopped", (
     stopped_postgresql_state[0]
 )
-owners_adoption_stopped = owner_inventory(resource_adoption_final_v1)
+owners_adoption_stopped = owner_inventory(resource_adoption_final)
 
 activation_adoption_restarted = generate_postgresql_activation(
     "/run/postgresql-adoption-restarted",
@@ -1263,7 +1263,7 @@ activation_adoption_restarted = generate_postgresql_activation(
     ADOPTION_CREDENTIAL_VERSION,
     ADOPTION_CONFIGURATION,
     "/run/postgresql-authority-adoption-restarted",
-    postgresql_artifact="adoption-v1",
+    postgresql_artifact="adoption-source",
 )
 provision_postgresql_authority(
     activation_adoption_restarted,
@@ -1272,7 +1272,7 @@ provision_postgresql_authority(
 adoption_host(
     "/run/postgresql-host-adoption-restarted.nix",
     activation_adoption_restarted,
-    "adoption-v1",
+    "adoption-source",
 )
 generation_adoption_restarted = switch_postgresql_host(
     "/run/postgresql-host-adoption-restarted.nix",
@@ -1288,7 +1288,7 @@ details_adoption_restarted = assert_cluster_layout(
     resource_states(activation_adoption_restarted)
 )
 assert details_adoption_restarted["data_path"] == (
-    details_adoption_final_v1["data_path"]
+    details_adoption_final["data_path"]
 )
 assert_adoption_data(
     details_adoption_restarted,
@@ -1299,10 +1299,10 @@ row_digest_adoption_restarted = adoption_row_digest(
     details_adoption_restarted,
     "/run/postgresql-adoption-restarted/test-only/credential.secret",
 )
-owners_adoption_restarted = owner_inventory(resource_adoption_final_v1)
-assert owners_adoption_restarted == owners_adoption_final_v1, (
+owners_adoption_restarted = owner_inventory(resource_adoption_final)
+assert owners_adoption_restarted == owners_adoption_final, (
     owners_adoption_restarted,
-    owners_adoption_final_v1,
+    owners_adoption_final,
 )
 unrelated_snapshot_after_followup = persisted_resource_snapshot(
     "postgresql",
@@ -1330,10 +1330,10 @@ for method, generation, transaction, root, method_bundle in (
 ):
     evidence = canonical_json_bytes({
         "schema": POSTGRESQL_ORDERED_METHOD_EVIDENCE_SCHEMA,
-        "adoption": bundle_adoption_final_v1,
+        "adoption": bundle_adoption_final,
         "method": method_bundle,
         "observation": {
-            "adoption-generation": generation_adoption_final_v1,
+            "adoption-generation": generation_adoption_final,
             "method-generation": generation,
             "transaction": transaction,
             "journal-digest": transaction_journal_digest(root),
@@ -1348,7 +1348,7 @@ for method, generation, transaction, root, method_bundle in (
     })
     ordered_method_evidence[method] = evidence
     ordered_method_subjects[method] = postgresql_ordered_method_subject(
-        bundle_adoption_final_v1,
+        bundle_adoption_final,
         method_bundle,
         method,
         evidence,
@@ -1372,16 +1372,16 @@ retained_cell = (
 )
 
 NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS = {
-    compatible_cell: subject_adoption_v2,
+    compatible_cell: subject_adoption_candidate,
     incompatible_cell: subject_adoption_incompatible,
     interrupted_cell: subject_adoption_interrupted,
-    retained_cell: subject_adoption_final_v1,
+    retained_cell: subject_adoption_final,
 }
 NATIVE_ADAPTER_MATRIX_COHORT_EVIDENCE = {
-    compatible_cell: bundle_bytes_adoption_v2,
+    compatible_cell: bundle_bytes_adoption_candidate,
     incompatible_cell: rejection_evidence_adoption_incompatible,
     interrupted_cell: pending_bundle_bytes,
-    retained_cell: bundle_bytes_adoption_final_v1,
+    retained_cell: bundle_bytes_adoption_final,
 }
 NATIVE_ADAPTER_MATRIX_PROBES = {
     compatible_cell: {
@@ -1390,11 +1390,11 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
             "compatible-state-adopted",
             "The production journal completed the exact PostgreSQL materialize operation.",
             {
-                "transaction": transaction_adoption_v2,
-                "plan": bundle_adoption_v2["plan"],
-                "operation": subject_adoption_v2["operation"],
-                "timeline": timeline_adoption_v2,
-                "record-digest": journal_digest_adoption_v2,
+                "transaction": transaction_adoption_candidate,
+                "plan": bundle_adoption_candidate["plan"],
+                "operation": subject_adoption_candidate["operation"],
+                "timeline": timeline_adoption_candidate,
+                "record-digest": journal_digest_adoption_candidate,
                 "terminal": "complete",
                 "classified": True,
             },
@@ -1404,10 +1404,10 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
             "compatible-state-adopted",
             "The atomic owner ledger retained at most one owner while materialize adopted the cluster.",
             {
-                "resource": resource_adoption_v2,
-                "owners-before": owners_adoption_v1,
+                "resource": resource_adoption_candidate,
+                "owners-before": owners_adoption_source,
                 "owners-unsettled": [],
-                "owners-after": owners_adoption_v2,
+                "owners-after": owners_adoption_candidate,
             },
         ),
         "foreign-resources-unchanged": matrix_probe(
@@ -1415,11 +1415,11 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
             "compatible-state-adopted",
             "The independently owned storage marker retained exact canonical state.",
             {
-                "resource": foreign_resource_adoption_v1,
-                "snapshot-before": foreign_snapshot_adoption_v1,
-                "snapshot-after": foreign_snapshot_adoption_v2,
+                "resource": foreign_resource_adoption_source,
+                "snapshot-before": foreign_snapshot_adoption_source,
+                "snapshot-after": foreign_snapshot_adoption_candidate,
                 "unchanged": (
-                    foreign_snapshot_adoption_v1 == foreign_snapshot_adoption_v2
+                    foreign_snapshot_adoption_source == foreign_snapshot_adoption_candidate
                 ),
             },
         ),
@@ -1428,15 +1428,15 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
             "compatible-state-adopted",
             "The transition pins distinct source and candidate handler incarnations under current policy.",
             {
-                "source-handler-incarnation": subject_adoption_v2["source"]
+                "source-handler-incarnation": subject_adoption_candidate["source"]
                 ["handler_incarnation"],
-                "candidate-handler-incarnation": subject_adoption_v2["candidate"]
+                "candidate-handler-incarnation": subject_adoption_candidate["candidate"]
                 ["handler_incarnation"],
-                "authorization-policy-revision": subject_adoption_v2[
+                "authorization-policy-revision": subject_adoption_candidate[
                     "authorization-policy-revision"
                 ],
-                "current-planning": subject_adoption_v2["current-planning"],
-                "desired-planning": subject_adoption_v2["desired-planning"],
+                "current-planning": subject_adoption_candidate["current-planning"],
+                "desired-planning": subject_adoption_candidate["desired-planning"],
                 "fresh": True,
             },
         ),
@@ -1445,18 +1445,18 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
             "compatible-state-adopted",
             "The changed PostgreSQL executable preserved the real cluster identifier and query result.",
             {
-                "resource": resource_adoption_v2,
-                "source-state-format": subject_adoption_v2["source"][
+                "resource": resource_adoption_candidate,
+                "source-state-format": subject_adoption_candidate["source"][
                     "state_format"
                 ],
-                "candidate-state-format": subject_adoption_v2["candidate"]
+                "candidate-state-format": subject_adoption_candidate["candidate"]
                 ["state_format"],
                 "system-identifier-before": adoption_system_identifier,
-                "system-identifier-after": details_adoption_v2[
+                "system-identifier-after": details_adoption_candidate[
                     "data_system_identifier"
                 ],
-                "row-digest-before": row_digest_adoption_v1,
-                "row-digest-after": row_digest_adoption_v2,
+                "row-digest-before": row_digest_adoption_source,
+                "row-digest-after": row_digest_adoption_candidate,
                 "adopted": True,
             },
         ),
@@ -1465,9 +1465,9 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
             "compatible-state-adopted",
             "The durable ledger names only the exact candidate endpoint after adoption.",
             {
-                "resource": resource_adoption_v2,
-                "expected-owner": owner_adoption_v2,
-                "owners": owners_adoption_v2,
+                "resource": resource_adoption_candidate,
+                "expected-owner": owner_adoption_candidate,
+                "owners": owners_adoption_candidate,
             },
         ),
     },
@@ -1493,9 +1493,9 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
             "transfer-rejected-before-effect",
             "The predecessor remained the ledger's sole owner across rejection.",
             {
-                "resource": resource_adoption_v1,
-                "owners-before": owners_adoption_v1,
-                "owners-unsettled": owners_adoption_v1,
+                "resource": resource_adoption_source,
+                "owners-before": owners_adoption_source,
+                "owners-unsettled": owners_adoption_source,
                 "owners-after": owners_after_incompatible,
             },
         ),
@@ -1504,11 +1504,11 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
             "transfer-rejected-before-effect",
             "The separately owned storage state retained its exact canonical digest.",
             {
-                "resource": foreign_resource_adoption_v1,
-                "snapshot-before": foreign_snapshot_adoption_v1,
+                "resource": foreign_resource_adoption_source,
+                "snapshot-before": foreign_snapshot_adoption_source,
                 "snapshot-after": foreign_snapshot_after_incompatible,
                 "unchanged": (
-                    foreign_snapshot_adoption_v1
+                    foreign_snapshot_adoption_source
                     == foreign_snapshot_after_incompatible
                 ),
             },
@@ -1575,14 +1575,14 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
             "transfer-rejected-before-effect",
             "The live predecessor kept the same owner, cluster identifier, and query result.",
             {
-                "resource": resource_adoption_v1,
-                "predecessor-owner-before": owner_adoption_v1,
+                "resource": resource_adoption_source,
+                "predecessor-owner-before": owner_adoption_source,
                 "predecessor-owner-after": owners_after_incompatible[0],
                 "system-identifier-before": adoption_system_identifier,
-                "system-identifier-after": details_adoption_v1[
+                "system-identifier-after": details_adoption_source[
                     "data_system_identifier"
                 ],
-                "row-digest-before": row_digest_adoption_v1,
+                "row-digest-before": row_digest_adoption_source,
                 "row-digest-after": row_digest_after_incompatible,
             },
         ),
@@ -1608,7 +1608,7 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
             "The atomic receipt kept one candidate owner before and after recovery.",
             {
                 "resource": resource_adoption_interrupted,
-                "owners-before": owners_adoption_v1_return,
+                "owners-before": owners_adoption_source_return,
                 "owners-unsettled": owners_adoption_interrupted,
                 "owners-after": owners_adoption_recovered,
             },
@@ -1648,11 +1648,11 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
             "retained-target-activated",
             "The final restart completed under a new plan after the old source artifact was collected.",
             {
-                "transaction": transaction_adoption_final_v1,
-                "plan": bundle_adoption_final_v1["plan"],
-                "operation": subject_adoption_final_v1["operation"],
-                "timeline": timeline_adoption_final_v1,
-                "record-digest": journal_digest_adoption_final_v1,
+                "transaction": transaction_adoption_final,
+                "plan": bundle_adoption_final["plan"],
+                "operation": subject_adoption_final["operation"],
+                "timeline": timeline_adoption_final,
+                "record-digest": journal_digest_adoption_final,
                 "terminal": "complete",
                 "classified": True,
             },
@@ -1662,10 +1662,10 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
             "retained-target-activated",
             "The final adoption replaced the recovered owner atomically.",
             {
-                "resource": resource_adoption_final_v1,
+                "resource": resource_adoption_final,
                 "owners-before": owners_adoption_recovered,
                 "owners-unsettled": [],
-                "owners-after": owners_adoption_final_v1,
+                "owners-after": owners_adoption_final,
             },
         ),
         "foreign-resources-unchanged": matrix_probe(
@@ -1675,10 +1675,10 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
             {
                 "resource": foreign_resource_after_recovery,
                 "snapshot-before": foreign_snapshot_after_recovery,
-                "snapshot-after": foreign_snapshot_adoption_final_v1,
+                "snapshot-after": foreign_snapshot_adoption_final,
                 "unchanged": (
                     foreign_snapshot_after_recovery
-                    == foreign_snapshot_adoption_final_v1
+                    == foreign_snapshot_adoption_final
                 ),
             },
         ),
@@ -1687,18 +1687,18 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
             "retained-target-activated",
             "The final plan bound the retained source and new candidate under current policy.",
             {
-                "authorization-policy-revision": subject_adoption_final_v1[
+                "authorization-policy-revision": subject_adoption_final[
                     "authorization-policy-revision"
                 ],
-                "source-handler-incarnation": subject_adoption_final_v1["source"]
+                "source-handler-incarnation": subject_adoption_final["source"]
                 ["handler_incarnation"],
-                "candidate-handler-incarnation": subject_adoption_final_v1[
+                "candidate-handler-incarnation": subject_adoption_final[
                     "candidate"
                 ]["handler_incarnation"],
-                "current-planning": subject_adoption_final_v1[
+                "current-planning": subject_adoption_final[
                     "current-planning"
                 ],
-                "desired-planning": subject_adoption_final_v1[
+                "desired-planning": subject_adoption_final[
                     "desired-planning"
                 ],
                 "reauthorized": True,
@@ -1709,17 +1709,17 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
             "retained-target-activated",
             "The final provider kept the same durable data path, cluster identifier, and query result.",
             {
-                "resource": resource_adoption_final_v1,
+                "resource": resource_adoption_final,
                 "data-path-before": details_adoption_recovered["data_path"],
-                "data-path-after": details_adoption_final_v1["data_path"],
+                "data-path-after": details_adoption_final["data_path"],
                 "system-identifier-before": details_adoption_recovered[
                     "data_system_identifier"
                 ],
-                "system-identifier-after": details_adoption_final_v1[
+                "system-identifier-after": details_adoption_final[
                     "data_system_identifier"
                 ],
                 "row-digest-before": row_digest_adoption_recovered,
-                "row-digest-after": row_digest_adoption_final_v1,
+                "row-digest-after": row_digest_adoption_final,
             },
         ),
         "exactly-one-resource-owner": matrix_probe(
@@ -1727,27 +1727,27 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
             "retained-target-activated",
             "The ledger names only the reinstalled production v1 endpoint.",
             {
-                "resource": resource_adoption_final_v1,
-                "expected-owner": owner_adoption_final_v1,
-                "owners": owners_adoption_final_v1,
+                "resource": resource_adoption_final,
+                "expected-owner": owner_adoption_final,
+                "owners": owners_adoption_final,
             },
         ),
     },
 }
 
 retained_adoption_subject = postgresql_cohort_subject(
-    bundle_adoption_final_v1,
-    subject_adoption_final_v1["candidate"]["handler_method"],
-    bundle_bytes_adoption_final_v1,
+    bundle_adoption_final,
+    subject_adoption_final["candidate"]["handler_method"],
+    bundle_bytes_adoption_final,
 )
 retained_durable = NATIVE_ADAPTER_MATRIX_PROBES[retained_cell][
     "durable-attempt-state-classified"
 ]["observations"]
-if retained_adoption_subject["operation"] != subject_adoption_final_v1["operation"]:
+if retained_adoption_subject["operation"] != subject_adoption_final["operation"]:
     retained_durable["adoption-operation"] = retained_adoption_subject["operation"]
     retained_durable["adoption-timeline"] = operation_timeline(
-        generation_adoption_final_v1,
-        transaction_adoption_final_v1,
+        generation_adoption_final,
+        transaction_adoption_final,
         retained_adoption_subject["operation"],
     )
 
@@ -1804,11 +1804,11 @@ for state_method in ("observe", "restart"):
         state_method,
         "adopt-compatible-state",
         compatible_cell,
-        generation_adoption_v2,
-        transaction_adoption_v2,
-        root_adoption_v2,
-        bundle_adoption_v2,
-        bundle_bytes_adoption_v2,
+        generation_adoption_candidate,
+        transaction_adoption_candidate,
+        root_adoption_candidate,
+        bundle_adoption_candidate,
+        bundle_bytes_adoption_candidate,
     )
 
 for state_method in ("materialize", "observe"):
@@ -1816,11 +1816,11 @@ for state_method in ("materialize", "observe"):
         state_method,
         "activate-retained-target",
         retained_cell,
-        generation_adoption_final_v1,
-        transaction_adoption_final_v1,
-        root_adoption_final_v1,
-        bundle_adoption_final_v1,
-        bundle_bytes_adoption_final_v1,
+        generation_adoption_final,
+        transaction_adoption_final,
+        root_adoption_final,
+        bundle_adoption_final,
+        bundle_bytes_adoption_final,
     )
 
 
@@ -1852,9 +1852,9 @@ def add_postgresql_ordered_method_cell(method, scenario, base_cell):
     }[method]
 
     adoption_subject = postgresql_cohort_subject(
-        bundle_adoption_final_v1,
+        bundle_adoption_final,
         subject["candidate"]["handler_method"],
-        bundle_bytes_adoption_final_v1,
+        bundle_bytes_adoption_final,
     )
     durable = probes["durable-attempt-state-classified"]["observations"]
     durable.update({
@@ -1869,17 +1869,17 @@ def add_postgresql_ordered_method_cell(method, scenario, base_cell):
         "record-digest": transaction_journal_digest(method_root),
         "adoption-operation": adoption_subject["operation"],
         "adoption-timeline": operation_timeline(
-            generation_adoption_final_v1,
-            transaction_adoption_final_v1,
+            generation_adoption_final,
+            transaction_adoption_final,
             adoption_subject["operation"],
         ),
-        "adoption-generation": generation_adoption_final_v1,
+        "adoption-generation": generation_adoption_final,
         "method-generation": method_generation,
     })
     probes["at-most-one-resource-owner"]["observations"] = {
-        "resource": resource_adoption_final_v1,
+        "resource": resource_adoption_final,
         "owners-before": owners_adoption_recovered,
-        "owners-unsettled": owners_adoption_final_v1,
+        "owners-unsettled": owners_adoption_final,
         "owners-after": method_owners,
     }
     probes["foreign-resources-unchanged"]["observations"] = {
@@ -1906,20 +1906,20 @@ def add_postgresql_ordered_method_cell(method, scenario, base_cell):
             "fresh": True,
         }
         probes["compatible-state-adopted"]["observations"] = {
-            "resource": resource_adoption_final_v1,
+            "resource": resource_adoption_final,
             "source-state-format": subject["source"]["state_format"],
             "candidate-state-format": subject["candidate"]["state_format"],
             "system-identifier-before": adoption_system_identifier,
-            "system-identifier-after": details_adoption_final_v1[
+            "system-identifier-after": details_adoption_final[
                 "data_system_identifier"
             ],
             "row-digest-before": row_digest_adoption_recovered,
-            "row-digest-after": row_digest_adoption_final_v1,
+            "row-digest-after": row_digest_adoption_final,
             "adopted": True,
         }
         probes["exactly-one-resource-owner"]["observations"] = {
-            "resource": resource_adoption_final_v1,
-            "expected-owner": owner_adoption_final_v1,
+            "resource": resource_adoption_final,
+            "expected-owner": owner_adoption_final,
             "owners": method_owners,
         }
     else:
@@ -1938,21 +1938,21 @@ def add_postgresql_ordered_method_cell(method, scenario, base_cell):
             "reauthorized": True,
         }
         probes["retained-target-identity-preserved"]["observations"] = {
-            "resource": resource_adoption_final_v1,
-            "data-path-before": details_adoption_final_v1["data_path"],
+            "resource": resource_adoption_final,
+            "data-path-before": details_adoption_final["data_path"],
             "data-path-after": details_adoption_restarted["data_path"],
-            "system-identifier-before": details_adoption_final_v1[
+            "system-identifier-before": details_adoption_final[
                 "data_system_identifier"
             ],
             "system-identifier-after": details_adoption_restarted[
                 "data_system_identifier"
             ],
-            "row-digest-before": row_digest_adoption_final_v1,
+            "row-digest-before": row_digest_adoption_final,
             "row-digest-after": row_digest_adoption_restarted,
         }
         probes["exactly-one-resource-owner"]["observations"] = {
-            "resource": resource_adoption_final_v1,
-            "expected-owner": owner_adoption_final_v1,
+            "resource": resource_adoption_final,
+            "expected-owner": owner_adoption_final,
             "owners": method_owners,
         }
 

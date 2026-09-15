@@ -121,7 +121,7 @@ fn resource_spec(
     arguments: &[String],
 ) -> Result<ForegroundProcessResourceSpec> {
     let revision = Sha256Digest::of_canonical(
-        "aos.qualification.foreground-nginx-revision/v2",
+        "aos.qualification.foreground-nginx-revision/v1",
         &(&artifact, entry_point, arguments),
     )?;
     Ok(ForegroundProcessResourceSpec {

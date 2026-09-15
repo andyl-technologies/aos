@@ -434,11 +434,11 @@ def _authenticated_policy(authority: dict[str, Any]) -> dict[str, Any]:
     policy_bytes = canonical(policy)
     pin = authority["policy-pin"]
     if (
-        policy.get("schema") != "aos.ability.authenticated-policy-set/v3"
+        policy.get("schema") != "aos.ability.authenticated-policy-set/v1"
         or pin.get("document_sha256") != sha256_bytes(policy_bytes)
         or pin.get("document_size") != len(policy_bytes)
         or policy.get("native_resource_map", {}).get("schema")
-        != "aos.ability.native-resource-map/v3"
+        != "aos.ability.native-resource-map/v1"
     ):
         raise RuntimeError("generation authority is not an exact native policy pin")
     return policy

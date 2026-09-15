@@ -671,7 +671,7 @@ in {
           "abilities-v1",
           "ability-effects-v1",
           "native-platform-policy-v1",
-          "native-resource-map-v2",
+          "native-resource-map-v1",
       ], activation_input_v1
       assert [package["name"] for package in activation_input_v1["packages"]] == [
           entry["name"] for entry in sorted(

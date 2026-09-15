@@ -17,12 +17,12 @@ use crate::{
     CompositionFragment, EvaluationError, PlanningReplayInputs, PlanningSnapshot,
     RUNTIME_OBSERVATIONS_SCHEMA, RecursiveComposer, ResolutionPolicyDocument,
     RuntimeResourceHealth, RuntimeResourceObservation, RuntimeResourceState,
-    TRANSITION_FRAGMENT_SCHEMA, TRANSITION_SNAPSHOT_SCHEMA, TRANSITION_SNAPSHOT_SCHEMA_V2,
-    TransitionBindingAuthority, TransitionContext, TransitionError, TransitionEvaluationResult,
-    TransitionExport, TransitionExportKind, TransitionFragment, TransitionHandoff,
-    TransitionImport, TransitionImportDirection, TransitionInputs, TransitionLimits,
-    TransitionLink, TransitionPlanner, TransitionReconciliation, TransitionReplayInputs,
-    TransitionSnapshot, TransitionSnapshotError, VerifiedPlanningSnapshot,
+    TRANSITION_FRAGMENT_SCHEMA, TRANSITION_SNAPSHOT_SCHEMA, TransitionBindingAuthority,
+    TransitionContext, TransitionError, TransitionEvaluationResult, TransitionExport,
+    TransitionExportKind, TransitionFragment, TransitionHandoff, TransitionImport,
+    TransitionImportDirection, TransitionInputs, TransitionLimits, TransitionLink,
+    TransitionPlanner, TransitionReconciliation, TransitionReplayInputs, TransitionSnapshot,
+    TransitionSnapshotError, VerifiedPlanningSnapshot,
 };
 
 struct EmptyTransitionEvaluator {
@@ -75,7 +75,7 @@ fn reconciliation_fixture(
     let transaction = TransactionId(key("reconciliation-attempt"));
     let policy_fence = RevisionId(aos_contract::Sha256Digest::of_bytes("policy-fence"));
     let authority_json = serde_json::json!({
-        "schema": "aos.ability.current-authority/v2",
+        "schema": "aos.ability.current-authority/v1",
         "policy_fence": policy_fence,
         "transaction": transaction,
         "authority_epoch": 7,
@@ -110,7 +110,7 @@ fn reconciliation_fixture(
         observed_at_restart_millis: 23,
         max_age_millis: 5_000,
         authority_publication: aos_contract::Sha256Digest::separated(
-            "aos.ability.current-authority/v2",
+            "aos.ability.current-authority/v1",
             authority_bytes,
         ),
         authority_document: AbilityValue::new(authority_json)
@@ -340,7 +340,7 @@ fn transition_snapshot_round_trips_and_replays_without_provider_execution() {
     assert_eq!(encoded["schema"], TRANSITION_SNAPSHOT_SCHEMA);
     assert!(
         encoded.get("reconciliation").is_none(),
-        "historical v1 snapshots must preserve their exact field set"
+        "snapshots without reconciliation must omit the optional field"
     );
     let replayed = snapshot
         .verify_structure(
@@ -372,7 +372,7 @@ fn reconciliation_snapshot_round_trips_and_replays_exact_live_input() {
     let transaction = TransactionId(LocalKey::new("repair-attempt").unwrap());
     let policy_fence = RevisionId(aos_contract::Sha256Digest::of_bytes("policy-fence"));
     let authority_json = serde_json::json!({
-        "schema": "aos.ability.current-authority/v2",
+        "schema": "aos.ability.current-authority/v1",
         "policy_fence": policy_fence,
         "transaction": transaction,
         "authority_epoch": 7,
@@ -390,7 +390,7 @@ fn reconciliation_snapshot_round_trips_and_replays_exact_live_input() {
     });
     let authority_bytes = aos_contract::canonical::to_vec(&authority_json).unwrap();
     let authority_publication =
-        aos_contract::Sha256Digest::separated("aos.ability.current-authority/v2", authority_bytes);
+        aos_contract::Sha256Digest::separated("aos.ability.current-authority/v1", authority_bytes);
     let reconciliation = TransitionReconciliation {
         schema: RUNTIME_OBSERVATIONS_SCHEMA.to_string(),
         source_plan,
@@ -426,7 +426,7 @@ fn reconciliation_snapshot_round_trips_and_replays_exact_live_input() {
 
     let bytes = transition.snapshot().canonical_bytes().unwrap();
     let encoded: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(encoded["schema"], TRANSITION_SNAPSHOT_SCHEMA_V2);
+    assert_eq!(encoded["schema"], TRANSITION_SNAPSHOT_SCHEMA);
     assert_eq!(
         transition.snapshot().reconciliation(),
         Some(&reconciliation)
@@ -478,7 +478,7 @@ fn absent_reconciliation_is_transaction_linked_and_replayable() {
     let transaction = TransactionId(LocalKey::new("absent-repair").unwrap());
     let policy_fence = RevisionId(aos_contract::Sha256Digest::of_bytes("policy-fence"));
     let authority_json = serde_json::json!({
-        "schema": "aos.ability.current-authority/v2",
+        "schema": "aos.ability.current-authority/v1",
         "policy_fence": policy_fence,
         "transaction": transaction,
         "authority_epoch": 7,
@@ -502,7 +502,7 @@ fn absent_reconciliation_is_transaction_linked_and_replayable() {
         observed_at_restart_millis: 23,
         max_age_millis: 5_000,
         authority_publication: aos_contract::Sha256Digest::separated(
-            "aos.ability.current-authority/v2",
+            "aos.ability.current-authority/v1",
             authority_bytes,
         ),
         authority_document: AbilityValue::new(authority_json).unwrap(),

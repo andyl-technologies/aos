@@ -181,7 +181,7 @@ pub(super) fn evaluate_pure_providers<E: CompositionEvaluator>(
             });
         }
         let composition_context = BorrowedCompositionContext {
-            schema: "aos.ability.composition-context/v2",
+            schema: "aos.ability.composition-context/v1",
             provider: &provider,
             interface: group.interface,
             implementation: reference,

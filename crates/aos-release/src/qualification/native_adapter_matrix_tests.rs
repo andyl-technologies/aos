@@ -244,7 +244,7 @@ fn fixture() -> Result<(
                     Ok((
                         name.clone(),
                         NativeAdapterPostconditionProbe {
-                            schema_version: "aos.release.native-adapter-postcondition-probe/v2"
+                            schema_version: "aos.release.native-adapter-postcondition-probe/v1"
                                 .into(),
                             kind: probe_kind(name).into(),
                             cell_id: cell.id.clone(),

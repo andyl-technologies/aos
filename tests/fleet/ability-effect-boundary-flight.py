@@ -154,13 +154,9 @@ def current_runtime_authority(state: dict[str, Any]) -> dict[str, Any]:
     ).encode()
     document = json.loads(document_bytes)
     assert canonical(document) == document_bytes, path
-    assert document["schema"] in {
-        "aos.ability.current-authority/v1",
-        "aos.ability.current-authority/v2",
-    }, document
+    assert document["schema"] == "aos.ability.current-authority/v1", document
     assert document["plan"] == plan, document
-    if document["schema"] == "aos.ability.current-authority/v2":
-        assert document["transaction"] == state["transaction"], document
+    assert document["transaction"] == state["transaction"], document
     return {
         "path": path,
         "digest": sha256_bytes(document_bytes),
@@ -232,9 +228,9 @@ def generation_authority(generation: int) -> dict[str, Any]:
     assert canonical(policy) == policy_bytes, policy_path
     assert sha256_bytes(policy_bytes) == policy_pin["document_sha256"], policy_pin
     assert len(policy_bytes) == policy_pin["document_size"], policy_pin
-    assert policy["schema"] == "aos.ability.authenticated-policy-set/v3", policy
+    assert policy["schema"] == "aos.ability.authenticated-policy-set/v1", policy
     resource_map = policy["native_resource_map"]
-    assert resource_map["schema"] == "aos.ability.native-resource-map/v3", resource_map
+    assert resource_map["schema"] == "aos.ability.native-resource-map/v1", resource_map
     return {
         "generation": generation,
         "manifest-path": manifest_path,

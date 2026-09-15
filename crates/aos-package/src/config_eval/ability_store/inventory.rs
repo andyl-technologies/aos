@@ -322,12 +322,6 @@ impl NativePhysicalResource {
             ("managed-configuration", "configuration-generation") => {
                 validate_catalog_object(&self.object, "managed-configuration destination")?;
             }
-            ("nginx-generation-association", "nginx-runtime") => {
-                return Err(GenerationAbilityStoreError::Conflict(
-                    "legacy nginx association ledger identity does not prove validation-prefix ownership; migration is required"
-                        .to_string(),
-                ));
-            }
             ("nginx-validation-prefix", "nginx-runtime") => {
                 validate_catalog_object(&self.object, "nginx validation prefix")?;
             }
@@ -524,20 +518,6 @@ mod physical_resource_tests {
         assert!(managed.conflicts_with(&nginx_child));
         assert!(nginx_child.conflicts_with(&managed));
         assert!(!managed.conflicts_with(&sibling));
-    }
-
-    #[test]
-    fn legacy_nginx_association_identity_requires_explicit_migration() {
-        let legacy = NativePhysicalResource {
-            class: "nginx-generation-association".to_string(),
-            authority: "nginx-runtime".to_string(),
-            object: "/var/lib/aos/nginx/associations/resource.json".to_string(),
-        };
-
-        let error = legacy
-            .validate()
-            .expect_err("association paths cannot stand in for validation prefixes");
-        assert!(error.to_string().contains("migration is required"));
     }
 }
 

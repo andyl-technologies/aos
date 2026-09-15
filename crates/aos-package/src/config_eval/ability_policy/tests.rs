@@ -881,10 +881,10 @@ fn repair_transaction_remains_linked_after_health_converges() {
         )
         .expect("converged repair authority publication");
 
-    assert_eq!(initial.schema, CURRENT_ABILITY_AUTHORITY_SCHEMA_V2);
+    assert_eq!(initial.schema, CURRENT_ABILITY_AUTHORITY_SCHEMA);
     assert_eq!(initial.transaction.as_ref(), Some(&fixture.transaction));
-    assert_eq!(repair.schema, CURRENT_ABILITY_AUTHORITY_SCHEMA_V2);
-    assert_eq!(converged.schema, CURRENT_ABILITY_AUTHORITY_SCHEMA_V2);
+    assert_eq!(repair.schema, CURRENT_ABILITY_AUTHORITY_SCHEMA);
+    assert_eq!(converged.schema, CURRENT_ABILITY_AUTHORITY_SCHEMA);
     assert_eq!(converged.transaction.as_ref(), Some(&fixture.transaction));
 }
 
@@ -903,7 +903,7 @@ fn absent_reconciliation_publication_is_transaction_linked() {
         )
         .expect("absent repair authority publication");
 
-    assert_eq!(authority.schema, CURRENT_ABILITY_AUTHORITY_SCHEMA_V2);
+    assert_eq!(authority.schema, CURRENT_ABILITY_AUTHORITY_SCHEMA);
     assert_eq!(authority.transaction.as_ref(), Some(&fixture.transaction));
 }
 
@@ -1014,7 +1014,7 @@ fn repair_admission_requires_matching_runtime_health_evidence() {
             revision: fixture.revision,
         },
     );
-    assert_eq!(stopped.schema, CURRENT_ABILITY_AUTHORITY_SCHEMA_V2);
+    assert_eq!(stopped.schema, CURRENT_ABILITY_AUTHORITY_SCHEMA);
     assert_eq!(stopped.transaction.as_ref(), Some(&fixture.transaction));
     fixture
         .authorize_resources(

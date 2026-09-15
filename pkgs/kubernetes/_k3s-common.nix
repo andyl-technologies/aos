@@ -148,7 +148,7 @@ in {
             end;
 
           select(exact_keys(["resources", "revision", "role", "schema"]))
-          | select(.schema == "aos.kubernetes-resources/v2")
+          | select(.schema == "aos.kubernetes-resources/v1")
           | select(.role == $role)
           | select(.revision | test("^sha256:[0-9a-f]{64}$"))
           | select(.resources | type == "array")

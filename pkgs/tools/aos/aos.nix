@@ -672,11 +672,11 @@ in
         ln -s ${util-linux}/bin/setpriv "$packageRuntime/libexec/aos-setpriv"
         ln -s ${socat}/bin/socat "$packageRuntime/libexec/aos-socat"
         for handler in \
-          aos-credential-delivery-handler-v1 \
-          aos-network-endpoint-handler-v1 \
-          aos-host-storage-handler-v1 \
-          aos-host-network-policy-handler-v1 \
-          aos-postgresql-handler-v1; do
+          aos-credential-delivery-handler \
+          aos-network-endpoint-handler \
+          aos-host-storage-handler \
+          aos-host-network-policy-handler \
+          aos-postgresql-handler; do
           ln -s ../bin/.aos-package-runtime-unwrapped "$packageRuntime/libexec/$handler"
         done
       ''}

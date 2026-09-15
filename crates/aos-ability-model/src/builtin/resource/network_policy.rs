@@ -23,10 +23,9 @@ pub const HOST_NETWORK_POLICY_INTERFACE_NAME: &str = "aos.host-network-policy-ef
 /// Names the policy state emitted after application and observation.
 pub const HOST_NETWORK_POLICY_ACTIVE_OUTPUT: &str = "active";
 /// Names the native host network-policy handler.
-pub const HOST_NETWORK_POLICY_HANDLER_KEY: &str = "native-host-network-policy-v1";
+pub const HOST_NETWORK_POLICY_HANDLER_KEY: &str = "native-host-network-policy";
 /// Names the policy handler executable retained in package metadata.
-pub const HOST_NETWORK_POLICY_HANDLER_ENTRY_POINT: &str =
-    "libexec/aos-host-network-policy-handler-v1";
+pub const HOST_NETWORK_POLICY_HANDLER_ENTRY_POINT: &str = "libexec/aos-host-network-policy-handler";
 /// Carries exact network-policy state and revision evidence.
 pub const HOST_NETWORK_POLICY_OBSERVATION_SCHEMA: &str =
     "aos.ability.host-network-policy-observation/v1";

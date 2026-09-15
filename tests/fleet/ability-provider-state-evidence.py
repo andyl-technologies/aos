@@ -890,7 +890,7 @@ class ProviderStateEvidence:
         policy = observation.candidate_policy
         authority = policy.get("transition_authority")
         if (
-            policy.get("schema") != "aos.ability.authenticated-policy-set/v3"
+            policy.get("schema") != "aos.ability.authenticated-policy-set/v1"
             or not isinstance(authority, dict)
             or authority.get("current_planning")
             != bundle.get("desired", {}).get("snapshot_digest")
@@ -1209,10 +1209,7 @@ def _current_authority(
         for field in ("bindings", "provider_assignments", "resource_observations")
     ):
         raise RuntimeError("current provider authority exceeds its entry bounds")
-    if authority["schema"] not in {
-        "aos.ability.current-authority/v1",
-        "aos.ability.current-authority/v2",
-    }:
+    if authority["schema"] != "aos.ability.current-authority/v1":
         raise RuntimeError("current provider authority has another schema")
     if expected_plan is not None and authority["plan"] != expected_plan:
         raise RuntimeError("current provider authority names another plan")

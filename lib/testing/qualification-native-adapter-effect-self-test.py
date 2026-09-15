@@ -111,10 +111,10 @@ def main() -> None:
         "qualification": {"kind": "test"},
     }
     policy = {
-        "schema": "aos.ability.authenticated-policy-set/v3",
+        "schema": "aos.ability.authenticated-policy-set/v1",
         "policies": [],
         "native_resource_map": {
-            "schema": "aos.ability.native-resource-map/v3",
+            "schema": "aos.ability.native-resource-map/v1",
             "desired_state": digest("a"),
             "entries": [resource_mapping],
         },

@@ -662,10 +662,7 @@ in {
           effect = transition["effect_document"]
           operations = effect["operations"]
           assert bundle["schema"] == "aos.ability.plan-bundle/v1", bundle
-          assert transition["schema"] in {
-              "aos.ability.transition-snapshot/v1",
-              "aos.ability.transition-snapshot/v2",
-          }, transition
+          assert transition["schema"] == "aos.ability.transition-snapshot/v1", transition
           assert publish_ordinal == 5, publish_ordinal
           publish = operations[publish_ordinal]
 

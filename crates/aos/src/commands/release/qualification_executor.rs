@@ -724,10 +724,7 @@ fn select<'a>(
     registry: &'a ScenarioRegistry,
     request: &QualificationExecutorRequestV1,
 ) -> Result<&'a str> {
-    let v1 = registry.schema_version == "aos.release.qualification-scenarios/v1";
-    let v2 = registry.schema_version == "aos.release.qualification-scenarios/v2";
-    if (!v1 && !v2)
-        || (v1 && !registry.case_scenarios.is_empty())
+    if registry.schema_version != "aos.release.qualification-scenarios/v1"
         || registry.platform != request.platform
     {
         bail!("scenario registry does not cover this request schema/platform");
@@ -751,7 +748,7 @@ mod tests {
     use super::*;
 
     const MATRIX_REGISTRY_BYTES: &[u8] =
-        br#"{"schema_version":"aos.release.qualification-scenarios/v2"}"#;
+        br#"{"schema_version":"aos.release.qualification-scenarios/v1"}"#;
 
     fn package_case() -> aos_release::qualification_evidence::QualificationCase {
         aos_release::qualification_evidence::QualificationCase {
@@ -1021,7 +1018,7 @@ mod tests {
         request.policy_digest = case.policy_digest;
         request.subjects.clone_from(&case.subjects);
         request.qualification_case = Some(case);
-        request.schema_version = aos_release::evidence::QUALIFICATION_EXECUTOR_REQUEST_V3.into();
+        request.schema_version = aos_release::evidence::QUALIFICATION_EXECUTOR_REQUEST_V1.into();
         request.retained_predecessor = Some(aos_release::evidence::QualificationRetainedBundleV1 {
             bundle_path: "/srv/aos/predecessor".into(),
             objects: vec![
@@ -1089,7 +1086,7 @@ mod tests {
     }
 
     #[test]
-    fn scenario_registry_v2_prefers_an_exact_case_override() -> Result<()> {
+    fn scenario_registry_prefers_an_exact_case_override() -> Result<()> {
         let request = package_request()?;
         let case_id = request
             .qualification_case
@@ -1100,7 +1097,7 @@ mod tests {
         let generic = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-generic/bin/run";
         let recovery = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-recovery/bin/run";
         let registry = ScenarioRegistry {
-            schema_version: "aos.release.qualification-scenarios/v2".into(),
+            schema_version: "aos.release.qualification-scenarios/v1".into(),
             platform: Platform::X86_64Linux,
             scenarios: BTreeMap::from([("package-function".into(), generic.into())]),
             case_scenarios: BTreeMap::from([(case_id, recovery.into())]),
@@ -1114,11 +1111,6 @@ mod tests {
         };
         assert_eq!(select(&fallback, &request)?, generic);
 
-        let v1 = ScenarioRegistry {
-            schema_version: "aos.release.qualification-scenarios/v1".into(),
-            ..registry
-        };
-        assert!(select(&v1, &request).is_err());
         Ok(())
     }
 
@@ -1214,7 +1206,7 @@ mod tests {
     #[test]
     fn update_request_requires_the_verified_predecessor_graph() -> Result<()> {
         let mut request = package_request()?;
-        request.schema_version = aos_release::evidence::QUALIFICATION_EXECUTOR_REQUEST_V3.into();
+        request.schema_version = aos_release::evidence::QUALIFICATION_EXECUTOR_REQUEST_V1.into();
         request
             .qualification_case
             .as_mut()
@@ -1330,7 +1322,7 @@ mod tests {
         assert_eq!(response.evidence.result, GateResult::Failed);
 
         let changed_registry =
-            br#"{"schema_version":"aos.release.qualification-scenarios/v2","scenarios":{}}"#;
+            br#"{"schema_version":"aos.release.qualification-scenarios/v1","scenarios":{}}"#;
         assert_ne!(
             Sha256Digest::of_bytes(MATRIX_REGISTRY_BYTES),
             Sha256Digest::of_bytes(changed_registry),

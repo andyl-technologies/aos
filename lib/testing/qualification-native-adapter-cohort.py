@@ -8,7 +8,7 @@ import re
 from typing import Any
 
 
-PROBE_SCHEMA = "aos.release.native-adapter-postcondition-probe/v2"
+PROBE_SCHEMA = "aos.release.native-adapter-postcondition-probe/v1"
 CELL_SUBJECT_SCHEMA = "aos.release.native-adapter-cell-cohort-subject/v1"
 POSTCONDITION_KINDS = {
     "durable-attempt-state-classified": "journal-timeline",
@@ -69,7 +69,7 @@ POSTGRESQL_CELL_IDS = [
     "postgresql/aos.postgresql-effects/abi-1/stop/activate-retained-target",
 ]
 QUALIFIED_CELL_IDS = [*PRIMARY_COHORT_CELL_IDS, *POSTGRESQL_CELL_IDS]
-RUNTIME_AUDIT_SCHEMA = "aos.qualification.native-adapter-runtime-audit/v2"
+RUNTIME_AUDIT_SCHEMA = "aos.qualification.native-adapter-runtime-audit/v1"
 RUNTIME_SUBJECT_SCHEMA = "aos.qualification.native-adapter-runtime-subject/v1"
 REPLACEMENT_SUBJECT_SCHEMA = (
     "aos.qualification.native-adapter-incarnation-replacement-subject/v1"
@@ -314,18 +314,18 @@ PROVIDER_ADAPTER_BY_INTERFACE = {
     "aos.service-management": "service-management",
 }
 PROVIDER_ENTRY_POINTS = {
-    "credential-delivery": "libexec/aos-credential-delivery-handler-v1",
-    "foreground-process": "libexec/aos-foreground-process-handler-v1",
-    "host-network-policy": "libexec/aos-host-network-policy-handler-v1",
-    "host-storage": "libexec/aos-host-storage-handler-v1",
-    "image-rollout": "libexec/aos-ab-image-rollout-handler-v1",
-    "kubernetes-object": "libexec/aos-kubernetes-object-handler-v1",
+    "credential-delivery": "libexec/aos-credential-delivery-handler",
+    "foreground-process": "libexec/aos-foreground-process-handler",
+    "host-network-policy": "libexec/aos-host-network-policy-handler",
+    "host-storage": "libexec/aos-host-storage-handler",
+    "image-rollout": "libexec/aos-ab-image-rollout-handler",
+    "kubernetes-object": "libexec/aos-kubernetes-object-handler",
     "managed-configuration": "bin/.aos-package-runtime-unwrapped",
-    "network-endpoint": "libexec/aos-network-endpoint-handler-v1",
+    "network-endpoint": "libexec/aos-network-endpoint-handler",
     "nginx-validation": "bin/nginx",
-    "postgresql": "libexec/aos-postgresql-handler-v1",
+    "postgresql": "libexec/aos-postgresql-handler",
     "systemd-bootstrap": "bin/.aos-package-runtime-unwrapped",
-    "systemd-manager": "libexec/aos-systemd-manager-handler-v1",
+    "systemd-manager": "libexec/aos-systemd-manager-handler",
     "service-management": "bin/.aos-package-runtime-unwrapped",
 }
 COHORT_SUBJECT_SCHEMA = "aos.qualification.host-resource-cohort-subject/v1"
@@ -368,53 +368,53 @@ CANCELLATION_BOUNDARIES = [
 ]
 CANCELLATION_HANDLER_ENTRY_POINTS = {
     "aos.credential-delivery-effects": (
-        "native-credential-delivery-v1",
-        "libexec/aos-credential-delivery-handler-v1",
+        "native-credential-delivery",
+        "libexec/aos-credential-delivery-handler",
     ),
     "aos.foreground-process": (
-        "native-foreground-process-v1",
-        "libexec/aos-foreground-process-handler-v1",
+        "native-foreground-process",
+        "libexec/aos-foreground-process-handler",
     ),
     "aos.host-network-policy-effects": (
-        "native-host-network-policy-v1",
-        "libexec/aos-host-network-policy-handler-v1",
+        "native-host-network-policy",
+        "libexec/aos-host-network-policy-handler",
     ),
     "aos.host-storage-effects": (
-        "native-host-storage-v1",
-        "libexec/aos-host-storage-handler-v1",
+        "native-host-storage",
+        "libexec/aos-host-storage-handler",
     ),
     "aos.managed-configuration-effects": (
         "managed-configuration-terminal",
         "bin/.aos-package-runtime-unwrapped",
     ),
     "aos.network-endpoint-effects": (
-        "native-network-endpoint-v1",
-        "libexec/aos-network-endpoint-handler-v1",
+        "native-network-endpoint",
+        "libexec/aos-network-endpoint-handler",
     ),
     "aos.nginx-validation": ("nginx-terminal", "bin/nginx"),
     "aos.postgresql-effects": (
-        "native-postgresql-v1",
-        "libexec/aos-postgresql-handler-v1",
+        "native-postgresql",
+        "libexec/aos-postgresql-handler",
     ),
     "aos.kubernetes-object-effects": (
-        "native-kubernetes-object-v1",
-        "libexec/aos-kubernetes-object-handler-v1",
+        "native-kubernetes-object",
+        "libexec/aos-kubernetes-object-handler",
     ),
     "aos.systemd-provider-bootstrap": (
         "systemd-bootstrap-terminal",
         "bin/.aos-package-runtime-unwrapped",
     ),
     "aos.systemd-manager": (
-        "native-systemd-manager-v1",
-        "libexec/aos-systemd-manager-handler-v1",
+        "native-systemd-manager",
+        "libexec/aos-systemd-manager-handler",
     ),
     "aos.service-management": (
         "service-management-terminal",
         "bin/.aos-package-runtime-unwrapped",
     ),
     "aos.ab-image-rollout-effects": (
-        "native-ab-image-rollout-v1",
-        "libexec/aos-ab-image-rollout-handler-v1",
+        "native-ab-image-rollout",
+        "libexec/aos-ab-image-rollout-handler",
     ),
 }
 CANCELLATION_ORACLE_KINDS = {
@@ -3912,7 +3912,7 @@ def _validate_provider_state_subject(
         source_format = source_endpoint.get("state_format", {})
         candidate_format = candidate_endpoint.get("state_format", {})
         if (
-            policy.get("schema") != "aos.ability.authenticated-policy-set/v3"
+            policy.get("schema") != "aos.ability.authenticated-policy-set/v1"
             or authority.get("current_planning")
             != bundle.get("desired", {}).get("snapshot_digest")
             or
@@ -3999,8 +3999,7 @@ def _provider_state_authority(value: Any) -> dict[str, Any]:
     if (
         not isinstance(value, dict)
         or not required <= set(value)
-        or value.get("schema")
-        not in {"aos.ability.current-authority/v1", "aos.ability.current-authority/v2"}
+        or value.get("schema") != "aos.ability.current-authority/v1"
         or not _is_nonnegative_int(value.get("sequence"))
         or value["sequence"] == 0
         or any(not isinstance(value.get(field), list) for field in (
@@ -4131,12 +4130,12 @@ def _effect_boundary_policy(authority: Any) -> dict[str, Any]:
         or not isinstance(authority.get("manifest-path"), str)
         or not isinstance(pin, dict)
         or not isinstance(policy, dict)
-        or policy.get("schema") != "aos.ability.authenticated-policy-set/v3"
+        or policy.get("schema") != "aos.ability.authenticated-policy-set/v1"
         or pin.get("document_sha256")
         != "sha256:" + hashlib.sha256(policy_bytes).hexdigest()
         or pin.get("document_size") != len(policy_bytes)
         or policy.get("native_resource_map", {}).get("schema")
-        != "aos.ability.native-resource-map/v3"
+        != "aos.ability.native-resource-map/v1"
     ):
         raise RuntimeError("effect-boundary generation authority is not exact")
     return policy
@@ -5344,10 +5343,7 @@ def _subject_from_plan_bundle(plan_bundle_bytes: Any) -> dict[str, Any]:
             raise RuntimeError("cohort plan bundle has another schema")
 
         transition = bundle["transition"]
-        if transition.get("schema") not in {
-            "aos.ability.transition-snapshot/v1",
-            "aos.ability.transition-snapshot/v2",
-        }:
+        if transition.get("schema") != "aos.ability.transition-snapshot/v1":
             raise RuntimeError("cohort transition snapshot has another schema")
         evaluations = transition["evaluations"]
         operations = transition["effect_document"]["operations"]

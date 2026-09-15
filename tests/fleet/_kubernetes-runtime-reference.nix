@@ -42,7 +42,7 @@
 
   packageRoots = lib.concatMap (entry: [entry.package entry.package.abilityContract]) orderedPackages;
   emptyAddonPayload = {
-    schema = "aos.kubernetes-resources/v2";
+    schema = "aos.kubernetes-resources/v1";
     role = "combined";
     resources = [];
   };

@@ -335,7 +335,7 @@
     {
       assertion =
         workerAddons.schema
-        == "aos.kubernetes-resources/v2"
+        == "aos.kubernetes-resources/v1"
         && workerAddons.role == "worker"
         && workerAddons.revision == expectedWorkerRevision
         && reorderedGrantWorker.config."k3s-worker".config.addons.revision == workerAddons.revision
