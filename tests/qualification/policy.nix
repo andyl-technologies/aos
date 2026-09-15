@@ -120,6 +120,12 @@
         failure = "injected-interruption";
         family = "durability-recovery";
         id = "interrupt-before-acquisition";
+        postconditions = [
+          {
+            evidence_kind = "journal-timeline";
+            name = "durable-attempt-state-classified";
+          }
+        ];
         predecessor = "none";
       }
       {
@@ -128,6 +134,12 @@
         failure = "none";
         family = "provider-state-transfer";
         id = "adopt-compatible-state";
+        postconditions = [
+          {
+            evidence_kind = "state-adoption";
+            name = "compatible-state-adopted";
+          }
+        ];
         predecessor = "present";
       }
     ];

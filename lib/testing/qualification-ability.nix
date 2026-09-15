@@ -281,13 +281,15 @@
     PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-cohort-test-pycache \
       ${pkgs.buildPackages.python3}/bin/python3 \
       ${./qualification-native-adapter-cohort-self-test.py} \
-      $out/share/aos-release/qualification-native-adapter-cohort.py
+      $out/share/aos-release/qualification-native-adapter-cohort.py \
+      ${../../qualification/native-adapter-scenarios.json}
 
     PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-effect-test-pycache \
       ${pkgs.buildPackages.python3}/bin/python3 \
       ${./qualification-native-adapter-effect-self-test.py} \
       $out/share/aos-release/qualification-native-adapter-cohort.py \
-      ${../..}/tests/fleet/ability-effect-boundary-evidence.py
+      ${../..}/tests/fleet/ability-effect-boundary-evidence.py \
+      ${../../qualification/native-adapter-scenarios.json}
 
     PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-provider-state-test-pycache \
       ${pkgs.buildPackages.python3}/bin/python3 \
@@ -299,7 +301,8 @@
       ${./qualification-native-adapter-cancellation-self-test.py} \
       $out/share/aos-release/qualification-native-adapter-cohort.py \
       ${../..}/tests/fleet/ability-effect-boundary-evidence.py \
-      ${../..}/tests/fleet/ability-cancellation-evidence.py
+      ${../..}/tests/fleet/ability-cancellation-evidence.py \
+      ${../../qualification/native-adapter-scenarios.json}
   '';
   matrixCohortSupportPath =
     if matrixSpec == null

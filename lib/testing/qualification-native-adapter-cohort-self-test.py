@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.util
+import json
 import pathlib
 import sys
 
@@ -271,6 +272,12 @@ def classify(module, spec):
     return spec
 
 
+def project_postcondition_kinds(names, policy_kinds):
+    """Projects evidence kinds from the shared scenario policy."""
+
+    return {name: policy_kinds[name] for name in names}
+
+
 def rejected(module, spec, probes, scope, subject, plan_bundle):
     """Requires one mutated probe population to fail closed."""
 
@@ -289,7 +296,7 @@ def rejected(module, spec, probes, scope, subject, plan_bundle):
     raise AssertionError("mutated cohort probe was accepted")
 
 
-def assert_semantic_validators(module, subject, cell, observations):
+def assert_semantic_validators(module, subject, cell, observations, policy_kinds):
     """Exercises every postcondition validator with positive and negative facts."""
 
     predecessor = subject["publish-operation"]
@@ -415,7 +422,7 @@ def assert_semantic_validators(module, subject, cell, observations):
         ),
     }
 
-    assert set(cases) == set(module.POSTCONDITION_KINDS)
+    assert set(cases) == set(policy_kinds)
     for name, (valid, mutation) in cases.items():
         module._validate_probe_facts(name, valid, subject, cell)
 
@@ -428,7 +435,7 @@ def assert_semantic_validators(module, subject, cell, observations):
         raise AssertionError(f"{name} semantic validator accepted false facts")
 
 
-def assert_provider_negative_validator(module, template_cell):
+def assert_provider_negative_validator(module, template_cell, policy_kinds):
     """Exercises candidate-linked paired-flight validation and rejection."""
 
     cell = copy.deepcopy(template_cell)
@@ -455,6 +462,9 @@ def assert_provider_negative_validator(module, template_cell):
                 "foreign-attempt-rejected-before-mutation",
             ],
         }
+    )
+    cell["postcondition_kinds"] = project_postcondition_kinds(
+        cell["postconditions"], policy_kinds
     )
     cell_digest = module.sha256(cell)
     foreign_resource = {"provider": "fixture", "key": "foreign-endpoint"}
@@ -683,7 +693,7 @@ def assert_provider_negative_validator(module, template_cell):
     return cell, record
 
 
-def assert_rollout_provider_negative_validator(module, template_cell):
+def assert_rollout_provider_negative_validator(module, template_cell, policy_kinds):
     """Exercises same-machine dependency and one-machine map rejection proofs."""
 
     interface = {
@@ -737,6 +747,9 @@ def assert_rollout_provider_negative_validator(module, template_cell):
                     ),
                 ],
             }
+        )
+        cell["postcondition_kinds"] = project_postcondition_kinds(
+            cell["postconditions"], policy_kinds
         )
         cell_digest = module.sha256(cell)
         predecessor_resource = machine if mode == "rollout-dependency" else forged_machine
@@ -1468,6 +1481,8 @@ def main() -> None:
     """Checks exact success and representative scope/probe mutations."""
 
     module = load(pathlib.Path(sys.argv[1]))
+    policy = json.loads(pathlib.Path(sys.argv[2]).read_text())
+    policy_kinds = policy["postcondition_kinds"]
     cell_id = (
         "managed-configuration/aos.managed-configuration-effects/abi-1/"
         "publish/lose-external-result"
@@ -1539,6 +1554,9 @@ def main() -> None:
                 "predecessor": "same",
                 "candidate": "same",
                 "postconditions": names,
+                "postcondition_kinds": project_postcondition_kinds(
+                    names, policy_kinds
+                ),
                 "invalidated_by": ["subject", "policy", "executor", "environment"],
             }
         ]
@@ -1767,7 +1785,7 @@ def main() -> None:
     probes = {
         cell_id: {
             name: {
-                "kind": module.POSTCONDITION_KINDS[name],
+                "kind": spec["cells"][0]["postcondition_kinds"][name],
                 "detail": f"independent {name} probe passed",
                 "disposition": "reconciled-completed",
                 "observations": observations[name],
@@ -1878,7 +1896,7 @@ def main() -> None:
         dependency["route-after-recovery"] = "candidate-" + scenario
         probes[scenario_cell_id] = {
             name: {
-                "kind": module.POSTCONDITION_KINDS[name],
+                "kind": scenario_cell["postcondition_kinds"][name],
                 "detail": f"independent {scenario} {name} probe passed",
                 "disposition": scenario_spec["disposition"],
                 "observations": scenario_observations[name],
@@ -1955,11 +1973,13 @@ def main() -> None:
     ]
     rejected(module, wrong_reason, probes, scope, subject, plan_bundle)
 
-    assert_semantic_validators(module, subject, cell_spec, observations)
-    provider_negative_cell, provider_negative_record = (
-        assert_provider_negative_validator(module, cell_spec)
+    assert_semantic_validators(
+        module, subject, cell_spec, observations, policy_kinds
     )
-    assert_rollout_provider_negative_validator(module, cell_spec)
+    provider_negative_cell, provider_negative_record = (
+        assert_provider_negative_validator(module, cell_spec, policy_kinds)
+    )
+    assert_rollout_provider_negative_validator(module, cell_spec, policy_kinds)
     assert_negative_semantic_validators(module, subject, cell_spec)
     assert_postgresql_cohort(module)
 
