@@ -203,10 +203,24 @@ fn validate_local_declarations(
         "package guarantee declarations must exactly cover all referenced guarantee identities"
     );
 
-    anyhow::ensure!(
-        package.artifacts.contains(&package.package_module.artifact),
-        "package module artifact is absent from the retained artifact catalog"
-    );
+    if let Some(module) = &package.package_module {
+        anyhow::ensure!(
+            package.artifacts.contains(&module.artifact),
+            "package module artifact is absent from the retained artifact catalog"
+        );
+    } else {
+        anyhow::ensure!(
+            package.qualification.package_probe.is_some()
+                && package.interfaces.is_empty()
+                && package.guarantees.is_empty()
+                && package.option_declarations.is_empty()
+                && package.exports.is_empty()
+                && package.requirements.is_empty()
+                && package.implementation.providers.is_empty()
+                && package.implementation.handlers.is_empty(),
+            "package without an ability module must contain only its package probe"
+        );
+    }
     let implementation_descriptors = package
         .implementation
         .providers
@@ -255,7 +269,7 @@ fn validate_local_declarations(
             export.name.as_str()
         );
     }
-    for (implementation, qualification) in &package.implementation.qualification {
+    for (implementation, qualification) in &package.qualification.implementations {
         anyhow::ensure!(
             implementation_descriptors.contains(implementation),
             "package qualification claim names an absent implementation descriptor"

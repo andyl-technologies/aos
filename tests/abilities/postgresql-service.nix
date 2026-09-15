@@ -42,7 +42,7 @@
       packageModules = [
         {
           name = "postgresql";
-          module = pkgs.postgresql.abilities._module;
+          module = pkgs.postgresql.module + "/module.nix";
         }
       ];
     };

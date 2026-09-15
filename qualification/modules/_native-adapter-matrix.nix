@@ -76,21 +76,21 @@
   providerByName = package: name:
     selectExact "native qualification implementation '${package.pname}:${name}'"
       (provider: provider.name == name)
-      package.abilities.implementation.providers;
+      package.contract.value.implementation.providers;
   interfaceByIdentity = package: identity:
     (selectExact "native qualification interface '${identity.descriptor}'"
       (entry: entry.descriptor == identity.descriptor)
-      package.abilities.interface_documents).document;
+      package.contract.value.interface_documents).document;
   selectedImplementations = builtins.concatMap (package: let
-    projection = package.abilities;
+    projection = package.contract.value;
   in
     map (name: let
       implementation = providerByName package name;
     in {
       inherit package name implementation;
-      qualification = projection.qualification.${name};
+      qualification = projection.qualification.implementations.${name};
       interface = interfaceByIdentity package implementation.interface;
-    }) (builtins.attrNames projection.qualification))
+    }) (builtins.attrNames projection.qualification.implementations))
   selectedPackages;
   packageDependencies = package:
     [package]
@@ -181,7 +181,7 @@
         methodNames;
       provider_contract = stateContractFor entry;
       provider_implementation = {
-        contract = builtins.toString entry.package.abilities.contract;
+        contract = builtins.toString entry.package.contract.document;
         implementation = entry.name;
         inherit observer;
       };

@@ -28,5 +28,5 @@ in
     "storage-view"
   ];
   assert lib.all
-  (requirement: requirement.interface != "" && requirement.methods != [])
+  (requirement: requirement.accepted_interfaces != [] && requirement.methods != [])
   (builtins.attrValues projection.requirementTemplates); true

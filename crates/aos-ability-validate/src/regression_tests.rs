@@ -1676,11 +1676,11 @@ fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
         artifacts: vec![artifact.clone()],
         interfaces: Default::default(),
         guarantees: Default::default(),
-        package_module: aos_ability_model::ModuleLocator {
+        package_module: Some(aos_ability_model::ModuleLocator {
             artifact: artifact.clone(),
             path: aos_ability_model::RelativePath::new("module.nix")
                 .expect("fixture package module path is valid"),
-        },
+        }),
         option_declarations: Vec::new(),
         exports: vec![ExportDeclaration {
             name: key("provider"),
@@ -1692,8 +1692,8 @@ fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
         implementation: PackageImplementation {
             providers: vec![implementation],
             handlers: BTreeMap::new(),
-            qualification: BTreeMap::new(),
         },
+        qualification: aos_ability_model::PackageQualification::default(),
     };
     binding.provider_package = Some(
         package

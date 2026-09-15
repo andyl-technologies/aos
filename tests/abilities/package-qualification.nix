@@ -1,0 +1,89 @@
+##! Package-owned qualification shares the canonical package contract carrier.
+{
+  lib,
+  pkgs,
+}: let
+  qualification = lib.qualification;
+  operation = {
+    input,
+    action,
+    expected,
+    steps,
+  }:
+    qualification.operation {
+      inherit input expected steps;
+      operation = action;
+      files = {};
+      artifacts = [];
+    };
+  probe = qualification.packageProbe {
+    primary = operation {
+      input = "A fixed input document.";
+      action = "Print the package version.";
+      expected = "The executable reports its version successfully.";
+      steps = [
+        (qualification.step {
+          argv = [
+            (qualification.template [
+              (qualification.artifactPath {path = "bin/probe";})
+            ])
+            (qualification.text "--version")
+          ];
+          exit_code = 0;
+          stdout = qualification.text "probe 1\n";
+        })
+      ];
+    };
+    badInput = operation {
+      input = "An unsupported option.";
+      action = "Invoke the package with the unsupported option.";
+      expected = "The executable rejects the option.";
+      steps = [
+        (qualification.step {
+          argv = [
+            (qualification.template [
+              (qualification.artifactPath {path = "bin/probe";})
+            ])
+            (qualification.text "--unsupported")
+          ];
+          exit_code = 2;
+          observes_rejection = true;
+        })
+      ];
+    };
+  };
+  package = pkgs.mkDerivation {
+    pname = "package-qualification-carrier-probe";
+    version = "1";
+    src = null;
+    phases = [];
+    qualification.packageProbe = probe;
+  };
+  openProbe = probe // {
+    primary = probe.primary // {unchecked = true;};
+  };
+  rejectsOpenProbe = !(builtins.tryEval (builtins.deepSeq (pkgs.mkDerivation {
+      pname = "invalid-package-qualification-carrier-probe";
+      version = "1";
+      src = null;
+      phases = [];
+      qualification.packageProbe = openProbe;
+    })
+    true)).success;
+in
+  assert !(package ? abilities);
+  assert builtins.attrNames package.contract == ["document" "selectors" "value"];
+  assert builtins.isAttrs package.contract.document;
+  assert package.contract.document ? outPath;
+  assert !(lib.hasInfix "/nix/store/" (builtins.toJSON package.contract.value));
+  assert package.contract.value.package_module == null;
+  assert package.contract.selectors
+  == [
+    {
+      package = "package-qualification-carrier-probe";
+      output = "out";
+    }
+  ];
+  assert package.contract.value.qualification.package_probe.primary.steps != [];
+  assert rejectsOpenProbe;
+    true

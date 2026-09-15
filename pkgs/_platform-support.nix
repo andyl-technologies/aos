@@ -936,7 +936,15 @@ in rec {
       names;
   };
 
-  releaseDerivations = system: packages: names: {
+  releaseDerivations = system: packages: names: let
+    eligibleNames = publicationEligibleNames system names;
+    outputStorePath = package: output:
+      if output == "module"
+      then package.module
+      else if output == "out"
+      then package
+      else package.${output};
+  in {
     schema_version = "aos.release.derivation-inventory/v1";
     platform = system;
     packages = map (
@@ -947,7 +955,7 @@ in rec {
           (if selectedOutput == "out"
           then package.outputs or ["out"]
           else [selectedOutput])
-          ++ (if package ? abilities._artifact_outputs.module then ["module"] else []);
+          ++ (if package ? module then ["module"] else []);
         normalizeSource = source: let
           sourcePath = toString source;
           storePath = builtins.match "^(/nix/store/[0-9a-z]{32}-[^/]+)(/.*)?$" sourcePath;
@@ -982,9 +990,33 @@ in rec {
               builtins.unsafeDiscardStringContext (toString (normalizeSource source))
           )
           (declaredSources
-            ++ (if package ? abilities._artifact_outputs.module then [package.abilities._artifact_outputs.module.drvPath] else []));
+            ++ (if package ? module then [package.module.drvPath] else []));
+        contract =
+          if !(package ? contract)
+          then null
+          else {
+            document = {
+              derivation = builtins.unsafeDiscardStringContext package.contract.document.drvPath;
+              store_path = builtins.unsafeDiscardStringContext (toString package.contract.document);
+            };
+            selectors =
+              map (selector: let
+                selectedPackageName =
+                  if selector.package == "self"
+                  then name
+                  else selector.package;
+                selectedPackage =
+                  if builtins.elem selectedPackageName eligibleNames
+                  then packages.${selectedPackageName}
+                  else throw "package contract for '${name}' selects unpublished package '${selectedPackageName}'";
+              in {
+                inherit (selector) package output;
+                store_path = builtins.unsafeDiscardStringContext (toString (outputStorePath selectedPackage selector.output));
+              })
+              package.contract.selectors;
+          };
       in {
-        inherit name;
+        inherit name contract;
         source_store_paths = builtins.attrNames (builtins.listToAttrs (
           map (source: {
             name = source;
@@ -1021,17 +1053,15 @@ in rec {
               then output
               else "out";
             store_path = builtins.unsafeDiscardStringContext (toString (
-              if output == "module"
-              then package.abilities._artifact_outputs.module
-              else package.${output}
+              outputStorePath package output
             ));
             }
             // (if output == "module"
-            then {derivation = builtins.unsafeDiscardStringContext package.abilities._artifact_outputs.module.drvPath;}
+            then {derivation = builtins.unsafeDiscardStringContext package.module.drvPath;}
             else {}))
           publishedOutputs;
       }
-    ) (publicationEligibleNames system names);
+    ) eligibleNames;
   };
 
   publicationMatrix = names:

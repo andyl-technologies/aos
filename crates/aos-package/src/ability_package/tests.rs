@@ -159,7 +159,11 @@ fn artifact_collection_includes_module_and_state_format_semantic_identities() {
     package_module.store_path = "/nix/store/package-module".to_string();
     package_module.nar_hash = digest('6');
     package_module.closure = digest('7');
-    package.package_module.artifact = package_module.clone();
+    package
+        .package_module
+        .as_mut()
+        .expect("stateful fixture has a package module")
+        .artifact = package_module.clone();
 
     let mut state_format = package.package.payload.clone();
     state_format.store_path = "/nix/store/state-format".to_string();
@@ -250,11 +254,11 @@ fn stateful_package() -> PackageDocument {
         artifacts: vec![artifact.clone()],
         interfaces: Default::default(),
         guarantees: Default::default(),
-        package_module: aos_ability_model::ModuleLocator {
+        package_module: Some(aos_ability_model::ModuleLocator {
             artifact: artifact.clone(),
             path: aos_ability_model::RelativePath::new("module.nix")
                 .expect("fixture package module path is valid"),
-        },
+        }),
         option_declarations: Vec::new(),
         exports: vec![ExportDeclaration {
             name: LocalKey::new("stateful").unwrap(),
@@ -266,8 +270,8 @@ fn stateful_package() -> PackageDocument {
         implementation: PackageImplementation {
             providers: vec![provider],
             handlers: BTreeMap::new(),
-            qualification: BTreeMap::new(),
         },
+        qualification: aos_ability_model::PackageQualification::default(),
     }
 }
 
@@ -317,19 +321,19 @@ impl TestFixture {
             artifacts: Vec::new(),
             interfaces: Default::default(),
             guarantees: Default::default(),
-            package_module: aos_ability_model::ModuleLocator {
+            package_module: Some(aos_ability_model::ModuleLocator {
                 artifact: artifact.clone(),
                 path: aos_ability_model::RelativePath::new("module.nix")
                     .expect("fixture package module path is valid"),
-            },
+            }),
             option_declarations: Vec::new(),
             exports: Vec::new(),
             requirements: Vec::new(),
             implementation: PackageImplementation {
                 providers: Vec::new(),
                 handlers: BTreeMap::new(),
-                qualification: BTreeMap::new(),
             },
+            qualification: aos_ability_model::PackageQualification::default(),
         };
         let manifest_bytes = encode_canonical(&package).unwrap();
         let ability = AbilityPackageMeta {

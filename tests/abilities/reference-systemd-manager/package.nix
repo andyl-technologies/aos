@@ -131,8 +131,8 @@
       observerPackage = qualificationObserver;
     };
   abilities = {
-    config.aos.abilities = lib.abilities.projectDefinitions {
-      driver = {
+    config.aos.abilities = lib.recursiveUpdate (lib.abilities.projectDefinitions {
+        driver = {
         definition = lib.abilities.define {
           interface = "aos.test.systemd-manager-matrix";
           abi = 1;
@@ -162,25 +162,7 @@
           transition = provider.transition;
         };
       };
-      systemd-manager = rec {
-        qualification =
-          if qualificationSupport == null
-          then null
-          else {
-            conformanceFamilies = [
-              "authority-revocation"
-              "dependent-effect"
-              "durability-recovery"
-              "foreign-resource"
-              "incarnation-replacement"
-              "provider-state-transfer"
-            ];
-            observer = qualificationSupport.observerFor {
-              provider = "systemd-manager";
-              kind = "systemd";
-              scope = "host-manager";
-            };
-          };
+        systemd-manager = {
         artifact = packageRuntimeSelector;
         definition = lib.abilities.define {
           interface = systemdManager.name;
@@ -205,8 +187,24 @@
           arguments = request;
           result = observation;
         };
-      };
-    };
+        };
+      }) (lib.optionalAttrs (qualificationSupport != null) {
+        qualification.implementations.systemd-manager = {
+          conformanceFamilies = [
+            "authority-revocation"
+            "dependent-effect"
+            "durability-recovery"
+            "foreign-resource"
+            "incarnation-replacement"
+            "provider-state-transfer"
+          ];
+          observer = qualificationSupport.observerFor {
+            provider = "systemd-manager";
+            kind = "systemd";
+            scope = "host-manager";
+          };
+        };
+      });
   };
 in
   mkDerivation {

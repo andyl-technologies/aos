@@ -637,11 +637,14 @@ pub(crate) fn resolve_package_document(
         nar_hash: &package_meta.nar_hash,
     };
     let bound = bind_ability_manifest(&coordinate, ability, &manifest_bytes)?;
+    let Some(module) = bound.package.package_module.as_ref() else {
+        return Ok(None);
+    };
     ensure!(
         bound
             .artifacts
             .iter()
-            .any(|artifact| artifact == &bound.package.package_module.artifact),
+            .any(|artifact| artifact == &module.artifact),
         "ability package module artifact is absent from the authenticated retention catalog"
     );
 
@@ -1222,7 +1225,9 @@ pub(crate) fn collect_distinct_artifacts(
     for artifact in &package.artifacts {
         insert(artifact)?;
     }
-    insert(&package.package_module.artifact)?;
+    if let Some(module) = &package.package_module {
+        insert(&module.artifact)?;
+    }
     for provider in &package.implementation.providers {
         insert(&provider.artifact)?;
         if let Some(module) = &provider.provider_module {
@@ -1235,7 +1240,7 @@ pub(crate) fn collect_distinct_artifacts(
     for handler in package.implementation.handlers.values() {
         insert(&handler.artifact)?;
     }
-    for qualification in package.implementation.qualification.values() {
+    for qualification in package.qualification.implementations.values() {
         insert(&qualification.observer.artifact)?;
     }
 

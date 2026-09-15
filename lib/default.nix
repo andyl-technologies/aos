@@ -157,6 +157,7 @@
     inherit (modules) mkOption;
     evalModules = modules.evalModules;
   };
+  qualification = import ./qualification.nix {inherit abilities;};
   aosDoc = import ./documentation.nix;
 
   platformMod = import ./platform.nix;
@@ -180,6 +181,7 @@
       inherit types system;
       inherit serviceTypes;
       inherit abilities;
+      inherit qualification;
       effects = abilities.effects;
       inherit aosDoc;
       literalExpression = text: {

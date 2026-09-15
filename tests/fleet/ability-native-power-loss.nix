@@ -29,7 +29,7 @@
       value = entry.package;
     })
     selectedPackageEntries));
-  authorityInterfaceRoots = map (package: package.abilities.contract) selectedPackages;
+  authorityInterfaceRoots = map (package: package.contract.document) selectedPackages;
   authorityMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {
     inherit lib;
     packages = selectedPackages;

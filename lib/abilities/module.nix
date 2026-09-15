@@ -795,11 +795,6 @@
       default = [];
       description = "Runtime features required to admit this implementation.";
     };
-    qualification = mkOption {
-      type = moduleTypes.nullOr qualificationType;
-      default = null;
-      description = "Package-owned native conformance and observation claim.";
-    };
   };
   implementationType = checkedSubmodule "ability implementation" implementationBaseType (implementation:
     implementation.description
@@ -822,19 +817,6 @@
       || (
         packageOutputType.check implementation.providerModule.artifact
         && relativePathType.check implementation.providerModule.path
-      )
-    )
-    && (
-      implementation.qualification
-      == null
-      || (
-        implementation.qualification.conformanceFamilies
-        != []
-        && uniqueValues implementation.qualification.conformanceFamilies
-        && packageOutputType.check implementation.qualification.observer.artifact
-        && relativePathType.check implementation.qualification.observer.entryPoint
-        && portableType.check implementation.qualification.observer.arguments
-        && portableType.check implementation.qualification.observer.result
       )
     )
     && uniqueValues implementation.methods
@@ -1426,6 +1408,19 @@ in {
       default = {};
       contributable = true;
       description = "Package-owned ability implementations available to provider discovery.";
+    };
+    qualification.implementations = mkOption {
+      type = abilityMapType "qualification.implementations" qualificationType;
+      default = {};
+      contributable = true;
+      apply = qualifications:
+        if
+          builtins.all
+          (name: builtins.hasAttr name config.aos.abilities.implementations)
+          (builtins.attrNames qualifications)
+        then qualifications
+        else throw "An ability qualification claim has no matching package implementation.";
+      description = "Package-owned native conformance and observation claims keyed by implementation.";
     };
     requirementTemplates = mkOption {
       type = abilityMapType "requirementTemplates" requirementBaseType;

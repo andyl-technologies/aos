@@ -632,19 +632,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-kubernetes-provider"
-version = "0.1.0"
-dependencies = [
- "aos-ability-model",
- "aos-contract",
- "aos-provider-protocol",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "aos-kernel-tunable-provider"
 version = "0.1.0"
 dependencies = [
@@ -655,6 +642,19 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "aos-kubernetes-provider"
+version = "0.1.0"
+dependencies = [
+ "aos-ability-model",
+ "aos-contract",
+ "aos-provider-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

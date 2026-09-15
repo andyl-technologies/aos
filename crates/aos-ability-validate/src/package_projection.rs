@@ -12,7 +12,9 @@ use aos_ability_model::document::PackageSubject;
 use aos_ability_model::{
     AbilityActivationMode, ArtifactReference, ExportDeclaration, GuaranteeDeclaration,
     GuaranteeKey, HandlerDescriptor, InterfaceDocument, InterfaceKey, InterfaceName, LocalKey,
-    ModuleLocator, PackageDocument, PackageImplementation, PackageOptionDeclaration,
+    ModuleLocator, PackageDocument, PackageImplementation, PackageOptionDeclaration, PackageProbe,
+    PackageProbeArtifact, PackageProbeHarness, PackageProbeOperation, PackageProbeStep,
+    PackageProbeTemplate, PackageProbeTemplateFragment, PackageQualification,
     ProviderImplementation, ProviderQualification, ProviderStateFormat, RelativePath,
     RequiredFeature, RequirementDeclaration, ValueSchema, VersionedDocument,
     validate_package_option_declarations,
@@ -302,6 +304,102 @@ pub struct QualificationProjection {
     pub observer: HandlerProjection,
 }
 
+/// Collects every symbolic package-owned qualification declaration.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageQualificationProjection {
+    /// Defines the package's functional probe, when one is published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_probe: Option<PackageProbeProjection>,
+    /// Maps implementation aliases to package-owned qualification claims.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub implementations: BTreeMap<LocalKey, QualificationProjection>,
+}
+
+/// Defines the symbolic package functional probe embedded in a projection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageProbeProjection {
+    /// Exercises one representative successful package operation.
+    pub primary: PackageProbeOperationProjection,
+    /// Exercises one malformed or unsupported input that must be rejected.
+    pub bad_input: PackageProbeOperationProjection,
+}
+
+/// Defines one symbolic package-probe operation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageProbeOperationProjection {
+    /// Describes the supplied input.
+    pub input: String,
+    /// Describes the operation under test.
+    pub operation: String,
+    /// Describes the expected semantic result.
+    pub expected: String,
+    /// Maps confined work paths to exact input contents.
+    pub files: BTreeMap<RelativePath, PackageProbeTemplateProjection>,
+    /// Lists commands in their required execution order.
+    pub steps: Vec<PackageProbeStepProjection>,
+    /// Lists exact artifacts observed after the commands finish.
+    pub artifacts: Vec<PackageProbeArtifact>,
+}
+
+/// Defines one symbolic package-probe command.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageProbeStepProjection {
+    /// Supplies the executable and arguments as typed templates.
+    pub argv: Vec<PackageProbeTemplateProjection>,
+    /// Supplies standard input, when required.
+    pub stdin: Option<PackageProbeTemplateProjection>,
+    /// Checks exact standard output, when present.
+    pub stdout: Option<PackageProbeTemplateProjection>,
+    /// Checks exact standard error, when present.
+    pub stderr: Option<PackageProbeTemplateProjection>,
+    /// Selects the expected process status.
+    pub exit_code: u8,
+    /// Bounds command execution time in seconds.
+    pub timeout_seconds: Option<u16>,
+    /// Records whether the step independently demonstrates rejection.
+    pub observes_rejection: bool,
+}
+
+/// Builds one projected probe string from explicit typed fragments.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageProbeTemplateProjection {
+    /// Lists fragments concatenated to form the final string.
+    pub fragments: Vec<PackageProbeTemplateFragmentProjection>,
+}
+
+/// Selects one explicit source for a projected probe fragment.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum PackageProbeTemplateFragmentProjection {
+    /// Emits exact package-authored text.
+    Literal {
+        /// Supplies the literal text.
+        text: String,
+    },
+    /// Emits a path beneath one symbolic package output.
+    ArtifactPath {
+        /// Selects the package output.
+        artifact: PackageOutputSelector,
+        /// Selects a path beneath the output root.
+        path: RelativePath,
+    },
+    /// Emits a path beneath the operation's confined work directory.
+    WorkPath {
+        /// Selects a path beneath the work root.
+        path: RelativePath,
+    },
+    /// Emits the exact executable path for one qualification harness tool.
+    Harness {
+        /// Selects the bounded harness tool.
+        tool: PackageProbeHarness,
+    },
+}
+
 /// Carries one canonical interface document emitted with the projection.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -343,9 +441,8 @@ pub struct PackageAbilityProjection {
     pub requirements: Vec<RequirementDeclaration>,
     /// Contains symbolic provider and handler declarations.
     pub implementation: PackageImplementationProjection,
-    /// Maps implementation aliases to package-owned qualification claims.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub qualification: BTreeMap<LocalKey, QualificationProjection>,
+    /// Contains every package-owned qualification declaration.
+    pub qualification: PackageQualificationProjection,
 }
 
 /// Decodes one canonical, bounded package ability projection.
@@ -371,6 +468,102 @@ pub fn decode_package_projection(bytes: &[u8]) -> Result<PackageAbilityProjectio
     validate_projection_structure(&projection)?;
     validate_projected_interfaces(&projection)?;
     Ok(projection)
+}
+
+fn resolve_probe_template<F>(
+    template: PackageProbeTemplateProjection,
+    resolver: &mut PackageOutputResolver<F>,
+) -> Result<PackageProbeTemplate>
+where
+    F: FnMut(&PackageOutputSelector) -> Result<ArtifactReference>,
+{
+    let fragments = template
+        .fragments
+        .into_iter()
+        .map(|fragment| match fragment {
+            PackageProbeTemplateFragmentProjection::Literal { text } => {
+                Ok(PackageProbeTemplateFragment::Literal { text })
+            }
+            PackageProbeTemplateFragmentProjection::ArtifactPath { artifact, path } => {
+                Ok(PackageProbeTemplateFragment::ArtifactPath {
+                    artifact: resolver.select(&artifact)?,
+                    path,
+                })
+            }
+            PackageProbeTemplateFragmentProjection::WorkPath { path } => {
+                Ok(PackageProbeTemplateFragment::WorkPath { path })
+            }
+            PackageProbeTemplateFragmentProjection::Harness { tool } => {
+                Ok(PackageProbeTemplateFragment::Harness { tool })
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(PackageProbeTemplate { fragments })
+}
+
+fn resolve_probe_operation<F>(
+    operation: PackageProbeOperationProjection,
+    resolver: &mut PackageOutputResolver<F>,
+) -> Result<PackageProbeOperation>
+where
+    F: FnMut(&PackageOutputSelector) -> Result<ArtifactReference>,
+{
+    let files = operation
+        .files
+        .into_iter()
+        .map(|(path, template)| Ok((path, resolve_probe_template(template, resolver)?)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let steps = operation
+        .steps
+        .into_iter()
+        .map(|step| {
+            Ok(PackageProbeStep {
+                argv: step
+                    .argv
+                    .into_iter()
+                    .map(|template| resolve_probe_template(template, resolver))
+                    .collect::<Result<Vec<_>>>()?,
+                stdin: step
+                    .stdin
+                    .map(|template| resolve_probe_template(template, resolver))
+                    .transpose()?,
+                stdout: step
+                    .stdout
+                    .map(|template| resolve_probe_template(template, resolver))
+                    .transpose()?,
+                stderr: step
+                    .stderr
+                    .map(|template| resolve_probe_template(template, resolver))
+                    .transpose()?,
+                exit_code: step.exit_code,
+                timeout_seconds: step.timeout_seconds,
+                observes_rejection: step.observes_rejection,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(PackageProbeOperation {
+        input: operation.input,
+        operation: operation.operation,
+        expected: operation.expected,
+        files,
+        steps,
+        artifacts: operation.artifacts,
+    })
+}
+
+fn resolve_package_probe<F>(
+    probe: PackageProbeProjection,
+    resolver: &mut PackageOutputResolver<F>,
+) -> Result<PackageProbe>
+where
+    F: FnMut(&PackageOutputSelector) -> Result<ArtifactReference>,
+{
+    Ok(PackageProbe {
+        primary: resolve_probe_operation(probe.primary, resolver)?,
+        bad_input: resolve_probe_operation(probe.bad_input, resolver)?,
+    })
 }
 
 /// Resolves one package projection into the public package document.
@@ -399,15 +592,19 @@ pub fn resolve_package_projection(
                 path: locator.path,
             })
         })
-        .transpose()?
-        .context("publishable ability projection has no authenticated package module locator")?;
+        .transpose()?;
+    if package_module.is_none() && projection.qualification.package_probe.is_none() {
+        bail!("publishable package projection has neither a module nor a package probe");
+    }
 
     let mut artifacts = projection
         .artifacts
         .iter()
         .map(|selector| resolver.select(selector))
         .collect::<Result<Vec<_>>>()?;
-    artifacts.push(package_module.artifact.clone());
+    if let Some(module) = &package_module {
+        artifacts.push(module.artifact.clone());
+    }
     artifacts.sort_by_key(|artifact| (artifact.content, artifact.nar_hash, artifact.closure));
     let mut semantic_identities = BTreeSet::new();
     artifacts.retain(|artifact| {
@@ -476,8 +673,14 @@ pub fn resolve_package_projection(
             ))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
+    let package_probe = projection
+        .qualification
+        .package_probe
+        .map(|probe| resolve_package_probe(probe, &mut resolver))
+        .transpose()?;
     let qualification = projection
         .qualification
+        .implementations
         .into_iter()
         .map(|(name, qualification)| {
             let provider = provider_names
@@ -552,7 +755,10 @@ pub fn resolve_package_projection(
         implementation: PackageImplementation {
             providers,
             handlers,
-            qualification,
+        },
+        qualification: PackageQualification {
+            package_probe,
+            implementations: qualification,
         },
     })
 }
@@ -612,7 +818,7 @@ fn validate_projection_structure(projection: &PackageAbilityProjection) -> Resul
         .iter()
         .map(|provider| &provider.name)
         .collect::<BTreeSet<_>>();
-    for (implementation, qualification) in &projection.qualification {
+    for (implementation, qualification) in &projection.qualification.implementations {
         if !provider_names.contains(implementation) {
             bail!("ability qualification claim has no exact implementation");
         }
@@ -771,8 +977,82 @@ mod tests {
             "exports": [],
             "interface_documents": [],
             "requirements": [],
-            "implementation": {"providers": [], "handlers": {}}
+            "implementation": {"providers": [], "handlers": {}},
+            "qualification": {"implementations": {}}
         })
+    }
+
+    fn package_probe() -> serde_json::Value {
+        fn template(fragment: serde_json::Value) -> serde_json::Value {
+            json!({"fragments": [fragment]})
+        }
+
+        json!({
+            "primary": {
+                "input": "A fixed input document.",
+                "operation": "Copy the document through the package executable.",
+                "expected": "The output exactly matches the input.",
+                "files": {
+                    "input.txt": template(json!({
+                        "kind": "literal",
+                        "text": "qualified input\n"
+                    }))
+                },
+                "steps": [{
+                    "argv": [
+                        template(json!({
+                            "kind": "artifact-path",
+                            "artifact": {"package": "self", "output": "out"},
+                            "path": "bin/copy"
+                        })),
+                        template(json!({"kind": "work-path", "path": "input.txt"}))
+                    ],
+                    "stdout": template(json!({
+                        "kind": "literal",
+                        "text": "qualified input\n"
+                    })),
+                    "exit_code": 0,
+                    "observes_rejection": false
+                }],
+                "artifacts": []
+            },
+            "bad_input": {
+                "input": "An unsupported command-line option.",
+                "operation": "Invoke the package executable with that option.",
+                "expected": "The executable rejects the option.",
+                "files": {},
+                "steps": [{
+                    "argv": [
+                        template(json!({"kind": "harness", "tool": "bash"})),
+                        template(json!({"kind": "literal", "text": "--invalid"}))
+                    ],
+                    "exit_code": 2,
+                    "observes_rejection": true
+                }],
+                "artifacts": [{
+                    "kind": "text",
+                    "path": "diagnostic.txt",
+                    "text": "unsupported option\n"
+                }]
+            }
+        })
+    }
+
+    fn resolve(projection: serde_json::Value) -> aos_ability_model::PackageDocument {
+        let bytes = aos_contract::canonical::to_vec(&projection).unwrap();
+        let projection = decode_package_projection(&bytes).unwrap();
+        let payload = artifact("payload", "/nix/store/payload");
+        let source = artifact("source", "/nix/store/source.drv");
+
+        resolve_package_projection(projection, payload.clone(), source, |selector| {
+            match (selector.package.as_str(), selector.output.as_str()) {
+                ("self", "out") => Ok(payload.clone()),
+                ("self", "module") => Ok(artifact("module", "/nix/store/owner-module")),
+                ("dependency", "bin") => Ok(artifact("dependency", "/nix/store/dependency-bin")),
+                _ => unreachable!("fixture contains only declared selectors"),
+            }
+        })
+        .unwrap()
     }
 
     #[test]
@@ -854,6 +1134,125 @@ mod tests {
                 .iter()
                 .any(|artifact| artifact.store_path == "/nix/store/owner-module")
         );
+    }
+
+    #[test]
+    fn resolves_probe_only_packages_without_an_ability_module() {
+        let mut value = projection();
+        value["package_module"] = serde_json::Value::Null;
+        value["qualification"]["package_probe"] = package_probe();
+
+        let document = resolve(value);
+        let probe = document
+            .qualification
+            .package_probe
+            .as_ref()
+            .expect("package probe should be retained");
+        let fragment = &probe.primary.steps[0].argv[0].fragments[0];
+
+        assert!(document.package_module.is_none());
+        assert!(matches!(
+            fragment,
+            aos_ability_model::PackageProbeTemplateFragment::ArtifactPath { artifact, path }
+                if artifact == &document.package.payload && path.as_str() == "bin/copy"
+        ));
+    }
+
+    #[test]
+    fn rejects_publishable_projection_without_module_or_probe() {
+        let mut value = projection();
+        value["package_module"] = serde_json::Value::Null;
+        let bytes = aos_contract::canonical::to_vec(&value).unwrap();
+        let projection = decode_package_projection(&bytes).unwrap();
+        let payload = artifact("payload", "/nix/store/payload");
+        let source = artifact("source", "/nix/store/source.drv");
+
+        let error = resolve_package_projection(projection, payload, source, |_| {
+            unreachable!("projection has no symbolic artifact references")
+        })
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("neither a module nor a package probe")
+        );
+    }
+
+    #[test]
+    fn rejects_open_package_probe_fragments() {
+        let mut value = projection();
+        value["package_module"] = serde_json::Value::Null;
+        value["qualification"]["package_probe"] = package_probe();
+        value["qualification"]["package_probe"]["primary"]["steps"][0]["argv"][0]["fragments"][0]
+            ["unchecked"] = json!(true);
+        let bytes = aos_contract::canonical::to_vec(&value).unwrap();
+
+        assert!(decode_package_projection(&bytes).is_err());
+    }
+
+    #[test]
+    fn package_probe_identity_uses_artifact_content_without_store_locator() {
+        let mut value = projection();
+        value["package_module"] = serde_json::Value::Null;
+        value["qualification"]["package_probe"] = package_probe();
+        let document = resolve(value);
+        let semantic = document.content_digest().unwrap();
+
+        let mut relocated = document.clone();
+        let probe = relocated
+            .qualification
+            .package_probe
+            .as_mut()
+            .expect("package probe should be retained");
+        let aos_ability_model::PackageProbeTemplateFragment::ArtifactPath {
+            artifact: selected_artifact,
+            ..
+        } = &mut probe.primary.steps[0].argv[0].fragments[0]
+        else {
+            panic!("fixture should retain one artifact-path fragment");
+        };
+        selected_artifact.store_path = "/nix/store/relocated-payload".to_string();
+        assert_eq!(semantic, relocated.content_digest().unwrap());
+
+        let mut changed = document;
+        let probe = changed
+            .qualification
+            .package_probe
+            .as_mut()
+            .expect("package probe should be retained");
+        let aos_ability_model::PackageProbeTemplateFragment::ArtifactPath {
+            artifact: selected_artifact,
+            ..
+        } = &mut probe.primary.steps[0].argv[0].fragments[0]
+        else {
+            panic!("fixture should retain one artifact-path fragment");
+        };
+        selected_artifact.closure = Sha256Digest::of_bytes("changed probe closure");
+        assert_ne!(semantic, changed.content_digest().unwrap());
+    }
+
+    #[test]
+    fn rejects_package_probe_artifacts_outside_the_retained_package_set() {
+        let mut value = projection();
+        value["package_module"] = serde_json::Value::Null;
+        value["qualification"]["package_probe"] = package_probe();
+        let mut document = resolve(value);
+        let probe = document
+            .qualification
+            .package_probe
+            .as_mut()
+            .expect("package probe should be retained");
+        let aos_ability_model::PackageProbeTemplateFragment::ArtifactPath {
+            artifact: selected_artifact,
+            ..
+        } = &mut probe.primary.steps[0].argv[0].fragments[0]
+        else {
+            panic!("fixture should retain one artifact-path fragment");
+        };
+        *selected_artifact = artifact("foreign", "/nix/store/foreign");
+
+        assert!(aos_ability_model::encode_canonical(&document).is_err());
     }
 
     #[test]
@@ -1027,36 +1426,55 @@ mod tests {
         let original = resolve(projection);
 
         let mut relocated = original.clone();
-        relocated.package_module.artifact.store_path = "/nix/store/relocated-module".to_string();
+        relocated
+            .package_module
+            .as_mut()
+            .unwrap()
+            .artifact
+            .store_path = "/nix/store/relocated-module".to_string();
         assert_eq!(
             original.content_digest().unwrap(),
             relocated.content_digest().unwrap()
         );
 
         let mut changed_closure = original.clone();
-        changed_closure.package_module.artifact.closure = Sha256Digest::of_bytes("new closure");
+        changed_closure
+            .package_module
+            .as_mut()
+            .unwrap()
+            .artifact
+            .closure = Sha256Digest::of_bytes("new closure");
         assert_ne!(
             original.content_digest().unwrap(),
             changed_closure.content_digest().unwrap()
         );
 
         let mut changed_nar = original.clone();
-        changed_nar.package_module.artifact.nar_hash = Sha256Digest::of_bytes("new nar");
+        changed_nar
+            .package_module
+            .as_mut()
+            .unwrap()
+            .artifact
+            .nar_hash = Sha256Digest::of_bytes("new nar");
         assert_ne!(
             original.content_digest().unwrap(),
             changed_nar.content_digest().unwrap()
         );
 
         let mut changed_content = original.clone();
-        changed_content.package_module.artifact.content =
-            Sha256Digest::of_bytes("new module content");
+        changed_content
+            .package_module
+            .as_mut()
+            .unwrap()
+            .artifact
+            .content = Sha256Digest::of_bytes("new module content");
         assert_ne!(
             original.content_digest().unwrap(),
             changed_content.content_digest().unwrap()
         );
 
         let mut changed_path = original.clone();
-        changed_path.package_module.path =
+        changed_path.package_module.as_mut().unwrap().path =
             aos_ability_model::RelativePath::new("provider/module.nix").unwrap();
         assert_ne!(
             original.content_digest().unwrap(),
@@ -1083,7 +1501,7 @@ mod tests {
             })
             .unwrap();
         let observer = artifact("observer", "/nix/store/observer");
-        document.implementation.qualification.insert(
+        document.qualification.implementations.insert(
             Sha256Digest::of_bytes("implementation"),
             aos_ability_model::ProviderQualification {
                 conformance_families: vec![LocalKey::new("lifecycle").unwrap()],
@@ -1099,8 +1517,8 @@ mod tests {
         let semantic = document.content_digest().unwrap();
         let mut relocated = document.clone();
         relocated
-            .implementation
             .qualification
+            .implementations
             .values_mut()
             .next()
             .unwrap()
@@ -1111,8 +1529,8 @@ mod tests {
 
         let mut changed = document;
         changed
-            .implementation
             .qualification
+            .implementations
             .values_mut()
             .next()
             .unwrap()

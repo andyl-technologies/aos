@@ -480,6 +480,9 @@
   zram = import ./zram.nix {
     inherit lib;
   };
+  packageQualification = import ./package-qualification.nix {
+    inherit lib pkgs;
+  };
   compositionDriver = import ./composition-driver.nix {
     inherit lib;
   };
@@ -493,7 +496,7 @@
     inherit pkgs lib;
   };
   smokeAbilityProjection = pkgs.ability-package-smoke.abilities;
-  smokeArtifactSelectors = smokeAbilityProjection._artifact_outputs.selectors;
+  smokeArtifactSelectors = pkgs.ability-package-smoke.contract.selectors;
   oversizedFallback = builtins.tryEval (builtins.deepSeq (
       requirementExport "advisory" {outputs.payload = effectFixture.oversizedValue;}
     )
@@ -934,6 +937,7 @@ in
   assert filesystemEntryProvider;
   assert networkPolicyCore;
   assert kernelTunables;
+  assert packageQualification;
   assert fails (normalizeBounded [true false null true false]);
   assert fails (normalizeBounded {oversized-member-name = true;});
   assert fails (normalizeBounded "0123456789abcdefg");

@@ -436,11 +436,11 @@ fn build_verified_planning_fixture(
         artifacts: vec![artifact.clone()],
         interfaces: Default::default(),
         guarantees: Default::default(),
-        package_module: aos_ability_model::ModuleLocator {
+        package_module: Some(aos_ability_model::ModuleLocator {
             artifact: artifact.clone(),
             path: aos_ability_model::RelativePath::new("module.nix")
                 .expect("fixture package module path is valid"),
-        },
+        }),
         option_declarations: Vec::new(),
         exports: vec![ExportDeclaration {
             name: key("provider"),
@@ -452,8 +452,8 @@ fn build_verified_planning_fixture(
         implementation: PackageImplementation {
             providers: vec![provider_implementation],
             handlers: BTreeMap::new(),
-            qualification: BTreeMap::new(),
         },
+        qualification: aos_ability_model::PackageQualification::default(),
     };
     let package_digest = package
         .content_digest()

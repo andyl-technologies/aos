@@ -201,8 +201,8 @@
   };
 
   abilities = {
-    config.aos.abilities = lib.abilities.projectDefinitions {
-      rollout = {
+    config.aos.abilities = lib.recursiveUpdate (lib.abilities.projectDefinitions {
+        rollout = {
         requiredFeatures = ["ab-image-rollout-v1"];
         definition = lib.abilities.define {
           interface = "aos.ab-image-rollout";
@@ -236,25 +236,7 @@
           transition = transitionTransform rolloutProvider.transition;
         };
       };
-      rollout-effects = rec {
-        qualification =
-          if packageName == "ability-reference-image-rollout" && qualificationSupport != null
-          then {
-            conformanceFamilies = [
-              "authority-revocation"
-              "dependent-effect"
-              "durability-recovery"
-              "foreign-resource"
-              "incarnation-replacement"
-              "provider-state-transfer"
-            ];
-            observer = qualificationSupport.observerFor {
-              provider = "image-rollout";
-              kind = "rollout";
-              scope = "host-machine";
-            };
-          }
-          else null;
+        rollout-effects = {
         artifact = rolloutRuntimeSelector;
         requiredFeatures = ["ab-image-rollout-v1"];
         definition = lib.abilities.define {
@@ -289,8 +271,24 @@
           arguments = rolloutRequest;
           result = rolloutObservation;
         };
-      };
-    };
+        };
+      }) (lib.optionalAttrs (packageName == "ability-reference-image-rollout" && qualificationSupport != null) {
+        qualification.implementations.rollout-effects = {
+          conformanceFamilies = [
+            "authority-revocation"
+            "dependent-effect"
+            "durability-recovery"
+            "foreign-resource"
+            "incarnation-replacement"
+            "provider-state-transfer"
+          ];
+          observer = qualificationSupport.observerFor {
+            provider = "image-rollout";
+            kind = "rollout";
+            scope = "host-machine";
+          };
+        };
+      });
   };
 in
   mkDerivation {

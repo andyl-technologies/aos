@@ -204,12 +204,14 @@
           (package:
             builtins.isAttrs package
             && package ? abilities
+            && package ? contract
+            && package ? module
             && (
-              if package.abilities ? _module && package.abilities ? _artifact_outputs
+              if package.contract.value.package_module != null
               then true
               else
                 throw
-                "selected package '${package.pname or package.name or "<unnamed>"}' has an incomplete native ability carrier"
+                "selected package '${package.pname or package.name or "<unnamed>"}' has no package module locator"
             ))
           selectionEvaluation.config.environment.systemPackages)
       );
@@ -220,7 +222,7 @@
       builtins.map (package: {
         name = package.pname or package.name;
         version = package.version or "0";
-        module = package.abilities._module;
+        module = package.module + "/module.nix";
         outputs = {
           self = builtins.toString package;
           dependencies = {};
