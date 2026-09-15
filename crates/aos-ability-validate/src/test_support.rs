@@ -155,8 +155,8 @@ pub fn checked_effect_plan() -> CheckedEffectPlan {
 /// Panics only when the test contract and this static effect fixture stop
 /// satisfying the production validator.
 #[must_use]
-pub fn checked_systemd_manager_effect_plan() -> CheckedEffectPlan {
-    systemd_manager_plan_fixture()
+pub fn checked_lifecycle_effect_plan() -> CheckedEffectPlan {
+    lifecycle_plan_fixture()
         .validate()
         .expect("built-in systemd fixture must pass production validation")
 }
@@ -167,7 +167,7 @@ pub fn checked_systemd_manager_effect_plan() -> CheckedEffectPlan {
 ///
 /// Panics only when a fixture identity or static value cannot be constructed.
 #[must_use]
-pub fn systemd_manager_plan_fixture() -> PlanFixture {
+pub fn lifecycle_plan_fixture() -> PlanFixture {
     let mut fixture = plan_fixture();
     let artifact = fixture.binding_plan.bindings[0]
         .implementation
@@ -1194,8 +1194,7 @@ fn digest(digit: char) -> Sha256Digest {
 #[cfg(test)]
 mod tests {
     use super::{
-        checked_effect_plan, checked_stateful_owner_effect_plan,
-        checked_systemd_manager_effect_plan,
+        checked_effect_plan, checked_lifecycle_effect_plan, checked_stateful_owner_effect_plan,
     };
 
     #[test]
@@ -1208,7 +1207,7 @@ mod tests {
 
     #[test]
     fn builtin_systemd_fixture_passes_production_validators() {
-        let plan = checked_systemd_manager_effect_plan();
+        let plan = checked_lifecycle_effect_plan();
 
         assert!(plan.is_executable());
         assert_eq!(plan.operations()[0].method.as_str(), "start");

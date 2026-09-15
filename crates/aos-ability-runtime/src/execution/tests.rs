@@ -16,7 +16,7 @@ use aos_ability_model::{
 };
 use aos_ability_plan::test_support::verified_planning_effect_plan;
 use aos_ability_validate::test_support::{
-    checked_effect_plan, checked_planned_provider_chain, checked_systemd_manager_effect_plan,
+    checked_effect_plan, checked_lifecycle_effect_plan, checked_planned_provider_chain,
     plan_fixture,
 };
 use aos_contract::Sha256Digest;
@@ -133,7 +133,7 @@ fn read_only_execution_snapshot_replays_exact_plan_membership_without_mutation()
         length_before
     );
 
-    let wrong_plan = checked_systemd_manager_effect_plan();
+    let wrong_plan = checked_lifecycle_effect_plan();
     let mismatch = CheckedExecutionJournalSnapshot::read(
         &wrong_plan,
         fixture.journal_path(),
