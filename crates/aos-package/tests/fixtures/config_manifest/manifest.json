@@ -62,7 +62,7 @@
           "package": "example",
           "document_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
           "store_path": "/nix/store/dddddddddddddddddddddddddddddddd-example-config",
-          "nar_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "nar_hash": "sha256:0000000000000000000000000000000000000000000000000000",
           "entrypoint": "module.nix",
           "origin": "image"
         }
@@ -88,13 +88,15 @@
       "platform": "fixture",
       "registry": "fixture",
       "store_path": "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example",
+      "nar_hash": "sha256:0000000000000000000000000000000000000000000000000000",
+      "nar_size": 1,
       "closure": [
         {
           "store_path_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "store_path": "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example",
           "realisations": [
             {
-              "nar_hash": "sha256:fixture",
+              "nar_hash": "sha256:0000000000000000000000000000000000000000000000000000",
               "nar_size": 1
             }
           ]

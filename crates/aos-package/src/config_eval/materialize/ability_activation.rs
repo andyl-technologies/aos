@@ -53,28 +53,14 @@ impl AbilityActivationInput {
                 self.schema
             );
         }
-        let planning_features = vec![
-            FEATURE_ABILITIES_V1.to_string(),
-            FEATURE_ABILITY_EFFECTS_V1.to_string(),
-        ];
-        let execution_features = vec![
-            FEATURE_ABILITIES_V1.to_string(),
-            FEATURE_ABILITY_EFFECTS_V1.to_string(),
-            "native-resource-map-v1".to_string(),
-        ];
-        let platform_execution_features = vec![
+        let required_features = vec![
             FEATURE_ABILITIES_V1.to_string(),
             FEATURE_ABILITY_EFFECTS_V1.to_string(),
             "native-platform-policy-v1".to_string(),
             "native-resource-map-v1".to_string(),
         ];
-        if self.required_features != planning_features
-            && self.required_features != execution_features
-            && self.required_features != platform_execution_features
-        {
-            bail!(
-                "ability activation requires the exact planning or native-execution feature sequence"
-            );
+        if self.required_features != required_features {
+            bail!("ability activation requires the exact native feature sequence");
         }
         self.desired_state.validate("desired state")?;
         self.authenticated_policy_set

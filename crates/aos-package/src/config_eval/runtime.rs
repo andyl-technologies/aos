@@ -78,20 +78,14 @@ pub struct RuntimePackagePin {
     /// Exact runtime output store path.
     pub store_path: String,
     /// Exact selected runtime output NAR identity.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub nar_hash: String,
     /// Exact selected runtime output uncompressed NAR size.
-    #[serde(default, skip_serializing_if = "is_zero")]
     pub nar_size: u64,
     /// Complete authenticated closure, keyed by input-addressed store hash.
     pub closure: Vec<RuntimeClosurePin>,
     /// Exact authenticated package contract selected with this package.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract: Option<ContractOrigin>,
-}
-
-fn is_zero(value: &u64) -> bool {
-    *value == 0
 }
 
 /// Trust origin for an exact runtime package pin.
@@ -446,6 +440,31 @@ mod tests {
         zlib_store_record,
     };
     use tempfile::TempDir;
+
+    #[test]
+    fn runtime_package_pin_requires_exact_nar_identity_fields() {
+        let complete = serde_json::json!({
+            "version": "1.0.0",
+            "platform": "x86_64-linux",
+            "registry": "test",
+            "store_path": "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example",
+            "nar_hash": format!("sha256:{}", "0".repeat(52)),
+            "nar_size": 1,
+            "closure": [],
+        });
+
+        for field in ["nar_hash", "nar_size"] {
+            let mut incomplete = complete.clone();
+            incomplete
+                .as_object_mut()
+                .expect("runtime pin fixture must be an object")
+                .remove(field);
+
+            let error = serde_json::from_value::<RuntimePackagePin>(incomplete)
+                .expect_err("runtime NAR identity fields must be present");
+            assert!(error.to_string().contains(&format!("missing field `{field}`")));
+        }
+    }
 
     #[test]
     fn resolves_exact_authenticated_outputs_and_dependency_edges() {

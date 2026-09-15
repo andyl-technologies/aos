@@ -26,7 +26,9 @@ use super::ability_policy::{
     validate_independent_binding_authority,
 };
 use super::ability_policy_authority::OperatorPolicyAuthorityStore;
-use super::activation::{ActivateConfigParams, ActivationFailure};
+use super::activation::{
+    ActivateConfigParams, ActivationFailure, read_stored_activation_record,
+};
 use super::execution_observer::AbilityExecutionBoundaryObserver;
 use super::handler_dispatch::HandlerDispatcher;
 use super::materialize::ConfigManifest;
@@ -77,17 +79,19 @@ pub(super) fn activate_config(
         return activate_config(params, desired_manifest);
     }
     let current_generation = match &pending {
-        Some(pending) if pending.prior_generation != 0 => Some((
-            pending.prior_generation,
-            load_generation_manifest(params, pending.prior_generation)?,
-        )),
-        Some(_) => None,
+        Some(pending) => pending
+            .prior_generation
+            .map(|prior_generation| {
+                load_generation_manifest(params, prior_generation)
+                    .map(|manifest| (prior_generation, manifest))
+            })
+            .transpose()?,
         None if failed
             .as_ref()
             .is_some_and(|failed| failed.manifest == desired_manifest) =>
         {
-            match failed.as_ref().map(|failed| failed.prior_generation) {
-                Some(0) | None => None,
+            match failed.as_ref().and_then(|failed| failed.prior_generation) {
+                None => None,
                 Some(prior_generation) => Some((
                     prior_generation,
                     load_successful_generation_manifest(params, prior_generation)?,
@@ -170,7 +174,7 @@ pub(super) fn activate_config(
         None => {
             let prior_generation = current_generation
                 .as_ref()
-                .map_or(0, |(generation, _)| *generation);
+                .map(|(generation, _)| *generation);
             let generation = commit_configuration(
                 params,
                 &desired_manifest,
@@ -223,7 +227,7 @@ pub(super) fn activate_config(
             generation_id: generation_id.clone(),
             prior_generation: current_generation
                 .as_ref()
-                .map_or(0, |(generation, _)| *generation),
+                .map(|(generation, _)| *generation),
             transaction: transaction.clone(),
             transaction_manifest: transaction_manifest.clone(),
             manifest: desired_manifest.clone(),
@@ -363,7 +367,7 @@ fn commit_configuration(
     params: &ActivateConfigParams,
     manifest: &ConfigManifest,
     transaction: &TransactionId,
-    prior_generation: u32,
+    prior_generation: Option<u32>,
     transaction_manifest: &str,
 ) -> Result<u32> {
     match super::activation::commit_structured_config_while_locked(
@@ -390,44 +394,23 @@ fn commit_configuration(
             let record_path = params
                 .profile
                 .join(format!("gen-{generation}/activation.json"));
-            let record: serde_json::Value = serde_json::from_slice(
-                &std::fs::read(&record_path)
-                    .with_context(|| format!("reading {}", record_path.display()))?,
-            )
-            .with_context(|| format!("parsing {}", record_path.display()))?;
-            let status = record
-                .get("status")
-                .and_then(serde_json::Value::as_str)
-                .context("structured configuration activation has no status")?;
+            let record = read_stored_activation_record(&record_path, true)?
+                .context("structured configuration activation has no record")?;
             ensure!(
-                record.get("schema").and_then(serde_json::Value::as_str)
-                    == Some("aos.config-activation/v1")
-                    && record.get("generation").and_then(serde_json::Value::as_u64)
-                        == Some(u64::from(generation))
+                record.schema == "aos.config-activation/v1"
+                    && record.generation == generation
+                    && record.generation_id == generation_id
+                    && record.transaction_manifest == transaction_manifest
+                    && record.activation_exit == 6
+                    && record.native_ability_transaction.as_deref() == Some(transaction.0.as_str())
                     && record
-                        .get("generation_id")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(generation_id.as_str())
-                    && record
-                        .get("transaction_manifest")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(transaction_manifest)
-                    && record
-                        .get("activation_exit")
-                        .and_then(serde_json::Value::as_i64)
-                        == Some(6)
-                    && record
-                        .get("native_ability_transaction")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(transaction.0.as_str())
-                    && record
-                        .get("native_ability_prior_generation")
-                        .and_then(serde_json::Value::as_u64)
-                        == Some(u64::from(prior_generation))
-                    && matches!(status, "native-pending" | "degraded"),
+                        .native_ability_prior_generation
+                        .map(std::num::NonZeroU32::get)
+                        == prior_generation
+                    && matches!(record.status.as_str(), "native-pending" | "degraded"),
                 "degraded configuration commit differs from its structured recovery identity"
             );
-            if status == "native-pending" {
+            if record.status == "native-pending" {
                 Ok(generation)
             } else {
                 Err(error)
@@ -449,7 +432,7 @@ fn committed_generation_id(params: &ActivateConfigParams, generation: u32) -> Re
 struct PendingActivation {
     generation: u32,
     generation_id: String,
-    prior_generation: u32,
+    prior_generation: Option<u32>,
     transaction: TransactionId,
     transaction_manifest: String,
     manifest: ConfigManifest,
@@ -566,58 +549,45 @@ fn load_selected_native_activation(
     let generation_id = committed_generation_id(params, state.current)?;
     let generation_dir = params.profile.join(format!("gen-{}", state.current));
     let record_path = generation_dir.join("activation.json");
-    let record: serde_json::Value = match std::fs::read(&record_path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .with_context(|| format!("parsing {}", record_path.display()))?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(error).with_context(|| format!("reading {}", record_path.display()));
-        }
+    let Some(record) = read_stored_activation_record(&record_path, false)? else {
+        return Ok(None);
     };
-    if record.get("status").and_then(serde_json::Value::as_str) != Some(expected_status) {
+    if record.status != expected_status {
         return Ok(None);
     }
     ensure!(
-        record.get("schema").and_then(serde_json::Value::as_str)
-            == Some("aos.config-activation/v1")
-            && record.get("generation").and_then(serde_json::Value::as_u64)
-                == Some(u64::from(state.current))
-            && record
-                .get("generation_id")
-                .and_then(serde_json::Value::as_str)
-                == Some(generation_id.as_str()),
+        record.schema == "aos.config-activation/v1"
+            && record.generation == state.current
+            && record.generation_id == generation_id
+            && record.activation_exit == 6,
         "selected native activation differs from its generation identity"
     );
     let manifest = load_generation_manifest(params, state.current)?;
     let transaction_manifest = crate::graph_compile::graph_transaction(&manifest)?.manifest;
     ensure!(
-        record
-            .get("transaction_manifest")
-            .and_then(serde_json::Value::as_str)
-            == Some(transaction_manifest.as_str()),
+        record.transaction_manifest == transaction_manifest,
         "selected native activation differs from its retained manifest identity"
     );
-    let transaction = serde_json::from_value(
+    let transaction = serde_json::from_value(serde_json::Value::String(
         record
-            .get("native_ability_transaction")
-            .cloned()
+            .native_ability_transaction
             .context("selected native activation has no transaction")?,
-    )
+    ))
     .context("decoding selected native transaction")?;
-    let prior_generation_u64 = record
-        .get("native_ability_prior_generation")
-        .and_then(serde_json::Value::as_u64)
-        .context("selected native activation has no prior generation")?;
-    let prior_generation = u32::try_from(prior_generation_u64)
-        .context("selected native prior generation exceeds u32")?;
-    ensure!(
-        prior_generation == 0
-            || state
-                .generations
-                .iter()
-                .any(|generation| generation.number == prior_generation),
-        "selected native activation prior generation is not retained"
-    );
+    let prior_generation = record
+        .native_ability_prior_generation
+        .map(std::num::NonZeroU32::get)
+        .map(|prior_generation| {
+            ensure!(
+                state
+                    .generations
+                    .iter()
+                    .any(|generation| generation.number == prior_generation),
+                "selected native activation prior generation is not retained"
+            );
+            Ok(prior_generation)
+        })
+        .transpose()?;
     Ok(Some(PendingActivation {
         generation: state.current,
         generation_id,
