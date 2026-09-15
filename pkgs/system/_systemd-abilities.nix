@@ -9,6 +9,8 @@
   resourceReferenceList = types.list {
     element = types.deferredResult types.resourceReference;
     maxItems = 256;
+    unique = true;
+    canonicalOrder = true;
   };
   dependencies = types.record {
     fields = {
@@ -26,14 +28,19 @@
           maximum = 255;
         };
         maxItems = 256;
+        unique = true;
+        canonicalOrder = true;
       };
       reload_triggers = types.list {
         element = types.deferredResult types.executionPath;
         maxItems = 256;
+        unique = true;
+        canonicalOrder = true;
       };
       search_path = types.list {
         element = types.artifactSelector;
         maxItems = 128;
+        unique = true;
       };
     };
   };
@@ -68,6 +75,7 @@
     fields = {
       source = packagedUnitSource;
       activation = types.enum ["enabled" "reference"];
+      prerequisites = resourceReferenceList;
       inherit dependencies;
       drop_in = dropIn;
     };
@@ -88,6 +96,8 @@
       discrepancies = types.list {
         element = types.localKey;
         maxItems = 128;
+        unique = true;
+        canonicalOrder = true;
       };
     };
   };

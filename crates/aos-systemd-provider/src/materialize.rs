@@ -153,6 +153,7 @@ fn publish_symlink(path: &Path, target: &Path) -> Result<()> {
     let _ = fs::remove_file(&temporary);
     symlink(target, &temporary).context("creating temporary packaged-unit link")?;
     fs::rename(&temporary, path).context("publishing packaged-unit link")?;
+    sync_directory(parent)?;
     Ok(())
 }
 
@@ -179,11 +180,15 @@ fn publish_file(path: &Path, bytes: &[u8]) -> Result<()> {
         .persist(path)
         .map_err(|error| error.error)
         .with_context(|| format!("publishing {}", path.display()))?;
+    sync_directory(parent)
+}
+
+fn sync_directory(path: &Path) -> Result<()> {
     OpenOptions::new()
         .read(true)
-        .open(parent)
+        .open(path)
         .and_then(|directory| directory.sync_all())
-        .with_context(|| format!("syncing {}", parent.display()))?;
+        .with_context(|| format!("syncing {}", path.display()))?;
     Ok(())
 }
 
