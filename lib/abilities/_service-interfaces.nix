@@ -165,6 +165,39 @@
   };
   networkReadinessDocument = interfaceDocumentFromDeclaration networkReadinessDeclaration;
 
+  filesystemReadinessName = "aos.filesystem.readiness";
+  filesystemReadinessMethods = {
+    observe =
+      method
+      serviceTypes.filesystemReadiness
+      serviceTypes.filesystemReadinessObservation
+      filesystemReadinessName
+      "observe"
+      "Observes whether the requested provider-neutral filesystem scope is ready."
+      read;
+  };
+  filesystemReadinessDeclaration = declareInterface {
+    name = filesystemReadinessName;
+    description = "Publishes and observes readiness for a provider-neutral filesystem scope.";
+    abi = 1;
+    requestType = serviceTypes.filesystemReadiness;
+    outputs.readiness-resource =
+      output "planning" "instance"
+      "References the exact filesystem readiness resource selected for this request."
+      serviceTypes.resourceReference;
+    methods = filesystemReadinessMethods;
+    lifecycle = lifecyclePolicy;
+    guarantees = [];
+    aggregation = {
+      scope = "provider-instance";
+      key = "slot";
+      rejectSlotCollisions = true;
+      mergeContract = null;
+      controllerGroup = "filesystem-readiness";
+    };
+  };
+  filesystemReadinessDocument = interfaceDocumentFromDeclaration filesystemReadinessDeclaration;
+
   producer = {
     alias,
     name,
@@ -564,6 +597,15 @@
       methods = builtins.attrNames networkReadinessMethods;
       requestType = serviceTypes.networkReadiness;
       observationType = serviceTypes.networkReadinessObservation;
+    };
+    filesystemReadiness = {
+      alias = "filesystem-readiness";
+      declaration = filesystemReadinessDeclaration;
+      document = filesystemReadinessDocument;
+      identity = interfaceIdentity filesystemReadinessDocument;
+      methods = builtins.attrNames filesystemReadinessMethods;
+      requestType = serviceTypes.filesystemReadiness;
+      observationType = serviceTypes.filesystemReadinessObservation;
     };
     credentialDelivery = producer {
       alias = "credential-delivery";

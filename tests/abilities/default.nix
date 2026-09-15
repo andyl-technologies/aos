@@ -332,6 +332,9 @@
   serviceManagement = import ./service-management.nix {
     inherit lib;
   };
+  systemServiceModules = import ./system-service-modules.nix {
+    inherit lib;
+  };
   compositionDriver = import ./composition-driver.nix {
     inherit lib;
   };
@@ -711,6 +714,7 @@ in
   assert productionKubernetes;
   assert productionPackageAdoption;
   assert serviceManagement;
+  assert systemServiceModules;
   assert compositionDriver;
   assert builtins.attrNames smokeAbilityProjection == ["contract" "documentation" "implementations" "interfaces" "module" "moduleOutputs" "optionSurface" "requirements"];
   assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];

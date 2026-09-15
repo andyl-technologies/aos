@@ -127,6 +127,10 @@
       minimum = 0;
       maximum = 86400000;
     };
+    configuration_change_action = {
+      type = types.enum ["none" "reload" "restart"];
+      default = "restart";
+    };
     remain_after_exit = types.boolean;
     start_timeout_millis = types.integer {
       minimum = 1;
@@ -861,6 +865,16 @@
       state = types.enum ["configuring" "degraded" "failed" "ready" "unknown"];
     };
   };
+  filesystemReadiness = types.record {
+    fields.scope = types.enum ["local-filesystems"];
+  };
+  filesystemReadinessObservation = types.record {
+    fields = {
+      schema = types.enum ["aos.ability.filesystem-readiness-observation/v1"];
+      expected = filesystemReadiness;
+      state = types.enum ["configuring" "degraded" "failed" "ready" "unknown"];
+    };
+  };
 
   calendarSchedule = types.record {
     fields = {
@@ -1320,6 +1334,8 @@ in {
     configurationMaterializationObservation
     networkReadiness
     networkReadinessObservation
+    filesystemReadiness
+    filesystemReadinessObservation
     credentialDelivery
     storageView
     storageAllocation

@@ -98,6 +98,11 @@
     && outputSchema "automountResource" "realize" "automount-resource" == resourceReferenceSchema
     && outputSchema "swapResource" "enable" "swap-resource" == resourceReferenceSchema
     && outputSchema "activationGroup" "realize" "activation-resource" == resourceReferenceSchema;
+  readinessOutputsAreReferences =
+    interfaces.networkReadiness.document.interface.outputs.readiness-resource.schema
+    == resourceReferenceSchema
+    && interfaces.filesystemReadiness.document.interface.outputs.readiness-resource.schema
+    == resourceReferenceSchema;
 
   expanded = serviceManagement.forService {
     inherit serviceTypes;
@@ -538,6 +543,7 @@ in
   assert materializedPathSchema == executionPathSchema;
   assert producerOutputsMatchConsumers;
   assert activationOutputsAreReferences;
+  assert readinessOutputsAreReferences;
   assert interfaces.storageAllocation.document.interface.methods.allocate.outputs.storage-path.lifetime == "instance";
   assert interfaces.persistentStorageAllocation.document.interface.methods.allocate.outputs.storage-path.lifetime == "persistent";
   assert interfaces.persistentStorageAllocation.document.interface.methods.allocate.outputs.retained-resource.lifetime == "persistent";
@@ -546,6 +552,7 @@ in
   assert expanded.requirementTemplates.service-lifecycle.methods == ["observe" "restart" "start" "stop"];
   assert expandedWithReload.requirementTemplates.service-lifecycle.methods == ["observe" "reload" "restart" "start" "stop"];
   assert expandedWithRestartToken.requests.main-lifecycle.parameters.restart_token == "operator-requested-restart";
+  assert expanded.requests.main-lifecycle.parameters.configuration_change_action == "restart";
   assert validates extendedService;
   assert builtins.attrNames expandedExtended.requests
   == [
@@ -611,6 +618,7 @@ in
     device = resultOf "device" "device-node";
     timeout_millis = 30000;
   };
+  assert succeedsAs serviceTypes.filesystemReadiness {scope = "local-filesystems";};
   assert !validates (minimalService
     // {
       instantiation = {
