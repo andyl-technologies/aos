@@ -449,6 +449,21 @@ pub enum ValueExpression {
 }
 
 impl ValueExpression {
+    /// Returns the expression's known top-level JSON representation.
+    #[must_use]
+    pub fn top_level_json_kind(&self) -> Option<crate::schema::JsonValueKind> {
+        use crate::schema::JsonValueKind;
+
+        match self {
+            Self::Literal { value } => JsonValueKind::of_json(value.as_json()),
+            Self::List { .. } => Some(JsonValueKind::Array),
+            Self::Object { .. }
+            | Self::ArtifactReference { .. }
+            | Self::ResourceReference { .. } => Some(JsonValueKind::Object),
+            Self::AggregateOutput { .. } | Self::OperationResult { .. } => None,
+        }
+    }
+
     /// Reports whether recursive expression nesting and collection growth stay bounded.
     #[must_use]
     pub fn is_within_limits(&self, max_depth: u32, max_items: u64) -> bool {

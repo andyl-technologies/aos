@@ -251,6 +251,7 @@ fn authorize_expression(
     root_authority: Option<(&AuthorityGrant, aos_ability_model::ResourceLifetime)>,
 ) -> Result<(), &'static str> {
     let schema = unwrap_optional(schema, expression);
+    let schema = unwrap_disjoint(schema, expression);
     match expression {
         ValueExpression::Literal { value } => authorize_literal(
             context,
@@ -320,6 +321,26 @@ fn authorize_expression(
             } => {
                 for (name, field) in fields {
                     if let Some(field_schema) = schemas.get(name.as_str()) {
+                        authorize_expression(
+                            context,
+                            principal,
+                            bindings,
+                            field_schema,
+                            field,
+                            resources,
+                            artifacts,
+                            maximum_lifetime,
+                            root_authority,
+                        )?;
+                    }
+                }
+                Ok(())
+            }
+            ValueSchema::DocumentRecord {
+                fields: schemas, ..
+            } => {
+                for (name, field) in fields {
+                    if let Some(field_schema) = schemas.get(name) {
                         authorize_expression(
                             context,
                             principal,
@@ -461,11 +482,55 @@ fn authorize_literal(
             }
             Ok(())
         }
+        (
+            ValueSchema::DocumentRecord {
+                fields: schemas, ..
+            },
+            Value::Object(fields),
+        ) => {
+            for (name, value) in fields {
+                if let Some(field_schema) = schemas.get(name) {
+                    authorize_literal(
+                        context,
+                        principal,
+                        bindings,
+                        field_schema,
+                        value,
+                        resources,
+                        artifacts,
+                        maximum_lifetime,
+                        root_authority,
+                    )?;
+                }
+            }
+            Ok(())
+        }
         (ValueSchema::TaggedUnion { tag, variants }, Value::Object(fields)) => {
             let selected = fields
                 .get(tag.as_str())
                 .and_then(Value::as_str)
                 .and_then(|tag_value| variants.get(tag_value));
+            if let Some(selected) = selected {
+                authorize_literal(
+                    context,
+                    principal,
+                    bindings,
+                    selected,
+                    value,
+                    resources,
+                    artifacts,
+                    maximum_lifetime,
+                    root_authority,
+                )?;
+            }
+            Ok(())
+        }
+        (ValueSchema::DisjointUnion { variants }, value) => {
+            let selected = aos_ability_model::JsonValueKind::of_json(value).and_then(|kind| {
+                variants
+                    .iter()
+                    .find(|variant| variant.top_level_json_kind() == Some(kind))
+            });
             if let Some(selected) = selected {
                 authorize_literal(
                     context,
@@ -713,6 +778,20 @@ fn unwrap_optional<'a>(
         schema = value;
     }
     schema
+}
+
+fn unwrap_disjoint<'a>(schema: &'a ValueSchema, expression: &ValueExpression) -> &'a ValueSchema {
+    let ValueSchema::DisjointUnion { variants } = schema else {
+        return schema;
+    };
+    let Some(kind) = expression.top_level_json_kind() else {
+        return schema;
+    };
+
+    variants
+        .iter()
+        .find(|variant| variant.top_level_json_kind() == Some(kind))
+        .unwrap_or(schema)
 }
 
 fn single_diagnostic(

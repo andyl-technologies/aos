@@ -787,7 +787,9 @@ fn instance_configuration_schema_is_literal(schema: &aos_ability_model::ValueSch
             | ValueSchema::Map { value: element, .. }
             | ValueSchema::Optional { value: element } => pending.push(element),
             ValueSchema::Record { fields, .. } => pending.extend(fields.values()),
+            ValueSchema::DocumentRecord { fields, .. } => pending.extend(fields.values()),
             ValueSchema::TaggedUnion { variants, .. } => pending.extend(variants.values()),
+            ValueSchema::DisjointUnion { variants } => pending.extend(variants),
             ValueSchema::ArtifactReference
             | ValueSchema::ResourceReference
             | ValueSchema::ProviderAssignment
@@ -915,6 +917,8 @@ mod instance_configuration_tests {
                         )]),
                     }),
                     max_items: 8,
+                    unique: false,
+                    canonical_order: false,
                 },
             )]),
             optional_fields: Vec::new(),
@@ -946,6 +950,8 @@ mod instance_configuration_tests {
                         maximum: 65535,
                     }),
                     max_items: 8,
+                    unique: false,
+                    canonical_order: false,
                 },
             )]),
             optional_fields: Vec::new(),

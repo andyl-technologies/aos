@@ -2561,6 +2561,8 @@ fn interface_documents() -> Vec<InterfaceDocument> {
                 ValueSchema::List {
                     element: Box::new(credential_view_schema().unwrap()),
                     max_items: 1024,
+                    unique: false,
+                    canonical_order: false,
                 },
             ),
             (
@@ -2643,6 +2645,8 @@ fn interface_documents() -> Vec<InterfaceDocument> {
                         ValueSchema::List {
                             element: Box::new(managed_nginx_request),
                             max_items: 1024,
+                            unique: false,
+                            canonical_order: false,
                         },
                     ),
                 ]),
@@ -2674,6 +2678,8 @@ fn interface_documents() -> Vec<InterfaceDocument> {
                         ValueSchema::List {
                             element: Box::new(string_schema()),
                             max_items: 1024,
+                            unique: false,
+                            canonical_order: false,
                         },
                     ),
                     (

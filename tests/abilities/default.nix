@@ -71,6 +71,63 @@
     }
   ];
 
+  canonicalListType = lib.abilities.types.list {
+    element = lib.abilities.types.string {
+      maxLength = 16;
+      syntax = null;
+    };
+    maxItems = 4;
+    unique = true;
+    canonicalOrder = true;
+  };
+  canonicalListSchema = lib.abilities.types.schemaOf "canonical list test" canonicalListType;
+  mergedCanonicalList = canonicalListType.merge ["test" "methods"] [
+    {
+      file = "first";
+      value = ["beta" "alpha"];
+    }
+    {
+      file = "second";
+      value = ["beta"];
+    }
+  ];
+
+  scalarUnionType = lib.abilities.types.disjointUnion [
+    (lib.abilities.types.string {
+      maxLength = 16;
+      syntax = null;
+    })
+    lib.abilities.types.boolean
+    (lib.abilities.types.integer {
+      minimum = 0;
+      maximum = 16;
+    })
+  ];
+  scalarUnionSchema = lib.abilities.types.schemaOf "scalar union test" scalarUnionType;
+  ambiguousUnion = builtins.tryEval (builtins.deepSeq (
+      lib.abilities.types.schemaOf "ambiguous union test" (lib.abilities.types.disjointUnion [
+        (lib.abilities.types.string {
+          maxLength = 16;
+          syntax = null;
+        })
+        (lib.abilities.types.enum ["same-kind"])
+      ])
+    )
+    true);
+
+  documentRecordType = lib.abilities.types.documentRecord {
+    keyMaxLength = 32;
+    fields = {
+      "@type" = lib.abilities.types.string {
+        maxLength = 64;
+        syntax = null;
+      };
+      enabled = lib.abilities.types.boolean;
+    };
+    optional = ["enabled"];
+  };
+  documentRecordSchema = lib.abilities.types.schemaOf "document record test" documentRecordType;
+
   testEnvironment = lib.abilities.environmentId {
     authority = "deployment";
     key = "test";
@@ -417,6 +474,23 @@
     inherit pkgs lib;
   };
 in
+  assert canonicalListType.check ["alpha" "beta"];
+  assert canonicalListSchema.unique && canonicalListSchema.canonical_order;
+  assert canonicalListType._aosDocType.unique && canonicalListType._aosDocType.canonical_order;
+  assert mergedCanonicalList == ["alpha" "beta"];
+  assert !canonicalListType.check ["alpha" "alpha"];
+  assert !canonicalListType.check ["beta" "alpha"];
+  assert scalarUnionType.check true;
+  assert scalarUnionType.check 4;
+  assert scalarUnionType.check "raw";
+  assert !scalarUnionType.check [];
+  assert builtins.map (variant: variant.kind) scalarUnionSchema.variants == ["boolean" "integer" "string"];
+  assert !ambiguousUnion.success;
+  assert lib.abilities.schemas.checkValue documentRecordSchema {"@type" = "type.googleapis.com/example";}
+  == {"@type" = "type.googleapis.com/example";};
+  assert builtins.attrNames documentRecordType._aosDocType.fields == ["@type" "enabled"];
+  assert !documentRecordType._aosDocType.open;
+  assert fails (lib.abilities.schemas.checkValue documentRecordSchema {unknown = true;});
   assert reservedAbilityOutputRejected "abilities";
   assert reservedAbilityOutputRejected "abilityContract";
   assert reservedAbilityOutputRejected "abilityModule";

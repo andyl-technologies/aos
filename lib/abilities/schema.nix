@@ -68,6 +68,12 @@ let
     builtins.isString value
     && builtins.match "[[:cntrl:][:print:]]*" value != null;
 
+  isDocumentKey = maximum: value:
+    builtins.isString value
+    && builtins.stringLength value > 0
+    && builtins.stringLength value <= maximum
+    && builtins.match "[[:print:]]+" value != null;
+
   requireLocalKey = context: value:
     if isLocalKey value
     then value
@@ -129,6 +135,29 @@ let
       && builtins.match "[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+" value != null
     else fail "unsupported string syntax '${syntax}'";
 
+  schemaTopLevelKind = schema:
+    if schema.kind == "boolean"
+    then "boolean"
+    else if schema.kind == "integer"
+    then "number"
+    else if builtins.elem schema.kind ["string" "string-enum"]
+    then "string"
+    else if schema.kind == "list"
+    then "array"
+    else if
+      builtins.elem schema.kind [
+        "map"
+        "record"
+        "document-record"
+        "tagged-union"
+        "artifact-reference"
+        "resource-reference"
+        "provider-assignment"
+        "operation-result-reference"
+      ]
+    then "object"
+    else null;
+
   validateSchemaAt = depth: context: value: let
     schema =
       if builtins.isAttrs value && value ? kind && builtins.isString value.kind
@@ -180,10 +209,33 @@ let
       else checked
     else if schema.kind == "list"
     then let
-      checked = exact ["element" "max_items"];
+      checked = requireAttrs context ["kind" "element" "max_items" "unique" "canonical_order"] schema;
+      unique = checked.unique or false;
+      canonicalOrder = checked.canonical_order or false;
     in
-      assert requireBoundedNonNegative "${context}.max_items" maxCollectionItems checked.max_items == checked.max_items;
-        checked // {element = validateSchemaAt (depth + 1) "${context}.element" checked.element;}
+      if !(checked ? element && checked ? max_items)
+      then fail "${context} must define element and max_items"
+      else if !builtins.isBool unique || !builtins.isBool canonicalOrder
+      then fail "${context} list constraints must be Boolean"
+      else if canonicalOrder && !unique
+      then fail "${context}.canonical_order requires unique"
+      else
+        assert requireBoundedNonNegative "${context}.max_items" maxCollectionItems checked.max_items == checked.max_items;
+          {
+            kind = "list";
+            element = validateSchemaAt (depth + 1) "${context}.element" checked.element;
+            max_items = checked.max_items;
+          }
+          // (
+            if unique
+            then {inherit unique;}
+            else {}
+          )
+          // (
+            if canonicalOrder
+            then {canonical_order = true;}
+            else {}
+          )
     else if schema.kind == "map"
     then let
       checked = exact ["key" "max_entries" "value"];
@@ -216,6 +268,34 @@ let
           inherit fields;
           optional_fields = optionalFields;
         }
+    else if schema.kind == "document-record"
+    then let
+      checked = exact ["key_max_length" "fields" "optional_fields"];
+      keyMaxLength = requireBoundedPositive "${context}.key_max_length" maxStringLength checked.key_max_length;
+      fieldNames = builtins.attrNames checked.fields;
+      invalidFields = builtins.filter (name: !isDocumentKey keyMaxLength name) fieldNames;
+      fields =
+        builtins.mapAttrs (
+          name: nested:
+            validateSchemaAt (depth + 1) "${context}.fields.${name}" nested
+        )
+        checked.fields;
+      optionalFields = uniqueSortedStrings "${context}.optional_fields" checked.optional_fields;
+      invalidOptional = builtins.filter (name: !isDocumentKey keyMaxLength name) optionalFields;
+      unknownOptional = builtins.filter (name: !(builtins.hasAttr name fields)) optionalFields;
+    in
+      if builtins.length fieldNames + builtins.length optionalFields > maxCollectionItems
+      then failLimit "${context} exceeds ${builtins.toString maxCollectionItems} field entries"
+      else if invalidFields != [] || invalidOptional != []
+      then fail "${context} contains invalid document field names"
+      else if unknownOptional != []
+      then fail "${context} names unknown optional fields: ${builtins.concatStringsSep ", " unknownOptional}"
+      else {
+        kind = "document-record";
+        key_max_length = keyMaxLength;
+        inherit fields;
+        optional_fields = optionalFields;
+      }
     else if schema.kind == "tagged-union"
     then let
       checked = exact ["tag" "variants"];
@@ -245,6 +325,33 @@ let
       else if builtins.length variantNames > maxCollectionItems
       then failLimit "${context}.variants exceeds ${builtins.toString maxCollectionItems} entries"
       else checked // {inherit tag variants;}
+    else if schema.kind == "disjoint-union"
+    then let
+      checked = exact ["variants"];
+      rawVariants =
+        if checked ? variants && builtins.isList checked.variants
+        then checked.variants
+        else fail "${context}.variants must be a list";
+      variants = builtins.genList (
+        index:
+          validateSchemaAt
+          (depth + 1)
+          "${context}.variants.${builtins.toString index}"
+          (builtins.elemAt rawVariants index)
+      ) (builtins.length rawVariants);
+      kinds = builtins.map schemaTopLevelKind variants;
+      canonicalKinds = uniqueSortedStrings "${context} variant JSON kinds" kinds;
+    in
+      if builtins.length variants < 2
+      then fail "${context}.variants must contain at least two variants"
+      else if builtins.any (kind: kind == null) kinds
+      then fail "${context} variants must each admit one top-level JSON kind"
+      else if kinds != canonicalKinds
+      then fail "${context}.variants must use distinct canonical JSON-kind order"
+      else {
+        kind = "disjoint-union";
+        inherit variants;
+      }
     else if schema.kind == "optional"
     then let
       checked = exact ["value"];
@@ -284,7 +391,8 @@ let
           found = false;
         }
         sorted
-      ).found;
+      )
+      .found;
   in
     if duplicate
     then fail "${context} contains a duplicate value"
@@ -341,7 +449,23 @@ let
       then invalid "a list"
       else if builtins.length value > schema.max_items
       then fail "list exceeds max_items ${builtins.toString schema.max_items}"
-      else builtins.map (checkValue schema.element) value
+      else let
+        checked = builtins.map (checkValue schema.element) value;
+        encoded = builtins.map builtins.toJSON checked;
+        unique =
+          builtins.length encoded
+          == builtins.length (builtins.attrNames (builtins.listToAttrs (builtins.map (item: {
+              name = item;
+              value = true;
+            })
+            encoded)));
+        ordered = encoded == builtins.sort builtins.lessThan encoded;
+      in
+        if (schema.unique or false) && !unique
+        then fail "list elements must be unique"
+        else if (schema.canonical_order or false) && !ordered
+        then fail "list elements must be in canonical order"
+        else checked
     else if schema.kind == "map"
     then let
       entries =
@@ -365,6 +489,8 @@ let
       else builtins.mapAttrs (_: checkValue schema.value) entries
     else if schema.kind == "record"
     then checkRecord
+    else if schema.kind == "document-record"
+    then checkRecord
     else if schema.kind == "tagged-union"
     then let
       valueSet =
@@ -376,6 +502,25 @@ let
       if !builtins.isString tagValue || !(builtins.hasAttr tagValue schema.variants)
       then fail "tag '${schema.tag}' does not select a declared variant"
       else checkValue schema.variants.${tagValue} valueSet
+    else if schema.kind == "disjoint-union"
+    then let
+      valueKind =
+        if builtins.isBool value
+        then "boolean"
+        else if builtins.isInt value || builtins.isFloat value
+        then "number"
+        else if builtins.isString value
+        then "string"
+        else if builtins.isList value
+        then "array"
+        else if builtins.isAttrs value
+        then "object"
+        else null;
+      matching = builtins.filter (variant: schemaTopLevelKind variant == valueKind) schema.variants;
+    in
+      if valueKind == null || builtins.length matching != 1
+      then fail "value has no matching disjoint-union variant"
+      else checkValue (builtins.head matching) value
     else if schema.kind == "optional"
     then
       if value == null
@@ -464,14 +609,31 @@ in rec {
   };
 
   list = args: let
-    checked = requireAttrs "list schema" ["element" "maxItems"] args;
-    candidate = {
-      kind = "list";
-      element = checked.element;
-      max_items = requireBoundedNonNegative "list maxItems" maxCollectionItems checked.maxItems;
-    };
+    checked = requireAttrs "list schema" ["element" "maxItems" "unique" "canonicalOrder"] args;
+    unique = checked.unique or false;
+    canonicalOrder = checked.canonicalOrder or false;
+    candidate =
+      {
+        kind = "list";
+        element = checked.element;
+        max_items = requireBoundedNonNegative "list maxItems" maxCollectionItems checked.maxItems;
+      }
+      // (
+        if unique
+        then {inherit unique;}
+        else {}
+      )
+      // (
+        if canonicalOrder
+        then {canonical_order = true;}
+        else {}
+      );
   in
-    validateSchema "list schema" candidate;
+    if !builtins.isBool unique || !builtins.isBool canonicalOrder
+    then fail "list constraints must be Boolean"
+    else if canonicalOrder && !unique
+    then fail "list canonicalOrder requires unique"
+    else validateSchema "list schema" candidate;
 
   map = args: let
     checked = requireAttrs "map schema" ["keyMaxLength" "keySyntax" "maxEntries" "value"] args;
@@ -511,6 +673,33 @@ in rec {
         optional_fields = optional;
       };
 
+  documentRecord = args: let
+    checked = requireAttrs "document-record schema" ["keyMaxLength" "fields" "optional"] args;
+    keyMaxLength = requireBoundedPositive "document-record keyMaxLength" maxStringLength checked.keyMaxLength;
+    fields =
+      builtins.mapAttrs (
+        name: nested:
+          if isDocumentKey keyMaxLength name
+          then requireSchema "document-record field '${name}'" nested
+          else fail "document-record field '${name}' is not a bounded printable document key"
+      )
+      checked.fields;
+    optional = uniqueSortedStrings "optional document field names" (checked.optional or []);
+    invalidOptional = builtins.filter (name: !isDocumentKey keyMaxLength name) optional;
+    unknownOptional = builtins.filter (name: !(builtins.hasAttr name fields)) optional;
+  in
+    if invalidOptional != []
+    then fail "optional document fields contain invalid names"
+    else if unknownOptional != []
+    then fail "optional document fields are not declared: ${builtins.concatStringsSep ", " unknownOptional}"
+    else
+      validateSchema "document-record schema" {
+        kind = "document-record";
+        key_max_length = keyMaxLength;
+        inherit fields;
+        optional_fields = optional;
+      };
+
   taggedUnion = args: let
     checked = requireAttrs "tagged-union schema" ["tag" "variants"] args;
     candidate = {
@@ -527,6 +716,32 @@ in rec {
   in
     validateSchema "tagged-union schema" candidate;
 
+  disjointUnion = variants: let
+    rawVariants =
+      if builtins.isList variants
+      then variants
+      else fail "disjoint-union variants must be a list";
+    normalized = builtins.genList (
+      index:
+        requireSchema
+        "disjoint-union variant ${builtins.toString index}"
+        (builtins.elemAt rawVariants index)
+    ) (builtins.length rawVariants);
+    unsupported = builtins.filter (variant: schemaTopLevelKind variant == null) normalized;
+    canonical =
+      builtins.sort (
+        left: right: schemaTopLevelKind left < schemaTopLevelKind right
+      )
+      normalized;
+  in
+    if unsupported != []
+    then fail "disjoint-union variants must each admit one top-level JSON kind"
+    else
+      validateSchema "disjoint-union schema" {
+        kind = "disjoint-union";
+        variants = canonical;
+      };
+
   optional = value:
     validateSchema "optional schema" {
       kind = "optional";
@@ -537,6 +752,9 @@ in rec {
   resourceReference = {kind = "resource-reference";};
   providerAssignment = {kind = "provider-assignment";};
   operationResultReference = {kind = "operation-result-reference";};
+
+  topLevelKind = schema:
+    schemaTopLevelKind (validateSchema "top-level JSON kind" schema);
 
   inherit checkValue validateSchema;
 }

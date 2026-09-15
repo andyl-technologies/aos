@@ -891,6 +891,7 @@ fn expression_uses_sensitive_reference(
         }
         _ => schema,
     };
+    let schema = unwrap_disjoint_schema(schema, expression);
 
     match expression {
         ValueExpression::ResourceReference { .. } => true,
@@ -945,6 +946,14 @@ fn expression_uses_sensitive_reference(
                         expression_uses_sensitive_reference(plan, field_schema, field)
                     })
             }),
+            ValueSchema::DocumentRecord {
+                fields: field_schemas,
+                ..
+            } => fields.iter().any(|(name, field)| {
+                field_schemas.get(name).is_some_and(|field_schema| {
+                    expression_uses_sensitive_reference(plan, field_schema, field)
+                })
+            }),
             ValueSchema::TaggedUnion { variants, tag } => expression_tag(fields, tag)
                 .and_then(|variant| variants.get(variant))
                 .is_some_and(|variant_schema| {
@@ -980,8 +989,14 @@ fn schema_contains_sensitive_reference(schema: &ValueSchema) -> bool {
         ValueSchema::Record { fields, .. } => {
             fields.values().any(schema_contains_sensitive_reference)
         }
+        ValueSchema::DocumentRecord { fields, .. } => {
+            fields.values().any(schema_contains_sensitive_reference)
+        }
         ValueSchema::TaggedUnion { variants, .. } => {
             variants.values().any(schema_contains_sensitive_reference)
+        }
+        ValueSchema::DisjointUnion { variants } => {
+            variants.iter().any(schema_contains_sensitive_reference)
         }
         ValueSchema::Boolean
         | ValueSchema::Integer { .. }
@@ -1043,6 +1058,7 @@ fn insert_expression_artifacts(
     expression: &ValueExpression,
 ) -> Result<(), InspectionViewError> {
     let schema = unwrap_optional_schema(schema, expression);
+    let schema = unwrap_disjoint_schema(schema, expression);
     match expression {
         ValueExpression::Literal { value } => {
             insert_literal_artifacts(nodes, edges, &owner, schema, value.as_json())?;
@@ -1068,6 +1084,21 @@ fn insert_expression_artifacts(
             } => {
                 for (name, field) in fields {
                     if let Some(field_schema) = schemas.get(name.as_str()) {
+                        insert_expression_artifacts(
+                            nodes,
+                            edges,
+                            owner.clone(),
+                            field_schema,
+                            field,
+                        )?;
+                    }
+                }
+            }
+            ValueSchema::DocumentRecord {
+                fields: schemas, ..
+            } => {
+                for (name, field) in fields {
+                    if let Some(field_schema) = schemas.get(name) {
                         insert_expression_artifacts(
                             nodes,
                             edges,
@@ -1143,6 +1174,18 @@ fn insert_literal_artifacts(
                 }
             }
         }
+        (
+            ValueSchema::DocumentRecord {
+                fields: schemas, ..
+            },
+            serde_json::Value::Object(fields),
+        ) => {
+            for (name, value) in fields {
+                if let Some(field_schema) = schemas.get(name) {
+                    insert_literal_artifacts(nodes, edges, owner, field_schema, value)?;
+                }
+            }
+        }
         (ValueSchema::TaggedUnion { tag, variants }, serde_json::Value::Object(fields)) => {
             if let Some(variant) = fields
                 .get(tag.as_str())
@@ -1155,6 +1198,16 @@ fn insert_literal_artifacts(
                 })
             {
                 insert_literal_artifacts(nodes, edges, owner, variant, value)?;
+            }
+        }
+        (ValueSchema::DisjointUnion { variants }, value) => {
+            let selected = aos_ability_model::JsonValueKind::of_json(value).and_then(|kind| {
+                variants
+                    .iter()
+                    .find(|variant| variant.top_level_json_kind() == Some(kind))
+            });
+            if let Some(selected) = selected {
+                insert_literal_artifacts(nodes, edges, owner, selected, value)?;
             }
         }
         _ => {}
@@ -1189,6 +1242,23 @@ fn unwrap_optional_schema<'a>(
         schema = value;
     }
     schema
+}
+
+fn unwrap_disjoint_schema<'a>(
+    schema: &'a ValueSchema,
+    expression: &ValueExpression,
+) -> &'a ValueSchema {
+    let ValueSchema::DisjointUnion { variants } = schema else {
+        return schema;
+    };
+    let Some(kind) = expression.top_level_json_kind() else {
+        return schema;
+    };
+
+    variants
+        .iter()
+        .find(|variant| variant.top_level_json_kind() == Some(kind))
+        .unwrap_or(schema)
 }
 
 fn insert_artifact(

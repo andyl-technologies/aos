@@ -1600,6 +1600,8 @@ fn nginx_validation_request_schema() -> Result<ValueSchema, io::Error> {
                             .map_err(|error| invalid_data(error.to_string()))?,
                     ),
                     max_items: 1024,
+                    unique: false,
+                    canonical_order: false,
                 },
             ),
             (

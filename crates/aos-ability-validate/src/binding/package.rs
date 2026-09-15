@@ -478,6 +478,18 @@ fn value_requires_authority(
                 }
             }
             (
+                aos_ability_model::ValueSchema::DocumentRecord {
+                    fields: schemas, ..
+                },
+                serde_json::Value::Object(fields),
+            ) => {
+                for (name, field) in fields {
+                    if let Some(field_schema) = schemas.get(name) {
+                        stack.push((field_schema, field));
+                    }
+                }
+            }
+            (
                 aos_ability_model::ValueSchema::TaggedUnion { tag, variants },
                 serde_json::Value::Object(fields),
             ) => {
@@ -485,6 +497,15 @@ fn value_requires_authority(
                     .get(tag.as_str())
                     .and_then(serde_json::Value::as_str)
                     .and_then(|tag_value| variants.get(tag_value))
+                {
+                    stack.push((variant, value));
+                }
+            }
+            (aos_ability_model::ValueSchema::DisjointUnion { variants }, value) => {
+                if let Some(kind) = aos_ability_model::JsonValueKind::of_json(value)
+                    && let Some(variant) = variants
+                        .iter()
+                        .find(|variant| variant.top_level_json_kind() == Some(kind))
                 {
                     stack.push((variant, value));
                 }
@@ -524,9 +545,13 @@ fn schema_may_carry_authority(schema: &aos_ability_model::ValueSchema) -> bool {
             | aos_ability_model::ValueSchema::Map { value: element, .. }
             | aos_ability_model::ValueSchema::Optional { value: element } => stack.push(element),
             aos_ability_model::ValueSchema::Record { fields, .. } => stack.extend(fields.values()),
+            aos_ability_model::ValueSchema::DocumentRecord { fields, .. } => {
+                stack.extend(fields.values())
+            }
             aos_ability_model::ValueSchema::TaggedUnion { variants, .. } => {
                 stack.extend(variants.values())
             }
+            aos_ability_model::ValueSchema::DisjointUnion { variants } => stack.extend(variants),
             aos_ability_model::ValueSchema::Boolean
             | aos_ability_model::ValueSchema::Integer { .. }
             | aos_ability_model::ValueSchema::String { .. }
