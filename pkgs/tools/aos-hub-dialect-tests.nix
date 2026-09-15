@@ -34,6 +34,56 @@
 in
   mkCargoPackage {
     pname = "aos-hub-dialect-tests";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The libtest harness returns success and exposes dialect contract tests.";
+        "files" = {};
+        "input" = "The packaged Rust dialect contract test executable.";
+        "operation" = "List its test inventory without connecting to PostgreSQL or MariaDB.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/aos-hub-dialect-contract\", \"--list\"], capture_output=True, text=True)\nassert result.returncode == 0 and \": test\" in result.stdout, (result.returncode, result.stdout, result.stderr)\nprint(\"aos-hub-dialect-tests operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "aos-hub-dialect-tests operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The libtest harness rejects the unsupported option.";
+        "files" = {};
+        "input" = "A dialect-test invocation containing an unsupported libtest option.";
+        "operation" = "Parse the invalid option without connecting to a database.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/aos-hub-dialect-contract\", \"--aos-invalid-option\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"aos-hub-dialect-tests rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "aos-hub-dialect-tests rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     cargoFlags = "-p aos-hub --features postgres,mysql,required-live-dialects --test dialect";

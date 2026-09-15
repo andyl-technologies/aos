@@ -207,6 +207,56 @@
 in
   mkHubDerivation {
     pname = "aos-hub-worker-dist";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The shim references the module, the module is WebAssembly, and required static assets exist.";
+        "files" = {};
+        "input" = "The Worker shim, WebAssembly module, and static-asset tree.";
+        "operation" = "Inspect the deployment surface and validate its binary module.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib\nroot = pathlib.Path(\"@out@\")\nshim = (root / \"shim.mjs\").read_text()\nwasm = (root / \"index.wasm\").read_bytes()\nassets = root / \"assets/_assets\"\nassert \"index.wasm\" in shim and wasm.startswith(b\"\\\\0asm\")\nassert all((assets / name).stat().st_size > 0 for name in [\"style.css\", \"app.js\", \"theme.js\"])\nprint(\"aos-hub-worker-dist data passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "aos-hub-worker-dist data passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The immutable Worker bundle rejects the undeclared asset.";
+        "files" = {};
+        "input" = "A request for an undeclared Worker source map.";
+        "operation" = "Resolve the absent source map in the deployment surface.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, sys\nif pathlib.Path(\"@out@/shim.mjs.map\").exists():\n    raise SystemExit(2)\nsys.stderr.write(\"aos-hub-worker-dist rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "aos-hub-worker-dist rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     # The wasm32 toolchain (rustc + cargo + the wasm32 std + rust-lld), the

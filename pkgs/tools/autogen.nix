@@ -1,5 +1,6 @@
 ##! autogen — Automated text and program generation
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -28,6 +29,62 @@
 in
   mkDerivation {
     pname = "autogen";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "AutoGen expands the template to the fixed qualification line.";
+        "files" = {
+          "probe.def" = "AutoGen Definitions;\nanswer = \"qualified\";\n";
+          "probe.tpl" = "[+ AutoGen5 template +]\n[+ answer +]\n";
+        };
+        "input" = "An AutoGen definition and template that expand one named value.";
+        "operation" = "Render the definition through the packaged AutoGen interpreter.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/autogen\", \"-T\", \"probe.tpl\", \"probe.def\"], capture_output=True, text=True)\nassert result.returncode == 0, result.stderr\nassert result.stdout.strip() == \"qualified\"\nprint(\"autogen operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "autogen operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "AutoGen rejects the invalid definition syntax.";
+        "files" = {
+          "probe.def" = "AutoGen Definitions;\nanswer = {\n";
+          "probe.tpl" = "[+ AutoGen5 template +]\n[+ answer +]\n";
+        };
+        "input" = "An AutoGen definition with an unterminated aggregate value.";
+        "operation" = "Render the malformed definition.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/autogen\", \"-T\", \"probe.tpl\", \"probe.def\"], capture_output=True)\nif result.returncode == 0:\n    raise SystemExit(2)\nsys.stderr.write(\"autogen rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "autogen rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

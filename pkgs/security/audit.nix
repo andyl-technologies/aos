@@ -1,5 +1,6 @@
 ##! Audit — Linux auditing framework
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -14,6 +15,94 @@
 in
   mkDerivation {
     pname = "audit";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The API returns the expected value and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\n#include <string.h>\n#include <libaudit.h>\n\nint main(void) {\n    int machine = audit_detect_machine();\n    int syscall = audit_name_to_syscall(\"read\", machine);\n    const char *name = audit_syscall_to_name(syscall, machine);\n    if (machine < 0 || syscall < 0 || name == NULL || strcmp(name, \"read\") != 0) {\n        return 2;\n    }\n    return puts(\"audit api passed\") == EOF;\n}\n";
+        };
+        "input" = "The portable audit syscall name read and the detected machine type.";
+        "operation" = "Resolve the syscall name to a machine-specific number and back to its canonical name.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-laudit"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "audit api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The API reports rejection and the consumer emits the fixed diagnostic and rejection status.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\n#include <libaudit.h>\n\nint main(void) {\n    int machine = audit_detect_machine();\n    if (machine < 0 || audit_name_to_syscall(\"aos_no_such_syscall\", machine) != -1) {\n        return 2;\n    }\n    fputs(\"audit rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "A syscall name absent from the Linux audit tables.";
+        "operation" = "Resolve the unknown name with audit_name_to_syscall.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-laudit"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "audit rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

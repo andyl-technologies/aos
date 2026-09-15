@@ -1,5 +1,6 @@
 ##! ALSA library — Advanced Linux Sound Architecture user-space library
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -8,6 +9,94 @@
 in
   mkDerivation {
     pname = "alsa-lib";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The public API returns the expected value and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\n#include <alsa/asoundlib.h>\n\nint main(void) {\n    if (snd_pcm_format_value(\"S16_LE\") != SND_PCM_FORMAT_S16_LE) {\n        return 2;\n    }\n    return puts(\"alsa-lib api passed\") == EOF;\n}\n";
+        };
+        "input" = "The public PCM format name S16_LE.";
+        "operation" = "Resolve the name with snd_pcm_format_value and verify the enum value.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lasound"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "alsa-lib api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The public API reports rejection and the consumer exits with the fixed rejection status and diagnostic.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\n#include <alsa/asoundlib.h>\n\nint main(void) {\n    if (snd_pcm_format_value(\"AOS_NOT_A_PCM_FORMAT\") != SND_PCM_FORMAT_UNKNOWN) {\n        return 2;\n    }\n    fputs(\"alsa-lib rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "A PCM format name that ALSA does not define.";
+        "operation" = "Resolve the unknown format with snd_pcm_format_value.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lasound"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "alsa-lib rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

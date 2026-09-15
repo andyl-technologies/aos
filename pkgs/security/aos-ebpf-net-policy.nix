@@ -1,5 +1,6 @@
 ##! aos-ebpf-net-policy — Attach package cgroup TCP network policies
 {
+  lib,
   mkDerivation,
   stdenv,
   linux-headers,
@@ -21,6 +22,60 @@
 in
   mkDerivation {
     pname = "aos-ebpf-net-policy";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The loader accepts the complete policy and expected BPF maps.";
+        "files" = {
+          "policy.json" = "{\"version\":1,\"package\":\"sample\",\"mode\":\"private\",\"securityLabel\":\"aos-pkg-sample\",\"tcp\":{\"bind\":[8000],\"connect\":[443]},\"fs\":{\"readOnly\":[],\"readWrite\":[]},\"landlock\":{\"abi\":4,\"tcp\":{\"bind\":[8000],\"connect\":[443]},\"fs\":{\"readOnly\":[],\"readWrite\":[]}},\"ebpf\":{\"identity\":\"aos-pkg-sample\",\"hooks\":[\"socket_bind\",\"socket_connect\"],\"tcp\":{\"bind\":[8000],\"connect\":[443]}}}\n";
+        };
+        "input" = "A version-one private TCP policy and the packaged cgroup BPF object.";
+        "operation" = "Validate the policy-object pair without attaching it to a cgroup.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/aos-ebpf-net-policy\", \"validate\", \"--policy\", \"policy.json\", \"--object\", \"@out@/lib/bpf/aos-ebpf-net-policy.bpf.o\"], capture_output=True)\nassert result.returncode == 0, result.stderr\nprint(\"aos-ebpf-net-policy operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "aos-ebpf-net-policy operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The loader rejects the invalid port before kernel attachment.";
+        "files" = {
+          "policy.json" = "{\"version\":1,\"package\":\"sample\",\"mode\":\"private\",\"securityLabel\":\"aos-pkg-sample\",\"tcp\":{\"bind\":[70000],\"connect\":[]}}\n";
+        };
+        "input" = "A policy with a TCP port outside the unsigned 16-bit range.";
+        "operation" = "Validate the out-of-range network policy.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/aos-ebpf-net-policy\", \"validate\", \"--policy\", \"policy.json\", \"--object\", \"@out@/lib/bpf/aos-ebpf-net-policy.bpf.o\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"aos-ebpf-net-policy rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "aos-ebpf-net-policy rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     version = "0";
     src = null;
 

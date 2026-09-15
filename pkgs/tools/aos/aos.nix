@@ -226,6 +226,56 @@
 in
   mkCargoPackage {
     pname = "aos";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The command returns success and documents Usage.";
+        "files" = {};
+        "input" = "The packaged aos command-line interface.";
+        "operation" = "Request its offline help text.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/aos\",\"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"Usage\" in (result.stdout + result.stderr), (result.returncode, result.stdout, result.stderr)\nprint(\"aos operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "aos operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The command rejects the unsupported option before performing its main operation.";
+        "files" = {};
+        "input" = "A aos invocation containing an unsupported command-line option.";
+        "operation" = "Parse the unknown option without starting a service or contacting a remote endpoint.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/aos\",\"--aos-invalid-option\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"aos rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "aos rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     outputs = ["out" "apm" "apr" "packageRuntime" "metadataRuntime" "testSupport"];
