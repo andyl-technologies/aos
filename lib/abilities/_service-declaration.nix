@@ -1,5 +1,9 @@
 ##! Expands one manager-neutral service declaration into feature requests.
-{serviceInterfaces}: let
+{
+  serviceInterfaces,
+  interfaceDocumentFromDeclaration,
+  interfaceIdentity,
+}: let
   featureInterfaces = {
     lifecycle = serviceInterfaces.lifecycle;
     dependencies = serviceInterfaces.dependencies;
@@ -49,6 +53,20 @@
     else if !builtins.all (name: builtins.elem name interface.methods) methods
     then throw "producer requirement methods must belong to the selected interface"
     else builtins.sort builtins.lessThan methods;
+
+  canonicalInterface = interface:
+    if interface ? identity && interface ? methods
+    then interface
+    else let
+      document = interfaceDocumentFromDeclaration interface.declaration;
+    in
+      interface
+      // {
+        inherit document;
+        identity = interfaceIdentity document;
+        methods = builtins.attrNames interface.declaration.methods;
+        requestType = interface.declaration.requestType;
+      };
 
   validate = serviceTypes: declaration: let
     lifecycle = declaration.lifecycle;
@@ -514,9 +532,14 @@
     consumerInstance,
     interface,
     producers,
-    methods ? interface.methods,
+    methods ? null,
   }: let
-    selectedMethods = checkedMethods interface methods;
+    selectedInterface = canonicalInterface interface;
+    selectedMethods = checkedMethods selectedInterface (
+      if methods == null
+      then selectedInterface.methods
+      else methods
+    );
     contribution =
       if !uniqueBy "key" producers
       then throw "producer request keys must be unique"
@@ -524,11 +547,11 @@
         requirementTemplates =
           if producers == []
           then {}
-          else {${interface.alias} = requirementFor interface selectedMethods;};
+          else {${selectedInterface.alias} = requirementFor selectedInterface selectedMethods;};
         requests = builtins.listToAttrs (builtins.map (producer: {
             name = producer.key;
             value = {
-              requirement = interface.alias;
+              requirement = selectedInterface.alias;
               consumer = consumerInstance;
               scope = [producer.key];
               inherit (producer) parameters;
@@ -540,15 +563,21 @@
     qualifyForConsumer consumerInstance contribution;
 
   forProducer = args:
-    forProducers {
-      inherit (args) consumerInstance interface;
-      methods = args.methods or args.interface.methods;
-      producers = [
-        {
-          inherit (args) key parameters;
-        }
-      ];
-    };
+    forProducers (
+      {
+        inherit (args) consumerInstance interface;
+        producers = [
+          {
+            inherit (args) key parameters;
+          }
+        ];
+      }
+      // (
+        if args ? methods
+        then {inherit (args) methods;}
+        else {}
+      )
+    );
 in {
   inherit featureInterfaces forConfiguration forProducer forProducers forService structuredSource validate;
 }
