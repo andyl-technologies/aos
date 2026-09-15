@@ -1,8 +1,14 @@
 ##! K3s-owned Kubernetes object-set declarations.
-{lib}: let
-  inherit (lib.abilities) declareInterface interfaceDocumentFromDeclaration interfaceIdentity types;
+{
+  lib,
+  packageName,
+  ...
+}: let
+  inherit (lib.abilities) declareInterface types;
+  serverRole = (import ./roles.nix).${packageName}.role != "worker";
   controllerAlias = "kubernetes-object-set";
   contributionAlias = "kubernetes-objects";
+  effectsAlias = "kubernetes-object-effects";
   controllerName = "aos.kubernetes.object-set";
 
   canonicalList = element: maxItems:
@@ -88,12 +94,6 @@
         "drifted"
         "unknown"
       ];
-    };
-  };
-  realizationType = types.record {
-    fields = {
-      schema = types.enum ["aos.kubernetes.object-set-realization/v1"];
-      kubeconfig = types.executionPath;
     };
   };
   output = phase: lifetime: description: schema: {
@@ -188,22 +188,24 @@
     };
     guarantees = [];
   };
-  describe = alias: declaration: methods: {
-    inherit alias declaration methods;
-    document = interfaceDocumentFromDeclaration declaration;
-    identity = interfaceIdentity (interfaceDocumentFromDeclaration declaration);
-    requestType = declaration.requestType;
-    observationType = observationType;
+  effectsDeclaration = declareInterface {
+    name = "aos.k3s.kubernetes-object-effects";
+    description = "Executes admitted Kubernetes object operations for one K3s controller-owned resource.";
+    abi = 1;
+    requestType = aggregateRequest;
+    methods = controllerMethods;
+    lifecycle = controllerLifecycle;
+    outputs = {};
+    guarantees = [];
+    aggregation = aggregation // {controllerGroup = effectsAlias;};
   };
 in {
-  controller =
-    describe controllerAlias controllerDeclaration (builtins.attrNames controllerMethods)
-    // {
-      inherit realizationType;
+  config.aos.abilities.interfaces =
+    {
+      ${controllerAlias} = controllerDeclaration;
+      ${contributionAlias} = contributionDeclaration;
+    }
+    // lib.optionalAttrs serverRole {
+      ${effectsAlias} = effectsDeclaration;
     };
-  contribution = describe contributionAlias contributionDeclaration (builtins.attrNames contributionMethods);
-  declarations = {
-    ${controllerAlias} = controllerDeclaration;
-    ${contributionAlias} = contributionDeclaration;
-  };
 }

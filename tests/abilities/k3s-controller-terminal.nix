@@ -3,12 +3,13 @@
   lib,
   pkgs,
 }: let
-  objectContract = import ../../pkgs/kubernetes/_k3s-config/object-interface.nix {inherit lib;};
-  configurationContract = import ../../pkgs/kubernetes/_k3s-config/configuration-interface.nix {inherit lib;};
+  objectControllerAlias = "kubernetes-object-set";
+  configurationControllerAlias = "k3s-configuration";
+  controllerMethods = ["apply" "observe" "release"];
 
   evaluateController = {
     requestKey,
-    requestInterface,
+    requestInterfaceName,
     requestMethods,
     parameters,
     controllerAlias,
@@ -62,19 +63,27 @@
           name = "consumer";
           version = "1";
           module = {
-            config.aos.abilities = lib.mkMerge [
-              (lib.abilities.interfaces.serviceManagement.forProducer {
-                consumerInstance = "workload";
-                key = requestKey;
-                interface = {
-                  alias = requestInterface.alias;
-                  declaration = requestInterface.declaration;
+            config.aos.abilities = {
+              instances.workload = {};
+              requirementTemplates.${requestKey} =
+                lib.abilities.interfaceSelector {
+                  name = requestInterfaceName;
+                  abi = 1;
+                }
+                // {
+                  description = "Selects the package-owned K3s controller under test.";
+                  methods = requestMethods;
+                  guarantees = [];
+                  strength = "required";
+                  fallback = null;
                 };
-                methods = requestMethods;
+              requests.${requestKey} = {
+                requirement = requestKey;
+                consumer = "workload";
+                scope = [requestKey];
                 inherit parameters;
-              })
-              {instances.workload = {};}
-            ];
+              };
+            };
           };
         }
       ];
@@ -86,13 +95,13 @@
 
   object = evaluateController {
     requestKey = "objects";
-    requestInterface = objectContract.controller;
-    requestMethods = objectContract.controller.methods;
+    requestInterfaceName = "aos.kubernetes.object-set";
+    requestMethods = controllerMethods;
     parameters = {
       cluster.prerequisites = [];
       contributions = {};
     };
-    controllerAlias = objectContract.controller.alias;
+    controllerAlias = objectControllerAlias;
     controllerInstance = "object-controller";
     terminalAlias = "kubernetes-object-effects";
     providerModule = ../../pkgs/kubernetes/_k3s-config/object-provider.nix;
@@ -100,8 +109,8 @@
   };
   configuration = evaluateController {
     requestKey = "configuration";
-    requestInterface = configurationContract.controller;
-    requestMethods = configurationContract.controller.methods;
+    requestInterfaceName = "aos.k3s.configuration";
+    requestMethods = controllerMethods;
     parameters = {
       base = {
         flannel_backend = "vxlan";
@@ -112,7 +121,7 @@
       };
       contributions = {};
     };
-    controllerAlias = configurationContract.controller.alias;
+    controllerAlias = configurationControllerAlias;
     controllerInstance = "configuration-controller";
     terminalAlias = "k3s-configuration-effects";
     providerModule = ../../pkgs/kubernetes/_k3s-config/configuration-provider.nix;
@@ -215,51 +224,51 @@
 in
   assert checkController {
     result = object;
-    controllerAlias = objectContract.controller.alias;
+    controllerAlias = objectControllerAlias;
     terminalAlias = "kubernetes-object-effects";
   };
   assert checkController {
     result = configuration;
-    controllerAlias = configurationContract.controller.alias;
+    controllerAlias = configurationControllerAlias;
     terminalAlias = "k3s-configuration-effects";
   };
   assert transitionMethods {
     result = object;
-    controllerAlias = objectContract.controller.alias;
+    controllerAlias = objectControllerAlias;
     terminalAlias = "kubernetes-object-effects";
     kind = "create";
   }
   == ["apply"];
   assert transitionMethods {
     result = object;
-    controllerAlias = objectContract.controller.alias;
+    controllerAlias = objectControllerAlias;
     terminalAlias = "kubernetes-object-effects";
     kind = "remove";
   }
   == ["release"];
   assert transitionMethods {
     result = configuration;
-    controllerAlias = configurationContract.controller.alias;
+    controllerAlias = configurationControllerAlias;
     terminalAlias = "k3s-configuration-effects";
     kind = "reconcile-divergent";
   }
   == ["apply"];
   assert transitionMethods {
     result = configuration;
-    controllerAlias = configurationContract.controller.alias;
+    controllerAlias = configurationControllerAlias;
     terminalAlias = "k3s-configuration-effects";
     kind = "unchanged";
   }
   == [];
   assert duplicateRejected {
     result = object;
-    controllerAlias = objectContract.controller.alias;
+    controllerAlias = objectControllerAlias;
     terminalAlias = "kubernetes-object-effects";
     kind = "create";
   };
   assert duplicateRejected {
     result = configuration;
-    controllerAlias = configurationContract.controller.alias;
+    controllerAlias = configurationControllerAlias;
     terminalAlias = "k3s-configuration-effects";
     kind = "remove";
   }; true

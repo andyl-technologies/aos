@@ -5,10 +5,12 @@
   packageName,
   ...
 }: let
-  contract = import ./configuration-interface.nix {inherit lib;};
-  controllerAlias = contract.controller.alias;
-  contributionAlias = contract.contribution.alias;
-  controllerIdentity = contract.controller.identity;
+  controllerAlias = "k3s-configuration";
+  contributionAlias = "k3s-integration";
+  controllerDeclaration = config.aos.abilities.interfaces."${packageName}:${controllerAlias}";
+  controllerIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration controllerDeclaration
+  );
   controller = config.aos.abilities.implementations."${packageName}:${controllerAlias}";
   effectsInterface = builtins.head controller.requirements.effects.accepted_interfaces;
   emptyResult = {
