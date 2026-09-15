@@ -193,9 +193,8 @@ in rec {
 
           `asDropin` always creates a drop-in file named `overrides.conf`.
           Needed to define instances for systemd template units
-          (e.g. `systemd-nspawn@mycontainer.service`) and to enable
-          upstream-provided units from `systemd.packages` (see
-          `modules/base/networking.nix` for the networkd case).
+          (e.g. `systemd-nspawn@mycontainer.service`) or to extend a unit
+          supplied by an authenticated provider artifact.
 
           See also {manpage}`systemd.unit(5)`.
         '';

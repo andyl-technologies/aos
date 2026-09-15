@@ -66,14 +66,6 @@
     path = encodePath drv.outPath;
     outputs = outputs;
     outPaths = outPaths;
-    # Package-provided systemd units must remain enumerable during on-host
-    # evaluation without reading the package output (which would be IFD when
-    # the same expression is evaluated during image construction).  Package
-    # recipes therefore publish a relative-path inventory as pure passthru
-    # data.  Preserve that one standardized metadata field in the frozen set.
-    systemdUnitInventory =
-      drv.systemdUnitInventory
-      or (drv.passthru.systemdUnitInventory or {});
     inherit name;
   };
 in {
@@ -116,7 +108,6 @@ in {
         name = e.name or name;
         outPath = path;
         outputName = builtins.head outputs;
-        systemdUnitInventory = e.systemdUnitInventory or {};
         __toString = _: path;
       }
       // builtins.listToAttrs (builtins.map (o: {

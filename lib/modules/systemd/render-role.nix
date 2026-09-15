@@ -141,9 +141,6 @@ in
     pureUnits = generateUnits {
       type = "system";
       units = renderedUnits;
-      upstreamUnits = [];
-      upstreamWants = [];
-      packages = [];
     };
     jobScripts = lib.listToAttrs (builtins.map (job:
       lib.nameValuePair job.key {

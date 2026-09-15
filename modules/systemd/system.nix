@@ -65,34 +65,6 @@
     // lib.listToAttrs (builtins.map (withName systemdLib.automountToUnit) cfg.automounts);
 in {
   options.systemd = {
-    package = lib.mkOption {
-      type = lib.types.package;
-      default = pkgs.systemd;
-      description = ''
-        The systemd package whose default unit files live in
-        `$package/lib/systemd/system/` and are found by systemd natively at
-        runtime. AOS does not move these into `$package/example/systemd/`
-        the way nixpkgs does; the defaults stay discoverable through
-        the `SYSTEM_DATA_UNIT_DIR` patch in `pkgs/system/systemd.nix`.
-      '';
-    };
-
-    packages = lib.mkOption {
-      type = lib.types.listOf lib.types.package;
-      default = [];
-      description = ''
-        AOS packages that ship systemd unit files under
-        `$pkg/lib/systemd/system/` (or `$pkg/etc/systemd/system/`).
-        Their unit files are symlinked into `/etc/systemd/system/` at
-        image build time by `generateUnits`. This is how a module
-        registers an upstream-provided unit without re-declaring it
-        via `systemd.services.<name>`. Package recipes expose the relative
-        leaves through `passthru.systemdUnitInventory.<type>`; this inventory
-        is frozen into the image base library so on-host evaluation never
-        enumerates a derivation output.
-      '';
-    };
-
     providerUnitArtifacts = lib.mkOption {
       type = lib.types.listOf lib.types.path;
       default = [];
@@ -188,8 +160,7 @@ in {
       contributable = true;
       description = ''
         Generic escape-hatch unit type. Modules that want to ship raw
-        unit text — e.g. to extend an upstream systemd.packages-provided
-        unit via `overrideStrategy = "asDropin"` — can declare entries
+        unit text, such as a provider-owned drop-in, can declare entries
         here directly. The `systemd.services` / `systemd.targets`
         / etc. renderers feed into this attrset automatically in
         `config.systemd.units` below.
@@ -305,18 +276,6 @@ in {
     pureSystemUnits = systemdLib.generateUnits {
       type = "system";
       units = config.systemd.units;
-      upstreamUnits = [];
-      upstreamWants = [];
-      packages = config.systemd.packages;
-      package = config.systemd.package;
-      packageOwners = builtins.listToAttrs (builtins.map (package:
-        lib.nameValuePair
-        (builtins.unsafeDiscardStringContext (builtins.toString package))
-        (provenance.ownerOfListAttr
-          ["systemd" "packages"]
-          "outPath"
-          package.outPath))
-      config.systemd.packages);
     };
 
     artifactOwner = path: name: let

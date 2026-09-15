@@ -34,7 +34,6 @@
   systemdTypes = import ../modules/systemd/types.nix {
     inherit lib systemdLib systemdUnitOptions;
   };
-  freezePkgs = import ../build/freeze-pkgs.nix {inherit lib;};
 
   # Drive the library from a synthetic module that declares just
   # `systemd.services` and provides a handful of definitions that cover
@@ -139,90 +138,9 @@
       "script-only.service" = systemdLib.serviceToUnit svc.script-only;
       "direct-only.service" = systemdLib.serviceToUnit svc.direct-only;
     };
-    upstreamUnits = [];
-    upstreamWants = [];
-    packages = [];
   };
   pureScriptUnit = pureGenerated."script-only.service";
   pureKeys = builtins.attrNames pureScriptUnit;
-  inventoryPackage = {
-    # Keep the fixture hash asymmetric so the reversible placeholder encoding
-    # can prove that the original store-path basename was not serialized.
-    outPath = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-inventory-fixture";
-    __toString = self: self.outPath;
-    systemdUnitInventory.system = [
-      "lib/systemd/system/demo.service"
-      "lib/systemd/system/demo.service.d/10-package.conf"
-      "lib/systemd/system/multi-user.target.wants/demo.service"
-    ];
-  };
-  frozenInventoryJson = freezePkgs.freezeToJSON {
-    fixture =
-      inventoryPackage
-      // {
-        type = "derivation";
-        name = "inventory-fixture";
-        outputs = ["out"];
-      };
-  };
-  frozenInventoryPackage = (freezePkgs.frozenFromJSON frozenInventoryJson).fixture;
-  inventoryGenerated = systemdLib.generateUnits {
-    type = "system";
-    units."demo.service" = overlapUnit "demo.service";
-    packages = [inventoryPackage];
-  };
-  inventoryEtc = systemdLib.unitsToEtc inventoryGenerated;
-  missingInventoryRejected =
-    !(builtins.tryEval (builtins.toJSON (systemdLib.generateUnits {
-      type = "system";
-      units = {};
-      packages = [
-        {
-          outPath = "/missing-inventory";
-          __toString = self: self.outPath;
-        }
-      ];
-    })))
-    .success;
-  inventoryCollisionRejected =
-    !(builtins.tryEval (builtins.toJSON (systemdLib.generateUnits {
-      type = "system";
-      units = {};
-      packages = [inventoryPackage inventoryPackage];
-      upstreamUnits = ["demo.service"];
-      package =
-        inventoryPackage
-        // {
-          systemdUnitInventory.system = ["example/systemd/system/demo.service"];
-        };
-    })))
-    .success;
-  disallowedCollisionRejected =
-    !(builtins.tryEval (builtins.toJSON (systemdLib.generateUnits {
-      allowCollisions = false;
-      type = "system";
-      units."demo.service" = overlapUnit "demo.service";
-      packages = [inventoryPackage];
-    })))
-    .success;
-  upstreamPackage = {
-    outPath = "/nix/store/11111111111111111111111111111111-upstream-fixture";
-    __toString = self: self.outPath;
-    systemdUnitInventory.system = [
-      "example/systemd/system/default.target"
-      {
-        path = "example/systemd/system/default.target.wants/base.service";
-        upstreamTarget = "../base.service";
-      }
-    ];
-  };
-  upstreamEtc = systemdLib.unitsToEtc (systemdLib.generateUnits {
-    type = "system";
-    units = {};
-    package = upstreamPackage;
-    upstreamUnits = ["default.target"];
-    upstreamWants = ["default.target.wants"];
-  });
   duplicateFinalEtcRejected =
     !(builtins.tryEval (builtins.toJSON (systemdLib.unitsToEtc {
       "demo.service" = {
@@ -284,49 +202,6 @@
     {
       cond = (builtins.tryEval (builtins.toJSON pureGenerated)).success;
       msg = "systemd-lib: generateUnits result must serialize as pure JSON data";
-    }
-    {
-      cond =
-        inventoryEtc."systemd/system/demo.service"
-        == {
-          kind = "symlink";
-          target = "${inventoryPackage}/lib/systemd/system/demo.service";
-        }
-        && inventoryEtc."systemd/system/demo.service.d/overrides.conf".kind == "text"
-        && inventoryEtc."systemd/system/demo.service.d/10-package.conf".kind == "symlink"
-        && inventoryEtc."systemd/system/multi-user.target.wants/demo.service".kind == "symlink";
-      msg = "systemd-lib: package inventory/drop-in/.wants merge semantics changed";
-    }
-    {
-      cond = missingInventoryRejected && inventoryCollisionRejected && disallowedCollisionRejected;
-      msg = "systemd-lib: missing inventories and forbidden/cross-source collisions must fail closed";
-    }
-    {
-      cond = frozenInventoryPackage.systemdUnitInventory == inventoryPackage.systemdUnitInventory;
-      msg = "systemd-lib: freeze-pkgs dropped package systemd inventory metadata";
-    }
-    {
-      cond =
-        toString frozenInventoryPackage
-        == toString inventoryPackage
-        && !containsStr "/nix/store/" frozenInventoryJson
-        && !containsStr "0123456789abcdfghijklmnpqrsvwxyz" frozenInventoryJson
-        && containsStr "@nix-store@/" frozenInventoryJson;
-      msg = "systemd-lib: frozen package paths must round-trip without serialized store references";
-    }
-    {
-      cond =
-        upstreamEtc."systemd/system/default.target"
-        == {
-          kind = "symlink";
-          target = "${upstreamPackage}/example/systemd/system/default.target";
-        }
-        && upstreamEtc."systemd/system/default.target.wants/base.service"
-        == {
-          kind = "symlink";
-          target = "../base.service";
-        };
-      msg = "systemd-lib: upstreamUnits/upstreamWants inventory semantics changed";
     }
     {
       cond = duplicateFinalEtcRejected && nonAdjacentAncestorEtcRejected;

@@ -164,7 +164,7 @@ in
       {
         name = "configure";
         # Enable systemd so dbus installs its user service/socket units and
-        # sockets.target.wants link for systemd.packages consumers.
+        # sockets.target.wants link for the packaged unit tree.
         # --sysconfdir=/etc so
         # baked-in config lookups go to /etc/dbus-1 on the running system,
         # not a read-only store path.

@@ -22,8 +22,8 @@
 #     has no Haskell toolchain, spec §5.4 — stays dropped.)
 #   - `generateUnits` now returns pure unit records. `unitsToEtc` flattens
 #     those records into the manifest layout and `materializeUnits` is the
-#     only build-side derivation seam. Package/upstream discovery consumes a
-#     stage-1-authored `systemdUnitInventory` instead of reading outputs (IFD).
+#     only build-side derivation seam. Package-owned units enter through the
+#     authenticated provider artifact path instead of an output inventory.
 #   - The `X-*` switch-to-configuration emissions were originally dropped
 #     here. The live in-place `apm upgrade --system` path
 #     (2026-05-27_apm_system_upgrade_refactor_v2 §6.4) restores them: the
@@ -206,9 +206,8 @@ in rec {
   # A type for options that take a unit name.
   unitNameType = types.strMatching "[a-zA-Z0-9@%:_.\\-]+[.](service|socket|device|mount|automount|swap|target|path|timer|scope|slice)";
 
-  # makeUnit — build a single unit as its own derivation, so upstream
-  # machinery (`generateUnits`, `systemd.packages` drop-ins) can symlink
-  # it into the final `/etc/systemd/system/` tree.
+  # makeUnit — build a single unit as its own derivation for the build-side
+  # materializer.
   #
   # When `unit.enable == false`, the unit is rendered as a symlink to
   # /dev/null — the systemd idiom for "mask this unit", and what lets
@@ -493,27 +492,15 @@ in rec {
       settings
     );
 
-  # generateUnits — render systemd units as pure data.
+  # generateUnits — render authored systemd units as pure data.
   #
-  # Authored records remain keyed by full unit name; inventory leaves use an
-  # internal slash-bearing key (not a valid unit name) while retaining their
-  # final path in `name`.
   # Every value is JSON-safe pure data and deliberately omits the legacy
-  # `unit` derivation and derivation-bearing job-script fields.
-  #
-  # Package outputs cannot be enumerated during pure evaluation. Packages that
-  # provide unit files therefore carry a `systemdUnitInventory.<type>` list of
-  # paths relative to their output. `freeze-pkgs.nix` preserves this metadata,
-  # so image-build and on-host evaluation consume the same pure inventory.
+  # `unit` derivation and derivation-bearing job-script fields. Package-owned
+  # unit trees enter through authenticated provider artifacts and are assembled
+  # outside this renderer.
   generateUnits = {
-    allowCollisions ? true,
     type,
     units,
-    upstreamUnits ? [],
-    upstreamWants ? [],
-    packages ? [],
-    package ? null,
-    packageOwners ? {},
   }: let
     typeDir =
       {
@@ -525,129 +512,7 @@ in rec {
       .${
         type
       };
-    normalRoots = [
-      "etc/systemd/${typeDir}/"
-      "lib/systemd/${typeDir}/"
-    ];
-    upstreamRoot = "example/systemd/${typeDir}/";
-    allRoots = normalRoots ++ [upstreamRoot];
-
-    inventoryOf = pkg: let
-      inventory =
-        pkg.systemdUnitInventory
-        or (pkg.passthru.systemdUnitInventory or null);
-    in
-      if inventory == null || !(inventory ? ${type})
-      then throw "generateUnits: package ${builtins.toString pkg} has no systemdUnitInventory.${type}"
-      else inventory.${type};
-
-    normalizeInventoryEntry = pkg: owner: raw: let
-      item =
-        if isString raw
-        then {path = raw;}
-        else if builtins.isAttrs raw
-        then raw
-        else throw "generateUnits: systemd inventory entries must be strings or attribute sets";
-      path =
-        if item ? path && isString item.path
-        then item.path
-        else throw "generateUnits: systemd inventory entry has no string path";
-      components = splitString "/" path;
-      rootMatches = filter (root: hasPrefix root path) allRoots;
-      root =
-        if length rootMatches == 1
-        then head rootMatches
-        else throw "generateUnits: invalid systemd inventory path '${path}' in ${builtins.toString pkg}";
-      logicalPath = lib.removePrefix root path;
-      safe =
-        path
-        != ""
-        && !(hasPrefix "/" path)
-        && !(lib.hasSuffix "/" path)
-        && !(elem "" components)
-        && !(elem "." components)
-        && !(elem ".." components)
-        && logicalPath != "";
-      source = "${builtins.toString pkg}/${path}";
-    in
-      if !safe
-      then throw "generateUnits: unsafe systemd inventory path '${path}' in ${builtins.toString pkg}"
-      else {
-        inherit logicalPath owner path root source;
-        # Upstream copied symlinks preserve their authored target. Ordinary
-        # systemd.packages leaves always point at the package path itself.
-        upstreamTarget =
-          if !(item ? upstreamTarget) || isString item.upstreamTarget
-          then item.upstreamTarget or source
-          else throw "generateUnits: upstreamTarget for '${path}' must be a string";
-      };
-
-    entriesFor = pkg: owner:
-      builtins.map (normalizeInventoryEntry pkg owner) (inventoryOf pkg);
-
-    packageKey = pkg:
-      builtins.unsafeDiscardStringContext (builtins.toString pkg);
-    uniquePackagesByPath = builtins.listToAttrs (builtins.map (pkg:
-      lib.nameValuePair (packageKey pkg) pkg)
-    packages);
-    uniquePackages = builtins.attrValues uniquePackagesByPath;
-    normalPackageEntries = concatLists (builtins.map (pkg: let
-      owner = packageOwners.${packageKey pkg} or "@base";
-    in
-      filter (entry: elem entry.root normalRoots) (entriesFor pkg owner))
-    uniquePackages);
-    upstreamInventory =
-      if upstreamUnits == [] && upstreamWants == []
-      then []
-      else if package == null
-      then throw "generateUnits: upstreamUnits/upstreamWants require package"
-      else filter (entry: entry.root == upstreamRoot) (entriesFor package "@base");
-    requestedUpstreamEntries = concatLists (
-      builtins.map (
-        name: let
-          matches = filter (entry: entry.logicalPath == name) upstreamInventory;
-        in
-          if length matches == 1
-          then matches
-          else throw "generateUnits: upstream unit '${name}' is missing or ambiguous in systemdUnitInventory.${type}"
-      )
-      upstreamUnits
-      ++ builtins.map (
-        wanted: let
-          prefix = "${wanted}/";
-          matches = filter (entry: hasPrefix prefix entry.logicalPath) upstreamInventory;
-        in
-          if matches != []
-          then matches
-          else throw "generateUnits: upstream wants directory '${wanted}' is missing from systemdUnitInventory.${type}"
-      )
-      upstreamWants
-    );
-
-    allExternalEntries = normalPackageEntries ++ requestedUpstreamEntries;
-    externalNames = builtins.map (entry: entry.logicalPath) allExternalEntries;
-    duplicateExternalNames =
-      filter
-      (name: length (filter (candidate: candidate == name) externalNames) > 1)
-      (lib.unique externalNames);
-
-    # Automatic override selection must observe the package inventory just as
-    # the historical builder observed `$out/$name` after constructing the
-    # package symlink farm.
-    hasExternalUnit = name: elem name externalNames;
-    renderUnit = name: unit: let
-      requested = attrByPath ["overrideStrategy"] "asDropinIfExists" unit;
-      collides = hasExternalUnit name;
-      effective =
-        if requested == "asDropin"
-        then "asDropin"
-        else if requested == "asDropinIfExists" && collides && unit.enable
-        then
-          if allowCollisions
-          then "asDropin"
-          else throw "generateUnits: multiple derivations configure ${name}"
-        else requested;
-    in {
+    renderUnit = name: unit: {
       inherit name;
       text =
         if unit.text == null
@@ -655,53 +520,18 @@ in rec {
         else unit.text;
       mode = "0644";
       enable = unit.enable;
-      overrideStrategy = effective;
+      overrideStrategy =
+        if attrByPath ["overrideStrategy"] "asDropinIfExists" unit == "asDropin"
+        then "asDropin"
+        else "asDropinIfExists";
       aliases = unit.aliases or [];
       wantedBy = unit.wantedBy or [];
       requiredBy = unit.requiredBy or [];
       upheldBy = unit.upheldBy or [];
       jobScriptKeys = builtins.map (job: job.key) (unit.jobScripts or []);
     };
-    renderedUnits = mapAttrs renderUnit units;
-
-    # These historical `ln -sfn` sites replace an existing package leaf.
-    replacingPaths = lib.unique (concatLists (mapAttrsToList (name: unit:
-      optional (unit.overrideStrategy != "asDropin") name
-      ++ unit.aliases
-      ++ builtins.map (target: "${target}.wants/${name}") unit.wantedBy
-      ++ builtins.map (target: "${target}.requires/${name}") unit.requiredBy
-      ++ builtins.map (target: "${target}.upholds/${name}") unit.upheldBy)
-    renderedUnits));
-    survivingExternalEntries =
-      filter
-      (entry: !(elem entry.logicalPath replacingPaths))
-      allExternalEntries;
-    externalRecords = builtins.listToAttrs (builtins.map (entry:
-      lib.nameValuePair "/package/${entry.logicalPath}" {
-        name = entry.logicalPath;
-        text = "";
-        mode = "0644";
-        enable = true;
-        overrideStrategy = "external";
-        aliases = [];
-        wantedBy = [];
-        requiredBy = [];
-        upheldBy = [];
-        jobScriptKeys = [];
-        externalEntry = {
-          kind = "symlink";
-          target =
-            if entry.root == upstreamRoot
-            then entry.upstreamTarget
-            else entry.source;
-        };
-        inherit (entry) owner;
-      })
-    survivingExternalEntries);
   in
-    if duplicateExternalNames != []
-    then throw "generateUnits: package/upstream unit collision at ${concatStringsSep ", " duplicateExternalNames}"
-    else builtins.seq typeDir (externalRecords // renderedUnits);
+    builtins.seq typeDir (mapAttrs renderUnit units);
 
   # unitsToEtc — flatten pure unit records into manifest `/etc` entries.
   # This is shared by the config manifest and role exposure so the pure plan
