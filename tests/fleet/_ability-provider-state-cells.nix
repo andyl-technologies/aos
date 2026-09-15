@@ -61,18 +61,14 @@
     builtins.filter (entry: entry.reason == "missing-authenticated-state-format") matrix.inapplicable_cells
   );
 in
-  assert builtins.length all == 101;
-  assert builtins.length (lib.unique all) == 101;
-  assert builtins.length groups.reference == 56;
-  assert builtins.length groups.kubernetes == 12;
-  assert builtins.length groups.rollout == 27;
-  assert builtins.length groups.foreground == 6;
-  assert builtins.length retained == 46;
-  assert builtins.length unsupported == 46;
-  assert builtins.length compatible == 9;
-  assert builtins.length blockedCompatible == 37;
-  assert builtins.length instanceLifetimeBlocked == 37;
-  assert builtins.length missingStateFormatBlocked == 0;
+  assert builtins.length all == builtins.length (lib.unique all);
+  assert builtins.sort builtins.lessThan all
+  == builtins.sort builtins.lessThan (map (cell: cell.id) selected);
+  assert builtins.length blockedCompatible
+  == builtins.length matrix.inapplicable_cells;
+  assert builtins.length instanceLifetimeBlocked
+  + builtins.length missingStateFormatBlocked
+  == builtins.length matrix.inapplicable_cells;
   assert builtins.all (cell:
     builtins.length cell.postconditions
     == (

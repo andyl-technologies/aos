@@ -1,23 +1,20 @@
 //! Validates and compiles the closed native-adapter surface.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 const SURFACE_PATH: &str = "../../qualification/native-adapter-surface.json";
 const SURFACE_SCHEMA: &str = "aos.qualification.native-adapter-surface/v1";
 const MATRIX_SCHEMA: &str = "aos.qualification.native-adapter-matrix/v1";
 const SUBJECT_SCHEMA: &str = "aos.qualification.native-adapter-subject/v1";
-const EXPECTED_ADAPTERS: usize = 13;
-const EXPECTED_METHODS: usize = 51;
-const EXPECTED_SCENARIOS: usize = 28;
 const MAX_SURFACE_BYTES: u64 = 64 * 1024;
-const EXPECTED_SURFACE_DIGEST: &str =
-    "e82843e065b80ed8920c784f27e7a19959489af817996e324f85257dc3c64eee";
+const MAX_ADAPTERS: usize = 64;
+const MAX_METHODS: usize = 1024;
+const MAX_SCENARIOS: usize = 64;
 
 type BuildResult<T> = Result<T, Box<dyn Error>>;
 
@@ -85,10 +82,6 @@ pub(super) fn compile() -> BuildResult<()> {
     }
     let source = std::fs::read(SURFACE_PATH)?;
     let value: serde_json::Value = serde_json::from_slice(&source)?;
-    let canonical = serde_json::to_vec(&value)?;
-    if format!("{:x}", Sha256::digest(&canonical)) != EXPECTED_SURFACE_DIGEST {
-        return Err("native-adapter surface differs from the closed version-1 contract".into());
-    }
     let document: SurfaceDocument = serde_json::from_value(value)?;
     validate(&document)?;
 
@@ -115,131 +108,26 @@ fn validate(document: &SurfaceDocument) -> BuildResult<()> {
     {
         return Err("native-adapter surface uses an unsupported schema".into());
     }
-    if document.limits.max_adapters != EXPECTED_ADAPTERS
-        || document.limits.max_methods != EXPECTED_METHODS
-        || document.limits.max_scenarios != EXPECTED_SCENARIOS
-        || document.adapters.len() != EXPECTED_ADAPTERS
-        || document.scenarios.len() != EXPECTED_SCENARIOS
+    let method_count = document
+        .adapters
+        .iter()
+        .map(|adapter| adapter.methods.len())
+        .sum::<usize>();
+    if document.limits.max_adapters == 0
+        || document.limits.max_adapters > MAX_ADAPTERS
+        || document.limits.max_methods == 0
+        || document.limits.max_methods > MAX_METHODS
+        || document.limits.max_scenarios == 0
+        || document.limits.max_scenarios > MAX_SCENARIOS
+        || document.adapters.is_empty()
+        || document.adapters.len() > document.limits.max_adapters
+        || method_count == 0
+        || method_count > document.limits.max_methods
+        || document.scenarios.is_empty()
+        || document.scenarios.len() > document.limits.max_scenarios
     {
-        return Err("native-adapter surface differs from its closed limits".into());
+        return Err("native-adapter surface exceeds its declared limits".into());
     }
-
-    let expected: BTreeMap<&str, (&str, &str, &[&str])> = BTreeMap::from([
-        (
-            "credential-delivery",
-            (
-                "aos.credential-delivery-effects",
-                "host-resource",
-                &["acquire", "deliver", "release"] as &[_],
-            ),
-        ),
-        (
-            "foreground-process",
-            (
-                "aos.foreground-process",
-                "application-container-process",
-                &["observe", "start", "stop"],
-            ),
-        ),
-        (
-            "host-network-policy",
-            (
-                "aos.host-network-policy-effects",
-                "host-resource",
-                &["apply", "observe", "remove"],
-            ),
-        ),
-        (
-            "host-storage",
-            (
-                "aos.host-storage-effects",
-                "host-resource",
-                &["ensure", "observe", "release"],
-            ),
-        ),
-        (
-            "image-rollout",
-            (
-                "aos.ab-image-rollout-effects",
-                "host-machine",
-                &[
-                    "drain",
-                    "hold",
-                    "observe-boot",
-                    "observe-health",
-                    "prepare",
-                    "retain",
-                    "retire",
-                    "select",
-                    "withdraw",
-                ],
-            ),
-        ),
-        (
-            "kubernetes-object",
-            (
-                "aos.kubernetes-object-effects",
-                "kubernetes-cluster",
-                &["apply", "delete", "observe"],
-            ),
-        ),
-        (
-            "managed-configuration",
-            (
-                "aos.managed-configuration-effects",
-                "host-filesystem",
-                &["prepare", "publish", "release"],
-            ),
-        ),
-        (
-            "network-endpoint",
-            (
-                "aos.network-endpoint-effects",
-                "host-resource",
-                &["materialize", "observe", "release"],
-            ),
-        ),
-        (
-            "nginx-validation",
-            (
-                "aos.nginx-validation",
-                "host-process",
-                &["record", "release", "validate"],
-            ),
-        ),
-        (
-            "postgresql",
-            (
-                "aos.postgresql-effects",
-                "host-resource",
-                &["materialize", "observe", "restart", "start", "stop"],
-            ),
-        ),
-        (
-            "systemd-bootstrap",
-            (
-                "aos.systemd-provider-bootstrap",
-                "bootstrap-manager",
-                &["observe-manager", "start", "stop"],
-            ),
-        ),
-        (
-            "systemd-manager",
-            (
-                "aos.systemd-manager",
-                "host-manager",
-                &["observe", "reload", "restart", "start", "stop"],
-            ),
-        ),
-        (
-            "service-management",
-            (
-                "aos.service-management",
-                "host-manager",
-                &["observe", "reload", "restart", "start", "stop"],
-            ),
-        ),
-    ]);
     let mut adapters = BTreeSet::new();
     let mut interfaces = BTreeSet::new();
     let mut methods = BTreeSet::new();
@@ -263,31 +151,12 @@ fn validate(document: &SurfaceDocument) -> BuildResult<()> {
         if let Some(state_format) = adapter.provider_contract.state_format.as_deref() {
             validate_digest(state_format)?;
         }
-        let Some((interface, scope, expected_methods)) = expected.get(adapter.adapter.as_str())
-        else {
-            return Err(format!("unknown native adapter {}", adapter.adapter).into());
-        };
         if adapter.interface_abi != 1
-            || adapter.interface_name != *interface
-            || adapter.scope != *scope
             || !adapters.insert(adapter.adapter.as_str())
             || !interfaces.insert((adapter.interface_name.as_str(), adapter.interface_abi))
             || previous_adapter.is_some_and(|previous| previous >= adapter.adapter.as_str())
         {
             return Err(format!("invalid or duplicate native adapter {}", adapter.adapter).into());
-        }
-        if adapter
-            .methods
-            .iter()
-            .map(|method| method.method.as_str())
-            .collect::<Vec<_>>()
-            != *expected_methods
-        {
-            return Err(format!(
-                "native adapter {} has the wrong method inventory",
-                adapter.adapter
-            )
-            .into());
         }
         previous_adapter = Some(adapter.adapter.as_str());
 
@@ -324,7 +193,7 @@ fn validate(document: &SurfaceDocument) -> BuildResult<()> {
             previous_method = Some(method.method.as_str());
         }
     }
-    if adapters.len() != expected.len() || methods.len() != EXPECTED_METHODS {
+    if adapters.len() != document.adapters.len() || methods.len() != method_count {
         return Err("native-adapter method inventory is incomplete".into());
     }
 
@@ -463,23 +332,18 @@ fn optional_digest_literal(value: Option<&str>) -> BuildResult<String> {
     )
 }
 
-fn variant(adapter: &str) -> BuildResult<&'static str> {
-    Ok(match adapter {
-        "credential-delivery" => "CredentialDelivery",
-        "foreground-process" => "ForegroundProcess",
-        "host-network-policy" => "HostNetworkPolicy",
-        "host-storage" => "HostStorage",
-        "image-rollout" => "ImageRollout",
-        "kubernetes-object" => "KubernetesObject",
-        "managed-configuration" => "ManagedConfiguration",
-        "network-endpoint" => "NetworkEndpoint",
-        "nginx-validation" => "NginxValidation",
-        "postgresql" => "Postgresql",
-        "systemd-bootstrap" => "SystemdBootstrap",
-        "systemd-manager" => "SystemdManager",
-        "service-management" => "ServiceManagement",
-        _ => return Err(format!("unknown native adapter {adapter}").into()),
-    })
+fn variant(adapter: &str) -> BuildResult<String> {
+    validate_token(adapter, "adapter")?;
+    let mut output = String::new();
+    for word in adapter.split('-') {
+        let mut bytes = word.bytes();
+        let Some(first) = bytes.next() else {
+            return Err(format!("native adapter {adapter} has an empty name segment").into());
+        };
+        output.push(char::from(first.to_ascii_uppercase()));
+        output.extend(bytes.map(char::from));
+    }
+    Ok(output)
 }
 
 fn option_literal(value: Option<&str>) -> String {

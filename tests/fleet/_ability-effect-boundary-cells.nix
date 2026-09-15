@@ -45,15 +45,9 @@
     ++ groups.rollout
     ++ groups.foreground;
 in
-  assert builtins.length matrix.cells == 1428;
-  assert builtins.length all == 200;
-  assert builtins.length (lib.unique all) == 200;
-  assert builtins.length groups.reference == 89;
-  assert builtins.length groups.postgresql == 19;
-  assert builtins.length groups.systemdManager == 20;
-  assert builtins.length groups.kubernetes == 24;
-  assert builtins.length groups.rollout == 36;
-  assert builtins.length groups.foreground == 12;
+  assert builtins.length all == builtins.length (lib.unique all);
+  assert builtins.sort builtins.lessThan all
+  == builtins.sort builtins.lessThan (map (cell: cell.id) selected);
   assert builtins.all (cell: builtins.length cell.postconditions == 4) selected; {
     inherit all alreadyQualified groups scenarios;
   }

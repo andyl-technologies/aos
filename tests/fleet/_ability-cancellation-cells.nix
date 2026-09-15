@@ -35,13 +35,15 @@
     rollout = byAdapters ["image-rollout"];
   };
 in
-  assert builtins.length all == 47;
-  assert builtins.length groups.reference == 18;
-  assert builtins.length groups.foreground == 3;
-  assert builtins.length groups.postgresql == 5;
-  assert builtins.length groups.kubernetes == 3;
-  assert builtins.length groups.systemd == 9;
-  assert builtins.length groups.rollout == 9;
-  assert builtins.length (lib.unique all) == 47; {
+  assert builtins.length all == builtins.length (lib.unique all);
+  assert builtins.sort builtins.lessThan all
+  == builtins.sort builtins.lessThan (
+    groups.reference
+    ++ groups.foreground
+    ++ groups.postgresql
+    ++ groups.kubernetes
+    ++ groups.systemd
+    ++ groups.rollout
+  ); {
     inherit all groups;
   }

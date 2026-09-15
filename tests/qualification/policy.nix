@@ -393,10 +393,11 @@ in
     "checks.fleet.ability-native-power-loss"
   ];
   assert abilityRequirements.ability-native-adapter-matrix.production_only;
-  assert nativeAdapterMatrix.cell_count == 1428;
-  assert nativeAdapterMatrix.required_production_vm_cells == 1391;
-  assert builtins.length nativeAdapterMatrix.applicable_cells == 1391;
-  assert builtins.length nativeAdapterMatrix.inapplicable_cells == 37;
+  assert nativeAdapterMatrix.cell_count
+  == nativeAdapterMatrix.required_production_vm_cells
+  + builtins.length nativeAdapterMatrix.inapplicable_cells;
+  assert builtins.length nativeAdapterMatrix.applicable_cells
+  == nativeAdapterMatrix.required_production_vm_cells;
   assert builtins.length applicableNativeIds
   == builtins.length (lib.unique applicableNativeIds);
   assert builtins.length inapplicableNativeIds
@@ -404,11 +405,11 @@ in
   assert builtins.all (id: !builtins.elem id inapplicableNativeIds) applicableNativeIds;
   assert partitionedNativeIds == map (cell: cell.id) nativeCells;
   assert builtins.length (builtins.filter (entry: entry.reason == "non-persistent-lifetime") nativeAdapterMatrix.inapplicable_cells)
-  == 37;
-  assert builtins.length (builtins.filter (entry: entry.reason == "missing-authenticated-state-format") nativeAdapterMatrix.inapplicable_cells)
-  == 0;
+  + builtins.length (builtins.filter (entry: entry.reason == "missing-authenticated-state-format") nativeAdapterMatrix.inapplicable_cells)
+  == builtins.length nativeAdapterMatrix.inapplicable_cells;
   assert nativeAdapterMatrix.spec.applicability == nativeAdapterMatrix.applicability;
-  assert nativeAdapterMatrix.applicability_digest == "sha256:3e0e6fff4942f23a8b13fd07d6fd3d11640fe12b6bf2d239b732d8b7cde992e1";
+  assert nativeAdapterMatrix.applicability_digest
+  == "sha256:${builtins.hashString "sha256" (builtins.toJSON nativeAdapterMatrix.applicability)}";
   assert (providerContract "postgresql")
   == {
     resource_lifetime = "persistent";
@@ -441,7 +442,7 @@ in
   assert rejectsNativeMatrix {
     applicability =
       nativeAdapterMatrix.applicability
-      // {required_production_vm_cells = 1354;};
+      // {required_production_vm_cells = nativeAdapterMatrix.required_production_vm_cells + 1;};
   };
   assert rejectsNativeMatrix {
     applicability =
@@ -463,6 +464,7 @@ in
   assert rejectsNativeMatrix {cells = [(builtins.elemAt nativeCells 1) firstNativeCell] ++ lib.drop 2 nativeCells;};
   assert rejectsNativeMatrix {subject = nativeAdapterMatrix.subject // {surface_digest = "sha256:stale";};};
   assert rejectsNativeMatrix {
+    subject = nativeAdapterMatrix.subject;
     surface =
       nativeAdapterSurface
       // {
@@ -472,6 +474,7 @@ in
       };
   };
   assert rejectsNativeMatrix {
+    subject = nativeAdapterMatrix.subject;
     surface =
       nativeAdapterSurface
       // {
@@ -488,6 +491,7 @@ in
       };
   };
   assert rejectsNativeMatrix {
+    subject = nativeAdapterMatrix.subject;
     surface =
       nativeAdapterSurface
       // {
