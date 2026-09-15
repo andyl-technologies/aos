@@ -105,6 +105,8 @@ in
       );
     propagatedDeps = [];
 
+    abilities = ./_openssh/module.nix;
+
     phases = [
       {
         name = "unpack";

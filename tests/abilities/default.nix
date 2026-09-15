@@ -534,6 +534,9 @@
   securityPolkitNative = import ./security-polkit-native.nix {
     inherit pkgs lib;
   };
+  securitySshNative = import ./security-ssh-native.nix {
+    inherit pkgs lib;
+  };
   smokeAbilityProjection = pkgs.ability-package-smoke.abilities;
   smokeArtifactSelectors = pkgs.ability-package-smoke.contract.selectors;
   oversizedFallback = builtins.tryEval (builtins.deepSeq (
@@ -952,6 +955,7 @@ in
   assert baseHardeningNative;
   assert securityAuditNative;
   assert securityPolkitNative;
+  assert securitySshNative;
   assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
   assert builtins.length (builtins.attrNames smokeAbilityProjection.requirementTemplates) == 1;
