@@ -408,9 +408,6 @@
   productionKubernetes = import ./production-kubernetes.nix {
     inherit pkgs lib;
   };
-  productionPackageAdoption = import ./production-package-adoption.nix {
-    inherit pkgs lib;
-  };
   serviceManagement = import ./service-management.nix {
     inherit lib;
   };
@@ -849,7 +846,6 @@ in
   assert postgresqlReconciliation.reconcile_stopped == ["materialize" "observe" "start" "stop"];
   assert postgresqlReconciliation.reconcile_divergent == ["materialize" "observe" "restart" "stop"];
   assert productionKubernetes;
-  assert productionPackageAdoption;
   assert serviceManagement;
   assert systemServiceModules;
   assert serviceModuleCutover;
