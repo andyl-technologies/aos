@@ -77,6 +77,135 @@ pub struct PartitionSpec {
     pub priority: i64,
 }
 
+/// Canonical storage-provisioning plan passed between checked ability operations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalProvisioningPlan {
+    /// Must equal `aos.storage.provisioning-plan/v1`.
+    pub schema: String,
+    /// Records whether authenticated operator input or image defaults supplied the intent.
+    pub source: CanonicalProvisioningSource,
+    /// Names the durable GPT provenance marker and UUID namespace.
+    pub marker_uuid: String,
+    /// Records whether the plan must leave `/var` raw for measured boot.
+    pub measured_boot: bool,
+    /// Maps logical partition keys to their normalized definitions.
+    pub partitions: BTreeMap<String, CanonicalPartitionSpec>,
+}
+
+/// Identifies the authenticated source of one provisioning plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CanonicalProvisioningSource {
+    /// The plan came from an authenticated operator host module.
+    Operator,
+    /// The plan came from the image's closed provisioning defaults.
+    Fallback,
+}
+
+/// Canonical target and settings for one partition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalPartitionSpec {
+    /// Selects the root disk or one stable explicit device path.
+    pub target: CanonicalPartitionTarget,
+    /// GPT partition label.
+    pub label: String,
+    /// Semantic partition type or canonical raw GUID.
+    pub partition_type: String,
+    /// Minimum partition size in systemd size syntax.
+    pub size_min: String,
+    /// Optional maximum partition size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_max: Option<String>,
+    /// Relative free-space allocation weight.
+    pub weight: i64,
+    /// Optional initial filesystem format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    /// Deterministic GPT partition UUID.
+    pub uuid: String,
+    /// Whether this partition consumes remaining free space.
+    pub grow: bool,
+    /// Whether an existing filesystem may grow.
+    pub grow_fs: bool,
+    /// Stable placement priority.
+    pub priority: i64,
+}
+
+/// Selects the block device that receives one partition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum CanonicalPartitionTarget {
+    /// Uses the disk containing the active root partition.
+    RootDisk,
+    /// Uses one stable explicit device path.
+    Device {
+        /// Stable `/dev/disk/by-id/...` path.
+        path: String,
+    },
+}
+
+/// Validates and converts evaluated provisioning intent into its ability wire plan.
+///
+/// Missing partition UUIDs are derived once from the durable marker UUID. Optional
+/// null fields remain absent in the serialized canonical value.
+///
+/// # Errors
+///
+/// Returns an error when the evaluated intent, measured-boot policy, or marker
+/// UUID is invalid.
+pub fn canonicalize_provisioning_plan(
+    mut plan: ProvisioningPlan,
+    source: CanonicalProvisioningSource,
+    measured_boot: bool,
+    marker_uuid: &str,
+) -> Result<CanonicalProvisioningPlan> {
+    validate_provisioning_plan(&plan, measured_boot)?;
+    let marker_uuid = normalize_marker_uuid(marker_uuid)?;
+    assign_missing_partition_uuids(&mut plan, &marker_uuid);
+
+    let partitions = plan
+        .storage
+        .partitions
+        .into_iter()
+        .map(|(name, partition)| -> Result<_> {
+            let target = match partition.device {
+                Some(path) => CanonicalPartitionTarget::Device { path },
+                None => CanonicalPartitionTarget::RootDisk,
+            };
+            let uuid = partition
+                .uuid
+                .context("partition UUID assignment omitted a partition")?;
+
+            Ok((
+                name,
+                CanonicalPartitionSpec {
+                    target,
+                    label: partition.label,
+                    partition_type: partition.partition_type,
+                    size_min: partition.size_min,
+                    size_max: partition.size_max,
+                    weight: partition.weight,
+                    format: partition.format,
+                    uuid,
+                    grow: partition.grow,
+                    grow_fs: partition.grow_fs,
+                    priority: partition.priority,
+                },
+            ))
+        })
+        .collect::<Result<_>>()?;
+
+    Ok(CanonicalProvisioningPlan {
+        schema: "aos.storage.provisioning-plan/v1".into(),
+        source,
+        marker_uuid,
+        measured_boot,
+        partitions,
+    })
+}
+
 /// Validates the complete evaluated provisioning plan.
 ///
 /// # Errors
@@ -407,4 +536,96 @@ fn validate_uuid(value: &str) -> Result<()> {
         bail!("'{value}' is not a canonical UUID");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn evaluated_plan() -> ProvisioningPlan {
+        ProvisioningPlan {
+            schema: "aos.provisioning-plan/v1".into(),
+            storage: StoragePlan {
+                partitions: BTreeMap::from([
+                    (
+                        "swap".into(),
+                        PartitionSpec {
+                            device: Some("/dev/disk/by-id/qualification-disk".into()),
+                            label: "swap".into(),
+                            partition_type: "swap".into(),
+                            size_min: "2G".into(),
+                            size_max: Some("2G".into()),
+                            weight: 1000,
+                            format: Some("swap".into()),
+                            uuid: None,
+                            grow: false,
+                            grow_fs: true,
+                            priority: 500,
+                        },
+                    ),
+                    (
+                        "var".into(),
+                        PartitionSpec {
+                            device: None,
+                            label: "var".into(),
+                            partition_type: "linux-generic".into(),
+                            size_min: "4G".into(),
+                            size_max: None,
+                            weight: 1000,
+                            format: None,
+                            uuid: None,
+                            grow: true,
+                            grow_fs: true,
+                            priority: 9000,
+                        },
+                    ),
+                ]),
+            },
+        }
+    }
+
+    #[test]
+    fn canonical_plan_assigns_uuid_and_omits_null_fields() {
+        let plan = canonicalize_provisioning_plan(
+            evaluated_plan(),
+            CanonicalProvisioningSource::Operator,
+            false,
+            "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+        )
+        .expect("valid evaluated provisioning plan");
+
+        assert_eq!(plan.schema, "aos.storage.provisioning-plan/v1");
+        assert_eq!(plan.marker_uuid, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+        assert_eq!(
+            plan.partitions["var"].target,
+            CanonicalPartitionTarget::RootDisk
+        );
+        assert_eq!(plan.partitions["var"].uuid.len(), 36);
+
+        let value = serde_json::to_value(plan).expect("serializable canonical plan");
+        let var = &value["partitions"]["var"];
+        assert!(var.get("size_max").is_none());
+        assert!(var.get("format").is_none());
+    }
+
+    #[test]
+    fn canonical_plan_preserves_explicit_partition_uuid() {
+        let mut plan = evaluated_plan();
+        let expected = "01234567-89ab-cdef-8123-456789abcdef";
+        plan.storage
+            .partitions
+            .get_mut("var")
+            .expect("var fixture")
+            .uuid = Some(expected.into());
+
+        let canonical = canonicalize_provisioning_plan(
+            plan,
+            CanonicalProvisioningSource::Fallback,
+            false,
+            "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        )
+        .expect("valid evaluated provisioning plan");
+
+        assert_eq!(canonical.partitions["var"].uuid, expected);
+    }
 }
