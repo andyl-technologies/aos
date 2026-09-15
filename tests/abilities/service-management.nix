@@ -487,6 +487,34 @@
     };
     mode = "0440";
   };
+  protectedConfiguration = {
+    name = "protected";
+    source = {
+      kind = "interpolated-text";
+      fragments = [
+        {
+          kind = "literal";
+          text = "rootpw {CLEARTEXT}";
+        }
+        {
+          kind = "credential-content";
+          resource = lib.abilities.resultOf "root-password" "retained-resource";
+          path = lib.abilities.resultOf "root-password" "credential-path";
+        }
+        {
+          kind = "literal";
+          text = "\n";
+        }
+      ];
+      maximum_size_bytes = 16777216;
+    };
+    mode = "0600";
+  };
+  protectedRequest = serviceManagement.forConfiguration {
+    inherit serviceTypes;
+    consumerInstance = "openldap";
+    declaration = protectedConfiguration;
+  };
   projectedStructuredConfiguration =
     structuredConfiguration
     // {
@@ -626,6 +654,27 @@ in
   assert lifecycleMethods.start.outputs.observation.lifetime == "attempt";
   assert lifecycleMethods.start.outputs.retained-resource.lifetime == "instance";
   assert materializedPathSchema == executionPathSchema;
+  assert protectedRequest.requests.protected.parameters == protectedConfiguration;
+  assert !(builtins.tryEval (builtins.deepSeq (serviceManagement.forConfiguration {
+    inherit serviceTypes;
+    consumerInstance = "openldap";
+    declaration = protectedConfiguration // {mode = "0640";};
+  }) true)).success;
+  assert !(builtins.tryEval (builtins.deepSeq (serviceManagement.forConfiguration {
+    inherit serviceTypes;
+    consumerInstance = "openldap";
+    declaration = protectedConfiguration // {
+      source = protectedConfiguration.source // {
+        fragments = [
+          {
+            kind = "credential-content";
+            resource = lib.abilities.resultOf "first" "retained-resource";
+            path = lib.abilities.resultOf "second" "credential-path";
+          }
+        ];
+      };
+    };
+  }) true)).success;
   assert producerOutputsMatchConsumers;
   assert activationOutputsAreReferences;
   assert readinessOutputsAreReferences;

@@ -669,6 +669,43 @@
       content = boundedString 1048576;
     };
   };
+  interpolatedConfigurationFragment = types.taggedUnion {
+    tag = "kind";
+    variants = {
+      literal = types.record {
+        fields = {
+          kind = types.enum ["literal"];
+          text = boundedString 1048576;
+        };
+      };
+      execution-path = types.record {
+        fields = {
+          kind = types.enum ["execution-path"];
+          value = types.deferredResult executionPath;
+        };
+      };
+      credential-content = types.record {
+        fields = {
+          kind = types.enum ["credential-content"];
+          resource = types.deferredResult types.resourceReference;
+          path = types.deferredResult credentialPath;
+        };
+      };
+    };
+  };
+  interpolatedConfigurationSource = types.record {
+    fields = {
+      kind = types.enum ["interpolated-text"];
+      fragments = types.list {
+        element = interpolatedConfigurationFragment;
+        maxItems = 65536;
+      };
+      maximum_size_bytes = types.integer {
+        minimum = 1;
+        maximum = types.limits.maxDocumentBytes;
+      };
+    };
+  };
   artifactConfigurationSource = types.record {
     fields = {
       kind = types.enum ["artifact-file"];
@@ -827,6 +864,7 @@
     variants = {
       artifact-file = artifactConfigurationSource;
       inline-text = inlineConfigurationSource;
+      interpolated-text = interpolatedConfigurationSource;
       structured-value = structuredConfigurationSource;
     };
   };
