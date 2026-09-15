@@ -1088,10 +1088,57 @@
         inherit artifact;
         inherit (selected) methods;
         guarantees = [];
+        requirements.readiness-effects = {
+          alias = "readiness-effects";
+          description = "Selects the checked lower systemd readiness observer for ${selected.document.interface.name}.";
+          accepted_interfaces = [(readinessEffectsIdentity selected)];
+          methods = ["observe"];
+          guarantees = [];
+          strength = "required";
+          fallback = null;
+        };
         providerModule = {
           inherit artifact;
           path = "share/aos/providers/systemd.nix";
         };
+        desiredType = null;
+        requiredFeatures = [];
+      };
+    }) readinessControllers);
+  readinessControllers = [
+    serviceInterfaces.networkReadiness
+    serviceInterfaces.filesystemReadiness
+  ];
+  readinessEffectsAlias = selected: "systemd-${selected.alias}-effects";
+  readinessEffectsDeclaration = selected:
+    lib.abilities.declareInterface {
+      name = "aos.systemd.${selected.alias}-effects";
+      description = "Executes checked terminal systemd observation for ${selected.document.interface.name}.";
+      abi = 1;
+      requestType = selected.requestType;
+      outputs = {};
+      methods.observe = selected.declaration.methods.observe // {
+        targetResource = selected.identity.name;
+      };
+      lifecycle = selected.declaration.lifecycle;
+      aggregation = selected.declaration.aggregation // {
+        controllerGroup = readinessEffectsAlias selected;
+      };
+      configurationType = null;
+      guarantees = [];
+    };
+  readinessEffectsIdentity = selected:
+    lib.abilities.interfaceIdentity (
+      lib.abilities.interfaceDocumentFromDeclaration (readinessEffectsDeclaration selected)
+    );
+  readinessTerminalImplementations = builtins.listToAttrs (builtins.map (selected: {
+      name = readinessEffectsAlias selected;
+      value = {
+        description = "Executes checked ${selected.document.interface.name} observation through systemd.";
+        interface = readinessEffectsAlias selected;
+        artifact = handlerArtifact;
+        methods = ["observe"];
+        guarantees = [];
         handlerDescriptor = {
           artifact = handlerArtifact;
           entryPoint = "bin/aos-systemd-provider";
@@ -1101,10 +1148,7 @@
         desiredType = null;
         requiredFeatures = [];
       };
-    }) [
-      serviceInterfaces.networkReadiness
-      serviceInterfaces.filesystemReadiness
-    ]);
+    }) readinessControllers);
 in {
   options.aos.monitoring.hardware = {
     watchdog = lib.mkOption {
@@ -1130,6 +1174,10 @@ in {
       systemd-manager-watchdog-effects = managerWatchdogEffectsDeclaration;
       systemd-service-effects = serviceEffectsDeclaration;
     }
+    // builtins.listToAttrs (builtins.map (selected: {
+        name = readinessEffectsAlias selected;
+        value = readinessEffectsDeclaration selected;
+      }) readinessControllers)
     // builtins.listToAttrs (builtins.map (kind: {
         name = identityKinds.${kind}.effectsAlias;
         value = identityEffectsDeclarations.${kind};
@@ -1142,6 +1190,7 @@ in {
     implementations =
       serviceImplementations
       // readinessImplementations
+      // readinessTerminalImplementations
       // identityControllerImplementations
       // identityTerminalImplementations
       // nativeControllerImplementations

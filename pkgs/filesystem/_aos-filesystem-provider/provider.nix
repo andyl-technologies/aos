@@ -1,5 +1,10 @@
 ##! Pure resource projection for the AOS filesystem provider.
-{lib, ...}: let
+{
+  config,
+  lib,
+  packageName,
+  ...
+}: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   interfaces = serviceManagement.interfaces;
   emptyProvision = {
@@ -12,6 +17,54 @@
     outputs = {};
     realizations = {};
   };
+  effectsInterface = alias:
+    lib.abilities.interfaceIdentity (
+      lib.abilities.interfaceDocumentFromDeclaration config.aos.abilities.interfaces."${packageName}:${alias}-effects"
+    );
+  withEffects = alias: resources: realizations:
+    emptyComposition
+    // {
+      requests = builtins.mapAttrs (key: resource: {
+        requirement = "effects";
+        scope = ["effects"];
+        slot = resource.resource.key;
+        parameters = resource.value;
+      }) resources;
+      inherit realizations;
+    };
+  transitionFor = alias: action: resourceLifetime: context:
+    lib.abilities.resourceControllerTransition {
+      inherit context resourceLifetime;
+      terminalInterface = effectsInterface alias;
+      actions = {
+        create = {
+          method = action;
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        update = {
+          method = action;
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        unchanged = null;
+        remove = {
+          method = "release";
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        reconcile-stopped = {
+          method = action;
+          phase = "recovering";
+          access = "exclusive-write";
+        };
+        reconcile-divergent = {
+          method = action;
+          phase = "recovering";
+          access = "exclusive-write";
+        };
+      };
+    };
   bindingFor = bindings: requestName: let
     matches = builtins.filter
       (binding: binding.request == requestName)
@@ -84,15 +137,12 @@
         })
         entries);
     };
-  storageCompose = persistent: {resources, ...}:
-    emptyComposition
-    // {
-      realizations = builtins.mapAttrs (_: resource: {
+  storageCompose = alias: persistent: {resources, ...}:
+    withEffects alias resources (builtins.mapAttrs (_: resource: {
           schema = "aos.filesystem.storage-realization/v1";
           path = storagePath persistent resource.resource resource.value;
         })
-        resources;
-    };
+        resources);
   storageViewPath = request:
     if (request.relative_path or null) == null
     then request.source_path
@@ -126,43 +176,41 @@
         }) (builtins.attrNames requests));
     };
   storageViewCompose = {resources, ...}:
-    emptyComposition
-    // {
-      realizations = builtins.mapAttrs (_: resource: {
+    withEffects "storage-view" resources (builtins.mapAttrs (_: resource: {
           schema = "aos.filesystem.storage-view-realization/v1";
           inherit (resource.value) source;
           relative_path = resource.value.relative_path or null;
           path = storageViewPath resource.value;
         })
-        resources;
-    };
+        resources);
   entryCompose = {resources, ...}:
-    emptyComposition
-    // {
-      realizations = builtins.mapAttrs (_: resource: {
+    withEffects "filesystem-entry" resources (builtins.mapAttrs (_: resource: {
           schema = "aos.filesystem.entry-realization/v1";
           path = resource.value.destination;
           source_path = sourcePath resource.value.entry;
         })
-        resources;
-    };
+        resources);
 in {
   config.aos.abilities.implementations = {
     storage-allocation = {
       provide = provide interfaces.storageAllocation "instance" (storagePath false) null;
-      compose = storageCompose false;
+      compose = storageCompose "storage-allocation" false;
+      transition = transitionFor "storage-allocation" "allocate" "instance";
     };
     persistent-storage-allocation = {
       provide = provide interfaces.persistentStorageAllocation "persistent" (storagePath true) null;
-      compose = storageCompose true;
+      compose = storageCompose "persistent-storage-allocation" true;
+      transition = transitionFor "persistent-storage-allocation" "allocate" "persistent";
     };
     storage-view = {
       provide = storageViewProvide;
       compose = storageViewCompose;
+      transition = transitionFor "storage-view" "materialize" "instance";
     };
     filesystem-entry = {
       provide = provide interfaces.filesystemEntry "instance" (_: request: request.destination) "entry-resource";
       compose = entryCompose;
+      transition = transitionFor "filesystem-entry" "materialize" "instance";
     };
   };
 }

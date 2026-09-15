@@ -16,8 +16,8 @@ use aos_systemd::{PinnedSystemdManager, UnitActiveState};
 use crate::model::{PROVIDER_CONTEXT_SCHEMA, ProviderContext};
 use crate::{decode_value, provider_context, target_context, value};
 
-const NETWORK_INTERFACE: &str = "aos.network.readiness";
-const FILESYSTEM_INTERFACE: &str = "aos.filesystem.readiness";
+const NETWORK_INTERFACE: &str = "aos.systemd.network-readiness-effects";
+const FILESYSTEM_INTERFACE: &str = "aos.systemd.filesystem-readiness-effects";
 const NETWORK_OBSERVATION_SCHEMA: &str = "aos.ability.network-readiness-observation/v1";
 const FILESYSTEM_OBSERVATION_SCHEMA: &str = "aos.ability.filesystem-readiness-observation/v1";
 
