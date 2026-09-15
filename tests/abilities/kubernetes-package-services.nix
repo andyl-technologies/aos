@@ -1,6 +1,9 @@
 ##! Fixed-point checks for package-owned Kubernetes service declarations.
-{lib, pkgs}: let
-  evaluatePackages = packageModules: configuration:
+{
+  lib,
+  pkgs,
+}: let
+  evaluatePackages = consumerModules: configuration:
     lib.evalModules {
       inherit lib;
       modules = [
@@ -14,7 +17,15 @@
         }
         configuration
       ];
-      inherit packageModules;
+      packageModules =
+        [
+          {
+            name = "aos-kernel-tunable-provider";
+            version = pkgs.aos-kernel-tunable-provider.version;
+            module = ../../pkgs/tools/_aos-kernel-tunable-provider-module.nix;
+          }
+        ]
+        ++ consumerModules;
     };
   evaluate = name: version: module: configuration:
     evaluatePackages [{inherit name version module;}] configuration;
@@ -110,9 +121,15 @@
   };
   disabledLonghorn = evaluateIntegration "longhorn-manager" pkgs.longhorn-manager.version ../../pkgs/storage/_longhorn-config/module.nix {};
   k3sPackageAbilities = pkgs.k3s-combined.abilities;
+  k3sWorkerPackageAbilities = pkgs.k3s-worker.abilities;
+  edgecorePackageAbilities = pkgs.edgecore.abilities;
   ciliumPackageAbilities = pkgs.cilium.abilities;
   longhornPackageAbilities = pkgs.longhorn-manager.abilities;
   commandFor = evaluated: key: (requests evaluated).${key}.parameters.start;
+  outputReference = request: output: {
+    _type = "aos-request-output-reference";
+    inherit request output;
+  };
   sourceFor = evaluated: package: (requests evaluated)."${package}:configuration".parameters.source;
   literalConfiguration = evaluated: package:
     lib.concatMapStrings (
@@ -178,6 +195,25 @@ in
     "overlay"
     "br_netfilter"
   ];
+  assert (requests edgecore)."edgecore:kernel-tunables".parameters
+  == {
+    values = {
+      "net.ipv4.ip_forward" = "1";
+      "net.ipv6.conf.all.forwarding" = "1";
+    };
+    dependencies = [];
+  };
+  assert builtins.elem
+  (outputReference "edgecore:kernel-tunables" "readiness-resource")
+  (requests edgecore)."edgecore:edgecore-dependencies".parameters.requires;
+  assert let
+    requirement = edgecorePackageAbilities.requirementTemplates.kernel-tunables;
+  in
+    {
+      name = requirement.interface;
+      inherit (requirement) abi descriptor;
+    }
+    == lib.abilities.interfaces.kernelTunables.interface.identity;
   assert (requests edgecore)."edgecore:edgecore-linux_device_policy".parameters.baseline_access
   == "standard-runtime-devices";
   assert builtins.length (
@@ -225,6 +261,27 @@ in
     "vxlan"
     "ip_set"
   ];
+  assert (requests k3sWorker)."k3s-worker:kernel-tunables".parameters
+  == {
+    values = {
+      "net.bridge.bridge-nf-call-ip6tables" = "1";
+      "net.bridge.bridge-nf-call-iptables" = "1";
+      "net.ipv4.ip_forward" = "1";
+      "net.ipv6.conf.all.forwarding" = "1";
+    };
+    dependencies = [];
+  };
+  assert builtins.elem
+  (outputReference "k3s-worker:kernel-tunables" "readiness-resource")
+  (requests k3sWorker)."k3s-worker:k3s-dependencies".parameters.requires;
+  assert let
+    requirement = k3sWorkerPackageAbilities.requirementTemplates.kernel-tunables;
+  in
+    {
+      name = requirement.interface;
+      inherit (requirement) abi descriptor;
+    }
+    == lib.abilities.interfaces.kernelTunables.interface.identity;
   assert (requests k3sWorker)."k3s-worker:ingress-policy".parameters.endpoints
   == [
     {

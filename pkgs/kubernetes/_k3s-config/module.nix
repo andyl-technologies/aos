@@ -98,6 +98,7 @@
     K3S_KUBECONFIG_MODE = cfg.kubeconfigMode;
   };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  kernelTunables = lib.abilities.interfaces.kernelTunables.interface;
   networkPolicy = lib.abilities.interfaces.networkPolicy;
   serviceTypes = serviceManagement.types;
   resultOf = lib.abilities.resultOf;
@@ -240,6 +241,14 @@
     modules = roleSpec.kernelModules;
     required = true;
   };
+  tunables =
+    producer "kernel-tunables" {
+      alias = kernelTunables.alias;
+      declaration = kernelTunables.declaration;
+    } {
+      values = roleSpec.kernelTunables;
+      dependencies = [];
+    };
   service = serviceManagement.forService {
     inherit serviceTypes;
     consumerInstance = "service";
@@ -280,6 +289,7 @@
           [
             (resultOf "network" "readiness-resource")
             (resultOf "kernel-modules" "readiness-resource")
+            (resultOf "kernel-tunables" "readiness-resource")
             (resultOf "configuration-base" "readiness-resource")
           ]
           ++ policyReadiness;
@@ -287,6 +297,7 @@
         requires =
           [
             (resultOf "kernel-modules" "readiness-resource")
+            (resultOf "kernel-tunables" "readiness-resource")
             (resultOf "configuration-base" "readiness-resource")
           ]
           ++ policyReadiness;
@@ -482,6 +493,7 @@
     [
       network
       modules
+      tunables
       ingressPolicy
       tokenSource
       tokenDelivery

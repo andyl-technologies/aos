@@ -116,6 +116,7 @@
   ];
   requiredRefs = builtins.attrValues credentials;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  kernelTunables = lib.abilities.interfaces.kernelTunables.interface;
   serviceTypes = serviceManagement.types;
   resultOf = lib.abilities.resultOf;
   credentialPath = name: resultOf "${name}-delivery" "credential-path";
@@ -166,6 +167,17 @@
     ];
     required = true;
   };
+  tunables =
+    producer "kernel-tunables" {
+      alias = kernelTunables.alias;
+      declaration = kernelTunables.declaration;
+    } {
+      values = {
+        "net.ipv4.ip_forward" = "1";
+        "net.ipv6.conf.all.forwarding" = "1";
+      };
+      dependencies = [];
+    };
   configuration = serviceManagement.forConfiguration {
     inherit serviceTypes;
     consumerInstance = "service";
@@ -217,9 +229,13 @@
         after = [
           (resultOf "network" "readiness-resource")
           (resultOf "kernel-modules" "readiness-resource")
+          (resultOf "kernel-tunables" "readiness-resource")
         ];
         before = [];
-        requires = [(resultOf "kernel-modules" "readiness-resource")];
+        requires = [
+          (resultOf "kernel-modules" "readiness-resource")
+          (resultOf "kernel-tunables" "readiness-resource")
+        ];
         wants = [(resultOf "network" "readiness-resource")];
       };
       resources = {
@@ -383,6 +399,7 @@
   fragments = [
     network
     modules
+    tunables
     configuration
     credentialSources
     credentialDeliveries
