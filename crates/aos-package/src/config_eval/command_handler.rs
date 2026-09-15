@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use aos_ability_model::{
-    AbilityValue, InterfaceDocument, InterfaceName, LocalKey, MethodReference, MethodSemantics,
-    Operation, ProviderAssignment, ProviderImplementationReference, ResourceAccess, ResourceId,
-    ResourceLifetime, ResourceReference, RevisionId, ValueSchema,
+    AbilityValue, AccessMode, InterfaceDocument, InterfaceName, LocalKey, MethodReference,
+    MethodSemantics, Operation, ProviderAssignment, ProviderImplementationReference,
+    ResourceAccess, ResourceId, ResourceLifetime, ResourceReference, RevisionId, ValueSchema,
 };
 use aos_ability_runtime::adapter::{
     AdapterCompletion, AdapterRecord, CancellationDisposition, CatalogReservation,
@@ -1522,29 +1522,7 @@ fn admission_method(
         }
         &operation.method
     } else {
-        reference
-            .operations
-            .iter()
-            .find(|method| {
-                method.as_str() == "observe"
-                    && entry
-                        .handler_interface
-                        .interface
-                        .methods
-                        .contains_key(*method)
-            })
-            .or_else(|| {
-                reference.operations.iter().find(|method| {
-                    entry
-                        .handler_interface
-                        .interface
-                        .methods
-                        .contains_key(*method)
-                })
-            })
-            .ok_or_else(|| {
-                invalid("dependency ResourceReference grants no selected handler admission method")
-            })?
+        dependency_admission_method(reference, &entry.handler_interface)?
     };
     if reference.operations.binary_search(method).is_err() {
         return Err(invalid(
@@ -1555,6 +1533,31 @@ fn admission_method(
         interface: entry.assignment.interface.clone(),
         method: method.clone(),
     })
+}
+
+fn dependency_admission_method<'a>(
+    reference: &'a ResourceReference,
+    interface: &InterfaceDocument,
+) -> Result<&'a LocalKey, io::Error> {
+    let declared_method = |method: &&LocalKey| interface.interface.methods.get(*method);
+
+    reference
+        .operations
+        .iter()
+        .find(|method| {
+            declared_method(method).is_some_and(|descriptor| {
+                descriptor.semantics.required_target_access == AccessMode::Read
+            })
+        })
+        .or_else(|| {
+            reference
+                .operations
+                .iter()
+                .find(|method| declared_method(method).is_some())
+        })
+        .ok_or_else(|| {
+            invalid("dependency ResourceReference grants no selected handler admission method")
+        })
 }
 
 fn resource_context(
@@ -1761,6 +1764,28 @@ mod tests {
             "lifetime": "instance",
         }))
         .expect("resource reference is valid")
+    }
+
+    #[test]
+    fn dependency_admission_prefers_declared_read_semantics() {
+        let mut interface = interface_document("aos.test.terminal", Some("aos.test.resource"));
+        let mut read_method = interface
+            .interface
+            .methods
+            .get("apply")
+            .expect("write method is declared")
+            .clone();
+        read_method.semantics.required_target_access = AccessMode::Read;
+        interface.interface.methods.insert(
+            LocalKey::new("read-state").expect("method name is valid"),
+            read_method,
+        );
+        let reference = resource_reference("dependency", &["apply", "read-state"]);
+
+        let selected = dependency_admission_method(&reference, &interface)
+            .expect("a declared admission method is selected");
+
+        assert_eq!(selected.as_str(), "read-state");
     }
 
     #[test]
