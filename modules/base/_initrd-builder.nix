@@ -132,7 +132,7 @@
     # PCR-policy public key — RFC-0006 phase 3).
     ++ initrdExtraPackages;
   uniqueInitrdPackages = lib.unique initrdPackages;
-  initrdStaticAbilityContract = oci.mkStaticAbilityContract {
+  initrdStaticAbilityContractBuild = oci.mkStaticAbilityContract {
     pname = "aos-initrd-static-abilities";
     artifactClass = "bootable";
     executionStage = "initrd";
@@ -141,6 +141,7 @@
     packageRegistry = pkgs;
     runtimeRoots = uniqueInitrdPackages;
   };
+  initrdStaticAbilityContract = initrdStaticAbilityContractBuild.artifact;
 
   initrdIntentModuleRoot = buildPkgs.writeTextFile {
     name = "aos-initrd-ability-intent";
@@ -167,7 +168,7 @@
         inherit baseLib;
         intentModule = "${initrdIntentModuleRoot}/module.nix";
         inherit (abilityResolutionInput) desiredInput authenticatedPolicySet;
-        packageContracts = initrdStaticAbilityContract.passthru.packageAbilityContracts;
+        packageContracts = initrdStaticAbilityContractBuild.retainedPackageContractArtifacts;
       };
   resolvedAbilityStage =
     if initrdAbilityStage == null

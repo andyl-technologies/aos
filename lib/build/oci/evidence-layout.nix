@@ -94,7 +94,7 @@
     };
     packageCatalog = checkedCatalog;
     abilityContract = {
-      path = builtins.unsafeDiscardStringContext (builtins.toString checkedAbilityContract);
+      path = builtins.unsafeDiscardStringContext (builtins.toString checkedAbilityContract.artifact);
       mediaType = checkedAbilityContract.mediaType;
       schema = "aos.container.static-abilities/v1";
     };
@@ -121,7 +121,7 @@ in
         name = "assemble";
         script = ''
           export AOS_EVIDENCE_IMAGE=${lib.escapeShellArg (builtins.toString checkedImage)}
-          export AOS_EVIDENCE_ABILITY_CONTRACT=${lib.escapeShellArg (builtins.toString checkedAbilityContract)}
+          export AOS_EVIDENCE_ABILITY_CONTRACT=${lib.escapeShellArg (builtins.toString checkedAbilityContract.artifact)}
           export AOS_EVIDENCE_REFERENCE_GRAPH=${lib.escapeShellArg (builtins.toString checkedReferenceGraph)}
           export AOS_EVIDENCE_SOURCE_GRAPH=${lib.escapeShellArg (builtins.toString checkedSourceGraph)}
           printf '%s\n' ${layerArguments} > evidence-layer-paths

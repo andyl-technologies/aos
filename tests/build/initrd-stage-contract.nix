@@ -117,9 +117,7 @@ in
           pkgs.nix
           pkgs.zstd
           runtimeEvalInputClosure
-        ]
-        ++ hostAbilities.packageAbilityContracts
-        ++ initrdAbilities.packageAbilityContracts;
+        ];
       phases = [
         {
           name = "check";

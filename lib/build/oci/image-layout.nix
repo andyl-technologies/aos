@@ -189,7 +189,7 @@
     src = null;
     buildDeps =
       [abilityContractValidator coreutils findutils gzip jq tar]
-      ++ checkedAbilityContract.packageAbilityContracts;
+      ++ checkedAbilityContract.retainedPackageContractArtifacts;
 
     outputChecks.out = {};
     inherit imageSpec;
@@ -217,30 +217,30 @@
 
           mkdir -p "$out/layout/blobs/sha256"
           jq '.imageSpec' "$NIX_ATTRS_JSON_FILE" > image-spec.input.json
-          test -f ${checkedAbilityContract}/contract.json
-          test -f ${checkedAbilityContract}/descriptor.json
+          test -f ${checkedAbilityContract.artifact}/contract.json
+          test -f ${checkedAbilityContract.artifact}/descriptor.json
           ${abilityContractValidator}/bin/aos-ability-contract-validator \
-            static-contract ${checkedAbilityContract}/contract.json \
+            static-contract ${checkedAbilityContract.artifact}/contract.json \
             container - ${abilityContractPlatformArguments}
-          contract_digest=$(jq -r .digest ${checkedAbilityContract}/descriptor.json)
-          contract_media_type=$(jq -r .mediaType ${checkedAbilityContract}/descriptor.json)
-          contract_size=$(jq -r .size ${checkedAbilityContract}/descriptor.json)
+          contract_digest=$(jq -r .digest ${checkedAbilityContract.artifact}/descriptor.json)
+          contract_media_type=$(jq -r .mediaType ${checkedAbilityContract.artifact}/descriptor.json)
+          contract_size=$(jq -r .size ${checkedAbilityContract.artifact}/descriptor.json)
           contract_hex=''${contract_digest#sha256:}
-          test "$(sha256sum ${checkedAbilityContract}/contract.json | cut -d ' ' -f 1)" = "$contract_hex"
-          test "$(stat -c %s ${checkedAbilityContract}/contract.json)" -eq "$contract_size"
+          test "$(sha256sum ${checkedAbilityContract.artifact}/contract.json | cut -d ' ' -f 1)" = "$contract_hex"
+          test "$(stat -c %s ${checkedAbilityContract.artifact}/contract.json)" -eq "$contract_size"
           jq -e '.schema == "aos.container.static-abilities/v1" and .runtime_grants == []' \
-            ${checkedAbilityContract}/contract.json >/dev/null
+            ${checkedAbilityContract.artifact}/contract.json >/dev/null
           jq -e \
             --slurpfile spec image-spec.input.json '
               (.platforms | length) == 1
               and .platforms[0].platform
                 == ($spec[0].platform | with_entries(select(.value != null)))
-            ' ${checkedAbilityContract}/contract.json >/dev/null || {
+            ' ${checkedAbilityContract.artifact}/contract.json >/dev/null || {
               echo "static ability contract platform does not match the image platform" >&2
               exit 1
             }
           jq -r '.platforms[0].packages[].payload.store_path' \
-            ${checkedAbilityContract}/contract.json \
+            ${checkedAbilityContract.artifact}/contract.json \
             | while IFS= read -r payload_path; do
                 grep -Fx "$payload_path" realized-store-paths.allowed >/dev/null || {
                   echo "static ability package payload is absent from the image: $payload_path" >&2
@@ -251,7 +251,7 @@
             .platforms[0].abilities[]
             | [.implementation_artifact.store_path, .availability]
             | @tsv
-          ' ${checkedAbilityContract}/contract.json \
+          ' ${checkedAbilityContract.artifact}/contract.json \
             | while IFS="$(printf '\t')" read -r artifact_path availability; do
                 if grep -Fx "$artifact_path" realized-store-paths.allowed >/dev/null; then
                   actual=baked
@@ -276,8 +276,8 @@
               | .config.Labels += contract_annotations
             ' image-spec.input.json > image-spec.with-contract.json
           mv image-spec.with-contract.json image-spec.input.json
-          cp --reflink=auto ${checkedAbilityContract}/contract.json "$out/static-ability-contract.json"
-          cp --reflink=auto ${checkedAbilityContract}/descriptor.json "$out/static-ability-contract.descriptor.json"
+          cp --reflink=auto ${checkedAbilityContract.artifact}/contract.json "$out/static-ability-contract.json"
+          cp --reflink=auto ${checkedAbilityContract.artifact}/descriptor.json "$out/static-ability-contract.descriptor.json"
           jq -e '.schema == "aos.runtime-closure-audit/v1"' \
             ${runtimeAudit}/report.json >/dev/null
           cp --reflink=auto ${runtimeAudit}/report.json "$out/runtime-closure-audit.json"
