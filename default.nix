@@ -1861,7 +1861,6 @@ in {
       inherit pkgs lib mkSystem;
       serverModule = ./systems/server.nix;
     };
-    k3s-config = import ./tests/packages/k3s-config.nix {inherit pkgs lib;};
     config-source-gc = import ./lib/testing/config-source-gc.nix {inherit pkgs lib;};
     container = rec {
       phase0 = import ./tests/containers/phase0.nix {
@@ -1940,7 +1939,6 @@ in {
           package-documentation
           registry-hub
           nginx-config
-          k3s-config
           integration.envoy-ability-module-contract
           integration.cloudcore-config
           integration.conntrack-tools-config
