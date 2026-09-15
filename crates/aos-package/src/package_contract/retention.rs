@@ -411,33 +411,37 @@ mod tests {
         let closure_digest = Sha256Digest::of_canonical(TEST_CLOSURE_DIGEST_DOMAIN, &closure)?;
         let content = Sha256Digest::of_bytes(store_path.as_bytes());
 
-        Ok(PackageContractMeta {
+        let retained_artifact = PackageContractArtifactMeta {
+            content: content.to_string(),
             store_path: store_path.to_string(),
             nar_hash: companion.nar_hash.clone(),
             nar_size: companion.nar_size,
-            references: companion.references,
-            manifest_sha256: Sha256Digest::of_bytes(b"test manifest").to_string(),
-            manifest_size: 1,
-            package_digest: Sha256Digest::of_bytes(b"test package").to_string(),
-            activation_mode: "contracts-only".to_string(),
-            artifacts: vec![PackageContractArtifactMeta {
-                content: content.to_string(),
+            closure_digest: closure_digest.to_string(),
+            closure,
+        };
+        Ok(PackageContractMeta {
+            document: crate::types::PackageContractDocumentMeta {
                 store_path: store_path.to_string(),
                 nar_hash: companion.nar_hash,
                 nar_size: companion.nar_size,
-                closure_digest: closure_digest.to_string(),
-                closure,
-            }],
+                document_sha256: Sha256Digest::of_bytes(b"test manifest").to_string(),
+                document_size: 1,
+                references: Vec::new(),
+            },
+            payload: retained_artifact.clone(),
+            source: retained_artifact,
+            selectors: Vec::new(),
             provenance: "provenance/test.contract.intoto.jsonl".to_string(),
         })
     }
 
     fn refresh_test_closure_digest(contract: &mut PackageContractMeta) {
-        ability.artifacts[0].closure.sort();
-        ability.artifacts[0].closure_digest =
-            Sha256Digest::of_canonical(TEST_CLOSURE_DIGEST_DOMAIN, &ability.artifacts[0].closure)
+        contract.payload.closure.sort();
+        contract.payload.closure_digest =
+            Sha256Digest::of_canonical(TEST_CLOSURE_DIGEST_DOMAIN, &contract.payload.closure)
                 .unwrap()
                 .to_string();
+        contract.source = contract.payload.clone();
     }
 
     #[test]
@@ -450,9 +454,10 @@ mod tests {
         verifier.verify_retention(&seal_test_retention_manifest(&ability)?)?;
 
         let mut wrong_nar = ability.clone();
-        wrong_nar.artifacts[0].nar_hash = Sha256Digest::of_bytes(b"wrong nar").to_string();
-        let wrong_nar_hash = wrong_nar.artifacts[0].nar_hash.clone();
-        let root = wrong_nar.artifacts[0]
+        wrong_nar.payload.nar_hash = Sha256Digest::of_bytes(b"wrong nar").to_string();
+        let wrong_nar_hash = wrong_nar.payload.nar_hash.clone();
+        let root = wrong_nar
+            .payload
             .closure
             .iter_mut()
             .find(|member| member.store_path == store_path)
@@ -465,7 +470,8 @@ mod tests {
         assert!(format!("{error:#}").contains("NAR mismatch"));
 
         let mut wrong_references = ability.clone();
-        let root = wrong_references.artifacts[0]
+        let root = wrong_references
+            .payload
             .closure
             .iter_mut()
             .find(|member| member.store_path == store_path)
@@ -490,8 +496,9 @@ mod tests {
 
         let mut missing = ability;
         let missing_path = "/nix/store/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-missing-ability-artifact";
-        missing.artifacts[0].store_path = missing_path.to_string();
-        let root = missing.artifacts[0]
+        missing.payload.store_path = missing_path.to_string();
+        let root = missing
+            .payload
             .closure
             .iter_mut()
             .find(|member| member.store_path == store_path)

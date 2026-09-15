@@ -88,16 +88,15 @@ fn production_nix_companion_round_trips_through_native_contracts() {
     assert_eq!(interface.interface_key().unwrap(), declaration.interface);
 
     let package_digest = package.content_digest().unwrap();
-    let activation_mode = package.activation_mode;
     let sealed = VerifiedPackageContract {
         artifacts: collect_distinct_artifacts(&package).unwrap(),
         package,
+        interfaces: vec![interface],
         manifest_sha256: Sha256Digest::of_bytes(&manifest),
         package_digest,
         package_name: "ability-package-smoke".to_string(),
         package_version: "1.0.0".to_string(),
         platform: "x86_64-linux".to_string(),
-        activation_mode,
         retention: VerifiedPackageContractRetentionManifest {
             document_store_path: companion,
             document_nar_hash: digest('8'),
@@ -333,23 +332,26 @@ impl TestFixture {
             qualification: aos_ability_model::PackageQualification::default(),
         };
         let manifest_bytes = encode_canonical(&package).unwrap();
+        let retained_artifact = PackageContractArtifactMeta {
+            content: artifact.content.to_string(),
+            store_path: artifact.store_path.clone(),
+            nar_hash: artifact.nar_hash.to_string(),
+            nar_size: 128,
+            closure_digest: closure_digest.to_string(),
+            closure,
+        };
         let ability = PackageContractMeta {
-            store_path: COMPANION_ROOT.to_string(),
-            nar_hash: digest('3').to_string(),
-            nar_size: 256,
-            references: Vec::new(),
-            manifest_sha256: Sha256Digest::of_bytes(&manifest_bytes).to_string(),
-            manifest_size: manifest_bytes.len() as u64,
-            package_digest: package.content_digest().unwrap().to_string(),
-            activation_mode: "contracts-only".to_string(),
-            artifacts: vec![PackageContractArtifactMeta {
-                content: artifact.content.to_string(),
-                store_path: artifact.store_path.clone(),
-                nar_hash: artifact.nar_hash.to_string(),
-                nar_size: 128,
-                closure_digest: closure_digest.to_string(),
-                closure,
-            }],
+            document: crate::types::PackageContractDocumentMeta {
+                store_path: COMPANION_ROOT.to_string(),
+                nar_hash: digest('3').to_string(),
+                nar_size: 256,
+                document_sha256: Sha256Digest::of_bytes(&manifest_bytes).to_string(),
+                document_size: manifest_bytes.len() as u64,
+                references: Vec::new(),
+            },
+            payload: retained_artifact.clone(),
+            source: retained_artifact,
+            selectors: Vec::new(),
             provenance: "provenance/demo.contract.intoto.jsonl".to_string(),
         };
         let package_meta = PackageMeta {
@@ -391,6 +393,7 @@ impl TestFixture {
             key_id: KEY_ID.to_string(),
             key: keypair.trust_key_line(REGISTRY),
             retired_before_sequence: None,
+            package_contract_retired_before_sequence: None,
         }];
         let mut fixture = Self {
             _key_dir: key_dir,
@@ -698,7 +701,8 @@ fn signed_package_rejects_manifest_and_artifact_tampering() {
         .contract
         .as_mut()
         .unwrap()
-        .package_digest = digest('5').to_string();
+        .document
+        .document_sha256 = digest('5').to_string();
     wrong_digest.resign();
     let error = verify_package_contract(
         &wrong_digest.package_meta,
@@ -709,7 +713,7 @@ fn signed_package_rejects_manifest_and_artifact_tampering() {
         &AcceptRetention::default(),
     )
     .unwrap_err();
-    assert!(format!("{error:#}").contains("semantic digest"));
+    assert!(format!("{error:#}").contains("exact-byte digest"));
 
     let mut wrong_artifact = TestFixture::new();
     wrong_artifact
@@ -717,7 +721,7 @@ fn signed_package_rejects_manifest_and_artifact_tampering() {
         .contract
         .as_mut()
         .unwrap()
-        .artifacts[0]
+        .payload
         .content = digest('6').to_string();
     wrong_artifact.resign();
     let error = verify_package_contract(
@@ -755,11 +759,10 @@ fn signed_package_propagates_live_store_failures() {
 #[test]
 fn closure_mutation_invalidates_the_semantic_closure_digest() {
     let mut fixture = TestFixture::new();
-    let ability = fixture.package_meta.contract.as_mut().unwrap();
-    ability.artifacts[0].closure[0].references =
-        vec!["3456789abcdfghijklmnpqrsvwxyz012".to_string()];
+    let contract = fixture.package_meta.contract.as_mut().unwrap();
+    contract.payload.closure[0].references = vec!["3456789abcdfghijklmnpqrsvwxyz012".to_string()];
 
-    let error = validate_package_contract_meta(ability).unwrap_err();
+    let error = validate_package_contract_meta(contract).unwrap_err();
     assert!(format!("{error:#}").contains("closure digest does not match"));
 }
 

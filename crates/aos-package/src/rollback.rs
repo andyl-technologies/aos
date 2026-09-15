@@ -570,10 +570,9 @@ fn describe_root(registries: &RegistrySet, hash: &str, target: &std::path::Path)
 #[cfg(test)]
 mod tests {
     use crate::profile::Profile;
-    use crate::profile::meta::{snapshot_profile_meta_to_generation, write_meta};
     use crate::types::{
-        ApmMeta, ConfigGeneration, FEATURE_ABILITY_EFFECTS_V1, InstalledMeta, PackageContractMeta,
-        ProfileScope, ReactivationPlan,
+        ApmMeta, ConfigGeneration, InstalledMeta, PackageContractArtifactMeta,
+        PackageContractDocumentMeta, PackageContractMeta, ProfileScope, ReactivationPlan,
     };
     use tempfile::TempDir;
 
@@ -582,20 +581,26 @@ mod tests {
     }
 
     fn ability_meta(store_path: &str) -> PackageContractMeta {
-        PackageContractMeta {
-            store_path: store_path.to_string(),
+        let artifact = PackageContractArtifactMeta {
+            content: format!("sha256:{}", "c".repeat(64)),
+            store_path: "/nix/store/11111111111111111111111111111111-owner".to_string(),
             nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
             nar_size: 1,
-            references: Vec::new(),
-            manifest_sha256:
-                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                    .to_string(),
-            manifest_size: 1,
-            package_digest:
-                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                    .to_string(),
-            activation_mode: "contracts-only".to_string(),
-            artifacts: Vec::new(),
+            closure_digest: format!("sha256:{}", "d".repeat(64)),
+            closure: Vec::new(),
+        };
+        PackageContractMeta {
+            document: PackageContractDocumentMeta {
+                store_path: store_path.to_string(),
+                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+                nar_size: 1,
+                document_sha256: format!("sha256:{}", "a".repeat(64)),
+                document_size: 1,
+                references: Vec::new(),
+            },
+            payload: artifact.clone(),
+            source: artifact,
+            selectors: Vec::new(),
             provenance: "provenance/a/ability.intoto.jsonl".to_string(),
         }
     }
@@ -622,39 +627,13 @@ mod tests {
                 expose_artifact: None,
                 config_module: None,
                 documentation: None,
-                contract: Some(ability),
+                contract: Some(contract),
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
             }),
         }
     }
-
-    #[test]
-    fn rollback_rejects_structured_effects_in_retained_generation() {
-        let tmp = TempDir::new().unwrap();
-        let profile = test_profile(&tmp);
-        let generation = profile.new_generation().unwrap();
-        let hash = "11111111111111111111111111111111";
-        let mut ability =
-            ability_meta("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-owner-abilities");
-        ability.activation_mode = "structured-effects".to_string();
-        let installed = installed_meta_with_ability(ability);
-        std::fs::create_dir_all(generation.path.join("usr")).unwrap();
-        std::os::unix::fs::symlink(
-            &installed.store_path,
-            generation.path.join("usr").join(hash),
-        )
-        .unwrap();
-        write_meta(&profile, hash, &installed).unwrap();
-        snapshot_profile_meta_to_generation(&profile, &generation).unwrap();
-
-        let error = super::validate_ordinary_generation_ability_state(&generation)
-            .expect_err("rollback must reject an unsupported retained activation owner");
-
-        assert!(error.to_string().contains(FEATURE_ABILITY_EFFECTS_V1));
-    }
-
     #[test]
     fn legacy_snapshot_cannot_omit_new_registry_ability_metadata() {
         let current = ability_meta("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-owner-abilities");
