@@ -454,6 +454,7 @@ let
     "aos-boot-identity"
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"
+    "aos-filesystem-provider"
     "aos-landlock"
     "aos-recovery"
     "aos-registry-server"

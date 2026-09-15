@@ -52,12 +52,6 @@
   };
 in {
   config.aos.abilities = {
-    interfaces = {
-      storage-allocation = interfaces.storageAllocation.declaration;
-      persistent-storage-allocation = interfaces.persistentStorageAllocation.declaration;
-      storage-view = interfaces.storageView.declaration;
-      filesystem-entry = interfaces.filesystemEntry.declaration;
-    };
     implementations = {
       storage-allocation =
         implementation interfaces.storageAllocation storageRealization
