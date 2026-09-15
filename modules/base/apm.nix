@@ -19,73 +19,14 @@
 
   packageNameRegex = "[A-Za-z0-9][A-Za-z0-9+._=-]*";
   packageNameType = lib.types.strMatching packageNameRegex;
-  credentialNameRegex = lib.serviceTypes.credentialNameRegex;
-  credentialNameType = lib.serviceTypes.credentialName;
   desiredConfigType = lib.types.attrsOf (lib.types.attrsOf (lib.types.attrsOf toml.type));
-  secretRefType = lib.types.submodule ({name, ...}: {
-    config._module.strict = true;
-    options = {
-      name = lib.mkOption {
-        type = credentialNameType;
-        default = name;
-        readOnly = true;
-        description = "The systemd credential handle.";
-      };
-      source = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "The credstore destination path; never credential bytes.";
-      };
-      encrypted = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = "Whether the material at the destination is systemd-encrypted.";
-      };
-      units = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = [];
-        description = "Service units that consume the credential.";
-      };
-      ref = lib.mkOption {
-        type = lib.serviceTypes.secretReference;
-        description = "The opaque credential resolver reference.";
-      };
-    };
-  });
-  desiredCredentialsType = lib.types.attrsOf (lib.types.attrsOf secretRefType);
   rolloutDrain = config.aos.config.artifacts.aos-rollout-drain;
   rolloutHealth = config.aos.config.artifacts.aos-rollout-health;
-  desiredSystemCredentialsType = lib.types.attrsOf (lib.types.attrsOf credentialNameType);
-
-  desiredSystemCredentialValues =
-    lib.mapAttrs
-    (_package: credentials:
-      lib.mapAttrs
-      (_name: systemCredential: {
-        system-credential = systemCredential;
-      })
-      credentials)
-    cfg.systemCredentials;
-  credentialPackages =
-    lib.unique ((builtins.attrNames cfg.credentials) ++ (builtins.attrNames cfg.systemCredentials));
-  credentialConflicts =
-    lib.concatMap (
-      package: let
-        referenceNames = builtins.attrNames (cfg.credentials.${package} or {});
-        systemNames = builtins.attrNames (cfg.systemCredentials.${package} or {});
-        overlaps = builtins.filter (name: builtins.elem name systemNames) referenceNames;
-      in
-        builtins.map (name: "${package}.${name}") overlaps
-    )
-    credentialPackages;
   desiredToml = toml.toTOML ({
       packages = cfg.packages;
     }
     // lib.optionalAttrs (cfg.config != {}) {
       config = cfg.config;
-    }
-    // lib.optionalAttrs (desiredSystemCredentialValues != {}) {
-      credentials = desiredSystemCredentialValues;
     });
 
   registries = config.aos.apm.registries;
@@ -175,28 +116,6 @@ in {
       '';
     };
 
-    credentials = lib.mkOption {
-      type = desiredCredentialsType;
-      default = {};
-      description = ''
-        Package-scoped opaque credential references. Each reference contains
-        only a handle, credstore destination, encryption policy, consuming
-        units, and resolver discriminator. There is deliberately no plaintext
-        `value` or `text` constructor.
-      '';
-    };
-
-    systemCredentials = lib.mkOption {
-      type = desiredSystemCredentialsType;
-      default = {};
-      description = ''
-        Convenience mapping for platform system credentials. It projects to
-        the same opaque reference schema as `credentials`, while the baked
-        first-boot desired file tells `apm` to read bytes from
-        `/run/credentials/@system/<name>` instead of embedding them.
-      '';
-    };
-
     includeRegistries = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -226,77 +145,7 @@ in {
           be valid APM package names (${packageNameRegex}).
         '';
       })
-      (builtins.attrNames cfg.config)
-      ++ builtins.map (name: {
-        assertion = builtins.match packageNameRegex name != null;
-        message = ''
-          aos.apm.installAtBoot.credentials.${name}: package credential keys
-          must be valid APM package names (${packageNameRegex}).
-        '';
-      })
-      (builtins.attrNames cfg.credentials)
-      ++ builtins.map (name: {
-        assertion = builtins.match packageNameRegex name != null;
-        message = ''
-          aos.apm.installAtBoot.systemCredentials.${name}: package credential
-          keys must be valid APM package names (${packageNameRegex}).
-        '';
-      })
-      (builtins.attrNames cfg.systemCredentials)
-      ++ lib.concatLists (lib.mapAttrsToList (
-          package: credentials:
-            builtins.map (name: {
-              assertion = builtins.match credentialNameRegex name != null;
-              message = ''
-                aos.apm.installAtBoot.credentials.${package}.${name}:
-                credential names must match ${credentialNameRegex}.
-              '';
-            })
-            (builtins.attrNames credentials)
-        )
-        cfg.credentials)
-      ++ lib.concatLists (lib.mapAttrsToList (
-          package: credentials:
-            builtins.map (name: {
-              assertion = builtins.match credentialNameRegex name != null;
-              message = ''
-                aos.apm.installAtBoot.systemCredentials.${package}.${name}:
-                credential names must match ${credentialNameRegex}.
-              '';
-            })
-            (builtins.attrNames credentials)
-        )
-        cfg.systemCredentials)
-      ++ lib.concatLists (lib.mapAttrsToList (
-          package: credentials:
-            lib.mapAttrsToList (name: systemCredential: {
-              assertion = builtins.match credentialNameRegex systemCredential != null;
-              message = ''
-                aos.apm.installAtBoot.systemCredentials.${package}.${name}:
-                system credential names must match ${credentialNameRegex}.
-              '';
-            })
-            credentials
-        )
-        cfg.systemCredentials)
-      ++ [
-        {
-          # Force each strict secretRef submodule even when install-at-boot is
-          # disabled. Otherwise an undeclared plaintext field can remain in an
-          # unforced option thunk and escape the normal toplevel assertion
-          # gate.
-          assertion = builtins.deepSeq cfg.credentials true;
-          message = "aos.apm.installAtBoot.credentials contains an invalid secretRef";
-        }
-        {
-          assertion = credentialConflicts == [];
-          message = ''
-            aos.apm.installAtBoot credentials and systemCredentials must not
-            both define the same package credential(s):
-            ${builtins.concatStringsSep ", " credentialConflicts}.
-          '';
-        }
-      ];
+      (builtins.attrNames cfg.config);
 
     aos.apm.installAtBoot.etc = installAtBootEtc;
     aos.packageRuntime.packageProfile = {

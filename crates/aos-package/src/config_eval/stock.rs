@@ -517,21 +517,6 @@ impl StockNixEvaluator {
             \x20   config = baseLib.lib.recursiveUpdate\n\
             \x20     candidate.config\n\
             \x20     system.config.aos.apm.installAtBoot.config;\n\
-            \x20   credentials = baseLib.lib.recursiveUpdate\n\
-            \x20     candidate.credentials\n\
-            \x20     (baseLib.lib.recursiveUpdate\n\
-            \x20       system.config.aos.apm.installAtBoot.credentials\n\
-            \x20       (builtins.mapAttrs\n\
-            \x20         (_package: handles: builtins.mapAttrs\n\
-            \x20           (name: systemCredential: {{\n\
-            \x20             inherit name;\n\
-            \x20             source = null;\n\
-            \x20             encrypted = true;\n\
-            \x20             units = [];\n\
-            \x20             ref = \"system-credential:${{systemCredential}}\";\n\
-            \x20           }})\n\
-            \x20           handles)\n\
-            \x20         system.config.aos.apm.installAtBoot.systemCredentials));\n\
             \x20 }};\n\
             \x20 pendingAbilityRequests = system.config.aos.abilities.compositionPendingRequests;\n\
              in {{\n\
@@ -1353,9 +1338,8 @@ mod tests {
         assert!(text.contains("manifest = mergedManifest //"));
         assert!(!text.contains("mergeImageDefaults ="));
         assert!(text.contains("installAtBoot.config"), "{text}");
-        assert!(text.contains("installAtBoot.systemCredentials"), "{text}");
         assert!(
-            text.contains("ref = \"system-credential:${systemCredential}\""),
+            !text.contains("credentials = baseLib.lib.recursiveUpdate"),
             "{text}"
         );
     }

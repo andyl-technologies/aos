@@ -112,26 +112,43 @@ The implemented sources are:
 
 - a package-authored TPM2-sealed credstore artifact;
 - a reviewed desired-state credential supplied outside evaluation;
-- a platform/systemd credential under `/run/credentials/@system`.
+- a platform-owned named credential exposed through the selected provider.
 
-`host.nix` carries only the handle and policy. It must never contain the bytes:
+The consuming package owns both the symbolic lookup and the delivery policy.
+For example, its authenticated package module declares two linked ability
+requests:
 
 ```nix
-{
-  aos.apm.installAtBoot.credentials.web.api-token = {
-    source = "/etc/credstore.encrypted/web/api-token";
-    encrypted = true;
-    units = ["web.service"];
-    ref = "system-credential:bootstrap-token";
+let
+  credentialSource = serviceManagement.forProducer {
+    consumerInstance = "web";
+    key = "api-token-source";
+    interface = serviceManagement.interfaces.namedCredential;
+    parameters = {
+      name = "bootstrap-token";
+      scope = "system";
+    };
   };
+  credential = serviceManagement.forProducer {
+    consumerInstance = "web";
+    key = "api-token";
+    interface = serviceManagement.interfaces.credentialDelivery;
+    parameters = {
+      name = "api-token";
+      source = lib.abilities.resultOf "api-token-source" "credential-resource";
+      encrypted = true;
+    };
+  };
+in {
+  aos.abilities.requests = credentialSource.requests // credential.requests;
 }
 ```
 
-This assumes the signed `web` package exposes the matching `api-token`
-credential and the deployment platform supplies `bootstrap-token` through the
-systemd credential channel. AOS does not ship a general Vault or cloud secret
-manager backend; those remain external delivery systems. Do not place secret
-bytes in metadata or `host.nix` while attempting to use a reference.
+The service declaration consumes the `api-token` request's protected
+`credential-path` result. The selected credential providers resolve
+`bootstrap-token` and deliver the resource without placing secret bytes in the
+package document, metadata, or `host.nix`. AOS does not ship a general Vault or
+cloud secret manager backend; those remain external delivery systems.
 
 ## Avoid secret command-line arguments
 

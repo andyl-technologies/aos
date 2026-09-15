@@ -146,12 +146,6 @@
   # Declaration-derived contributable-surface helpers.
   namespacing = import ./namespacing.nix {};
 
-  # Version-stable primitive contracts shared by independently authenticated
-  # package modules. Logical service schemas remain package-owned.
-  serviceTypes = import ./service-types.nix {
-    inherit types;
-    inherit (modules) mkOption;
-  };
   abilityCore = import ./abilities {
     inherit types;
     inherit (modules) mkOption;
@@ -186,7 +180,6 @@
     // strings
     // {
       inherit types system;
-      inherit serviceTypes;
       inherit abilities;
       inherit qualification;
       effects = abilities.effects;
