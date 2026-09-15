@@ -1,121 +1,205 @@
-##! Canonical provider-neutral boot-preparation handoff interface.
+##! Canonical provider-neutral boot preparation and stage handoff interfaces.
 {
   types,
   declareInterface,
   interfaceDocumentFromDeclaration,
   interfaceIdentity,
 }: let
-  interfaceAlias = "boot-preparation-handoff";
-  interfaceName = "aos.boot.preparation-handoff";
-
   canonicalList = element: maxItems:
     types.list {
       inherit element maxItems;
       unique = true;
       canonicalOrder = true;
     };
-  preparations = canonicalList types.localKey 16;
-  requestType = types.record {
-    fields = {
-      source_stage = types.enum ["initrd"];
-      receiver_stage = types.enum ["host"];
-      inherit preparations;
-    };
-  };
-  bootIdentity = types.string {
-    maxLength = 128;
-    syntax = null;
-  };
-  receivedEvidence = types.record {
-    fields = {
-      boot_identity = bootIdentity;
-      image_identity = types.digest;
-      static_contract = types.digest;
-      checkpoint = types.digest;
-      completed_preparations = preparations;
-    };
-  };
-  observationType = types.record {
-    fields = {
-      schema = types.enum ["aos.ability.boot-preparation-handoff-observation/v1"];
-      expected = requestType;
-      evidence = types.optional receivedEvidence;
-      state = types.enum ["absent" "released" "received" "unknown"];
-    };
-  };
-  realizationType = types.record {
-    fields.schema = types.enum ["aos.boot.preparation-handoff-realization/v1"];
-  };
+  requestedResources = canonicalList (types.deferredResult types.resourceReference) 64;
+  completedResources = canonicalList types.resourceReference 64;
   lifecycle = {
     stableResourceIdentity = true;
     releasesEphemeralOnDisable = false;
     retainsPersistentByDefault = false;
     persistentDeleteMethod = null;
   };
-  aggregation = {
-    scope = "provider-instance";
-    key = "slot";
-    rejectSlotCollisions = true;
-    mergeContract = null;
-    controllerGroup = "boot-preparation-handoff";
-  };
-  output = phase: description: schema: {
-    inherit phase description schema;
-    lifetime = "transaction";
+  output = phase: lifetime: description: schema: {
+    inherit phase lifetime description schema;
     visibility = "protected";
   };
-  observationOutput = phase:
-    output phase "Reports the exact observed boot-preparation handoff." observationType;
-  method = name: description: access: outputs: {
-    inherit description outputs;
-    semantics = {
-      requiredTargetAccess = access;
-      stopsProvider = false;
+  canonicalInterface = {
+    alias,
+    name,
+    description,
+    requestType,
+    observationType,
+    realizationType,
+    methods,
+    outputs,
+    controllerGroup,
+  }: let
+    declaration = declareInterface {
+      inherit name description requestType methods outputs lifecycle;
+      abi = 1;
+      guarantees = [];
+      aggregation = {
+        scope = "provider-instance";
+        key = "slot";
+        rejectSlotCollisions = true;
+        mergeContract = null;
+        inherit controllerGroup;
+      };
     };
-    parameters = requestType;
-    targetResource = interfaceName;
-    permittedOperations = [name];
-    guarantees = [];
-    outcome = {
-      completionEvidence = observationType;
-      observationEvidence = observationType;
-      supportsRejectedBeforeEffect = true;
-      indeterminate = "reconcile";
-    };
+    document = interfaceDocumentFromDeclaration declaration;
+  in {
+    inherit alias name declaration document requestType observationType realizationType;
+    identity = interfaceIdentity document;
+    methods = builtins.attrNames methods;
   };
-  methods = {
-    receive = method "receive" "Authenticates and records host receipt of exact initrd preparation evidence." "exclusive-write" {
-      observation = observationOutput "runtime";
-      retained-resource =
-        output "runtime" "References the exact received boot-preparation resource." types.resourceReference;
-    };
-    observe = method "observe" "Observes an exact boot-preparation handoff without changing ownership." "read" {
-      observation = observationOutput "observation";
-    };
-  };
-  declaration = declareInterface {
-    name = interfaceName;
-    description = "Transfers exact successful boot-preparation evidence from an initrd transaction to its host stage.";
-    abi = 1;
-    inherit requestType methods lifecycle aggregation;
-    outputs.readiness-resource =
-      output "planning" "References host receipt of the exact boot-preparation transaction." types.resourceReference;
-    guarantees = [];
-  };
-  document = interfaceDocumentFromDeclaration declaration;
-  identity = interfaceIdentity document;
-in {
-  inherit
-    interfaceAlias
-    interfaceName
-    declaration
-    document
-    identity
-    methods
-    requestType
-    observationType
-    realizationType
-    ;
 
-  declarations.${interfaceAlias} = declaration;
+  preparation = let
+    name = "aos.boot.preparation";
+    requestType = types.record {
+      fields = {
+        execution = types.executableReference;
+        prerequisites = requestedResources;
+      };
+    };
+    observationType = types.record {
+      fields = {
+        schema = types.enum ["aos.ability.boot-preparation-observation/v1"];
+        expected = requestType;
+        state = types.enum ["absent" "completed" "failed" "unknown"];
+      };
+    };
+    realizationType = types.record {
+      fields.schema = types.enum ["aos.boot.preparation-realization/v1"];
+    };
+    observationOutput = phase:
+      output phase "attempt"
+      "Reports the exact observed preparation state."
+      observationType;
+    method = methodName: description: access: outputs: {
+      inherit description outputs;
+      semantics = {
+        requiredTargetAccess = access;
+        stopsProvider = false;
+      };
+      parameters = requestType;
+      targetResource = name;
+      permittedOperations = [methodName];
+      guarantees = [];
+      outcome = {
+        completionEvidence = observationType;
+        observationEvidence = observationType;
+        supportsRejectedBeforeEffect = true;
+        indeterminate = "reconcile";
+      };
+    };
+    methods = {
+      prepare = method "prepare" "Executes one exact preparation in its selected boot stage." "exclusive-write" {
+        observation = observationOutput "runtime";
+        retained-resource =
+          output "runtime" "transaction"
+          "References the successfully completed boot preparation."
+          types.resourceReference;
+      };
+      observe = method "observe" "Observes completion of one exact boot preparation." "read" {
+        observation = observationOutput "observation";
+      };
+    };
+  in
+    canonicalInterface {
+      alias = "boot-preparation";
+      inherit name requestType observationType realizationType methods;
+      description = "Executes and retains exact preparation evidence within one boot transaction.";
+      outputs.preparation-resource =
+        output "planning" "transaction"
+        "References the exact preparation resource selected before execution."
+        types.resourceReference;
+      controllerGroup = "boot-preparation";
+    };
+
+  handoff = let
+    name = "aos.boot.preparation-handoff";
+    requestType = types.record {
+      fields = {
+        source_stage = types.enum ["initrd"];
+        receiver_stage = types.enum ["host"];
+        preparations = requestedResources;
+      };
+    };
+    bootIdentity = types.string {
+      maxLength = 128;
+      syntax = null;
+    };
+    receivedEvidence = types.record {
+      fields = {
+        boot_identity = bootIdentity;
+        image_identity = types.digest;
+        static_contract = types.digest;
+        checkpoint = types.digest;
+        completed_preparations = completedResources;
+      };
+    };
+    observationType = types.record {
+      fields = {
+        schema = types.enum ["aos.ability.boot-preparation-handoff-observation/v1"];
+        expected = requestType;
+        evidence = types.optional receivedEvidence;
+        state = types.enum ["absent" "released" "received" "unknown"];
+      };
+    };
+    realizationType = types.record {
+      fields.schema = types.enum ["aos.boot.preparation-handoff-realization/v1"];
+    };
+    observationOutput = phase:
+      output phase "attempt"
+      "Reports the exact observed boot-preparation handoff."
+      observationType;
+    method = methodName: description: access: outputs: {
+      inherit description outputs;
+      semantics = {
+        requiredTargetAccess = access;
+        stopsProvider = false;
+      };
+      parameters = requestType;
+      targetResource = name;
+      permittedOperations = [methodName];
+      guarantees = [];
+      outcome = {
+        completionEvidence = observationType;
+        observationEvidence = observationType;
+        supportsRejectedBeforeEffect = true;
+        indeterminate = "reconcile";
+      };
+    };
+    methods = {
+      receive = method "receive" "Authenticates and records host receipt of exact initrd preparation evidence." "exclusive-write" {
+        observation = observationOutput "runtime";
+        retained-resource =
+          output "runtime" "transaction"
+          "References the exact received boot-preparation handoff."
+          types.resourceReference;
+      };
+      observe = method "observe" "Observes an exact boot-preparation handoff without changing ownership." "read" {
+        observation = observationOutput "observation";
+      };
+    };
+  in
+    canonicalInterface {
+      alias = "boot-preparation-handoff";
+      inherit name requestType observationType realizationType methods;
+      description = "Transfers exact successful boot-preparation evidence from an initrd transaction to its host stage.";
+      outputs.readiness-resource =
+        output "planning" "transaction"
+        "References host receipt of the exact boot-preparation transaction."
+        types.resourceReference;
+      controllerGroup = "boot-preparation-handoff";
+    };
+in {
+  interfaces = {
+    inherit preparation handoff;
+  };
+
+  declarations = {
+    ${preparation.alias} = preparation.declaration;
+    ${handoff.alias} = handoff.declaration;
+  };
 }
