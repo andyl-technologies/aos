@@ -19,8 +19,8 @@ use aos_ability_model::VersionedDocument as _;
 use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
 use aos_doc_model::{
-    DOCUMENT_JSON_SCHEMA, DOCUMENT_SCHEMA, DocumentationComparison, MAX_DOCUMENT_BYTES,
-    OptionDocument, PackageAbilityReference, PackageDocumentation, SearchDocument, tokenize,
+    DOCUMENT_SCHEMA, DocumentationComparison, MAX_DOCUMENT_BYTES, OptionDocument,
+    PackageAbilityReference, PackageDocumentation, SearchDocument, document_json_schema, tokenize,
 };
 use aos_proto_types::{
     ComparePackageDocumentationRequest, GetPackageAbilityReferenceRequest,
@@ -172,7 +172,7 @@ pub async fn run(command: &DocumentationCommand, printer: &Printer) -> Result<()
             let bytes = if let Some(hub) = hub {
                 remote_schema(hub, token.as_deref()).await?
             } else {
-                DOCUMENT_JSON_SCHEMA.as_bytes().to_vec()
+                document_json_schema()?
             };
             write_bytes(&bytes, None)
         }
@@ -395,7 +395,7 @@ pub async fn run_schema(
         None => {
             let bytes = match hub {
                 Some(hub) => remote_schema(hub, token).await?,
-                None => DOCUMENT_JSON_SCHEMA.as_bytes().to_vec(),
+                None => document_json_schema()?,
             };
             write_bytes(&bytes, None)
         }

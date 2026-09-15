@@ -14,6 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -64,8 +65,32 @@ pub const DOCUMENT_SCHEMA: &str = "aos.package-documentation/v1";
 /// Media/format identifier advertised by signed registry metadata.
 pub const DOCUMENT_FORMAT: &str = "aos.package-documentation/v1+json";
 
-/// Closed JSON Schema served to editors and language tooling.
-pub const DOCUMENT_JSON_SCHEMA: &str = include_str!("../schema-v1.json");
+/// Generates the closed JSON Schema served to editors and language tooling.
+///
+/// The schema is derived from the same Rust data contract that decodes package
+/// documentation. This keeps new variants and field changes visible to every
+/// frontend without a separately maintained schema snapshot.
+///
+/// # Errors
+///
+/// Returns an error if the generated schema cannot be represented as JSON.
+pub fn document_json_schema() -> Result<Vec<u8>> {
+    let mut schema = serde_json::to_value(schemars::schema_for!(PackageDocumentation))?;
+    let schema_property = schema
+        .pointer_mut("/properties/schema")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            DocumentationError::Invalid(
+                "generated documentation schema omits its schema property".to_string(),
+            )
+        })?;
+    schema_property.insert(
+        "const".to_string(),
+        Value::String(DOCUMENT_SCHEMA.to_string()),
+    );
+
+    Ok(serde_json::to_vec_pretty(&schema)?)
+}
 
 /// Maximum canonical document size admitted by version 1.
 pub const MAX_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
@@ -91,7 +116,7 @@ pub enum DocumentationError {
 pub type Result<T> = std::result::Result<T, DocumentationError>;
 
 /// One canonical package documentation object.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PackageDocumentation {
     /// Closed document schema identifier.
@@ -109,7 +134,7 @@ pub struct PackageDocumentation {
 }
 
 /// Package identity and short catalog metadata embedded in a document.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DocumentedPackage {
     /// Registry package name.
@@ -128,7 +153,7 @@ pub struct DocumentedPackage {
 }
 
 /// Semantic and artifact digests repeated for self-description.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DocumentationIdentity {
     /// Digest over configuration meaning, excluding explanatory prose.
@@ -149,7 +174,7 @@ pub struct DocumentationIdentity {
 }
 
 /// One package-authored conceptual section.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Section {
     /// Stable document-local identifier.
@@ -161,7 +186,7 @@ pub struct Section {
 }
 
 /// Closed structured-prose block understood by every renderer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ProseBlock {
     /// A paragraph of safe inline spans.
@@ -198,7 +223,7 @@ pub enum ProseBlock {
 }
 
 /// One safe inline prose span.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum InlineSpan {
     /// Plain text.
@@ -221,7 +246,7 @@ pub enum InlineSpan {
 }
 
 /// Link destination admitted by structured prose.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum LinkTarget {
     /// Another package in the selected registry.
@@ -252,7 +277,7 @@ pub enum LinkTarget {
 }
 
 /// Note severity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum NoteSeverity {
     /// General useful information.
@@ -264,7 +289,7 @@ pub enum NoteSeverity {
 }
 
 /// One definition-table row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DefinitionEntry {
     /// Plain-text term.
@@ -274,7 +299,7 @@ pub struct DefinitionEntry {
 }
 
 /// One exact or dynamic option-path segment.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum PathSegment {
     /// Exact option attribute segment.
@@ -299,7 +324,7 @@ impl PathSegment {
 }
 
 /// Closed rich option type algebra.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum OptionType {
     /// Boolean value.
@@ -395,7 +420,7 @@ pub enum OptionType {
 }
 
 /// One enum value and its structured description.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EnumValue {
     /// Literal value.
@@ -406,7 +431,7 @@ pub struct EnumValue {
 }
 
 /// A safe option default or example.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum DocumentedValue {
     /// Bounded JSON-compatible literal.
@@ -422,7 +447,7 @@ pub enum DocumentedValue {
 }
 
 /// Public visibility of an option or runtime fact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Visibility {
     /// Public user-facing interface.
@@ -434,7 +459,7 @@ pub enum Visibility {
 }
 
 /// Authenticated owner of an option path.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OptionOwner {
     /// Package declaring or owning the option.
@@ -447,7 +472,7 @@ pub struct OptionOwner {
 }
 
 /// Effect expected when an option changes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ActivationEffect {
     /// Activation action.
@@ -458,7 +483,7 @@ pub struct ActivationEffect {
 }
 
 /// Closed activation action vocabulary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum ActivationKind {
     /// No live action.
@@ -478,7 +503,7 @@ pub enum ActivationKind {
 }
 
 /// Repository-relative declaration locator.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SourceLocator {
     /// Repository-relative source path.
@@ -492,7 +517,7 @@ pub struct SourceLocator {
 }
 
 /// One mechanically extracted option document.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OptionDocument {
     /// Structured path segments.
@@ -1929,7 +1954,17 @@ mod tests {
 
     #[test]
     fn checked_json_schema_exposes_the_complete_tooling_contract() {
-        let schema: Value = serde_json::from_str(DOCUMENT_JSON_SCHEMA).expect("valid JSON Schema");
+        let bytes = document_json_schema().expect("generate documentation JSON Schema");
+        assert_eq!(
+            bytes,
+            document_json_schema().expect("regenerate documentation JSON Schema")
+        );
+
+        let schema: Value = serde_json::from_slice(&bytes).expect("valid JSON Schema");
+        assert_eq!(
+            schema.get("$schema").and_then(Value::as_str),
+            Some("https://json-schema.org/draft/2020-12/schema")
+        );
         assert_eq!(
             schema
                 .pointer("/properties/schema/const")
@@ -1938,7 +1973,7 @@ mod tests {
         );
         assert_eq!(
             schema
-                .pointer("/$defs/optionType/oneOf")
+                .pointer("/$defs/OptionType/oneOf")
                 .and_then(Value::as_array)
                 .map(Vec::len),
             Some(17)
