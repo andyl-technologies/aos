@@ -6,8 +6,6 @@
 }: let
   envoyTypes = import ./types.nix {inherit lib;};
   render = import ./render.nix {inherit lib;};
-  cfg = config.envoy;
-  inherit (lib) mkOption types;
   inherit (lib.abilities) resultOf;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
@@ -17,21 +15,107 @@
     "tls-private-key"
     "validation-ca"
   ];
-  credentialReference = types.submodule ({...}: {
-    config._module.strict = true;
-    options = {
-      resource = mkOption {
+  credentialReference = abilityTypes.record {
+    fields = {
+      resource = {
         type = abilityTypes.optional (abilityTypes.deferredResult abilityTypes.resourceReference);
         default = null;
         description = "Typed source resource for this delivered credential.";
       };
-      encrypted = mkOption {
+      encrypted = {
         type = abilityTypes.boolean;
         default = false;
         description = "Whether the credential requires encrypted delivery.";
       };
     };
-  });
+  };
+  credentialReferences = abilityTypes.map {
+    keyMaxLength = 64;
+    maxEntries = builtins.length credentialNames;
+    value = credentialReference;
+  };
+  nodeType = abilityTypes.record {
+    fields = {
+      id = {
+        type = envoyTypes.nonEmpty;
+        default = "aos-envoy";
+        description = "The xDS node identifier.";
+      };
+      cluster = {
+        type = envoyTypes.nonEmpty;
+        default = "aos";
+        description = "The xDS node cluster identifier.";
+      };
+      metadata = {
+        type = envoyTypes.metadata;
+        default = {};
+        description = "Non-secret xDS node metadata.";
+      };
+    };
+  };
+  dynamicResourcesType = abilityTypes.record {
+    fields = {
+      enableAds = {
+        type = abilityTypes.boolean;
+        default = false;
+        description = "Whether to configure aggregated discovery service.";
+      };
+      adsCluster = {
+        type = envoyTypes.nonEmpty;
+        default = "xds-control-plane";
+        description = "The static cluster serving ADS and SDS.";
+      };
+      listenersFromAds = {
+        type = abilityTypes.boolean;
+        default = false;
+        description = "Whether listeners are obtained through LDS over ADS.";
+      };
+      clustersFromAds = {
+        type = abilityTypes.boolean;
+        default = false;
+        description = "Whether clusters are obtained through CDS over ADS.";
+      };
+    };
+  };
+  adminType = abilityTypes.record {
+    fields = {
+      enable = {
+        type = abilityTypes.boolean;
+        default = true;
+        description = "Whether to expose the loopback administration API.";
+      };
+      address = {
+        type = envoyTypes.nonEmpty;
+        default = "127.0.0.1";
+        description = "The administration API bind address.";
+      };
+      port = {
+        type = envoyTypes.port;
+        default = 9901;
+        description = "The administration API port.";
+      };
+      accessLog = {
+        type = abilityTypes.enum ["disabled" "service-log"];
+        default = "service-log";
+        description = "Whether administration requests are discarded or written to the service-owned log storage.";
+      };
+    };
+  };
+  telemetryType = abilityTypes.record {
+    fields = {
+      statsPrefix = {
+        type = abilityTypes.runtimeString;
+        default = "";
+        description = "An optional fixed tag attached to emitted metrics.";
+      };
+      statsd = {
+        type = abilityTypes.optional envoyTypes.socketAddress;
+        default = null;
+        description = "An optional StatsD sink.";
+      };
+    };
+  };
+  cfg = envoyTypes.normalize config.envoy;
   named = attrs: builtins.map (name: attrs.${name}) (builtins.attrNames attrs);
   allChains = lib.concatLists (builtins.map (listener: named listener.filterChains) (named cfg.listeners));
   downstreamTls = builtins.filter (value: value != null) (builtins.map (chain: chain.tls) allChains);
@@ -112,7 +196,7 @@
     ++ builtins.filter (value: value != null) (builtins.map (chain: chain.tcpProxyCluster) allChains);
   configuredCredentials =
     builtins.filter
-    (name: cfg.credentials ? ${name} && cfg.credentials.${name}.resource != null)
+    (name: cfg.credentials ? ${name} && (cfg.credentials.${name}.resource or null) != null)
     usedCredentials;
   isDeferredResult = value:
     builtins.isAttrs value
@@ -418,133 +502,52 @@ in {
     enable = lib.mkEnableOption "the Envoy proxy service";
 
     node = lib.mkOption {
-      type = lib.types.submodule {
-        config._module.strict = true;
-        options = {
-          id = lib.mkOption {
-            type = lib.types.strMatching ".+";
-            default = "aos-envoy";
-            description = "The xDS node identifier.";
-          };
-          cluster = lib.mkOption {
-            type = lib.types.strMatching ".+";
-            default = "aos";
-            description = "The xDS node cluster identifier.";
-          };
-          metadata = lib.mkOption {
-            type = lib.types.attrsOf envoyTypes.runtimeValue;
-            default = {};
-            description = "Non-secret xDS node metadata.";
-          };
-        };
-      };
+      type = nodeType;
       default = {};
       description = "The Envoy node identity advertised to xDS servers.";
     };
 
     listeners = lib.mkOption {
-      type = lib.types.attrsOf envoyTypes.listener;
+      type = envoyTypes.listeners;
       default = {};
       contributable = true;
       description = "The statically configured listeners.";
     };
 
     clusters = lib.mkOption {
-      type = lib.types.attrsOf envoyTypes.cluster;
+      type = envoyTypes.clusters;
       default = {};
       contributable = true;
       description = "The statically configured upstream clusters.";
     };
 
     dynamicResources = lib.mkOption {
-      type = lib.types.submodule {
-        config._module.strict = true;
-        options = {
-          enableAds = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-            description = "Whether to configure aggregated discovery service.";
-          };
-          adsCluster = lib.mkOption {
-            type = lib.types.strMatching ".+";
-            default = "xds-control-plane";
-            description = "The static cluster serving ADS and SDS.";
-          };
-          listenersFromAds = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-            description = "Whether listeners are obtained through LDS over ADS.";
-          };
-          clustersFromAds = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-            description = "Whether clusters are obtained through CDS over ADS.";
-          };
-        };
-      };
+      type = dynamicResourcesType;
       default = {};
       description = "The xDS dynamic-resource configuration.";
     };
 
     runtimeLayers = lib.mkOption {
-      type = lib.types.attrsOf envoyTypes.runtimeLayer;
+      type = envoyTypes.runtimeLayers;
       default = {};
       contributable = true;
       description = "Static, non-secret Envoy runtime layers.";
     };
 
     admin = lib.mkOption {
-      type = lib.types.submodule {
-        config._module.strict = true;
-        options = {
-          enable = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-            description = "Whether to expose the loopback administration API.";
-          };
-          address = lib.mkOption {
-            type = lib.types.strMatching ".+";
-            default = "127.0.0.1";
-            description = "The administration API bind address.";
-          };
-          port = lib.mkOption {
-            type = lib.types.port;
-            default = 9901;
-            description = "The administration API port.";
-          };
-          accessLog = lib.mkOption {
-            type = lib.types.enum ["disabled" "service-log"];
-            default = "service-log";
-            description = "Whether administration requests are discarded or written to the service-owned log storage.";
-          };
-        };
-      };
+      type = adminType;
       default = {};
       description = "The local Envoy administration interface.";
     };
 
     telemetry = lib.mkOption {
-      type = lib.types.submodule {
-        config._module.strict = true;
-        options = {
-          statsPrefix = lib.mkOption {
-            type = lib.types.str;
-            default = "";
-            description = "An optional fixed tag attached to emitted metrics.";
-          };
-          statsd = lib.mkOption {
-            type = lib.types.nullOr envoyTypes.socketAddress;
-            default = null;
-            description = "An optional StatsD sink.";
-          };
-        };
-      };
+      type = telemetryType;
       default = {};
       description = "Envoy telemetry sinks and tags.";
     };
 
     credentials = lib.mkOption {
-      type = lib.types.attrsOf credentialReference;
+      type = credentialReferences;
       default = {};
       description = "Typed credential resources used by static TLS contexts.";
     };
@@ -603,7 +606,7 @@ in {
           assertion =
             !cfg.enable
             || builtins.all
-            (name: cfg.credentials ? ${name} && cfg.credentials.${name}.resource != null)
+            (name: cfg.credentials ? ${name} && (cfg.credentials.${name}.resource or null) != null)
             usedCredentials;
           message = "each Envoy TLS credential handle must have a typed envoy.credentials resource";
         }
