@@ -48,10 +48,26 @@
     inherit request output;
   };
   lifecycle = requests."aos:configuration-evaluation-lifecycle".parameters;
+  registryLifecycle = requests."aos:registry-synchronization-lifecycle".parameters;
   dependencies = requests."aos:configuration-evaluation-dependencies".parameters;
 in
   assert !(disabled.config.aos.abilities.requests ? "aos:configuration-evaluation-lifecycle");
   assert lifecycle.service == "configuration-evaluation";
+  assert registryLifecycle.service == "registry-synchronization";
+  assert registryLifecycle.start
+  == [
+    {
+      executable = {
+        artifact = lib.abilities.packageOutput {
+          package = "aos";
+          output = "apm";
+        };
+        entry_point = "bin/apm";
+        arguments = ["update" "--system"];
+      };
+      ignore_failure = false;
+    }
+  ];
   assert lifecycle.start
   == [
     {
@@ -91,6 +107,7 @@ in
     (resultOf "aos:local-filesystems" "readiness-resource")
     (resultOf "aos:network-readiness" "readiness-resource")
     (resultOf "aos:aos-credential-recovery-lifecycle" "service-resource")
+    (resultOf "aos:registry-synchronization-lifecycle" "service-resource")
   ];
   assert dependencies.requires
   == [
@@ -99,5 +116,10 @@ in
   ];
   assert dependencies.wanted_by
   == [(resultOf "aos:user-sessions-ready" "readiness-resource")];
+  assert dependencies.wants
+  == [
+    (resultOf "aos:network-readiness" "readiness-resource")
+    (resultOf "aos:registry-synchronization-lifecycle" "service-resource")
+  ];
   assert requests."aos:configuration-evaluation-manager_identity".parameters.name == "aos-eval";
   assert !(enabled.config ? systemd); true

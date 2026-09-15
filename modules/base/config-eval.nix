@@ -259,34 +259,6 @@ in {
       }
     ];
 
-    # Host policy names packages before the evaluator can resolve their signed
-    # runtime closures. Refresh the system-scope registry snapshot first so a
-    # pristine image can resolve those names on its first boot. `apm update`
-    # retains an already-authenticated snapshot when a registry is temporarily
-    # unreachable, so subsequent boots can still evaluate offline.
-    systemd.services.aos-registry-sync = {
-      description = "Refresh signed AOS registry metadata for host evaluation";
-      wants = ["network-online.target"];
-      requires = ["local-fs.target" "systemd-networkd.service"];
-      after = [
-        "local-fs.target"
-        "network-online.target"
-        "systemd-networkd.service"
-        "aos-config-seed.service"
-      ];
-      before = ["aos-eval.service" "multi-user.target"];
-      unitConfig.ConditionPathExists = cfg.hostNix;
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        TimeoutStartSec = "2min";
-        ExecStartPre = "${pkgs.systemd}/lib/systemd/systemd-networkd-wait-online --any --timeout=110";
-      };
-      script = ''
-        ${pkgs.aos.apm}/bin/apm update --system
-      '';
-    };
-
     systemd.services.aos-image-measurement-index = lib.mkIf config.aos.boot.secureBoot.measuredBoot.enable {
       description = "Import authenticated UKI PCR 11 measurement metadata";
       wantedBy = ["multi-user.target"];

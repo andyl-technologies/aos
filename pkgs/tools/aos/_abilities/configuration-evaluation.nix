@@ -55,6 +55,138 @@
       };
     };
   };
+  registrySynchronization = serviceManagement.forService {
+    inherit serviceTypes consumerInstance;
+    declaration = {
+      service = "registry-synchronization";
+      enabled = true;
+      lifecycle = {
+        description = "Refresh signed registry metadata for host evaluation";
+        execution_model = "oneshot";
+        environment_files = [];
+        condition = [];
+        pre_start = [];
+        start = [
+          {
+            executable = {
+              artifact = lib.abilities.packageOutput {output = "apm";};
+              entry_point = "bin/apm";
+              arguments = ["update" "--system"];
+            };
+            ignore_failure = false;
+          }
+        ];
+        post_start = [];
+        stop = [];
+        post_stop = [];
+        restart = "never";
+        restart_delay_millis = 0;
+        configuration_change_action = "restart";
+        remain_after_exit = true;
+        start_timeout_millis = 120000;
+        stop_timeout_millis = 90000;
+      };
+      dependencies = {
+        prerequisites = [];
+        after = [
+          (resultOf "local-filesystems" "readiness-resource")
+          (resultOf "network-readiness" "readiness-resource")
+          (resultOf "aos-credential-recovery-lifecycle" "service-resource")
+        ];
+        before = [];
+        requires = [
+          (resultOf "local-filesystems" "readiness-resource")
+          (resultOf "aos-credential-recovery-lifecycle" "service-resource")
+        ];
+        wants = [(resultOf "network-readiness" "readiness-resource")];
+        requisite = [];
+        conflicts = [];
+        binds_to = [];
+        part_of = [];
+        upholds = [];
+        required_by = [];
+        wanted_by = [];
+        required_mounts = [];
+        implicit_dependencies = false;
+      };
+      manager_identity = {
+        name = "aos-registry-sync";
+        aliases = [];
+      };
+      conditions.all = [
+        {
+          kind = "path";
+          predicate = "exists";
+          path = cfg.hostNix;
+          negated = false;
+        }
+      ];
+      readiness = {
+        mechanism = "successful-exit";
+        signal_scope = "none";
+        timeout_millis = 120000;
+      };
+      environment = {
+        variables = {};
+        search_path = [];
+      };
+      isolation = {
+        privilege = "privileged";
+        filesystem = "read-only-system";
+        home_access = "inaccessible";
+        network = "host";
+        process_visibility = "host";
+        termination_scope = "all-processes";
+        temporary_directory = "private";
+        devices = [];
+        host_paths = [
+          {
+            source = "/var/lib/apm";
+            mode = "read-write";
+          }
+        ];
+        permit_core_dumps = false;
+      };
+      linux_isolation = {
+        allow_privilege_escalation = false;
+        ambient_capabilities = [];
+        capability_bounds = {
+          kind = "restricted";
+          capabilities = [];
+        };
+        control_group_delegation = false;
+        control_group_access = "read-only";
+        device_namespace = "private";
+        kernel_clock_mutation = false;
+        kernel_hostname_mutation = false;
+        kernel_log_access = false;
+        kernel_module_access = false;
+        kernel_tunable_access = false;
+        lock_personality = false;
+        memory_write_execute = false;
+        remove_ipc = false;
+        namespace_isolation = [];
+        namespace_creation = "denied";
+        network_address_families = ["ipv4" "ipv6" "unix"];
+        oom_score_adjust = 0;
+        permit_realtime = false;
+        permit_suid_sgid = false;
+        process_visibility = "all";
+        syscall_architectures = [];
+        syscall_allow = [];
+        syscall_deny = [];
+        syscall_denial_action = "return-permission-denied";
+        syscall_profile = "system-service";
+        user_namespace_ownership = "none";
+      };
+      resources = {
+        memory_high_bytes = {kind = "unbounded";};
+        memory_max_bytes = {kind = "unbounded";};
+        tasks = {kind = "unbounded";};
+      };
+    };
+  };
+  registryReadiness = resultOf "registry-synchronization-lifecycle" "service-resource";
   service = serviceManagement.forService {
     inherit serviceTypes consumerInstance;
     declaration = {
@@ -110,13 +242,17 @@
           (resultOf "local-filesystems" "readiness-resource")
           (resultOf "network-readiness" "readiness-resource")
           (resultOf "aos-credential-recovery-lifecycle" "service-resource")
+          registryReadiness
         ];
         before = [(resultOf "user-sessions-ready" "readiness-resource")];
         requires = [
           (resultOf "local-filesystems" "readiness-resource")
           (resultOf "aos-credential-recovery-lifecycle" "service-resource")
         ];
-        wants = [(resultOf "network-readiness" "readiness-resource")];
+        wants = [
+          (resultOf "network-readiness" "readiness-resource")
+          registryReadiness
+        ];
         requisite = [];
         conflicts = [];
         binds_to = [];
@@ -237,7 +373,7 @@
       };
     };
   };
-  baseFragments = [localFilesystems networkReadiness userSessions service];
+  baseFragments = [localFilesystems networkReadiness userSessions registrySynchronization service];
   baseContributions = builtins.map serviceManagement.splitContribution baseFragments;
   storeDatabaseContribution = serviceManagement.splitContribution storeDatabase;
   fragments = baseFragments ++ [storeDatabase];
