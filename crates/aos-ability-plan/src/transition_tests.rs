@@ -1550,7 +1550,7 @@ fn lifecycle_operation(
 }
 
 fn lifecycle_upgrade_fixture(payload_only: bool) -> LifecycleUpgradeFixture {
-    let source = aos_ability_validate::test_support::checked_systemd_manager_effect_plan();
+    let source = aos_ability_validate::test_support::checked_lifecycle_effect_plan();
     let interface_document = source
         .interfaces()
         .values()

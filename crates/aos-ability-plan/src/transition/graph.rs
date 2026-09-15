@@ -1315,8 +1315,7 @@ mod tests {
     use super::*;
 
     fn operation_fixture() -> Operation {
-        aos_ability_validate::test_support::checked_systemd_manager_effect_plan().operations()[0]
-            .clone()
+        aos_ability_validate::test_support::checked_lifecycle_effect_plan().operations()[0].clone()
     }
 
     #[test]

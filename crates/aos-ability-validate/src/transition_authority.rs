@@ -1911,7 +1911,7 @@ mod tests {
     }
 
     fn authority_fixture() -> AuthorityFixture {
-        let checked = crate::test_support::checked_systemd_manager_effect_plan();
+        let checked = crate::test_support::checked_lifecycle_effect_plan();
         let context =
             ValidationContext::new(BTreeSet::new(), checked.interfaces().values().cloned())
                 .expect("systemd interface catalog must validate");

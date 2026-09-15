@@ -735,8 +735,7 @@ mod tests {
     }
 
     fn loaded_document() -> LoadedDocumentation {
-        let interface = aos_ability_model::builtin::systemd_manager_interface()
-            .expect("build systemd interface");
+        let interface = aos_ability_validate::test_support::test_lifecycle_interface();
         let interface_key = interface.interface_key().expect("interface key");
         let implementation = ProviderImplementation {
             name: LocalKey::new("service-manager").expect("implementation name"),

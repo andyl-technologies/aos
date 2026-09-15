@@ -3,12 +3,12 @@
 use std::sync::{Arc, Barrier};
 
 use aos_ability_model::{
-    AbilityValue, AccessMode, IncarnationId, LocalKey, MethodReference,
-    ResourceAccess, ResourceId, RevisionId, TeardownBindingAuthorization,
+    AbilityValue, AccessMode, IncarnationId, LocalKey, MethodReference, ResourceAccess, ResourceId,
+    RevisionId, TeardownBindingAuthorization,
 };
 use aos_ability_runtime::adapter::ResourceRevisionObservation;
 use aos_ability_validate::CheckedEffectPlan;
-use aos_ability_validate::test_support::checked_systemd_manager_effect_plan;
+use aos_ability_validate::test_support::checked_lifecycle_effect_plan;
 use tempfile::TempDir;
 
 use super::storage::publish_authority_file;
@@ -59,7 +59,7 @@ impl AuthorityFixture {
         let authority_dir = trust_anchor.join("run").join("apm");
         std::fs::create_dir_all(&authority_dir).expect("authority directory");
         let path = authority_dir.join("ability-authority.json");
-        let plan = checked_systemd_manager_effect_plan();
+        let plan = checked_lifecycle_effect_plan();
         let binding_document = plan.binding_plan().document();
         let policy = ResolutionPolicyDocument {
             schema: ResolutionPolicyDocument::SCHEMA.to_string(),

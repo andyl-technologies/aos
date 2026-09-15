@@ -1342,7 +1342,7 @@ mod tests {
         ScopedOperationKey, TransactionId,
     };
     use aos_ability_validate::test_support::{
-        checked_effect_plan, checked_systemd_manager_effect_plan, plan_fixture,
+        checked_effect_plan, checked_lifecycle_effect_plan, plan_fixture,
     };
 
     use super::*;
@@ -1817,7 +1817,7 @@ mod tests {
             TimelineProvenance::UnverifiedRetainedRecords,
             DiagnosticBundleAudience::Redacted,
         )?;
-        let other_plan = checked_systemd_manager_effect_plan();
+        let other_plan = checked_lifecycle_effect_plan();
         let other_bundle = InspectionBundle::from_checked(&other_plan)?;
         let other_checked = other_bundle.check(None)?;
 

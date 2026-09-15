@@ -21,13 +21,13 @@ use aos_ability_model::{
 use aos_contract::Sha256Digest;
 
 use crate::test_support::{
-    PlanFixture, checked_systemd_manager_effect_plan, plan_fixture, planned_provider_chain_fixture,
-    stateful_owner_plan_fixture, systemd_manager_plan_fixture,
+    PlanFixture, checked_lifecycle_effect_plan, plan_fixture, planned_provider_chain_fixture,
+    stateful_owner_plan_fixture,
 };
 
 #[test]
 fn operation_rejects_caller_authored_method_semantics() {
-    let checked = checked_systemd_manager_effect_plan();
+    let checked = checked_lifecycle_effect_plan();
     let mut document = serde_json::to_value(checked.document()).unwrap();
     document["operations"][0]["semantics"] = serde_json::json!({
         "required_target_access": "read",
@@ -1078,7 +1078,7 @@ fn nested_operation_result_rejects_a_different_producer_output_schema() {
 }
 
 fn assert_retained_reference_mismatch(mutate: impl FnOnce(&mut ResourceReference)) {
-    let plan = checked_systemd_manager_effect_plan();
+    let plan = checked_lifecycle_effect_plan();
     let operation = &plan.operations()[0];
     let mut reference = operation.target.clone();
     mutate(&mut reference);
