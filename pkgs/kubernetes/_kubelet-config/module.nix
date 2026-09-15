@@ -31,6 +31,7 @@
     };
   };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  networkPolicy = lib.abilities.interfaces.networkPolicy;
   serviceTypes = serviceManagement.types;
   resultOf = lib.abilities.resultOf;
   producer = key: interface: parameters:
@@ -70,6 +71,15 @@
       "ipv4"
       "ipv6"
     ];
+  };
+  ingressPolicy = producer "ingress-policy" networkPolicy.interfaces.ingress {
+    endpoints = [
+      {
+        transport = "tcp";
+        port = 10250;
+      }
+    ];
+    prerequisites = [];
   };
   modules = producer "kernel-modules" serviceManagement.interfaces.kernelModules {
     modules = [
@@ -166,9 +176,13 @@
         after = [
           (resultOf "network" "readiness-resource")
           (resultOf "kernel-modules" "readiness-resource")
+          (resultOf "ingress-policy" "readiness-resource")
         ];
         before = [];
-        requires = [(resultOf "kernel-modules" "readiness-resource")];
+        requires = [
+          (resultOf "kernel-modules" "readiness-resource")
+          (resultOf "ingress-policy" "readiness-resource")
+        ];
         wants = [(resultOf "network" "readiness-resource")];
       };
       supervision = {
@@ -316,6 +330,7 @@
   serviceFragments = [
     network
     modules
+    ingressPolicy
     configuration
     service
   ];

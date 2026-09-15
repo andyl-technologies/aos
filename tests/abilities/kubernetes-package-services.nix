@@ -105,6 +105,17 @@ in
       ignore_failure = false;
     }
   ];
+  assert (requests cloudcore)."cloudcore:ingress-policy".parameters.endpoints
+  == [
+    {
+      transport = "tcp";
+      port = 10000;
+    }
+    {
+      transport = "tcp";
+      port = 10002;
+    }
+  ];
   assert (requests edgecore)."edgecore:kernel-modules".parameters.modules
   == [
     "overlay"
@@ -152,6 +163,13 @@ in
     && configuration.containerRuntimeEndpoint == "unix:///run/containerd/containerd.sock";
   assert lib.elem "worker-a" (builtins.head (commandFor kubelet "kubelet:kubelet-lifecycle")).executable.arguments;
   assert (requests kubelet)."kubelet:kubeconfig-source".parameters.name == "kubelet";
+  assert (requests kubelet)."kubelet:ingress-policy".parameters.endpoints
+  == [
+    {
+      transport = "tcp";
+      port = 10250;
+    }
+  ];
   assert (requests kubelet)."kubelet:kubelet-linux_device_policy".parameters.rules
   == [
     {

@@ -147,6 +147,7 @@
   ];
   requiredRefs = builtins.attrValues credentials;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  networkPolicy = lib.abilities.interfaces.networkPolicy;
   serviceTypes = serviceManagement.types;
   resultOf = lib.abilities.resultOf;
   producer = key: interface: parameters:
@@ -189,6 +190,18 @@
       "ipv4"
       "ipv6"
     ];
+  };
+  ingressPolicy = producer "ingress-policy" networkPolicy.interfaces.ingress {
+    endpoints =
+      lib.optional cfg.websocket.enable {
+        transport = "tcp";
+        port = cfg.websocket.port;
+      }
+      ++ lib.optional cfg.https.enable {
+        transport = "tcp";
+        port = cfg.https.port;
+      };
+    prerequisites = [];
   };
   configuration = serviceManagement.forConfiguration {
     inherit serviceTypes;
@@ -238,9 +251,12 @@
         stop_timeout_millis = 90000;
       };
       dependencies = {
-        after = [(resultOf "network" "readiness-resource")];
+        after = [
+          (resultOf "network" "readiness-resource")
+          (resultOf "ingress-policy" "readiness-resource")
+        ];
         before = [];
-        requires = [];
+        requires = [(resultOf "ingress-policy" "readiness-resource")];
         wants = [(resultOf "network" "readiness-resource")];
       };
       directories.managed = [
@@ -337,6 +353,7 @@
   };
   fragments = [
     network
+    ingressPolicy
     configuration
     credentialSources
     credentialDeliveries
