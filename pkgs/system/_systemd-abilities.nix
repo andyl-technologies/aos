@@ -9,6 +9,7 @@
   serviceInterfaces = serviceManagement.interfaces;
   directoryPreparationRequirement = {
     alias = "directory-preparation";
+    description = "Prepares service directories whose ownership differs from the selected service identity.";
     accepted_interfaces = [serviceInterfaces.filesystemEntry.identity];
     methods = ["materialize" "observe" "release"];
     guarantees = [];
