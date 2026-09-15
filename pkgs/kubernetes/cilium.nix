@@ -4,7 +4,6 @@
   fetchurl,
   buildPackages,
   gnumake,
-  lib,
 }: let
   version = "1.17.3";
 in
@@ -26,8 +25,8 @@ in
     ];
     runtimeDeps = [];
 
-    # One module owns Cilium's configuration surface, k3s contributions, and
-    # ability requirements. Its declarations are the write-authority source.
+    # One module owns Cilium's configuration and provider-neutral ability
+    # requirements. Its typed requests are the desired-state source.
     abilities = ./_cilium-abilities;
 
     phases = [
@@ -79,12 +78,11 @@ in
       {
         name = "install";
         script = ''
-          mkdir -p $out/bin $out/lib/bpf $out/share
+          mkdir -p $out/bin $out/lib/bpf
           install -m 755 _bin/cilium-agent _bin/cilium-dbg $out/bin/
 
           # Install compiled BPF programs
           cp -r bpf/out/* $out/lib/bpf/ 2>/dev/null || true
-          printf '%s\n' '${builtins.toJSON {inherit version;}}' > $out/share/cilium-package.json
         '';
       }
     ];
