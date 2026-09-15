@@ -779,11 +779,8 @@ mod tests {
             images: vec![],
             min_format: None,
             requires_features: Vec::new(),
-            expose: None,
-            expose_artifact: None,
             documentation: None,
             contract: None,
-            permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),
         }

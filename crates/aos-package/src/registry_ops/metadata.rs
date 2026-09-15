@@ -9,20 +9,14 @@
 //!   [versions.platforms.<name>]  per-platform artifact bindings
 //! ```
 
-use crate::registry_ops::attestation::publish_attestation_meta;
 use crate::registry_ops::images::PublishedImage;
-use crate::registry_ops::mac::PublishExposeManifest;
 use crate::registry_ops::provenance::bind_documentation_provenance;
 use crate::registry_ops::store_paths::StorePathInfo;
 use crate::types::{
-    AttestationMeta, DocumentationArtifactMeta, ExposeArtifactMeta, FEATURE_ABILITIES_V1,
-    FEATURE_ABILITY_EFFECTS_V1, FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1,
-    FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
-    FEATURE_MAC_PROFILE_V1, FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_NETWORK_POLICY_V1,
-    FEATURE_OPTIONAL_CREDENTIALS_V1, FEATURE_PACKAGE_DOCUMENTATION_V1, FEATURE_PERMISSIONS_V1,
-    FEATURE_RECOVERY_UKIS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1,
-    PACKAGE_META_FORMAT, PackageContractMeta, validate_attestation_meta,
-    validate_documentation_artifact_meta, validate_expose_artifact_meta,
+    AttestationMeta, DocumentationArtifactMeta, FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1,
+    FEATURE_ATTESTATION_V1, FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_PACKAGE_DOCUMENTATION_V1,
+    FEATURE_RECOVERY_UKIS_V1, FEATURE_UKI_SLOTS_V1, PACKAGE_META_FORMAT, PackageContractMeta,
+    validate_attestation_meta, validate_documentation_artifact_meta,
 };
 use anyhow::{Context, Result, bail};
 use std::collections::{BTreeSet, HashSet};
@@ -49,9 +43,6 @@ pub(in crate::registry_ops) fn build_package_toml_with_documentation(
     previous: Option<&str>,
     image_infos: &[PublishedImage],
     source_info: Option<&StorePathInfo>,
-    expose_manifest: Option<&PublishExposeManifest>,
-    expose_artifact_info: Option<&StorePathInfo>,
-    expose_manifest_digest: Option<&str>,
     documentation: Option<&DocumentationArtifactMeta>,
     documentation_attestation: Option<&AttestationMeta>,
 ) -> Result<String> {
@@ -64,18 +55,8 @@ pub(in crate::registry_ops) fn build_package_toml_with_documentation(
     let source_nar_hash = source_info
         .map(|source| source.nar_hash.as_str())
         .unwrap_or_default();
-    let mut platform_table = package_platform_table(
-        name,
-        version,
-        platform,
-        info,
-        image_infos,
-        source_drv,
-        source_nar_hash,
-        expose_manifest,
-        expose_artifact_info,
-        expose_manifest_digest,
-    )?;
+    let mut platform_table =
+        package_platform_table(info, image_infos, source_drv, source_nar_hash)?;
     if sysroot {
         let table = platform_table
             .as_table_mut()
@@ -498,9 +479,6 @@ fn build_package_toml(
     previous: Option<&str>,
     image_infos: &[PublishedImage],
     source_info: Option<&StorePathInfo>,
-    expose_manifest: Option<&PublishExposeManifest>,
-    expose_artifact_info: Option<&StorePathInfo>,
-    expose_manifest_digest: Option<&str>,
 ) -> Result<String> {
     build_package_toml_with_documentation(
         existing,
@@ -516,25 +494,16 @@ fn build_package_toml(
         previous,
         image_infos,
         source_info,
-        expose_manifest,
-        expose_artifact_info,
-        expose_manifest_digest,
         None,
         None,
     )
 }
 
 fn package_platform_table(
-    name: &str,
-    version: &str,
-    platform: &str,
     info: &StorePathInfo,
     image_infos: &[PublishedImage],
     source_drv: &str,
     source_nar_hash: &str,
-    expose_manifest: Option<&PublishExposeManifest>,
-    expose_artifact_info: Option<&StorePathInfo>,
-    expose_manifest_digest: Option<&str>,
 ) -> Result<toml::Value> {
     let mut table = toml::map::Map::new();
     table.insert("store_path".into(), toml::Value::String(info.path.clone()));
@@ -724,116 +693,6 @@ fn package_platform_table(
             table.insert(
                 "min-format".into(),
                 toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
-            );
-        }
-    }
-
-    if let Some(manifest) = expose_manifest {
-        let artifact = expose_artifact_info
-            .context("expose manifest requires rendered expose artifact metadata")?;
-        let attestation = publish_attestation_meta(
-            name,
-            version,
-            platform,
-            info,
-            manifest,
-            expose_manifest_digest,
-        )
-        .with_context(|| format!("deriving package attestation metadata for package '{name}'"))?;
-        table.insert(
-            "min-format".into(),
-            toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
-        );
-        let mut required_features = vec![
-            toml::Value::String(FEATURE_EXPOSE_V1.to_string()),
-            toml::Value::String(FEATURE_EXPOSE_ARTIFACT_V1.to_string()),
-            toml::Value::String(FEATURE_PERMISSIONS_V1.to_string()),
-            toml::Value::String(FEATURE_NETWORK_POLICY_V1.to_string()),
-        ];
-        if !manifest.expose.requires.is_empty() {
-            required_features.push(toml::Value::String(FEATURE_REQUIRES_V1.to_string()));
-        }
-        if !manifest.expose.config.is_empty() {
-            required_features.push(toml::Value::String(FEATURE_CONFIG_V1.to_string()));
-        }
-        if manifest.expose.config.has_optional_credentials() {
-            required_features.push(toml::Value::String(
-                FEATURE_OPTIONAL_CREDENTIALS_V1.to_string(),
-            ));
-        }
-        if manifest.expose.config.has_unit_reconciliation() {
-            required_features.push(toml::Value::String(FEATURE_RELOAD_V1.to_string()));
-        }
-        if !manifest.expose.provides.is_empty() || !manifest.expose.uses.is_empty() {
-            required_features.push(toml::Value::String(
-                FEATURE_CAPABILITY_ROUTES_V1.to_string(),
-            ));
-        }
-        let ebpf_unit = format!("aos-pkg-{name}-ebpf.service");
-        if manifest.expose.units.iter().any(|unit| unit == &ebpf_unit) {
-            required_features.push(toml::Value::String(FEATURE_EBPF_NET_POLICY_V1.to_string()));
-        }
-        if manifest.mac.is_some() {
-            required_features.push(toml::Value::String(FEATURE_MAC_PROFILE_V1.to_string()));
-        }
-        if attestation.is_some() {
-            required_features.push(toml::Value::String(FEATURE_ATTESTATION_V1.to_string()));
-        }
-        table.insert(
-            "requires-features".into(),
-            toml::Value::Array(required_features.clone()),
-        );
-        let mut references = toml::map::Map::new();
-        references.insert("hashes".into(), toml::Value::Array(Vec::new()));
-        references.insert(
-            "min-format".into(),
-            toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
-        );
-        references.insert(
-            "requires-features".into(),
-            toml::Value::Array(required_features.clone()),
-        );
-        table.insert("references".into(), toml::Value::Table(references));
-        table.insert(
-            "expose".into(),
-            toml::Value::try_from(&manifest.expose)
-                .context("serializing expose manifest metadata")?,
-        );
-        let artifact = ExposeArtifactMeta {
-            store_path: artifact.path.clone(),
-            nar_hash: artifact.nar_hash.clone(),
-            nar_size: artifact.nar_size,
-        };
-        validate_expose_artifact_meta(&artifact)?;
-        table.insert(
-            "expose_artifact".into(),
-            toml::Value::try_from(&artifact).context("serializing expose artifact metadata")?,
-        );
-        table.insert(
-            "permissions".into(),
-            toml::Value::try_from(&manifest.permissions)
-                .context("serializing permissions manifest metadata")?,
-        );
-        if let Some(attestation) = attestation {
-            if let Some(root_digest) = attestation.root_digest {
-                table.insert("root_digest".into(), toml::Value::String(root_digest));
-            }
-            if let Some(root_hash) = attestation.root_hash {
-                table.insert("root_hash".into(), toml::Value::String(root_hash));
-            }
-            if let Some(root_hash_sig) = attestation.root_hash_sig {
-                table.insert("root_hash_sig".into(), toml::Value::String(root_hash_sig));
-            }
-            if let Some(provenance) = attestation.provenance {
-                table.insert("provenance".into(), toml::Value::String(provenance));
-            }
-            table.insert(
-                "measurement".into(),
-                toml::Value::String(
-                    attestation
-                        .measurement
-                        .context("package attestation measurement missing")?,
-                ),
             );
         }
     }

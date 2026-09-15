@@ -17,7 +17,6 @@ use crate::registry_ops::provenance::{
 };
 use crate::registry_ops::store_paths::extract_hash;
 use crate::registry_ops::uki::sha256_hex;
-use crate::types::rfc0001_metadata_requires_provenance;
 use anyhow::{Context, Result, bail};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -388,12 +387,10 @@ fn ensure_staged_package_rfc0001_provenance(
             key.package, key.version, key.platform
         )
     })?;
-    let requires_provenance = rfc0001_metadata_requires_provenance(
-        meta.expose.as_ref(),
-        meta.expose_artifact.as_ref(),
-        &meta.permissions,
-        meta.bpf_lsm.as_ref(),
-    );
+    let requires_provenance = meta
+        .bpf_lsm
+        .as_ref()
+        .is_some_and(|bpf_lsm| !bpf_lsm.is_empty());
     if !requires_provenance {
         return Ok(());
     }
@@ -406,7 +403,7 @@ fn ensure_staged_package_rfc0001_provenance(
             key.platform
         ),
         None => bail!(
-            "staged package metadata {path} {} {} {} uses RFC-0001 exposed or permission metadata without attestation provenance",
+            "staged package metadata {path} {} {} {} uses BPF-LSM metadata without attestation provenance",
             key.package,
             key.version,
             key.platform

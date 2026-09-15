@@ -596,7 +596,7 @@ fn measurement_events(root: &Path, installed: &[InstalledMeta]) -> Result<Vec<Me
         let Some(apm) = entry.apm.as_ref() else {
             continue;
         };
-        if !apm.explicit || apm.expose.is_none() {
+        if !apm.explicit || apm.contract.is_none() {
             continue;
         }
         packages.push(measured_package(root, entry, apm)?);
@@ -618,9 +618,9 @@ fn measurement_events(root: &Path, installed: &[InstalledMeta]) -> Result<Vec<Me
     Ok(events)
 }
 
-fn measured_package(root: &Path, entry: &InstalledMeta, apm: &ApmMeta) -> Result<MeasuredPackage> {
+fn measured_package(_root: &Path, entry: &InstalledMeta, apm: &ApmMeta) -> Result<MeasuredPackage> {
     let root_digest = package_root_digest(entry, apm);
-    let manifest_digest = package_manifest_digest(root, apm)?;
+    let manifest_digest = package_manifest_digest(apm)?;
     let package = MeasuredPackage {
         name: apm.name.clone(),
         version: apm.version.clone(),
@@ -656,16 +656,6 @@ fn package_root_digest(entry: &InstalledMeta, apm: &ApmMeta) -> String {
         return canonical_digest(root_hash);
     }
 
-    if let Some(expose) = &apm.expose
-        && let Some(root_hash) = expose
-            .images
-            .iter()
-            .find(|image| image.root_hash_sig.is_some())
-            .and_then(|image| image.root_hash.as_deref())
-    {
-        return canonical_digest(root_hash);
-    }
-
     package_store_path_root_digest(&entry.store_path)
 }
 
@@ -673,30 +663,14 @@ fn package_store_path_root_digest(store_path: &str) -> String {
     format!("sha256:{}", digest_hex(store_path.as_bytes()))
 }
 
-fn package_manifest_digest(root: &Path, apm: &ApmMeta) -> Result<String> {
-    let mut expose_manifest_digest = None;
-    if let Some(artifact) = &apm.expose_artifact {
-        let manifest = Path::new(&artifact.store_path).join("manifest.json");
-        if manifest.is_file() {
-            let bytes = fs::read(&manifest)
-                .with_context(|| format!("reading expose manifest {}", manifest.display()))?;
-            expose_manifest_digest = Some(package_manifest_digest_bytes(&bytes));
-        } else if root == Path::new("/") {
-            bail!(
-                "exposed package '{}' is missing signed manifest at {}",
-                apm.name,
-                manifest.display()
-            );
-        }
-    }
-
-    if let Some(digest) = expose_manifest_digest {
-        return Ok(digest);
-    }
-
-    let bytes = serde_json::to_vec(&apm.permissions)
-        .with_context(|| format!("serializing permissions for package '{}'", apm.name))?;
-    Ok(package_manifest_digest_bytes(&bytes))
+fn package_manifest_digest(apm: &ApmMeta) -> Result<String> {
+    let contract = apm.contract.as_ref().with_context(|| {
+        format!(
+            "package '{}' has no authenticated package contract",
+            apm.name
+        )
+    })?;
+    Ok(canonical_digest(&contract.document.document_sha256))
 }
 
 /// Returns the RFC-0001 golden package measurement tuple digest.
@@ -2726,16 +2700,21 @@ fn digest_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::types::{
-        ApmMeta, AttestationMeta, ExposeArtifactMeta, ExposeMeta, HostPathMode, HostPathPermission,
-        InstalledMeta, NetworkPermission, PACKAGE_META_FORMAT, PackageMeta, PermissionsMeta,
-        SysrootImageEntry,
+        ApmMeta, AttestationMeta, InstalledMeta, PACKAGE_META_FORMAT, PackageContractArtifactMeta,
+        PackageContractDocumentMeta, PackageContractMeta, PackageMeta,
     };
     use tempfile::TempDir;
 
     fn installed_fixture(tmp: &TempDir, manifest: &[u8]) -> InstalledMeta {
-        let artifact = tmp.path().join("artifact");
-        fs::create_dir_all(artifact.join("units")).expect("artifact units");
-        fs::write(artifact.join("manifest.json"), manifest).expect("manifest");
+        let document_digest = package_manifest_digest_bytes(manifest);
+        let retained_artifact = PackageContractArtifactMeta {
+            content: format!("sha256:{}", "c".repeat(64)),
+            store_path: "/nix/store/hash-web-1.0".into(),
+            nar_hash: "sha256:nar".into(),
+            nar_size: 1,
+            closure_digest: format!("sha256:{}", "d".repeat(64)),
+            closure: Vec::new(),
+        };
         InstalledMeta {
             store_path: "/nix/store/hash-web-1.0".into(),
             pushed_at: 1,
@@ -2753,49 +2732,21 @@ mod tests {
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: "sha256:nar".into(),
-                expose: Some(ExposeMeta {
-                    target: "aos-pkg-web.target".into(),
-                    units: vec!["web.service".into()],
-                    images: vec![SysrootImageEntry {
-                        format: "ext4-verity".into(),
-                        store_path: "/nix/store/image-web".into(),
-                        nar_hash: "sha256:image".into(),
-                        nar_size: 1,
-                        delivery: crate::types::test_image_delivery("raw"),
-                        sb_signer_cert_sha256: None,
-                        sbat: Vec::new(),
-                        expected_pcr11: None,
-                        ukis: Vec::new(),
-                        recovery_ukis: Vec::new(),
-                        recovery_bundle: None,
-                        root_image: Some("root.img".into()),
-                        root_verity: Some("root.verity".into()),
-                        root_hash: Some(
-                            "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-                                .into(),
-                        ),
-                        root_hash_sig: Some("root.roothash.p7s".into()),
-                    }],
-                    requires: Vec::new(),
-                    config: Default::default(),
-                    provides: Vec::new(),
-                    uses: Vec::new(),
+                documentation: None,
+                contract: Some(PackageContractMeta {
+                    document: PackageContractDocumentMeta {
+                        store_path: "/nix/store/hash-web-contract".into(),
+                        nar_hash: "sha256:contract".into(),
+                        nar_size: manifest.len() as u64,
+                        document_sha256: document_digest,
+                        document_size: manifest.len() as u64,
+                        references: Vec::new(),
+                    },
+                    payload: retained_artifact.clone(),
+                    source: retained_artifact,
+                    selectors: Vec::new(),
+                    provenance: "provenance/web.contract.intoto.jsonl".into(),
                 }),
-                expose_artifact: Some(ExposeArtifactMeta {
-                    store_path: artifact.display().to_string(),
-                    nar_hash: "sha256:artifact".into(),
-                    nar_size: manifest.len() as u64,
-                }),
-                    documentation: None,
-                contract: None,
-                permissions: PermissionsMeta {
-                    network: Some(NetworkPermission::Private),
-                    host_paths: vec![HostPathPermission {
-                        path: "/var/lib/web".into(),
-                        mode: HostPathMode::Rw,
-                    }],
-                    ..Default::default()
-                },
                 bpf_lsm: None,
                 attestation: Default::default(),
             }),
@@ -2831,11 +2782,8 @@ mod tests {
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
             requires_features: vec!["attestation-v1".into()],
-            expose: None,
-            expose_artifact: None,
             documentation: None,
             contract: None,
-            permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {
                 root_digest: Some(root_hash.into()),
@@ -2922,7 +2870,7 @@ mod tests {
     #[test]
     fn package_measurement_includes_root_and_manifest_digests() {
         let tmp = TempDir::new().expect("tempdir");
-        let installed = installed_fixture(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let installed = installed_fixture(&tmp, br#"{"package":"web","network":"private"}"#);
 
         let events = measurement_events(tmp.path(), &[installed]).expect("events");
 
@@ -2938,7 +2886,7 @@ mod tests {
             package.manifest_digest,
             format!(
                 "sha256:{}",
-                digest_hex(br#"{"permissions":{"network":"private"}}"#)
+                digest_hex(br#"{"package":"web","network":"private"}"#)
             )
         );
         assert!(events[1].word.contains("name=3:web"));
@@ -2947,18 +2895,12 @@ mod tests {
     #[test]
     fn package_measurement_uses_store_path_digest_without_signed_root() {
         let tmp = TempDir::new().expect("tempdir");
-        let mut installed = installed_fixture(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let mut installed = installed_fixture(&tmp, br#"{"package":"web","network":"private"}"#);
         let expected_root_digest = package_store_path_root_digest(&installed.store_path);
-        let apm = installed.apm.as_mut().expect("apm metadata");
-        let image = apm
-            .expose
-            .as_mut()
-            .expect("expose metadata")
-            .images
-            .first_mut()
-            .expect("image metadata");
-        image.root_hash = None;
-        image.root_hash_sig = None;
+        let attestation = &mut installed.apm.as_mut().expect("apm metadata").attestation;
+        attestation.root_digest = None;
+        attestation.root_hash = None;
+        attestation.root_hash_sig = None;
 
         let events = measurement_events(tmp.path(), &[installed]).expect("events");
 
@@ -2972,11 +2914,11 @@ mod tests {
     #[test]
     fn package_measurement_changes_when_manifest_changes() {
         let tmp = TempDir::new().expect("tempdir");
-        let first = installed_fixture(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let first = installed_fixture(&tmp, br#"{"package":"web","network":"private"}"#);
         let first_digest = measurement_events(tmp.path(), &[first]).expect("first")[1]
             .digest
             .clone();
-        let second = installed_fixture(&tmp, br#"{"permissions":{"network":"host"}}"#);
+        let second = installed_fixture(&tmp, br#"{"package":"web","network":"host"}"#);
         let second_digest = measurement_events(tmp.path(), &[second]).expect("second")[1]
             .digest
             .clone();
@@ -2987,7 +2929,7 @@ mod tests {
     #[test]
     fn package_measurement_accepts_matching_registry_measurement() {
         let tmp = TempDir::new().expect("tempdir");
-        let manifest = br#"{"permissions":{"network":"private"}}"#;
+        let manifest = br#"{"package":"web","network":"private"}"#;
         let mut installed = installed_fixture(&tmp, manifest);
         let apm = installed.apm.as_mut().expect("apm metadata");
         let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -3011,7 +2953,7 @@ mod tests {
     #[test]
     fn package_measurement_rejects_mismatched_registry_measurement() {
         let tmp = TempDir::new().expect("tempdir");
-        let manifest = br#"{"permissions":{"network":"private"}}"#;
+        let manifest = br#"{"package":"web","network":"private"}"#;
         let mut installed = installed_fixture(&tmp, manifest);
         let apm = installed.apm.as_mut().expect("apm metadata");
         apm.attestation = AttestationMeta {
@@ -3035,7 +2977,7 @@ mod tests {
     #[test]
     fn measure_activated_packages_writes_event_log_under_root() {
         let tmp = TempDir::new().expect("tempdir");
-        let installed = installed_fixture(&tmp, br#"{"permissions":{}}"#);
+        let installed = installed_fixture(&tmp, br#"{"package":"web"}"#);
 
         measure_activated_packages(tmp.path(), &[installed]).expect("measure");
 
@@ -3064,7 +3006,7 @@ mod tests {
     #[test]
     fn measure_activated_packages_rolls_back_log_when_live_pcr_extend_fails() {
         let tmp = TempDir::new().expect("tempdir");
-        let installed = installed_fixture(&tmp, br#"{"permissions":{}}"#);
+        let installed = installed_fixture(&tmp, br#"{"package":"web"}"#);
         let log_path = tmp.path().join(AOS_PACKAGE_CEL_REL);
         fs::create_dir_all(log_path.parent().expect("log parent")).expect("log parent");
         fs::write(&log_path, "existing\n").expect("existing log");
@@ -3096,7 +3038,7 @@ mod tests {
             return;
         }
         let tmp = TempDir::new().expect("tempdir");
-        let installed = installed_fixture(&tmp, br#"{"permissions":{}}"#);
+        let installed = installed_fixture(&tmp, br#"{"package":"web"}"#);
 
         measure_activated_packages_inner(tmp.path(), &[installed], true, None)
             .expect("measure without a tpm succeeds");
@@ -3110,7 +3052,7 @@ mod tests {
     fn package_event_log_verifier_accepts_catalog_match() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let catalog = vec![catalog_meta(&root_hash, &measurement)];
 
@@ -3132,7 +3074,7 @@ mod tests {
     #[test]
     fn package_event_log_decoder_accepts_jsonl_bytes() {
         let tmp = TempDir::new().expect("tempdir");
-        let (log, _, _) = measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let (log, _, _) = measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
 
         let decoded = decode_package_event_log_bytes(log.as_bytes()).expect("jsonl decode");
 
@@ -3143,7 +3085,7 @@ mod tests {
     fn package_event_log_decoder_accepts_tcg_pcr_event2_binary_profile() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let catalog = vec![catalog_meta(&root_hash, &measurement)];
         let binary = tcg_pcr_event2_log_from_jsonl(&log);
@@ -3160,7 +3102,7 @@ mod tests {
     #[test]
     fn package_event_log_decoder_rejects_unsupported_tcg_digest_count() {
         let tmp = TempDir::new().expect("tempdir");
-        let (log, _, _) = measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let (log, _, _) = measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let mut binary = tcg_pcr_event2_log_from_jsonl(&log);
         binary[8..12].copy_from_slice(&2u32.to_le_bytes());
 
@@ -3173,7 +3115,7 @@ mod tests {
     fn package_event_log_verifier_accepts_legacy_record_shape() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let legacy_log = legacy_event_log_without_pcr_event_fields(&log);
         let pcr15 = replay_package_event_log_pcr15(&legacy_log).expect("pcr replay");
         let catalog = vec![catalog_meta(&root_hash, &measurement)];
@@ -3188,7 +3130,7 @@ mod tests {
     #[test]
     fn package_event_log_verifier_replays_from_pcr_baseline() {
         let tmp = TempDir::new().expect("tempdir");
-        let manifest = br#"{"permissions":{"network":"private"}}"#;
+        let manifest = br#"{"package":"web","network":"private"}"#;
         let installed = installed_fixture(&tmp, manifest);
         let apm = installed.apm.as_ref().expect("apm metadata");
         let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -3224,7 +3166,7 @@ mod tests {
     #[test]
     fn append_event_log_continues_sequence_numbers() {
         let tmp = TempDir::new().expect("tempdir");
-        let manifest = br#"{"permissions":{"network":"private"}}"#;
+        let manifest = br#"{"package":"web","network":"private"}"#;
         let installed = installed_fixture(&tmp, manifest);
         let events = measurement_events(tmp.path(), &[installed]).expect("events");
 
@@ -3349,7 +3291,7 @@ mod tests {
     #[test]
     fn package_measurement_catalog_entries_round_trip_through_json() {
         let tmp = TempDir::new().expect("tempdir");
-        let manifest = br#"{"permissions":{"network":"private"}}"#;
+        let manifest = br#"{"package":"web","network":"private"}"#;
         let mut installed = installed_fixture(&tmp, manifest);
         let apm = installed.apm.as_mut().expect("apm metadata");
         let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -3427,7 +3369,7 @@ mod tests {
     fn package_event_log_verifier_rejects_pcr_mismatch() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let catalog = vec![catalog_meta(&root_hash, &measurement)];
         let wrong_pcr = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -3440,7 +3382,7 @@ mod tests {
     fn package_event_log_verifier_rejects_digest_list_mismatch() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let mut lines = log.lines().collect::<Vec<_>>();
         let mut package: serde_json::Value = serde_json::from_str(lines[1]).expect("package event");
@@ -3461,7 +3403,7 @@ mod tests {
     fn package_event_log_verifier_rejects_partial_pcr_event_shape() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let mut lines = log.lines().collect::<Vec<_>>();
         let mut package_set: serde_json::Value = serde_json::from_str(lines[0]).expect("set event");
@@ -3484,7 +3426,7 @@ mod tests {
     fn package_event_log_verifier_rejects_null_pcr_event_field() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let mut lines = log.lines().collect::<Vec<_>>();
         let mut package_set: serde_json::Value = serde_json::from_str(lines[0]).expect("set event");
@@ -3504,7 +3446,7 @@ mod tests {
     fn package_event_log_verifier_rejects_sequence_number_mismatch() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let mut lines = log.lines().collect::<Vec<_>>();
         let mut package_set: serde_json::Value = serde_json::from_str(lines[0]).expect("set event");
@@ -3524,7 +3466,7 @@ mod tests {
     fn package_event_log_verifier_rejects_catalog_mismatch() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, _) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let catalog = vec![catalog_meta(
             &root_hash,
@@ -3565,7 +3507,7 @@ mod tests {
     #[test]
     fn package_event_log_verifier_reports_latest_package_set() {
         let tmp = TempDir::new().expect("tempdir");
-        let manifest = br#"{"permissions":{"network":"private"}}"#;
+        let manifest = br#"{"package":"web","network":"private"}"#;
         let installed = installed_fixture(&tmp, manifest);
         let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let manifest_digest = package_manifest_digest_bytes(manifest);
@@ -3587,7 +3529,7 @@ mod tests {
     fn package_event_log_verifier_rejects_package_set_digest_mismatch() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let mut lines = log.lines().collect::<Vec<_>>();
         let mut package_set: serde_json::Value = serde_json::from_str(lines[0]).expect("set event");
         let wrong_digest =
@@ -3619,7 +3561,7 @@ mod tests {
     fn package_event_log_verifier_rejects_package_set_count_mismatch() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let mut lines = log.lines().collect::<Vec<_>>();
         let mut package_set: serde_json::Value = serde_json::from_str(lines[0]).expect("set event");
         package_set["package_count"] = serde_json::Value::from(0);

@@ -177,7 +177,6 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         | PackageCommand::ActivateRestoreRoutedSources { .. }
         | PackageCommand::RecoverCredentialTransactions
         | PackageCommand::TestSystemdClient { .. }
-        | PackageCommand::TestReconcileExposedUnits { .. }
         | PackageCommand::TestProducePackageAttestationQuote { .. }
         | PackageCommand::AttestService
         | PackageCommand::LoadEbpfLsmPolicies { .. }
@@ -249,7 +248,6 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::ActivateRestoreRoutedSources { .. }
         | PackageCommand::RecoverCredentialTransactions
         | PackageCommand::TestSystemdClient { .. }
-        | PackageCommand::TestReconcileExposedUnits { .. }
         | PackageCommand::TestProducePackageAttestationQuote { .. }
         | PackageCommand::AttestService
         | PackageCommand::LoadEbpfLsmPolicies { .. }

@@ -17,7 +17,6 @@ use crate::install;
 use crate::profile::Profile;
 use crate::profile::meta::list_meta;
 use crate::remove;
-use crate::resolve;
 use crate::sysroot_lock::IgnoreSysrootLock;
 use crate::types::validate_package_name;
 use aos_core::output::{OutputMode, Printer};
@@ -30,8 +29,6 @@ struct DesiredToml {
     #[serde(default)]
     packages: Vec<String>,
     #[serde(default)]
-    config: DesiredPackageConfig,
-    #[serde(default)]
     credentials: DesiredPackageCredentials,
     #[serde(default)]
     desired: Option<DesiredSection>,
@@ -42,14 +39,9 @@ struct DesiredSection {
     #[serde(default)]
     packages: Vec<String>,
     #[serde(default)]
-    config: DesiredPackageConfig,
-    #[serde(default)]
     credentials: DesiredPackageCredentials,
 }
 
-/// Desired config values keyed by package, artifact, and field name.
-pub(crate) type DesiredPackageConfig =
-    BTreeMap<String, BTreeMap<String, BTreeMap<String, toml::Value>>>;
 /// Desired credential values keyed by package and credential name.
 pub(crate) type DesiredPackageCredentials =
     BTreeMap<String, BTreeMap<String, DesiredCredentialValue>>;
@@ -124,37 +116,8 @@ pub async fn reconcile_from_file(
         ));
     }
 
-    let resolved_additions = if additions.is_empty() {
-        Vec::new()
-    } else {
-        let registries = install::load_registries(config)
-            .context("loading registries for desired package preflight")?;
-        resolve::resolve_multiple(&registries, &additions, None)
-            .context("resolving desired additions for package preflight")?
-    };
-    let resolved_addition_roots = resolved_additions
-        .iter()
-        .map(|closure| closure.root.clone())
-        .collect::<Vec<_>>();
-    crate::config_artifact::preflight_desired_config(
-        config,
-        &desired_file.config,
-        &desired,
-        &installed_before_meta,
-        &resolved_addition_roots,
-    )
-    .context("preflighting desired package config")?;
-    crate::credential_artifact::preflight_desired_credentials(
-        config,
-        &desired_file.credentials,
-        &desired,
-        &installed_before_meta,
-        &resolved_addition_roots,
-    )
-    .context("preflighting desired package credentials")?;
-
     if !additions.is_empty() {
-        install::run_deferred_expose_reconcile(
+        install::run(
             config,
             &additions,
             None,
@@ -182,43 +145,9 @@ pub async fn reconcile_from_file(
         .collect::<Vec<_>>();
 
     if !removals.is_empty() {
-        remove::run_deferred_expose_reconcile(config, &removals, true, dry_run, yes, printer)
+        remove::run(config, &removals, true, dry_run, yes, printer)
             .await
             .context("removing packages absent from desired package set")?;
-    }
-
-    let config_reconciliation = if dry_run {
-        crate::config_artifact::ConfigReconciliation::default()
-    } else {
-        crate::config_artifact::reconcile_desired_config(config, &desired_file.config, printer)
-            .await
-            .context("reconciling desired package config")?
-    };
-    let credential_reconciliation = if dry_run {
-        crate::credential_artifact::CredentialReconciliation::default()
-    } else {
-        crate::credential_artifact::reconcile_desired_credentials(
-            config,
-            &desired_file.credentials,
-            printer,
-        )
-        .await
-        .context("reconciling desired package credentials")?
-    };
-    let changed_config = config_reconciliation.changed();
-    let changed_credentials = credential_reconciliation.changed();
-
-    let profile_changed = !additions.is_empty() || !removals.is_empty();
-    if (profile_changed || changed_config || changed_credentials) && !dry_run {
-        crate::exposed_units::reconcile_system_profile(config, printer)
-            .await
-            .context("reconciling exposed package units")?;
-        config_reconciliation
-            .apply()
-            .context("applying desired package config service changes")?;
-        credential_reconciliation
-            .apply()
-            .context("applying desired package credential service changes")?;
     }
 
     if printer.mode() == OutputMode::Json {
@@ -234,8 +163,6 @@ pub async fn reconcile_from_file(
             "desired": desired,
             "install": additions,
             "remove": removals,
-            "config_changed": changed_config,
-            "credentials_changed": changed_credentials,
             "dry_run": dry_run,
         }));
     } else if additions.is_empty() && removals.is_empty() {
@@ -248,7 +175,6 @@ pub async fn reconcile_from_file(
 #[derive(Debug)]
 struct DesiredFile {
     packages: BTreeSet<String>,
-    config: DesiredPackageConfig,
     credentials: DesiredPackageCredentials,
 }
 
@@ -262,21 +188,15 @@ impl DesiredFile {
     fn from_str(content: &str) -> Result<Self> {
         let parsed: DesiredToml =
             toml::from_str(content).context("invalid desired package TOML")?;
-        let top_level_present = !parsed.packages.is_empty()
-            || !parsed.config.is_empty()
-            || !parsed.credentials.is_empty();
-        let (names, config, credentials) = match parsed.desired {
-            Some(desired)
-                if !desired.packages.is_empty()
-                    || !desired.config.is_empty()
-                    || !desired.credentials.is_empty() =>
-            {
+        let top_level_present = !parsed.packages.is_empty() || !parsed.credentials.is_empty();
+        let (names, credentials) = match parsed.desired {
+            Some(desired) if !desired.packages.is_empty() || !desired.credentials.is_empty() => {
                 if top_level_present {
                     bail!("desired package file must not mix top-level keys with [desired]");
                 }
-                (desired.packages, desired.config, desired.credentials)
+                (desired.packages, desired.credentials)
             }
-            _ => (parsed.packages, parsed.config, parsed.credentials),
+            _ => (parsed.packages, parsed.credentials),
         };
 
         let mut set = BTreeSet::new();
@@ -284,10 +204,6 @@ impl DesiredFile {
             validate_package_name(&name)
                 .with_context(|| format!("invalid desired package name '{name}'"))?;
             set.insert(name);
-        }
-        for name in config.keys() {
-            validate_package_name(name)
-                .with_context(|| format!("invalid desired config package name '{name}'"))?;
         }
         for (package, package_credentials) in &credentials {
             validate_package_name(package)
@@ -312,7 +228,6 @@ impl DesiredFile {
 
         Ok(Self {
             packages: set,
-            config,
             credentials,
         })
     }
@@ -372,23 +287,6 @@ packages = ["k3s-worker"]
             packages.into_iter().collect::<Vec<_>>(),
             vec!["k3s-worker".to_string()]
         );
-    }
-
-    #[test]
-    fn desired_file_parse_nested_config() {
-        let desired = DesiredFile::from_str(
-            r#"
-[desired]
-packages = ["web"]
-
-[desired.config.web.env]
-TOKEN = "abc"
-"#,
-        )
-        .unwrap();
-
-        assert!(desired.packages.contains("web"));
-        assert_eq!(desired.config["web"]["env"]["TOKEN"].as_str(), Some("abc"));
     }
 
     #[test]

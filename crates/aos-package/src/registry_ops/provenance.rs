@@ -16,10 +16,9 @@ use crate::provenance::{
     sign_statement_dsse_jsonl_external,
 };
 use crate::registry::keys;
-use crate::registry_ops::attestation::{documentation_nar_identity, publish_attestation_meta};
+use crate::registry_ops::attestation::documentation_nar_identity;
 use crate::registry_ops::config::read_registry_toml;
 use crate::registry_ops::git::{git_try, registry_relative_path};
-use crate::registry_ops::mac::PublishExposeManifest;
 use crate::registry_ops::provenance::staged::git_tree_file_bytes;
 use crate::registry_ops::provenance::statement::{
     ensure_safe_package_provenance_statement_path, package_provenance_transparency_entry_hash,
@@ -30,9 +29,8 @@ use crate::registry_ops::trust::{derive_trust_key, load_committed_roster, valida
 use crate::registry_ops::uki::sha256_hex;
 use crate::security::parse_signing_key;
 use crate::types::{
-    AttestationMeta, BpfLsmPolicyMeta, DocumentationArtifactMeta, ExposeArtifactMeta, ExposeMeta,
-    PermissionsMeta, package_name_bucket, validate_attestation_meta, validate_package_name,
-    validate_platform_name,
+    AttestationMeta, BpfLsmPolicyMeta, DocumentationArtifactMeta, package_name_bucket,
+    validate_attestation_meta, validate_package_name, validate_platform_name,
 };
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -165,170 +163,8 @@ pub(in crate::registry_ops) struct PackageTomlPlatformKey {
 
 #[derive(Debug, Deserialize)]
 pub(in crate::registry_ops) struct StagedPackageRfc0001Meta {
-    #[serde(default)]
-    pub(in crate::registry_ops) expose: Option<ExposeMeta>,
-    #[serde(default)]
-    pub(in crate::registry_ops) expose_artifact: Option<ExposeArtifactMeta>,
-    #[serde(default)]
-    pub(in crate::registry_ops) permissions: PermissionsMeta,
     #[serde(default, rename = "bpf_lsm")]
     pub(in crate::registry_ops) bpf_lsm: Option<BpfLsmPolicyMeta>,
-}
-
-fn unsigned_publish_provenance_artifact(
-    registry_name: &str,
-    name: &str,
-    version: &str,
-    platform: &str,
-    info: &StorePathInfo,
-    source_info: Option<&StorePathInfo>,
-    manifest: &PublishExposeManifest,
-    manifest_digest: &str,
-    documentation: Option<&DocumentationArtifactMeta>,
-    key_id: &str,
-) -> Result<Option<(String, Value, AttestationMeta)>> {
-    let Some(attestation) = publish_attestation_meta(
-        name,
-        version,
-        platform,
-        info,
-        manifest,
-        Some(manifest_digest),
-    )?
-    else {
-        return Ok(None);
-    };
-    let attestation = match documentation {
-        Some(documentation) => {
-            bind_documentation_provenance(attestation, name, platform, documentation)?
-        }
-        None => attestation,
-    };
-    let provenance = attestation.provenance.as_deref().map(str::to_string);
-    let Some(provenance) = provenance else {
-        return Ok(None);
-    };
-    let mut statement = publish_provenance_statement(
-        registry_name,
-        name,
-        version,
-        platform,
-        info,
-        source_info,
-        manifest_digest,
-        &attestation,
-        key_id,
-    )?;
-    if let Some(documentation) = documentation {
-        append_documentation_provenance_subject(
-            &mut statement,
-            name,
-            version,
-            platform,
-            documentation,
-        )?;
-    }
-    Ok(Some((provenance, statement, attestation)))
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn publish_provenance_artifact_inner(
-    registry_name: &str,
-    name: &str,
-    version: &str,
-    platform: &str,
-    info: &StorePathInfo,
-    source_info: Option<&StorePathInfo>,
-    manifest: &PublishExposeManifest,
-    manifest_digest: &str,
-    documentation: Option<&DocumentationArtifactMeta>,
-    signer: &mut dyn ProvenanceSigner,
-) -> Result<Option<PublishProvenanceArtifact>> {
-    let Some((path, statement, attestation)) = unsigned_publish_provenance_artifact(
-        registry_name,
-        name,
-        version,
-        platform,
-        info,
-        source_info,
-        manifest,
-        manifest_digest,
-        documentation,
-        signer.key_id(),
-    )?
-    else {
-        return Ok(None);
-    };
-    let jsonl = sign_statement_dsse_jsonl_external(&statement, signer).await?;
-    Ok(Some(PublishProvenanceArtifact {
-        path,
-        jsonl,
-        attestation,
-    }))
-}
-
-#[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-pub(in crate::registry_ops) fn publish_provenance_artifact(
-    registry_name: &str,
-    name: &str,
-    version: &str,
-    platform: &str,
-    info: &StorePathInfo,
-    source_info: Option<&StorePathInfo>,
-    manifest: &PublishExposeManifest,
-    manifest_digest: &str,
-    signer: &LocalPackageProvenanceSigner,
-) -> Result<Option<PublishProvenanceArtifact>> {
-    let Some((path, statement, attestation)) = unsigned_publish_provenance_artifact(
-        registry_name,
-        name,
-        version,
-        platform,
-        info,
-        source_info,
-        manifest,
-        manifest_digest,
-        None,
-        &signer.key_id,
-    )?
-    else {
-        return Ok(None);
-    };
-    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
-    Ok(Some(PublishProvenanceArtifact {
-        path,
-        jsonl,
-        attestation,
-    }))
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(in crate::registry_ops) async fn publish_provenance_artifact_with_documentation(
-    registry_name: &str,
-    name: &str,
-    version: &str,
-    platform: &str,
-    info: &StorePathInfo,
-    source_info: Option<&StorePathInfo>,
-    manifest: &PublishExposeManifest,
-    manifest_digest: &str,
-    documentation: &DocumentationArtifactMeta,
-    signer: &mut dyn ProvenanceSigner,
-) -> Result<Option<PublishProvenanceArtifact>> {
-    publish_provenance_artifact_inner(
-        registry_name,
-        name,
-        version,
-        platform,
-        info,
-        source_info,
-        manifest,
-        manifest_digest,
-        Some(documentation),
-        signer,
-    )
-    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -804,7 +640,7 @@ pub(in crate::registry_ops) fn head_package_provenance_transparency_log(
     git_tree_file_bytes(dir, "HEAD", PACKAGE_PROVENANCE_TRANSPARENCY_LOG)
 }
 
-fn publish_provenance_statement(
+pub(in crate::registry_ops) fn publish_provenance_statement(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -867,7 +703,7 @@ fn publish_provenance_statement(
                 "digest": provenance_digest_map(&info.nar_hash),
             },
             {
-                "name": format!("aos:permissions-manifest:{name}:{version}:{platform}"),
+                "name": format!("aos:package-runtime-binding:{name}:{version}:{platform}"),
                 "digest": provenance_digest_map(manifest_digest),
             },
             {

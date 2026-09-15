@@ -1801,16 +1801,6 @@ fn release_snapshot_artifacts(
                         store_path: entry.source_drv.clone(),
                     });
                 }
-                if let Some(expose) = &entry.expose_artifact {
-                    artifacts.push(ReleaseSnapshotArtifact {
-                        package_name: package.package.name.clone(),
-                        package_version: version.version.clone(),
-                        platform: platform.clone(),
-                        artifact_kind: "expose".to_string(),
-                        store_hash: store_hash_component(&expose.store_path),
-                        store_path: expose.store_path.clone(),
-                    });
-                }
                 if let Some(documentation) = &entry.documentation {
                     artifacts.push(ReleaseSnapshotArtifact {
                         package_name: package.package.name.clone(),

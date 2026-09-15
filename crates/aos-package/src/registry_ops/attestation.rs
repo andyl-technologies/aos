@@ -1,64 +1,11 @@
 //! Attestation metadata and content digests binding published artifacts.
 
 use crate::provenance::sha256_hex_payload;
-use crate::registry_ops::mac::PublishExposeManifest;
 use crate::registry_ops::provenance::publish_provenance_ref;
 use crate::registry_ops::store_paths::StorePathInfo;
 use crate::registry_ops::uki::sha256_hex;
 use crate::types::{AttestationMeta, validate_attestation_meta};
-use anyhow::{Context, Result};
-
-pub(in crate::registry_ops) fn publish_attestation_meta(
-    name: &str,
-    version: &str,
-    platform: &str,
-    info: &StorePathInfo,
-    manifest: &PublishExposeManifest,
-    expose_manifest_digest: Option<&str>,
-) -> Result<Option<AttestationMeta>> {
-    let image = manifest
-        .expose
-        .images
-        .iter()
-        .find(|image| image.root_hash.is_some() || image.root_hash_sig.is_some());
-    let manifest_digest = expose_manifest_digest
-        .context("package root attestation requires an expose manifest digest")?;
-    let root_hash = image
-        .map(|image| {
-            image
-                .root_hash
-                .clone()
-                .context("verity package root image is missing root_hash")
-        })
-        .transpose()?;
-    let root_hash_sig = image
-        .map(|image| {
-            image
-                .root_hash_sig
-                .clone()
-                .context("verity package root image is missing root_hash_sig")
-        })
-        .transpose()?;
-    let root_digest = root_hash
-        .clone()
-        .unwrap_or_else(|| package_nar_root_digest(&info.nar_hash));
-    let measurement = crate::package_attestation::package_measurement_digest(
-        name,
-        version,
-        &root_digest,
-        manifest_digest,
-    );
-    let provenance = Some(publish_provenance_ref(name, platform, &measurement)?);
-    let meta = AttestationMeta {
-        root_digest: Some(root_digest),
-        root_hash,
-        root_hash_sig,
-        provenance,
-        measurement: Some(measurement),
-    };
-    validate_attestation_meta(&meta)?;
-    Ok(Some(meta))
-}
+use anyhow::Result;
 
 pub(in crate::registry_ops) fn publish_documentation_attestation_meta(
     name: &str,

@@ -92,9 +92,6 @@ async fn package_contract_publication_accepts_a_transitive_self_referencing_clos
         Some(&source),
         None,
         None,
-        None,
-        None,
-        None,
     )
     .unwrap();
     let package_dir = registry.path().join("packages/a");

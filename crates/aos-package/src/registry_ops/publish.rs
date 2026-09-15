@@ -18,9 +18,6 @@ use crate::registry_ops::git::{
     commit_registry_paths, current_git_head, refresh_registry_object_store,
 };
 use crate::registry_ops::images::{PublishedImage, inspect_published_image};
-use crate::registry_ops::mac::{
-    infer_publish_expose_artifact, read_publish_expose_manifest, read_publish_manifest_digest,
-};
 use crate::registry_ops::metadata::{
     build_package_toml_with_documentation, record_named_output, record_package_contract,
 };
@@ -30,8 +27,8 @@ use crate::registry_ops::package_contract::{
 use crate::registry_ops::package_contract_transparency::append_package_contract_transparency_log;
 use crate::registry_ops::provenance::{
     append_package_provenance_transparency_log, bind_documentation_provenance,
-    publish_documentation_provenance_artifact, publish_provenance_artifact_with_documentation,
-    resolve_package_provenance_signer, validate_external_provenance_signer,
+    publish_documentation_provenance_artifact, resolve_package_provenance_signer,
+    validate_external_provenance_signer,
 };
 use crate::registry_ops::signing::resolve_producer_signing_key;
 use crate::registry_ops::store_paths::{
@@ -74,10 +71,6 @@ use std::path::{Path, PathBuf};
 /// the package as a system root, `--previous` records the predecessor
 /// version for delta upgrades, and `--source-drv` records explicit source
 /// provenance for prebuilt binaries whose deriver is not visible to Nix.
-/// `--expose-manifest` records the RFC-0001 expose and permission metadata
-/// rendered by the package builder. Exposed packages also emit DSSE-wrapped
-/// provenance, so they must be published with `--key-id`; a raw `--key` has
-/// no stable roster id for the DSSE builder identity.
 ///
 /// # Errors
 ///
@@ -86,9 +79,8 @@ use std::path::{Path, PathBuf};
 /// when the package name is not safe for registry package paths; when the
 /// platform name is not safe for package metadata; when the image arguments are not
 /// given in triples or their files/metadata disagree, when the `nix path-info` /
-/// `nix-store` queries fail for the store path, when `--expose-manifest`
-/// cannot be parsed or validated, when the config output references a
-/// derivation, when a file write, the commit, or the object-store refresh
+/// `nix-store` queries fail for the store path, when a file write, the commit,
+/// or the object-store refresh
 /// fails. Policy-bearing internal components also fail
 /// when published directly, and aggregate roots fail unless their restricted
 /// component and corresponding source are direct runtime references.
@@ -112,7 +104,6 @@ pub async fn publish(
     image_info_paths: &[String],
     image_formats: &[String],
     image_uki_paths: &[String],
-    expose_manifest_path: Option<&str>,
     bless: bool,
     no_ca: bool,
     no_commit: bool,
@@ -145,7 +136,6 @@ pub async fn publish(
         image_info_paths,
         image_formats,
         image_uki_paths,
-        expose_manifest_path,
         bless,
         no_ca,
         no_commit,
@@ -185,7 +175,6 @@ pub(crate) async fn publish_to_registry_directory(
     image_info_paths: &[String],
     image_formats: &[String],
     image_uki_paths: &[String],
-    expose_manifest_path: Option<&str>,
     bless: bool,
     no_ca: bool,
     no_commit: bool,
@@ -284,15 +273,6 @@ pub(crate) async fn publish_to_registry_directory(
         sb_db_cert.is_some(),
         require_signed_ukis,
     )?;
-    let expose_manifest = expose_manifest_path
-        .map(|path| read_publish_expose_manifest(path, pkg_name))
-        .transpose()?;
-    let expose_artifact_info = expose_manifest_path
-        .map(infer_publish_expose_artifact)
-        .transpose()?;
-    let expose_manifest_digest = expose_manifest_path
-        .map(|path| read_publish_manifest_digest(Path::new(path)))
-        .transpose()?;
     let documentation = publish_package_documentation(
         pkg_name,
         pkg_version,
@@ -330,16 +310,12 @@ pub(crate) async fn publish_to_registry_directory(
         String::new()
     };
 
-    let documentation_attestation = if expose_manifest.is_none() {
-        Some(bind_documentation_provenance(
-            publish_documentation_attestation_meta(pkg_name, pkg_version, &platform, &info)?,
-            pkg_name,
-            &platform,
-            &documentation.metadata,
-        )?)
-    } else {
-        None
-    };
+    let documentation_attestation = bind_documentation_provenance(
+        publish_documentation_attestation_meta(pkg_name, pkg_version, &platform, &info)?,
+        pkg_name,
+        &platform,
+        &documentation.metadata,
+    )?;
     let new_content = build_package_toml_with_documentation(
         &content,
         pkg_name,
@@ -354,45 +330,23 @@ pub(crate) async fn publish_to_registry_directory(
         previous,
         &image_infos,
         source_info.as_ref(),
-        expose_manifest.as_ref(),
-        expose_artifact_info.as_ref(),
-        expose_manifest_digest.as_deref(),
         Some(&documentation.metadata),
-        documentation_attestation.as_ref(),
+        Some(&documentation_attestation),
     )?;
-    let provenance_artifact = match (expose_manifest.as_ref(), expose_manifest_digest.as_deref()) {
-        (Some(manifest), Some(manifest_digest)) => {
-            publish_provenance_artifact_with_documentation(
-                &name,
-                pkg_name,
-                pkg_version,
-                &platform,
-                &info,
-                source_info.as_ref(),
-                manifest,
-                manifest_digest,
-                &documentation.metadata,
-                provenance_signer,
-            )
-            .await?
-        }
-        _ => Some(
-            publish_documentation_provenance_artifact(
-                &name,
-                pkg_name,
-                pkg_version,
-                &platform,
-                &info,
-                source_info.as_ref(),
-                &documentation.metadata,
-                documentation_attestation
-                    .as_ref()
-                    .context("documentation-only package is missing attestation metadata")?,
-                provenance_signer,
-            )
-            .await?,
-        ),
-    };
+    let provenance_artifact = Some(
+        publish_documentation_provenance_artifact(
+            &name,
+            pkg_name,
+            pkg_version,
+            &platform,
+            &info,
+            source_info.as_ref(),
+            &documentation.metadata,
+            &documentation_attestation,
+            provenance_signer,
+        )
+        .await?,
+    );
 
     std::fs::write(&toml_path, &new_content)?;
     let provenance_path = if let Some(artifact) = &provenance_artifact {
@@ -424,19 +378,6 @@ pub(crate) async fn publish_to_registry_directory(
             );
         }
     }
-    let expose_store_report = if let Some(artifact) = &expose_artifact_info {
-        Some(
-            write_store_files(&dir, &artifact.path, content_addressed, bless, printer)
-                .with_context(|| {
-                    format!(
-                        "writing store/ realisation graph for expose artifact {}",
-                        artifact.path
-                    )
-                })?,
-        )
-    } else {
-        None
-    };
     let documentation_store_report = write_store_files(
         &dir,
         &documentation.info.path,
@@ -482,12 +423,6 @@ pub(crate) async fn publish_to_registry_directory(
             &format!("Image artifact graph {}", index + 1),
             &report.summary(),
         );
-    }
-    if let Some(artifact) = &expose_artifact_info {
-        printer.kv("Expose artifact", &artifact.path);
-    }
-    if let Some(report) = &expose_store_report {
-        printer.kv("Expose artifact graph", &report.summary());
     }
     printer.kv("Documentation", &documentation.info.path);
     printer.kv("Documentation graph", &documentation_store_report.summary());
@@ -594,17 +529,6 @@ pub(crate) async fn publish_to_registry_directory(
                 "unchanged": store_report.unchanged,
                 "content_addressed": store_report.content_addressed,
             },
-            "expose_artifact": expose_artifact_info.as_ref().map(|artifact| serde_json::json!({
-                "store_path": artifact.path.as_str(),
-                "nar_hash": artifact.nar_hash.as_str(),
-                "nar_size": artifact.nar_size,
-            })),
-            "expose_artifact_graph": expose_store_report.as_ref().map(|report| serde_json::json!({
-                "created": report.created,
-                "blessed": report.blessed,
-                "unchanged": report.unchanged,
-                "content_addressed": report.content_addressed,
-            })),
             "provenance": provenance_artifact.as_ref().map(|artifact| artifact.path.as_str()),
             "transparency_log": transparency_log_path.as_ref().map(|path| {
                 path.strip_prefix(&dir)
@@ -680,7 +604,6 @@ pub(crate) async fn publish_canonical_release_entry(
         &[],
         &[],
         &[],
-        None,
         false,
         false,
         true,
