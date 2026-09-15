@@ -75,12 +75,13 @@
       kind = "optional";
       value = nested schema.value;
     }
-    else if builtins.elem schema.kind [
-      "artifact-reference"
-      "resource-reference"
-      "provider-assignment"
-      "operation-result-reference"
-    ]
+    else if
+      builtins.elem schema.kind [
+        "artifact-reference"
+        "resource-reference"
+        "provider-assignment"
+        "operation-result-reference"
+      ]
     then {inherit (schema) kind;}
     else {
       kind = "opaque";
@@ -289,7 +290,8 @@
     && builtins.stringLength value <= 4096
     && builtins.substring 0 1 value == "/"
     && (
-      value == "/"
+      value
+      == "/"
       || builtins.all (component: component != "" && component != "." && component != "..") components
     );
 
@@ -325,6 +327,18 @@ in rec {
     if moduleTypes.optionType.check abilityType && abilityType ? _abilitySchema
     then checkedSchema context abilityType._abilitySchema
     else throw "${context} must use an option type from lib.abilities.types";
+
+  ## Reports whether every leaf in an evaluated option tree has a portable schema.
+  isPortableOptionTree = optionTree:
+    builtins.isAttrs optionTree
+    && builtins.all
+    (name: let
+      option = optionTree.${name};
+    in
+      if option ? type
+      then option.type ? _abilitySchema
+      else isPortableOptionTree option)
+    (builtins.attrNames optionTree);
 
   ## Converts a closed portable schema into a normal AOS option type.
   ##

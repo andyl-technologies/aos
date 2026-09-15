@@ -199,6 +199,7 @@ in
       configuration = requests."rsync:daemon-configuration".parameters;
       contractHolds =
         assertionsHold evaluated
+        && lib.abilities.types.isPortableOptionTree evaluated.options.rsyncd
         && assertionsHold authenticated
         && !assertionsHold invalid
         && configuration.source.kind == "interpolated-text"

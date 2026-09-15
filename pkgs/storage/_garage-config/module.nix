@@ -5,7 +5,7 @@
   ...
 }: let
   cfg = config.garage;
-  inherit (lib) mkOption types;
+  inherit (lib) mkOption;
   inherit (lib.abilities) resultOf;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
@@ -391,9 +391,13 @@
     });
 in {
   options.garage = {
-    enable = lib.mkEnableOption "the Garage object-storage service";
+    enable = mkOption {
+      type = abilityTypes.boolean;
+      default = false;
+      description = "Enable the Garage object-storage service.";
+    };
     restartToken = mkOption {
-      type = types.nullOr serviceTypes.restartToken;
+      type = abilityTypes.optional serviceTypes.restartToken;
       default = null;
       description = "Operator-controlled token whose change requests a service restart.";
     };
@@ -414,12 +418,15 @@ in {
         description = "Socket address used for Garage cluster RPC.";
       };
       publicAddress = mkOption {
-        type = types.nullOr socketAddress;
+        type = abilityTypes.optional socketAddress;
         default = null;
         description = "Externally reachable cluster RPC address advertised to peers.";
       };
       bootstrapPeers = mkOption {
-        type = types.listOf nonEmpty;
+        type = abilityTypes.list {
+          element = nonEmpty;
+          maxItems = abilityTypes.limits.maxCollectionItems;
+        };
         default = [];
         description = "Garage node-ID and RPC-address peers used for cluster discovery.";
       };
@@ -441,14 +448,14 @@ in {
         description = "S3 region returned to clients and used for request signing.";
       };
       rootDomain = mkOption {
-        type = types.nullOr nonEmpty;
+        type = abilityTypes.optional nonEmpty;
         default = null;
         description = "Optional DNS suffix for virtual-host-style S3 requests.";
       };
     };
     web = {
       enable = mkOption {
-        type = types.bool;
+        type = abilityTypes.boolean;
         default = false;
         description = "Enable Garage's public bucket website endpoint.";
       };
@@ -465,7 +472,7 @@ in {
     };
     admin = {
       enable = mkOption {
-        type = types.bool;
+        type = abilityTypes.boolean;
         default = false;
         description = "Enable Garage's authenticated administration and metrics API.";
       };
@@ -481,7 +488,7 @@ in {
       };
       metrics = {
         requireToken = mkOption {
-          type = types.bool;
+          type = abilityTypes.boolean;
           default = true;
           description = "Require a bearer token when scraping metrics.";
         };

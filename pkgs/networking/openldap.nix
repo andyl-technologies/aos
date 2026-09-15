@@ -290,6 +290,7 @@ in
         configuration.source.fragments;
       contractHolds =
         assertionsHold valid
+        && lib.abilities.types.isPortableOptionTree valid.options.openldap
         && assertionsHold tls
         && !assertionsHold missingPassword
         && builtins.hasAttr "openldap:main-lifecycle" requests

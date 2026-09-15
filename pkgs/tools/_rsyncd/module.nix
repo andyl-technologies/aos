@@ -5,7 +5,7 @@
   ...
 }: let
   cfg = config.rsyncd;
-  inherit (lib) mkOption types;
+  inherit (lib) mkOption;
   inherit (lib.abilities) resultOf;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
@@ -14,6 +14,10 @@
   positiveInt = abilityTypes.integer {
     minimum = 1;
     maximum = 2147483647;
+  };
+  port = abilityTypes.integer {
+    minimum = 1;
+    maximum = 65535;
   };
   boundedText = abilityTypes.string {
     maxLength = 4096;
@@ -328,7 +332,8 @@
       (serviceRequestFor withCredential)
     ]
     ++ lib.optional withCredential credentialRequest;
-  staticAbilityFragments = builtins.map
+  staticAbilityFragments =
+    builtins.map
     (fragment: (serviceManagement.splitContribution fragment).declarations)
     (abilityFragmentsFor true);
   configuredAbilityFragments = withCredential:
@@ -338,17 +343,17 @@
 in {
   options.rsyncd = {
     enable = mkOption {
-      type = types.bool;
+      type = abilityTypes.boolean;
       default = false;
       description = "Enable the package-owned rsync daemon.";
     };
     port = mkOption {
-      type = types.port;
+      type = port;
       default = 873;
       description = "TCP port on which rsyncd listens.";
     };
     address = mkOption {
-      type = types.str;
+      type = abilityTypes.runtimeString;
       default = "0.0.0.0";
       description = "Address on which rsyncd listens.";
     };

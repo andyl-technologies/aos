@@ -500,7 +500,11 @@
     else service.requests;
 in {
   options.envoy = {
-    enable = lib.mkEnableOption "the Envoy proxy service";
+    enable = lib.mkOption {
+      type = abilityTypes.boolean;
+      default = false;
+      description = "Enable the Envoy proxy service.";
+    };
 
     node = lib.mkOption {
       type = nodeType;
@@ -554,22 +558,14 @@ in {
     };
 
     restartToken = lib.mkOption {
-      type = lib.types.nullOr serviceTypes.restartToken;
+      type = abilityTypes.optional serviceTypes.restartToken;
       default = null;
       description = "Operator-controlled token whose change requests a service restart.";
-    };
-
-    renderedBootstrap = lib.mkOption {
-      type = lib.types.attrs;
-      internal = true;
-      readOnly = true;
-      description = "The rendered Envoy v3 bootstrap document.";
     };
   };
 
   config = lib.mkMerge [
     {
-      envoy.renderedBootstrap = renderedBootstrap;
       aos.abilities.requirementTemplates =
         lib.mkMerge (builtins.map (fragment: fragment.requirementTemplates) potentialAbilityFragments);
 

@@ -295,6 +295,7 @@ in
       });
       contractHolds =
         assertionsHold evaluated
+        && lib.abilities.types.isPortableOptionTree evaluated.options.etcd
         && !assertionsHold invalidMember
         && !assertionsHold invalidTls
         && !assertionsHold invalidDuplicate

@@ -186,6 +186,7 @@ in
         source.fragments);
       contractHolds =
         assertionsHold evaluated
+        && lib.abilities.types.isPortableOptionTree evaluated.options.conntrackd
         && !assertionsHold invalidHashRange
         && ownedValues disabledAbilities.instances == {}
         && ownedValues disabledAbilities.requests == {}
