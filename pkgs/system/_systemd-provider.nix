@@ -53,6 +53,12 @@
     (builtins.filter controlsService serviceImplementationNames);
   networkReadinessAlias = serviceInterfaces.networkReadiness.alias;
   filesystemReadinessAlias = serviceInterfaces.filesystemReadiness.alias;
+  activationMilestoneAlias = serviceInterfaces.activationMilestone.alias;
+  readinessControllers = [
+    serviceInterfaces.networkReadiness
+    serviceInterfaces.filesystemReadiness
+    serviceInterfaces.activationMilestone
+  ];
   nativeResourceInterfaces = [
     serviceInterfaces.mountResource
     serviceInterfaces.scheduledActivation
@@ -282,13 +288,18 @@
     emptyResult
     // {
       resourceFragments = {};
-      requests = builtins.listToAttrs (builtins.map (entry: {
+      requests = builtins.listToAttrs (builtins.map (entry: let
+          unitName = readinessUnitFor selected entry.parameters;
+        in {
           name = entry.binding.slot;
           value = {
             requirement = "readiness-effects";
             scope = [selected.alias];
             slot = entry.binding.slot;
-            parameters = entry.parameters;
+            parameters = {
+              expected = entry.parameters;
+              systemd_unit.unit_name = unitName;
+            };
           };
         })
         entries);
@@ -298,6 +309,25 @@
         })
         entries);
     };
+
+  readinessUnitFor = selected: parameters:
+    if selected.alias == networkReadinessAlias
+    then
+      if parameters.scope == "stack-prepared"
+      then "network-pre.target"
+      else "network-online.target"
+    else if selected.alias == filesystemReadinessAlias
+    then "local-fs.target"
+    else if selected.alias == activationMilestoneAlias
+    then
+      {
+        early-system = "sysinit.target";
+        interactive-console = "getty.target";
+        user-sessions-ready = "systemd-user-sessions.service";
+      }.${
+        parameters.milestone
+      }
+    else throw "systemd readiness controller does not map ${selected.identity.name}";
 
   provideManagerWatchdog = context: let
     entries = builtins.map (requestName: let
@@ -412,15 +442,20 @@
       else builtins.head matches;
     realization = resource.realization;
     unitIdentity =
-      if realization == null
-      then null
-      else if (realization.schema or null) == "aos.systemd.packaged-unit-realization/v1"
+      if realization != null && (realization.schema or null) == "aos.systemd.packaged-unit-realization/v1"
       then {
         kind = "unit";
         unit_name = realization.systemd_unit.unit_name or null;
       }
-      else if (realization.schema or null) == "aos.systemd.service-realization/v1"
+      else if realization != null && (realization.schema or null) == "aos.systemd.service-realization/v1"
       then realization.systemd_unit or null
+      else if builtins.elem resource.kind (builtins.map (selected: selected.identity.name) readinessControllers)
+      then {
+        kind = "unit";
+        unit_name = readinessUnitFor
+          (builtins.head (builtins.filter (selected: selected.identity.name == resource.kind) readinessControllers))
+          resource.value;
+      }
       else null;
   in
     if resource.resource != reference.resource
@@ -758,10 +793,11 @@
       };
     })
     serviceImplementationNames);
-  readinessProviderImplementations = {
-    ${networkReadinessAlias} = {
-      provide = provideReadiness serviceInterfaces.networkReadiness "readiness-resource";
-      transition = _: {
+  readinessProviderImplementations = builtins.listToAttrs (builtins.map (selected: {
+      name = selected.alias;
+      value = {
+        provide = provideReadiness selected "readiness-resource";
+        transition = _: {
         schema = "aos.ability.transition-fragment/v1";
         operations = [];
         decisions = [];
@@ -773,25 +809,9 @@
         handoffs = [];
         provider_readiness = [];
         obligations = [];
+        };
       };
-    };
-    ${filesystemReadinessAlias} = {
-      provide = provideReadiness serviceInterfaces.filesystemReadiness "readiness-resource";
-      transition = _: {
-        schema = "aos.ability.transition-fragment/v1";
-        operations = [];
-        decisions = [];
-        merges = [];
-        edges = [];
-        exports = [];
-        imports = [];
-        links = [];
-        handoffs = [];
-        provider_readiness = [];
-        obligations = [];
-      };
-    };
-  };
+    }) readinessControllers);
   identityProviderImplementations = import ./_systemd-identity-provider.nix {
     inherit config lib packageName;
   };

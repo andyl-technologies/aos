@@ -18,13 +18,16 @@ use crate::{decode_value, provider_context, target_context, value};
 
 const NETWORK_INTERFACE: &str = "aos.systemd.network-readiness-effects";
 const FILESYSTEM_INTERFACE: &str = "aos.systemd.filesystem-readiness-effects";
+const ACTIVATION_MILESTONE_INTERFACE: &str = "aos.systemd.activation-milestone-effects";
 const NETWORK_OBSERVATION_SCHEMA: &str = "aos.ability.network-readiness-observation/v1";
 const FILESYSTEM_OBSERVATION_SCHEMA: &str = "aos.ability.filesystem-readiness-observation/v1";
+const ACTIVATION_MILESTONE_OBSERVATION_SCHEMA: &str =
+    "aos.ability.activation-milestone-observation/v1";
 
 pub(crate) fn supports(method: &MethodReference) -> bool {
     matches!(
         method.interface.name.as_str(),
-        NETWORK_INTERFACE | FILESYSTEM_INTERFACE
+        NETWORK_INTERFACE | FILESYSTEM_INTERFACE | ACTIVATION_MILESTONE_INTERFACE
     )
 }
 
@@ -39,7 +42,7 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     }
     validate_resource_contexts(&request.resources)?;
 
-    let selected = selected_target(&request.method, &request.resource_spec.value)?;
+    let selected = selected_target(&request.resource_spec.value)?;
     let manager = PinnedSystemdManager::connect().await?;
     let inspection = inspect(
         &manager,
@@ -106,7 +109,7 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
         bail!("unsupported provider context schema");
     }
 
-    let selected = selected_target(&invocation.method, &bound.resource_spec.value)?;
+    let selected = selected_target(&bound.resource_spec.value)?;
     let manager = PinnedSystemdManager::connect().await?;
     if manager.incarnation().bus_id() != provider.manager_bus_id
         || manager.incarnation().owner() != provider.manager_owner
@@ -156,20 +159,26 @@ async fn inspect(
     } else {
         None
     };
+    let inactive_state = if method.interface.name.as_str() == ACTIVATION_MILESTONE_INTERFACE {
+        "pending"
+    } else {
+        "configuring"
+    };
     let state = match active_state {
         Some(UnitActiveState::Active | UnitActiveState::Reloading) => "ready",
         Some(UnitActiveState::Failed) => "failed",
-        Some(UnitActiveState::Inactive) => "configuring",
+        Some(UnitActiveState::Inactive) => inactive_state,
         Some(_) | None => "unknown",
     };
-    let schema = if method.interface.name.as_str() == NETWORK_INTERFACE {
-        NETWORK_OBSERVATION_SCHEMA
-    } else {
-        FILESYSTEM_OBSERVATION_SCHEMA
+    let schema = match method.interface.name.as_str() {
+        NETWORK_INTERFACE => NETWORK_OBSERVATION_SCHEMA,
+        FILESYSTEM_INTERFACE => FILESYSTEM_OBSERVATION_SCHEMA,
+        ACTIVATION_MILESTONE_INTERFACE => ACTIVATION_MILESTONE_OBSERVATION_SCHEMA,
+        _ => bail!("handler invocation selects an unsupported readiness interface"),
     };
     let observation = value(&serde_json::json!({
         "schema": schema,
-        "expected": expected.as_json(),
+        "expected": selected_expected(expected)?,
         "state": state,
     }))?;
 
@@ -189,36 +198,52 @@ fn require_method(method: &MethodReference, semantics: &MethodSemantics) -> Resu
     Ok(())
 }
 
-fn selected_target<'a>(method: &MethodReference, expected: &'a AbilityValue) -> Result<&'a str> {
-    match method.interface.name.as_str() {
-        NETWORK_INTERFACE => match expected
-            .as_json()
-            .get("scope")
-            .and_then(serde_json::Value::as_str)
-        {
-            Some("stack-prepared") => Ok("network-pre.target"),
-            Some("configured-connectivity" | "default-route" | "local-connectivity") => {
-                Ok("network-online.target")
-            }
-            _ => bail!("network readiness request has an unsupported scope"),
-        },
-        FILESYSTEM_INTERFACE => match expected
-            .as_json()
-            .get("scope")
-            .and_then(serde_json::Value::as_str)
-        {
-            Some("local-filesystems") => Ok("local-fs.target"),
-            _ => bail!("filesystem readiness request has an unsupported scope"),
-        },
-        _ => bail!("handler invocation selects an unsupported readiness interface"),
-    }
+fn selected_target(expected: &AbilityValue) -> Result<&str> {
+    expected
+        .as_json()
+        .get("systemd_unit")
+        .and_then(|unit| unit.get("unit_name"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|name| {
+            let suffix = name.rsplit_once('.').map(|(_, suffix)| suffix);
+            !name.is_empty()
+                && name.len() <= 255
+                && name.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || "_.@:-".contains(character)
+                })
+                && matches!(
+                    suffix,
+                    Some(
+                        "service"
+                            | "socket"
+                            | "target"
+                            | "timer"
+                            | "path"
+                            | "mount"
+                            | "automount"
+                            | "swap"
+                            | "device"
+                    )
+                )
+        })
+        .ok_or_else(|| anyhow::anyhow!("readiness effect has no valid systemd unit identity"))
+}
+
+fn selected_expected(expected: &AbilityValue) -> Result<&serde_json::Value> {
+    expected
+        .as_json()
+        .get("expected")
+        .ok_or_else(|| anyhow::anyhow!("readiness effect has no provider-neutral expected value"))
 }
 
 #[cfg(test)]
 mod tests {
     use aos_ability_model::{AbilityValue, LocalKey, MethodReference};
 
-    use super::{FILESYSTEM_INTERFACE, NETWORK_INTERFACE, selected_target};
+    use super::{
+        ACTIVATION_MILESTONE_INTERFACE, FILESYSTEM_INTERFACE, NETWORK_INTERFACE, selected_expected,
+        selected_target,
+    };
 
     fn method(interface: &str) -> MethodReference {
         serde_json::from_value(serde_json::json!({
@@ -233,34 +258,61 @@ mod tests {
     }
 
     #[test]
-    fn readiness_scopes_map_only_to_package_owned_manager_targets() {
+    fn readiness_effects_carry_checked_package_owned_manager_targets() {
         let online = AbilityValue::new(serde_json::json!({
-            "scope": "configured-connectivity",
-            "address_families": ["ipv4"],
+            "expected": {
+                "scope": "configured-connectivity",
+                "address_families": ["ipv4"],
+            },
+            "systemd_unit": {"unit_name": "network-online.target"},
         }))
         .expect("request is bounded");
         let prepared = AbilityValue::new(serde_json::json!({
-            "scope": "stack-prepared",
-            "address_families": ["ipv4"],
+            "expected": {
+                "scope": "stack-prepared",
+                "address_families": ["ipv4"],
+            },
+            "systemd_unit": {"unit_name": "network-pre.target"},
         }))
         .expect("request is bounded");
         let filesystems = AbilityValue::new(serde_json::json!({
-            "scope": "local-filesystems",
+            "expected": {"scope": "local-filesystems"},
+            "systemd_unit": {"unit_name": "local-fs.target"},
+        }))
+        .expect("request is bounded");
+        let milestone = AbilityValue::new(serde_json::json!({
+            "expected": {"milestone": "interactive-console"},
+            "systemd_unit": {"unit_name": "getty.target"},
         }))
         .expect("request is bounded");
 
         assert_eq!(
-            selected_target(&method(NETWORK_INTERFACE), &online).expect("online target"),
+            selected_target(&online).expect("online target"),
             "network-online.target"
         );
         assert_eq!(
-            selected_target(&method(NETWORK_INTERFACE), &prepared).expect("prepared target"),
+            selected_target(&prepared).expect("prepared target"),
             "network-pre.target"
         );
         assert_eq!(
-            selected_target(&method(FILESYSTEM_INTERFACE), &filesystems)
-                .expect("filesystem target"),
+            selected_target(&filesystems).expect("filesystem target"),
             "local-fs.target"
         );
+        assert_eq!(
+            selected_target(&milestone).expect("milestone target"),
+            "getty.target"
+        );
+        assert_eq!(
+            selected_expected(&milestone).expect("neutral milestone"),
+            &serde_json::json!({"milestone": "interactive-console"})
+        );
+
+        for interface in [
+            NETWORK_INTERFACE,
+            FILESYSTEM_INTERFACE,
+            ACTIVATION_MILESTONE_INTERFACE,
+        ] {
+            assert_eq!(method(interface).interface.name.as_str(), interface);
+        }
     }
 }
