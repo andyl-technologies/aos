@@ -370,7 +370,10 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
             source: artifact.clone(),
         },
         artifacts: vec![artifact.clone()],
-        interfaces: Default::default(),
+        interfaces: BTreeMap::from([
+            (key("handler"), terminal_interface.clone()),
+            (key("owner"), owner_interface_key.clone()),
+        ]),
         guarantees: Default::default(),
         package_module: aos_ability_model::ModuleLocator {
             artifact: artifact.clone(),

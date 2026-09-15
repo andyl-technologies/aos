@@ -508,11 +508,19 @@
     .requirementTemplates
     true);
 
-  implementationDefinition = lib.abilities.define {
-    interface = "aos.test.symbolic-artifact";
+  selfOutput = lib.abilities.packageOutput {};
+  namedOutput = lib.abilities.packageOutput {
+    package = "aos";
+    output = "packageRuntime";
+  };
+  implementationInterface = lib.abilities.declareInterface {
+    name = "aos.test.symbolic-artifact";
     abi = 1;
-    requestSchema = lib.abilities.types.boolean;
+    description = "Exercises package-local selector qualification.";
+    requestType = lib.abilities.types.boolean;
+    configurationType = lib.abilities.types.boolean;
     outputs.flag = {
+      description = "Publishes the selected test flag.";
       schema = lib.abilities.types.boolean;
       phase = "planning";
       visibility = "protected";
@@ -533,21 +541,38 @@
       mergeContract = null;
       controllerGroup = "symbolic-artifact";
     };
-    requires = {};
-    ownsResourceKinds = [];
-    composeEntry = "compose";
-    transitionEntry = "transition";
+    requiredFeatures = [];
+  };
+  implementation = {
+    description = "Provides the selector qualification test interface.";
+    interface = "test";
+    methods = [];
+    guarantees = [];
+    requirements = {};
+    artifact = selfOutput;
+    artifacts = [];
+    providerModule = {
+      artifact = selfOutput;
+      path = "share/abilities/provider.nix";
+    };
+    desiredType = lib.abilities.types.boolean;
+    requiredFeatures = [];
     compose = context: context;
     transition = context: context;
+    provide = null;
+    handlerDescriptor = null;
+    state_format = null;
   };
   evaluateImplementation = implementation:
     (lib.evalModules {
-      modules = [
-        lib.abilities.module
+      modules = [lib.abilities.module];
+      packageModules = [
         {
-          config.aos.abilities = lib.abilities.qualifyPackageAbilities "authoring" (
-            lib.abilities.projectDefinitions {test = implementation;}
-          );
+          name = "authoring";
+          module.config.aos.abilities = {
+            interfaces.test = implementationInterface;
+            implementations.test = implementation;
+          };
         }
       ];
     })
@@ -556,20 +581,70 @@
     .abilities;
   rejectsImplementation = implementation:
     !(builtins.tryEval (builtins.deepSeq (evaluateImplementation implementation) true)).success;
-  localImplementationProjection = lib.abilities.projectDefinitions {test.definition = implementationDefinition;};
-  alphaImplementationProjection = lib.abilities.qualifyPackageAbilities "alpha" localImplementationProjection;
-  betaImplementationProjection = lib.abilities.qualifyPackageAbilities "beta" localImplementationProjection;
-  combinedImplementationKeys = builtins.attrNames (
-    alphaImplementationProjection.implementations
-    // betaImplementationProjection.implementations
-  );
+  authoredGuarantee = lib.abilities.guarantee {
+    name = "aos.guarantee.authoring-test";
+    version = 1;
+    semantics = "successful completion proves the authoring fixture contract";
+    description = "Documents the authoring fixture guarantee.";
+  };
+  proseChangedGuarantee = authoredGuarantee // {
+    description = "Documents the same authoring guarantee with revised prose.";
+  };
+  semanticsChangedGuarantee = authoredGuarantee // {
+    semantics = "successful completion proves a different authoring fixture contract";
+  };
+  guaranteeReferenceDeclaration = implementationInterface // {
+    guarantees = ["authoring"];
+  };
+  guaranteeReferenceEvaluation = lib.evalModules {
+    modules = [
+      lib.abilities.module
+      {
+        config.aos.abilities = {
+          guarantees.authoring = authoredGuarantee;
+          interfaces.test = guaranteeReferenceDeclaration;
+        };
+      }
+    ];
+  };
+  missingGuaranteeReference = builtins.tryEval (builtins.deepSeq (
+      (lib.evalModules {
+        modules = [
+          lib.abilities.module
+          {config.aos.abilities.interfaces.test = guaranteeReferenceDeclaration;}
+        ];
+      })
+      .config
+      .aos
+      .abilities
+      .interfaces
+      .test
+      .guarantees
+    ) true);
+  conflictingGuaranteeCatalog = builtins.tryEval (builtins.deepSeq (
+      (lib.evalModules {
+        modules = [
+          lib.abilities.module
+          {config.aos.abilities.guarantees.authoring = authoredGuarantee;}
+          {config.aos.abilities.guarantees.authoring = proseChangedGuarantee;}
+        ];
+      })
+      .config.aos.abilities.guarantees
+    ) true);
+  expectedGuaranteeDescriptor = lib.abilities.descriptorFor "aos.ability.execution-guarantee/v1" {
+    name = authoredGuarantee.name;
+    version = authoredGuarantee.version;
+    semantics = authoredGuarantee.semantics;
+  };
   packageModuleFor = package: {
     name = package;
-    module = {
-      imports = [
-        {config.aos.abilities = lib.abilities.projectDefinitions {test.definition = implementationDefinition;};}
-        {config.aos.abilities.implementations.test.provide = context: context;}
-      ];
+    module.config.aos.abilities = {
+      guarantees.authoring = authoredGuarantee;
+      interfaces.test = implementationInterface // {guarantees = ["authoring"];};
+      implementations.test = implementation // {
+        guarantees = ["authoring"];
+        provide = context: context;
+      };
     };
   };
   combinedPackageEvaluation = lib.evalModules {
@@ -597,33 +672,19 @@
   };
   derivedInstanceIdentity =
     instanceIdentityEvaluation.config.aos.abilities.instanceIdentities."demo:server";
-  qualifiedDeferredRequest = lib.abilities.qualifyPackageAbilities "alpha" {
-    requests.consumer = {
-      package = null;
-      requirement = "service";
-      consumer = "consumer";
-      scope = [];
-      parameters = {
-        literal = "producer";
-        nested = [
-          (lib.abilities.resultOf "producer" "path")
-        ];
-      };
-    };
-  };
-  selfOutput = lib.abilities.packageOutput {};
-  namedOutput = lib.abilities.packageOutput {
-    package = "aos";
-    output = "packageRuntime";
-  };
   forgedSelector = package: output: {
     _type = "aos-package-output-selector";
     inherit package output;
   };
   handlerImplementation = artifact: entryPoint: {
-    artifact = selfOutput;
-    definition = implementationDefinition // {handler = "test-handler";};
-    handler = {
+    inherit (implementation) description interface methods guarantees requirements artifacts desiredType requiredFeatures;
+    artifact = artifact;
+    compose = null;
+    transition = null;
+    provide = null;
+    providerModule = null;
+    state_format = null;
+    handlerDescriptor = {
       inherit artifact entryPoint;
       arguments = lib.abilities.types.boolean;
       result = lib.abilities.types.boolean;
@@ -717,8 +778,7 @@ in
   assert namedOutput.output == "packageRuntime";
   assert !invalidPackageOutputField.success;
   assert !invalidPackageOutputKey.success;
-  assert (evaluateImplementation {definition = implementationDefinition;}).implementations."authoring:test".interface == "authoring:test";
-  assert combinedImplementationKeys == ["alpha:test" "beta:test"];
+  assert (evaluateImplementation implementation).implementations."authoring:test".interface == "authoring:test";
   assert builtins.attrNames combinedPackageEvaluation.config.aos.abilities.implementations == ["alpha:test" "beta:test"];
   assert builtins.isFunction combinedPackageEvaluation.config.aos.abilities.implementations."alpha:test".provide;
   assert derivedInstanceIdentity.environment
@@ -729,34 +789,22 @@ in
   };
   assert derivedInstanceIdentity.key
   == "instance-122435614f54784fad556d4f153bdccaa571e66af26db80f2330fd7dca893044";
-  assert qualifiedDeferredRequest.requests."alpha:consumer".parameters.literal == "producer";
-  assert (builtins.head qualifiedDeferredRequest.requests."alpha:consumer".parameters.nested).request == "alpha:producer";
-  assert alphaImplementationProjection.implementations."alpha:test".package == "alpha";
-  assert alphaImplementationProjection.implementations."alpha:test".interface == "alpha:test";
-  assert rejectsImplementation {
-    artifact = pkgs.bash;
-    definition = implementationDefinition;
-  };
-  assert rejectsImplementation {
+  assert combinedPackageEvaluation.config.aos.abilities.implementations."alpha:test".package == "alpha";
+  assert combinedPackageEvaluation.config.aos.abilities.implementations."alpha:test".interface == "alpha:test";
+  assert rejectsImplementation (implementation // {artifact = pkgs.bash;});
+  assert rejectsImplementation (implementation // {
     artifact = "/nix/store/00000000000000000000000000000000-artifact";
-    definition = implementationDefinition;
-  };
-  assert rejectsImplementation {
-    artifacts = [pkgs.bash];
-    definition = implementationDefinition;
-  };
-  assert rejectsImplementation {
+  });
+  assert rejectsImplementation (implementation // {artifacts = [pkgs.bash];});
+  assert rejectsImplementation (implementation // {
     artifact = forgedSelector "bad/package" "out";
-    definition = implementationDefinition;
-  };
-  assert rejectsImplementation {
+  });
+  assert rejectsImplementation (implementation // {
     artifact = forgedSelector "self" "bad/output";
-    definition = implementationDefinition;
-  };
-  assert rejectsImplementation {
+  });
+  assert rejectsImplementation (implementation // {
     artifact = (forgedSelector "self" "out") // {unknown = true;};
-    definition = implementationDefinition;
-  };
+  });
   assert rejectsImplementation (handlerImplementation pkgs.bash "bin/handler");
   assert rejectsImplementation (handlerImplementation selfOutput "/bin/handler");
   assert rejectsImplementation (handlerImplementation selfOutput "");
@@ -767,64 +815,52 @@ in
     // {
       handler.arguments = lib.abilities.schemas.boolean;
     });
-  assert rejectsImplementation {
-    definition =
-      implementationDefinition
-      // {
-        _interface_declaration.lifecycle.unknown = true;
-      };
+  assert rejectsAbilityModule {
+    config.aos.abilities.interfaces.test = implementationInterface // {
+      lifecycle = implementationInterface.lifecycle // {unknown = true;};
+    };
   };
   assert rejectsAbilityModule {
-    config.aos.abilities =
-      (lib.abilities.projectDefinitions {
-        test.definition =
-          implementationDefinition
-          // {
-            _interface_declaration.configurationType = lib.abilities.schemas.boolean;
-          };
-      })
-      // {
-        environment = plainIdentity.environment;
-        instances.test = {
-          implementation = "test";
-          configuration = "not-a-boolean";
-        };
+    config.aos.abilities = {
+      interfaces.test = implementationInterface;
+      implementations.test = implementation;
+      environment = plainIdentity.environment;
+      instances.test = {
+        implementation = "test";
+        configuration = "not-a-boolean";
       };
+    };
   };
   assert rejectsAbilityModule {
-    config.aos.abilities =
-      (lib.abilities.projectDefinitions {test.definition = implementationDefinition;})
-      // {
-        environment = plainIdentity.environment;
-        instances.consumer = {};
-        requirementTemplates.test = {
-          description = "Requires the symbolic artifact test interface.";
-          interface = "aos.test.symbolic-artifact";
-          abi = 1;
-          descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-          strength = "advisory";
-          fallback.outputs.flag = "not-a-boolean";
-        };
+    config.aos.abilities = {
+      interfaces.test = implementationInterface;
+      implementations.test = implementation;
+      environment = plainIdentity.environment;
+      instances.consumer = {};
+      requirementTemplates.test = {
+        description = "Requires the symbolic artifact test interface.";
+        interface = executableIdentity;
+        strength = "advisory";
+        fallback.outputs.flag = "not-a-boolean";
       };
+    };
   };
   assert rejectsAbilityModule {
-    config.aos.abilities =
-      (lib.abilities.projectDefinitions {test.definition = implementationDefinition;})
-      // {
-        environment = plainIdentity.environment;
-        instances.consumer = {};
-        requirementTemplates.test = {
-          description = "Requires the symbolic artifact test interface.";
-          interface = "aos.test.symbolic-artifact";
-          abi = 1;
-          descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        };
-        requests.test = {
-          requirement = "test";
-          consumer = "consumer";
-          parameters = "not-a-boolean";
-        };
+    config.aos.abilities = {
+      interfaces.test = implementationInterface;
+      implementations.test = implementation;
+      environment = plainIdentity.environment;
+      instances.consumer = {};
+      requirementTemplates.test = {
+        description = "Requires the symbolic artifact test interface.";
+        interface = executableIdentity;
       };
+      requests.test = {
+        requirement = "test";
+        consumer = "consumer";
+        parameters = "not-a-boolean";
+      };
+    };
   };
   assert rejectsAbilityModule {
     config.aos.abilities.bindings.test = {
@@ -835,16 +871,16 @@ in
     };
   };
   assert rejectsAbilityModule {
-    config.aos.abilities =
-      (lib.abilities.projectDefinitions {test.definition = implementationDefinition;})
-      // {
-        desiredResources.test = {
-          kind = "aos.test.symbolic-artifact";
-          controller = "test";
-          lifetime = "instance";
-          value = "not-a-boolean";
-        };
+    config.aos.abilities = {
+      interfaces.test = implementationInterface;
+      implementations.test = implementation;
+      desiredResources.test = {
+        kind = "aos.test.symbolic-artifact";
+        controller = "test";
+        lifetime = "instance";
+        value = "not-a-boolean";
       };
+    };
   };
   assert portableRecordEvaluation.config.testRecord
   == {
@@ -857,6 +893,23 @@ in
   assert !invalidDecodedRecord.success;
   assert !invalidResourceReference.success;
   assert validExecutableRequest.config.aos.abilities.requests."authoring:executable".parameters.executable.entry_point == "bin/server";
+  assert !(authoredGuarantee ? descriptor);
+  assert guaranteeReferenceEvaluation.config.aos.abilities.guarantees.authoring == authoredGuarantee;
+  assert guaranteeReferenceEvaluation.config.aos.abilities.interfaces.test.guarantees == [{
+    name = authoredGuarantee.name;
+    version = authoredGuarantee.version;
+    descriptor = expectedGuaranteeDescriptor;
+  }];
+  assert !missingGuaranteeReference.success;
+  assert !conflictingGuaranteeCatalog.success;
+  assert lib.abilities.guaranteeIdentity authoredGuarantee == lib.abilities.guaranteeIdentity proseChangedGuarantee;
+  assert lib.abilities.guaranteeIdentity authoredGuarantee != lib.abilities.guaranteeIdentity semanticsChangedGuarantee;
+  assert guaranteeReferenceEvaluation.config.aos.abilities.interfaces.test.guarantees
+  == [{
+    name = authoredGuarantee.name;
+    version = authoredGuarantee.version;
+    descriptor = expectedGuaranteeDescriptor;
+  }];
   assert crossTargetEvaluation.config.aos.abilities.interfaces."authoring:source".methods.invoke.targetResource == crossTargetInterface.name;
   assert crossTargetEvaluation.config.aos.abilities.interfaces."authoring:source".methods.invoke.outputs.observed.phase == "observation";
   assert !missingCrossTarget.success;

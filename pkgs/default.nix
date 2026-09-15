@@ -142,7 +142,7 @@
   # declared-interface manifest). A fixed companion derivation builds it so
   # package-authored phases cannot skip or mutate its validation boundary.
   configModuleRenderer = import ./build-support/_config-module-renderer.nix {inherit lib;};
-  abilityContractRenderer = import ./build-support/_ability-contract-renderer.nix {
+  projectPackageAbilities = import ../lib/abilities/package-projection.nix {
     inherit lib;
     abilities = lib.abilities;
   };
@@ -231,6 +231,53 @@
       then authoredAbilities
       else [authoredAbilities];
     retainedAbilityModule = {imports = abilityModules;};
+    abilityModuleSource =
+      if authoredAbilities != null && builtins.isPath authoredAbilities
+      then let
+        isDirectory = builtins.pathExists (authoredAbilities + "/module.nix");
+      in {
+        source = authoredAbilities;
+        inherit isDirectory;
+        path = "module.nix";
+      }
+      else null;
+    abilityModuleArtifact =
+      if abilityModuleSource == null
+      then null
+      else
+        lib.throwIf
+        (builtins.elem "module" existingOutputs)
+        "mkDerivation abilities for package '${packageName}' reserve the 'module' output name for the separately built ability module"
+        (rawMkDerivation {
+          pname = "${packageName}-module";
+          version = args.version or "0";
+          src = null;
+          outputs = ["module"];
+          phases = [
+            {
+              name = "install";
+              script = ''
+                mkdir -p "$module"
+                ${
+                  if abilityModuleSource.isDirectory
+                  then ''cp -R ${abilityModuleSource.source}/. "$module/"''
+                  else ''cp ${abilityModuleSource.source} "$module/module.nix"''
+                }
+                test -f "$module/module.nix"
+              '';
+            }
+          ];
+          outputChecks.module.allowedReferences = [];
+          preferLocalBuild = true;
+          allowSubstitutes = false;
+        });
+    symbolicAbilityModuleLocator =
+      if abilityModuleArtifact == null
+      then null
+      else {
+        artifact = lib.abilities.packageOutput {output = "module";};
+        inherit (abilityModuleSource) path;
+      };
     abilityEvaluation =
       if authoredAbilities == null
       then null
@@ -254,50 +301,25 @@
       if abilityEvaluation == null
       then null
       else abilityEvaluation.config.aos.abilities;
-    packageAbilityPrefix = "${packageName}:";
-    localAbilityName = name:
-      if lib.hasPrefix packageAbilityPrefix name
-      then builtins.substring (builtins.stringLength packageAbilityPrefix) (-1) name
-      else name;
-    projectLocalAbilityMap = transform: values:
-      builtins.listToAttrs (builtins.map (name: {
-          name = localAbilityName name;
-          value = transform values.${name};
-        })
-        (builtins.attrNames values));
-    projectAbilityHandler = context: handler:
-      if handler == null
-      then null
-      else
-        (builtins.removeAttrs handler ["arguments" "result"])
-        // {
-          arguments = lib.abilities.types.schemaOf "${context} arguments" handler.arguments;
-          result = lib.abilities.types.schemaOf "${context} result" handler.result;
-        };
     abilityProjection =
       if localAbilityProjection == null
       then null
       else
-        localAbilityProjection
+        (projectPackageAbilities {
+            inherit packageName;
+            version = args.version or "0";
+            evaluated = localAbilityProjection;
+            packageModuleLocator = symbolicAbilityModuleLocator;
+          })
         // {
-          interfaces =
-            projectLocalAbilityMap
-            (declaration: lib.abilities.interfaceDocumentFromDeclaration declaration)
-            localAbilityProjection.interfaces;
-          implementations = projectLocalAbilityMap (implementation:
-            (builtins.removeAttrs implementation ["description" "desiredType"])
-            // {
-              interface = localAbilityName implementation.interface;
-              desired_type =
-                if implementation.desiredType == null
-                then null
-                else lib.abilities.types.schemaOf "implementation desired realization" implementation.desiredType;
-            })
-          localAbilityProjection.implementations;
-          requirementTemplates =
-            projectLocalAbilityMap
-            (requirement: builtins.removeAttrs requirement ["description"])
-            localAbilityProjection.requirementTemplates;
+          artifactOutputs =
+            lib.optionalAttrs (abilityModuleArtifact != null) {
+              module = {
+                derivation = builtins.unsafeDiscardStringContext abilityModuleArtifact.drvPath;
+                output = abilityModuleArtifact.module;
+                storePath = builtins.unsafeDiscardStringContext (toString abilityModuleArtifact.module);
+              };
+            };
         };
     publishedAbilityImplementations =
       if abilityProjection == null
@@ -540,189 +562,16 @@
       }
       // exposeAttrs;
     drv = rawMkDerivation lowerArgs;
-    implementationNames =
-      if abilityProjection == null
-      then []
-      else builtins.attrNames abilityProjection.implementations;
-    implementationValues =
-      builtins.map (name: abilityProjection.implementations.${name}) implementationNames;
-    implementationExport = name: entry:
-      lib.abilities.exportForImplementation
-      abilityProjection.interfaces.${entry.interface}
-      name
-      entry;
-    authoredAbilityContract =
-      if abilityProjection == null
-      then null
-      else {
-        activationMode =
-          if builtins.any (entry: entry.compose != null) implementationValues
-          then "structured-effects"
-          else "contracts-only";
-        requiredFeatures = lib.unique (
-          ["abilities-v1"]
-          ++ lib.concatMap (entry: entry.requiredFeatures) implementationValues
-          ++ lib.optional
-          (builtins.any (entry: entry.state_format != null) implementationValues)
-          "provider-state-format-v1"
-        );
-        ownership = lib.optional (implementationNames != []) [];
-        artifacts = lib.concatMap (entry: entry.artifacts) implementationValues;
-        exports =
-          builtins.mapAttrs (
-            name: entry: let
-              export = implementationExport name entry;
-            in
-              {
-                inherit export;
-                inherit (entry) requiredFeatures;
-              }
-              // lib.optionalAttrs (entry.artifact != null) {inherit (entry) artifact;}
-          )
-          abilityProjection.implementations;
-        handlers = builtins.listToAttrs (lib.concatMap (name: let
-          entry = abilityProjection.implementations.${name};
-        in
-          lib.optional (entry.handlerDescriptor != null) {
-            inherit name;
-            value =
-              {
-                inherit (entry.handlerDescriptor) entryPoint arguments result;
-              }
-              // lib.optionalAttrs (entry.handlerDescriptor.artifact != null) {
-                artifact = entry.handlerDescriptor.artifact;
-              };
-          })
-        implementationNames);
-        interfaces = abilityProjection.interfaces;
-        requirements = abilityProjection.requirementTemplates;
-      };
-    abilityArtifactDependencies = lib.unique (
-      (args.buildDeps or [])
-      ++ (args.runtimeDeps or [])
-      ++ (args.propagatedDeps or [])
-    );
-    resolveAbilityArtifact = selector: let
-      matches = lib.unique (builtins.filter (
-          dependency:
-            builtins.isAttrs dependency
-            && (dependency.pname or null) == selector.package
-        )
-        abilityArtifactDependencies);
-      package =
-        if selector.package == "self"
-        then drv
-        else if builtins.length matches == 0
-        then throw "mkDerivation abilities for package '${packageName}' select undeclared artifact package '${selector.package}'"
-        else if builtins.length matches > 1
-        then throw "mkDerivation abilities for package '${packageName}' select ambiguous artifact package '${selector.package}'"
-        else builtins.head matches;
-      outputs = package.outputs or ["out"];
-    in
-      if !(builtins.elem selector.output outputs)
-      then throw "mkDerivation abilities for package '${packageName}' select missing output '${selector.output}' from artifact package '${selector.package}'"
-      else if selector.output == "out"
-      then package.out or package
-      else builtins.getAttr selector.output package;
-    preparedAbilityContract =
-      if authoredAbilityContract != null
-      then
-        abilityContractRenderer.prepare {
-          inherit packageName;
-          version = args.version or "0";
-          payload = drv;
-          source =
-            if (args.src or null) != null
-            then args.src
-            else drv.drvPath;
-          declaration = authoredAbilityContract;
-          resolveArtifact = resolveAbilityArtifact;
-        }
-      else null;
-    abilityContract =
-      if preparedAbilityContract != null
-      then
-        lib.throwIfNot
-        (!(builtins.any (name: builtins.elem name existingOutputs) ["abilities" "abilityContract" "abilityModule"]))
-        "mkDerivation abilities for package '${packageName}' reserves the 'abilities', 'abilityContract', and 'abilityModule' output names"
-        ((rawMkDerivation {
-            pname = "${packageName}-abilities";
-            version = args.version or "0";
-            src = null;
-            buildDeps = [
-              resolvedBuildPackages.aos-ability-contract-validator
-              resolvedBuildPackages.jq
-              resolvedBuildPackages.nix
-            ];
-            exportReferencesGraph = preparedAbilityContract.referenceGraph;
-            abilityTemplateJson = preparedAbilityContract.templateJson;
-            abilityGraphSpecsJson = preparedAbilityContract.graphSpecsJson;
-            abilityInterfacesJson = preparedAbilityContract.interfacesJson;
-            dontNukeRefs = true;
-            phases = [
-              {
-                name = "install";
-                script = ''
-                  ${stdenv.coreutils}/bin/env -i \
-                    HOME=/homeless-shelter \
-                    NIX_ATTRS_JSON_FILE="$NIX_ATTRS_JSON_FILE" \
-                    ABILITY_CLOSURE_GRAPH_JQ=${./build-support/_ability-closure-graph.jq} \
-                    PATH="$PATH" \
-                    TMPDIR=/build \
-                    out="$out" \
-                    ${stdenv.bash}/bin/bash --noprofile --norc ${./build-support/_ability-contract-builder.sh}
-
-                  ${resolvedBuildPackages.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-                    package-source "$out/package.json" "$out/interfaces"
-                '';
-              }
-            ];
-            outputChecks.out.allowedReferences = preparedAbilityContract.allPaths;
-            preferLocalBuild = true;
-            allowSubstitutes = false;
-          })
-          // {
-            packagePayload = drv;
-            semanticValidator = resolvedBuildPackages.aos-ability-contract-validator;
-          })
-      else null;
     abilityAttrs =
-      if abilityContract != null
+      if abilityProjection != null
       then {
         abilities = {
-          inherit (abilityProjection) interfaces;
-          implementations = publishedAbilityImplementations;
-          requirements = abilityProjection.requirementTemplates;
-          module = packageModule;
-          moduleOutputs = {
-            self = lib.abilities.packageOutput {};
-            dependencies = preparedConfigModule.dependencyOutputs or {};
-          };
-          contract = abilityContract;
+          module = retainedAbilityModule;
+          projection = abilityProjection;
           optionSurface =
             builtins.filter
             (declaration: declaration.owner == packageName)
             abilityEvaluation._optionDecls;
-          documentation = {
-            interfaces =
-              builtins.mapAttrs (_: declaration: {
-                inherit (declaration) description;
-                methods =
-                  builtins.mapAttrs (_: method: {
-                    inherit (method) description;
-                    outputs = builtins.mapAttrs (_: output: output.description) method.outputs;
-                  })
-                  declaration.methods;
-                outputs = builtins.mapAttrs (_: output: output.description) declaration.outputs;
-              })
-              localAbilityProjection.interfaces;
-            implementations =
-              builtins.mapAttrs (_: implementation: implementation.description)
-              localAbilityProjection.implementations;
-            requirements =
-              builtins.mapAttrs (_: requirement: requirement.description)
-              localAbilityProjection.requirementTemplates;
-          };
         };
       }
       else if hasConfigModule

@@ -56,7 +56,9 @@ in rec {
     inherit lib mkDerivation coreutils jq;
   };
   mkEvidenceLayout = import ./evidence-layout.nix baseDependencies;
-  mkStaticAbilityContract = import ./static-ability-contract.nix abilityContractDependencies;
+  mkStaticAbilityContract = import ./static-ability-contract.nix {
+    inherit lib mkDerivation abilityContractValidator common;
+  };
 
   # Short aliases are useful to call sites while the long names preserve the
   # RFC vocabulary at the public boundary.

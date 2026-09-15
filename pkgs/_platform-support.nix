@@ -732,6 +732,9 @@ let
     "kubernetes/_k3s-expose-package.nix" = "linux-only-build-helper";
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
+    "system/_kmod-abilities.nix" = "target-independent-source";
+    "system/_kmod-provider.nix" = "target-independent-source";
+    "system/_systemd-service-provider-lib.nix" = "target-independent-source";
     "toolchain/_bazel.nix" = "native-build-helper";
     "toolchain/_linux-hosted-binutils.nix" = "cross-build-helper";
     "toolchain/_linux-hosted-cc.nix" = "cross-build-helper";

@@ -125,14 +125,6 @@
     mergeContract = null;
     controllerGroup = group;
   };
-  requirement = selected: methods: {
-    inherit (selected) abi descriptor;
-    interface = selected.name;
-    inherit methods;
-    strength = "required";
-    fallback = null;
-    guarantees = [];
-  };
   output = schema: phase: lifetime: {
     description = "Reports rollout state produced by the selected action.";
     inherit schema phase lifetime;
@@ -194,6 +186,22 @@
   };
   rolloutEffectsDocument = lib.abilities.interfaceDocumentFromDeclaration rolloutEffectsDeclaration;
   rolloutEffects = lib.abilities.interfaceIdentity rolloutEffectsDocument;
+  rolloutDeclaration = lib.abilities.declareInterface {
+    name = "aos.ab-image-rollout";
+    abi = 1;
+    description = "Coordinates one atomic single-host A/B image rollout.";
+    requestType = types.boolean;
+    configurationType =
+      if qualificationCell
+      then qualificationRequest
+      else rolloutRequest;
+    outputs.machine = output types.resourceReference "planning" "persistent";
+    methods = {};
+    inherit lifecycle;
+    guarantees = [];
+    aggregation = aggregation "rollout";
+    requiredFeatures = ["ab-image-rollout-v1"];
+  };
   rolloutProvider = import (providerArtifact + "/default.nix") {inherit rolloutEffects;};
   rolloutRuntimeSelector = lib.abilities.packageOutput {
     package = "aos";
@@ -201,23 +209,20 @@
   };
 
   abilities = {
-    config.aos.abilities = lib.abilities.projectDefinitions {
-      rollout = {
-        requiredFeatures = ["ab-image-rollout-v1"];
-        definition = lib.abilities.define {
-          interface = "aos.ab-image-rollout";
-          abi = 1;
-          requestSchema = types.boolean;
-          configurationSchema =
-            if qualificationCell
-            then qualificationRequest
-            else rolloutRequest;
-          outputs.machine = output types.resourceReference "planning" "persistent";
-          methods = {};
-          inherit lifecycle;
-          guarantees = [];
-          aggregation = aggregation "rollout";
-          requires.effects = requirement rolloutEffects [
+    config.aos.abilities = {
+      interfaces = {
+        rollout = rolloutDeclaration;
+        rollout-effects = rolloutEffectsDeclaration;
+      };
+      implementations.rollout = {
+        description = "Composes and transitions the atomic image rollout.";
+        interface = "rollout";
+        methods = [];
+        guarantees = [];
+        requirements.effects = {
+          alias = "effects";
+          accepted_interfaces = [rolloutEffects];
+          methods = [
             "drain"
             "hold"
             "observe-boot"
@@ -228,15 +233,21 @@
             "select"
             "withdraw"
           ];
-          composeEntry = "compose";
-          transitionEntry = "transition";
-          ownsResourceKinds = ["aos.ab-image-rollout" rolloutEffects.name];
-          stateFormat = rolloutStateFormat;
-          compose = rolloutProvider.compose;
-          transition = transitionTransform rolloutProvider.transition;
+          guarantees = [];
+          strength = "required";
+          fallback = null;
+        };
+        state_format = rolloutStateFormat;
+        compose = rolloutProvider.compose;
+        transition = transitionTransform rolloutProvider.transition;
+        desiredType = rolloutDeclaration.configurationType;
+        requiredFeatures = ["ab-image-rollout-v1"];
+        providerModule = {
+          artifact = lib.abilities.packageOutput {};
+          path = "share/ability-reference-image-rollout/provider.nix";
         };
       };
-      rollout-effects = rec {
+      implementations.rollout-effects = {
         qualification =
           if packageName == "ability-reference-image-rollout" && qualificationSupport != null
           then {
@@ -255,35 +266,24 @@
             };
           }
           else null;
+        description = "Executes native image rollout effects.";
+        interface = "rollout-effects";
+        methods = [
+          "drain"
+          "hold"
+          "observe-boot"
+          "observe-health"
+          "prepare"
+          "retain"
+          "retire"
+          "select"
+          "withdraw"
+        ];
+        guarantees = [];
+        requirements = {};
         artifact = rolloutRuntimeSelector;
         requiredFeatures = ["ab-image-rollout-v1"];
-        definition = lib.abilities.define {
-          interface = rolloutEffects.name;
-          abi = rolloutEffects.abi;
-          requestSchema = rolloutRequest;
-          outputs = {};
-          methods = builtins.listToAttrs (builtins.map (action: {
-              name = action;
-              value = method action;
-            }) [
-              "drain"
-              "hold"
-              "observe-boot"
-              "observe-health"
-              "prepare"
-              "retain"
-              "retire"
-              "select"
-              "withdraw"
-            ]);
-          inherit lifecycle;
-          guarantees = [];
-          aggregation = aggregation "rollout-effects";
-          requires = {};
-          ownsResourceKinds = [rolloutEffects.name];
-          handler = "native-ab-image-rollout";
-        };
-        handler = {
+        handlerDescriptor = {
           artifact = rolloutRuntimeSelector;
           entryPoint = "libexec/aos-ab-image-rollout-handler";
           arguments = rolloutRequest;
@@ -305,6 +305,7 @@ in
         name = "install";
         script = ''
           mkdir -p "$out/share/ability-reference-image-rollout"
+          cp "$src/default.nix" "$out/share/ability-reference-image-rollout/provider.nix"
           printf '%s\n' 'single-host A/B rollout reference package' \
             > "$out/share/ability-reference-image-rollout/README"
         '';

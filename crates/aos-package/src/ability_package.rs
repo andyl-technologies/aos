@@ -56,6 +56,12 @@ const STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
 const PREDICATE_TYPE: &str = "https://andyl.com/aos/ability-package-provenance/v1";
 const BUILD_TYPE: &str = "https://andyl.com/aos/apr-ability-publish/v1";
 
+fn artifact_semantic_key(
+    artifact: &ArtifactReference,
+) -> (Sha256Digest, Sha256Digest, Sha256Digest) {
+    (artifact.content, artifact.nar_hash, artifact.closure)
+}
+
 /// Borrows the primary package identity bound by ability provenance.
 pub(crate) struct AbilityPackageCoordinate<'a> {
     pub(crate) name: &'a str,
@@ -168,7 +174,7 @@ pub struct VerifiedAbilityPackage {
 pub struct VerifiedAbilityPackageSet {
     packages: Vec<VerifiedAbilityPackage>,
     coordinates: BTreeMap<(String, String, String), usize>,
-    artifacts: BTreeMap<Sha256Digest, ArtifactReference>,
+    artifacts: BTreeMap<(Sha256Digest, Sha256Digest, Sha256Digest), ArtifactReference>,
 }
 
 impl VerifiedAbilityPackageSet {
@@ -192,7 +198,7 @@ impl VerifiedAbilityPackageSet {
 
         let mut canonical = Vec::<VerifiedAbilityPackage>::with_capacity(packages.len());
         let mut coordinates = BTreeMap::new();
-        let mut artifacts = BTreeMap::<Sha256Digest, ArtifactReference>::new();
+        let mut artifacts = BTreeMap::new();
         for package in packages {
             let coordinate = (
                 package.package_name.clone(),
@@ -212,12 +218,13 @@ impl VerifiedAbilityPackageSet {
             }
 
             for artifact in &package.artifacts {
-                if let Some(existing) = artifacts.get(&artifact.content) {
+                let identity = artifact_semantic_key(artifact);
+                if let Some(existing) = artifacts.get(&identity) {
                     if existing != artifact {
                         bail!("conflicting verified ability artifact {}", artifact.content);
                     }
                 } else {
-                    artifacts.insert(artifact.content, artifact.clone());
+                    artifacts.insert(identity, artifact.clone());
                 }
             }
 
@@ -246,7 +253,7 @@ impl VerifiedAbilityPackageSet {
     /// store-path, NAR, or closure commitments differ from `artifact`.
     pub fn authenticate_artifact(&self, artifact: &ArtifactReference) -> Result<()> {
         ensure!(
-            self.artifacts.get(&artifact.content) == Some(artifact),
+            self.artifacts.get(&artifact_semantic_key(artifact)) == Some(artifact),
             "ability artifact is not present with exact metadata in the verified package set"
         );
         Ok(())
@@ -301,17 +308,21 @@ impl VerifiedAbilityPackageSet {
                 );
             };
             for artifact in &candidate.artifacts {
-                if self.artifacts.get(&artifact.content) != Some(artifact) {
+                if self.artifacts.get(&artifact_semantic_key(artifact)) != Some(artifact) {
                     bail!(
                         "authenticated ability artifact index disagrees for {}",
                         artifact.content
                     );
                 }
-                admitted_artifacts.insert(artifact.content, artifact);
+                admitted_artifacts.insert(artifact_semantic_key(artifact), artifact);
             }
         }
         for artifact in artifacts {
-            if admitted_artifacts.get(&artifact.content).copied() != Some(artifact) {
+            if admitted_artifacts
+                .get(&artifact_semantic_key(artifact))
+                .copied()
+                != Some(artifact)
+            {
                 bail!(
                     "plan ability artifact {} is absent from the authenticated selected packages",
                     artifact.content
@@ -1192,14 +1203,15 @@ fn validate_sorted_store_hashes(owner: &str, references: &[String]) -> Result<()
 pub(crate) fn collect_distinct_artifacts(
     package: &PackageDocument,
 ) -> Result<Vec<ArtifactReference>> {
-    let mut by_content = BTreeMap::new();
+    let mut by_identity = BTreeMap::new();
     let mut insert = |artifact: &ArtifactReference| -> Result<()> {
-        if let Some(existing) = by_content.insert(artifact.content, artifact.clone())
+        let identity = (artifact.content, artifact.nar_hash, artifact.closure);
+        if let Some(existing) = by_identity.insert(identity, artifact.clone())
             && existing != *artifact
         {
             bail!(
-                "ability package reuses content identity {} for different artifact references",
-                artifact.content
+                "ability package reuses semantic artifact identity {} for different locators",
+                artifact.content,
             );
         }
         Ok(())
@@ -1210,17 +1222,21 @@ pub(crate) fn collect_distinct_artifacts(
     for artifact in &package.artifacts {
         insert(artifact)?;
     }
+    insert(&package.package_module.artifact)?;
     for provider in &package.implementation.providers {
         insert(&provider.artifact)?;
         if let Some(module) = &provider.provider_module {
             insert(&module.artifact)?;
+        }
+        if let Some(state_format) = &provider.state_format {
+            insert(&state_format.artifact)?;
         }
     }
     for handler in package.implementation.handlers.values() {
         insert(&handler.artifact)?;
     }
 
-    Ok(by_content.into_values().collect())
+    Ok(by_identity.into_values().collect())
 }
 
 #[cfg(test)]

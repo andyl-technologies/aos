@@ -248,6 +248,22 @@
       && localKeyType.check value.output;
     merge = moduleTypes.mergeEqualOption;
   };
+  configArtifactType = moduleTypes.mkOptionType {
+    name = "configuration artifact selector";
+    description = "closed symbolic evaluated configuration artifact selector";
+    check = value:
+      builtins.isAttrs value
+      && builtins.attrNames value == ["_type" "name"]
+      && value._type == "aos-config-artifact-selector"
+      && localKeyType.check value.name;
+    merge = moduleTypes.mergeEqualOption;
+  };
+  artifactSelectorType = moduleTypes.mkOptionType {
+    name = "artifact selector";
+    description = "closed symbolic package output or evaluated configuration artifact selector";
+    check = value: packageOutputType.check value || configArtifactType.check value;
+    merge = moduleTypes.mergeEqualOption;
+  };
   relativePathType = moduleTypes.addCheck moduleTypes.str (value: let
     components = builtins.filter builtins.isString (builtins.split "/" value);
   in
@@ -432,6 +448,7 @@ in rec {
   ]) (moduleTypes.enum ["attempt" "transaction" "instance" "persistent"]);
 
   packageOutputSelector = packageOutputType;
+  configArtifactSelector = configArtifactType;
   relativePath =
     decorate "relative path" (schemas.string {
       maxLength = 4096;
@@ -813,7 +830,7 @@ in rec {
   in
     decorate "deferred result" schema authored;
 
-  artifactSelector = decorate "symbolic artifact" schemas.artifactReference packageOutputType;
+  artifactSelector = decorate "symbolic artifact" schemas.artifactReference artifactSelectorType;
 
   executableReference = let
     argumentList = list {

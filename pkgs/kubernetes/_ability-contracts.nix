@@ -21,7 +21,16 @@
     controllerGroup = group;
   };
 
-  requirement = selected: methods: {
+  requirement = alias: selected: methods: {
+    inherit alias;
+    accepted_interfaces = [selected];
+    inherit methods;
+    strength = "required";
+    fallback = null;
+    guarantees = [];
+  };
+  requirementTemplate = selected: methods: {
+    description = "Requires the ${selected.name} interface.";
     inherit (selected) abi descriptor;
     interface = selected.name;
     inherit methods;
@@ -31,6 +40,7 @@
   };
 
   output = schema: phase: {
+    description = "Publishes a selected Kubernetes provider value.";
     inherit schema phase;
     visibility = "protected";
     lifetime =
@@ -104,6 +114,7 @@
     stopsProvider = builtins.elem name ["delete" "stop"];
   };
   method = target: name: parameters: outputs: evidence: {
+    description = "Performs the ${name} operation on ${target}.";
     targetResource = target;
     semantics = methodSemantics name;
     inherit parameters outputs;
@@ -135,53 +146,65 @@
       types.boolean;
   };
 
-  terminalExport = {
+  terminalDeclaration = {
     name,
     group,
-    handler,
     requestSchema,
     methods,
     deleteMethod ? null,
   }:
-    lib.abilities.define {
-      interface = name;
+    lib.abilities.declareInterface {
+      inherit name;
       abi = 1;
-      inherit requestSchema methods handler;
+      description = "Provides the ${name} interface.";
+      requestType = requestSchema;
+      configurationType = null;
+      inherit methods;
       outputs = {};
       lifecycle = lifecycle deleteMethod;
       guarantees = [];
       aggregation = aggregation group;
-      requires = {};
-      ownsResourceKinds = [name];
+      requiredFeatures = [];
     };
-  systemdDefinition = terminalExport {
+  systemdDeclaration = terminalDeclaration {
     name = systemdBootstrapName;
     group = "systemd-bootstrap";
-    handler = "systemd-bootstrap-terminal";
     requestSchema = types.boolean;
     methods = bootstrapMethods;
   };
-  kubernetesDefinition = terminalExport {
+  kubernetesDeclaration = terminalDeclaration {
     name = kubernetesEffectsName;
     group = "kubernetes";
-    handler = "native-kubernetes-object";
     requestSchema = kubernetesIdentity;
     methods = kubernetesMethods;
     deleteMethod = "delete";
   };
-  systemdBootstrap = lib.abilities.interfaceIdentity (lib.abilities.interfaceDocument [] systemdDefinition);
-  kubernetesEffects = lib.abilities.interfaceIdentity (lib.abilities.interfaceDocument [] kubernetesDefinition);
+  systemdBootstrap = lib.abilities.interfaceIdentity (lib.abilities.interfaceDocumentFromDeclaration systemdDeclaration);
+  kubernetesEffects = lib.abilities.interfaceIdentity (lib.abilities.interfaceDocumentFromDeclaration kubernetesDeclaration);
 
-  k3sDefinition = {
+  k3sProvider = {
     bootstrapMatrix ? false,
     effectQualification ? false,
     providerStateQualification ? false,
     transitionTransform ? transition: transition,
-  }:
-    lib.abilities.define {
-      interface = k3sInterfaceName;
+  }: let
+    provider = import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix systemdBootstrap kubernetesEffects;};
+  in {
+    compose = provider.compose;
+    transition = transitionTransform (
+      if providerStateQualification
+      then provider.providerStateQualificationTransition
+      else if effectQualification
+      then provider.effectQualificationTransition
+      else provider.transition
+    );
+  };
+  k3sDeclaration = lib.abilities.declareInterface {
+      name = k3sInterfaceName;
       abi = 1;
-      requestSchema = addon;
+      description = "Coordinates the selected k3s cluster and Kubernetes objects.";
+      requestType = addon;
+      configurationType = addon;
       outputs = {
         object-json = output stringMap "planning";
         objects = output resourceMap "planning";
@@ -192,28 +215,14 @@
       lifecycle = lifecycle null;
       guarantees = [];
       aggregation = aggregation "k3s";
-      requires = {
-        systemd-bootstrap = requirement systemdBootstrap ["observe-manager" "start" "stop"];
-        kubernetes-terminal = requirement kubernetesEffects ["apply" "delete" "observe"];
-      };
-      composeEntry = "compose";
-      transitionEntry = "transition";
-      ownsResourceKinds = [k3sInterfaceName];
-      inherit (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix systemdBootstrap kubernetesEffects;}) compose;
-      transition = transitionTransform (
-        if providerStateQualification
-        then (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix systemdBootstrap kubernetesEffects;}).providerStateQualificationTransition
-        else if effectQualification
-        then (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix systemdBootstrap kubernetesEffects;}).effectQualificationTransition
-        else (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix systemdBootstrap kubernetesEffects;}).transition
-      );
+      requiredFeatures = [];
     };
-  k3sInterface = lib.abilities.interfaceIdentity (lib.abilities.interfaceDocument [] (k3sDefinition {}));
+  k3sInterface = lib.abilities.interfaceIdentity (lib.abilities.interfaceDocumentFromDeclaration k3sDeclaration);
 in rec {
   inherit k3sInterface kubernetesEffects systemdBootstrap;
 
   contributorPackage = {
-    config.aos.abilities.requirementTemplates.k3s = requirement k3sInterface [];
+    config.aos.abilities.requirementTemplates.k3s = requirementTemplate k3sInterface [];
   };
 
   payloadPackage = {};
@@ -224,23 +233,40 @@ in rec {
     providerStateQualification ? false,
     transitionTransform ? transition: transition,
     bootstrapMatrix ? false,
-  }: {
-    config.aos.abilities = lib.abilities.projectDefinitions {
-      k3s = {
-        artifacts = payloadArtifacts;
-        definition = k3sDefinition {
+  }: let
+    provider = k3sProvider {
           inherit bootstrapMatrix effectQualification providerStateQualification transitionTransform;
+    };
+  in {
+    config.aos.abilities = {
+      interfaces.k3s = k3sDeclaration;
+      implementations.k3s = {
+        description = "Composes and transitions the selected k3s cluster.";
+        interface = "k3s";
+        methods = [];
+        guarantees = [];
+        requirements = {
+          systemd-bootstrap = requirement "systemd-bootstrap" systemdBootstrap ["observe-manager" "start" "stop"];
+          kubernetes-terminal = requirement "kubernetes-terminal" kubernetesEffects ["apply" "delete" "observe"];
         };
+        inherit (provider) compose transition;
+        desiredType = addon;
+        artifacts = payloadArtifacts;
       };
     };
   };
 
   systemdPackage = runtimeSelector: {
-    config.aos.abilities = lib.abilities.projectDefinitions {
-      systemd-bootstrap = {
+    config.aos.abilities = {
+      interfaces.systemd-bootstrap = systemdDeclaration;
+      implementations.systemd-bootstrap = {
+        description = "Executes systemd provider bootstrap operations.";
+        interface = "systemd-bootstrap";
+        methods = builtins.attrNames bootstrapMethods;
+        guarantees = [];
+        requirements = {};
         artifact = runtimeSelector;
-        definition = systemdDefinition;
-        handler = {
+        handlerDescriptor = {
           artifact = runtimeSelector;
           entryPoint = "bin/.aos-package-runtime-unwrapped";
           arguments = types.boolean;
@@ -251,11 +277,16 @@ in rec {
   };
 
   kubernetesPackage = runtimeSelector: {
-    config.aos.abilities = lib.abilities.projectDefinitions {
-      kubernetes = {
+    config.aos.abilities = {
+      interfaces.kubernetes = kubernetesDeclaration;
+      implementations.kubernetes = {
+        description = "Executes Kubernetes object operations.";
+        interface = "kubernetes";
+        methods = builtins.attrNames kubernetesMethods;
+        guarantees = [];
+        requirements = {};
         artifact = runtimeSelector;
-        definition = kubernetesDefinition;
-        handler = {
+        handlerDescriptor = {
           artifact = runtimeSelector;
           entryPoint = "libexec/aos-kubernetes-object-handler-v1";
           arguments = types.boolean;

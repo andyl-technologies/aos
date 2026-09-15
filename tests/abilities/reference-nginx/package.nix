@@ -181,11 +181,13 @@
     name = "aos.guarantee.loopback-tcp-ingress-enforcement";
     version = 1;
     semantics = "successful application and observation prove loopback-only TCP ingress for the requested endpoint";
+    description = "Enforces loopback-only TCP ingress for the requested endpoint.";
   };
   loopbackEgressGuarantee = lib.abilities.guarantee {
     name = "aos.guarantee.loopback-tcp-egress-enforcement";
     version = 1;
     semantics = "successful application and observation prove loopback-only TCP egress for the requested endpoint";
+    description = "Enforces loopback-only TCP egress for the requested endpoint.";
   };
 
   lifecycle = {
@@ -643,7 +645,7 @@
   baseNginxImplementations = baseNginxAbilities.implementations;
   nginxAbilityModule = {
     config.aos.abilities = {
-      inherit (baseNginxAbilities) interfaces;
+      inherit (baseNginxAbilities) guarantees interfaces;
       implementations =
         baseNginxImplementations
         // {

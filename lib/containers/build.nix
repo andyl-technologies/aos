@@ -200,23 +200,13 @@
     destination = "/init";
     executable = true;
   };
-  abilityPackages =
-    builtins.filter
-    (package:
-      builtins.isAttrs package
-      && package ? abilityContract)
-    container.packageRoots;
   staticAbilityContract = oci.mkStaticAbilityContract {
     pname = "aos-container-${container.name}-static-abilities";
     platform = {
       inherit (container.platform) os architecture;
     };
-    packages =
-      map (package: {
-        payload = package;
-        manifest = package.abilities.contract;
-      })
-      abilityPackages;
+    packageRoots = container.packageRoots;
+    packageRegistry = pkgs;
     runtimeRoots = auditRoots;
   };
   osRelease = ''
