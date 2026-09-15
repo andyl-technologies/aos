@@ -392,7 +392,7 @@ fn exact_pure_provider_package_is_required() {
 }
 
 #[test]
-fn contracts_only_package_cannot_catalog_a_terminal_handler() {
+fn contracts_only_package_requires_the_effect_feature_for_a_terminal_handler() {
     let mut fixture = plan_fixture();
     pin_primary_binding_to_pure_package(&mut fixture);
     let package = &mut fixture.binding_inputs.packages[0];
@@ -401,7 +401,7 @@ fn contracts_only_package_cannot_catalog_a_terminal_handler() {
     package.implementation.providers[0].provider_module = None;
     package.implementation.providers[0].handler = Some(handler.clone());
     package.implementation.handlers.insert(
-        handler,
+        handler.clone(),
         HandlerDescriptor {
             artifact,
             entry_point: "bin/terminal".to_string(),
@@ -409,8 +409,34 @@ fn contracts_only_package_cannot_catalog_a_terminal_handler() {
             result: ValueSchema::Boolean,
         },
     );
+    let descriptor = package.implementation.providers[0]
+        .descriptor_digest()
+        .expect("terminal implementation must digest");
+    package.exports[0].implementation = descriptor;
+    fixture.binding_plan.bindings[0].implementation.descriptor = descriptor;
+    fixture.binding_plan.bindings[0].implementation.handler = Some(handler.clone());
+    fixture.binding_inputs.environment.providers[0]
+        .implementation
+        .descriptor = descriptor;
+    fixture.binding_inputs.environment.providers[0]
+        .implementation
+        .handler = Some(handler);
+    fixture.binding_plan.bindings[0].provider_package = Some(
+        package
+            .content_digest()
+            .expect("terminal package must digest"),
+    );
+    fixture.binding_inputs.packages[0]
+        .required_features
+        .retain(|feature| feature.as_str() != aos_ability_model::FEATURE_ABILITY_EFFECTS_V1);
+    fixture.binding_plan.bindings[0].provider_package = Some(
+        fixture.binding_inputs.packages[0]
+            .content_digest()
+            .expect("contracts-only package must digest"),
+    );
+    fixture.refresh_commitments();
 
-    assert_diagnostic(fixture, DiagnosticCode::ResourceScopeEscape);
+    assert_diagnostic(fixture, DiagnosticCode::UnsupportedRequiredFeature);
 }
 
 #[test]
@@ -1098,7 +1124,7 @@ fn assert_retained_reference_mismatch(mutate: impl FnOnce(&mut ResourceReference
 
     assert_eq!(
         plan.validate_operation_outputs(operation, &outputs),
-        Err(crate::OutputValidationError::RetainedResourceMismatch)
+        Err(crate::OutputValidationError::OutputSetMismatch)
     );
 }
 
@@ -1531,6 +1557,15 @@ fn add_ungranted_resource(fixture: &mut PlanFixture) -> ResourceId {
 }
 
 fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
+    let effect_features = BTreeSet::from([
+        RequiredFeature::new("abilities-v1").expect("abilities feature"),
+        RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)
+            .expect("effect feature"),
+    ]);
+    fixture.context =
+        crate::ValidationContext::new(effect_features.clone(), fixture.interfaces.clone())
+            .expect("fixture catalog accepts effect semantics");
+
     let binding = &mut fixture.binding_plan.bindings[0];
     let artifact = binding.implementation.artifact.clone();
     let implementation = ProviderImplementation {
@@ -1558,7 +1593,7 @@ fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
 
     let package = PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
-        required_features: Vec::new(),
+        required_features: effect_features.into_iter().collect(),
         package: PackageSubject {
             name: key("pure-provider"),
             version: "1.0.0".to_string(),
@@ -1616,9 +1651,14 @@ fn configure_primary_state_format(fixture: &mut PlanFixture, mode: StateFormatFi
             .required_features
             .push(feature.clone());
     }
-    fixture.context =
-        crate::ValidationContext::new([feature].into_iter().collect(), fixture.interfaces.clone())
-            .expect("fixture catalog accepts the state-format feature");
+    let supported_features = BTreeSet::from([
+        RequiredFeature::new("abilities-v1").expect("abilities feature"),
+        RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)
+            .expect("effect feature"),
+        feature,
+    ]);
+    fixture.context = crate::ValidationContext::new(supported_features, fixture.interfaces.clone())
+        .expect("fixture catalog accepts the state-format feature");
 
     let package = &mut fixture.binding_inputs.packages[0];
     if !matches!(mode, StateFormatFixture::MissingDeclaration) {

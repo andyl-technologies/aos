@@ -787,6 +787,7 @@ fn validate_teardown_provider(
             .iter()
             .find(|implementation| {
                 implementation.artifact == authorization.implementation.artifact
+                    && implementation.handler == authorization.implementation.handler
                     && implementation
                         .descriptor_digest()
                         .is_ok_and(|digest| digest == authorization.implementation.descriptor)
@@ -1892,6 +1893,8 @@ mod tests {
             schema: PackageDocument::SCHEMA.to_string(),
             required_features: vec![
                 RequiredFeature::new("abilities-v1").expect("abilities feature"),
+                RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)
+                    .expect("effect feature"),
                 RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)
                     .expect("state-format feature"),
             ],
@@ -2062,6 +2065,8 @@ mod tests {
         fixture.context = ValidationContext::new(
             BTreeSet::from([
                 RequiredFeature::new("abilities-v1").expect("abilities feature"),
+                RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)
+                    .expect("effect feature"),
                 RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)
                     .expect("state-format feature"),
             ]),
@@ -2106,6 +2111,8 @@ mod tests {
         let context = ValidationContext::new(
             BTreeSet::from([
                 RequiredFeature::new("abilities-v1").expect("abilities feature"),
+                RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)
+                    .expect("effect feature"),
                 RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)
                     .expect("state-format feature"),
                 RequiredFeature::new(PROVIDER_STATE_ADOPTION_V1).expect("adoption feature"),
@@ -2118,10 +2125,34 @@ mod tests {
     }
 
     fn authority_fixture() -> AuthorityFixture {
-        let checked = crate::test_support::checked_lifecycle_effect_plan();
-        let context =
-            ValidationContext::new(BTreeSet::new(), checked.interfaces().values().cloned())
-                .expect("systemd interface catalog must validate");
+        let mut source = crate::test_support::lifecycle_plan_fixture();
+        let mut stop = crate::test_support::test_lifecycle_interface()
+            .interface
+            .methods
+            .remove(&key("stop"))
+            .expect("neutral lifecycle interface must declare Stop");
+        stop.target_resource = source.interfaces[0].interface.name.clone();
+        stop.parameters = source.interfaces[0].interface.request.clone();
+        stop.outcome.indeterminate = aos_ability_model::IndeterminateSemantics::Reconcile;
+        source.interfaces[0]
+            .interface
+            .methods
+            .insert(key("stop"), stop);
+        source.refresh_interface_with_features(BTreeSet::from([RequiredFeature::new(
+            aos_ability_model::FEATURE_ABILITY_EFFECTS_V1,
+        )
+        .expect("effect feature")]));
+        let checked = source
+            .validate()
+            .expect("lifecycle teardown fixture must validate");
+        let context = ValidationContext::new(
+            BTreeSet::from([
+                RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)
+                    .expect("effect feature"),
+            ]),
+            checked.interfaces().values().cloned(),
+        )
+        .expect("systemd interface catalog must validate");
         let current = checked.binding_plan().clone();
         let desired = current.clone();
         let source = current.bindings()[0].clone();

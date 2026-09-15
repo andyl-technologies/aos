@@ -702,7 +702,12 @@ pub(super) fn validate_enabled_providers(
                         })
                     })
             });
+        let has_request_candidate = policy
+            .candidates
+            .iter()
+            .any(|candidate| candidate.provider == desired.instance);
         if has_pure_aggregate
+            && !has_request_candidate
             && !policy
                 .enabled_providers
                 .iter()
