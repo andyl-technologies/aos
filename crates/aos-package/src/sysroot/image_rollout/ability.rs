@@ -1031,11 +1031,7 @@ impl NativeAbRolloutBackend {
             .image_profile
             .join(format!("image-gen-{}", image.number));
         require_exact_root(&directory.join("toplevel"), &image.toplevel)?;
-        let executor = image
-            .native_executor_ref
-            .as_deref()
-            .context("active image has no native executor identity")?;
-        require_exact_root(&directory.join("executor"), executor)
+        require_exact_root(&directory.join("executor"), &image.native_executor_ref)
     }
 
     fn authenticate_pair(&self, request: &AbRolloutRequest) -> Result<ImageGenerationState> {
@@ -1458,8 +1454,8 @@ fn image_matches(generation: &ImageGeneration, identity: &RolloutImageIdentity) 
             .as_deref()
             .unwrap_or(&generation.uki_path)
             == identity.uki
-        && generation.native_executor_ref.as_deref() == Some(identity.executor.as_str())
-        && generation.state_version.as_deref() == Some(identity.state_format.as_str())
+        && generation.native_executor_ref == identity.executor
+        && generation.state_version == identity.state_format
 }
 
 fn ensure_private_directory(path: &Path) -> Result<()> {
@@ -1551,11 +1547,11 @@ mod tests {
             ),
             package_name: "aos".into(),
             version: number.to_string(),
-            state_version: Some("7".into()),
-            native_executor_ref: Some(format!(
+            state_version: "7".into(),
+            native_executor_ref: format!(
                 "/nix/store/{}-executor",
                 char::from(b'k' + seed).to_string().repeat(32)
-            )),
+            ),
             registry: "test".into(),
             kernel_path: None,
             evaluator_ref: format!(
@@ -1618,8 +1614,8 @@ mod tests {
             let identity = |generation: &ImageGeneration| RolloutImageIdentity {
                 toplevel: generation.toplevel.clone(),
                 uki: generation.uki_path.clone(),
-                executor: generation.native_executor_ref.clone().unwrap(),
-                state_format: generation.state_version.clone().unwrap(),
+                executor: generation.native_executor_ref.clone(),
+                state_format: generation.state_version.clone(),
             };
             let request = AbRolloutRequest {
                 strategy: "single-host-ab-v1".into(),
