@@ -539,6 +539,9 @@
   systemdReadiness = import ./systemd-readiness.nix {
     inherit pkgs lib;
   };
+  systemdStageMilestones = import ./systemd-stage-milestones.nix {
+    inherit pkgs lib;
+  };
   baseKernelNative = import ./base-kernel-native.nix {
     inherit pkgs lib;
   };
@@ -988,6 +991,7 @@ in
   assert systemdDirectoryPreparation;
   assert systemdIdentityRealization;
   assert systemdReadiness;
+  assert systemdStageMilestones;
   assert baseKernelNative;
   assert baseNixDbNative;
   assert baseNetworkingNative;

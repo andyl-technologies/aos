@@ -319,6 +319,39 @@
   };
   activationMilestoneDocument = interfaceDocumentFromDeclaration activationMilestoneDeclaration;
 
+  systemMilestoneReadinessName = "aos.system.milestone-readiness";
+  systemMilestoneReadinessMethods = {
+    observe =
+      method
+      serviceTypes.systemMilestoneReadiness
+      serviceTypes.systemMilestoneReadinessObservation
+      systemMilestoneReadinessName
+      "observe"
+      "Observes whether the requested provider-neutral system milestone has been reached."
+      read;
+  };
+  systemMilestoneReadinessDeclaration = declareInterface {
+    name = systemMilestoneReadinessName;
+    description = "Publishes readiness for a closed provider-neutral system milestone.";
+    abi = 1;
+    requestType = serviceTypes.systemMilestoneReadiness;
+    outputs.readiness-resource =
+      output "planning" "instance"
+      "References the exact system milestone selected for this request."
+      serviceTypes.resourceReference;
+    methods = systemMilestoneReadinessMethods;
+    lifecycle = lifecyclePolicy;
+    guarantees = [];
+    aggregation = {
+      scope = "provider-instance";
+      key = "slot";
+      rejectSlotCollisions = true;
+      mergeContract = null;
+      controllerGroup = "system-milestone-readiness";
+    };
+  };
+  systemMilestoneReadinessDocument = interfaceDocumentFromDeclaration systemMilestoneReadinessDeclaration;
+
   runtimeEntryPopulationName = "aos.filesystem.runtime-entry-population";
   runtimeEntryPopulationMethods = {
     observe =
@@ -996,6 +1029,15 @@
       methods = builtins.attrNames activationMilestoneMethods;
       requestType = serviceTypes.activationMilestone;
       observationType = serviceTypes.activationMilestoneObservation;
+    };
+    systemMilestoneReadiness = {
+      alias = "system-milestone-readiness";
+      declaration = systemMilestoneReadinessDeclaration;
+      document = systemMilestoneReadinessDocument;
+      identity = interfaceIdentity systemMilestoneReadinessDocument;
+      methods = builtins.attrNames systemMilestoneReadinessMethods;
+      requestType = serviceTypes.systemMilestoneReadiness;
+      observationType = serviceTypes.systemMilestoneReadinessObservation;
     };
     runtimeEntryPopulation = {
       alias = "runtime-entry-population";

@@ -19,11 +19,15 @@ use crate::{decode_value, provider_context, target_context, value};
 const NETWORK_INTERFACE: &str = "aos.systemd.network-readiness-effects";
 const FILESYSTEM_INTERFACE: &str = "aos.systemd.filesystem-readiness-effects";
 const ACTIVATION_MILESTONE_INTERFACE: &str = "aos.systemd.activation-milestone-effects";
+const SYSTEM_MILESTONE_READINESS_INTERFACE: &str =
+    "aos.systemd.system-milestone-readiness-effects";
 const RUNTIME_ENTRY_POPULATION_INTERFACE: &str = "aos.systemd.runtime-entry-population-effects";
 const NETWORK_OBSERVATION_SCHEMA: &str = "aos.ability.network-readiness-observation/v1";
 const FILESYSTEM_OBSERVATION_SCHEMA: &str = "aos.ability.filesystem-readiness-observation/v1";
 const ACTIVATION_MILESTONE_OBSERVATION_SCHEMA: &str =
     "aos.ability.activation-milestone-observation/v1";
+const SYSTEM_MILESTONE_READINESS_OBSERVATION_SCHEMA: &str =
+    "aos.ability.system-milestone-readiness-observation/v1";
 const RUNTIME_ENTRY_POPULATION_OBSERVATION_SCHEMA: &str =
     "aos.ability.runtime-entry-population-observation/v1";
 
@@ -33,6 +37,7 @@ pub(crate) fn supports(method: &MethodReference) -> bool {
         NETWORK_INTERFACE
             | FILESYSTEM_INTERFACE
             | ACTIVATION_MILESTONE_INTERFACE
+            | SYSTEM_MILESTONE_READINESS_INTERFACE
             | RUNTIME_ENTRY_POPULATION_INTERFACE
     )
 }
@@ -167,7 +172,9 @@ async fn inspect(
     };
     let inactive_state = if matches!(
         method.interface.name.as_str(),
-        ACTIVATION_MILESTONE_INTERFACE | RUNTIME_ENTRY_POPULATION_INTERFACE
+        ACTIVATION_MILESTONE_INTERFACE
+            | SYSTEM_MILESTONE_READINESS_INTERFACE
+            | RUNTIME_ENTRY_POPULATION_INTERFACE
     ) {
         "pending"
     } else {
@@ -183,6 +190,7 @@ async fn inspect(
         NETWORK_INTERFACE => NETWORK_OBSERVATION_SCHEMA,
         FILESYSTEM_INTERFACE => FILESYSTEM_OBSERVATION_SCHEMA,
         ACTIVATION_MILESTONE_INTERFACE => ACTIVATION_MILESTONE_OBSERVATION_SCHEMA,
+        SYSTEM_MILESTONE_READINESS_INTERFACE => SYSTEM_MILESTONE_READINESS_OBSERVATION_SCHEMA,
         RUNTIME_ENTRY_POPULATION_INTERFACE => RUNTIME_ENTRY_POPULATION_OBSERVATION_SCHEMA,
         _ => bail!("handler invocation selects an unsupported readiness interface"),
     };
@@ -252,7 +260,8 @@ mod tests {
 
     use super::{
         ACTIVATION_MILESTONE_INTERFACE, FILESYSTEM_INTERFACE, NETWORK_INTERFACE,
-        RUNTIME_ENTRY_POPULATION_INTERFACE, selected_expected, selected_target,
+        RUNTIME_ENTRY_POPULATION_INTERFACE, SYSTEM_MILESTONE_READINESS_INTERFACE,
+        selected_expected, selected_target,
     };
 
     fn method(interface: &str) -> MethodReference {
@@ -295,6 +304,11 @@ mod tests {
             "systemd_unit": {"unit_name": "getty.target"},
         }))
         .expect("request is bounded");
+        let system_milestone = AbilityValue::new(serde_json::json!({
+            "expected": {"milestone": "root-device"},
+            "systemd_unit": {"unit_name": "initrd-root-device.target"},
+        }))
+        .expect("request is bounded");
         let runtime_entries = AbilityValue::new(serde_json::json!({
             "expected": {"scope": "runtime-entries"},
             "systemd_unit": {"unit_name": "systemd-tmpfiles-setup.service"},
@@ -318,6 +332,10 @@ mod tests {
             "getty.target"
         );
         assert_eq!(
+            selected_target(&system_milestone).expect("system milestone target"),
+            "initrd-root-device.target"
+        );
+        assert_eq!(
             selected_expected(&milestone).expect("neutral milestone"),
             &serde_json::json!({"milestone": "interactive-console"})
         );
@@ -330,6 +348,7 @@ mod tests {
             NETWORK_INTERFACE,
             FILESYSTEM_INTERFACE,
             ACTIVATION_MILESTONE_INTERFACE,
+            SYSTEM_MILESTONE_READINESS_INTERFACE,
             RUNTIME_ENTRY_POPULATION_INTERFACE,
         ] {
             assert_eq!(method(interface).interface.name.as_str(), interface);

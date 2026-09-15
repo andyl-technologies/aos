@@ -54,11 +54,13 @@
   networkReadinessAlias = serviceInterfaces.networkReadiness.alias;
   filesystemReadinessAlias = serviceInterfaces.filesystemReadiness.alias;
   activationMilestoneAlias = serviceInterfaces.activationMilestone.alias;
+  systemMilestoneReadinessAlias = serviceInterfaces.systemMilestoneReadiness.alias;
   runtimeEntryPopulationAlias = serviceInterfaces.runtimeEntryPopulation.alias;
   readinessControllers = [
     serviceInterfaces.networkReadiness
     serviceInterfaces.filesystemReadiness
     serviceInterfaces.activationMilestone
+    serviceInterfaces.systemMilestoneReadiness
     serviceInterfaces.runtimeEntryPopulation
   ];
   nativeResourceInterfaces = [
@@ -323,12 +325,45 @@
     else if selected.alias == activationMilestoneAlias
     then
       {
-        early-system = "sysinit.target";
+        early-system =
+          if config.aos.abilities.environment.stage == "initrd"
+          then "initrd-fs.target"
+          else "sysinit.target";
         interactive-console = "getty.target";
         user-sessions-ready = "systemd-user-sessions.service";
       }.${
         parameters.milestone
       }
+    else if selected.alias == systemMilestoneReadinessAlias
+    then let
+      stage = config.aos.abilities.environment.stage;
+      selectedMilestone = parameters.milestone;
+      hostUnits = {
+        local-filesystems = "local-fs.target";
+        multi-user = "multi-user.target";
+      };
+      initrdUnits = {
+        initrd-filesystems = "initrd-fs.target";
+        root-device = "initrd-root-device.target";
+        switch-root = "initrd-switch-root.target";
+        sysroot = "sysroot.mount";
+        var = "mount-var.service";
+        nix-overlay = "nix-overlay-setup.service";
+        etc-overlay = "etc-overlay-setup.service";
+        run-etc = "run-etc-setup.service";
+        device-settle = "systemd-udev-settle.service";
+        kernel-modules = "systemd-modules-load.service";
+      };
+      units =
+        if stage == "host"
+        then hostUnits
+        else if stage == "initrd"
+        then initrdUnits
+        else {};
+    in
+      if builtins.hasAttr selectedMilestone units
+      then units.${selectedMilestone}
+      else throw "system milestone '${selectedMilestone}' is unavailable during the ${stage} stage"
     else if selected.alias == runtimeEntryPopulationAlias
     then "systemd-tmpfiles-setup.service"
     else throw "systemd readiness controller does not map ${selected.identity.name}";

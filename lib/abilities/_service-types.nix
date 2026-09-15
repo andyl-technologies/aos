@@ -1199,6 +1199,29 @@
       state = types.enum ["failed" "pending" "ready" "unknown"];
     };
   };
+  systemMilestoneReadiness = types.record {
+    fields.milestone = types.enum [
+      "local-filesystems"
+      "multi-user"
+      "initrd-filesystems"
+      "root-device"
+      "switch-root"
+      "sysroot"
+      "var"
+      "nix-overlay"
+      "etc-overlay"
+      "run-etc"
+      "device-settle"
+      "kernel-modules"
+    ];
+  };
+  systemMilestoneReadinessObservation = types.record {
+    fields = {
+      schema = types.enum ["aos.ability.system-milestone-readiness-observation/v1"];
+      expected = systemMilestoneReadiness;
+      state = types.enum ["failed" "pending" "ready" "unknown"];
+    };
+  };
   runtimeEntryPopulation = types.record {
     fields.scope = types.enum ["runtime-entries"];
   };
@@ -1826,6 +1849,8 @@ in {
     filesystemReadinessObservation
     activationMilestone
     activationMilestoneObservation
+    systemMilestoneReadiness
+    systemMilestoneReadinessObservation
     runtimeEntryPopulation
     runtimeEntryPopulationObservation
     kernelModules
