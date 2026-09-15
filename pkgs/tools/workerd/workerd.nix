@@ -18,11 +18,6 @@ mkDerivation {
   propagatedDeps = [];
 
   passthru.evidenceSources = workerd-source.passthru.evidenceSources;
-  passthru.serviceDocumentation = {
-    kind = "on-demand";
-    summary = "Seed runtime invoked for one authored Worker deployment.";
-  };
-
   phases = [
     {
       name = "install";

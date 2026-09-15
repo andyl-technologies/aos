@@ -70,11 +70,6 @@ in
       ];
     };
 
-    passthru.serviceDocumentation = {
-      kind = "fixture";
-      summary = "Fleet fixture for secretRef activation.";
-    };
-
     meta = {
       description = "Fleet fixture for secretRef activation";
       license = "Apache-2.0";

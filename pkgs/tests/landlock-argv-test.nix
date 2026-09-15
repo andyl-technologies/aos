@@ -51,11 +51,6 @@ in
       };
     };
 
-    passthru.serviceDocumentation = {
-      kind = "fixture";
-      summary = "Landlock argument preservation fixture.";
-    };
-
     meta = {
       description = "AOS Landlock exec argv preservation test payload";
       license = "Apache-2.0";

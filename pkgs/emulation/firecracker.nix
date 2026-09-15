@@ -65,11 +65,6 @@ in
 
     runtimeDeps = [libseccomp];
 
-    passthru.serviceDocumentation = {
-      kind = "on-demand";
-      summary = "Per-VM monitor launched by a VM orchestrator.";
-    };
-
     meta = {
       description = "Firecracker — lightweight virtual machine monitor for serverless workloads";
       homepage = "https://github.com/firecracker-microvm/firecracker";

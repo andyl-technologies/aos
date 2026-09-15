@@ -474,11 +474,6 @@ in
       }
     ];
 
-    passthru.serviceDocumentation = {
-      kind = "on-demand";
-      summary = "Immutable Worker deployment artifact, not a host daemon.";
-    };
-
     meta = {
       description = "Deployable AOS registry-hub Cloudflare Worker artifact (wasm + ES-module shim), built from source";
       homepage = "https://github.com/andyl/andyl-os";

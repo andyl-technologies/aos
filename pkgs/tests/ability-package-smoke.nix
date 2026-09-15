@@ -101,11 +101,6 @@ in
       };
     };
 
-    passthru.serviceDocumentation = {
-      kind = "fixture";
-      summary = "Ability publication fixture for package authoring tests.";
-    };
-
     meta = {
       description = "Production ability companion smoke fixture";
       license = "Apache-2.0";
