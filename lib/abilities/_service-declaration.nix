@@ -162,11 +162,11 @@
     then throw "service '${declaration.service}' syscall allow and deny sets must be disjoint"
     else declaration;
 
-  requirementFor = interface: {
+  requirementFor = interface: methods: {
     description = interface.declaration.description;
     inherit (interface.identity) abi descriptor;
     interface = interface.identity.name;
-    methods = interface.methods;
+    inherit methods;
     guarantees = [];
     strength = "required";
     fallback = null;
@@ -302,10 +302,14 @@
       builtins.filter
       (feature: feature == "lifecycle" || checked.${feature} or null != null)
       (builtins.attrNames featureInterfaces);
+    methodsFor = feature:
+      if feature == "lifecycle" && (checked.reload or null) == null
+      then builtins.filter (method: method != "reload") featureInterfaces.lifecycle.methods
+      else featureInterfaces.${feature}.methods;
   in {
     requirementTemplates = builtins.listToAttrs (builtins.map (feature: {
         name = featureInterfaces.${feature}.alias;
-        value = requirementFor featureInterfaces.${feature};
+        value = requirementFor featureInterfaces.${feature} (methodsFor feature);
       })
       enabledFeatures);
     requests = builtins.listToAttrs (builtins.map (feature: {
@@ -338,7 +342,7 @@
       else declaration;
     interface = serviceInterfaces.managedConfiguration;
   in {
-    requirementTemplates.${interface.alias} = requirementFor interface;
+    requirementTemplates.${interface.alias} = requirementFor interface interface.methods;
     requests.${checked.name} = {
       requirement = interface.alias;
       consumer = consumerInstance;
@@ -353,7 +357,7 @@
     interface,
     parameters,
   }: {
-    requirementTemplates.${interface.alias} = requirementFor interface;
+    requirementTemplates.${interface.alias} = requirementFor interface interface.methods;
     requests.${key} = {
       requirement = interface.alias;
       consumer = consumerInstance;

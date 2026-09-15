@@ -51,7 +51,7 @@
     builtins.filter
     (name: lifecycleMethods.${name}.semantics.required_target_access == "exclusive-write")
     (builtins.attrNames lifecycleMethods);
-  featureInterfaces = builtins.removeAttrs serviceManagement.featureInterfaces ["lifecycle" "reload"];
+  featureInterfaces = builtins.removeAttrs serviceManagement.featureInterfaces ["lifecycle"];
   featureMethodsAreReadOnly =
     builtins.all
     (interface:
@@ -248,8 +248,8 @@ in
         timeout_millis = 1000;
       };
     });
-  assert lifecycleWrites == ["restart" "start" "stop"];
-  assert builtins.attrNames interfaces.reload.document.interface.methods == ["observe" "reload"];
+  assert lifecycleWrites == ["reload" "restart" "start" "stop"];
+  assert builtins.attrNames interfaces.reload.document.interface.methods == ["observe"];
   assert featureMethodsAreReadOnly;
   assert lifecycleMethods.observe.outputs.observation.phase == "observation";
   assert lifecycleMethods.observe.outputs.observation.lifetime == "attempt";
@@ -263,6 +263,8 @@ in
   assert interfaces.persistentStorageAllocation.document.interface.methods.allocate.outputs.retained-resource.lifetime == "persistent";
   assert builtins.attrNames expanded.requests == ["main-lifecycle"];
   assert builtins.attrNames expandedWithReload.requests == ["main-lifecycle" "main-reload"];
+  assert expanded.requirementTemplates.service-lifecycle.methods == ["observe" "restart" "start" "stop"];
+  assert expandedWithReload.requirementTemplates.service-lifecycle.methods == ["observe" "reload" "restart" "start" "stop"];
   assert expanded.requests.main-lifecycle.consumer == "consumer";
   assert succeedsAs serviceTypes.configurationMaterialization structuredConfiguration;
   assert succeedsAs serviceTypes.configurationMaterialization projectedStructuredConfiguration;

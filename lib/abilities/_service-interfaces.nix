@@ -235,6 +235,10 @@
           method serviceTypes.lifecycle serviceTypes.observations.lifecycle targetResource "observe"
           "Observes the exact assembled service resource without mutating it."
           read;
+        reload =
+          retainingMethod serviceTypes.lifecycle serviceTypes.observations.lifecycle targetResource "reload"
+          "Reloads the assembled service through its bound reload facet."
+          write;
         restart =
           retainingMethod serviceTypes.lifecycle serviceTypes.observations.lifecycle targetResource "restart"
           "Restarts the exact assembled service resource."
@@ -276,10 +280,6 @@
       serviceTypes.reload
       serviceTypes.observations.reload
       (targetResource: {
-        reload =
-          retainingMethod serviceTypes.reload serviceTypes.observations.reload targetResource "reload"
-          "Reloads the assembled service using this declared reload strategy."
-          write;
         observe =
           method serviceTypes.reload serviceTypes.observations.reload targetResource "observe"
           "Observes whether the declared reload strategy is available."
