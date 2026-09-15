@@ -37,7 +37,10 @@
           aos.filesystems.zfs = {
             enable = true;
             poolName = "tank";
-            datasets.data = {mountpoint = "/tank/data";};
+            datasets.data = {
+              mountpoint = "/tank/data";
+              properties.compression = "zstd";
+            };
           };
           aos.services.zfsAutoSnapshot = {
             enable = enabled;
@@ -134,4 +137,5 @@ in
     io_priority = 7;
   };
   assert portableOptionTree enabled.options.aos.services.zfsAutoSnapshot;
+  assert portableOptionTree enabled.options.aos.filesystems.zfs;
   assert !(enabled.config ? systemd); true
