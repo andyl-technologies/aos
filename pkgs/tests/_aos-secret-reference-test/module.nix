@@ -10,23 +10,6 @@
   serviceTypes = serviceManagement.types;
   inherit (lib.abilities) resultOf;
 
-  defaultCredentialProvider = lib.abilities.instanceId {
-    environment = lib.abilities.environmentId {
-      authority = "deployment";
-      key = "aos-secret-reference-test";
-      stage = "host";
-    };
-    key = "system-credentials";
-  };
-  defaultCredential = lib.abilities.resourceReference {
-    interface = serviceManagement.interfaces.credentialDelivery.identity;
-    resource = {
-      provider = defaultCredentialProvider;
-      key = "bootstrap-token";
-    };
-    operations = ["observe"];
-    lifetime = "persistent";
-  };
   state = serviceManagement.forProducer {
     consumerInstance = "aos-secret-reference-test";
     key = "state";
@@ -105,12 +88,12 @@ in {
   options.aos-secret-reference-test = {
     enable = lib.mkOption {
       type = abilityTypes.boolean;
-      default = true;
+      default = false;
       description = "Enable the credential-delivery integration fixture.";
     };
     credential = lib.mkOption {
-      type = abilityTypes.resourceReference;
-      default = defaultCredential;
+      type = abilityTypes.optional abilityTypes.resourceReference;
+      default = null;
       description = "Credential resource delivered to the test consumer.";
     };
     encrypted = lib.mkOption {
@@ -127,6 +110,12 @@ in {
 
   config = lib.mkMerge [
     {
+      assertions = [
+        {
+          assertion = !cfg.enable || cfg.credential != null;
+          message = "aos-secret-reference-test.enable requires a credential resource";
+        }
+      ];
       aos.abilities = lib.mkMerge (builtins.map
         (fragment: (serviceManagement.splitContribution fragment).declarations)
         fragments);
