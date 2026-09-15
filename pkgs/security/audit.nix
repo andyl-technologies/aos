@@ -10,6 +10,7 @@
   stdenv,
   linux-headers,
   libcap,
+  bash,
 }: let
   version = "4.2.1";
 in
@@ -113,8 +114,10 @@ in
     };
 
     buildDeps = [gnumake autoconf automake libtool linux-headers];
-    runtimeDeps = [libcap];
+    runtimeDeps = [libcap bash];
     propagatedDeps = [];
+
+    abilities = ./_audit/module.nix;
 
     phases = [
       {
@@ -194,6 +197,29 @@ in
         name = "install";
         script = ''
           make install
+
+          mkdir -p $out/libexec
+          cat > $out/libexec/aos-audit-rules <<'EOF'
+          #!${bash}/bin/bash
+          set -u
+
+          rules=$1
+          failed=0
+          loaded=0
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            [ "''${line#\#}" != "$line" ] && continue
+            error=$($out/sbin/auditctl $line 2>&1 >/dev/null) && status=0 || status=$?
+            if [ "$status" -eq 0 ]; then
+              loaded=$((loaded + 1))
+            else
+              failed=$((failed + 1))
+              echo "audit-rules: rejected [$status]: $line -- $error"
+            fi
+          done < "$rules"
+          echo "audit-rules: loaded $loaded rule(s), rejected $failed"
+          EOF
+          chmod 0755 $out/libexec/aos-audit-rules
         '';
       }
     ];
