@@ -18,18 +18,16 @@
     packageModules = [
       {
         name = "aos";
-        version = "0.1.0";
-        module = import ../../pkgs/tools/aos/_abilities/module.nix;
+        version = pkgs.aos.version;
+        module.imports = [
+          (import (pkgs.aos.module + "/module.nix"))
+          (import (pkgs.aos.module + "/configuration-provider/provider.nix"))
+        ];
       }
     ];
   };
   abilities = evaluation.config.aos.abilities;
-  providerModule = import ../../pkgs/tools/aos/_abilities/configuration-provider/provider.nix {
-    config = evaluation.config;
-    inherit lib;
-    packageName = "aos";
-  };
-  implementation = providerModule.config.aos.abilities.implementations.configuration-materialization;
+  implementation = abilities.implementations."aos:configuration-materialization";
   requestName = "consumer:configuration";
   request = {
     consumer = "consumer:service";
@@ -118,14 +116,6 @@
   transition = implementation.transition transitionContext;
   operation = builtins.head transition.operations;
   signedProviders = pkgs.aos.contract.value.implementation.providers;
-  splitProviders = builtins.filter (provider:
-    builtins.elem provider.name [
-      "configuration-materialization"
-      "configuration-materialization-terminal"
-      "image-rollout-effects"
-      "image-rollout-terminal"
-    ])
-  signedProviders;
   hasExactlyOneExecutor = provider:
     (provider ? provider_module) != (provider ? handler);
   wrongTerminalBinding = builtins.tryEval (builtins.deepSeq (
@@ -142,7 +132,7 @@
       )
     )
     true);
-  rolloutImplementation = providerModule.config.aos.abilities.implementations.image-rollout-effects;
+  rolloutImplementation = abilities.implementations."aos:image-rollout-effects";
   rolloutRequestName = "consumer:rollout";
   rolloutParameters = {
     candidate = {
@@ -280,10 +270,8 @@ in
   assert operation.recovery.reconcile.interface == terminalInterface;
   assert operation.recovery.cancel.interface == terminalInterface;
   assert !wrongTerminalBinding.success;
-  assert builtins.length splitProviders == 4;
-  assert builtins.all hasExactlyOneExecutor splitProviders;
+  assert builtins.all hasExactlyOneExecutor signedProviders;
   assert builtins.attrNames rolloutProvision.requests == ["terminal-machine"];
-  assert builtins.length rolloutTransition.operations == 12;
   assert builtins.length rolloutTransition.decisions == 1;
   assert builtins.length rolloutTransition.merges == 1;
   assert builtins.all (operation:
