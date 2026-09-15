@@ -8,6 +8,8 @@
   lib,
   mkDerivation,
   fetchurl,
+  stdenv,
+  buildPackages,
   gnumake,
   pkg-config,
   util-linux,
@@ -23,6 +25,17 @@
   kernel ? null,
 }: let
   version = "2.4.4";
+  kernelArch = stdenv.hostPlatform.linuxArch;
+  # Kernel SDK helpers execute on the build machine, including while they
+  # finalize modules for a cross target.
+  buildElfutils =
+    if stdenv.isCross
+    then buildPackages.elfutils
+    else elfutils;
+  buildZlib =
+    if stdenv.isCross
+    then buildPackages.zlib
+    else zlib;
 in
   mkDerivation {
     pname = "zfs";
@@ -68,7 +81,8 @@ in
           # Kbuild invokes the exact kernel tree's objtool while compiling
           # feature probes. objtool links against libelf, which is a build
           # dependency of the kernel SDK rather than part of its output.
-          export LD_LIBRARY_PATH="${elfutils}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export LD_LIBRARY_PATH="${buildElfutils}/lib:${buildZlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export ARCH=${kernelArch}
           configure_args=(
             --prefix="$out"
             --sysconfdir="$out/etc"
@@ -107,7 +121,8 @@ in
       {
         name = "build";
         script = ''
-          export LD_LIBRARY_PATH="${elfutils}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export LD_LIBRARY_PATH="${buildElfutils}/lib:${buildZlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export ARCH=${kernelArch}
           ${
             if kernel == null
             then ""
@@ -121,6 +136,9 @@ in
       {
         name = "install";
         script = ''
+          export LD_LIBRARY_PATH="${buildElfutils}/lib:${buildZlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export ARCH=${kernelArch}
+
           # Override hardcoded paths that would install outside the store
           make install \
             ${
