@@ -13,6 +13,18 @@
   inertPackageHash = storePathHash pkgs.expose-smoke;
   inertExposeHash = storePathHash pkgs.expose-smoke.expose;
   inertTarget = pkgs.expose-smoke.expose.passthru.manifest.expose.target;
+  payloadNarHash = pkgs.runCommand "test-http-server-payload-nar-hash" {
+    buildDeps = [pkgs.jq pkgs.nix];
+    exportReferencesGraph.packagePayload = [pkgs.test-http-server];
+  } ''
+    package_path=${pkgs.test-http-server}
+    nar_hash=$(jq -r --arg path "$package_path" \
+      '[.packagePayload[] | select(.path == $path)][0].narHash' \
+      "$NIX_ATTRS_JSON_FILE")
+    nar_hex=$(nix --extra-experimental-features nix-command hash convert \
+      --hash-algo sha256 --to base16 "$nar_hash")
+    printf 'sha256:%s\n' "$nar_hex" > "$out"
+  '';
 
   testSystem = mkSystem {
     modules = [
@@ -51,6 +63,13 @@ in
       vm.fail("test -e /var/lib/profiles/system-packages/gen-1/expose/${inertExposeHash}")
       vm.succeed("test -f /var/lib/profiles/system-packages/meta/${packageHash}.json")
       vm.succeed("${pkgs.jq}/bin/jq -e '.apm.name == \"test-http-server\" and .apm.expose.target == \"${target}\"' /var/lib/profiles/system-packages/meta/${packageHash}.json")
+      vm.succeed("test \"$(${pkgs.jq}/bin/jq -r .apm.attestation.root_digest /var/lib/profiles/system-packages/meta/${packageHash}.json)\" = \"$(cat ${payloadNarHash})\"")
+      vm.succeed(
+          "metadata=/var/lib/profiles/system-packages/meta/${packageHash}.json; "
+          "package_path=$(${pkgs.jq}/bin/jq -r .store_path $metadata); "
+          "path_digest=sha256:$(printf %s \"$package_path\" | sha256sum | cut -d ' ' -f 1); "
+          "test \"$(${pkgs.jq}/bin/jq -r .apm.attestation.root_digest $metadata)\" != \"$path_digest\""
+      )
       vm.succeed("test -e ${pkgs.expose-smoke}")
       vm.succeed("test -e ${pkgs.expose-smoke.expose}")
 
