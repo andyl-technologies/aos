@@ -148,9 +148,9 @@
     // {
       releasesEphemeralOnDisable = false;
     };
-  mergeContract = "sha256:${builtins.hashString "sha256" (builtins.toJSON (
-    types.schemaOf "Kubernetes object-set aggregate" aggregateRequest
-  ))}";
+  mergeContract = lib.abilities.descriptorFor "aos.ability.merge-contract/v1" {
+    schema = types.schemaOf "Kubernetes object-set aggregate" aggregateRequest;
+  };
   aggregation = {
     scope = "provider-instance";
     key = "slot";

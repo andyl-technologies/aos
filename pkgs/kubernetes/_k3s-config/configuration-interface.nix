@@ -117,9 +117,9 @@
     scope = "provider-instance";
     key = "slot";
     rejectSlotCollisions = false;
-    mergeContract = "sha256:${builtins.hashString "sha256" (builtins.toJSON (
-      types.schemaOf "K3s configuration aggregate" aggregateRequest
-    ))}";
+    mergeContract = lib.abilities.descriptorFor "aos.ability.merge-contract/v1" {
+      schema = types.schemaOf "K3s configuration aggregate" aggregateRequest;
+    };
     controllerGroup = controllerAlias;
   };
   controllerDeclaration = declareInterface {
