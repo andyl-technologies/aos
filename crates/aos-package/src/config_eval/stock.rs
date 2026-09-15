@@ -1172,16 +1172,12 @@ fn resolved_image_package_module(
     let Some(origin) = package.contract.as_ref() else {
         return Ok(None);
     };
-    let document = package
-        .document
-        .as_ref()
-        .context("checked image package has no resolved package document")?;
     let resolved = super::static_packages::resolve(
         name,
         &package.version,
         "image",
         &package.store_path,
-        &document.package.payload.nar_hash.to_string(),
+        &package.nar_hash,
         origin,
     )?;
 
