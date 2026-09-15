@@ -153,7 +153,7 @@
       "References the exact network readiness resource selected for this request."
       serviceTypes.resourceReference;
     methods = networkReadinessMethods;
-    lifecycle = lifecyclePolicy;
+    lifecycle = lifecyclePolicy // {releasesEphemeralOnDisable = false;};
     guarantees = [];
     aggregation = {
       scope = "provider-instance";
@@ -186,7 +186,7 @@
       "References the exact filesystem readiness resource selected for this request."
       serviceTypes.resourceReference;
     methods = filesystemReadinessMethods;
-    lifecycle = lifecyclePolicy;
+    lifecycle = lifecyclePolicy // {releasesEphemeralOnDisable = false;};
     guarantees = [];
     aggregation = {
       scope = "provider-instance";
