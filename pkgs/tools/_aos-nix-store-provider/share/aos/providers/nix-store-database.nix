@@ -1,33 +1,23 @@
-##! Selected pure controller for the kmod kernel-module provider.
+##! Selected pure composition for the Nix store database provider.
 {
   config,
   lib,
   packageName,
   ...
 }: let
-  kernelModules = lib.abilities.interfaces.serviceManagement.interfaces.kernelModules;
-  controller = config.aos.abilities.implementations."${packageName}:kernel-modules";
+  interfaceAlias = "nix-store-database";
+  qualifiedAlias = "${packageName}:${interfaceAlias}";
+  declaration = config.aos.abilities.interfaces.${qualifiedAlias};
+  document = lib.abilities.interfaceDocumentFromDeclaration declaration;
+  identity = lib.abilities.interfaceIdentity document;
+  controller = config.aos.abilities.implementations.${qualifiedAlias};
   effectsInterface = builtins.head controller.requirements.effects.accepted_interfaces;
 
   emptyResult = {
+    conditionalRequirements = [];
     requests = {};
     outputs = {};
   };
-
-  checkedParameters = parameters: let
-    moduleNames = parameters.modules;
-    uniqueNames = builtins.attrNames (builtins.listToAttrs (builtins.map (name: {
-        inherit name;
-        value = true;
-      })
-      moduleNames));
-  in
-    if moduleNames == []
-    then throw "a kernel-module request must name at least one module"
-    else if builtins.length moduleNames != builtins.length uniqueNames
-    then throw "a kernel-module request cannot contain duplicate module names"
-    else parameters // {modules = builtins.sort builtins.lessThan moduleNames;};
-
   bindingFor = bindings: requestName: let
     matches =
       builtins.filter
@@ -35,11 +25,10 @@
       (builtins.attrValues bindings);
   in
     if builtins.length matches != 1
-    then throw "a kernel-module request must have exactly one selected binding"
+    then throw "a Nix store database request must have exactly one selected binding"
     else builtins.head matches;
-
   resourceReference = instance: key: {
-    interface = kernelModules.identity;
+    interface = identity;
     resource = {
       provider = instance.id;
       inherit key;
@@ -47,22 +36,22 @@
     operations = ["observe"];
     lifetime = "persistent";
   };
-
+  checkedParameters = parameters:
+    if parameters.scope != "local"
+    then throw "the Nix store database provider only supports the local store"
+    else parameters;
   provide = {
     instance,
     requests,
     bindings,
     ...
   }: let
-    requestNames = builtins.attrNames requests;
-    entries =
-      builtins.map (requestName: let
-        binding = bindingFor bindings requestName;
-        parameters = checkedParameters requests.${requestName}.parameters;
-      in {
-        inherit requestName binding parameters;
-      })
-      requestNames;
+    entries = builtins.map (requestName: let
+      binding = bindingFor bindings requestName;
+      parameters = checkedParameters requests.${requestName}.parameters;
+    in {
+      inherit requestName binding parameters;
+    }) (builtins.attrNames requests);
   in
     emptyResult
     // {
@@ -74,64 +63,65 @@
       resourceFragments = builtins.listToAttrs (builtins.map (entry: {
           name = entry.binding.slot;
           value = {
-            kind = kernelModules.identity.name;
+            kind = identity.name;
             lifetime = "persistent";
             value = entry.parameters;
           };
         })
         entries);
     };
-
   effectRequest = key: resource: {
     requirement = "effects";
     scope = [key];
     slot = key;
     parameters = resource.value;
   };
-
   compose = {resources, ...}:
     emptyResult
     // {
       requests = builtins.mapAttrs effectRequest resources;
       realizations =
-        builtins.mapAttrs (_: resource: {
-          schema = "aos.kmod.module-set-realization/v1";
-          inherit (resource.value) modules required;
+        builtins.mapAttrs (_: _: {
+          schema = "aos.nix.store-database-realization/v1";
+          nix_store = {
+            artifact = lib.abilities.packageOutput {package = "nix";};
+            entry_point = "bin/nix-store";
+            arguments = [];
+          };
         })
         resources;
     };
-
   transition = context:
     lib.abilities.resourceControllerTransition {
       inherit context;
       terminalInterface = effectsInterface;
       actions = {
         create = {
-          method = "load";
+          method = "converge";
           phase = "converging";
           access = "exclusive-write";
         };
         update = {
-          method = "load";
+          method = "converge";
           phase = "converging";
           access = "exclusive-write";
         };
         unchanged = null;
         remove = null;
         reconcile-stopped = {
-          method = "load";
+          method = "converge";
           phase = "recovering";
           access = "exclusive-write";
         };
         reconcile-divergent = {
-          method = "load";
+          method = "converge";
           phase = "recovering";
           access = "exclusive-write";
         };
       };
     };
 in {
-  config.aos.abilities.implementations.kernel-modules = {
+  config.aos.abilities.implementations.${interfaceAlias} = {
     inherit provide compose transition;
   };
 }

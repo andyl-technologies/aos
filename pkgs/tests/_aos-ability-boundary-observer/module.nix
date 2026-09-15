@@ -183,7 +183,6 @@
 in {
   imports = [
     ./endpoint-interface.nix
-    ./endpoint-provider.nix
   ];
 
   options.aos.tests.executionObserver = {

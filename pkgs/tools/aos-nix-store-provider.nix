@@ -71,7 +71,7 @@ in
     buildDeps = [patchelf];
     runtimeDeps = [nix];
 
-    abilities = ./_aos-nix-store-provider-module.nix;
+    abilities = ./_aos-nix-store-provider;
 
     preBuild = staticBuildSetup;
 
@@ -88,7 +88,7 @@ in
       ln -s .aos-nix-store-provider \
         "$out/libexec/aos-content-addressed-object"
       ln -s ${nix}/bin/nix-store "$out/libexec/nix-store"
-      cp ${./_nix-store-provider.nix} \
+      cp ${./_aos-nix-store-provider/share/aos/providers/nix-store-database.nix} \
         "$out/share/aos/providers/nix-store-database.nix"
       cp ${./_content-object-provider.nix} \
         "$out/share/aos/providers/content-addressed-object.nix"

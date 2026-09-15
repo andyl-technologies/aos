@@ -79,7 +79,7 @@ in
 
     postInstall = ''
       mkdir -p "$out/share/aos/providers"
-      cp ${./_aos-ability-crucible/endpoint-provider.nix} \
+      cp ${./_aos-ability-crucible/share/aos/providers/ability-crucible-endpoint.nix} \
         "$out/share/aos/providers/ability-crucible-endpoint.nix"
       cp ${./_aos-ability-crucible/settings.nix} \
         "$out/share/aos/providers/settings.nix"

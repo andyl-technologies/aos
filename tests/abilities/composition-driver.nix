@@ -8,29 +8,31 @@ args @ {lib, ...}: let
   lifecycleDeclaration =
     interfaces.lifecycle.declaration
     // {
-      outputs = interfaces.lifecycle.declaration.outputs // {
-        marker = {
-          description = "Marks completion of merged lifecycle composition.";
-          schema = lib.abilities.types.boolean;
-          phase = "planning";
-          visibility = "protected";
-          lifetime = "instance";
+      outputs =
+        interfaces.lifecycle.declaration.outputs
+        // {
+          marker = {
+            description = "Marks completion of merged lifecycle composition.";
+            schema = lib.abilities.types.boolean;
+            phase = "planning";
+            visibility = "protected";
+            lifetime = "instance";
+          };
+          runtime-marker = {
+            description = "Proves pure composition cannot manufacture runtime evidence.";
+            schema = lib.abilities.types.boolean;
+            phase = "runtime";
+            visibility = "protected";
+            lifetime = "instance";
+          };
+          observer-socket = {
+            description = "Publishes the protected execution observer socket for the fixture.";
+            schema = lib.abilities.types.executionPath;
+            phase = "planning";
+            visibility = "protected";
+            lifetime = "instance";
+          };
         };
-        runtime-marker = {
-          description = "Proves pure composition cannot manufacture runtime evidence.";
-          schema = lib.abilities.types.boolean;
-          phase = "runtime";
-          visibility = "protected";
-          lifetime = "instance";
-        };
-        observer-socket = {
-          description = "Publishes the protected execution observer socket for the fixture.";
-          schema = lib.abilities.types.executionPath;
-          phase = "planning";
-          visibility = "protected";
-          lifetime = "instance";
-        };
-      };
     };
   lifecycleModuleDeclaration =
     moduleDeclarationFor interfaces.lifecycle
@@ -74,16 +76,20 @@ args @ {lib, ...}: let
     start_timeout_millis = 1000;
     stop_timeout_millis = 1000;
   };
-  qualifiedLifecycleRequest = lifecycleRequest // {
-    start = map (command:
-      command
-      // {
-        executable = command.executable // {
-          artifact = command.executable.artifact // {package = "consumer";};
-        };
-      })
-    lifecycleRequest.start;
-  };
+  qualifiedLifecycleRequest =
+    lifecycleRequest
+    // {
+      start = map (command:
+        command
+        // {
+          executable =
+            command.executable
+            // {
+              artifact = command.executable.artifact // {package = "consumer";};
+            };
+        })
+      lifecycleRequest.start;
+    };
   dependencyRequest = {
     service = "main";
     enabled = true;
@@ -93,12 +99,14 @@ args @ {lib, ...}: let
     wants = [];
   };
   emptyProvision = {
+    conditionalRequirements = [];
     requests = {};
     outputs = {};
     resourceFragments = {};
   };
   bindingFor = bindings: requestName: let
-    matches = builtins.filter
+    matches =
+      builtins.filter
       (binding: binding.request == requestName)
       (builtins.attrValues bindings);
   in
@@ -193,6 +201,7 @@ args @ {lib, ...}: let
             resources,
             ...
           }: {
+            conditionalRequirements = [];
             requests = {};
             outputs = builtins.mapAttrs (_: _: {marker = true;}) requests;
             realizations = builtins.mapAttrs (_: _: {backend = "fixture";}) resources;
@@ -333,13 +342,15 @@ args @ {lib, ...}: let
   publishedResource = builtins.head (builtins.filter (resource: resource.controller == null) resolved);
   networkOutput = abilities.compositionOutputs."consumer:network".readiness-resource;
   observerSelection = evaluate {
-    roundAdditions = [{
-      config.aos.abilities.executionObserver = {
-        request = "consumer:lifecycle";
-        resourceOutput = "service-resource";
-        socketOutput = "observer-socket";
-      };
-    }];
+    roundAdditions = [
+      {
+        config.aos.abilities.executionObserver = {
+          request = "consumer:lifecycle";
+          resourceOutput = "service-resource";
+          socketOutput = "observer-socket";
+        };
+      }
+    ];
   };
   rejects = value: !(builtins.tryEval (builtins.deepSeq value true)).success;
 
@@ -473,12 +484,14 @@ args @ {lib, ...}: let
     ];
   };
   changedObserverRequest = evaluate {
-    consumerAdditions = [{
-      config.aos.abilities.requests.network.parameters = lib.mkForce {
-        scope = "configured-connectivity";
-        address_families = ["ipv4"];
-      };
-    }];
+    consumerAdditions = [
+      {
+        config.aos.abilities.requests.network.parameters = lib.mkForce {
+          scope = "configured-connectivity";
+          address_families = ["ipv4"];
+        };
+      }
+    ];
   };
   publishedRevision = evaluation: let
     resources = builtins.attrValues evaluation.config.aos.abilities.resolvedResources;
@@ -497,6 +510,7 @@ args @ {lib, ...}: let
               requests.child = childRequest;
             };
           compose = context: {
+            conditionalRequirements = [];
             requests.child = childRequest;
             outputs = builtins.mapAttrs (_: _: {marker = true;}) context.requests;
             realizations = builtins.mapAttrs (_: _: {backend = "fixture";}) context.resources;
@@ -514,11 +528,21 @@ args @ {lib, ...}: let
       }
     ];
   };
+  undeclaredConditionalRequirement = evaluate {
+    providerAdditions = [
+      {
+        config.aos.abilities.implementations.service-lifecycle.provide = context:
+          (provideFacet "lifecycle" context)
+          // {conditionalRequirements = ["undeclared"];};
+      }
+    ];
+  };
   resolvedChild = evaluate {
     providerAdditions = [
       lifecycleWithChild
       {
         config.aos.abilities.implementations.service-lifecycle.compose = context: {
+          conditionalRequirements = [];
           requests = {};
           outputs = assert context.children.child.request == childRequestKey;
           assert context.children.child.binding == "test:child-network";
@@ -623,6 +647,7 @@ args @ {lib, ...}: let
     providerAdditions = [
       {
         config.aos.abilities.implementations.service-lifecycle.compose = context: {
+          conditionalRequirements = [];
           requests = {};
           outputs =
             builtins.mapAttrs (_: _: {
@@ -642,7 +667,8 @@ args @ {lib, ...}: let
 in
   if returnPending
   then {
-    requests = builtins.mapAttrs
+    requests =
+      builtins.mapAttrs
       (_: request:
         request
         // {
@@ -655,7 +681,8 @@ in
         })
       pendingChildRequest.config.aos.abilities.compositionPendingRequests;
     requirements = pendingChildRequest.config.aos.abilities.compositionRequirements;
-    providerInstances = builtins.mapAttrs
+    providerInstances =
+      builtins.mapAttrs
       (name: instance: {
         inherit (instance) implementation;
         identity = pendingChildRequest.config.aos.abilities.instanceIdentities.${name};
@@ -687,7 +714,8 @@ in
     assert networkOutput.lifetime == "instance";
     assert networkOutput.value.resource.provider == abilities.instanceIdentities."provider:manager";
     assert networkOutput.value.resource.key == "network-online";
-    assert observerSelection.config.aos.abilities.resolvedExecutionObserver == {
+    assert observerSelection.config.aos.abilities.resolvedExecutionObserver
+    == {
       request = "consumer:lifecycle";
       resource = observerSelection.config.aos.abilities.compositionOutputs."consumer:lifecycle".service-resource.value;
       socket = "/run/aos-observer/control.sock";
@@ -730,7 +758,8 @@ in
     assert resolvedChild.config.aos.abilities.compositionPendingRequests == {};
     assert resolvedChild.config.aos.abilities.compositionRequests.${childRequestKey}.parameters == childParameters;
     assert builtins.length (builtins.attrNames resolvedChild.config.aos.abilities.desiredResources) == 1;
-    assert rejects authoredConditionalRequirement.config.aos.abilities.compositionPendingRequirements;
+    assert builtins.length (builtins.attrNames authoredConditionalRequirement.config.aos.abilities.desiredResources) == 1;
+    assert rejects undeclaredConditionalRequirement.config.aos.abilities.desiredResources;
     assert rejects collidingAuthoredChild.config.aos.abilities.desiredResources;
     assert rejects forgedAuthoredChild.config.aos.abilities.requests;
     assert rejects orphanChildBinding.config.aos.abilities.desiredResources;

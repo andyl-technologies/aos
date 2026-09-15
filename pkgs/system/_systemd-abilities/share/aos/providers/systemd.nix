@@ -54,7 +54,7 @@
     selected = serviceInterfaces.${featureName};
   in
     builtins.any (methodName:
-      selected.declaration.methods.${methodName}.semantics.requiredTargetAccess == "exclusive-write")
+      selected.declaration.methods.${methodName}.semantics.stopsProvider)
     selected.methods;
   serviceControllerImplementationNames =
     builtins.map
@@ -86,6 +86,7 @@
   interface = config.aos.abilities.interfaces.${implementationName};
 
   emptyResult = {
+    conditionalRequirements = [];
     requests = {};
     outputs = {};
   };
@@ -482,15 +483,113 @@
       resources;
     };
 
-  resolveReference = value:
+  resolveReference = resources: value:
     if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
     then let
-      output =
-        config.aos.abilities.compositionOutputs.${value.request}.${value.output}
-        or (throw "systemd provider cannot resolve ${value.request}.${value.output}");
+      matchingBindings =
+        builtins.filter
+        (binding: binding.request == value.request)
+        (builtins.attrValues (config.aos.abilities.bindings or {}));
+      binding =
+        if builtins.length matchingBindings == 1
+        then builtins.head matchingBindings
+        else null;
+      resourceId =
+        if binding == null
+        then null
+        else {
+          provider = config.aos.abilities.instanceIdentities.${binding.providerInstance};
+          key = binding.slot;
+        };
+      matchingResources =
+        if resourceId == null
+        then []
+        else
+          builtins.filter
+          (resource: resource.resource == resourceId)
+          resources;
+      resource =
+        if binding != null && builtins.length matchingResources == 1
+        then builtins.head matchingResources
+        else null;
+      interfaceCandidates =
+        if resource == null
+        then []
+        else
+          builtins.filter
+          (candidate: candidate.name == resource.kind)
+          (builtins.attrValues config.aos.abilities.interfaces);
+      interfaceIdentities = lib.unique (builtins.map
+        (candidate:
+          lib.abilities.interfaceIdentity (
+            lib.abilities.interfaceDocumentFromDeclaration (semanticInterface candidate)
+          ))
+        interfaceCandidates);
+      interfaceIdentity =
+        if builtins.length interfaceIdentities == 1
+        then builtins.head interfaceIdentities
+        else null;
+      interface =
+        if resource == null || interfaceIdentity == null
+        then null
+        else
+          interfaceForReference {
+            inherit (resource) resource lifetime;
+            interface = interfaceIdentity;
+            operations = ["observe"];
+          };
+      outputDescriptors =
+        if interface == null
+        then []
+        else
+          lib.optional (builtins.hasAttr value.output interface.outputs) interface.outputs.${value.output}
+          ++ builtins.concatMap
+          (method: lib.optional (builtins.hasAttr value.output method.outputs) method.outputs.${value.output})
+          (builtins.attrValues interface.methods);
+      distinctDescriptors = builtins.attrValues (builtins.listToAttrs (builtins.map (descriptor: {
+          name = builtins.hashString "sha256" (builtins.toJSON {
+            inherit (descriptor) lifetime phase;
+            schema = descriptor.schema._abilitySchema;
+          });
+          value = descriptor;
+        })
+        outputDescriptors));
+      readableOperations =
+        if interface == null
+        then []
+        else
+          builtins.filter
+          (operation:
+            interface.methods.${operation}.semantics.requiredTargetAccess
+            == "read"
+            && interface.methods.${operation}.targetResource == resource.kind)
+          (builtins.attrNames interface.methods);
+      derivedReference = {
+        _type = "aos-resource-reference";
+        interface = interfaceIdentity;
+        resource = resourceId;
+        operations = lib.take 1 readableOperations;
+        inherit (resource) lifetime;
+      };
+      derived =
+        if
+          resource
+          != null
+          && interfaceIdentity != null
+          && builtins.length distinctDescriptors == 1
+          && (builtins.head distinctDescriptors).phase == "runtime"
+          && (builtins.head distinctDescriptors).lifetime == resource.lifetime
+          && (builtins.head distinctDescriptors).schema.check derivedReference
+        then derivedReference
+        else null;
+      output = config.aos.abilities.compositionOutputs.${value.request}.${value.output} or null;
     in
-      if output.phase != "planning"
-      then throw "systemd dependency ${value.request}.${value.output} is not a planning output"
+      if derived != null
+      then derived
+      else if output == null
+      then throw "systemd provider cannot resolve ${value.request}.${value.output}"
+      else if output.phase != "planning"
+      then throw "systemd dependency ${value.request}.${value.output} is neither a planning reference nor a retained planned resource"
       else if !lib.abilities.types.resourceReference.check output.value
       then throw "systemd dependency ${value.request}.${value.output} is not a ResourceReference"
       else output.value
@@ -526,7 +625,8 @@
       lib.abilities.interfaceIdentity (
         lib.abilities.interfaceDocumentFromDeclaration (semanticInterface candidate)
       )
-      == reference.interface) named;
+      == reference.interface)
+    named;
   in
     if builtins.length matches != 1
     then throw "systemd dependency must name exactly one declared interface"
@@ -558,7 +658,7 @@
       && lib.hasSuffix "@.service" identity.template_unit_name
     );
   unitIdentityForReference = deferred: let
-    reference = resolveReference deferred;
+    reference = resolveReference (builtins.attrValues config.aos.abilities.resolvedResources) deferred;
     identity = resourceIdentity reference.resource;
     matches = resourcesByIdentity.${identity} or [];
     resource =
@@ -625,15 +725,18 @@
         observation_schema = observationSchemaFor selected;
       })
       serviceImplementationNames);
-  serviceRendererFor = resolver:
+  serviceRendererFor = resolver: prerequisiteResolver:
     import ./_systemd-service-document.nix {
       inherit lib serviceFacets;
       unitNameForReference = resolver;
+      prerequisiteUnitNameForReference = prerequisiteResolver;
     };
   unitIdentityForPlannedResource = allResources: resource:
     if resource.kind == "aos.service.instance"
     then
-      (serviceRendererFor (unitIdentityForPlannedReference allResources))
+      (serviceRendererFor
+        (unitIdentityForPlannedReference true allResources)
+        (unitIdentityForPlannedReference false allResources))
       .serviceIdentityFor
       (builtins.removeAttrs resource ["controller"])
     else if resource.kind == "aos.systemd.packaged-unit"
@@ -655,8 +758,8 @@
         resource.value;
     }
     else null;
-  unitIdentityForPlannedReference = allResources: deferred: let
-    reference = resolveReference deferred;
+  unitIdentityForPlannedReference = requireManagerIdentity: allResources: deferred: let
+    reference = resolveReference allResources deferred;
     matches =
       builtins.filter (
         resource: resource.resource == reference.resource
@@ -676,6 +779,8 @@
     then throw "systemd dependency planning does not match its ResourceReference authority"
     else if !requireReferenceAuthority reference resource
     then throw "systemd dependency has invalid planned ResourceReference authority"
+    else if unitIdentity == null && !requireManagerIdentity
+    then null
     else if !validServiceUnitIdentity unitIdentity
     then throw "systemd dependency has no valid planned systemd unit identity"
     else unitIdentity;
@@ -782,7 +887,10 @@
     destinations = builtins.map (preparation: preparation.destination) preparations;
     referencesFor = resourceName:
       builtins.map (preparationReference implementation providerInstance) preparationsByResource.${resourceName};
-    serviceRenderer = serviceRendererFor (unitIdentityForPlannedReference allResources);
+    serviceRenderer =
+      serviceRendererFor
+      (unitIdentityForPlannedReference true allResources)
+      (unitIdentityForPlannedReference false allResources);
   in
     if !builtins.all (binding: binding.providerInstance == providerInstance) selectedBindings
     then throw "systemd service controller received several provider instances"
@@ -1032,7 +1140,7 @@
   };
   nativeResourceProviderImplementations = import ./_systemd-native-resource-provider.nix {
     inherit config lib packageName;
-    unitIdentityForReference = unitIdentityForPlannedReference;
+    unitIdentityForReference = unitIdentityForPlannedReference true;
   };
 in {
   config.aos.abilities.implementations =

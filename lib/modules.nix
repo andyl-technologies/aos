@@ -963,9 +963,14 @@
           then throw "evalModules: package '${package}' requested an invalid artifact selector"
           else builtins.removeAttrs selector ["_type"];
         key = builtins.toJSON checked;
+        selected =
+          locators.${key}
+          or (throw "evalModules: package '${package}' requested an artifact selector outside its authenticated view");
       in
-        locators.${key}
-        or (throw "evalModules: package '${package}' requested an artifact selector outside its authenticated view");
+        selected
+        // {
+          artifactReference = selected.artifactReference // {_type = "aos-artifact-reference";};
+        };
 
       validatedPackageModules = builtins.map (record: let
         keys =

@@ -1,13 +1,16 @@
-##! Pure transition construction for the systemd service controller.
+##! Pure transition construction for one systemd native resource controller.
 {
   effectsInterface,
+  resourceInterface,
+  resourceKind,
 }: context: let
-  operationDeadline = {
+  deadline = {
     attempt_timeout_millis = 300000;
     total_recovery_millis = 1200000;
   };
   actionable = builtins.filter (change:
-    change.resource.provider == context.provider
+    change.resource.provider
+    == context.provider
     && builtins.elem change.kind [
       "create"
       "update"
@@ -33,20 +36,24 @@
       if change.kind == "remove"
       then context.before
       else context.after;
-    matches = builtins.filter (resource: resource.resource == change.resource) snapshot.resources;
+    matches = builtins.filter (resource:
+      resource.resource == change.resource && resource.kind == resourceKind)
+    snapshot.resources;
   in
     if builtins.length matches == 1
     then builtins.head matches
-    else throw "systemd service transition requires one exact ${authorityFor change} resource state for '${change.resource.key}'";
+    else throw "systemd native-resource transition requires one exact ${authorityFor change} ${resourceKind} state";
   bindingFor = change: method: let
     authorityRole = authorityFor change;
     matches = builtins.filter (entry:
-      entry.authority.role == authorityRole
+      entry.authority.role
+      == authorityRole
       && entry.binding.interface == effectsInterface
       && builtins.elem method entry.binding.caller_grant.methods
       && builtins.elem "observe" entry.binding.caller_grant.methods
       && builtins.length (builtins.filter (permission:
-        permission.resource == change.resource
+        permission.resource
+        == change.resource
         && permission.access == "exclusive-write"
         && builtins.elem method permission.operations)
       entry.binding.caller_grant.resources)
@@ -55,13 +62,13 @@
   in
     if builtins.length matches == 1
     then (builtins.head matches).binding
-    else throw "systemd service transition requires one authorized ${authorityRole} effects binding for '${change.resource.key}'";
+    else throw "systemd native-resource transition requires one authorized ${authorityRole} effects binding";
   controllerFor = resource: let
     matches = builtins.filter (entry: entry.resource == resource) context.controllers;
   in
     if builtins.length matches == 1
     then (builtins.head matches).controller
-    else throw "systemd service transition requires one exact resource controller";
+    else throw "systemd native-resource transition requires one exact resource controller";
   scopedKey = key: {
     scope = context.operation_scope;
     inherit key;
@@ -80,17 +87,14 @@
     phase = "converging";
     input_phase = "planning";
     target = {
-      interface = binding.interface;
+      interface = resourceInterface;
       resource = change.resource;
       operations = [method];
       inherit (desired) lifetime;
     };
     inputs = {
       source = "literal";
-      value = {
-        kind = "service";
-        desired = desired.value;
-      };
+      value.desired = desired.value;
     };
     preconditions = [];
     accesses = [
@@ -100,7 +104,7 @@
       }
     ];
     controller = controllerFor change.resource;
-    deadline = operationDeadline;
+    inherit deadline;
     recovery = {
       retry = {
         kind = "bounded";

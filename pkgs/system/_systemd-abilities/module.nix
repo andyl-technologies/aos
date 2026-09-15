@@ -461,7 +461,11 @@
     targetResource = "aos.systemd.packaged-unit";
     outputs.observation =
       output
-      (if name == "observe" then "observation" else "runtime")
+      (
+        if name == "observe"
+        then "observation"
+        else "runtime"
+      )
       "attempt"
       "Reports the exact terminal packaged-unit effect state."
       packagedUnitEffectsObservation;
@@ -555,22 +559,27 @@
     };
     parameters = managerWatchdogRequest;
     targetResource = "aos.systemd.manager-watchdog";
-    outputs = {
-      observation =
-        output
-        (if name == "observe" then "observation" else "runtime")
-        "attempt"
-        "Reports exact manager watchdog configuration and reload state."
-        managerWatchdogObservation;
-    }
-    // lib.optionalAttrs retained {
-      retained-resource =
-        output
-        "runtime"
-        "instance"
-        "References the retained manager watchdog configuration."
-        types.resourceReference;
-    };
+    outputs =
+      {
+        observation =
+          output
+          (
+            if name == "observe"
+            then "observation"
+            else "runtime"
+          )
+          "attempt"
+          "Reports exact manager watchdog configuration and reload state."
+          managerWatchdogObservation;
+      }
+      // lib.optionalAttrs retained {
+        retained-resource =
+          output
+          "runtime"
+          "instance"
+          "References the retained manager watchdog configuration."
+          types.resourceReference;
+      };
     permittedOperations = [name];
     guarantees = [];
     outcome = {
@@ -627,7 +636,11 @@
     targetResource = "aos.systemd.manager-watchdog";
     outputs.observation =
       output
-      (if name == "observe" then "observation" else "runtime")
+      (
+        if name == "observe"
+        then "observation"
+        else "runtime"
+      )
       "attempt"
       "Reports the exact terminal manager-watchdog effect state."
       managerWatchdogEffectsObservation;
@@ -720,7 +733,11 @@
     targetResource = "aos.service.instance";
     outputs.observation =
       output
-      (if name == "observe" then "observation" else "runtime")
+      (
+        if name == "observe"
+        then "observation"
+        else "runtime"
+      )
       "attempt"
       "Reports the exact systemd service effect state."
       serviceEffectsObservation;
@@ -822,7 +839,11 @@
     targetResource = selected.resourceKind;
     outputs.observation =
       output
-      (if name == "observe" then "observation" else "runtime")
+      (
+        if name == "observe"
+        then "observation"
+        else "runtime"
+      )
       "attempt"
       "Reports the exact systemd identity effect state."
       (identityEffectsObservation selected);
@@ -875,44 +896,44 @@
     fallback = null;
   };
   identityControllerImplementations = builtins.listToAttrs (builtins.map (kind: let
-      selected = identityKinds.${kind};
-    in {
-      name = selected.controller.alias;
-      value = {
-        description = "Realizes ${selected.resourceKind} through the selected systemd identity controller.";
-        interface = selected.controller.alias;
+    selected = identityKinds.${kind};
+  in {
+    name = selected.controller.alias;
+    value = {
+      description = "Realizes ${selected.resourceKind} through the selected systemd identity controller.";
+      interface = selected.controller.alias;
+      inherit artifact;
+      inherit (selected.controller) methods;
+      guarantees = [];
+      requirements.identity-effects = identityEffectsRequirement selected;
+      providerModule = {
         inherit artifact;
-        inherit (selected.controller) methods;
-        guarantees = [];
-        requirements.identity-effects = identityEffectsRequirement selected;
-        providerModule = {
-          inherit artifact;
-          path = "share/aos/providers/systemd.nix";
-        };
-        desiredType = identityRealizationType;
-        requiredFeatures = [];
+        path = "share/aos/providers/systemd.nix";
       };
-    }) (builtins.attrNames identityKinds));
+      desiredType = identityRealizationType;
+      requiredFeatures = [];
+    };
+  }) (builtins.attrNames identityKinds));
   identityTerminalImplementations = builtins.listToAttrs (builtins.map (kind: let
-      selected = identityKinds.${kind};
-    in {
-      name = selected.effectsAlias;
-      value = {
-        description = "Executes checked ${selected.resourceKind} effects through systemd-sysusers.";
-        interface = selected.effectsAlias;
+    selected = identityKinds.${kind};
+  in {
+    name = selected.effectsAlias;
+    value = {
+      description = "Executes checked ${selected.resourceKind} effects through systemd-sysusers.";
+      interface = selected.effectsAlias;
+      artifact = handlerArtifact;
+      methods = ["create" "observe" "reconcile" "remove" "update"];
+      guarantees = [];
+      handlerDescriptor = {
         artifact = handlerArtifact;
-        methods = ["create" "observe" "reconcile" "remove" "update"];
-        guarantees = [];
-        handlerDescriptor = {
-          artifact = handlerArtifact;
-          entryPoint = "bin/aos-${selected.effectsAlias}";
-          arguments = identityEffectsRequest selected;
-          result = identityEffectsObservation selected;
-        };
-        desiredType = null;
-        requiredFeatures = [];
+        entryPoint = "bin/aos-${selected.effectsAlias}";
+        arguments = identityEffectsRequest selected;
+        result = identityEffectsObservation selected;
       };
-    }) (builtins.attrNames identityKinds));
+      desiredType = null;
+      requiredFeatures = [];
+    };
+  }) (builtins.attrNames identityKinds));
   nativeResourceRealizationType = types.taggedUnion {
     tag = "backend";
     variants = {
@@ -1018,7 +1039,11 @@
     targetResource = selected.resourceKind;
     outputs.observation =
       output
-      (if name == "observe" then "observation" else "runtime")
+      (
+        if name == "observe"
+        then "observation"
+        else "runtime"
+      )
       "attempt"
       "Reports the exact systemd native-resource effect state."
       (nativeEffectsObservation selected);
@@ -1071,44 +1096,44 @@
     fallback = null;
   };
   nativeControllerImplementations = builtins.listToAttrs (builtins.map (kind: let
-      selected = nativeResourceKinds.${kind};
-    in {
-      name = selected.controller.alias;
-      value = {
-        description = "Realizes ${selected.resourceKind} through the selected systemd native-resource controller.";
-        interface = selected.controller.alias;
+    selected = nativeResourceKinds.${kind};
+  in {
+    name = selected.controller.alias;
+    value = {
+      description = "Realizes ${selected.resourceKind} through the selected systemd native-resource controller.";
+      interface = selected.controller.alias;
+      inherit artifact;
+      inherit (selected.controller) methods;
+      guarantees = [];
+      requirements.native-effects = nativeEffectsRequirement selected;
+      providerModule = {
         inherit artifact;
-        inherit (selected.controller) methods;
-        guarantees = [];
-        requirements.native-effects = nativeEffectsRequirement selected;
-        providerModule = {
-          inherit artifact;
-          path = "share/aos/providers/systemd.nix";
-        };
-        desiredType = nativeResourceRealizationType;
-        requiredFeatures = [];
+        path = "share/aos/providers/systemd.nix";
       };
-    }) (builtins.attrNames nativeResourceKinds));
+      desiredType = nativeResourceRealizationType;
+      requiredFeatures = [];
+    };
+  }) (builtins.attrNames nativeResourceKinds));
   nativeTerminalImplementations = builtins.listToAttrs (builtins.map (kind: let
-      selected = nativeResourceKinds.${kind};
-    in {
-      name = selected.effectsAlias;
-      value = {
-        description = "Executes checked ${selected.resourceKind} effects through systemd native units.";
-        interface = selected.effectsAlias;
+    selected = nativeResourceKinds.${kind};
+  in {
+    name = selected.effectsAlias;
+    value = {
+      description = "Executes checked ${selected.resourceKind} effects through systemd native units.";
+      interface = selected.effectsAlias;
+      artifact = handlerArtifact;
+      methods = ["create" "observe" "reconcile" "remove" "update"];
+      guarantees = [];
+      handlerDescriptor = {
         artifact = handlerArtifact;
-        methods = ["create" "observe" "reconcile" "remove" "update"];
-        guarantees = [];
-        handlerDescriptor = {
-          artifact = handlerArtifact;
-          entryPoint = "bin/aos-${selected.effectsAlias}";
-          arguments = nativeEffectsRequest selected;
-          result = nativeEffectsObservation selected;
-        };
-        desiredType = null;
-        requiredFeatures = [];
+        entryPoint = "bin/aos-${selected.effectsAlias}";
+        arguments = nativeEffectsRequest selected;
+        result = nativeEffectsObservation selected;
       };
-    }) (builtins.attrNames nativeResourceKinds));
+      desiredType = null;
+      requiredFeatures = [];
+    };
+  }) (builtins.attrNames nativeResourceKinds));
   devicePresenceImplementation = {
     ${serviceInterfaces.devicePresence.alias} = {
       description = "Observes provider-neutral device presence through systemd device units.";
@@ -1152,11 +1177,10 @@
       inherit artifact;
       inherit (selected) methods;
       inherit guarantees;
-      requirements =
-        lib.optionalAttrs controlsService {
-          service-effects = serviceEffectsRequirement;
-          directory-preparation = directoryPreparationRequirement;
-        };
+      requirements = lib.optionalAttrs controlsService {
+        service-effects = serviceEffectsRequirement;
+        directory-preparation = directoryPreparationRequirement;
+      };
       providerModule = {
         inherit artifact;
         path = "share/aos/providers/systemd.nix";
@@ -1195,7 +1219,8 @@
         desiredType = null;
         requiredFeatures = [];
       };
-    }) readinessControllers);
+    })
+    readinessControllers);
   readinessControllers = [
     serviceInterfaces.networkReadiness
     serviceInterfaces.filesystemReadiness
@@ -1218,14 +1243,18 @@
       abi = 1;
       requestType = readinessEffectsRequest selected;
       outputs = {};
-      methods.observe = selected.declaration.methods.observe // {
-        parameters = readinessEffectsRequest selected;
-        targetResource = selected.identity.name;
-      };
+      methods.observe =
+        selected.declaration.methods.observe
+        // {
+          parameters = readinessEffectsRequest selected;
+          targetResource = selected.identity.name;
+        };
       lifecycle = selected.declaration.lifecycle;
-      aggregation = selected.declaration.aggregation // {
-        controllerGroup = readinessEffectsAlias selected;
-      };
+      aggregation =
+        selected.declaration.aggregation
+        // {
+          controllerGroup = readinessEffectsAlias selected;
+        };
       configurationType = null;
       guarantees = [];
     };
@@ -1250,7 +1279,8 @@
         desiredType = null;
         requiredFeatures = [];
       };
-    }) readinessControllers);
+    })
+    readinessControllers);
 in {
   options.aos.monitoring.hardware = {
     watchdog = lib.mkOption {
@@ -1273,23 +1303,25 @@ in {
       manager = {};
     };
 
-    interfaces = {
-      systemd-packaged-unit = packagedUnitDeclaration;
-      systemd-packaged-unit-effects = packagedUnitEffectsDeclaration;
-      systemd-manager-watchdog = managerWatchdogDeclaration;
-      systemd-manager-watchdog-effects = managerWatchdogEffectsDeclaration;
-      ${networkConfigurationEffectsAlias} = networkConfigurationEffects.declaration;
-      systemd-service-effects = serviceEffectsDeclaration;
-    }
-    // builtins.listToAttrs (builtins.map (selected: {
-        name = readinessEffectsAlias selected;
-        value = readinessEffectsDeclaration selected;
-      }) readinessControllers)
-    // builtins.listToAttrs (builtins.map (kind: {
+    interfaces =
+      {
+        systemd-packaged-unit = packagedUnitDeclaration;
+        systemd-packaged-unit-effects = packagedUnitEffectsDeclaration;
+        systemd-manager-watchdog = managerWatchdogDeclaration;
+        systemd-manager-watchdog-effects = managerWatchdogEffectsDeclaration;
+        ${networkConfigurationEffectsAlias} = networkConfigurationEffects.declaration;
+        systemd-service-effects = serviceEffectsDeclaration;
+      }
+      // builtins.listToAttrs (builtins.map (selected: {
+          name = readinessEffectsAlias selected;
+          value = readinessEffectsDeclaration selected;
+        })
+        readinessControllers)
+      // builtins.listToAttrs (builtins.map (kind: {
         name = identityKinds.${kind}.effectsAlias;
         value = identityEffectsDeclarations.${kind};
       }) (builtins.attrNames identityKinds))
-    // builtins.listToAttrs (builtins.map (kind: {
+      // builtins.listToAttrs (builtins.map (kind: {
         name = nativeResourceKinds.${kind}.effectsAlias;
         value = nativeEffectsDeclarations.${kind};
       }) (builtins.attrNames nativeResourceKinds));

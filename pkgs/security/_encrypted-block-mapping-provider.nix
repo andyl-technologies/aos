@@ -10,6 +10,7 @@
   controller = config.aos.abilities.implementations."${packageName}:${alias}";
   effectsInterface = builtins.head controller.requirements.effects.accepted_interfaces;
   emptyResult = {
+    conditionalRequirements = [];
     requests = {};
     outputs = {};
   };

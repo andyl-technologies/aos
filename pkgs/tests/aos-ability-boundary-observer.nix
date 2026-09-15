@@ -81,7 +81,7 @@ in
           mkdir -p "$out/bin" "$out/share/aos/providers"
           ln -s ${controller}/bin/aos-ability-boundary-controller \
             "$out/bin/aos-ability-boundary-controller"
-          cp ${./_aos-ability-boundary-observer/endpoint-provider.nix} \
+          cp ${./_aos-ability-boundary-observer/share/aos/providers/ability-boundary-observer-endpoint.nix} \
             "$out/share/aos/providers/ability-boundary-observer-endpoint.nix"
         '';
       }

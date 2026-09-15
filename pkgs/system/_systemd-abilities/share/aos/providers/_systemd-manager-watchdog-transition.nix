@@ -1,15 +1,8 @@
-##! Pure transition construction for one systemd native resource controller.
-{
-  effectsInterface,
-  resourceInterface,
-  resourceKind,
-}: context: let
-  deadline = {
-    attempt_timeout_millis = 300000;
-    total_recovery_millis = 1200000;
-  };
+##! Pure transition construction for the systemd manager watchdog controller.
+{effectsInterface}: context: let
   actionable = builtins.filter (change:
-    change.resource.provider == context.provider
+    change.resource.provider
+    == context.provider
     && builtins.elem change.kind [
       "create"
       "update"
@@ -35,22 +28,22 @@
       if change.kind == "remove"
       then context.before
       else context.after;
-    matches = builtins.filter (resource:
-      resource.resource == change.resource && resource.kind == resourceKind)
-    snapshot.resources;
+    matches = builtins.filter (resource: resource.resource == change.resource) snapshot.resources;
   in
     if builtins.length matches == 1
     then builtins.head matches
-    else throw "systemd native-resource transition requires one exact ${authorityFor change} ${resourceKind} state";
+    else throw "systemd manager-watchdog transition requires one exact resource state";
   bindingFor = change: method: let
     authorityRole = authorityFor change;
     matches = builtins.filter (entry:
-      entry.authority.role == authorityRole
+      entry.authority.role
+      == authorityRole
       && entry.binding.interface == effectsInterface
       && builtins.elem method entry.binding.caller_grant.methods
       && builtins.elem "observe" entry.binding.caller_grant.methods
       && builtins.length (builtins.filter (permission:
-        permission.resource == change.resource
+        permission.resource
+        == change.resource
         && permission.access == "exclusive-write"
         && builtins.elem method permission.operations)
       entry.binding.caller_grant.resources)
@@ -59,23 +52,22 @@
   in
     if builtins.length matches == 1
     then (builtins.head matches).binding
-    else throw "systemd native-resource transition requires one authorized ${authorityRole} effects binding";
+    else throw "systemd manager-watchdog transition requires one authorized effects binding";
   controllerFor = resource: let
     matches = builtins.filter (entry: entry.resource == resource) context.controllers;
   in
     if builtins.length matches == 1
     then (builtins.head matches).controller
-    else throw "systemd native-resource transition requires one exact resource controller";
-  scopedKey = key: {
-    scope = context.operation_scope;
-    inherit key;
-  };
+    else throw "systemd manager-watchdog transition requires one exact controller";
   operationFor = change: let
     method = methodFor change.kind;
     binding = bindingFor change method;
     desired = stateFor change;
   in {
-    key = scopedKey "${method}-${change.resource.key}";
+    key = {
+      scope = context.operation_scope;
+      key = "${method}-${change.resource.key}";
+    };
     branch_context = [];
     binding = binding.id;
     authority = "caller";
@@ -84,14 +76,17 @@
     phase = "converging";
     input_phase = "planning";
     target = {
-      interface = resourceInterface;
+      interface = binding.interface;
       resource = change.resource;
       operations = [method];
       inherit (desired) lifetime;
     };
     inputs = {
       source = "literal";
-      value.desired = desired.value;
+      value = {
+        kind = "manager-watchdog";
+        desired = desired.value;
+      };
     };
     preconditions = [];
     accesses = [
@@ -101,12 +96,15 @@
       }
     ];
     controller = controllerFor change.resource;
-    inherit deadline;
+    deadline = {
+      attempt_timeout_millis = 300000;
+      total_recovery_millis = 1200000;
+    };
     recovery = {
       retry = {
         kind = "bounded";
         max_attempts = 2;
-        backoff_millis = 0;
+        backoff_millis = 1000;
       };
       reconcile = {
         interface = binding.interface;

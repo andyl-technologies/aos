@@ -219,10 +219,15 @@
       builtins.attrValues selectedByPath;
     callerPackageNames = builtins.map (record: record.name) packageModules;
     nativeAbilityPackageModules =
-      builtins.map (package: {
+      builtins.map (package: let
+        source = package.abilityModuleSource;
+      in {
         name = package.pname or package.name;
         version = package.version or "0";
-        module = package.module + "/module.nix";
+        module =
+          if source.isDirectory
+          then source.source + "/module.nix"
+          else source.source;
         outputs = {
           self = builtins.toString package;
           dependencies = {};
@@ -231,10 +236,114 @@
         (package: !(builtins.elem (package.pname or package.name) callerPackageNames))
         selectedAbilityPackages);
     finalPackageModules = packageModules ++ nativeAbilityPackageModules;
-    initrdAbilityPackageNames = builtins.map
+    selectedPackagesByName = builtins.listToAttrs (builtins.map (package: {
+        name = package.pname or package.name;
+        value = package;
+      })
+      selectedAbilityPackages);
+    buildArtifactLocator = selector: let
+      package =
+        selectedPackagesByName.${selector.package}
+        or pkgs.${selector.package}
+        or (throw "selected ability artifact package '${selector.package}' is absent");
+      output =
+        if selector.output == "out"
+        then package
+        else package.${selector.output}
+          or (throw "selected ability artifact '${selector.package}:${selector.output}' is absent");
+      path = builtins.toString output;
+      digest = "sha256:${builtins.hashString "sha256" path}";
+    in {
+      name = builtins.toJSON selector;
+      value = {
+        artifactReference = {
+          content = digest;
+          nar_hash = digest;
+          closure = digest;
+          store_path = path;
+        };
+        inherit path;
+      };
+    };
+    selectedArtifactSelectors = builtins.concatLists (builtins.map (package:
+      builtins.map (selector:
+        if selector.package == "self"
+        then selector // {package = package.pname or package.name;}
+        else selector)
+      package.contract.selectors)
+    selectedAbilityPackages);
+    buildArtifactLocators = builtins.listToAttrs (
+      builtins.map buildArtifactLocator selectedArtifactSelectors
+    );
+    selectedProviderModulesFor = abilityBindings: let
+      selectedImplementationNames = builtins.attrNames (builtins.listToAttrs (builtins.map (binding: {
+          name = binding.implementation;
+          value = true;
+        })
+        (builtins.attrValues abilityBindings)));
+      selected = builtins.concatMap (implementationName: let
+        providerPackageName = builtins.head (lib.splitString ":" implementationName);
+        localName = lib.removePrefix "${providerPackageName}:" implementationName;
+        package =
+          selectedPackagesByName.${providerPackageName}
+          or (throw "selected provider package '${providerPackageName}' is absent");
+        implementation =
+          package.abilities.implementations.${localName}
+          or (throw "selected provider implementation '${implementationName}' is absent");
+        locator = implementation.provider_module or null;
+      in
+        lib.optional (locator != null) {
+          key = builtins.toJSON {
+            package = providerPackageName;
+            inherit (locator) path;
+          };
+          value = let
+            # The package wrapper copies the complete authored ability tree to
+            # its lightweight module output. Provider modules retain the exact
+            # path from the authenticated runtime ModuleLocator, so build-time
+            # evaluation never needs an import from the executable output.
+            source = package.abilityModuleSource;
+            configRoot =
+              if source.isDirectory
+              then source.source
+              else
+                throw
+                "selected provider package '${providerPackageName}' does not author a directory module tree";
+          in {
+            name = providerPackageName;
+            packageVersion = package.version or "0";
+            inherit configRoot;
+            module = configRoot + "/${locator.path}";
+            outputs = {
+              self = builtins.toString package;
+              dependencies = {};
+            };
+            artifactLocators = buildArtifactLocators;
+          };
+        })
+      selectedImplementationNames;
+    in
+      builtins.attrValues (builtins.listToAttrs (builtins.map (entry: {
+          name = entry.key;
+          value = entry.value;
+        })
+        selected));
+    synthesizedProviderInstancesFor = abilityBindings:
+      builtins.listToAttrs (builtins.map (name: {
+          inherit name;
+          value = {};
+        })
+        (lib.unique (builtins.map
+          (binding: binding.providerInstance)
+          (builtins.filter
+            (binding: lib.hasPrefix "build:provider-" binding.providerInstance)
+            (builtins.attrValues abilityBindings)))));
+    initrdAbilityPackageNames =
+      builtins.map
       (package: package.pname or package.name)
       selectionEvaluation.config.aos.abilities.stages.initrd.packages;
-    initrdPackageModules = builtins.filter
+    initrdPackageModules =
+      builtins.filter
       (record: builtins.elem record.name initrdAbilityPackageNames)
       finalPackageModules;
     initrdAbilityEvaluation = lib.evalModules {
@@ -271,27 +380,40 @@
       baseModules = modules;
       inherit systemModules systemName moduleAbi;
     };
+    evaluateSelectedSystem = abilityBindings:
+      lib.evalModules {
+        modules =
+          modules
+          ++ moduleList
+          ++ [
+            {
+              aos.config.evalAtBoot = {
+                inherit baseLib;
+                baseLibAbiHash = baseLib.passthru.abiHash;
+              };
+              aos.abilities.environment = {
+                authority = "system-image";
+                key = systemName;
+                stage = "host";
+              };
+            }
+          ];
+        inherit pkgs lib operatorModules;
+        runtimeModules =
+          runtimeModules
+          ++ lib.optional (abilityBindings != {}) {
+            aos.abilities = {
+              bindings = abilityBindings;
+              instances = synthesizedProviderInstancesFor abilityBindings;
+            };
+          };
+        packageModules = finalPackageModules;
+        selectedProviderModules = selectedProviderModulesFor abilityBindings;
+        specialArgs = moduleSpecialArgs // {inherit initrdAbilityEvaluation;};
+      };
   in
-    lib.evalModules {
-      modules =
-        modules
-        ++ moduleList
-        ++ [
-          {
-            aos.config.evalAtBoot = {
-              inherit baseLib;
-              baseLibAbiHash = baseLib.passthru.abiHash;
-            };
-            aos.abilities.environment = {
-              authority = "system-image";
-              key = systemName;
-              stage = "host";
-            };
-          }
-        ];
-      inherit pkgs lib operatorModules runtimeModules;
-      packageModules = finalPackageModules;
-      specialArgs = moduleSpecialArgs // {inherit initrdAbilityEvaluation;};
+    import ./lib/build/selected-ability-bindings.nix {inherit lib;} {
+      evaluate = evaluateSelectedSystem;
     };
 
   # Auto-discover system definitions from ./systems/*.nix

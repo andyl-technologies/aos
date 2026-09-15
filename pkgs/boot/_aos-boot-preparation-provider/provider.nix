@@ -10,6 +10,7 @@
     lib.abilities.interfaceDocumentFromDeclaration terminalDeclaration
   );
   emptyProvision = {
+    conditionalRequirements = [];
     requests = {};
     outputs = {};
     resourceFragments = {};
@@ -72,6 +73,7 @@
         entries);
     };
   compose = {resources, ...}: {
+    conditionalRequirements = [];
     requests = {};
     outputs = {};
     realizations =

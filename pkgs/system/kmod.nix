@@ -132,7 +132,7 @@ in
       zstd
     ];
 
-    abilities = ./_kmod-abilities.nix;
+    abilities = ./_kmod-abilities;
 
     phases = [
       {
@@ -178,7 +178,7 @@ in
             -o $out/libexec/aos-kmod-handler \
             -ljansson -lcrypto
           install -m 444 \
-            ${./_kmod-provider.nix} \
+            ${./_kmod-abilities/share/aos/providers/kmod.nix} \
             $out/share/aos/providers/kmod.nix
         '';
       }

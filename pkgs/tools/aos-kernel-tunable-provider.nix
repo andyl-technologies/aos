@@ -70,7 +70,7 @@ in
     buildDeps = [patchelf];
     runtimeDeps = [];
 
-    abilities = ./_aos-kernel-tunable-provider-module.nix;
+    abilities = ./_aos-kernel-tunable-provider;
 
     preBuild = staticBuildSetup;
 
@@ -80,7 +80,7 @@ in
 
     postInstall = ''
       mkdir -p "$out/share/aos/providers"
-      cp ${./_kernel-tunable-provider.nix} \
+      cp ${./_aos-kernel-tunable-provider/share/aos/providers/kernel-tunables.nix} \
         "$out/share/aos/providers/kernel-tunables.nix"
       test -x "$out/bin/aos-kernel-tunable-provider"
       if patchelf --print-interpreter "$out/bin/aos-kernel-tunable-provider" \

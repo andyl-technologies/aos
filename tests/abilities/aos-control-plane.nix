@@ -105,8 +105,8 @@
           name = "systemd";
           module = {
             imports = [
-              ../../pkgs/system/_systemd-abilities.nix
-              ../../pkgs/system/_systemd-provider.nix
+              ../../pkgs/system/_systemd-abilities/module.nix
+              ../../pkgs/system/_systemd-abilities/share/aos/providers/systemd.nix
             ];
             config.aos.abilities.instances.manager = {};
           };
@@ -121,52 +121,9 @@
       };
     };
   initial = evaluate {};
-  authoredBindings = builtins.listToAttrs (builtins.map (requestName: let
-      request = initial.config.aos.abilities.requests.${requestName};
-      implementation = "systemd:${lib.removePrefix "aos:" request.requirement}";
-      slot = builtins.head request.scope;
-    in {
-      name = "test:authored-${builtins.hashString "sha256" requestName}";
-      value = {
-        request = requestName;
-        inherit implementation slot;
-        providerInstance = "systemd:manager";
-      };
-    })
-    (builtins.attrNames initial.config.aos.abilities.requests));
-  composed = evaluate authoredBindings;
-  implementations = composed.config.aos.abilities.implementations;
-  interfaces = composed.config.aos.abilities.interfaces;
-  implementationInterfaceIdentity = implementation: let
-    declaration = interfaces.${implementation.interface};
-  in
-    lib.abilities.interfaceIdentity (
-      lib.abilities.interfaceDocumentFromDeclaration declaration
-    );
-  childImplementationFor = pending: let
-    requirement = implementations.${pending.implementation}.requirements.${pending.requirement};
-    candidates = builtins.filter (implementationName: let
-      implementation = implementations.${implementationName};
-      identity = implementationInterfaceIdentity implementation;
-    in
-      builtins.any
-      (selector: lib.abilities.interfaceSelectorMatches selector identity)
-      requirement.accepted_interfaces
-      && builtins.all (method: builtins.elem method implementation.methods) requirement.methods
-      && builtins.all (guarantee: builtins.elem guarantee implementation.guarantees) requirement.guarantees)
-    (builtins.attrNames implementations);
-  in
-    assert builtins.length candidates == 1; builtins.head candidates;
-  childBindings = lib.mapAttrs' (requestName: pending: {
-      name = "test:child-${builtins.hashString "sha256" requestName}";
-      value = {
-        request = requestName;
-        implementation = childImplementationFor pending;
-        inherit (pending) providerInstance slot;
-      };
-    })
-    composed.config.aos.abilities.compositionPendingRequests;
-  complete = evaluate (authoredBindings // childBindings);
+  complete = import ../../lib/build/selected-ability-bindings.nix {inherit lib;} {
+    inherit evaluate;
+  };
   abilities = complete.config.aos.abilities;
   resources = builtins.attrValues abilities.desiredResources;
   realizedUnitName = resource: let

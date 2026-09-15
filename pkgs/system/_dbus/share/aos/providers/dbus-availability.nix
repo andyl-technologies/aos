@@ -30,6 +30,7 @@
     operations = ["observe"];
   };
   provide = context: {
+    conditionalRequirements = [];
     requests = {};
     resourceFragments = {};
     outputs =

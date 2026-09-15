@@ -773,6 +773,10 @@
           method serviceTypes.reload serviceTypes.observations.reload targetResource "observe"
           "Observes whether the declared reload strategy is available."
           read;
+        reload =
+          method serviceTypes.reload serviceTypes.observations.reload targetResource "reload"
+          "Applies the declared reload strategy to the assembled service."
+          write;
       });
     termination =
       canonical "service-termination" "aos.service.termination"

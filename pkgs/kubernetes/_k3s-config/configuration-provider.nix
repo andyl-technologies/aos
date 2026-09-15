@@ -20,6 +20,7 @@
     else throw "the K3s configuration controller declaration must own one realization schema";
   effectsInterface = builtins.head controller.requirements.effects.accepted_interfaces;
   emptyResult = {
+    conditionalRequirements = [];
     requests = {};
     outputs = {};
     resourceFragments = {};
@@ -137,6 +138,7 @@
     if builtins.length (builtins.attrNames mergedLabels) != labelCount
     then throw "K3s integration contributions contain a duplicate node label"
     else {
+      conditionalRequirements = [];
       requests = builtins.mapAttrs effectRequest resources;
       outputs = {};
       realizations.configuration = {

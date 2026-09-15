@@ -55,6 +55,7 @@
       lifetime = "instance";
     };
   in {
+    conditionalRequirements = [];
     requests = {};
     resourceFragments = {};
     outputs.${entry.requestName} = {

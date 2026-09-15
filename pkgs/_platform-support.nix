@@ -738,19 +738,18 @@ let
     "kubernetes/_k3s-role-package.nix" = "linux-only-build-helper";
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
-    "security/_polkit-dbus-registration.nix" = "linux-only-config-source";
     "security/_aos-cryptsetup-provider-module.nix" = "target-independent-source";
     "security/_encrypted-block-mapping-provider.nix" = "target-independent-source";
-    "security/_cryptsetup/module.nix" = "target-independent-source";
-    "system/_kmod-abilities.nix" = "target-independent-source";
-    "system/_kmod-provider.nix" = "target-independent-source";
-    "system/_systemd-abilities.nix" = "target-independent-source";
-    "system/_systemd-provider.nix" = "target-independent-source";
-    "system/_systemd-service-document.nix" = "target-independent-source";
-    "system/_systemd-service-provider-lib.nix" = "target-independent-source";
-    "system/_systemd-unit-document.nix" = "target-independent-source";
-    "virtualization/_libvirt/dbus-registration.nix" = "linux-only-config-source";
-    "virtualization/_libvirt/module.nix" = "linux-only-config-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-identity-provider.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-identity-transition.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-manager-watchdog-transition.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-native-resource-provider.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-native-resource-transition.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-packaged-unit-transition.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-service-document.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-service-provider-lib.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-service-transition.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-unit-document.nix" = "target-independent-source";
     "tests/_ability-package-smoke-module.nix" = "target-independent-source";
     "toolchain/_bazel.nix" = "native-build-helper";
     "toolchain/_linux-hosted-binutils.nix" = "cross-build-helper";
@@ -766,12 +765,8 @@ let
     "toolchain/rust/_rust-darwin.nix" = "cross-build-helper";
     "toolchain/rust/_rust-bootstrap.nix" = "native-build-helper";
     "toolchain/rust/_rust-linux-hosted.nix" = "cross-build-helper";
-    "tools/_aos-kernel-tunable-provider-module.nix" = "target-independent-source";
     "tools/_aos-storage-format-provider-module.nix" = "target-independent-source";
-    "tools/_aos-nix-store-provider-module.nix" = "target-independent-source";
-    "tools/_kernel-tunable-provider.nix" = "target-independent-source";
     "tools/_storage-format-provider.nix" = "target-independent-source";
-    "tools/_nix-store-provider.nix" = "target-independent-source";
     "tools/aos/_tests.nix" = "native-test-helper";
     "tools/aos/_workspace-source.nix" = "target-independent-source";
     "tools/crucible/_cargo-deps-hash.nix" = "target-independent-source";
@@ -791,14 +786,19 @@ let
   # excluded from discovery, but are consumed by package factories.
   resourceInventory = {
     "tests/_ability-package-smoke/default.nix" = "linux-only-test-source";
+    "boot/_aos-boot-preparation-provider/module.nix" = "linux-only-config-source";
+    "boot/_aos-boot-preparation-provider/provider.nix" = "target-independent-source";
     "containers/_containerd-config/module.nix" = "linux-only-config-source";
     "containers/_containerd-tests/contract.nix" = "linux-only-test-source";
     "containers/_containerd-tests/lifecycle.nix" = "linux-only-test-source";
+    "containers/_docker-engine/module.nix" = "linux-only-config-source";
     "db/_etcd-config/module.nix" = "linux-only-config-source";
     "filesystem/_aos-filesystem-provider/module.nix" = "linux-only-config-source";
-    "filesystem/_aos-filesystem-provider/provider.nix" = "linux-only-config-source";
+    "filesystem/_aos-filesystem-provider/share/aos/providers/filesystem.nix" = "linux-only-config-source";
     "filesystem/_aos-zfs-provider/dataset-provider.nix" = "linux-only-config-source";
     "filesystem/_aos-zfs-provider/module.nix" = "linux-only-config-source";
+    "filesystem/_aos-zfs-provider/maintenance.nix" = "linux-only-config-source";
+    "filesystem/_aos-zfs-provider/policy.nix" = "linux-only-config-source";
     "filesystem/_aos-zfs-provider/pool-provider.nix" = "linux-only-config-source";
     "system/_aos-storage-provisioning-provider/module.nix" = "linux-only-config-source";
     "system/_aos-storage-provisioning-provider/provider.nix" = "linux-only-config-source";
@@ -819,8 +819,16 @@ let
     "networking/_envoy/render.nix" = "linux-only-config-source";
     "networking/_envoy/types.nix" = "linux-only-config-source";
     "networking/_nginx/module.nix" = "linux-only-config-source";
+    "networking/_nftables/module.nix" = "linux-only-config-source";
     "networking/_openldap/module.nix" = "linux-only-config-source";
+    "networking/_openssh/module.nix" = "linux-only-config-source";
+    "networking/_tailscale/module.nix" = "linux-only-config-source";
+    "security/_audit/module.nix" = "linux-only-config-source";
+    "security/_cryptsetup/module.nix" = "target-independent-source";
     "security/_krb5-kdc/module.nix" = "linux-only-config-source";
+    "security/_polkit/dbus-registration.nix" = "linux-only-config-source";
+    "security/_polkit/module.nix" = "linux-only-config-source";
+    "security/_refpolicy/module.nix" = "linux-only-config-source";
     "storage/_garage-config/module.nix" = "linux-only-config-source";
     "tools/_rsyncd/module.nix" = "linux-only-config-source";
     "tools/aos/_abilities/attestation-verifier.nix" = "target-independent-source";
@@ -833,16 +841,30 @@ let
     "storage/_zfstools/module.nix" = "linux-only-config-source";
     "system/_dbus/module.nix" = "linux-only-config-source";
     "system/_dbus/availability-interface.nix" = "target-independent-source";
-    "system/_dbus/availability-provider.nix" = "target-independent-source";
     "system/_dbus/registration-interface.nix" = "target-independent-source";
-    "system/_dbus/registration-provider.nix" = "target-independent-source";
-    "system/_dbus/registration-transition.nix" = "target-independent-source";
+    "system/_dbus/share/aos/providers/dbus-availability.nix" = "target-independent-source";
+    "system/_dbus/share/aos/providers/dbus-registration.nix" = "target-independent-source";
+    "system/_dbus/share/aos/providers/registration-transition.nix" = "target-independent-source";
+    "system/_kmod-abilities/module.nix" = "target-independent-source";
+    "system/_kmod-abilities/share/aos/providers/kmod.nix" = "target-independent-source";
+    "system/_systemd-abilities/module.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-identity-provider.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-identity-transition.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-manager-watchdog-transition.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-native-resource-provider.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-native-resource-transition.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-packaged-unit-transition.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-service-document.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-service-provider-lib.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-service-transition.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/_systemd-unit-document.nix" = "target-independent-source";
+    "system/_systemd-abilities/share/aos/providers/systemd.nix" = "target-independent-source";
+    "system/_zram-generator/module.nix" = "linux-only-config-source";
     "tests/_aos-registry-server/module.nix" = "linux-only-config-source";
     "tests/_aos-ability-boundary-observer/endpoint-interface.nix" = "target-independent-source";
-    "tests/_aos-ability-boundary-observer/endpoint-provider.nix" = "target-independent-source";
+    "tests/_aos-ability-boundary-observer/share/aos/providers/ability-boundary-observer-endpoint.nix" = "target-independent-source";
     "tests/_aos-ability-boundary-observer/module.nix" = "linux-only-config-source";
     "tests/_aos-ability-boundary-observer/settings.nix" = "target-independent-source";
-    "tests/_aos-ability-boundary-observer.py" = "target-independent-source";
     "tests/_aos-secret-reference-test/module.nix" = "linux-only-config-source";
     "tests/_aos-test-agent/module.nix" = "linux-only-config-source";
     "tests/_desired-config-test/module.nix" = "linux-only-config-source";
@@ -852,16 +874,29 @@ let
     "tests/_test-static-cache-server/module.nix" = "linux-only-config-source";
     "tests/_upgrade-transition-fixture/module.nix" = "linux-only-config-source";
     "tools/_aos-ability-crucible/endpoint-interface.nix" = "target-independent-source";
-    "tools/_aos-ability-crucible/endpoint-provider.nix" = "target-independent-source";
+    "tools/_aos-ability-crucible/share/aos/providers/ability-crucible-endpoint.nix" = "target-independent-source";
     "tools/_aos-ability-crucible/module.nix" = "linux-only-config-source";
     "tools/_aos-ability-crucible/settings.nix" = "target-independent-source";
     "tools/_conntrackd/module.nix" = "linux-only-config-source";
     "tools/_smartmontools/module.nix" = "linux-only-config-source";
+    "tools/_util-linux-getty/module.nix" = "linux-only-config-source";
+    "tools/_aos-kernel-tunable-provider/module.nix" = "target-independent-source";
+    "tools/_aos-kernel-tunable-provider/share/aos/providers/kernel-tunables.nix" = "target-independent-source";
+    "tools/_aos-nix-store-provider/module.nix" = "target-independent-source";
+    "tools/_aos-nix-store-provider/share/aos/providers/nix-store-database.nix" = "target-independent-source";
     "tools/aos/_abilities/configuration-provider/module.nix" = "target-independent-source";
-    "tools/aos/_abilities/configuration-provider/provider.nix" = "target-independent-source";
+    "tools/aos/_abilities/share/aos/providers/configuration-materialization.nix" = "target-independent-source";
+    "tools/aos/_abilities/configuration-evaluation.nix" = "linux-only-config-source";
+    "tools/aos/_abilities/control-plane/module.nix" = "linux-only-config-source";
+    "tools/aos/_abilities/credential-recovery.nix" = "linux-only-config-source";
+    "tools/aos/_abilities/ebpf-lsm-policy-loader.nix" = "linux-only-config-source";
+    "tools/aos/_abilities/package-attestation-quote.nix" = "linux-only-config-source";
+    "tools/aos/_abilities/package-profile-convergence.nix" = "linux-only-config-source";
     "tools/aos/_abilities/module.nix" = "linux-only-config-source";
     "tools/aos/_abilities/release-coordinator/module.nix" = "linux-only-config-source";
     "tools/aos-hub/_aos-hub/module.nix" = "linux-only-config-source";
+    "virtualization/_libvirt/dbus-registration.nix" = "linux-only-config-source";
+    "virtualization/_libvirt/module.nix" = "linux-only-config-source";
   };
 
   isLinux = system: builtins.match "[a-zA-Z0-9_]+-linux" system != null;
@@ -980,121 +1015,134 @@ in rec {
   in {
     schema_version = "aos.release.derivation-inventory/v1";
     platform = system;
-    packages = map (
-      name: let
-        package = packages.${name};
-        selectedOutput = package.outputName or "out";
-        publishedOutputs =
-          (if selectedOutput == "out"
-          then package.outputs or ["out"]
-          else [selectedOutput])
-          ++ (if package ? module then ["module"] else []);
-        normalizeSource = source: let
-          sourcePath = toString source;
-          storePath = builtins.match "^(/nix/store/[0-9a-z]{32}-[^/]+)(/.*)?$" sourcePath;
-        in
-          if storePath != null
-          then builtins.head storePath
-          # Checked-in subdirectories are not store roots during local
-          # evaluation. Capture each as an immutable root so the release plan
-          # can retain the same source evidence as container publication.
-          else if builtins.isPath source
-          then
-            builtins.path {
-              path = source;
-              name = builtins.baseNameOf sourcePath;
-            }
-          else source;
-        # Generated packages and language builders declare every source bundle
-        # through this passthru contract. Ordinary packages retain their src.
-        declaredSources =
-          if package ? passthru && package.passthru ? evidenceSources
-          then package.passthru.evidenceSources
-          else if !(package ? src) || package.src == null
-          then []
-          else if builtins.isList package.src
-          then package.src
-          else if toString package.src == ""
-          then []
-          else [package.src];
-        sourcePaths =
-          map (
-            source:
-              builtins.unsafeDiscardStringContext (toString (normalizeSource source))
-          )
-          (declaredSources
-            ++ (if package ? module then [package.module.drvPath] else []));
-        contract =
-          if !(package ? contract)
-          then null
-          else {
-            document = {
-              derivation = builtins.unsafeDiscardStringContext package.contract.document.drvPath;
-              store_path = builtins.unsafeDiscardStringContext (toString package.contract.document);
-            };
-            selectors =
-              map (selector: let
-                selectedPackageName =
-                  if selector.package == "self"
-                  then name
-                  else selector.package;
-                selectedPackage =
-                  if builtins.elem selectedPackageName eligibleNames
-                  then packages.${selectedPackageName}
-                  else throw "package contract for '${name}' selects unpublished package '${selectedPackageName}'";
-              in {
-                inherit (selector) package output;
-                store_path = builtins.unsafeDiscardStringContext (toString (outputStorePath selectedPackage selector.output));
-              })
-              package.contract.selectors;
-          };
-      in {
-        inherit name contract;
-        source_store_paths = builtins.attrNames (builtins.listToAttrs (
-          map (source: {
-            name = source;
-            value = true;
-          })
-          sourcePaths
-        ));
-        publication = let
-          license = package.meta.license or null;
-          licenseExpression =
-            if builtins.isList license
-            then builtins.concatStringsSep " AND " license
-            else license;
-          version = package.version or null;
-          description = package.meta.description or null;
-          maintainers = package.meta.maintainers or [];
-        in
-          if version == null || description == null || licenseExpression == null || maintainers == []
-          then null
-          else {
-            inherit version description maintainers;
-            homepage = package.meta.homepage or null;
-            license_expression = licenseExpression;
-          };
-        derivation = builtins.unsafeDiscardStringContext package.drvPath;
-        outputs =
-          map (output:
-            {
-            # A public alias of one non-default derivation output is itself a
-            # single-output package root. Normalize that selected root to `out`
-            # so package qualification cannot silently exercise a sibling output.
-            name =
+    packages =
+      map (
+        name: let
+          package = packages.${name};
+          selectedOutput = package.outputName or "out";
+          publishedOutputs =
+            (
               if selectedOutput == "out"
-              then output
-              else "out";
-            store_path = builtins.unsafeDiscardStringContext (toString (
-              outputStorePath package output
-            ));
+              then package.outputs or ["out"]
+              else [selectedOutput]
+            )
+            ++ (
+              if package ? module
+              then ["module"]
+              else []
+            );
+          normalizeSource = source: let
+            sourcePath = toString source;
+            storePath = builtins.match "^(/nix/store/[0-9a-z]{32}-[^/]+)(/.*)?$" sourcePath;
+          in
+            if storePath != null
+            then builtins.head storePath
+            # Checked-in subdirectories are not store roots during local
+            # evaluation. Capture each as an immutable root so the release plan
+            # can retain the same source evidence as container publication.
+            else if builtins.isPath source
+            then
+              builtins.path {
+                path = source;
+                name = builtins.baseNameOf sourcePath;
+              }
+            else source;
+          # Generated packages and language builders declare every source bundle
+          # through this passthru contract. Ordinary packages retain their src.
+          declaredSources =
+            if package ? passthru && package.passthru ? evidenceSources
+            then package.passthru.evidenceSources
+            else if !(package ? src) || package.src == null
+            then []
+            else if builtins.isList package.src
+            then package.src
+            else if toString package.src == ""
+            then []
+            else [package.src];
+          sourcePaths =
+            map (
+              source:
+                builtins.unsafeDiscardStringContext (toString (normalizeSource source))
+            )
+            (declaredSources
+              ++ (
+                if package ? module
+                then [package.module.drvPath]
+                else []
+              ));
+          contract =
+            if !(package ? contract)
+            then null
+            else {
+              document = {
+                derivation = builtins.unsafeDiscardStringContext package.contract.document.drvPath;
+                store_path = builtins.unsafeDiscardStringContext (toString package.contract.document);
+              };
+              selectors =
+                map (selector: let
+                  selectedPackageName =
+                    if selector.package == "self"
+                    then name
+                    else selector.package;
+                  selectedPackage =
+                    if builtins.elem selectedPackageName eligibleNames
+                    then packages.${selectedPackageName}
+                    else throw "package contract for '${name}' selects unpublished package '${selectedPackageName}'";
+                in {
+                  inherit (selector) package output;
+                  store_path = builtins.unsafeDiscardStringContext (toString (outputStorePath selectedPackage selector.output));
+                })
+                package.contract.selectors;
+            };
+        in {
+          inherit name contract;
+          source_store_paths = builtins.attrNames (builtins.listToAttrs (
+            map (source: {
+              name = source;
+              value = true;
+            })
+            sourcePaths
+          ));
+          publication = let
+            license = package.meta.license or null;
+            licenseExpression =
+              if builtins.isList license
+              then builtins.concatStringsSep " AND " license
+              else license;
+            version = package.version or null;
+            description = package.meta.description or null;
+            maintainers = package.meta.maintainers or [];
+          in
+            if version == null || description == null || licenseExpression == null || maintainers == []
+            then null
+            else {
+              inherit version description maintainers;
+              homepage = package.meta.homepage or null;
+              license_expression = licenseExpression;
+            };
+          derivation = builtins.unsafeDiscardStringContext package.drvPath;
+          outputs = map (output:
+            {
+              # A public alias of one non-default derivation output is itself a
+              # single-output package root. Normalize that selected root to `out`
+              # so package qualification cannot silently exercise a sibling output.
+              name =
+                if selectedOutput == "out"
+                then output
+                else "out";
+              store_path = builtins.unsafeDiscardStringContext (toString (
+                outputStorePath package output
+              ));
             }
-            // (if output == "module"
-            then {derivation = builtins.unsafeDiscardStringContext package.module.drvPath;}
-            else {}))
+            // (
+              if output == "module"
+              then {derivation = builtins.unsafeDiscardStringContext package.module.drvPath;}
+              else {}
+            ))
           publishedOutputs;
-      }
-    ) eligibleNames;
+        }
+      )
+      eligibleNames;
   };
 
   publicationMatrix = names:

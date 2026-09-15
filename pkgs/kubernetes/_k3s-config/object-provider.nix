@@ -20,6 +20,7 @@
     else throw "the K3s object controller declaration must own one realization schema";
   effectsInterface = builtins.head controller.requirements.effects.accepted_interfaces;
   emptyResult = {
+    conditionalRequirements = [];
     requests = {};
     outputs = {};
     resourceFragments = {};
@@ -133,6 +134,7 @@
     if builtins.length identities != builtins.length (lib.unique identities)
     then throw "Kubernetes object contributions contain a duplicate API identity"
     else {
+      conditionalRequirements = [];
       requests = builtins.mapAttrs effectRequest resources;
       outputs = {};
       realizations.objects = {

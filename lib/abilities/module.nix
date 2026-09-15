@@ -841,7 +841,8 @@
       implementation.qualification
       == null
       || (
-        implementation.qualification.conformanceFamilies != []
+        implementation.qualification.conformanceFamilies
+        != []
         && uniqueValues implementation.qualification.conformanceFamilies
       )
     )
@@ -1234,12 +1235,15 @@
       config.aos.abilities.requests.${requestName}
       or config.aos.abilities.compositionRequests.${requestName}
       or (throw "Published resource output '${requestName}' has no exact request declaration.");
-    normalizedRequest = (evalModules {
-      modules = [{
-        options.value = mkOption {type = declaration.requestType;};
-        config.value = request.parameters;
-      }];
-    }).config.value;
+    normalizedRequest =
+      (evalModules {
+        modules = [
+          {
+            options.value = mkOption {type = declaration.requestType;};
+            config.value = request.parameters;
+          }
+        ];
+      }).config.value;
     selectedImplementation = semanticImplementation binding.value.implementation implementation;
     publication = {
       schema = "aos.ability.resource-publication/v1";
@@ -1345,7 +1349,14 @@
         != null
         && resource.resource.provider == config.aos.abilities.instanceIdentities.${binding.providerInstance}
         && controlsKind
-        && typeAccepts resourceDeclaration.requestType resource.value
+        # A merge contract commits the provider's aggregate schema. Each
+        # contribution was checked before merging, while the aggregate may
+        # intentionally differ from the controller's root request shape.
+        && (
+          resourceDeclaration.aggregation.mergeContract
+          != null
+          || typeAccepts resourceDeclaration.requestType resource.value
+        )
         && implementation.desiredType != null
         && typeAccepts implementation.desiredType resource.realization;
 
@@ -1387,7 +1398,8 @@
       then null
       else outputs.${selected.socketOutput} or null;
     protectedPlanningOutput = output:
-      output != null
+      output
+      != null
       && output.phase == "planning"
       && output.visibility == "protected";
   in

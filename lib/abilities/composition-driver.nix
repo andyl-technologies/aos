@@ -47,6 +47,7 @@
       then builtins.head matches
       else fail "implementation '${implementationKey}' must resolve its exact shared interface identity to one declaration";
   emptyProvision = {
+    conditionalRequirements = [];
     requests = {};
     outputs = {};
     resourceFragments = {};
@@ -57,6 +58,26 @@
     if !builtins.isAttrs value || actual != expected
     then fail "${context} must contain exactly ${builtins.toJSON expected}"
     else value;
+  checkedProviderResult = context: implementation: expected: value: let
+    result = exactAttrs context expected value;
+    active = result.conditionalRequirements;
+    unique =
+      if builtins.isList active
+      then
+        builtins.attrNames (builtins.listToAttrs (builtins.map (name: {
+            inherit name;
+            value = true;
+          })
+          active))
+      else [];
+  in
+    if
+      !builtins.isList active
+      || !(builtins.all lib.abilities.types.localKey.check active)
+      || builtins.length unique != builtins.length active
+      || !(builtins.all (name: builtins.hasAttr name implementation.requirements) active)
+    then fail "${context} has invalid conditional requirements"
+    else result;
 
   mergeValue = context: left: right:
     if left == right
@@ -238,9 +259,10 @@
       then emptyProvision
       else first.implementation.provide (contextFor entries);
     result =
-      exactAttrs
+      checkedProviderResult
       "provide result for '${first.binding.implementation}'"
-      ["outputs" "requests" "resourceFragments"]
+      first.implementation
+      ["conditionalRequirements" "outputs" "requests" "resourceFragments"]
       authored;
   in
     if first.interface.aggregation.rejectSlotCollisions && builtins.length slots != builtins.length uniqueSlots
@@ -279,10 +301,6 @@
   provisionGroups);
   fragmentsByResource = groupBy (entry: builtins.hashString "sha256" (builtins.toJSON entry.resource)) fragmentEntries;
 
-  requestedMethods = entry:
-    if builtins.hasAttr entry.request.requirement abilities.requirementTemplates
-    then (semanticRequirement abilities.requirementTemplates.${entry.request.requirement}).methods
-    else (generatedRequirements.${entry.request.requirement} or (fail "request '${entry.binding.request}' has no exact requirement")).requirement.methods;
   controlsKind = kind: entry:
     builtins.any (methodName: let
       method = entry.interface.methods.${methodName} or null;
@@ -291,7 +309,7 @@
       != null
       && method.targetResource == kind
       && method.semantics.requiredTargetAccess == "exclusive-write")
-    (requestedMethods entry);
+    entry.implementation.methods;
 
   mergeResource = entries: let
     first = builtins.head entries;
@@ -310,6 +328,7 @@
       (entry:
         entry.provider
         == first.resource.provider
+        && entry.implementation.compose != null
         && entry.binding.slot == first.key
         && entry.interface.aggregation.controllerGroup == first.aggregation.controllerGroup
         && controlsKind first.fragment.kind entry)
@@ -376,9 +395,10 @@
             allResources = plannedResources;
           });
     result =
-      exactAttrs
+      checkedProviderResult
       "compose result for '${controller.binding.implementation}'"
-      ["outputs" "realizations" "requests"]
+      controller.implementation
+      ["conditionalRequirements" "outputs" "realizations" "requests"]
       authored;
   in
     if builtins.attrNames result.realizations != builtins.attrNames resourceMap

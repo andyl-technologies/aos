@@ -42,6 +42,7 @@
       lifetime = "instance";
     };
   in {
+    conditionalRequirements = [];
     requests = {};
     resourceFragments = {};
     outputs = builtins.listToAttrs (builtins.map (entry: {

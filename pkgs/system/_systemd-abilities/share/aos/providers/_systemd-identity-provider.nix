@@ -7,6 +7,7 @@
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   interfaces = serviceManagement.interfaces;
   emptyProvision = {
+    conditionalRequirements = [];
     requests = {};
     outputs = {};
     resourceFragments = {};
@@ -72,7 +73,8 @@
                 ${specification.outputName} = entry.parameters.name;
                 identity-resource = entry.reference;
               };
-          }) entries);
+          })
+          entries);
         resourceFragments = builtins.listToAttrs (builtins.map (entry: {
             name = entry.binding.slot;
             value = {
@@ -80,20 +82,26 @@
               lifetime = "instance";
               value = entry.parameters;
             };
-          }) entries);
+          })
+          entries);
       };
     compose = {resources, ...}: {
+      conditionalRequirements = [];
       outputs = {};
-      requests = builtins.mapAttrs (key: resource: {
-        requirement = "identity-effects";
-        scope = ["identity-effects"];
-        slot = key;
-        parameters.desired = resource.value;
-      }) resources;
-      realizations = builtins.mapAttrs (_: _: {
-        schema = "aos.systemd.identity-realization/v1";
-        backend = "systemd-sysusers";
-      }) resources;
+      requests =
+        builtins.mapAttrs (key: resource: {
+          requirement = "identity-effects";
+          scope = ["identity-effects"];
+          slot = key;
+          parameters.desired = resource.value;
+        })
+        resources;
+      realizations =
+        builtins.mapAttrs (_: _: {
+          schema = "aos.systemd.identity-realization/v1";
+          backend = "systemd-sysusers";
+        })
+        resources;
     };
     transition = import ./_systemd-identity-transition.nix {
       inherit effectsInterface;
@@ -104,6 +112,6 @@
   };
 in
   builtins.listToAttrs (builtins.map (kind: {
-      name = kinds.${kind}.selected.alias;
-      value = providerFor kind;
-    }) (builtins.attrNames kinds))
+    name = kinds.${kind}.selected.alias;
+    value = providerFor kind;
+  }) (builtins.attrNames kinds))

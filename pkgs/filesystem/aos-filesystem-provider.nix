@@ -22,7 +22,7 @@ in
     cargoTestFlags = "-p aos-filesystem-provider";
     doCheck = true;
 
-    abilities = ./_aos-filesystem-provider/module.nix;
+    abilities = ./_aos-filesystem-provider;
 
     postInstall = ''
       mkdir -p "$out/libexec" "$out/share/aos/providers"
@@ -36,7 +36,7 @@ in
         ln -s .aos-filesystem-provider "$out/libexec/aos-$role"
       done
       install -m 444 \
-        ${./_aos-filesystem-provider/provider.nix} \
+        ${./_aos-filesystem-provider/share/aos/providers/filesystem.nix} \
         "$out/share/aos/providers/filesystem.nix"
     '';
 

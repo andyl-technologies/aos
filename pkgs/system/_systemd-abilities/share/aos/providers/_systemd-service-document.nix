@@ -3,6 +3,7 @@
   lib,
   serviceFacets,
   unitNameForReference,
+  prerequisiteUnitNameForReference ? unitNameForReference,
 }: let
   providerLib = import ./_systemd-service-provider-lib.nix {inherit lib;};
   semantic = import ./_systemd-unit-document.nix {inherit lib;};
@@ -21,7 +22,13 @@
     builtins.sort
     (left: right: builtins.toJSON left < builtins.toJSON right)
     (lib.unique identities);
-  dependencyIdentities = values: builtins.map unitNameForReference values;
+  # Cross-provider dependencies stay in the activation graph. The selected
+  # manager lowers only references backed by one of its own unit resources.
+  prerequisiteIdentities = values:
+    builtins.filter
+    (identity: identity != null)
+    (builtins.map prerequisiteUnitNameForReference values);
+  dependencyIdentities = prerequisiteIdentities;
   unitIdentityList = name: identities:
     repeated name (builtins.map (identity: semantic.systemdUnitName {inherit identity;}) identities);
   join = separator: documents:
@@ -88,9 +95,9 @@
   activationDirectives = value: let
     bindings = (value.activation or {bindings = [];}).bindings;
     unitsFor = relationship:
-      canonicalIdentities (builtins.map
-        (binding: unitNameForReference binding.resource)
-        (builtins.filter (binding: binding.relationship == relationship) bindings));
+      canonicalIdentities (prerequisiteIdentities (builtins.map
+        (binding: binding.resource)
+        (builtins.filter (binding: binding.relationship == relationship) bindings)));
     dependencies = unitsFor "service-depends-on-resource";
     memberships = unitsFor "service-member-of-resource";
   in
@@ -603,14 +610,15 @@
   in
     if terminal == null
     then []
-    else [
-      (semantic.directive "TTYPath" (quotedExecutionPath terminal.device))
-      (semantic.directive "TTYReset" (yesNo terminal.reset))
-      (semantic.directive "TTYVHangup" (yesNo terminal.hangup))
-      (semantic.directive "TTYVTDisallocate" (yesNo terminal.deallocate))
-      (semantic.directive "SendSIGHUP" (yesNo terminal.send_hangup_on_stop))
-    ]
-    ++ optional "UtmpIdentifier" (terminal.session_identifier or null);
+    else
+      [
+        (semantic.directive "TTYPath" (quotedExecutionPath terminal.device))
+        (semantic.directive "TTYReset" (yesNo terminal.reset))
+        (semantic.directive "TTYVHangup" (yesNo terminal.hangup))
+        (semantic.directive "TTYVTDisallocate" (yesNo terminal.deallocate))
+        (semantic.directive "SendSIGHUP" (yesNo terminal.send_hangup_on_stop))
+      ]
+      ++ optional "UtmpIdentifier" (terminal.session_identifier or null);
 
   serviceDirectives = value: let
     lifecycle = value.lifecycle;

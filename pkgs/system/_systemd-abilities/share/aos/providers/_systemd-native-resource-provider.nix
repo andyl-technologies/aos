@@ -9,6 +9,7 @@
   interfaces = serviceManagement.interfaces;
   providerLib = import ./_systemd-service-provider-lib.nix {inherit lib;};
   emptyProvision = {
+    conditionalRequirements = [];
     requests = {};
     outputs = {};
     resourceFragments = {};
@@ -57,9 +58,11 @@
   };
   triggerFor = resource: let
     matches = builtins.filter (candidate:
-      candidate.kind == "aos.service.instance"
+      candidate.kind
+      == "aos.service.instance"
       && builtins.any (binding:
-        binding.relationship == "resource-triggers-service"
+        binding.relationship
+        == "resource-triggers-service"
         && binding.resource.resource == resource.resource)
       ((candidate.value.activation or {bindings = [];}).bindings))
     (builtins.attrValues config.aos.abilities.resolvedResources);
@@ -88,17 +91,18 @@
           then {}
           else
             builtins.listToAttrs (builtins.map (entry: {
-              name = entry.requestName;
-              value.${specification.outputName} = {
-                interface = specification.selected.identity;
-                resource = {
-                  provider = context.instance.id;
-                  key = entry.binding.slot;
+                name = entry.requestName;
+                value.${specification.outputName} = {
+                  interface = specification.selected.identity;
+                  resource = {
+                    provider = context.instance.id;
+                    key = entry.binding.slot;
+                  };
+                  operations = ["observe"];
+                  lifetime = "instance";
                 };
-                operations = ["observe"];
-                lifetime = "instance";
-              };
-            }) entries);
+              })
+              entries);
         resourceFragments = builtins.listToAttrs (builtins.map (entry: {
             name = entry.binding.slot;
             value = {
@@ -106,7 +110,8 @@
               lifetime = "instance";
               value = entry.parameters;
             };
-          }) entries);
+          })
+          entries);
       };
     realizationFor = allResources: resource:
       {
@@ -133,13 +138,16 @@
       resources,
       ...
     }: {
+      conditionalRequirements = [];
       outputs = {};
-      requests = builtins.mapAttrs (key: resource: {
-        requirement = "native-effects";
-        scope = ["native-effects"];
-        slot = key;
-        parameters.desired = resource.value;
-      }) resources;
+      requests =
+        builtins.mapAttrs (key: resource: {
+          requirement = "native-effects";
+          scope = ["native-effects"];
+          slot = key;
+          parameters.desired = resource.value;
+        })
+        resources;
       realizations = builtins.mapAttrs (_: realizationFor allResources) resources;
     };
     transition = import ./_systemd-native-resource-transition.nix {
@@ -152,6 +160,6 @@
   };
 in
   builtins.listToAttrs (builtins.map (kind: {
-      name = kinds.${kind}.selected.alias;
-      value = providerFor kind;
-    }) (builtins.attrNames kinds))
+    name = kinds.${kind}.selected.alias;
+    value = providerFor kind;
+  }) (builtins.attrNames kinds))

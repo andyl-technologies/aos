@@ -8,11 +8,13 @@
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   interfaces = serviceManagement.interfaces;
   emptyProvision = {
+    conditionalRequirements = [];
     requests = {};
     outputs = {};
     resourceFragments = {};
   };
   emptyComposition = {
+    conditionalRequirements = [];
     requests = {};
     outputs = {};
     realizations = {};
@@ -31,12 +33,14 @@
   withEffects = alias: resources: realizations:
     emptyComposition
     // {
-      requests = builtins.mapAttrs (key: resource: {
-        requirement = "effects";
-        scope = ["effects"];
-        slot = resource.resource.key;
-        parameters = resource.value;
-      }) resources;
+      requests =
+        builtins.mapAttrs (key: resource: {
+          requirement = "effects";
+          scope = ["effects"];
+          slot = resource.resource.key;
+          parameters = resource.value;
+        })
+        resources;
       inherit realizations;
     };
   transitionFor = alias: action: resourceLifetime: context:
@@ -73,7 +77,8 @@
       };
     };
   bindingFor = bindings: requestName: let
-    matches = builtins.filter
+    matches =
+      builtins.filter
       (binding: binding.request == requestName)
       (builtins.attrValues bindings);
   in
@@ -171,16 +176,16 @@
         })
         requests;
       resourceFragments = builtins.listToAttrs (builtins.map (requestName: let
-          request = requests.${requestName};
-          binding = bindingFor bindings requestName;
-        in {
-          name = binding.slot;
-          value = {
-            kind = interfaces.storageView.identity.name;
-            lifetime = "instance";
-            value = request.parameters;
-          };
-        }) (builtins.attrNames requests));
+        request = requests.${requestName};
+        binding = bindingFor bindings requestName;
+      in {
+        name = binding.slot;
+        value = {
+          kind = interfaces.storageView.identity.name;
+          lifetime = "instance";
+          value = request.parameters;
+        };
+      }) (builtins.attrNames requests));
     };
   storageViewCompose = {resources, ...}:
     withEffects "storage-view" resources (builtins.mapAttrs (_: resource: {

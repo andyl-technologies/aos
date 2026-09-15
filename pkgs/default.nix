@@ -491,6 +491,10 @@
           # Module selection and artifact binding use the package's real
           # module output. The static ability view contains semantic data only.
           module = abilityModuleArtifact.module;
+          # Build-stage selection evaluates the exact source tree copied into
+          # the authenticated module output. Provider locators remain relative
+          # to this single package-authored tree.
+          abilityModuleSource = abilityModuleSource;
         };
     secondaryOutputAttrs = builtins.listToAttrs (
       builtins.map (outputName: {

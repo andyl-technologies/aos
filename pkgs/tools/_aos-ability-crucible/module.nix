@@ -165,7 +165,6 @@
 in {
   imports = [
     ./endpoint-interface.nix
-    ./endpoint-provider.nix
   ];
 
   options.aos.services.abilityCrucible = {

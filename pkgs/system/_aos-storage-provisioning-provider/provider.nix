@@ -8,6 +8,7 @@
   interface = lib.abilities.interfaces.blockStorage.interfaces.provisioning;
   networkConfiguration = lib.abilities.interfaces.networkConfiguration.interface;
   emptyResult = {
+    conditionalRequirements = [];
     requests = {};
     outputs = {};
   };

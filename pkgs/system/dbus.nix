@@ -231,11 +231,11 @@ in
             "$out/share/dbus-1/system.conf"
 
           mkdir -p "$out/share/aos/providers"
-          cp ${./_dbus/availability-provider.nix} \
+          cp ${./_dbus/share/aos/providers/dbus-availability.nix} \
             "$out/share/aos/providers/dbus-availability.nix"
-          cp ${./_dbus/registration-provider.nix} \
+          cp ${./_dbus/share/aos/providers/dbus-registration.nix} \
             "$out/share/aos/providers/dbus-registration.nix"
-          cp ${./_dbus/registration-transition.nix} \
+          cp ${./_dbus/share/aos/providers/registration-transition.nix} \
             "$out/share/aos/providers/registration-transition.nix"
         '';
       }

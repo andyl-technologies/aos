@@ -19,6 +19,7 @@
     then builtins.head values
     else throw "the D-Bus registration controller declaration must own one realization schema";
   emptyResult = {
+    conditionalRequirements = [];
     requests = {};
     outputs = {};
     resourceFragments = {};
@@ -165,6 +166,7 @@
     resource = resources.system-bus or (throw "D-Bus system registration resource is absent");
     configurationChild = children.configuration or null;
   in {
+    conditionalRequirements = [];
     requests.configuration = {
       requirement = "configuration-materialization";
       scope = ["system-bus"];
