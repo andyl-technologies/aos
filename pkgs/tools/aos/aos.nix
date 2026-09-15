@@ -649,7 +649,15 @@ in
         mkdir -p "$packageRuntime/libexec"
         mv "$out/bin/aos-configuration-provider" "$packageRuntime/libexec/"
         mv "$out/bin/aos-configuration-observer" "$packageRuntime/libexec/"
-        mv "$out/bin/aos-image-rollout-boot" "$packageRuntime/libexec/"
+        mv \
+          "$out/bin/aos-image-rollout-boot" \
+          "$packageRuntime/libexec/.aos-image-rollout-boot-unwrapped"
+        cat > "$packageRuntime/libexec/aos-image-rollout-boot" <<ROLLOUT_BOOT
+      #!${bash}/bin/bash
+      export AOS_TPM2_CHECKQUOTE="${tpm2-tools}/bin/tpm2_checkquote"
+      exec "$packageRuntime/libexec/.aos-image-rollout-boot-unwrapped" "\$@"
+      ROLLOUT_BOOT
+        chmod +x "$packageRuntime/libexec/aos-image-rollout-boot"
         mv "$out/bin/aos-registry-snapshot-provider" "$packageRuntime/libexec/"
         mv "$out/bin/aos-image-rollout-observer" "$packageRuntime/libexec/"
         mv "$out/bin/aos-image-rollout-provider" "$packageRuntime/libexec/"

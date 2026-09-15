@@ -3,7 +3,7 @@
   lib,
   pkgs,
 }: let
-  evaluate = enabled:
+  evaluate = enabled: measuredBoot: pcrPublicKey:
     lib.evalModules {
       inherit lib;
       modules = [
@@ -24,7 +24,7 @@
             evalRoot = "/run/aos-eval";
             provisioningState = "/var/lib/aos-provisioning";
             imageVersion = "2026.09";
-            requireAttestationQuote = true;
+            inherit measuredBoot pcrPublicKey;
           };
         }
       ];
@@ -41,8 +41,11 @@
         }
       ];
     };
-  disabled = evaluate false;
-  enabled = evaluate true;
+  pcrPublicKey = "/nix/store/00000000000000000000000000000000-aos-pcr-pubkey/pcr.pem";
+  disabled = evaluate false true pcrPublicKey;
+  unmeasured = evaluate true false null;
+  missingMeasurementKey = builtins.tryEval (builtins.deepSeq (evaluate true true null).config.aos.abilities.requests true);
+  enabled = evaluate true true pcrPublicKey;
   requests = enabled.config.aos.abilities.requests;
   resultOf = request: output: {
     _type = "aos-request-output-reference";
@@ -54,8 +57,12 @@
   bootCommitLifecycle = requests."aos:image-boot-commit-lifecycle".parameters;
   bootCommitDependencies = requests."aos:image-boot-commit-dependencies".parameters;
   fallbackLifecycle = requests."aos:image-rollout-fallback-lifecycle".parameters;
+  measurementLifecycle = requests."aos:image-measurement-index-lifecycle".parameters;
+  measurementDependencies = requests."aos:image-measurement-index-dependencies".parameters;
 in
   assert !(disabled.config.aos.abilities.requests ? "aos:configuration-evaluation-lifecycle");
+  assert !(unmeasured.config.aos.abilities.requests ? "aos:image-measurement-index-lifecycle");
+  assert !missingMeasurementKey.success;
   assert lifecycle.service == "configuration-evaluation";
   assert registryLifecycle.service == "registry-synchronization";
   assert registryLifecycle.start
@@ -173,4 +180,30 @@ in
     }
   ];
   assert !fallbackLifecycle.enabled;
+  assert measurementLifecycle.start
+  == [
+    {
+      executable = {
+        artifact = lib.abilities.packageOutput {
+          package = "aos";
+          output = "packageRuntime";
+        };
+        entry_point = "libexec/aos-image-rollout-boot";
+        arguments = ["measurement-index" "--pcr-public-key" pcrPublicKey];
+      };
+      ignore_failure = false;
+    }
+  ];
+  assert measurementDependencies.after
+  == [
+    (resultOf "aos-boot-storage:aos-mount-esp-lifecycle" "service-resource")
+    (resultOf "aos:local-filesystems" "readiness-resource")
+    (resultOf "aos:runtime-entry-population" "lifecycle-resource")
+  ];
+  assert measurementDependencies.before
+  == [
+    (resultOf "aos:configuration-evaluation-lifecycle" "service-resource")
+    (resultOf "aos:multi-user" "readiness-resource")
+  ];
+  assert measurementDependencies.requires == measurementDependencies.after;
   assert !(enabled.config ? systemd); true
