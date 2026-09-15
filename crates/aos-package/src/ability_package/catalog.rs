@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use aos_ability_model::{InterfaceDocument, PackageDocument};
+use aos_ability_model::{InterfaceDocument, PackageDocument, VersionedDocument};
 use aos_ability_plan::RecursiveComposer;
 use aos_ability_validate::{ValidationContext, package_source_supported_features};
 
@@ -23,6 +23,68 @@ pub struct VerifiedAbilityPlanningCatalog {
 }
 
 impl VerifiedAbilityPlanningCatalog {
+    /// Loads an authenticated package and interface catalog from retained companions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a retained interface is absent, malformed, or
+    /// disagrees with the package declaration, or when package validation fails.
+    pub(crate) fn from_authenticated_documents(
+        documents: impl IntoIterator<Item = (PackageDocument, PathBuf)>,
+    ) -> Result<Self> {
+        let supported_features = package_source_supported_features()
+            .context("constructing supported package ability features")?;
+        let mut interfaces = BTreeMap::new();
+        let mut packages = Vec::new();
+
+        for (package, companion) in documents {
+            for interface in package.interfaces.values() {
+                let path = companion
+                    .join("interfaces")
+                    .join(format!("{}.json", interface.descriptor.hex()));
+                let bytes = read_bounded_regular_file(&path, "ability interface document")?;
+                let document = aos_ability_model::decode_canonical::<InterfaceDocument>(
+                    &bytes,
+                    aos_ability_model::ABILITY_LIMITS_V1,
+                    &supported_features,
+                )
+                .with_context(|| format!("decoding ability interface {}", path.display()))?;
+                let key = document
+                    .interface_key()
+                    .context("computing retained ability interface descriptor")?;
+                if &key != interface {
+                    bail!(
+                        "ability interface document {} does not match package declaration",
+                        path.display()
+                    );
+                }
+                if let Some(existing) = interfaces.insert(key.clone(), document.clone())
+                    && existing != document
+                {
+                    bail!("conflicting authenticated ability interface {key:?}");
+                }
+            }
+            packages.push((package.content_digest()?, package));
+        }
+
+        let context = ValidationContext::new(supported_features, interfaces.into_values())
+            .context("validating authenticated registry ability interfaces")?;
+        for (_, package) in &packages {
+            context
+                .validate_package_contract(package.clone())
+                .context("validating authenticated registry ability package semantics")?;
+        }
+        packages.sort_by_key(|(digest, _)| *digest);
+
+        Ok(Self {
+            context,
+            packages: packages
+                .into_iter()
+                .map(|(_, package)| package)
+                .collect(),
+        })
+    }
+
     /// Returns a composer bound to the authenticated interface catalog.
     #[must_use]
     pub fn composer(&self) -> RecursiveComposer<'_> {
@@ -55,54 +117,14 @@ impl VerifiedAbilityPackageSet {
     /// non-canonical, unsupported, exceeds the version-1 bound, disagrees with
     /// its export key, or conflicts with another authenticated companion.
     pub fn planning_catalog(&self) -> Result<VerifiedAbilityPlanningCatalog> {
-        let supported_features = package_source_supported_features()
-            .context("constructing supported package ability features")?;
-        let mut interfaces = BTreeMap::new();
-        for sealed in &self.packages {
-            let companion = Path::new(sealed.retention.companion_store_path());
-            for interface in sealed.package.interfaces.values() {
-                let path = companion
-                    .join("interfaces")
-                    .join(format!("{}.json", interface.descriptor.hex()));
-                let bytes = read_bounded_regular_file(&path, "ability interface document")?;
-                let document = aos_ability_model::decode_canonical::<InterfaceDocument>(
-                    &bytes,
-                    aos_ability_model::ABILITY_LIMITS_V1,
-                    &supported_features,
+        VerifiedAbilityPlanningCatalog::from_authenticated_documents(self.packages.iter().map(
+            |sealed| {
+                (
+                    sealed.package().clone(),
+                    Path::new(sealed.retention.companion_store_path()).to_path_buf(),
                 )
-                .with_context(|| format!("decoding ability interface {}", path.display()))?;
-                let key = document
-                    .interface_key()
-                    .context("computing retained ability interface descriptor")?;
-                if &key != interface {
-                    bail!(
-                        "ability interface document {} does not match package declaration",
-                        path.display()
-                    );
-                }
-                if let Some(existing) = interfaces.insert(key.clone(), document.clone())
-                    && existing != document
-                {
-                    bail!("conflicting authenticated ability interface {key:?}");
-                }
-            }
-        }
-
-        let context = ValidationContext::new(supported_features, interfaces.into_values())
-            .context("validating authenticated registry ability interfaces")?;
-        for sealed in &self.packages {
-            context
-                .validate_package_contract(sealed.package.clone())
-                .context("validating authenticated registry ability package semantics")?;
-        }
-        let mut packages = self
-            .packages
-            .iter()
-            .map(|sealed| (sealed.package_digest(), sealed.package().clone()))
-            .collect::<Vec<_>>();
-        packages.sort_by_key(|(digest, _)| *digest);
-        let packages = packages.into_iter().map(|(_, package)| package).collect();
-        Ok(VerifiedAbilityPlanningCatalog { context, packages })
+            },
+        ))
     }
 }
 

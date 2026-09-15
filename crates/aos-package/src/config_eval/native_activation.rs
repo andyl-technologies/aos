@@ -688,8 +688,12 @@ fn execute_native_transition(
         CURRENT_AUTHORITY_MAX_AGE_MILLIS,
         transaction_linked,
     );
-    let mut boundary_observer = AbilityExecutionBoundaryObserver::load()
-        .context("opening protected native execution observation channel")?;
+    let fixed_point = desired_inputs
+        .fixed_point()
+        .context("native activation has no retained final module fixed point")?;
+    let mut boundary_observer =
+        AbilityExecutionBoundaryObserver::load(fixed_point.execution_observer.as_ref())
+            .context("opening protected native execution observation channel")?;
     let terminal = dispatcher.run_to_terminal(
         &mut session,
         operator_authority,
@@ -768,7 +772,7 @@ fn load_successful_generation_manifest(
     load_generation_manifest(params, generation)
 }
 
-fn production_evaluator() -> Result<RestrictedAbilityEvaluator> {
+pub(super) fn production_evaluator() -> Result<RestrictedAbilityEvaluator> {
     let nix_instantiate = std::env::var("AOS_NIX_INSTANTIATE")
         .context("reading AOS_NIX_INSTANTIATE for native activation")?;
     let prlimit =

@@ -22,6 +22,8 @@ pub struct ResolvedPackageModule {
     pub platform: String,
     /// Authenticated runtime payload output.
     pub runtime_output: String,
+    /// Authenticated companion output containing the package and interface documents.
+    pub ability_store_path: String,
     /// Canonical package document containing the sole module locator.
     pub document: aos_ability_model::PackageDocument,
 }

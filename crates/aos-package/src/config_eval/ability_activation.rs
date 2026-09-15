@@ -196,6 +196,7 @@ pub struct VerifiedAbilityActivationInputs {
     policy_set: AuthenticatedPolicySetDocument,
     policy_sidecar: PinnedAbilitySidecar,
     packages: Vec<PinnedAbilityPackageCoordinate>,
+    fixed_point: Option<super::ability_rounds::AbilityFixedPointProjection>,
 }
 
 /// Owns one checked native effect graph and its reloadable provenance.
@@ -297,6 +298,23 @@ impl SpecializedAbilityActivation {
 }
 
 impl VerifiedAbilityActivationInputs {
+    /// Loads the authenticated planning sidecars before manifest package enrichment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when operator authority rejects the policy sidecar or
+    /// either bounded canonical planning document is invalid.
+    pub(crate) fn load_for_planning(
+        activation: &AbilityActivationInput,
+        operator_authority: &OperatorPolicyAuthorityStore,
+    ) -> Result<Self> {
+        activation.validate_descriptor()?;
+        operator_authority
+            .authorize(&activation.authenticated_policy_set)
+            .context("authenticating native policy set through operator authority")?;
+        Self::load_activation(activation)
+    }
+
     /// Loads and authenticates the structured activation inputs from a manifest.
     ///
     /// The manifest must carry the current activation descriptor. Both
@@ -343,6 +361,12 @@ impl VerifiedAbilityActivationInputs {
         &self.policy_sidecar
     }
 
+    /// Returns the final module fixed point retained by a generation manifest.
+    #[must_use]
+    pub const fn fixed_point(&self) -> Option<&super::ability_rounds::AbilityFixedPointProjection> {
+        self.fixed_point.as_ref()
+    }
+
     fn load_activation(activation: &AbilityActivationInput) -> Result<Self> {
         let desired_bytes = load_sidecar(&activation.desired_state, "desired state")?;
         let desired: ActivationDesiredInputDocument =
@@ -363,6 +387,7 @@ impl VerifiedAbilityActivationInputs {
             policy_set,
             policy_sidecar: activation.authenticated_policy_set.clone(),
             packages: activation.packages.clone(),
+            fixed_point: activation.fixed_point.clone(),
         })
     }
 }
@@ -689,7 +714,7 @@ fn packages_for_inputs(
     VerifiedAbilityPackageSet::from_verified(selected)
 }
 
-fn specialize_planning(
+pub(crate) fn specialize_planning(
     inputs: &VerifiedAbilityActivationInputs,
     catalog: &crate::ability_package::VerifiedAbilityPlanningCatalog,
     evaluator: &mut RestrictedAbilityEvaluator,
@@ -703,7 +728,7 @@ fn specialize_planning(
     )?;
     let snapshot = PlanningSnapshot::from_outcome(&outcome)?;
     let expected_digest = snapshot.digest()?;
-    snapshot
+    let verified = snapshot
         .verify_structure(
             &catalog.composer(),
             PlanningReplayInputs {
@@ -714,7 +739,14 @@ fn specialize_planning(
                 packages: catalog.packages().to_vec(),
             },
         )
-        .map_err(anyhow::Error::new)
+        .map_err(anyhow::Error::new)?;
+    if let Some(fixed_point) = inputs.fixed_point.as_ref() {
+        fixed_point
+            .validate_replayed_planning(&verified)
+            .map_err(anyhow::Error::new)
+            .context("authenticating retained final fixed point")?;
+    }
+    Ok(verified)
 }
 
 fn authenticate_transition_authority(
