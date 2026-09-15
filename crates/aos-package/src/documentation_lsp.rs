@@ -728,8 +728,6 @@ mod tests {
             identity: DocumentationIdentity {
                 semantic_schema_sha256: String::new(),
                 runtime_nar_hash: format!("sha256:{}", "a".repeat(64)),
-                config_module_nar_hash: None,
-                expose_artifact_nar_hash: None,
                 source_nar_hash: format!("sha256:{}", "b".repeat(64)),
             },
         };

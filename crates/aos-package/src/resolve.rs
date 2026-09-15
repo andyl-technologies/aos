@@ -23,7 +23,7 @@ use std::collections::HashSet;
 use anyhow::{Context, Result, bail};
 
 use super::registry::{RegistrySet, store_path_hash};
-use super::types::{ConfigModuleMeta, ModuleAbiCompat, PackageMeta};
+use super::types::PackageMeta;
 use aos_core::error::AosError;
 
 // ---------------------------------------------------------------------------
@@ -335,69 +335,6 @@ pub fn collect_unique_metas(closures: &[ResolvedClosure]) -> Vec<&PackageMeta> {
     }
 
     result
-}
-
-// ---------------------------------------------------------------------------
-// Module-ABI pre-evaluation gate.
-// ---------------------------------------------------------------------------
-
-/// One config module presented to the [`module_abi`] resolver gate.
-///
-/// This carries the minimum the pre-evaluation gate needs — the package
-/// identity and its declared [`ModuleAbiCompat`] band. The configuration
-/// fixpoint constructs these inputs before evaluating any selected module.
-///
-/// [`module_abi`]: enforce_module_abi_compat
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GatedConfigModule<'a> {
-    /// Provider package name.
-    pub package: &'a str,
-    /// Provider package version.
-    pub version: &'a str,
-    /// The module's base-lib ABI compatibility band.
-    pub module_abi_compat: ModuleAbiCompat,
-}
-
-impl<'a> GatedConfigModule<'a> {
-    /// Build a gate input from a package name/version and its [`ConfigModuleMeta`].
-    pub fn from_meta(package: &'a str, version: &'a str, module: &ConfigModuleMeta) -> Self {
-        Self {
-            package,
-            version,
-            module_abi_compat: module.module_abi_compat,
-        }
-    }
-}
-
-/// Fail-closed `module_abi` compatibility gate, run **before** any eval.
-///
-/// For every configuration module `M` in the
-/// resolved set, `M.module_abi_compat.min <= K <= M.module_abi_compat.max` must
-/// hold, where `K` is the running image's `module_abi`. The first module whose
-/// band excludes `K` aborts resolution before a manifest is produced, so an
-/// ABI-incompatible module never reaches `entry.nix` (where a stale interface
-/// would throw a misleading missing-option error the fixpoint would misread as
-/// "fetch a provider"). This mirrors the fail-closed `enforce_totality` trust
-/// gate: a terminal error here is a no-op on the live system, leaving the old
-/// config generation live.
-///
-/// # Errors
-///
-/// Returns an error naming the first module whose compatibility band excludes
-/// `image_abi`.
-pub fn enforce_module_abi_compat(modules: &[GatedConfigModule<'_>], image_abi: u32) -> Result<()> {
-    for module in modules {
-        if !module.module_abi_compat.admits(image_abi) {
-            bail!(
-                "config module '{}@{}' requires module_abi in [{},{}], running image is {image_abi}",
-                module.package,
-                module.version,
-                module.module_abi_compat.min,
-                module.module_abi_compat.max,
-            );
-        }
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -888,81 +825,5 @@ requires = ["cycle-a"]
         let names: Vec<&str> = resolved.closure.iter().map(|m| m.name.as_str()).collect();
         assert!(names.contains(&"curl"));
         assert!(names.contains(&"zlib"));
-    }
-
-    // ----------------------------------------------------------------------
-    // Module-ABI gate.
-    // ----------------------------------------------------------------------
-
-    fn gated(package: &'static str, min: u32, max: u32) -> GatedConfigModule<'static> {
-        GatedConfigModule {
-            package,
-            version: "1.0.0",
-            module_abi_compat: ModuleAbiCompat { min, max },
-        }
-    }
-
-    // 14. module_abi gate: table-driven admit/refuse decisions.
-    #[test]
-    fn module_abi_gate_admits_and_refuses() {
-        struct Case {
-            name: &'static str,
-            modules: Vec<GatedConfigModule<'static>>,
-            image_abi: u32,
-            ok: bool,
-        }
-        let cases = [
-            Case {
-                name: "in-band",
-                modules: vec![gated("a", 1, 2)],
-                image_abi: 1,
-                ok: true,
-            },
-            Case {
-                name: "at-max",
-                modules: vec![gated("a", 1, 2)],
-                image_abi: 2,
-                ok: true,
-            },
-            Case {
-                name: "below-min",
-                modules: vec![gated("a", 2, 3)],
-                image_abi: 1,
-                ok: false,
-            },
-            Case {
-                name: "above-max",
-                modules: vec![gated("a", 1, 2)],
-                image_abi: 3,
-                ok: false,
-            },
-            Case {
-                name: "empty-set",
-                modules: vec![],
-                image_abi: 9,
-                ok: true,
-            },
-            Case {
-                name: "one-incompatible-of-many",
-                modules: vec![gated("a", 1, 3), gated("b", 2, 2)],
-                image_abi: 1,
-                ok: false,
-            },
-        ];
-        for case in cases {
-            let result = enforce_module_abi_compat(&case.modules, case.image_abi);
-            assert_eq!(result.is_ok(), case.ok, "case {}", case.name);
-        }
-    }
-
-    // 15. The refusal message names the offending module and band.
-    #[test]
-    fn module_abi_gate_message_is_actionable() {
-        let err =
-            enforce_module_abi_compat(&[gated("firewall", 2, 4)], 1).expect_err("must refuse");
-        let msg = err.to_string();
-        assert!(msg.contains("firewall@1.0.0"), "{msg}");
-        assert!(msg.contains("[2,4]"), "{msg}");
-        assert!(msg.contains("running image is 1"), "{msg}");
     }
 }

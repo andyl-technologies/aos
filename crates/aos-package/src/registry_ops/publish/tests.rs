@@ -6,7 +6,7 @@ use super::{
 };
 use crate::config::ApmConfig;
 use crate::package_contract::{
-    collect_distinct_artifacts, decode_package_manifest, read_package_manifest,
+    collect_distinct_artifacts, decode_package_manifest, read_package_manifest, retained_artifacts,
 };
 use crate::registry::parse::ImageVerificationState;
 use crate::registry::release::RegistryReleaseEntry;
@@ -57,7 +57,7 @@ async fn package_contract_publication_requires_the_committed_roster_binding() {
 }
 
 #[tokio::test]
-async fn ability_publication_accepts_a_transitive_self_referencing_closure() {
+async fn package_contract_publication_accepts_a_transitive_self_referencing_closure() {
     let Ok(companion_path) = std::env::var("AOS_TEST_ABILITY_PACKAGE_SMOKE") else {
         return;
     };
@@ -87,8 +87,6 @@ async fn ability_publication_accepts_a_transitive_self_referencing_closure() {
         None,
         &[],
         Some(&source),
-        None,
-        None,
         None,
         None,
         None,
@@ -131,8 +129,8 @@ async fn ability_publication_accepts_a_transitive_self_referencing_closure() {
 
     let published = fs::read_to_string(package_path).unwrap();
     let parsed = crate::registry::parse::parse_package_file(&published).unwrap();
-    let ability = parsed.versions[0].platforms["x86_64-linux"]
-        .ability
+    let contract = parsed.versions[0].platforms["x86_64-linux"]
+        .contract
         .as_ref()
         .unwrap();
     assert_eq!(
@@ -140,7 +138,7 @@ async fn ability_publication_accepts_a_transitive_self_referencing_closure() {
             [crate::types::PACKAGE_CONTRACT_OUTPUT],
         companion_path
     );
-    let manifest = read_package_manifest(&ability.store_path).unwrap();
+    let manifest = read_package_manifest(&contract.document.store_path).unwrap();
     let package = decode_package_manifest(&manifest).unwrap();
     assert!(package.qualification.package_probe.is_some());
     let mut fixture_artifacts = collect_distinct_artifacts(&package)
@@ -165,14 +163,10 @@ async fn ability_publication_accepts_a_transitive_self_referencing_closure() {
             .trim(),
         dependency_path
     );
-    let published_source = ability
-        .artifacts
-        .iter()
+    let published_source = retained_artifacts(contract)
         .find(|published| published.store_path == package.package.source.store_path)
         .unwrap();
-    let published_artifact = ability
-        .artifacts
-        .iter()
+    let published_artifact = retained_artifacts(contract)
         .find(|published| published.store_path == artifact.store_path)
         .unwrap();
     let dependency = published_artifact

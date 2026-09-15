@@ -654,7 +654,7 @@ mod subverb_tests {
             store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example".into(),
             nar_hash: format!("sha256:{}", "0".repeat(52)),
             nar_size: 42,
-            config_dependency_outputs: BTreeMap::new(),
+            contract: None,
             closure: vec![RuntimeClosurePin {
                 store_path_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                 store_path: Some("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example".into()),
@@ -663,11 +663,6 @@ mod subverb_tests {
                     nar_size: 42,
                 }],
             }],
-            expose: None,
-            expose_artifact: None,
-            config_projection: None,
-            ability: None,
-            legacy_config: None,
         }
     }
 

@@ -5,7 +5,7 @@ use crate::registry_ops::mac::PublishExposeManifest;
 use crate::registry_ops::provenance::publish_provenance_ref;
 use crate::registry_ops::store_paths::StorePathInfo;
 use crate::registry_ops::uki::sha256_hex;
-use crate::types::{AttestationMeta, ConfigModuleMeta, validate_attestation_meta};
+use crate::types::{AttestationMeta, validate_attestation_meta};
 use anyhow::{Context, Result};
 
 pub(in crate::registry_ops) fn publish_attestation_meta(
@@ -60,33 +60,6 @@ pub(in crate::registry_ops) fn publish_attestation_meta(
     Ok(Some(meta))
 }
 
-pub(in crate::registry_ops) fn publish_config_attestation_meta(
-    name: &str,
-    version: &str,
-    platform: &str,
-    info: &StorePathInfo,
-    module: &ConfigModuleMeta,
-    expose_manifest_digest: Option<&str>,
-) -> Result<AttestationMeta> {
-    let root_digest = package_nar_root_digest(&info.nar_hash);
-    let binding_digest = config_publish_binding_digest(module, expose_manifest_digest)?;
-    let measurement = crate::package_attestation::package_measurement_digest(
-        name,
-        version,
-        &root_digest,
-        &binding_digest,
-    );
-    let meta = AttestationMeta {
-        root_digest: Some(root_digest),
-        root_hash: None,
-        root_hash_sig: None,
-        provenance: Some(publish_provenance_ref(name, platform, &measurement)?),
-        measurement: Some(measurement),
-    };
-    validate_attestation_meta(&meta)?;
-    Ok(meta)
-}
-
 pub(in crate::registry_ops) fn publish_documentation_attestation_meta(
     name: &str,
     version: &str,
@@ -110,13 +83,6 @@ pub(in crate::registry_ops) fn publish_documentation_attestation_meta(
     };
     validate_attestation_meta(&meta)?;
     Ok(meta)
-}
-
-pub(in crate::registry_ops) fn config_publish_binding_digest(
-    module: &ConfigModuleMeta,
-    expose_manifest_digest: Option<&str>,
-) -> Result<String> {
-    crate::package_attestation::config_module_binding_digest(module, expose_manifest_digest)
 }
 
 pub(in crate::registry_ops) fn package_nar_root_digest(nar_hash: &str) -> String {

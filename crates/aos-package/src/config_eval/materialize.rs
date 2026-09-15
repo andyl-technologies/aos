@@ -2430,7 +2430,7 @@ mod tests {
                 store_path: store_path.to_string(),
                 nar_hash: String::new(),
                 nar_size: 0,
-                config_dependency_outputs: BTreeMap::new(),
+                contract: None,
                 closure: vec![crate::config_eval::runtime::RuntimeClosurePin {
                     store_path_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
                     store_path: Some(store_path.to_string()),
@@ -2439,11 +2439,6 @@ mod tests {
                         nar_size: 1,
                     }],
                 }],
-                expose: None,
-                expose_artifact: None,
-                config_projection: None,
-                ability: None,
-                legacy_config: None,
             },
         );
 

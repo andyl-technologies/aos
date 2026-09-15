@@ -24,8 +24,8 @@ use crate::registry_ops::store_paths::{RELEASE_POLICY_RELATIVE_PATH, StorePathIn
 use crate::registry_ops::uki::SbFacts;
 use crate::testutil;
 use crate::types::{
-    ApmSettings, ConfigModuleMeta, ConfigOutputMeta, ExposeMeta, ModuleAbiCompat, OwnedRoot,
-    PermissionsMeta, ProfileScope, RegistryConfig, RegistryUploadAuthConfig, SigningKeySource,
+    ApmSettings, ExposeMeta, PermissionsMeta, ProfileScope, RegistryConfig,
+    RegistryUploadAuthConfig, SigningKeySource,
 };
 use anyhow::{Context, Result};
 use aos_cache::AuthOptions;
@@ -38,7 +38,6 @@ use aos_oci_types::{
     NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest,
 };
 use serde_json::Value;
-use std::collections::BTreeMap;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Seek as _, SeekFrom};
@@ -225,46 +224,6 @@ pub(in crate::registry_ops) fn rewrite_test_image_parent(
     info["architecture"] = serde_json::json!(platform.split('-').next().unwrap_or_default());
     fs::write(path, serde_json::to_vec(&info).unwrap()).unwrap();
 }
-
-pub(in crate::registry_ops) fn config_module_fixture() -> ConfigModuleMeta {
-    ConfigModuleMeta {
-        config_output: ConfigOutputMeta {
-            store_path: "/nix/store/0000000000000000000000000000000a-firewall-config".to_string(),
-            nar_hash: "sha256:cc".to_string(),
-            nar_size: 2048,
-            references: vec![],
-        },
-        evaluation_base_lib: None,
-        dependency_outputs: BTreeMap::new(),
-        module_abi_compat: ModuleAbiCompat { min: 1, max: 2 },
-        declares: vec!["firewall.allowedTCPPorts".to_string()],
-        declaration_schema: vec![],
-        requires: vec![],
-        owns_roots: vec![OwnedRoot {
-            root: "firewall".to_string(),
-            interface_abi: 1,
-            contributable: vec!["allowedTCPPorts".to_string()],
-        }],
-        contributes: vec![],
-        artifacts: Default::default(),
-        provides_capabilities: vec!["system.capabilities.dns-resolver".to_string()],
-    }
-}
-
-pub(in crate::registry_ops) fn config_module_fixture_with_base() -> ConfigModuleMeta {
-    let mut module = config_module_fixture();
-    module.config_output.nar_hash =
-        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
-    module.evaluation_base_lib = Some(ConfigOutputMeta {
-        store_path: "/nix/store/0000000000000000000000000000000c-base-lib".to_string(),
-        nar_hash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-            .to_string(),
-        nar_size: 1,
-        references: vec![],
-    });
-    module
-}
-
 pub(in crate::registry_ops) fn test_release_options(tmp: &TempDir) -> ReleaseTreeOptions {
     ReleaseTreeOptions {
         version: semver::Version::parse("1.0.0").unwrap(),

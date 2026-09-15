@@ -292,7 +292,7 @@ fn verify_target_package_contracts(
                 continue;
             }
             bail!(
-                "rollback target {}@{} requires unavailable registry '{}' for ability verification",
+                "rollback target {}@{} requires unavailable registry '{}' for package-contract verification",
                 installed.name,
                 installed.version,
                 installed.registry
@@ -310,7 +310,7 @@ fn verify_target_package_contracts(
                 installed.registry
             ));
         };
-        let requires_verification = require_rollback_ability_metadata(
+        let requires_verification = require_rollback_contract(
             &installed.name,
             &installed.version,
             &installed.registry,
@@ -325,7 +325,7 @@ fn verify_target_package_contracts(
             || store_path.to_str() != Some(package.store_path.as_str())
         {
             bail!(
-                "rollback target {}@{} ability metadata differs from registry '{}'",
+                "rollback target {}@{} package contract differs from registry '{}'",
                 installed.name,
                 installed.version,
                 installed.registry
@@ -338,8 +338,8 @@ fn verify_target_package_contracts(
     Ok(())
 }
 
-/// Requires an exact retained ability seal before a rollback can reactivate it.
-fn require_rollback_ability_metadata(
+/// Requires an exact retained package contract before a rollback can reactivate it.
+fn require_rollback_contract(
     name: &str,
     version: &str,
     registry: &str,
@@ -350,10 +350,10 @@ fn require_rollback_ability_metadata(
         (None, None) => Ok(false),
         (Some(snapshot), Some(current)) if snapshot == current => Ok(true),
         (None, Some(_)) => bail!(
-            "rollback target {name}@{version} does not retain ability metadata now required by registry '{registry}'"
+            "rollback target {name}@{version} does not retain package contract now required by registry '{registry}'"
         ),
         _ => bail!(
-            "rollback target {name}@{version} ability metadata differs from registry '{registry}'"
+            "rollback target {name}@{version} package contract differs from registry '{registry}'"
         ),
     }
 }
@@ -508,7 +508,7 @@ fn system_generation_hint(config: &ApmConfig) -> Option<usize> {
 /// # Errors
 ///
 /// Returns an error when the target requires cross-ABI re-eval but a retained
-/// input (`config_module_closure`, `host_nix_ref`, or `facts_hash`) is missing
+/// input (`package_module_closure`, `host_nix_ref`, or `facts_hash`) is missing
 /// from its record — a fail-closed signal that the generation cannot be safely
 /// recomputed.
 pub fn plan_config_gen_reactivation(
@@ -571,8 +571,8 @@ fn describe_root(registries: &RegistrySet, hash: &str, target: &std::path::Path)
 mod tests {
     use crate::profile::Profile;
     use crate::types::{
-        ApmMeta, ConfigGeneration, InstalledMeta, PackageContractArtifactMeta,
-        PackageContractDocumentMeta, PackageContractMeta, ProfileScope, ReactivationPlan,
+        ConfigGeneration, PackageContractArtifactMeta, PackageContractDocumentMeta,
+        PackageContractMeta, ProfileScope, ReactivationPlan,
     };
     use tempfile::TempDir;
 
@@ -580,7 +580,7 @@ mod tests {
         Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap()
     }
 
-    fn ability_meta(store_path: &str) -> PackageContractMeta {
+    fn contract_meta(store_path: &str) -> PackageContractMeta {
         let artifact = PackageContractArtifactMeta {
             content: format!("sha256:{}", "c".repeat(64)),
             store_path: "/nix/store/11111111111111111111111111111111-owner".to_string(),
@@ -605,61 +605,32 @@ mod tests {
         }
     }
 
-    fn installed_meta_with_ability(contract: PackageContractMeta) -> InstalledMeta {
-        InstalledMeta {
-            store_path: "/nix/store/11111111111111111111111111111111-owner".to_string(),
-            pushed_at: 1,
-            pushed_by: "apm".to_string(),
-            expires_at: None,
-            is_root: true,
-            last_accessed: 1,
-            access_count: 0,
-            apm: Some(ApmMeta {
-                name: "owner".to_string(),
-                version: "1.0.0".to_string(),
-                explicit: true,
-                registry: "test-reg".to_string(),
-                installed_at: "2026-09-11T00:00:00Z".to_string(),
-                held: false,
-                source_drv: String::new(),
-                source_nar_hash: String::new(),
-                expose: None,
-                expose_artifact: None,
-                config_module: None,
-                documentation: None,
-                contract: Some(contract),
-                permissions: Default::default(),
-                bpf_lsm: None,
-                attestation: Default::default(),
-            }),
-        }
-    }
     #[test]
-    fn legacy_snapshot_cannot_omit_new_registry_ability_metadata() {
-        let current = ability_meta("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-owner-abilities");
+    fn legacy_snapshot_cannot_omit_new_registry_contract_metadata() {
+        let current = contract_meta("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-owner-contract");
 
-        let error = super::require_rollback_ability_metadata(
+        let error = super::require_rollback_contract(
             "owner",
             "1.0.0",
             "test-reg",
             None,
             Some(&current),
         )
-        .expect_err("rollback must not infer an ability seal absent from its snapshot");
+        .expect_err("rollback must not infer an package contract absent from its snapshot");
 
         assert!(
             error
                 .to_string()
-                .contains("does not retain ability metadata")
+                .contains("does not retain package contract")
         );
     }
 
     #[test]
-    fn rollback_rejects_changed_retained_ability_metadata() {
-        let snapshot = ability_meta("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-owner-abilities");
-        let current = ability_meta("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-owner-abilities");
+    fn rollback_rejects_changed_retained_contract_metadata() {
+        let snapshot = contract_meta("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-owner-contract");
+        let current = contract_meta("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-owner-contract");
 
-        let error = super::require_rollback_ability_metadata(
+        let error = super::require_rollback_contract(
             "owner",
             "1.0.0",
             "test-reg",
@@ -672,11 +643,11 @@ mod tests {
     }
 
     #[test]
-    fn rollback_accepts_exact_retained_ability_metadata() {
-        let snapshot = ability_meta("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-owner-abilities");
+    fn rollback_accepts_exact_retained_contract_metadata() {
+        let snapshot = contract_meta("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-owner-contract");
 
         assert!(
-            super::require_rollback_ability_metadata(
+            super::require_rollback_contract(
                 "owner",
                 "1.0.0",
                 "test-reg",
@@ -695,18 +666,18 @@ mod tests {
             image_gen_parent: 1,
             module_abi_pinned,
             manifest_hash: "sha256:beef".into(),
-            config_module_closure: if with_inputs {
+            package_module_closure: if with_inputs {
                 "/nix/store/src0-cfg".to_string()
             } else {
                 "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                     .to_string()
             },
-            config_module_paths: if with_inputs {
+            package_module_paths: if with_inputs {
                 vec!["/nix/store/src0-cfg".to_string()]
             } else {
                 vec![]
             },
-            config_module_packages: if with_inputs {
+            package_module_packages: if with_inputs {
                 vec!["server".to_string()]
             } else {
                 vec![]
@@ -724,7 +695,7 @@ mod tests {
     #[test]
     fn reactivation_cross_abi_with_mismatched_module_identity_is_rejected() {
         let mut target = config_gen(3, 1, true);
-        target.config_module_packages.clear();
+        target.package_module_packages.clear();
         let error = super::plan_config_gen_reactivation(&target, 1, 2).unwrap_err();
         assert!(
             error
@@ -741,8 +712,8 @@ mod tests {
         let ReactivationPlan::CrossAbiReEval(inputs) = plan else {
             panic!("cross-ABI host-only reactivation must re-evaluate");
         };
-        assert!(inputs.config_module_paths.is_empty());
-        assert!(inputs.config_module_packages.is_empty());
+        assert!(inputs.package_module_paths.is_empty());
+        assert!(inputs.package_module_packages.is_empty());
     }
 
     // The same ABI permits direct pointer-switch reactivation across images.
@@ -762,7 +733,7 @@ mod tests {
             ReactivationPlan::CrossAbiReEval(inputs) => {
                 assert_eq!(inputs.from_module_abi, 1);
                 assert_eq!(inputs.to_module_abi, 2);
-                assert_eq!(inputs.config_module_paths, ["/nix/store/src0-cfg"]);
+                assert_eq!(inputs.package_module_paths, ["/nix/store/src0-cfg"]);
                 assert_eq!(inputs.host_nix_ref, "/nix/store/hn0-host.nix");
                 assert_eq!(inputs.facts_hash, "sha256:facts");
                 assert_eq!(inputs.facts_ref, "/nix/store/fa0-facts.json");
@@ -775,7 +746,7 @@ mod tests {
     #[test]
     fn reactivation_cross_abi_mismatched_input_identity_errors() {
         let mut target = config_gen(3, 1, true);
-        target.config_module_paths.clear();
+        target.package_module_paths.clear();
         assert!(super::plan_config_gen_reactivation(&target, 1, 2).is_err());
     }
 

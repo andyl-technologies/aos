@@ -71,10 +71,6 @@ pub const FEATURE_BPF_LSM_POLICY_V1: &str = "bpf-lsm-policy-v1";
 /// Registry feature flag for RFC-0001 package attestation metadata.
 pub const FEATURE_ATTESTATION_V1: &str = "attestation-v1";
 
-/// Registry feature flag for the second `config` package output and
-/// its config-module metadata (`ConfigOutputMeta` + `ConfigModuleMeta`).
-pub const FEATURE_CONFIG_MODULE_V1: &str = "config-module-v1";
-
 /// Registry feature flag for canonical RFC-0016 package documentation.
 pub const FEATURE_PACKAGE_DOCUMENTATION_V1: &str = "package-documentation-v1";
 
@@ -110,7 +106,6 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_EBPF_NET_POLICY_V1,
     FEATURE_BPF_LSM_POLICY_V1,
     FEATURE_ATTESTATION_V1,
-    FEATURE_CONFIG_MODULE_V1,
     FEATURE_PACKAGE_DOCUMENTATION_V1,
     FEATURE_UKI_SLOTS_V1,
     FEATURE_RECOVERY_UKIS_V1,
@@ -562,9 +557,6 @@ pub struct PackageMeta {
     /// Store artifact carrying rendered RFC-0001 unit files and manifest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose_artifact: Option<ExposeArtifactMeta>,
-    /// Configuration-only module output and its declared interface.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config_module: Option<ConfigModuleMeta>,
     /// Canonical package documentation selected for this version/platform.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation: Option<DocumentationArtifactMeta>,
@@ -596,15 +588,9 @@ pub use aos_registry_surface::manifest::{
     RequiredCapabilityMeta, SyscallProfile,
 };
 
-// Configuration schema types are pure manifest data; they live in the
-// wasm-clean `aos-registry-surface` crate alongside the rest of the package
-// schema (so the hub indexer and the Worker share them) and are re-exported
-// here so `aos_package::types::{ConfigModuleMeta, …}` paths are unchanged.
 pub use aos_registry_surface::manifest::{
-    ConfigModuleArtifacts, ConfigModuleMeta, ConfigOptionDeclaration, ConfigOutputMeta,
-    DocumentationArtifactMeta, ModuleAbiCompat, OwnedRoot, PackageContractArtifactMeta,
-    PackageContractClosureMemberMeta, PackageContractDocumentMeta, PackageContractMeta,
-    PackageContractSelectorMeta, RootContribution,
+    DocumentationArtifactMeta, PackageContractArtifactMeta, PackageContractClosureMemberMeta,
+    PackageContractDocumentMeta, PackageContractMeta, PackageContractSelectorMeta,
 };
 
 /// Returns the top-level root segment of a dotted option path.
@@ -618,17 +604,15 @@ pub fn option_path_root(path: &str) -> &str {
 /// Returns whether package metadata must be backed by DSSE provenance.
 ///
 /// RFC-0001 exposure/permission/BPF-LSM metadata requires provenance via
-/// [`rfc0001_metadata_requires_provenance`]; in addition, a configuration
-/// `config_module` block is privileged metadata that independently forces
-/// provenance.
+/// [`rfc0001_metadata_requires_provenance`]. Package documents and their
+/// derived documentation projection require provenance as well.
 pub(crate) fn package_requires_provenance(meta: &PackageMeta) -> bool {
     rfc0001_metadata_requires_provenance(
         meta.expose.as_ref(),
         meta.expose_artifact.as_ref(),
         &meta.permissions,
         meta.bpf_lsm.as_ref(),
-    ) || meta.config_module.is_some()
-        || meta.documentation.is_some()
+    ) || meta.documentation.is_some()
         || meta.contract.is_some()
 }
 
@@ -729,11 +713,6 @@ pub fn validate_supported_package_meta_with(
         validate_attestation_meta(&meta.attestation)
             .with_context(|| format!("invalid attestation metadata for '{}'", meta.name))?;
     }
-    if let Some(config_module) = &meta.config_module {
-        require_feature(meta, FEATURE_CONFIG_MODULE_V1)?;
-        validate_config_module_meta(&meta.name, config_module)
-            .with_context(|| format!("invalid config-module metadata for '{}'", meta.name))?;
-    }
     if let Some(documentation) = &meta.documentation {
         require_feature(meta, FEATURE_PACKAGE_DOCUMENTATION_V1)?;
         validate_documentation_artifact_meta(documentation).with_context(|| {
@@ -760,9 +739,7 @@ pub fn validate_supported_package_meta_with(
             .with_context(|| format!("invalid sysroot image metadata for '{}'", meta.name))?;
     }
     if package_requires_provenance(meta) && meta.attestation.provenance.is_none() {
-        let reason = if meta.config_module.is_some() {
-            "uses config-module metadata"
-        } else if meta.documentation.is_some() {
+        let reason = if meta.documentation.is_some() {
             "uses package-documentation metadata"
         } else if meta.contract.is_some() {
             "uses ability metadata"
@@ -1049,56 +1026,6 @@ pub fn validate_expose_artifact_meta(artifact: &ExposeArtifactMeta) -> Result<()
     Ok(())
 }
 
-/// Validates metadata for the second `config` package output.
-///
-/// Mirrors [`validate_expose_artifact_meta`]: the store path must be absolute
-/// and Nix-style, and the NAR hash must be a recognized `sha256` digest. In
-/// addition, every reference entry must be a bare store-path hash, and no
-/// reference may name a `.drv` — the config output is pure data and must never
-/// pull a derivation into its closure (publish lint, architecture.md §Stage-1).
-///
-/// # Errors
-///
-/// Returns an error when the store path is not an absolute Nix-style store path,
-/// the NAR hash is missing or malformed, the NAR size is zero, or a reference is
-/// not a bare store-path hash or names a derivation.
-pub fn validate_config_output_meta(output: &ConfigOutputMeta) -> Result<()> {
-    validate_absolute_path(&output.store_path, "config output store path")?;
-    if store_path_hash_component(&output.store_path).is_none() {
-        bail!(
-            "config output store path is not a Nix-style store path: {}",
-            output.store_path
-        );
-    }
-    if !output.nar_hash.starts_with("sha256:") && !output.nar_hash.starts_with("sha256-") {
-        bail!("config output '{}' has invalid NAR hash", output.store_path);
-    }
-    if output.nar_size == 0 {
-        bail!(
-            "config output '{}' must record a non-zero NAR size",
-            output.store_path
-        );
-    }
-    for reference in &output.references {
-        if reference.contains(".drv") {
-            bail!(
-                "config output '{}' must not reference a derivation: {reference}",
-                output.store_path
-            );
-        }
-        if reference.contains('/')
-            || reference.len() < 2
-            || !reference.chars().all(|ch| ch.is_ascii_alphanumeric())
-        {
-            bail!(
-                "config output '{}' reference is not a bare store-path hash: {reference}",
-                output.store_path
-            );
-        }
-    }
-    Ok(())
-}
-
 /// Validates a canonical package-documentation artifact locator.
 ///
 /// Version 1 is a single regular-file NAR whose canonical JSON is at most 4
@@ -1176,235 +1103,6 @@ fn validate_sha256_hex(label: &str, digest: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validates configuration-module metadata.
-///
-/// Checks the embedded [`ConfigOutputMeta`], the inclusive ABI band
-/// (`min <= max`), the option paths, owned roots, and contributions for
-/// well-formedness, and the capability tokens declared by the module.
-///
-/// # Errors
-///
-/// Returns an error when the config output is malformed, the ABI band is
-/// inverted, an option path / root / capability token is empty or malformed, a
-/// declared path is not package-private, beneath an owned root, or contained by
-/// a contributed path, or a contribution targets a root the module also owns.
-pub fn validate_config_module_meta(package_name: &str, module: &ConfigModuleMeta) -> Result<()> {
-    validate_package_name(package_name).context("validating config-module package name")?;
-    validate_config_output_meta(&module.config_output)?;
-    if let Some(base_lib) = &module.evaluation_base_lib {
-        validate_config_output_meta(base_lib)
-            .context("validating config-module evaluation base lib")?;
-    }
-    for (name, path) in &module.dependency_outputs {
-        validate_package_name(name)
-            .with_context(|| format!("validating config dependency name {name:?}"))?;
-        validate_absolute_path(path, "config dependency output")
-            .with_context(|| format!("validating config dependency output for {name:?}"))?;
-        if store_path_hash_component(path).is_none() {
-            bail!("config dependency '{name}' output is not a Nix-style store path: {path}");
-        }
-    }
-
-    if module.module_abi_compat.min > module.module_abi_compat.max {
-        bail!(
-            "config module module_abi_compat range is inverted: min {} > max {}",
-            module.module_abi_compat.min,
-            module.module_abi_compat.max
-        );
-    }
-
-    let mut declared = std::collections::BTreeSet::new();
-    for path in &module.declares {
-        validate_option_path(path)?;
-        if !declared.insert(path) {
-            bail!("config module declares option path '{path}' more than once");
-        }
-    }
-    if !module.declaration_schema.is_empty() {
-        let schema_paths = module
-            .declaration_schema
-            .iter()
-            .map(|declaration| declaration.path.as_str())
-            .collect::<Vec<_>>();
-        let declared_paths = module
-            .declares
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        if schema_paths != declared_paths {
-            bail!("config module declaration_schema paths must exactly match sorted declares");
-        }
-        for declaration in &module.declaration_schema {
-            if declaration.type_signature.trim().is_empty() {
-                bail!(
-                    "config module declaration '{}' has an empty type signature",
-                    declaration.path
-                );
-            }
-        }
-    }
-
-    let mut required = std::collections::BTreeSet::new();
-    for path in &module.requires {
-        validate_option_path(path)?;
-        if !required.insert(path) {
-            bail!("config module requires option path '{path}' more than once");
-        }
-    }
-    if module.requires.windows(2).any(|pair| pair[0] >= pair[1]) {
-        bail!("config module requires paths must be sorted and deduplicated");
-    }
-
-    let mut owned = std::collections::BTreeSet::new();
-    for owned_root in &module.owns_roots {
-        validate_option_root("owned root", &owned_root.root)?;
-        if !owned.insert(owned_root.root.as_str()) {
-            bail!(
-                "config module owns root '{}' more than once",
-                owned_root.root
-            );
-        }
-        let mut contributable = std::collections::BTreeSet::new();
-        for path in &owned_root.contributable {
-            validate_option_surface(path)?;
-            if !contributable.insert(path) {
-                bail!(
-                    "owned root '{}' lists contributable sub-path '{path}' more than once",
-                    owned_root.root
-                );
-            }
-        }
-    }
-
-    let mut contributed = std::collections::BTreeMap::new();
-    for contribution in &module.contributes {
-        validate_option_root("contribution root", &contribution.root)?;
-        if owned.contains(contribution.root.as_str()) {
-            bail!(
-                "config module both owns and contributes to root '{}'",
-                contribution.root
-            );
-        }
-        if contributed.contains_key(contribution.root.as_str()) {
-            bail!(
-                "config module contributes to root '{}' more than once",
-                contribution.root
-            );
-        }
-        if contribution.paths.is_empty() {
-            bail!(
-                "config module contribution to root '{}' lists no paths",
-                contribution.root
-            );
-        }
-        let mut contribution_paths = std::collections::BTreeSet::new();
-        for path in &contribution.paths {
-            validate_option_subpath(path)?;
-            if !contribution_paths.insert(path.as_str()) {
-                bail!(
-                    "config module contribution to root '{}' lists path '{path}' more than once",
-                    contribution.root
-                );
-            }
-        }
-        contributed.insert(contribution.root.as_str(), contribution_paths);
-    }
-
-    for path in declared {
-        let path = path.as_str();
-        let root = path.split_once('.').map_or(path, |(root, _)| root);
-        let contribution_authorizes = contributed.get(root).is_some_and(|paths| {
-            path.strip_prefix(root)
-                .and_then(|suffix| suffix.strip_prefix('.'))
-                .is_some_and(|relative| {
-                    paths.iter().any(|allowed| {
-                        relative == *allowed
-                            || relative
-                                .strip_prefix(*allowed)
-                                .is_some_and(|suffix| suffix.starts_with('.'))
-                    })
-                })
-        });
-        if root != package_name && !owned.contains(root) && !contribution_authorizes {
-            bail!(
-                "config module declares option path '{path}' outside its owned roots or contributed paths"
-            );
-        }
-    }
-
-    validate_config_artifact_names("etc", &module.artifacts.etc, validate_relative_etc_path)?;
-    validate_config_artifact_names("unit", &module.artifacts.units, validate_systemd_unit_name)?;
-    validate_config_artifact_names("user", &module.artifacts.users, validate_account_name)?;
-    validate_config_artifact_names("group", &module.artifacts.groups, validate_account_name)?;
-
-    let mut capabilities = std::collections::BTreeSet::new();
-    for token in &module.provides_capabilities {
-        validate_capability_token(token)?;
-        if !capabilities.insert(token) {
-            bail!("config module sets capability '{token}' more than once");
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_config_artifact_names(
-    kind: &str,
-    values: &[String],
-    validate: fn(&str) -> Result<()>,
-) -> Result<()> {
-    let mut seen = std::collections::BTreeSet::new();
-    for value in values {
-        validate(value)
-            .with_context(|| format!("validating config-module {kind} grant {value:?}"))?;
-        if !seen.insert(value.as_str()) {
-            bail!("config module grants {kind} artifact '{value}' more than once");
-        }
-    }
-    Ok(())
-}
-
-fn validate_relative_etc_path(path: &str) -> Result<()> {
-    if path.is_empty() || path.starts_with('/') {
-        bail!("/etc artifact path must be non-empty and relative");
-    }
-    if path.split('/').any(|segment| {
-        segment.is_empty()
-            || matches!(segment, "." | "..")
-            || !segment.chars().all(|ch| {
-                ch.is_ascii_alphanumeric() || matches!(ch, '_' | '@' | '+' | '.' | ',' | '=' | '-')
-            })
-    }) {
-        bail!("unsafe relative /etc artifact path '{path}'");
-    }
-    Ok(())
-}
-
-fn validate_systemd_unit_name(name: &str) -> Result<()> {
-    const SUFFIXES: &[&str] = &[
-        ".service",
-        ".socket",
-        ".target",
-        ".timer",
-        ".path",
-        ".slice",
-        ".mount",
-        ".automount",
-    ];
-    let stem = SUFFIXES
-        .iter()
-        .find_map(|suffix| name.strip_suffix(suffix))
-        .filter(|stem| !stem.is_empty())
-        .context("systemd artifact name has no supported unit suffix")?;
-    if !stem
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '@' | '+' | '.' | '-'))
-    {
-        bail!("invalid systemd unit artifact name '{name}'");
-    }
-    Ok(())
-}
-
 fn validate_account_name(name: &str) -> Result<()> {
     let mut chars = name.chars();
     if !chars
@@ -1415,72 +1113,6 @@ fn validate_account_name(name: &str) -> Result<()> {
         bail!("invalid account artifact name '{name}'");
     }
     Ok(())
-}
-
-/// Validate a dotted option path used as an inverted-index key.
-fn validate_option_path(path: &str) -> Result<()> {
-    if path.is_empty() {
-        bail!("option path must not be empty");
-    }
-    if path.starts_with('.') || path.ends_with('.') || path.contains("..") {
-        bail!("invalid option path '{path}': empty path segment");
-    }
-    if !path
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
-    {
-        bail!("invalid option path '{path}': use ASCII letters, digits, '.', '_', '-'");
-    }
-    Ok(())
-}
-
-/// Validate a single option-path root segment (no `.`).
-fn validate_option_root(kind: &str, root: &str) -> Result<()> {
-    if root.is_empty() || root.contains('.') {
-        bail!("invalid {kind} '{root}': must be a single option-path segment");
-    }
-    if !root
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
-    {
-        bail!("invalid {kind} '{root}': use ASCII letters, digits, '_', '-'");
-    }
-    Ok(())
-}
-
-/// Validate an option sub-path relative to a shared root.
-fn validate_option_subpath(path: &str) -> Result<()> {
-    validate_option_path(path)
-}
-
-/// Validate an owner-declared contribution surface.
-///
-/// A wildcard is permitted only as an entire dotted segment. The surface is
-/// interpreted as a subtree prefix after segment-aware wildcard matching.
-fn validate_option_surface(path: &str) -> Result<()> {
-    if path.is_empty() || path.starts_with('.') || path.ends_with('.') || path.contains("..") {
-        bail!("invalid contribution surface '{path}': empty path segment");
-    }
-    for segment in path.split('.') {
-        if segment == "*" {
-            continue;
-        }
-        if segment.is_empty()
-            || !segment
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
-        {
-            bail!(
-                "invalid contribution surface '{path}': '*' must occupy a complete segment and other segments use ASCII letters, digits, '_', '-'"
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Validate a capability token (a dotted option path).
-fn validate_capability_token(token: &str) -> Result<()> {
-    validate_option_path(token)
 }
 
 /// Validate signed BPF-LSM policy artifact metadata.
@@ -2405,9 +2037,6 @@ pub struct ApmMeta {
     /// Rendered RFC-0001 expose artifact captured at install time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose_artifact: Option<ExposeArtifactMeta>,
-    /// Configuration-only module metadata captured at install time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config_module: Option<ConfigModuleMeta>,
     /// Canonical documentation artifact captured at install time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation: Option<DocumentationArtifactMeta>,
@@ -3333,9 +2962,9 @@ pub enum ReactivationPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrossAbiReEvalInputs {
     /// Exact ordered config-output module store paths the evaluator must read.
-    pub config_module_paths: Vec<String>,
+    pub package_module_paths: Vec<String>,
     /// Authenticated package identity corresponding to each ordered module.
-    pub config_module_packages: Vec<String>,
+    pub package_module_packages: Vec<String>,
     /// Store path of the exact `host.nix` the config-gen was evaluated from.
     pub host_nix_ref: String,
     /// Content-address of the resolved instance facts (`facts.json`).
@@ -3572,11 +3201,11 @@ pub struct ConfigGeneration {
     pub manifest_hash: String,
     /// Store path of the config-module source closure (the eval *input*), or
     /// the canonical empty-closure hash for a host-only configuration.
-    pub config_module_closure: String,
+    pub package_module_closure: String,
     /// Exact evaluator order of config-output module store paths.
-    pub config_module_paths: Vec<String>,
+    pub package_module_paths: Vec<String>,
     /// Authenticated package identity corresponding to each ordered module.
-    pub config_module_packages: Vec<String>,
+    pub package_module_packages: Vec<String>,
     /// Store path / content hash of the exact `host.nix` evaluated.
     pub host_nix_ref: String,
     /// Non-authoritative git commit `host.nix` came from (operator traceability).
@@ -3606,17 +3235,17 @@ impl ConfigGeneration {
         if self.module_abi_pinned == running_abi {
             return Ok(ReactivationPlan::DirectReactivate);
         }
-        if self.config_module_paths.len() != self.config_module_packages.len() {
+        if self.package_module_paths.len() != self.package_module_packages.len() {
             anyhow::bail!(
                 "config-gen {} has {} retained modules but {} authenticated package identities",
                 self.number,
-                self.config_module_paths.len(),
-                self.config_module_packages.len()
+                self.package_module_paths.len(),
+                self.package_module_packages.len()
             );
         }
         Ok(ReactivationPlan::CrossAbiReEval(CrossAbiReEvalInputs {
-            config_module_paths: self.config_module_paths.clone(),
-            config_module_packages: self.config_module_packages.clone(),
+            package_module_paths: self.package_module_paths.clone(),
+            package_module_packages: self.package_module_packages.clone(),
             host_nix_ref: self.host_nix_ref.clone(),
             facts_hash: self.facts_hash.clone(),
             facts_ref: self.facts_ref.clone(),
@@ -4384,7 +4013,6 @@ last_update = "2026-02-13T10:30:00Z"
                 source_nar_hash: "sha256:source".into(),
                 expose: None,
                 expose_artifact: None,
-                config_module: None,
                 documentation: None,
                 contract: None,
                 permissions: Default::default(),
@@ -4483,7 +4111,6 @@ last_update = "2026-02-13T10:30:00Z"
                 nar_hash: "sha256:artifact".into(),
                 nar_size: 128,
             }),
-            config_module: None,
             documentation: None,
             contract: None,
             permissions: PermissionsMeta {
@@ -4602,7 +4229,6 @@ last_update = "2026-02-13T10:30:00Z"
             requires_features: vec![FEATURE_PERMISSIONS_V1.into(), FEATURE_ATTESTATION_V1.into()],
             expose: None,
             expose_artifact: None,
-            config_module: None,
             documentation: None,
             contract: None,
             permissions: PermissionsMeta {
@@ -4642,7 +4268,6 @@ last_update = "2026-02-13T10:30:00Z"
             requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_PERMISSIONS_V1.into()],
             expose: None,
             expose_artifact: None,
-            config_module: None,
             documentation: None,
             contract: None,
             permissions: PermissionsMeta {
@@ -4693,7 +4318,6 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
-            config_module: None,
             documentation: None,
             contract: None,
             permissions: PermissionsMeta::default(),
@@ -4745,7 +4369,6 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
-            config_module: None,
             documentation: None,
             contract: None,
             permissions: PermissionsMeta::default(),
@@ -4788,7 +4411,6 @@ last_update = "2026-02-13T10:30:00Z"
             ],
             expose: None,
             expose_artifact: None,
-            config_module: None,
             documentation: None,
             contract: None,
             permissions: PermissionsMeta {
@@ -4831,7 +4453,6 @@ last_update = "2026-02-13T10:30:00Z"
             requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_PERMISSIONS_V1.into()],
             expose: None,
             expose_artifact: None,
-            config_module: None,
             documentation: None,
             contract: None,
             permissions: PermissionsMeta {
@@ -4906,7 +4527,6 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
-            config_module: None,
             documentation: None,
             contract: None,
             permissions: PermissionsMeta::default(),
@@ -4984,7 +4604,6 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
-            config_module: None,
             documentation: None,
             contract: None,
             permissions: PermissionsMeta::default(),
@@ -5156,7 +4775,6 @@ last_update = "2026-02-13T10:30:00Z"
                 }],
             }),
             expose_artifact: None,
-            config_module: None,
             documentation: None,
             contract: None,
             permissions: PermissionsMeta::default(),
@@ -5212,7 +4830,6 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
-            config_module: None,
             documentation: None,
             contract: None,
             permissions: PermissionsMeta::default(),
@@ -5251,7 +4868,6 @@ last_update = "2026-02-13T10:30:00Z"
             requires_features: requires_features.into_iter().map(str::to_string).collect(),
             expose: None,
             expose_artifact: None,
-            config_module: None,
             documentation: None,
             contract: None,
             permissions: PermissionsMeta::default(),
@@ -5327,7 +4943,6 @@ last_update = "2026-02-13T10:30:00Z"
             requires_features: requires_features.into_iter().map(str::to_string).collect(),
             expose: None,
             expose_artifact: None,
-            config_module: None,
             documentation: None,
             contract: None,
             permissions: PermissionsMeta::default(),
@@ -5656,7 +5271,6 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
-            config_module: None,
             documentation: None,
             contract: None,
             permissions: PermissionsMeta::default(),
@@ -5713,7 +5327,6 @@ last_update = "2026-02-13T10:30:00Z"
                 }],
             }),
             expose_artifact: None,
-            config_module: None,
             documentation: None,
             contract: None,
             permissions: PermissionsMeta::default(),
@@ -6019,226 +5632,6 @@ pin = "v2026.02"
         assert_eq!(ProfileScope::System.other(), ProfileScope::User);
     }
 
-    // ----------------------------------------------------------------------
-    // Configuration-module metadata.
-    // ----------------------------------------------------------------------
-
-    fn sample_config_module() -> ConfigModuleMeta {
-        ConfigModuleMeta {
-            config_output: ConfigOutputMeta {
-                store_path: "/nix/store/0000000000000000000000000000000a-firewall-config"
-                    .to_string(),
-                nar_hash: "sha256:deadbeef".to_string(),
-                nar_size: 4096,
-                references: vec!["0000000000000000000000000000000b".to_string()],
-            },
-            evaluation_base_lib: None,
-            dependency_outputs: BTreeMap::new(),
-            module_abi_compat: ModuleAbiCompat { min: 1, max: 2 },
-            declares: vec![
-                "firewall.allowedTCPPorts".to_string(),
-                "firewall.enable".to_string(),
-            ],
-            declaration_schema: vec![],
-            requires: vec![],
-            owns_roots: vec![OwnedRoot {
-                root: "firewall".to_string(),
-                interface_abi: 1,
-                contributable: vec!["allowedTCPPorts".to_string()],
-            }],
-            contributes: vec![RootContribution {
-                root: "nginx".to_string(),
-                interface_abi: 1,
-                paths: vec!["virtualHosts".to_string()],
-            }],
-            artifacts: Default::default(),
-            provides_capabilities: vec!["system.capabilities.dns-resolver".to_string()],
-        }
-    }
-
-    #[test]
-    fn config_module_meta_toml_round_trip() {
-        let module = sample_config_module();
-        let serialized = toml::to_string(&module).expect("serialize");
-        let parsed: ConfigModuleMeta = toml::from_str(&serialized).expect("deserialize");
-        assert_eq!(parsed, module);
-    }
-
-    #[test]
-    fn config_module_dependency_outputs_round_trip_and_validate() {
-        let mut module = sample_config_module();
-        module.dependency_outputs.insert(
-            "bash".to_string(),
-            "/nix/store/0000000000000000000000000000000c-bash-5.2".to_string(),
-        );
-        validate_config_module_meta("firewall", &module).expect("valid dependency output");
-
-        let serialized = toml::to_string(&module).expect("serialize dependency output");
-        let parsed: ConfigModuleMeta = toml::from_str(&serialized).expect("deserialize");
-        assert_eq!(parsed.dependency_outputs, module.dependency_outputs);
-
-        module
-            .dependency_outputs
-            .insert("broken".to_string(), "relative/path".to_string());
-        assert!(validate_config_module_meta("firewall", &module).is_err());
-    }
-
-    #[test]
-    fn config_module_declares_only_owned_or_contributed_roots() {
-        let mut module = sample_config_module();
-        module.declares.push("foreign.enable".to_string());
-        let error =
-            validate_config_module_meta("firewall", &module).expect_err("foreign declaration");
-        assert!(
-            error
-                .to_string()
-                .contains("outside its owned roots or contributed paths"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn config_module_declaration_must_be_contained_by_contributed_path() {
-        let mut module = sample_config_module();
-        module.declares.push("nginx.enable".to_string());
-        let error = validate_config_module_meta("firewall", &module)
-            .expect_err("sibling path outside contribution");
-        assert!(
-            error
-                .to_string()
-                .contains("outside its owned roots or contributed paths"),
-            "{error}"
-        );
-
-        module.declares.pop();
-        module
-            .declares
-            .push("nginx.virtualHosts.demo.enable".to_string());
-        validate_config_module_meta("firewall", &module).expect("descendant of contributed path");
-    }
-
-    #[test]
-    fn owned_root_surface_wildcard_must_fill_a_complete_segment() {
-        let mut module = sample_config_module();
-        module.owns_roots[0].contributable = vec!["interfaces.*.addresses".to_string()];
-        validate_config_module_meta("firewall", &module).expect("whole-segment wildcard");
-
-        module.owns_roots[0].contributable = vec!["interfaces.eth*".to_string()];
-        let error = validate_config_module_meta("firewall", &module)
-            .expect_err("partial-segment wildcard must be rejected");
-        assert!(error.to_string().contains("complete segment"), "{error}");
-    }
-
-    #[test]
-    fn config_module_private_root_needs_no_owned_root_record() {
-        let mut module = sample_config_module();
-        module.owns_roots.clear();
-        validate_config_module_meta("firewall", &module).expect("implicit package-private root");
-    }
-
-    #[test]
-    fn config_module_requires_paths_are_sorted_unique_and_well_formed() {
-        let mut module = sample_config_module();
-        module.requires = vec!["nginx.enable".into(), "firewall.enable".into()];
-        let error = validate_config_module_meta("firewall", &module)
-            .expect_err("unsorted conservative requirements");
-        assert!(
-            error.to_string().contains("sorted and deduplicated"),
-            "{error}"
-        );
-
-        module.requires = vec!["nginx..enable".into()];
-        let error = validate_config_module_meta("firewall", &module)
-            .expect_err("malformed conservative requirement");
-        assert!(error.to_string().contains("option path"), "{error}");
-    }
-
-    #[test]
-    fn config_module_meta_inside_package_round_trips_and_gates() {
-        // A package carrying config_module must declare the feature and have
-        // attestation provenance, else validation fails.
-        let toml_str = r#"
-name = "firewall"
-version = "1.4.0"
-description = "host firewall"
-license = "MIT"
-maintainer = "aos"
-platform = "x86_64-linux"
-store_path = "/nix/store/0000000000000000000000000000000c-firewall-1.4.0"
-nar_hash = "sha256:aa"
-nar_size = 10
-references = []
-source_drv = "/nix/store/0000000000000000000000000000000d-firewall.drv"
-source_nar_hash = "sha256:bb"
-closure_size = 10
-requires-features = ["config-module-v1", "attestation-v1"]
-
-[config_module.config_output]
-store_path = "/nix/store/0000000000000000000000000000000a-firewall-config"
-nar_hash = "sha256:cc"
-nar_size = 2048
-
-[config_module.module_abi_compat]
-min = 1
-max = 2
-
-[config_module]
-declares = ["firewall.allowedTCPPorts"]
-provides_capabilities = []
-
-[[config_module.owns_roots]]
-root = "firewall"
-interface_abi = 1
-contributable = ["allowedTCPPorts"]
-
-[attestation]
-provenance = "provenance/firewall.jsonl"
-"#;
-        let meta: PackageMeta = toml::from_str(toml_str).expect("parse package meta");
-        assert!(meta.config_module.is_some());
-        validate_supported_package_meta(&meta).expect("valid config-module package");
-    }
-
-    #[test]
-    fn config_module_without_feature_is_rejected() {
-        let mut meta = sample_package_meta();
-        meta.config_module = Some(sample_config_module());
-        // Missing requires-features ⇒ feature gate refuses.
-        let err = validate_supported_package_meta(&meta).expect_err("must refuse");
-        assert!(err.to_string().contains("config-module-v1"), "{err}");
-    }
-
-    #[test]
-    fn config_module_without_provenance_is_rejected() {
-        let mut meta = sample_package_meta();
-        meta.requires_features = vec![FEATURE_CONFIG_MODULE_V1.to_string()];
-        meta.config_module = Some(sample_config_module());
-        let err = validate_supported_package_meta(&meta).expect_err("must refuse");
-        assert!(
-            err.to_string().contains("without attestation provenance"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn config_output_rejects_drv_reference() {
-        let mut output = sample_config_module().config_output;
-        output.references = vec!["abc.drv".to_string()];
-        let err = validate_config_output_meta(&output).expect_err("must refuse .drv ref");
-        assert!(
-            err.to_string().contains("must not reference a derivation"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn config_module_rejects_inverted_abi_band() {
-        let mut module = sample_config_module();
-        module.module_abi_compat = ModuleAbiCompat { min: 3, max: 1 };
-        let err = validate_config_module_meta("firewall", &module).expect_err("inverted band");
-        assert!(err.to_string().contains("inverted"), "{err}");
-    }
-
     // -----------------------------------------------------------------------
     // Two-axis generation records.
     // -----------------------------------------------------------------------
@@ -6253,9 +5646,9 @@ provenance = "provenance/firewall.jsonl"
             image_gen_parent: 2,
             module_abi_pinned: 2,
             manifest_hash: "sha256:beef".into(),
-            config_module_closure: "/nix/store/src-cfg".into(),
-            config_module_paths: vec!["/nix/store/src-cfg".into()],
-            config_module_packages: vec!["server".into()],
+            package_module_closure: "/nix/store/src-cfg".into(),
+            package_module_paths: vec!["/nix/store/src-cfg".into()],
+            package_module_packages: vec!["server".into()],
             host_nix_ref: "/nix/store/hn-host.nix".into(),
             host_nix_commit: Some("deadbeef".into()),
             facts_hash: "sha256:facts".into(),
@@ -6400,7 +5793,6 @@ provenance = "provenance/firewall.jsonl"
             source_nar_hash: meta.source_nar_hash.clone(),
             expose: None,
             expose_artifact: None,
-            config_module: None,
             documentation: meta.documentation.clone(),
             contract: None,
             permissions: PermissionsMeta::default(),
@@ -6468,7 +5860,6 @@ provenance = "provenance/firewall.jsonl"
             requires_features: vec![],
             expose: None,
             expose_artifact: None,
-            config_module: None,
             documentation: None,
             contract: None,
             permissions: PermissionsMeta::default(),

@@ -11,9 +11,9 @@ fn config_generation(parent: u32, abi: u32) -> ConfigGeneration {
         image_gen_parent: parent,
         module_abi_pinned: abi,
         manifest_hash: "sha256:manifest".into(),
-        config_module_closure: "/nix/store/cfg-config".into(),
-        config_module_paths: vec!["/nix/store/cfg-config".into()],
-        config_module_packages: vec!["service".into()],
+        package_module_closure: "/nix/store/cfg-config".into(),
+        package_module_paths: vec!["/nix/store/cfg-config".into()],
+        package_module_packages: vec!["service".into()],
         host_nix_ref: "/nix/store/host-host.nix".into(),
         host_nix_commit: None,
         facts_hash: "sha256:facts".into(),
@@ -79,7 +79,7 @@ fn generation_axes_round_trip_independently() {
         serde_json::from_str(&encoded).expect("parse config state");
     assert_eq!(decoded.generations[0].image_gen_parent, 3);
     assert_eq!(decoded.generations[0].module_abi_pinned, 9);
-    assert_eq!(decoded.generations[0].config_module_packages, ["service"]);
+    assert_eq!(decoded.generations[0].package_module_packages, ["service"]);
 }
 
 #[test]
@@ -102,7 +102,7 @@ fn cross_abi_reactivation_replays_retained_inputs() {
     };
     assert_eq!(inputs.from_module_abi, 8);
     assert_eq!(inputs.to_module_abi, 9);
-    assert_eq!(inputs.config_module_paths, ["/nix/store/cfg-config"]);
+    assert_eq!(inputs.package_module_paths, ["/nix/store/cfg-config"]);
     assert_eq!(inputs.host_nix_ref, "/nix/store/host-host.nix");
     assert_eq!(inputs.facts_ref, "/nix/store/facts-json");
 }

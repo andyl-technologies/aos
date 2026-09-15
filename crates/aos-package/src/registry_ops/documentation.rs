@@ -3,9 +3,7 @@
 use crate::registry_ops::attestation::documentation_nar_identity;
 use crate::registry_ops::store_paths::{StorePathInfo, introspect_store_path, nix_command};
 use crate::registry_ops::uki::sha256_hex;
-use crate::types::{
-    ConfigModuleMeta, DocumentationArtifactMeta, validate_documentation_artifact_meta,
-};
+use crate::types::{DocumentationArtifactMeta, validate_documentation_artifact_meta};
 use anyhow::{Context, Result, bail};
 use aos_doc_model::{
     DOCUMENT_FORMAT, DOCUMENT_SCHEMA, DocumentationIdentity, DocumentedPackage,
@@ -21,7 +19,6 @@ pub(in crate::registry_ops) struct PublishedDocumentation {
     pub(in crate::registry_ops) info: StorePathInfo,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(in crate::registry_ops) fn publish_package_documentation(
     name: &str,
     version: &str,
@@ -31,8 +28,6 @@ pub(in crate::registry_ops) fn publish_package_documentation(
     license: &str,
     runtime: &StorePathInfo,
     source: Option<&StorePathInfo>,
-    config_module: Option<&ConfigModuleMeta>,
-    expose_artifact: Option<&StorePathInfo>,
 ) -> Result<PublishedDocumentation> {
     let mut document = PackageDocumentation {
         schema: DOCUMENT_SCHEMA.to_string(),
@@ -47,12 +42,6 @@ pub(in crate::registry_ops) fn publish_package_documentation(
         identity: DocumentationIdentity {
             semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
             runtime_nar_hash: documentation_nar_identity(&runtime.nar_hash)?,
-            config_module_nar_hash: config_module
-                .map(|module| documentation_nar_identity(&module.config_output.nar_hash))
-                .transpose()?,
-            expose_artifact_nar_hash: expose_artifact
-                .map(|artifact| documentation_nar_identity(&artifact.nar_hash))
-                .transpose()?,
             source_nar_hash: documentation_nar_identity(
                 source.map_or(runtime.nar_hash.as_str(), |source| source.nar_hash.as_str()),
             )?,

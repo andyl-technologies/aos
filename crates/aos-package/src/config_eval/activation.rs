@@ -1301,17 +1301,17 @@ fn config_generation_record(
         .pointer("/inputs/package_modules/modules")
         .and_then(Value::as_array)
         .context("manifest has no package module records")?;
-    let config_module_paths = package_modules
+    let package_module_paths = package_modules
         .iter()
         .filter_map(|module| module.get("store_path").and_then(Value::as_str))
         .map(str::to_string)
         .collect::<Vec<_>>();
-    let config_module_packages = package_modules
+    let package_module_packages = package_modules
         .iter()
         .filter_map(|module| module.get("package").and_then(Value::as_str))
         .map(str::to_string)
         .collect::<Vec<_>>();
-    let config_module_closure = config_module_paths.first().cloned().unwrap_or_else(|| {
+    let package_module_closure = package_module_paths.first().cloned().unwrap_or_else(|| {
         crate::graph_compile::reproject::hash_cjson(&Value::Array(package_modules.clone()))
     });
     Ok(ConfigGeneration {
@@ -1320,9 +1320,9 @@ fn config_generation_record(
         image_gen_parent: running_image.number,
         module_abi_pinned: module_abi,
         manifest_hash: manifest_hash.to_string(),
-        config_module_closure,
-        config_module_paths,
-        config_module_packages,
+        package_module_closure,
+        package_module_paths,
+        package_module_packages,
         host_nix_ref,
         host_nix_commit: None,
         facts_hash,
@@ -1470,11 +1470,12 @@ mod tests {
             image_gen_parent: 1,
             module_abi_pinned: 7,
             manifest_hash: "sha256:legacy-fixture".to_string(),
-            config_module_closure: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-config".to_string(),
-            config_module_paths: vec![
+            package_module_closure: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-config"
+                .to_string(),
+            package_module_paths: vec![
                 "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-config".to_string(),
             ],
-            config_module_packages: vec!["fixture".to_string()],
+            package_module_packages: vec!["fixture".to_string()],
             host_nix_ref: "/nix/store/cccccccccccccccccccccccccccccccc-host.nix".to_string(),
             host_nix_commit: None,
             facts_hash: "sha256:fixture".to_string(),
@@ -1810,7 +1811,7 @@ mod tests {
         let expected_hash = hash_cjson(&manifest);
         assert_eq!(state.generations[1].manifest_hash, expected_hash);
         assert_eq!(
-            state.generations[1].config_module_paths,
+            state.generations[1].package_module_paths,
             vec!["/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-config".to_string()]
         );
         assert_eq!(

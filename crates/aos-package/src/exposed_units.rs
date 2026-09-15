@@ -3811,7 +3811,6 @@ mod tests {
                     nar_hash: "sha256:test".into(),
                     nar_size: 1,
                 }),
-                config_module: None,
                 documentation: None,
                 contract: None,
                 permissions: Default::default(),
