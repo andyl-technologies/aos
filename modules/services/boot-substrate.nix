@@ -249,13 +249,11 @@
       requires =
         ["sysroot.mount"]
         ++ lib.optional config.aos.security.verity.enable "aos-boot-identity-guard.service"
-        ++ lib.optional config.aos.security.verity.enable "aos-verity-root-verify.service"
         ++ lib.optional (!zfsState && disksUnit != null) disksUnit
         ++ lib.optional zfsState "aos-zfs-unlock.service";
       after =
         ["sysroot.mount"]
         ++ lib.optional config.aos.security.verity.enable "aos-boot-identity-guard.service"
-        ++ lib.optional config.aos.security.verity.enable "aos-verity-root-verify.service"
         ++ lib.optional (!zfsState && disksUnit != null) disksUnit
         ++ lib.optional zfsState "aos-zfs-unlock.service"
         ++ ["systemd-udev-settle.service"];

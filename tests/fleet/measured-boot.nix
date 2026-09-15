@@ -53,6 +53,20 @@
       }
     ];
   };
+  measuredVarDependencies =
+    measuredSystem
+    .config
+    .system
+    .build
+    .initrdAbilityGraph
+    .requests
+    ."aos-var-policy-migrate:aos-var-crypt-dependencies"
+    .parameters;
+  verityReadiness = {
+    _type = "aos-request-output-reference";
+    request = "aos-var-policy-migrate:verity-root";
+    output = "readiness-resource";
+  };
   ukiBMedia = effectiveSystem: let
     measuredImage = effectiveSystem.config.system.build.image.raw;
     dbKey = effectiveSystem.config.aos.boot.secureBoot.dbKey;
@@ -121,7 +135,7 @@
       ];
     };
 in {
-  name = assert builtins.elem "aos-verity-root-verify.service" measuredSystem.config.boot.initrd.systemd.services."aos-var-crypt".requires; "measured-boot";
+  name = assert builtins.elem verityReadiness measuredVarDependencies.requires; "measured-boot";
   # Image boot + enrollment/migration + the A/B counted-candidate lifecycle.
   timeout = 5400;
   # The emulated TPM (swtpm) adds tens of seconds of slow command

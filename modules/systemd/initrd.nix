@@ -28,6 +28,7 @@
 ##!     derivation produced by `../base/initrd-builder.nix`.
 {
   config,
+  initrdAbilityEvaluation ? null,
   lib,
   pkgs,
   ...
@@ -69,6 +70,10 @@
       name = job.scriptName;
     })
   (lib.concatLists (lib.mapAttrsToList (_: service: service.jobScripts) cfg.services)));
+  initrdProviderArtifacts =
+    if initrdAbilityEvaluation == null
+    then []
+    else initrdAbilityEvaluation.config.systemd.providerUnitArtifacts or [];
 
   # Render the typed `boot.initrd.systemd.network` tree to a directory of
   # `<name>.network` files. These are networkd config (not units), so they
@@ -254,7 +259,10 @@ in {
             ${pkgs.coreutils}/bin/cp "$generated_verity_unit" \
               /run/systemd/system/systemd-veritysetup@root.service
             ${pkgs.systemd}/bin/systemctl daemon-reload
-            ${pkgs.systemd}/bin/systemctl start --no-block systemd-veritysetup@root.service
+
+            # The package-owned verity verification lifecycle starts this unit
+            # only after the identity guard, partition layout, and device
+            # event milestones have completed.
             ${pkgs.coreutils}/bin/touch /run/aos/boot-identity-valid
           '';
         };
@@ -326,11 +334,24 @@ in {
       };
     };
 
-    system.build.systemdInitrdUnits = systemdLib.materializeUnits {
-      type = "initrd";
-      etc = systemdLib.unitsToEtc pureInitrdUnits;
-      jobScripts = initrdJobScripts;
-    };
+    system.build.systemdInitrdUnits = let
+      baseUnits = systemdLib.materializeUnits {
+        type = "initrd";
+        etc = systemdLib.unitsToEtc pureInitrdUnits;
+        jobScripts = initrdJobScripts;
+      };
+      providerArtifactsJson = builtins.toJSON initrdProviderArtifacts;
+    in
+      if initrdProviderArtifacts == []
+      then baseUnits
+      else
+        pkgs.runCommand "systemd-initrd-units-with-provider-artifacts" {
+          inherit baseUnits providerArtifactsJson;
+          passAsFile = ["providerArtifactsJson"];
+        } ''
+          providerArtifactsPath="$providerArtifactsJsonPath" \
+            ${pkgs.buildPackages.aos-systemd-provider}/bin/aos-systemd-provider assemble
+        '';
 
     system.build.initrd = import ../base/_initrd-builder.nix {
       inherit pkgs lib;

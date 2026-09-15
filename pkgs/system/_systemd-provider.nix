@@ -367,6 +367,10 @@
         run-etc = "run-etc-setup.service";
         device-settle = "systemd-udev-settle.service";
         kernel-modules = "systemd-modules-load.service";
+        boot-identity-validated = "aos-boot-identity-guard.service";
+        boot-integrity-failure = "aos-boot-identity-failure.target";
+        partition-layout-ready = "aos-repart.service";
+        verity-root-verified = "aos-verity-root-verify.service";
       };
       units =
         if stage == "host"
