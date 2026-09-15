@@ -1,7 +1,8 @@
 {
   lib,
   pkgs,
-}: let
+}:
+let
   k3sModprobe = pkgs.writeShellScriptBin "modprobe" ''
     set -eu
 
@@ -25,7 +26,8 @@
 
     exec ${pkgs.kmod}/sbin/modprobe "$@"
   '';
-in {
+in
+{
   runtimePath = [
     pkgs.k3s
     pkgs.containerd # provides containerd-shim-runc-v2
@@ -52,71 +54,8 @@ in {
   # iptables-availability probe potentially auto-detect nftables
   # mode in some k3s versions — best avoided.
 
-  kernelModules = [
-    "br_netfilter"
-    "vxlan" # flannel default (VXLAN) backend
-    "ip_set" # k3s netpol controller
-  ];
-
-  # Forwarding + bridge call-iptables. `bridge.bridge-nf-call-*`
-  # only exist once br_netfilter is loaded; the stock
-  # systemd-sysctl.service is ordered After=systemd-modules-load.service,
-  # so as long as br_netfilter is in the module list above it loads
-  # first and these keys are writable when systemd-sysctl runs.
-  sysctls = {
-    "net.ipv4.ip_forward" = "1";
-    "net.ipv6.conf.all.forwarding" = "1";
-    "net.bridge.bridge-nf-call-iptables" = "1";
-    "net.bridge.bridge-nf-call-ip6tables" = "1";
-  };
-
-  enabledCheck = role:
-    pkgs.writeShellScriptBin "k3s-${role}-enabled" ''
-      set -eu
-
-      [ "''${K3S_ENABLED:-false}" = true ]
-    '';
-
-  preflightService = role: required: let
-    checks =
-      lib.concatMapStringsSep "\n" (varName: ''
-        : "''${${varName}:?[k3s-preflight] ${role}: ${varName} must be set in /etc/aos/packages/${role}/k3s.env}"
-      '')
-      required;
-  in {
-    description = "Pre-flight checks for ${role}";
-
-    # `wantedBy` + `before` schedule preflight first under
-    # `multi-user.target`; the matching `requisite` /
-    # `after = [...preflight.service]` sit on the role's
-    # `k3s.service` (declared inline per role, since k3s.service
-    # itself diverges between roles in `ExecStart` and ports).
-    wantedBy = ["multi-user.target"];
-    before = ["k3s.service"];
-
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-      EnvironmentFile = "-/etc/aos/packages/${role}/k3s.env";
-      StandardOutput = "journal+console";
-      StandardError = "journal+console";
-    };
-
-    script = ''
-      set -eu
-
-      if [ "''${K3S_ENABLED:-false}" != true ]; then
-        echo "[k3s-preflight] ${role}: disabled, skipping checks"
-        exit 0
-      fi
-
-      ${checks}
-
-      echo "[k3s-preflight] ${role}: required env present, k3s may start"
-    '';
-  };
-
-  addonRenderer = package: role:
+  addonRenderer =
+    package: role:
     pkgs.writeShellScriptBin "${package}-render-addons" ''
       set -eu
 
@@ -222,7 +161,8 @@ in {
       printf '%s\n' "$declared_revision" > "$revision_output"
     '';
 
-  launcher = role: command: addonRenderer:
+  launcher =
+    role: command: addonRenderer:
     pkgs.writeShellScriptBin "k3s-${role}-start" ''
       set -eu
 
@@ -236,8 +176,13 @@ in {
         exit 0
       fi
 
-      : "''${CREDENTIALS_DIRECTORY:?[k3s] ${role}: token credential was not loaded}"
-      token_file="$CREDENTIALS_DIRECTORY/token"
+      if [ "$#" -ne 2 ]; then
+        echo "[k3s] ${role}: expected add-on configuration and token paths" >&2
+        exit 64
+      fi
+      addons=$1
+      token_file=$2
+      shift 2
       if [ ! -r "$token_file" ]; then
         echo "[k3s] ${role}: token credential is not readable" >&2
         exit 1
@@ -247,7 +192,6 @@ in {
 
       case ${lib.escapeShellArg command} in
       server*)
-        addons=/etc/aos/packages/${role}/addons.json
         destination=/var/lib/rancher/k3s/server/manifests/aos-runtime-addons.yaml
         temporary="$destination.tmp"
         revision_destination=/var/lib/rancher/k3s/server/aos-runtime-addons.revision
