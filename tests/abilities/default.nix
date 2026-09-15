@@ -478,7 +478,7 @@
     inherit lib pkgs;
   };
   zram = import ./zram.nix {
-    inherit lib;
+    inherit lib pkgs;
   };
   packageQualification = import ./package-qualification.nix {
     inherit lib pkgs;
@@ -901,13 +901,14 @@ in
   assert managedIdentityAllocation;
   assert systemServiceModules;
   assert compositionDriver;
-   assert systemdPackagedUnit;
-   assert systemdServiceRealization;
-   assert systemdReadiness;
+  assert systemdPackagedUnit;
+  assert systemdServiceRealization;
+  assert systemdReadiness;
   assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
   assert builtins.length (builtins.attrNames smokeAbilityProjection.requirementTemplates) == 1;
-  assert smokeArtifactSelectors == [
+  assert smokeArtifactSelectors
+  == [
     {
       package = "ability-package-smoke";
       output = "out";

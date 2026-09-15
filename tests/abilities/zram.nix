@@ -1,8 +1,14 @@
 ##! Checks zram integration at its typed resource boundaries.
-{lib}: let
+{
+  lib,
+  pkgs,
+}: let
   zramGenerator = builtins.toFile "zram-generator" "";
   utilLinux = builtins.toFile "util-linux" "";
-  evaluate = size:
+  evaluate = {
+    enable ? true,
+    size ? "min(ram / 2, 4096)",
+  }:
     lib.evalModules {
       specialArgs = {
         inherit lib;
@@ -36,50 +42,106 @@
               stage = "host";
             };
             aos.zram = {
-              enable = true;
-              inherit size;
+              inherit enable size;
             };
           };
         })
       ];
       packageModules = [
         {
+          name = "zram-generator";
+          module.imports = [../../pkgs/system/_zram-generator/module.nix];
+        }
+        {
           name = "systemd";
           module.imports = [../../pkgs/system/_systemd-abilities.nix];
         }
       ];
     };
-  baseline = evaluate "min(ram / 2, 4096)";
-  changed = evaluate "2048";
+  baseline = evaluate {};
+  changed = evaluate {size = "2048";};
+  disabled = evaluate {enable = false;};
+  packageProjection = pkgs.zram-generator.abilities;
+  packageContract = pkgs.zram-generator.contract.value;
+  documentedOptionPaths =
+    builtins.map
+    (option: lib.concatStringsSep "." option.path)
+    packageContract.option_declarations;
   requests = baseline.config.aos.abilities.requests;
   filesystemRequirement =
-    baseline.config.aos.abilities.requirementTemplates."system:filesystem-entry";
+    baseline.config.aos.abilities.requirementTemplates."zram-generator:filesystem-entry";
   packagedUnitRequirement =
-    baseline.config.aos.abilities.requirementTemplates."system:systemd-packaged-unit";
-  kernelModules = requests."system:zram-kernel-modules".parameters;
-  configuration = requests."system:zram-generator-config".parameters;
-  directory = requests."system:zram-generator-directory".parameters;
-  executable = requests."system:zram-generator-executable".parameters;
-  configurationEntry = requests."system:zram-generator-configuration".parameters;
-  packagedUnit = requests."system:zram-setup-unit".parameters;
+    baseline.config.aos.abilities.requirementTemplates."zram-generator:systemd-packaged-unit";
+  kernelModules = requests."zram-generator:zram-kernel-modules".parameters;
+  configuration = requests."zram-generator:zram-generator-config".parameters;
+  directory = requests."zram-generator:zram-generator-directory".parameters;
+  executable = requests."zram-generator:zram-generator-executable".parameters;
+  configurationEntry = requests."zram-generator:zram-generator-configuration".parameters;
+  packagedUnit = requests."zram-generator:zram-setup-unit".parameters;
   kernelReadiness = {
     _type = "aos-request-output-reference";
-    request = "system:zram-kernel-modules";
+    request = "zram-generator:zram-kernel-modules";
     output = "readiness-resource";
   };
 in
   assert baseline.config.environment.systemPackages == [zramGenerator];
+  assert builtins.attrNames packageProjection.interfaces == [];
+  assert builtins.attrNames packageProjection.implementations == [];
+  assert builtins.attrNames packageProjection.requirementTemplates
+  == [
+    "configuration-materialization"
+    "filesystem-entry"
+    "kernel-modules"
+    "systemd-packaged-unit"
+  ];
+  assert builtins.map (requirement: requirement.alias) packageContract.requirements
+  == builtins.attrNames packageProjection.requirementTemplates;
+  assert packageProjection.requirementTemplates."systemd-packaged-unit".accepted_interfaces
+  == [
+    {
+      name = "aos.systemd.packaged-unit";
+      abi = 1;
+    }
+  ];
+  assert documentedOptionPaths
+  == [
+    "aos.zram.compressionAlgorithms"
+    "aos.zram.enable"
+    "aos.zram.priority"
+    "aos.zram.size"
+  ];
+  assert builtins.all
+  (option: option.source.path == "module.nix" && option.description != "")
+  packageContract.option_declarations;
+  assert packageContract.package_module
+  == {
+    artifact = {
+      package = "self";
+      output = "module";
+    };
+    path = "module.nix";
+  };
+  assert pkgs.zram-generator ? module;
+  assert disabled.config.aos.abilities.instances == {};
+  assert disabled.config.aos.abilities.requests == {};
+  assert builtins.attrNames disabled.config.aos.abilities.requirementTemplates
+  == [
+    "zram-generator:configuration-materialization"
+    "zram-generator:filesystem-entry"
+    "zram-generator:kernel-modules"
+    "zram-generator:systemd-packaged-unit"
+  ];
   assert filesystemRequirement.methods == ["materialize" "observe" "release"];
   assert packagedUnitRequirement.methods == ["observe"];
   assert builtins.all (assertion: assertion.assertion) baseline.config.assertions;
   assert builtins.attrNames requests
   == [
-    "system:zram-generator-config"
-    "system:zram-generator-configuration"
-    "system:zram-generator-directory"
-    "system:zram-generator-executable"
-    "system:zram-kernel-modules"
-    "system:zram-setup-unit"
+    "zram-generator:zram-generator-config"
+    "zram-generator:zram-generator-configuration"
+    "zram-generator:zram-generator-directory"
+    "zram-generator:zram-generator-executable"
+    "zram-generator:zram-kernel-modules"
+    "zram-generator:zram-setup-unit"
   ];
   assert kernelModules
   == {
@@ -89,7 +151,7 @@ in
   assert configuration.source.kind == "inline-text";
   assert lib.hasInfix "zram-size = min(ram / 2, 4096)" configuration.source.content;
   assert configuration.source.content
-  != changed.config.aos.abilities.requests."system:zram-generator-config".parameters.source.content;
+  != changed.config.aos.abilities.requests."zram-generator:zram-generator-config".parameters.source.content;
   assert directory.entry.kind == "directory";
   assert directory.destination == "/etc/systemd/system-generators";
   assert directory.prerequisites == [];
@@ -110,7 +172,7 @@ in
   == [
     {
       _type = "aos-request-output-reference";
-      request = "system:zram-generator-directory";
+      request = "zram-generator:zram-generator-directory";
       output = "retained-resource";
     }
   ];
@@ -121,12 +183,12 @@ in
       kind = "execution-path";
       resource = {
         _type = "aos-request-output-reference";
-        request = "system:zram-generator-config";
+        request = "zram-generator:zram-generator-config";
         output = "retained-resource";
       };
       path = {
         _type = "aos-request-output-reference";
-        request = "system:zram-generator-config";
+        request = "zram-generator:zram-generator-config";
         output = "execution-path";
       };
     };
@@ -137,7 +199,7 @@ in
   == [
     {
       _type = "aos-request-output-reference";
-      request = "system:zram-generator-config";
+      request = "zram-generator:zram-generator-config";
       output = "retained-resource";
     }
   ];
@@ -160,12 +222,12 @@ in
       reload_triggers = [
         {
           _type = "aos-request-output-reference";
-          request = "system:zram-generator-executable";
+          request = "zram-generator:zram-generator-executable";
           output = "planned-path";
         }
         {
           _type = "aos-request-output-reference";
-          request = "system:zram-generator-configuration";
+          request = "zram-generator:zram-generator-configuration";
           output = "planned-path";
         }
       ];
