@@ -146,6 +146,7 @@ fn record_ability_preserves_stronger_format_and_feature_gates() {
         "demo",
         "1",
         "x86_64-linux",
+        &ability.store_path,
         &ability,
     )
     .expect("record ability output");
@@ -170,9 +171,15 @@ fn record_ability_preserves_stronger_format_and_feature_gates() {
 
     let mut structured_ability = ability;
     structured_ability.activation_mode = "structured-effects".to_string();
-    let structured_recorded =
-        record_ability_output(&recorded, "demo", "1", "x86_64-linux", &structured_ability)
-            .expect("record structured ability output");
+    let structured_recorded = record_ability_output(
+        &recorded,
+        "demo",
+        "1",
+        "x86_64-linux",
+        &structured_ability.store_path,
+        &structured_ability,
+    )
+    .expect("record structured ability output");
     let structured = crate::registry::parse::parse_package_file(&structured_recorded)
         .expect("parse structured package metadata");
     let structured_platform = &structured.versions[0].platforms["x86_64-linux"];

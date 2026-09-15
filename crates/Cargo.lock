@@ -297,6 +297,8 @@ dependencies = [
  "anyhow",
  "aos-ability-model",
  "aos-contract",
+ "base64 0.22.1",
+ "hex",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

@@ -367,6 +367,7 @@ pub(crate) fn record_ability_output(
     name: &str,
     version: &str,
     platform: &str,
+    projection_store_path: &str,
     ability: &AbilityPackageMeta,
 ) -> Result<String> {
     crate::ability_package::validate_ability_package_meta(ability)?;
@@ -376,7 +377,7 @@ pub(crate) fn record_ability_output(
         version,
         platform,
         crate::types::ABILITY_MANIFEST_OUTPUT,
-        &ability.store_path,
+        projection_store_path,
     )?;
     let mut document: toml::Value =
         toml::from_str(&updated).context("parsing package TOML for ability output")?;

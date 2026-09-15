@@ -74,6 +74,7 @@ pub struct CanonicalRegistryEntryAuthor<'a> {
     config: &'a ApmConfig,
     registry: &'a str,
     publications: &'a BTreeMap<String, RegistryPackagePublication>,
+    selectors: crate::registry_ops::AbilitySelectorRegistry,
     signer: &'a mut dyn ProvenanceSigner,
     printer: &'a aos_core::output::Printer,
 }
@@ -85,6 +86,7 @@ impl<'a> CanonicalRegistryEntryAuthor<'a> {
         config: &'a ApmConfig,
         registry: &'a str,
         publications: &'a BTreeMap<String, RegistryPackagePublication>,
+        entries: &[RegistryReleaseEntry],
         signer: &'a mut dyn ProvenanceSigner,
         printer: &'a aos_core::output::Printer,
     ) -> Self {
@@ -92,6 +94,7 @@ impl<'a> CanonicalRegistryEntryAuthor<'a> {
             config,
             registry,
             publications,
+            selectors: crate::registry_ops::AbilitySelectorRegistry::new(entries),
             signer,
             printer,
         }
@@ -113,6 +116,7 @@ impl RegistryEntryAuthor for CanonicalRegistryEntryAuthor<'_> {
                 &entry.name,
                 &entry.version,
                 &entry.platform,
+                &self.selectors,
                 self.signer,
                 self.printer,
             )
@@ -1590,6 +1594,7 @@ mod tests {
                 &entry.name,
                 &entry.version,
                 &entry.platform,
+                &entry.store_path,
                 &ability,
             )?;
             fs::write(path, content)?;
