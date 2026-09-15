@@ -231,6 +231,12 @@
         (package: !(builtins.elem (package.pname or package.name) callerPackageNames))
         selectedAbilityPackages);
     finalPackageModules = packageModules ++ nativeAbilityPackageModules;
+    initrdAbilityPackageNames = builtins.map
+      (package: package.pname or package.name)
+      selectionEvaluation.config.aos.abilities.stages.initrd.packages;
+    initrdPackageModules = builtins.filter
+      (record: builtins.elem record.name initrdAbilityPackageNames)
+      finalPackageModules;
     initrdAbilityEvaluation = lib.evalModules {
       modules =
         [
@@ -243,9 +249,12 @@
             };
           }
         ]
+        ++ [
+          {config = selectionEvaluation.config.aos.abilities.stages.initrd.intent;}
+        ]
         ++ selectionEvaluation.config.aos.abilities.stages.initrd.modules;
       inherit pkgs lib operatorModules runtimeModules;
-      packageModules = finalPackageModules;
+      packageModules = initrdPackageModules;
       specialArgs = moduleSpecialArgs;
     };
     # Determine the resolved image ABI from the complete caller module list.

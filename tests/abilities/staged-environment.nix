@@ -43,4 +43,6 @@ in
   assert initrd.requests."system:fixture-preparation".parameters.execution.entry_point
   == "libexec/fixture-preparation";
   assert !(host.requests ? "system:fixture-preparation");
+  assert !(builtins.any (name: lib.hasPrefix "chrony:" name) (builtins.attrNames initrd.requests));
+  assert !(builtins.any (name: lib.hasPrefix "openssh:" name) (builtins.attrNames initrd.requests));
   true
