@@ -705,6 +705,7 @@ dependencies = [
  "aos-net",
  "aos-oci-types",
  "aos-proto-types",
+ "aos-provider-protocol",
  "aos-registry-surface",
  "aos-remote",
  "aos-systemd",

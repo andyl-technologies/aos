@@ -20,12 +20,12 @@ const INTERRUPT_EXIT_CODE: i32 = 130;
 const TERMINATE_EXIT_CODE: i32 = 143;
 
 /// Keeps native activation signal listeners alive and exposes their token.
-pub(super) struct NativeCancellationGuard {
+pub(super) struct AbilityCancellationGuard {
     token: CancellationToken,
     watcher: JoinHandle<()>,
 }
 
-impl NativeCancellationGuard {
+impl AbilityCancellationGuard {
     /// Installs SIGINT and SIGTERM listeners on the current Tokio runtime.
     ///
     /// # Errors
@@ -57,7 +57,7 @@ impl NativeCancellationGuard {
     }
 }
 
-impl Drop for NativeCancellationGuard {
+impl Drop for AbilityCancellationGuard {
     fn drop(&mut self) {
         self.watcher.abort();
     }
@@ -113,7 +113,7 @@ mod tests {
 
     use rustix::process::{Pid, Signal, kill_process};
 
-    use super::NativeCancellationGuard;
+    use super::AbilityCancellationGuard;
 
     const PROBE_READY_ENV: &str = "AOS_NATIVE_CANCELLATION_PROBE_READY";
     const PROBE_CANCELLED_ENV: &str = "AOS_NATIVE_CANCELLATION_PROBE_CANCELLED";
@@ -171,7 +171,7 @@ mod tests {
 
         runtime.block_on(async {
             let cancellation =
-                NativeCancellationGuard::install().expect("probe cancellation listeners");
+                AbilityCancellationGuard::install().expect("probe cancellation listeners");
             fs::write(ready_path, b"ready").expect("publish probe readiness");
 
             tokio::time::timeout(PROBE_TIMEOUT, async {

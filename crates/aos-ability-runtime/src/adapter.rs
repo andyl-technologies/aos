@@ -134,6 +134,7 @@ pub struct ResourceHandle<H> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResourceAdmissionEvidence {
     resource: ResourceId,
+    provider_assignment: Option<ProviderAssignment>,
     provider_incarnation: Option<IncarnationId>,
     revision: ResourceRevisionObservation,
     observation: AbilityValue,
@@ -176,7 +177,25 @@ impl ResourceAdmissionEvidence {
     ) -> Self {
         Self {
             resource,
+            provider_assignment: None,
             provider_incarnation,
+            revision,
+            observation,
+        }
+    }
+
+    /// Constructs evidence bound to an exact selected provider assignment.
+    #[must_use]
+    pub fn new_with_provider_and_revision_observation(
+        resource: ResourceId,
+        provider_assignment: ProviderAssignment,
+        revision: ResourceRevisionObservation,
+        observation: AbilityValue,
+    ) -> Self {
+        Self {
+            resource,
+            provider_incarnation: Some(provider_assignment.incarnation.clone()),
+            provider_assignment: Some(provider_assignment),
             revision,
             observation,
         }
@@ -192,6 +211,12 @@ impl ResourceAdmissionEvidence {
     #[must_use]
     pub const fn provider_incarnation(&self) -> Option<&IncarnationId> {
         self.provider_incarnation.as_ref()
+    }
+
+    /// Returns the exact selected provider assignment, when the catalog retained it.
+    #[must_use]
+    pub const fn provider_assignment(&self) -> Option<&ProviderAssignment> {
+        self.provider_assignment.as_ref()
     }
 
     /// Returns the current resource revision, when established.

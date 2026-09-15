@@ -37,40 +37,33 @@
 
 pub mod ability;
 pub mod ability_activation;
-pub mod ability_rounds;
 pub mod ability_policy;
 pub mod ability_policy_authority;
-pub mod ability_store;
+pub mod ability_rounds;
+pub(crate) mod transaction_store;
 pub mod activation;
 pub mod classify;
+mod command_handler;
 pub mod diagnostics;
 pub mod dry_run;
-pub mod foreground_process_ability;
-pub mod kubernetes_ability;
-mod kubernetes_transport;
-pub mod managed_configuration_ability;
+mod handler_dispatch;
+mod handler_process;
 pub mod materialize;
-mod native_ability_fs;
+mod protected_fs;
 mod native_activation;
+mod rollout_boot;
+mod transaction_verification;
 pub use native_activation::supported_native_ability_features;
 pub(crate) use native_activation::{
     RetainedNativePreflightError, preflight_retained_manifest, verify_rollout_boot_commit,
 };
-mod native_adapter_surface;
-mod native_boundary_observer;
-mod native_cancellation;
-mod native_consumer_observation;
-pub(crate) mod native_dispatch;
-mod native_host_resources;
-mod native_provider_capability;
-pub mod native_resource_map;
-pub mod nginx_ability;
+mod cancellation;
+mod execution_observer;
 pub mod runtime;
 pub mod runtime_modules;
 pub mod stage_handoff;
 pub mod stock;
 pub mod system_roots;
-pub mod systemd_ability;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
