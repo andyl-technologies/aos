@@ -28,11 +28,6 @@ use crate::semantic::resolve_unit_identity;
 use crate::{decode_value, empty_outputs, provider_context, target_context, value};
 
 const ETC_ROOT: &str = "/etc";
-const MOUNT_EFFECTS_INTERFACE: &str = "aos.systemd.mount-effects";
-const SCHEDULED_ACTIVATION_EFFECTS_INTERFACE: &str =
-    "aos.systemd.scheduled-activation-effects";
-const SWAP_EFFECTS_INTERFACE: &str = "aos.systemd.swap-effects";
-const DEVICE_PRESENCE_INTERFACE: &str = "aos.device.presence";
 const MOUNT_RESOURCE_KIND: &str = "aos.filesystem.mount";
 const SCHEDULED_ACTIVATION_RESOURCE_KIND: &str = "aos.activation.schedule";
 const SWAP_RESOURCE_KIND: &str = "aos.memory.swap";
@@ -158,17 +153,17 @@ impl Desired {
     }
 }
 
-pub(crate) fn supports(method: &MethodReference) -> bool {
-    matches!(
-        method.interface.name.as_str(),
-        MOUNT_EFFECTS_INTERFACE
-            | SCHEDULED_ACTIVATION_EFFECTS_INTERFACE
-            | SWAP_EFFECTS_INTERFACE
-            | DEVICE_PRESENCE_INTERFACE
-    )
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NativeResourceRole {
+    Mount,
+    ScheduledActivation,
+    Swap,
 }
 
-pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
+pub(crate) async fn admit(
+    role: NativeResourceRole,
+    request: AdmissionRequest,
+) -> Result<AdmissionResult> {
     if request.schema != ADMISSION_REQUEST_SCHEMA {
         bail!("unsupported native-resource admission request schema");
     }
@@ -176,11 +171,7 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     validate_resource_contexts(&request.resources)?;
     require_method(&request.method, &request.semantics)?;
 
-    if request.method.interface.name.as_str() == DEVICE_PRESENCE_INTERFACE {
-        return admit_device(request).await;
-    }
-
-    let desired = desired_from_value(&request.method, &request.resource_spec.value)?;
+    let desired = desired_from_value(role, &request.resource_spec.value)?;
     require_realization(&desired, &request.resource_spec.realization)?;
     if request.resource_spec.kind.as_str() != desired.resource_kind() {
         bail!("native-resource desired value differs from its resource kind");
@@ -228,7 +219,10 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     })
 }
 
-pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
+pub(crate) async fn invoke(
+    role: NativeResourceRole,
+    invocation: Invocation,
+) -> Result<InvocationResult> {
     if invocation.schema != INVOCATION_SCHEMA || invocation.request.schema != REQUEST_SCHEMA {
         bail!("unsupported native-resource invocation schema");
     }
@@ -244,15 +238,12 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     require_method(&invocation.method, &invocation.semantics)?;
     require_method(&invocation.request.method, &invocation.request.semantics)?;
 
-    if invocation.method.interface.name.as_str() == DEVICE_PRESENCE_INTERFACE {
-        return invoke_device(invocation).await;
-    }
     if invocation.method.interface != invocation.request.method.interface {
         bail!("native-resource recovery cannot cross effect interfaces");
     }
 
     let bound = validate_resource_context(target_context(&invocation)?)?;
-    let desired = desired_from_value(&invocation.method, &bound.resource_spec.value)?;
+    let desired = desired_from_value(role, &bound.resource_spec.value)?;
     require_inputs(&desired, &invocation.request.inputs)?;
     require_realization(&desired, &bound.resource_spec.realization)?;
     if bound.resource_spec.kind.as_str() != desired.resource_kind() {
@@ -342,6 +333,17 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     })
 }
 
+pub(crate) async fn admit_device_role(request: AdmissionRequest) -> Result<AdmissionResult> {
+    if request.schema != ADMISSION_REQUEST_SCHEMA {
+        bail!("unsupported device admission request schema");
+    }
+    validate_admission_resource(&request)?;
+    validate_resource_contexts(&request.resources)?;
+    require_device_method(&request.method, &request.semantics)?;
+
+    admit_device(request).await
+}
+
 async fn admit_device(request: AdmissionRequest) -> Result<AdmissionResult> {
     if !request.resource_spec.realization.as_json().is_null() {
         bail!("device-presence observation unexpectedly carries a realization");
@@ -365,6 +367,28 @@ async fn admit_device(request: AdmissionRequest) -> Result<AdmissionResult> {
         native_context: provider_context(&manager, inspection.unit_identity, false)?,
         supported_purposes: supported_purposes()?,
     })
+}
+
+pub(crate) async fn invoke_device_role(invocation: Invocation) -> Result<InvocationResult> {
+    if invocation.schema != INVOCATION_SCHEMA || invocation.request.schema != REQUEST_SCHEMA {
+        bail!("unsupported device invocation schema");
+    }
+    if !invocation.method_is_bound() {
+        bail!("device invocation method is not bound to its recovery contract");
+    }
+    require_device_method(&invocation.method, &invocation.semantics)?;
+    require_device_method(&invocation.request.method, &invocation.request.semantics)?;
+    if invocation.method.interface != invocation.request.method.interface {
+        bail!("device-presence recovery cannot cross interfaces");
+    }
+    if resource_set_digest(&invocation.request.resources)?
+        != invocation.request.native_context_digest
+    {
+        bail!("device invocation resource-set digest does not match");
+    }
+    validate_resource_contexts(&invocation.request.resources)?;
+
+    invoke_device(invocation).await
 }
 
 async fn invoke_device(invocation: Invocation) -> Result<InvocationResult> {
@@ -429,23 +453,11 @@ fn supported_purposes() -> Result<SupportedPurposes> {
 }
 
 fn require_method(method: &MethodReference, semantics: &MethodSemantics) -> Result<()> {
-    if !supports(method) {
-        bail!("native-resource method selects another interface");
-    }
-    let expected = if method.interface.name.as_str() == DEVICE_PRESENCE_INTERFACE {
-        if method.method.as_str() != "observe" {
-            bail!("device-presence handler exposes only observation");
-        }
-        MethodSemantics::ordinary(AccessMode::Read)
-    } else {
-        match method.method.as_str() {
-            "observe" => MethodSemantics::ordinary(AccessMode::Read),
-            "create" | "reconcile" | "update" => {
-                MethodSemantics::ordinary(AccessMode::ExclusiveWrite)
-            }
-            "remove" => MethodSemantics::provider_stop(),
-            _ => bail!("unsupported native-resource effect method"),
-        }
+    let expected = match method.method.as_str() {
+        "observe" => MethodSemantics::ordinary(AccessMode::Read),
+        "create" | "reconcile" | "update" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+        "remove" => MethodSemantics::provider_stop(),
+        _ => bail!("unsupported native-resource effect method"),
     };
     if *semantics != expected {
         bail!("native-resource method carries mismatched semantics");
@@ -453,14 +465,23 @@ fn require_method(method: &MethodReference, semantics: &MethodSemantics) -> Resu
     Ok(())
 }
 
-fn desired_from_value(method: &MethodReference, value: &AbilityValue) -> Result<Desired> {
-    match method.interface.name.as_str() {
-        MOUNT_EFFECTS_INTERFACE => Ok(Desired::Mount(decode_value(value)?)),
-        SCHEDULED_ACTIVATION_EFFECTS_INTERFACE => {
+fn require_device_method(method: &MethodReference, semantics: &MethodSemantics) -> Result<()> {
+    if method.method.as_str() != "observe" {
+        bail!("device-presence handler exposes only observation");
+    }
+    if *semantics != MethodSemantics::ordinary(AccessMode::Read) {
+        bail!("device-presence method carries mismatched semantics");
+    }
+    Ok(())
+}
+
+fn desired_from_value(role: NativeResourceRole, value: &AbilityValue) -> Result<Desired> {
+    match role {
+        NativeResourceRole::Mount => Ok(Desired::Mount(decode_value(value)?)),
+        NativeResourceRole::ScheduledActivation => {
             Ok(Desired::ScheduledActivation(decode_value(value)?))
         }
-        SWAP_EFFECTS_INTERFACE => Ok(Desired::Swap(decode_value(value)?)),
-        _ => bail!("native-resource effect selects an unsupported desired value"),
+        NativeResourceRole::Swap => Ok(Desired::Swap(decode_value(value)?)),
     }
 }
 
@@ -489,10 +510,9 @@ fn require_realization(desired: &Desired, value: &AbilityValue) -> Result<()> {
         | (Desired::Swap(_), NativeRealization::SwapUnit { schema }) => {
             schema == REALIZATION_SCHEMA
         }
-        (
-            Desired::ScheduledActivation(_),
-            NativeRealization::TimerUnit { schema, .. },
-        ) => schema == REALIZATION_SCHEMA,
+        (Desired::ScheduledActivation(_), NativeRealization::TimerUnit { schema, .. }) => {
+            schema == REALIZATION_SCHEMA
+        }
         _ => false,
     };
     if !matches {

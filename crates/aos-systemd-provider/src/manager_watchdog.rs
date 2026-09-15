@@ -19,10 +19,10 @@ use crate::materialize::{
     ensure_directory, publish_file, remove_managed_path, verify_file_exact_or_absent,
 };
 use crate::model::{
-    MANAGER_WATCHDOG_CONTEXT_SCHEMA, MANAGER_WATCHDOG_EFFECTS_INTERFACE_NAME,
-    MANAGER_WATCHDOG_OBSERVATION_SCHEMA, MANAGER_WATCHDOG_REALIZATION_SCHEMA,
-    ManagerWatchdogContext, ManagerWatchdogEffectsRequest, ManagerWatchdogObservation,
-    ManagerWatchdogRealization, ManagerWatchdogRequest, ManagerWatchdogState,
+    MANAGER_WATCHDOG_CONTEXT_SCHEMA, MANAGER_WATCHDOG_OBSERVATION_SCHEMA,
+    MANAGER_WATCHDOG_REALIZATION_SCHEMA, ManagerWatchdogContext, ManagerWatchdogEffectsRequest,
+    ManagerWatchdogObservation, ManagerWatchdogRealization, ManagerWatchdogRequest,
+    ManagerWatchdogState,
 };
 use crate::{decode_value, target_context, value};
 
@@ -30,10 +30,6 @@ const CONFIGURATION_PATH: &str = "systemd/system.conf.d/50-aos-watchdog.conf";
 const RECEIPT_ROOT: &str = "aos/ability-revisions/systemd-manager-watchdog/sha256";
 const RECONNECT_LIMIT: Duration = Duration::from_secs(10);
 const RECONNECT_DELAY: Duration = Duration::from_millis(100);
-
-pub(crate) fn supports(method: &MethodReference) -> bool {
-    method.interface.name.as_str() == MANAGER_WATCHDOG_EFFECTS_INTERFACE_NAME
-}
 
 pub(crate) fn render(realization: &ManagerWatchdogRealization) -> Result<Vec<u8>> {
     if realization.schema != MANAGER_WATCHDOG_REALIZATION_SCHEMA {
@@ -192,9 +188,6 @@ fn require_matching_request(
 }
 
 fn require_method(method: &MethodReference, semantics: &MethodSemantics) -> Result<()> {
-    if !supports(method) {
-        bail!("handler invocation selects an unsupported manager-watchdog interface");
-    }
     let expected = match method.method.as_str() {
         "observe" => MethodSemantics::ordinary(AccessMode::Read),
         "remove" => MethodSemantics::provider_stop(),

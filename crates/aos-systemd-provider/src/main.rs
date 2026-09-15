@@ -18,6 +18,7 @@ mod static_assemble;
 mod static_render;
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Duration;
@@ -40,13 +41,71 @@ use crate::materialize::{
     UnitPaths, is_absent, matches, materialize, paths_for, remove, validate_removal,
 };
 use crate::model::{
-    Activation, OBSERVATION_SCHEMA, PACKAGED_UNIT_EFFECTS_INTERFACE_NAME,
-    PackagedUnitEffectsRequest, PackagedUnitObservation, PackagedUnitRealization,
-    PackagedUnitRequest, ProviderContext, UnitState, empty_outputs,
+    Activation, OBSERVATION_SCHEMA, PackagedUnitEffectsRequest, PackagedUnitObservation,
+    PackagedUnitRealization, PackagedUnitRequest, ProviderContext, UnitState, empty_outputs,
 };
 use crate::render::{RenderedUnit, render};
 
 const ETC_ROOT: &str = "/etc";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HandlerRole {
+    DevicePresence,
+    Identity(identity::IdentityRole),
+    ManagerWatchdog,
+    NativeResource(native_resource::NativeResourceRole),
+    PackagedUnit,
+    Readiness(readiness::ReadinessRole),
+    Service,
+}
+
+impl HandlerRole {
+    fn from_entry_point(argument_zero: &OsStr) -> Result<Self> {
+        let name = Path::new(argument_zero)
+            .file_name()
+            .and_then(OsStr::to_str)
+            .ok_or_else(|| anyhow::anyhow!("handler entry point is not valid UTF-8"))?;
+
+        match name {
+            "aos-systemd-device-presence" => Ok(Self::DevicePresence),
+            "aos-systemd-group-effects" => Ok(Self::Identity(identity::IdentityRole::Group)),
+            "aos-systemd-group-membership-effects" => {
+                Ok(Self::Identity(identity::IdentityRole::GroupMembership))
+            }
+            "aos-systemd-manager-watchdog-effects" => Ok(Self::ManagerWatchdog),
+            "aos-systemd-mount-effects" => Ok(Self::NativeResource(
+                native_resource::NativeResourceRole::Mount,
+            )),
+            "aos-systemd-packaged-unit-effects" => Ok(Self::PackagedUnit),
+            "aos-systemd-principal-effects" => {
+                Ok(Self::Identity(identity::IdentityRole::Principal))
+            }
+            "aos-systemd-scheduled-activation-effects" => Ok(Self::NativeResource(
+                native_resource::NativeResourceRole::ScheduledActivation,
+            )),
+            "aos-systemd-service-effects" => Ok(Self::Service),
+            "aos-systemd-swap-effects" => Ok(Self::NativeResource(
+                native_resource::NativeResourceRole::Swap,
+            )),
+            "aos-systemd-network-readiness-effects" => {
+                Ok(Self::Readiness(readiness::ReadinessRole::Network))
+            }
+            "aos-systemd-filesystem-readiness-effects" => {
+                Ok(Self::Readiness(readiness::ReadinessRole::Filesystem))
+            }
+            "aos-systemd-activation-milestone-effects" => Ok(Self::Readiness(
+                readiness::ReadinessRole::ActivationMilestone,
+            )),
+            "aos-systemd-runtime-entry-population-effects" => Ok(Self::Readiness(
+                readiness::ReadinessRole::RuntimeEntryPopulation,
+            )),
+            "aos-systemd-system-milestone-readiness-effects" => {
+                Ok(Self::Readiness(readiness::ReadinessRole::SystemMilestone))
+            }
+            _ => bail!("entry point does not select a checked systemd handler role"),
+        }
+    }
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -57,7 +116,7 @@ async fn main() {
 }
 
 async fn run() -> Result<()> {
-    let arguments = std::env::args().collect::<Vec<_>>();
+    let arguments = std::env::args_os().collect::<Vec<_>>();
     if arguments.len() == 2 && arguments[1] == "render" {
         return static_render::run();
     }
@@ -67,17 +126,18 @@ async fn run() -> Result<()> {
     if arguments.len() != 3 || arguments[1] != HANDLER_ABI_ARGUMENT {
         bail!("expected --aos-primitive-v1 and one invocation purpose");
     }
+    let role = HandlerRole::from_entry_point(&arguments[0])?;
     let bytes = read_input()?;
-    match arguments[2].as_str() {
-        "admit" => {
+    match arguments[2].to_str() {
+        Some("admit") => {
             let request: AdmissionRequest = decode_canonical(&bytes)?;
             let timeout = deadline(request.control.attempt_remaining_millis);
-            let result = tokio::time::timeout(timeout, admit(request))
+            let result = tokio::time::timeout(timeout, admit(role, request))
                 .await
                 .context("admission deadline expired")??;
             write_output(&result)
         }
-        purpose => {
+        Some(purpose) => {
             let request: Invocation = decode_canonical(&bytes)?;
             if serde_json::to_value(request.purpose)? != serde_json::Value::String(purpose.into()) {
                 bail!("argv purpose does not match the invocation envelope");
@@ -88,27 +148,24 @@ async fn run() -> Result<()> {
                     .attempt_remaining_millis
                     .min(request.control.recovery_remaining_millis),
             );
-            let result = tokio::time::timeout(timeout, invoke(request))
+            let result = tokio::time::timeout(timeout, invoke(role, request))
                 .await
                 .context("invocation deadline expired")??;
             write_output(&result)
         }
+        None => bail!("invocation purpose is not valid UTF-8"),
     }
 }
 
-async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
-    if request.method.interface.name.as_str() == PACKAGED_UNIT_EFFECTS_INTERFACE_NAME {
-        admit_packaged_unit(request).await
-    } else if identity::supports(&request.method) {
-        identity::admit(request).await
-    } else if manager_watchdog::supports(&request.method) {
-        manager_watchdog::admit(request).await
-    } else if readiness::supports(&request.method) {
-        readiness::admit(request).await
-    } else if native_resource::supports(&request.method) {
-        native_resource::admit(request).await
-    } else {
-        service::admit(request).await
+async fn admit(role: HandlerRole, request: AdmissionRequest) -> Result<AdmissionResult> {
+    match role {
+        HandlerRole::DevicePresence => native_resource::admit_device_role(request).await,
+        HandlerRole::Identity(role) => identity::admit(role, request).await,
+        HandlerRole::ManagerWatchdog => manager_watchdog::admit(request).await,
+        HandlerRole::NativeResource(role) => native_resource::admit(role, request).await,
+        HandlerRole::PackagedUnit => admit_packaged_unit(request).await,
+        HandlerRole::Readiness(role) => readiness::admit(role, request).await,
+        HandlerRole::Service => service::admit(request).await,
     }
 }
 
@@ -170,19 +227,15 @@ async fn admit_packaged_unit(request: AdmissionRequest) -> Result<AdmissionResul
     })
 }
 
-async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
-    if invocation.method.interface.name.as_str() == PACKAGED_UNIT_EFFECTS_INTERFACE_NAME {
-        invoke_packaged_unit(invocation).await
-    } else if identity::supports(&invocation.method) {
-        identity::invoke(invocation).await
-    } else if manager_watchdog::supports(&invocation.method) {
-        manager_watchdog::invoke(invocation).await
-    } else if readiness::supports(&invocation.method) {
-        readiness::invoke(invocation).await
-    } else if native_resource::supports(&invocation.method) {
-        native_resource::invoke(invocation).await
-    } else {
-        service::invoke(invocation).await
+async fn invoke(role: HandlerRole, invocation: Invocation) -> Result<InvocationResult> {
+    match role {
+        HandlerRole::DevicePresence => native_resource::invoke_device_role(invocation).await,
+        HandlerRole::Identity(role) => identity::invoke(role, invocation).await,
+        HandlerRole::ManagerWatchdog => manager_watchdog::invoke(invocation).await,
+        HandlerRole::NativeResource(role) => native_resource::invoke(role, invocation).await,
+        HandlerRole::PackagedUnit => invoke_packaged_unit(invocation).await,
+        HandlerRole::Readiness(role) => readiness::invoke(role, invocation).await,
+        HandlerRole::Service => service::invoke(invocation).await,
     }
 }
 
@@ -573,9 +626,6 @@ fn require_method(
     method: &aos_ability_model::MethodReference,
     semantics: &MethodSemantics,
 ) -> Result<()> {
-    if method.interface.name.as_str() != PACKAGED_UNIT_EFFECTS_INTERFACE_NAME {
-        bail!("handler invocation selects another interface");
-    }
     let expected = match method.method.as_str() {
         "create" | "reconcile" | "update" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
         "observe" => MethodSemantics::ordinary(AccessMode::Read),
@@ -688,14 +738,21 @@ fn deadline(milliseconds: u64) -> Duration {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+
     use aos_ability_model::{
         AbilityValue, AccessMode, MethodReference, MethodSemantics, ResourceReference, RevisionId,
     };
     use aos_contract::Sha256Digest;
     use aos_provider_protocol::ResourceContext;
 
-    use super::{packaged_resource_references, require_method, require_resource_contexts};
+    use super::{
+        HandlerRole, packaged_resource_references, require_method, require_resource_contexts,
+    };
+    use crate::identity::IdentityRole;
     use crate::model::PackagedUnitRequest;
+    use crate::native_resource::NativeResourceRole;
+    use crate::readiness::ReadinessRole;
 
     fn method(name: &str) -> MethodReference {
         serde_json::from_value(serde_json::json!({
@@ -732,6 +789,33 @@ mod tests {
                 &MethodSemantics::ordinary(AccessMode::ExclusiveWrite)
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn entry_points_select_closed_semantic_roles() {
+        assert_eq!(
+            HandlerRole::from_entry_point(OsStr::new(
+                "/nix/store/provider/bin/aos-systemd-group-effects"
+            ))
+            .expect("group role parses"),
+            HandlerRole::Identity(IdentityRole::Group)
+        );
+        assert_eq!(
+            HandlerRole::from_entry_point(OsStr::new("aos-systemd-mount-effects"))
+                .expect("mount role parses"),
+            HandlerRole::NativeResource(NativeResourceRole::Mount)
+        );
+        assert_eq!(
+            HandlerRole::from_entry_point(OsStr::new(
+                "aos-systemd-system-milestone-readiness-effects",
+            ))
+            .expect("milestone role parses"),
+            HandlerRole::Readiness(ReadinessRole::SystemMilestone)
+        );
+        assert!(
+            HandlerRole::from_entry_point(OsStr::new("aos-systemd-provider")).is_err(),
+            "the generic binary cannot select a runtime handler role",
         );
     }
 
