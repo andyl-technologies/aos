@@ -15,7 +15,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use aos_ability_model::{AbilityValue, IncarnationId, LocalKey};
+use aos_ability_model::{
+    ABILITY_LIMITS_V1, AbilityValue, AccessMode, IncarnationId, LocalKey, MethodSemantics,
+    RevisionId,
+};
 use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
     AdmissionResult, AdmissionRevision, BoundNativeContext, HANDLER_ABI_ARGUMENT,
@@ -33,7 +36,6 @@ use crate::model::{
 };
 use crate::render::{RenderedUnit, render};
 
-const MAX_INPUT_BYTES: usize = 32 * 1024 * 1024;
 const ETC_ROOT: &str = "/etc";
 
 #[tokio::main(flavor = "current_thread")]
@@ -82,13 +84,14 @@ async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
     if request.schema != ADMISSION_REQUEST_SCHEMA {
         bail!("unsupported admission request schema");
     }
-    require_interface(&request.method)?;
+    require_method(&request.method, &request.semantics)?;
     if request.target.resource != request.resource_spec.resource {
         bail!("admission target does not match its resource specification");
     }
     validate_contexts(&request.resources)?;
 
     let expected: PackagedUnitRequest = decode_value(&request.resource_spec.value)?;
+    require_prerequisite_contexts(&expected.prerequisites, &request.resources)?;
     let realization: PackagedUnitRealization = decode_value(&request.resource_spec.realization)?;
     require_matching_request(&expected, &realization)?;
     let rendered = render(&realization)?;
@@ -141,7 +144,8 @@ async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     if !invocation.method_is_bound() {
         bail!("invocation method is not bound to its durable recovery contract");
     }
-    require_interface(&invocation.method)?;
+    require_method(&invocation.method, &invocation.semantics)?;
+    require_method(&invocation.request.method, &invocation.request.semantics)?;
     if resource_set_digest(&invocation.request.resources)?
         != invocation.request.native_context_digest
     {
@@ -156,7 +160,9 @@ async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     {
         bail!("target context is bound to another resource");
     }
+    require_target_revision(bound.resource_spec.revision, target.revision)?;
     let expected: PackagedUnitRequest = decode_value(&bound.resource_spec.value)?;
+    require_prerequisite_contexts(&expected.prerequisites, &invocation.request.resources)?;
     let method_inputs: PackagedUnitRequest = decode_value(&invocation.request.inputs)?;
     if method_inputs != expected {
         bail!("invocation inputs differ from the checked target value");
@@ -410,12 +416,43 @@ fn validate_contexts(contexts: &[ResourceContext]) -> Result<()> {
     Ok(())
 }
 
-fn require_interface(method: &aos_ability_model::MethodReference) -> Result<()> {
+fn require_prerequisite_contexts(
+    prerequisites: &[aos_ability_model::ResourceReference],
+    contexts: &[ResourceContext],
+) -> Result<()> {
+    for prerequisite in prerequisites {
+        let matches = contexts
+            .iter()
+            .filter(|context| context.reference == *prerequisite)
+            .count();
+        if matches != 1 {
+            bail!("packaged-unit prerequisite lacks one exact checked resource context");
+        }
+    }
+    Ok(())
+}
+
+fn require_method(
+    method: &aos_ability_model::MethodReference,
+    semantics: &MethodSemantics,
+) -> Result<()> {
     if method.interface.name.as_str() != INTERFACE_NAME {
         bail!("handler invocation selects another interface");
     }
-    if !matches!(method.method.as_str(), "apply" | "observe") {
-        bail!("handler invocation selects an unsupported method");
+    let expected = match method.method.as_str() {
+        "apply" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+        "observe" => MethodSemantics::ordinary(AccessMode::Read),
+        _ => bail!("handler invocation selects an unsupported method"),
+    };
+    if *semantics != expected {
+        bail!("handler invocation carries mismatched method semantics");
+    }
+    Ok(())
+}
+
+fn require_target_revision(resource: RevisionId, context: RevisionId) -> Result<()> {
+    if resource != context {
+        bail!("target native context carries another semantic revision");
     }
     Ok(())
 }
@@ -484,10 +521,14 @@ where
 fn read_input() -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     std::io::stdin()
-        .take((MAX_INPUT_BYTES + 1) as u64)
+        .take(ABILITY_LIMITS_V1.max_document_bytes.saturating_add(1))
         .read_to_end(&mut bytes)
         .context("reading handler input")?;
-    if bytes.len() > MAX_INPUT_BYTES {
+    let input_too_large = match u64::try_from(bytes.len()) {
+        Ok(length) => length > ABILITY_LIMITS_V1.max_document_bytes,
+        Err(_) => true,
+    };
+    if input_too_large {
         bail!("handler input exceeds its byte bound");
     }
     Ok(bytes)
@@ -505,4 +546,115 @@ fn write_output<T: Serialize>(output: &T) -> Result<()> {
 
 fn deadline(milliseconds: u64) -> Duration {
     Duration::from_millis(milliseconds.max(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_ability_model::{
+        AbilityValue, AccessMode, MethodReference, MethodSemantics, ResourceReference, RevisionId,
+    };
+    use aos_contract::Sha256Digest;
+    use aos_provider_protocol::ResourceContext;
+
+    use super::{require_method, require_prerequisite_contexts, require_target_revision};
+
+    fn method(name: &str) -> MethodReference {
+        serde_json::from_value(serde_json::json!({
+            "interface": {
+                "name": "aos.systemd.packaged-unit",
+                "abi": 1,
+                "descriptor": Sha256Digest::from_bytes([1; 32]).to_string(),
+            },
+            "method": name,
+        }))
+        .expect("method fixture is valid")
+    }
+
+    #[test]
+    fn methods_require_their_exact_declared_semantics() {
+        let apply = method("apply");
+        let observe = method("observe");
+
+        assert!(
+            require_method(
+                &apply,
+                &MethodSemantics::ordinary(AccessMode::ExclusiveWrite)
+            )
+            .is_ok()
+        );
+        assert!(require_method(&observe, &MethodSemantics::ordinary(AccessMode::Read)).is_ok());
+        assert!(require_method(&apply, &MethodSemantics::ordinary(AccessMode::Read)).is_err());
+        assert!(require_method(&observe, &MethodSemantics::provider_stop()).is_err());
+    }
+
+    #[test]
+    fn target_context_revision_must_equal_its_resource_specification() {
+        let expected = RevisionId(Sha256Digest::from_bytes([1; 32]));
+        let changed = RevisionId(Sha256Digest::from_bytes([2; 32]));
+
+        assert!(require_target_revision(expected, expected).is_ok());
+        assert!(require_target_revision(expected, changed).is_err());
+    }
+
+    fn resource_reference(key: &str) -> ResourceReference {
+        serde_json::from_value(serde_json::json!({
+            "interface": {
+                "name": "aos.kernel.modules",
+                "abi": 1,
+                "descriptor": format!("sha256:{}", "1".repeat(64)),
+            },
+            "resource": {
+                "provider": {
+                    "environment": {
+                        "authority": "test",
+                        "key": "host",
+                        "stage": "host",
+                    },
+                    "key": "kmod",
+                },
+                "key": key,
+            },
+            "operations": ["observe"],
+            "lifetime": "instance",
+        }))
+        .expect("resource-reference fixture is valid")
+    }
+
+    fn context(reference: ResourceReference) -> ResourceContext {
+        let empty =
+            AbilityValue::new(serde_json::Value::Null).expect("null context fixture is bounded");
+        ResourceContext {
+            reference,
+            revision: RevisionId(Sha256Digest::from_bytes([2; 32])),
+            observation: empty.clone(),
+            native_context: empty,
+            native_context_digest: Sha256Digest::from_bytes([3; 32]),
+        }
+    }
+
+    #[test]
+    fn prerequisites_require_one_exact_checked_context() {
+        let expected = resource_reference("configured");
+        let changed = resource_reference("other");
+
+        assert!(
+            require_prerequisite_contexts(
+                std::slice::from_ref(&expected),
+                &[context(expected.clone())],
+            )
+            .is_ok()
+        );
+        assert!(require_prerequisite_contexts(std::slice::from_ref(&expected), &[]).is_err());
+        assert!(
+            require_prerequisite_contexts(std::slice::from_ref(&expected), &[context(changed)],)
+                .is_err()
+        );
+        assert!(
+            require_prerequisite_contexts(
+                &[expected.clone()],
+                &[context(expected.clone()), context(expected)],
+            )
+            .is_err()
+        );
+    }
 }

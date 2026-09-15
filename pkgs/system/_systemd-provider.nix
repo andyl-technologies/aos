@@ -93,35 +93,84 @@
       realizations = builtins.mapAttrs (_: realizationFor) resources;
     };
 
-  resolveDeferred = value:
+  resolveReference = value:
     if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
-    then
-      config.aos.abilities.compositionOutputs.${value.request}.${value.output}.value
-      or (throw "systemd provider cannot resolve ${value.request}.${value.output}")
-    else value;
+    then let
+      output =
+        config.aos.abilities.compositionOutputs.${value.request}.${value.output}
+        or (throw "systemd provider cannot resolve ${value.request}.${value.output}");
+    in
+      if output.phase != "planning"
+      then throw "systemd dependency ${value.request}.${value.output} is not a planning output"
+      else if !lib.abilities.types.resourceReference.check output.value
+      then throw "systemd dependency ${value.request}.${value.output} is not a ResourceReference"
+      else output.value
+    else if lib.abilities.types.resourceReference.check value
+    then value
+    else throw "systemd dependency is not an exact ResourceReference";
 
-  resourceIdentity = resource:
-    builtins.hashString "sha256" (builtins.toJSON resource);
-  resourcesByIdentity = builtins.listToAttrs (builtins.map (resource: {
-      name = resourceIdentity resource.resource;
-      value = resource;
-    })
-    (builtins.attrValues config.aos.abilities.resolvedResources));
-  unitNameForReference = deferred: let
-    reference = resolveDeferred deferred;
-    resource = resourcesByIdentity.${resourceIdentity reference.resource} or null;
-    realization =
-      if resource == null
-      then null
-      else resource.realization;
+  resourceIdentity = resource: builtins.toJSON resource;
+  resourcesByIdentity = builtins.foldl' (resources: resource: let
+    identity = resourceIdentity resource.resource;
   in
-    if realization == null
-    then null
-    else realization.systemd_unit.unit_name or null;
-  concreteUnitNames = references:
-    builtins.sort builtins.lessThan (
-      builtins.filter (name: name != null) (builtins.map unitNameForReference references)
-    );
+    resources
+    // {
+      ${identity} = (resources.${identity} or []) ++ [resource];
+    }) {} (builtins.attrValues config.aos.abilities.resolvedResources);
+  interfaceForReference = reference: let
+    matches = builtins.filter (candidate:
+      lib.abilities.interfaceIdentity (
+        lib.abilities.interfaceDocumentFromDeclaration candidate
+      )
+      == reference.interface) (builtins.attrValues config.aos.abilities.interfaces);
+  in
+    if builtins.length matches != 1
+    then throw "systemd dependency must name exactly one declared interface"
+    else builtins.head matches;
+  requireReferenceAuthority = reference: resource: let
+    referencedInterface = interfaceForReference reference;
+    operationsAreReadable = builtins.all (operation:
+      builtins.hasAttr operation referencedInterface.methods
+      && referencedInterface.methods.${operation}.semantics.requiredTargetAccess == "read"
+      && referencedInterface.methods.${operation}.targetResource == resource.kind)
+    reference.operations;
+  in
+    if reference.operations == [] || !operationsAreReadable
+    then throw "systemd dependency ResourceReference does not grant exact read authority"
+    else true;
+  unitNameForReference = deferred: let
+    reference = resolveReference deferred;
+    identity = resourceIdentity reference.resource;
+    matches = resourcesByIdentity.${identity} or [];
+    resource =
+      if builtins.length matches != 1
+      then throw "systemd dependency must resolve to exactly one resource"
+      else builtins.head matches;
+    realization = resource.realization;
+    unitIdentity =
+      if realization == null
+      then null
+      else realization.systemd_unit or null;
+    unitName =
+      if unitIdentity == null
+      then null
+      else unitIdentity.unit_name or null;
+  in
+    if resource.resource != reference.resource
+    then throw "systemd dependency resolved to another ResourceId"
+    else if resource.lifetime != reference.lifetime
+    then throw "systemd dependency realization does not match its ResourceReference authority"
+    else if !requireReferenceAuthority reference resource
+    then throw "systemd dependency has invalid ResourceReference authority"
+    else if unitName == null || !validUnitName unitName
+    then throw "systemd dependency has no valid systemd unit identity"
+    else unitName;
+  concreteUnitNames = references: let
+    units = builtins.sort builtins.lessThan (builtins.map unitNameForReference references);
+  in
+    if builtins.length units != builtins.length (lib.unique units)
+    then throw "systemd dependencies resolve multiple resources to the same unit"
+    else units;
 
   directive = name: values:
     lib.optionalString (values != []) "${name}=${builtins.concatStringsSep " " values}\n";

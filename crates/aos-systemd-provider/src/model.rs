@@ -54,6 +54,7 @@ pub(crate) struct DropIn {
 pub(crate) struct PackagedUnitRequest {
     pub(crate) source: UnitSource,
     pub(crate) activation: Activation,
+    pub(crate) prerequisites: Vec<ResourceReference>,
     pub(crate) dependencies: Dependencies,
     pub(crate) drop_in: DropIn,
 }
