@@ -1517,17 +1517,19 @@ mod tests {
                     "store_path": "/nix/store/gggggggggggggggggggggggggggggggg-evaluator",
                     "store_hash": format!("sha256:{}", "1".repeat(40))
                 },
-                "config_modules": {
+                "package_modules": {
                     "registry": "test",
                     "release_tag": "1.0.0",
                     "tag_signer_key": "deadbeef",
                     "realization": format!("sha256:{}", "5".repeat(64)),
-                    "closure_hash": "sha256:9ab0c293d36b82b855c56917504b69670de56367c26d3bb7529a82b227bd1135",
-                    "count": 1,
-                    "store_paths": ["/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-config"],
-                    "nar_hashes": [format!("sha256:{}", "0".repeat(52))],
-                    "package_names": ["firewall"],
-                    "module_abi_compat": [{"min": 1, "max": 10}]
+                    "modules": [{
+                        "package": "firewall",
+                        "document_digest": format!("sha256:{}", "2".repeat(64)),
+                        "store_path": "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-config",
+                        "nar_hash": format!("sha256:{}", "0".repeat(52)),
+                        "entrypoint": "module.nix",
+                        "origin": "registry"
+                    }]
                 },
                 "host_nix": {
                     "store_path": "/nix/store/cccccccccccccccccccccccccccccccc-host.nix",
@@ -1847,11 +1849,16 @@ mod tests {
         assert_eq!(attestation["quote_status"], "unquoted-tpm-unavailable");
         for field in ["registry", "release_tag", "tag_signer_key", "realization"] {
             assert_eq!(
-                attestation["inputs"]["config_modules"][field],
-                manifest["inputs"]["config_modules"][field],
-                "config-module release field {field} must survive manifest-to-attestation projection"
+                attestation["inputs"]["package_modules"][field],
+                manifest["inputs"]["package_modules"][field],
+                "package-module release field {field} must survive manifest-to-attestation projection"
             );
         }
+        assert_eq!(
+            attestation["inputs"]["package_modules"]["modules"],
+            manifest["inputs"]["package_modules"]["modules"],
+            "typed package-module identities must survive manifest-to-attestation projection"
+        );
         assert_eq!(
             attestation["inputs"]["host_nix"]["content_hash"],
             manifest["inputs"]["host_nix"]["content_hash"]
