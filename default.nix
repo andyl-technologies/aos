@@ -419,6 +419,8 @@
       testing.mkQualificationImageScenario {
         name = "aos-qualification-${hostPlatform.system}-image-lifecycle";
         identity = qualificationExecutorIdentity;
+        checks = qualificationClaimChecks "disk-${hostPlatform.system}-functional";
+        packageChecks = qualificationRequirementChecks "package-function";
       }
     else null;
   nativeAbilityScenarioIds = [
@@ -436,6 +438,15 @@
       releaseQualification.requirements
     ))
     .checks;
+  qualificationClaimChecks = claimId: let
+    claim = builtins.head (
+      builtins.filter (
+        candidate: candidate.id == claimId
+      )
+      releaseQualification.claims
+    );
+  in
+    lib.concatMap qualificationRequirementChecks claim.requirements;
   mkNativeAbilityScenario = scenarioId: source: let
     spec = import source {
       inherit lib mkSystem pkgs;
