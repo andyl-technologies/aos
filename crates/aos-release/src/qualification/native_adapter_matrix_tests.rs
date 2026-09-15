@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result};
+use aos_ability_model::{AccessMode, LifecycleSemantics, ResourceLifetime};
 
 use crate::digest::Sha256Digest;
 use crate::evidence::GateResult;
@@ -11,11 +12,12 @@ use crate::qualification::{
 };
 use crate::qualification_evidence::{
     CheckObservation, NATIVE_ADAPTER_MATRIX_OBSERVATION_V1, NATIVE_ADAPTER_MATRIX_REQUIREMENT,
-    NativeAdapterCellObservation, NativeAdapterClaimHandler, NativeAdapterImplementationClaim,
-    NativeAdapterMatrixComponentIdentity, NativeAdapterMatrixEnvironment,
-    NativeAdapterMatrixEnvironmentStatus, NativeAdapterMatrixObservation,
-    NativeAdapterPostconditionPolicy, NativeAdapterPostconditionProbe,
-    NativeAdapterProviderContract, NativeAdapterSurfaceAdapter, NativeAdapterSurfaceLimits,
+    NativeAdapterCellObservation, NativeAdapterClaimHandler, NativeAdapterDispositionPolicy,
+    NativeAdapterImplementationClaim, NativeAdapterMatrixComponentIdentity,
+    NativeAdapterMatrixEnvironment, NativeAdapterMatrixEnvironmentStatus,
+    NativeAdapterMatrixObservation, NativeAdapterPostconditionPolicy,
+    NativeAdapterPostconditionProbe, NativeAdapterProviderContract,
+    NativeAdapterScenarioApplicability, NativeAdapterSurfaceAdapter, NativeAdapterSurfaceLimits,
     NativeAdapterSurfaceMethod, NativeAdapterSurfaceScenario, NativeAdapterSurfaceSpec,
     QualificationCase, QualificationObservation, QualificationPredecessor,
     native_adapter_inapplicable_reason, native_adapter_matrix_check,
@@ -65,11 +67,18 @@ pub(crate) fn fixture_surface() -> NativeAdapterSurfaceSpec {
             interface_descriptor: descriptor,
             interface_name: interface_name.into(),
             methods: vec![NativeAdapterSurfaceMethod {
-                effect_class: "mutation".into(),
+                required_target_access: AccessMode::ExclusiveWrite,
                 method: "apply".into(),
             }],
+            observation_kind: "fixture-observation".into(),
             provider_contract: NativeAdapterProviderContract {
-                resource_lifetime: "persistent".into(),
+                lifecycle: LifecycleSemantics {
+                    stable_resource_identity: true,
+                    releases_ephemeral_on_disable: true,
+                    retains_persistent_by_default: true,
+                    persistent_delete_method: None,
+                },
+                resource_lifetimes: vec![ResourceLifetime::Persistent],
                 state_format: Some(digest("state format")),
             },
             provider_implementation: NativeAdapterImplementationClaim {
@@ -102,8 +111,15 @@ pub(crate) fn fixture_surface() -> NativeAdapterSurfaceSpec {
         .collect();
 
         NativeAdapterSurfaceScenario {
+            applicability: NativeAdapterScenarioApplicability {
+                required_resource_lifetimes: Vec::new(),
+                requires_state_format: false,
+            },
             boundary: boundary.into(),
             candidate: "same".into(),
+            disposition: NativeAdapterDispositionPolicy::Exact {
+                value: disposition(id).into(),
+            },
             failure: failure.into(),
             family: "durability-recovery".into(),
             id: id.into(),
@@ -118,6 +134,12 @@ pub(crate) fn fixture_surface() -> NativeAdapterSurfaceSpec {
             method(digest("interface z"), "fixture-z", "aos.fixture-z-effects"),
         ],
         families: vec!["durability-recovery".into()],
+        invalidation_dimensions: vec![
+            "subject".into(),
+            "policy".into(),
+            "executor".into(),
+            "environment".into(),
+        ],
         limits: NativeAdapterSurfaceLimits {
             max_adapters: 2,
             max_methods: 2,
@@ -884,8 +906,18 @@ fn provider_contract_metadata_changes_adoption_applicability_and_surface_identit
     );
 
     let mut contract = NativeAdapterProviderContract {
-        resource_lifetime: "persistent".into(),
+        lifecycle: LifecycleSemantics {
+            stable_resource_identity: true,
+            releases_ephemeral_on_disable: true,
+            retains_persistent_by_default: true,
+            persistent_delete_method: None,
+        },
+        resource_lifetimes: vec![ResourceLifetime::Persistent],
         state_format: Some(digest("state format")),
+    };
+    cell.applicability = NativeAdapterScenarioApplicability {
+        required_resource_lifetimes: vec![ResourceLifetime::Persistent],
+        requires_state_format: true,
     };
     assert_eq!(native_adapter_inapplicable_reason(&cell, &contract), None);
 
@@ -893,7 +925,7 @@ fn provider_contract_metadata_changes_adoption_applicability_and_surface_identit
     let mut changed_surface = observation.spec.surface.clone();
     changed_surface.adapters[0]
         .provider_contract
-        .resource_lifetime = "instance".into();
+        .resource_lifetimes = vec![ResourceLifetime::Instance];
     let changed_lifetime_surface = crate::canonical::to_vec(&changed_surface)?;
     assert_ne!(original_surface, changed_lifetime_surface);
     let mut stale_lifetime_spec = observation.spec.clone();
@@ -901,7 +933,7 @@ fn provider_contract_metadata_changes_adoption_applicability_and_surface_identit
     assert!(validate_native_adapter_matrix_spec(&stale_lifetime_spec).is_err());
     assert_eq!(
         native_adapter_inapplicable_reason(&cell, &changed_surface.adapters[0].provider_contract,),
-        Some("non-persistent-lifetime")
+        Some("required-resource-lifetime-unavailable")
     );
 
     contract.state_format = None;
@@ -936,7 +968,7 @@ fn surface_digest_subject_and_cell_expansion_are_recomputed() -> Result<()> {
     mutations.push(limits);
 
     let mut method = observation.clone();
-    method.spec.surface.adapters[0].methods[0].effect_class = "observation".into();
+    method.spec.surface.adapters[0].methods[0].required_target_access = AccessMode::Read;
     mutations.push(method);
 
     let mut implementation_reference = observation.clone();

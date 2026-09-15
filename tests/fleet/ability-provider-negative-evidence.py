@@ -637,16 +637,16 @@ class ProviderNegativeEvidence:
         selected: dict[str, Any],
         dependent: dict[str, Any],
     ) -> dict[str, Any] | None:
-        effect_class = {
-            cell["effect_class"]
+        required_target_access = {
+            cell["required_target_access"]
             for cell in self._cells.values()
             if cell["interface"] == selected["interface"]
             and cell["method"] == selected["method"]
         }
-        if effect_class != {"observation"}:
+        if required_target_access != {"read"}:
             return None
         dependent_class = {
-            cell["effect_class"]
+            cell["required_target_access"]
             for cell in self._cells.values()
             if cell["interface"] == dependent["interface"]
             and cell["method"] == dependent["method"]
@@ -675,7 +675,7 @@ class ProviderNegativeEvidence:
             if operation["key"] not in targets:
                 continue
             classes = {
-                cell["effect_class"]
+                cell["required_target_access"]
                 for cell in self._cells.values()
                 if cell["interface"] == operation["interface"]
                 and cell["method"] == operation["method"]

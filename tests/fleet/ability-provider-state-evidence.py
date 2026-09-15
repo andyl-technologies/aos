@@ -421,7 +421,7 @@ class ProviderStateEvidence:
             raise RuntimeError("production transfer contract does not support the candidate route")
         provider_contract = self._contracts[cell["adapter"]]
         if (
-            provider_contract["resource_lifetime"] != "persistent"
+            "persistent" not in provider_contract["resource_lifetimes"]
             or provider_contract["state_format"] is None
             or owner.get("state_format", {}).get("descriptor")
             != provider_contract["state_format"]
@@ -637,7 +637,9 @@ class ProviderStateEvidence:
         }:
             raise RuntimeError("transfer contract has no truthful unsupported reason")
         provider_contract = self._contracts[cell["adapter"]]
-        expected_lifetime = provider_contract["resource_lifetime"]
+        expected_lifetime = operation["target"]["lifetime"]
+        if expected_lifetime not in provider_contract["resource_lifetimes"]:
+            raise RuntimeError("provider-state operation differs from its contract lifetime")
         expected_reason = (
             "non-persistent-lifetime"
             if expected_lifetime != "persistent"
@@ -1085,7 +1087,7 @@ class ProviderStateEvidence:
             raise RuntimeError("provider-state operation targets another interface")
         if (
             operation["target"]["lifetime"]
-            != self._contracts[cell["adapter"]]["resource_lifetime"]
+            not in self._contracts[cell["adapter"]]["resource_lifetimes"]
         ):
             raise RuntimeError("provider-state operation differs from its contract lifetime")
         return cell, bundle, operation, _operation_identity(operation, ordinal)

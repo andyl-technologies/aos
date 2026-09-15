@@ -71,8 +71,8 @@ in
                   provider_key="matrix-systemd",
                   resource_key="aos-matrix-primary-service",
                   label=label,
-                  observation=matrix_cells[foreign_cell]["effect_class"]
-                  == "observation",
+                  observation=matrix_cells[foreign_cell]["required_target_access"]
+                  == "read",
                   mapping=selected["native_resource_map"],
               ),
               candidate,

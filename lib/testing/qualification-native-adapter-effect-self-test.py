@@ -138,15 +138,24 @@ def main() -> None:
         "test-adapter/aos.test-effects/abi-1/apply/"
         "interrupt-after-durable-intent"
     )
-    postconditions = scenario_policy["baseline_postconditions"] + [
-        scenario_policy["failure_postcondition"]
-    ]
+    postconditions = (
+        scenario_policy["postcondition_groups"]["baseline"]
+        + scenario_policy["postcondition_groups"]["failure"]
+    )
     cell = {
         "id": cell_id,
         "adapter": "test-adapter",
-        "effect_class": "mutation",
+        "applicability": {
+            "required_resource_lifetimes": [],
+            "requires_state_format": False,
+        },
+        "required_target_access": "exclusive-write",
         "interface": interface,
         "method": "apply",
+        "disposition": {
+            "kind": "exact",
+            "value": "reconciled-after-interruption",
+        },
         "postconditions": postconditions,
         "postcondition_kinds": {
             name: policy_kinds[name] for name in postconditions
@@ -215,7 +224,8 @@ def main() -> None:
                 {
                     "adapter": cell["adapter"],
                     "provider_contract": {
-                        "resource_lifetime": "instance",
+                        "lifecycle": {},
+                        "resource_lifetimes": ["instance"],
                         "state_format": None,
                     },
                 }
@@ -230,8 +240,8 @@ def main() -> None:
 
     changed_lifetime = copy.deepcopy(matrix)
     changed_lifetime["surface"]["adapters"][0]["provider_contract"][
-        "resource_lifetime"
-    ] = "persistent"
+        "resource_lifetimes"
+    ] = ["persistent"]
     rejected(
         lambda: evidence.EffectBoundaryEvidence(
             changed_lifetime, [cell_id]

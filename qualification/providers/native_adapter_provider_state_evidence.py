@@ -12,7 +12,6 @@ from native_adapter_evidence_common import (
     LOCAL_KEY,
     PROBE_SCHEMA,
     RAW_DIGEST,
-    SCENARIO_DISPOSITIONS,
     _adapter_claim,
     _adapter_claim_by_interface,
     _bound_cohort_subject,
@@ -26,7 +25,7 @@ from native_adapter_evidence_common import (
     _is_ordered_boundary_timeline,
     _is_ordered_operation_timeline,
     _matches,
-    _observer_result_value,
+    _observation_kind,
     _operation_key,
     _postcondition_kind,
     _project_operation,
@@ -56,7 +55,7 @@ def _cancellation_oracle_kinds(spec: dict[str, Any]) -> set[str]:
     """Returns live-state kinds from package-owned observer descriptors."""
 
     return {
-        _observer_result_value(adapter, "kind")
+        _observation_kind(adapter)
         for adapter in spec.get("surface", {}).get("adapters", [])
         if isinstance(adapter, dict)
     }
@@ -263,8 +262,9 @@ def _validate_provider_state_subject(
     provider_contract = provider_contracts.get(cell["adapter"])
     if not isinstance(provider_contract, dict):
         raise RuntimeError("provider-state evidence has no matrix provider contract")
-    expected_lifetime = provider_contract.get("resource_lifetime")
-    if operation_document.get("target", {}).get("lifetime") != expected_lifetime:
+    declared_lifetimes = provider_contract.get("resource_lifetimes")
+    expected_lifetime = operation_document.get("target", {}).get("lifetime")
+    if not isinstance(declared_lifetimes, list) or expected_lifetime not in declared_lifetimes:
         raise RuntimeError("provider-state operation differs from its provider contract")
 
     live_snapshots = [
@@ -590,8 +590,8 @@ def _provider_state_oracle_snapshot(
 
     return (
         isinstance(value, dict)
-        and value.get("kind") == _observer_result_value(
-            _adapter_claim(matrix_spec, adapter), "kind"
+        and value.get("kind") == _observation_kind(
+            _adapter_claim(matrix_spec, adapter)
         )
     )
 

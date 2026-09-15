@@ -21,12 +21,6 @@ SCENARIO_BOUNDARIES = {
     "lose-external-result": "effect-returned",
     "interrupt-after-durable-outcome": "effect-outcome-durable",
 }
-SCENARIO_DISPOSITIONS = {
-    "interrupt-after-acquisition": "unsettled-after-acquisition",
-    "interrupt-after-durable-intent": "reconciled-after-interruption",
-    "lose-external-result": "reconciled-completed",
-    "interrupt-after-durable-outcome": "completed-before-interruption",
-}
 SCENARIO_TIMELINES = {
     "interrupt-after-acquisition": [
         "operation-admitted",
@@ -59,12 +53,12 @@ SCENARIO_TIMELINES = {
 }
 
 
-def expected_timeline(scenario: str, effect_class: str) -> list[str]:
+def expected_timeline(scenario: str, required_target_access: str) -> list[str]:
     """Returns the exact recovery classification for one matrix effect class."""
 
     if (
         scenario == "interrupt-after-durable-intent"
-        and effect_class == "observation"
+        and required_target_access == "read"
     ):
         return [
             "operation-admitted",
@@ -198,7 +192,7 @@ class EffectBoundaryEvidence:
             raise RuntimeError("matrix operation targets another interface")
         if (
             operation["target"]["lifetime"]
-            != self._contracts[cell["adapter"]]["resource_lifetime"]
+            not in self._contracts[cell["adapter"]]["resource_lifetimes"]
         ):
             raise RuntimeError("matrix operation differs from its provider contract lifetime")
         if not any(
@@ -208,7 +202,7 @@ class EffectBoundaryEvidence:
         ):
             raise RuntimeError("boundary transcript lacks the selected interruption")
         if [event.get("kind") for event in observation.timeline] != expected_timeline(
-            scenario, cell["effect_class"]
+            scenario, cell["required_target_access"]
         ):
             raise RuntimeError("durable journal has another recovery classification")
         ownership_inventories = (
@@ -284,7 +278,12 @@ class EffectBoundaryEvidence:
             "provider-implementation": provider_implementation,
             "native-route": native_route,
         }
-        disposition = SCENARIO_DISPOSITIONS[scenario]
+        disposition_policy = cell.get("disposition")
+        if not isinstance(disposition_policy, dict) or disposition_policy.get("kind") != "exact":
+            raise RuntimeError("effect-boundary cell has no exact disposition policy")
+        disposition = disposition_policy.get("value")
+        if not isinstance(disposition, str) or not disposition:
+            raise RuntimeError("effect-boundary cell disposition is invalid")
         live_digest_baseline = sha256_bytes(canonical(observation.live_baseline))
         live_digest_unsettled = sha256_bytes(canonical(observation.live_unsettled))
         live_digest_after = sha256_bytes(canonical(observation.live_after))
@@ -293,7 +292,7 @@ class EffectBoundaryEvidence:
             "interrupt-after-durable-outcome",
         }
         mutation_observed = live_digest_baseline != live_digest_unsettled
-        if cell["effect_class"] == "mutation" and (
+        if cell["required_target_access"] != "read" and (
             mutation_observed != external_effect_returned
         ):
             raise RuntimeError(

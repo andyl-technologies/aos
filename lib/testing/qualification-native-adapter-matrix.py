@@ -22,7 +22,6 @@ SPEC = pathlib.Path(os.environ["AOS_QUALIFICATION_NATIVE_ADAPTER_MATRIX_SPEC"])
 EXPECTED_CHECK = os.environ["AOS_QUALIFICATION_NATIVE_ADAPTER_MATRIX_CHECK"]
 SCENARIO_REGISTRY = ROOT / "scenario-registry.json"
 APPLICABILITY_SCHEMA = "aos.qualification.native-adapter-matrix-applicability/v1"
-RESOURCE_LIFETIMES = {"attempt", "transaction", "instance", "persistent"}
 
 
 def canonical(value: Any) -> bytes:
@@ -74,8 +73,14 @@ def applicable_cells(spec: dict[str, Any]) -> list[dict[str, Any]]:
         contract = adapter.get("provider_contract")
         if (
             not isinstance(contract, dict)
-            or set(contract) != {"resource_lifetime", "state_format"}
-            or contract.get("resource_lifetime") not in RESOURCE_LIFETIMES
+            or not isinstance(contract.get("lifecycle"), dict)
+            or not isinstance(contract.get("resource_lifetimes"), list)
+            or len(contract["resource_lifetimes"])
+            != len(set(contract["resource_lifetimes"]))
+            or not all(
+                isinstance(value, str) and value
+                for value in contract["resource_lifetimes"]
+            )
             or (
                 contract.get("state_format") is not None
                 and (
@@ -95,14 +100,22 @@ def applicable_cells(spec: dict[str, Any]) -> list[dict[str, Any]]:
 
     expected = []
     for cell in cells:
-        if cell["id"].rsplit("/", 1)[-1] != "adopt-compatible-state":
-            continue
         contract = contracts.get(cell["adapter"])
         if contract is None:
             raise RuntimeError("matrix cell has no authenticated provider contract")
-        if contract["resource_lifetime"] != "persistent":
-            reason = "non-persistent-lifetime"
-        elif contract["state_format"] is None:
+        scenario = cell.get("applicability")
+        if (
+            not isinstance(scenario, dict)
+            or not isinstance(scenario.get("required_resource_lifetimes"), list)
+            or not isinstance(scenario.get("requires_state_format"), bool)
+        ):
+            raise RuntimeError("matrix cell has no typed applicability declaration")
+        if any(
+            lifetime not in contract["resource_lifetimes"]
+            for lifetime in scenario["required_resource_lifetimes"]
+        ):
+            reason = "required-resource-lifetime-unavailable"
+        elif scenario["requires_state_format"] and contract["state_format"] is None:
             reason = "missing-authenticated-state-format"
         else:
             continue

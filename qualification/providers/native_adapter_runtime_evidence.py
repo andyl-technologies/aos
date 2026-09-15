@@ -12,7 +12,6 @@ from native_adapter_evidence_common import (
     LOCAL_KEY,
     PROBE_SCHEMA,
     RAW_DIGEST,
-    SCENARIO_DISPOSITIONS,
     _adapter_claim,
     _adapter_claim_by_interface,
     _bound_cohort_subject,
@@ -26,7 +25,7 @@ from native_adapter_evidence_common import (
     _is_ordered_boundary_timeline,
     _is_ordered_operation_timeline,
     _matches,
-    _observer_result_value,
+    _observation_kind,
     _operation_key,
     _postcondition_kind,
     _project_operation,
@@ -385,7 +384,7 @@ def validate_provider_negative_cell(
             "plan-schema": PROVIDER_NEGATIVE_PLAN_SCHEMA,
             "probe-schema": PROBE_SCHEMA,
             "postcondition-kinds": cell["postcondition_kinds"],
-            "disposition": SCENARIO_DISPOSITIONS[_cell_scenario(cell)],
+            "disposition": _expected_disposition(cell),
         },
     )
     if provider_result is not None:
@@ -405,7 +404,7 @@ def validate_provider_negative_cell(
     scenario = _cell_scenario(cell)
     adapter = cell["adapter"]
     adapter_claim = _adapter_claim(spec, adapter)
-    expected_oracle = _observer_result_value(adapter_claim, "kind")
+    expected_oracle = _observation_kind(adapter_claim)
     expected_subject = {
         "schema": PROVIDER_NEGATIVE_SUBJECT_SCHEMA,
         "cell-id": cell["id"],
@@ -470,7 +469,7 @@ def validate_provider_negative_cell(
         or expected_cell_operation.get("method") != cell["method"]
     ):
         raise RuntimeError("provider-negative selected operation differs from the exact cell")
-    if cell["effect_class"] == "observation":
+    if cell["required_target_access"] == "read":
         if (
             not isinstance(behavioral_witness, dict)
             or behavioral_witness.get("resource") is None
@@ -577,7 +576,7 @@ def validate_provider_negative_cell(
             "successor",
             successor,
             dependent_operation,
-            _observer_result_value(successor_claim, "kind"),
+            _observation_kind(successor_claim),
             False,
         ),
     ]:
@@ -603,11 +602,10 @@ def validate_provider_negative_cell(
         or set(blocked_witness)
         != {"kind", "resource", "before", "after", "unchanged", "live"}
         or blocked_witness.get("kind")
-        != _observer_result_value(
+        != _observation_kind(
             _adapter_claim_by_interface(
                 spec, behavioral_witness.get("interface", {}).get("name")
-            ),
-            "kind",
+            )
         )
         or blocked_witness.get("resource") != behavioral_witness.get("resource")
         or not _matches(DIGEST, blocked_witness.get("before"))
@@ -701,7 +699,7 @@ def validate_provider_negative_cell(
         probes[name] = {
             "schema": PROBE_SCHEMA,
             "kind": _postcondition_kind(cell, name),
-            "disposition": SCENARIO_DISPOSITIONS[scenario],
+            "disposition": _expected_disposition(cell, cohort_subject),
             "observation_digest": observation_digest,
             "cohort_subject_digest": cohort_subject_digest,
         }

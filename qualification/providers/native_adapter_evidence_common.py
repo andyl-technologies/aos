@@ -24,36 +24,6 @@ MAX_PROBE_FACTS = 32
 
 MAX_PROBE_BYTES = 64 * 1024
 
-SCENARIO_DISPOSITIONS = {
-    "interrupt-before-acquisition": "rejected-before-acquisition",
-    "interrupt-after-acquisition": "unsettled-after-acquisition",
-    "interrupt-after-durable-intent": "reconciled-after-interruption",
-    "lose-external-result": "reconciled-completed",
-    "interrupt-after-durable-outcome": "completed-before-interruption",
-    "expire-attempt-deadline": "deadline-exceeded-retains-ownership",
-    "fail-cleanup": "cleanup-failed-retains-ownership",
-    "fail-release": "release-failed-retains-ownership",
-    "revoke-caller-before-acquisition": "rejected-before-effect",
-    "revoke-caller-after-acquisition": "rejected-before-effect",
-    "revoke-caller-before-external-effect": "rejected-before-effect",
-    "revoke-provider-before-acquisition": "rejected-before-effect",
-    "revoke-provider-after-acquisition": "rejected-before-effect",
-    "revoke-provider-before-external-effect": "rejected-before-effect",
-    "revoke-enforcement-before-acquisition": "rejected-before-effect",
-    "revoke-enforcement-after-acquisition": "rejected-before-effect",
-    "revoke-enforcement-before-external-effect": "rejected-before-effect",
-    "revoke-assignment-before-acquisition": "rejected-before-effect",
-    "revoke-assignment-after-acquisition": "rejected-before-effect",
-    "revoke-assignment-before-external-effect": "rejected-before-effect",
-    "replace-executor-incarnation": "stale-executor-rejected",
-    "replace-provider-incarnation": "stale-provider-rejected",
-    "adopt-compatible-state": "compatible-state-adopted",
-    "reject-unsupported-transfer": "transfer-rejected-before-effect",
-    "activate-retained-target": "retained-target-activated",
-    "block-dependent-effect": "dependent-effect-blocked",
-    "reject-foreign-resource-mutation": "foreign-mutation-rejected",
-}
-
 
 def _postcondition_kind(cell: dict[str, Any], name: str) -> str:
     """Returns the evidence kind projected from the scenario policy."""
@@ -99,17 +69,13 @@ def _adapter_claim_by_interface(
         raise RuntimeError("matrix surface lacks one exact interface claim")
     return matches[0]
 
-def _observer_result_value(adapter_claim: dict[str, Any], field: str) -> str:
-    """Returns one closed value from the package-owned observer result type."""
+def _observation_kind(adapter_claim: dict[str, Any]) -> str:
+    """Returns the package-owned typed observation kind."""
 
-    descriptor = adapter_claim.get("provider_implementation", {}).get("observer", {})
-    result_field = descriptor.get("result", {}).get("fields", {}).get(field, {})
-    values = result_field.get("values")
-    if result_field.get("kind") != "string-enum" or not isinstance(values, list):
-        raise RuntimeError("matrix observer result is not a closed typed descriptor")
-    if len(values) != 1 or not _matches(LOCAL_KEY, values[0]):
-        raise RuntimeError("matrix observer result does not select one value")
-    return values[0]
+    observation_kind = adapter_claim.get("observation_kind")
+    if not _matches(LOCAL_KEY, observation_kind):
+        raise RuntimeError("matrix adapter claim has no typed observation kind")
+    return observation_kind
 
 def canonical(value: Any) -> bytes:
     """Encodes one value in the canonical JSON dialect used by evidence."""
@@ -147,19 +113,27 @@ def _bound_cohort_subject(
 def _expected_disposition(
     cell: dict[str, Any], cohort_subject: dict[str, Any] | None = None
 ) -> str:
-    scenario = cell["id"].rsplit("/", 1)[-1]
-    if scenario == "cancel-unsettled-attempt":
+    disposition = cell.get("disposition")
+    if not isinstance(disposition, dict):
+        raise RuntimeError("matrix cell has no typed disposition policy")
+    if disposition.get("kind") == "exact":
+        value = disposition.get("value")
+        if not _matches(TOKEN, value):
+            raise RuntimeError("matrix cell has an invalid exact disposition")
+        return value
+    if disposition.get("kind") == "cancellation-route":
         if cohort_subject is None or "cancel-route" not in cohort_subject:
             raise RuntimeError(
                 "cancellation disposition requires its concrete operation route"
             )
         if cohort_subject["cancel-route"] is None:
-            return "unsupported-cancellation-retains-ownership"
-        return "cancelled-after-reconciliation"
-    try:
-        return SCENARIO_DISPOSITIONS[scenario]
-    except KeyError as error:
-        raise RuntimeError("matrix cell has no expected disposition") from error
+            selected = disposition.get("unsupported")
+        else:
+            selected = disposition.get("supported")
+        if not _matches(TOKEN, selected):
+            raise RuntimeError("matrix cancellation disposition is invalid")
+        return selected
+    raise RuntimeError("matrix cell has an unknown disposition policy")
 
 def _scoped_operation_key(value: Any) -> bool:
     return (

@@ -30,16 +30,16 @@
     "incarnation-replacement"
     "provider-state-transfer"
   ];
-  qualificationFor = adapter: scope: {
-    inherit adapter conformanceFamilies scope;
+  qualificationFor = adapter: observationKind: scope: {
+    inherit adapter conformanceFamilies observationKind scope;
     observer = qualificationSupport.observer;
   };
-  withQualification = name: adapter: scope: abilities:
+  withQualification = name: adapter: observationKind: scope: abilities:
     if qualificationSupport == null
     then abilities
     else
       lib.recursiveUpdate abilities {
-        config.aos.abilities.implementations.${name}.qualification = qualificationFor adapter scope;
+        config.aos.abilities.implementations.${name}.qualification = qualificationFor adapter observationKind scope;
       };
 
   k3sArtifact = ../../../pkgs/kubernetes/_k3s-ability-provider;
@@ -77,13 +77,13 @@ in {
 
   systemd = mkPackage "ability-reference-systemd-bootstrap" systemdArtifact (
     [systemdRuntime] ++ lib.optional (qualificationObserver != null) qualificationObserver
-  ) (withQualification "systemd-bootstrap" "systemd-bootstrap" "bootstrap-manager" (
+  ) (withQualification "systemd-bootstrap" "systemd-bootstrap" "systemd" "bootstrap-manager" (
     contracts.systemdPackage packageRuntimeSelector
   ));
 
   kubernetes = mkPackage "ability-reference-kubernetes-terminal" kubernetesArtifact (
     [systemdRuntime kubernetesRuntime] ++ lib.optional (qualificationObserver != null) qualificationObserver
-  ) (withQualification "kubernetes" "kubernetes-object" "kubernetes-cluster" (
+  ) (withQualification "kubernetes" "kubernetes-object" "kubernetes" "kubernetes-cluster" (
     contracts.kubernetesPackage packageRuntimeSelector
   ));
 }

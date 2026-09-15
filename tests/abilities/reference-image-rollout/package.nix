@@ -277,6 +277,7 @@
       }) (lib.optionalAttrs (packageName == "ability-reference-image-rollout" && qualificationSupport != null) {
         implementations.rollout-effects.qualification = {
           adapter = "image-rollout";
+          observationKind = "rollout";
           scope = "host-machine";
           conformanceFamilies = [
             "authority-revocation"

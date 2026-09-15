@@ -13,6 +13,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
+use aos_ability_model::{AccessMode, LifecycleSemantics, ResourceLifetime};
 use serde::{Deserialize, Serialize};
 
 use crate::artifact::{ArtifactKind, ArtifactRecord, ArtifactRelation};
@@ -187,8 +188,8 @@ pub struct NativeAdapterSurfaceLimits {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeAdapterSurfaceMethod {
-    /// Whether the method observes or mutates external state.
-    pub effect_class: String,
+    /// Exact target access declared by the authenticated interface method.
+    pub required_target_access: AccessMode,
     /// Stable public method name.
     pub method: String,
 }
@@ -197,8 +198,10 @@ pub struct NativeAdapterSurfaceMethod {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeAdapterProviderContract {
-    /// Checked lifetime shared by the resource request, binding, and target.
-    pub resource_lifetime: String,
+    /// Exact lifecycle semantics from the authenticated interface document.
+    pub lifecycle: LifecycleSemantics,
+    /// Sorted resource lifetimes declared by the interface's output ports.
+    pub resource_lifetimes: Vec<ResourceLifetime>,
     /// Provider-implementation state-format descriptor, when one is declared.
     pub state_format: Option<Sha256Digest>,
 }
@@ -245,6 +248,8 @@ pub struct NativeAdapterSurfaceAdapter {
     pub interface_name: String,
     /// Sorted exact methods dispatched by this adapter.
     pub methods: Vec<NativeAdapterSurfaceMethod>,
+    /// Typed observation record emitted by the package-owned observer.
+    pub observation_kind: String,
     /// State-transfer facts from the authenticated production provider contract.
     pub provider_contract: NativeAdapterProviderContract,
     /// Exact selected package implementation and handler route.
@@ -257,10 +262,14 @@ pub struct NativeAdapterSurfaceAdapter {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeAdapterSurfaceScenario {
+    /// Declared provider-contract predicates that select applicable cells.
+    pub applicability: NativeAdapterScenarioApplicability,
     /// Failure, recovery, or lifecycle boundary exercised by the scenario.
     pub boundary: String,
     /// Required candidate state.
     pub candidate: String,
+    /// Declares how the executor derives the expected terminal disposition.
+    pub disposition: NativeAdapterDispositionPolicy,
     /// Injected or naturally observed failure classification.
     pub failure: String,
     /// Conformance family that selects this scenario for an implementation.
@@ -271,6 +280,34 @@ pub struct NativeAdapterSurfaceScenario {
     pub postconditions: Vec<NativeAdapterPostconditionPolicy>,
     /// Required predecessor state.
     pub predecessor: String,
+}
+
+/// Declares the provider-contract facts required by one scenario.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterScenarioApplicability {
+    /// Resource lifetimes that must occur in the authenticated interface.
+    pub required_resource_lifetimes: Vec<ResourceLifetime>,
+    /// Whether the implementation must authenticate a state-format descriptor.
+    pub requires_state_format: bool,
+}
+
+/// Selects how a scenario's expected terminal disposition is obtained.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum NativeAdapterDispositionPolicy {
+    /// Requires one exact policy-authored disposition.
+    Exact {
+        /// Names the exact terminal disposition.
+        value: String,
+    },
+    /// Selects one of two policy-authored results from the checked cancel route.
+    CancellationRoute {
+        /// Required disposition when the checked operation supports cancellation.
+        supported: String,
+        /// Required disposition when the checked operation has no cancel route.
+        unsupported: String,
+    },
 }
 
 /// One provider-neutral acceptance condition selected by scenario policy.
@@ -291,6 +328,8 @@ pub struct NativeAdapterSurfaceSpec {
     pub adapters: Vec<NativeAdapterSurfaceAdapter>,
     /// Closed registry of conformance families used by the scenario policy.
     pub families: Vec<String>,
+    /// Exact identity dimensions that invalidate retained observations.
+    pub invalidation_dimensions: Vec<String>,
     /// Exact size declarations for this surface revision.
     pub limits: NativeAdapterSurfaceLimits,
     /// Matrix semantics used to expand this surface.
@@ -335,8 +374,8 @@ pub struct NativeAdapterCellSpec {
     pub interface: NativeAdapterInterfaceIdentity,
     /// Interface method exercised by the cell.
     pub method: String,
-    /// Whether the method observes or mutates external state.
-    pub effect_class: String,
+    /// Exact target access declared by the authenticated interface method.
+    pub required_target_access: AccessMode,
     /// Native execution scope containing the effect.
     pub scope: String,
     /// Failure, recovery, or lifecycle boundary exercised by the cell.
@@ -347,6 +386,10 @@ pub struct NativeAdapterCellSpec {
     pub predecessor: String,
     /// Required candidate state.
     pub candidate: String,
+    /// Declares how the executor derives the expected terminal disposition.
+    pub disposition: NativeAdapterDispositionPolicy,
+    /// Provider-contract predicates copied from the selected scenario.
+    pub applicability: NativeAdapterScenarioApplicability,
     /// Ordered acceptance conditions that determine the cell result.
     pub postconditions: Vec<String>,
     /// Maps each acceptance condition to its policy-selected evidence kind.
@@ -1335,22 +1378,19 @@ fn validate_native_adapter_postcondition_probe(
     cell_digest: Sha256Digest,
     probe: &NativeAdapterPostconditionProbe,
 ) -> Result<()> {
-    let expected_kind = native_adapter_postcondition_probe_kind(postcondition)
+    let expected_kind = cell
+        .postcondition_kinds
+        .get(postcondition)
         .ok_or_else(|| anyhow::anyhow!("native adapter matrix postcondition has no probe class"))?;
-    let expected_disposition = native_adapter_expected_disposition(cell);
-    let valid_disposition = expected_disposition.map_or_else(
-        || {
-            cell.id.ends_with("/cancel-unsettled-attempt")
-                && [
-                    "cancelled-after-reconciliation",
-                    "unsupported-cancellation-retains-ownership",
-                ]
-                .contains(&probe.disposition.as_str())
-        },
-        |expected| probe.disposition == expected,
-    );
+    let valid_disposition = match &cell.disposition {
+        NativeAdapterDispositionPolicy::Exact { value } => probe.disposition == *value,
+        NativeAdapterDispositionPolicy::CancellationRoute {
+            supported,
+            unsupported,
+        } => probe.disposition == *supported || probe.disposition == *unsupported,
+    };
     if probe.schema_version != NATIVE_ADAPTER_POSTCONDITION_PROBE_V1
-        || probe.kind != expected_kind
+        || probe.kind != *expected_kind
         || probe.cell_id != cell.id
         || probe.cell_digest != cell_digest
         || !valid_disposition
@@ -1397,59 +1437,10 @@ fn validate_native_adapter_cell_cohort_subject(
 
 /// Returns the required scenario disposition for one immutable matrix cell.
 #[must_use]
-pub fn native_adapter_expected_disposition(cell: &NativeAdapterCellSpec) -> Option<&'static str> {
-    let scenario = cell.id.rsplit('/').next()?;
-    match scenario {
-        "interrupt-before-acquisition" => Some("rejected-before-acquisition"),
-        "interrupt-after-acquisition" => Some("unsettled-after-acquisition"),
-        "interrupt-after-durable-intent" => Some("reconciled-after-interruption"),
-        "lose-external-result" => Some("reconciled-completed"),
-        "interrupt-after-durable-outcome" => Some("completed-before-interruption"),
-        // The concrete checked Operation determines whether cancellation is
-        // supported; the interface method deliberately carries no route map.
-        "cancel-unsettled-attempt" => None,
-        "expire-attempt-deadline" => Some("deadline-exceeded-retains-ownership"),
-        "fail-cleanup" => Some("cleanup-failed-retains-ownership"),
-        "fail-release" => Some("release-failed-retains-ownership"),
-        "revoke-caller-before-acquisition"
-        | "revoke-caller-after-acquisition"
-        | "revoke-caller-before-external-effect"
-        | "revoke-provider-before-acquisition"
-        | "revoke-provider-after-acquisition"
-        | "revoke-provider-before-external-effect"
-        | "revoke-enforcement-before-acquisition"
-        | "revoke-enforcement-after-acquisition"
-        | "revoke-enforcement-before-external-effect"
-        | "revoke-assignment-before-acquisition"
-        | "revoke-assignment-after-acquisition"
-        | "revoke-assignment-before-external-effect" => Some("rejected-before-effect"),
-        "replace-executor-incarnation" => Some("stale-executor-rejected"),
-        "replace-provider-incarnation" => Some("stale-provider-rejected"),
-        "adopt-compatible-state" => Some("compatible-state-adopted"),
-        "reject-unsupported-transfer" => Some("transfer-rejected-before-effect"),
-        "activate-retained-target" => Some("retained-target-activated"),
-        "block-dependent-effect" => Some("dependent-effect-blocked"),
-        "reject-foreign-resource-mutation" => Some("foreign-mutation-rejected"),
-        _ => None,
-    }
-}
-
-fn native_adapter_postcondition_probe_kind(postcondition: &str) -> Option<&'static str> {
-    match postcondition {
-        "durable-attempt-state-classified" => Some("journal-timeline"),
-        "at-most-one-resource-owner" => Some("ownership-inventory"),
-        "foreign-resources-unchanged" => Some("foreign-resource-snapshot"),
-        "dependent-effects-not-executed" => Some("dependency-barrier"),
-        "fresh-receiving-authority" => Some("authority-incarnation"),
-        "compatible-state-adopted" => Some("state-adoption"),
-        "exactly-one-resource-owner" => Some("exact-ownership-inventory"),
-        "transfer-rejected-before-candidate-effect" => Some("transfer-rejection"),
-        "predecessor-remains-sole-owner" => Some("predecessor-ownership"),
-        "current-grants-reauthorized" => Some("authority-grants"),
-        "retained-target-identity-preserved" => Some("target-identity"),
-        "prerequisite-failure-recorded" => Some("prerequisite-failure"),
-        "foreign-attempt-rejected-before-mutation" => Some("foreign-attempt-rejection"),
-        _ => None,
+pub fn native_adapter_expected_disposition(cell: &NativeAdapterCellSpec) -> Option<&str> {
+    match &cell.disposition {
+        NativeAdapterDispositionPolicy::Exact { value } => Some(value),
+        NativeAdapterDispositionPolicy::CancellationRoute { .. } => None,
     }
 }
 
@@ -1700,13 +1691,14 @@ pub(crate) fn native_adapter_inapplicable_reason(
     cell: &NativeAdapterCellSpec,
     contract: &NativeAdapterProviderContract,
 ) -> Option<&'static str> {
-    if !cell.id.ends_with("/adopt-compatible-state") {
-        return None;
-    }
-
-    if contract.resource_lifetime != "persistent" {
-        Some("non-persistent-lifetime")
-    } else if contract.state_format.is_none() {
+    if cell
+        .applicability
+        .required_resource_lifetimes
+        .iter()
+        .any(|lifetime| !contract.resource_lifetimes.contains(lifetime))
+    {
+        Some("required-resource-lifetime-unavailable")
+    } else if cell.applicability.requires_state_format && contract.state_format.is_none() {
         Some("missing-authenticated-state-format")
     } else {
         None
@@ -1768,6 +1760,14 @@ fn expand_native_adapter_surface(
         || surface.families.is_empty()
         || !unique_by(&surface.families, |family| family.clone())
         || surface.families.iter().any(|family| !matrix_token(family))
+        || surface.invalidation_dimensions.is_empty()
+        || !unique_by(&surface.invalidation_dimensions, |dimension| {
+            dimension.clone()
+        })
+        || surface
+            .invalidation_dimensions
+            .iter()
+            .any(|dimension| !matrix_token(dimension))
         || !unique_by(&surface.scenarios, |scenario| scenario.id.clone())
     {
         bail!("native adapter matrix surface has inconsistent schemas, bounds, or ordering");
@@ -1805,23 +1805,22 @@ fn expand_native_adapter_surface(
             || scenario.postconditions.iter().any(|postcondition| {
                 !matrix_token(&postcondition.name) || !matrix_token(&postcondition.evidence_kind)
             })
-            || ![
-                "after-acquisition",
-                "after-durable-intent",
-                "after-durable-outcome",
-                "after-external-return",
-                "before-acquisition",
-                "before-external-effect",
-                "cancellation",
-                "cleanup",
-                "deadline",
-                "foreign-resource",
-                "prerequisite",
-                "recovery",
-                "release",
-                "retained-target-activation",
-            ]
-            .contains(&scenario.boundary.as_str())
+            || scenario
+                .applicability
+                .required_resource_lifetimes
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            || match &scenario.disposition {
+                NativeAdapterDispositionPolicy::Exact { value } => !matrix_token(value),
+                NativeAdapterDispositionPolicy::CancellationRoute {
+                    supported,
+                    unsupported,
+                } => {
+                    !matrix_token(supported)
+                        || !matrix_token(unsupported)
+                        || supported == unsupported
+                }
+            }
     }) {
         bail!("native adapter matrix surface contains an invalid scenario");
     }
@@ -1889,8 +1888,12 @@ fn valid_native_adapter(adapter: &NativeAdapterSurfaceAdapter) -> bool {
         || adapter.conformance_families.is_empty()
         || !unique_by(&adapter.conformance_families, |family| family.clone())
         || !matrix_token(&adapter.scope)
-        || !["attempt", "transaction", "instance", "persistent"]
-            .contains(&adapter.provider_contract.resource_lifetime.as_str())
+        || !matrix_token(&adapter.observation_kind)
+        || adapter
+            .provider_contract
+            .resource_lifetimes
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
         || adapter.methods.is_empty()
         || !strictly_sorted_by(&adapter.methods, |method| method.method.clone())
         || !valid_native_adapter_implementation(&adapter.provider_implementation)
@@ -1898,10 +1901,10 @@ fn valid_native_adapter(adapter: &NativeAdapterSurfaceAdapter) -> bool {
         return false;
     }
 
-    adapter.methods.iter().all(|method| {
-        matrix_token(&method.method)
-            && ["mutation", "observation"].contains(&method.effect_class.as_str())
-    })
+    adapter
+        .methods
+        .iter()
+        .all(|method| matrix_token(&method.method))
 }
 
 fn valid_native_adapter_implementation(claim: &NativeAdapterImplementationClaim) -> bool {
@@ -1965,12 +1968,14 @@ fn expand_native_adapter_cell(
             descriptor: adapter.interface_descriptor,
         },
         method: method.method.clone(),
-        effect_class: method.effect_class.clone(),
+        required_target_access: method.required_target_access,
         scope: adapter.scope.clone(),
         boundary: scenario.boundary.clone(),
         failure: scenario.failure.clone(),
         predecessor: scenario.predecessor.clone(),
         candidate: scenario.candidate.clone(),
+        disposition: scenario.disposition.clone(),
+        applicability: scenario.applicability.clone(),
         postconditions: scenario
             .postconditions
             .iter()
@@ -1986,9 +1991,7 @@ fn expand_native_adapter_cell(
                 )
             })
             .collect(),
-        invalidated_by: ["subject", "policy", "executor", "environment"]
-            .map(str::to_owned)
-            .to_vec(),
+        invalidated_by: surface.invalidation_dimensions.clone(),
     }
 }
 

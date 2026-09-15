@@ -705,6 +705,10 @@
       type = localKeyType;
       description = "Native execution scope containing this implementation's effects.";
     };
+    observationKind = mkOption {
+      type = localKeyType;
+      description = "Typed observation record kind emitted by the package-owned observer.";
+    };
     conformanceFamilies = mkOption {
       type = moduleTypes.listOf localKeyType;
       description = "Semantic conformance families required by this implementation.";

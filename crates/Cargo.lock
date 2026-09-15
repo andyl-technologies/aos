@@ -929,6 +929,7 @@ name = "aos-release"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-ability-model",
  "aos-contract",
  "aos-registry-surface",
  "base64 0.22.1",

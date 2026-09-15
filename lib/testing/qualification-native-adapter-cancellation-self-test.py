@@ -34,7 +34,7 @@ def rejected(action) -> None:
 def fixture_postconditions(policy):
     """Returns one bounded postcondition projection for synthetic cells."""
 
-    names = policy["baseline_postconditions"] + [policy["failure_postcondition"]]
+    names = policy["postcondition_groups"]["baseline"] + policy["postcondition_groups"]["failure"]
     kinds = policy["postcondition_kinds"]
     return names, {name: kinds[name] for name in names}
 
@@ -62,6 +62,7 @@ def synthetic_matrix(cell, dispatch, entry_point, cancellation_oracle):
         {
             "adapter": cell["adapter"],
             "interface_name": cell["interface"]["name"],
+            "observation_kind": cancellation_oracle,
             "provider_implementation": {
                 "observer": {
                     "result": {
@@ -85,6 +86,7 @@ def synthetic_matrix(cell, dispatch, entry_point, cancellation_oracle):
             {
                 "adapter": "systemd-manager",
                 "interface_name": "aos.systemd-manager",
+                "observation_kind": "systemd",
                 "provider_implementation": {
                     "observer": {
                         "result": {
@@ -220,11 +222,20 @@ def validate_image_rollout_case(
     cell = {
         "id": cell_id,
         "adapter": "image-rollout",
-        "effect_class": "mutation",
+        "applicability": {
+            "required_resource_lifetimes": [],
+            "requires_state_format": False,
+        },
+        "required_target_access": "exclusive-write",
         "interface": interface,
         "method": "drain",
         "boundary": "provider-effect",
         "failure": "process-termination",
+        "disposition": {
+            "kind": "cancellation-route",
+            "supported": "cancelled-after-reconciliation",
+            "unsupported": "unsupported-cancellation-retains-ownership",
+        },
         "candidate": "new",
         "predecessor": "same",
         "postconditions": postconditions,
@@ -421,6 +432,11 @@ def main() -> None:
         "binding": binding,
         "interface": interface,
         "method": "publish",
+        "disposition": {
+            "kind": "cancellation-route",
+            "supported": "cancelled-after-reconciliation",
+            "unsupported": "unsupported-cancellation-retains-ownership",
+        },
         "target": target,
         "recovery": {"cancel": {"interface": interface, "method": "remove"}},
     }
@@ -506,7 +522,11 @@ def main() -> None:
     cell = {
         "id": cell_id,
         "adapter": "managed-configuration",
-        "effect_class": "mutation",
+        "applicability": {
+            "required_resource_lifetimes": [],
+            "requires_state_format": False,
+        },
+        "required_target_access": "exclusive-write",
         "interface": interface,
         "method": "publish",
         "postconditions": postconditions,

@@ -3,7 +3,6 @@
   lib,
   packages,
   scenarioPolicy ? builtins.fromJSON (builtins.readFile ../native-adapter-scenarios.json),
-  invalidatedBy ? ["subject" "policy" "executor" "environment"],
   regressions ? [
     "checks.fleet.ability-native-activation"
     "checks.fleet.ability-native-foreground-container"
@@ -12,17 +11,16 @@
     "checks.fleet.ability-native-power-loss"
   ],
 }: let
-  expectedSurfaceKeys = ["adapters" "families" "limits" "matrix_schema" "scenarios" "schema" "subject_schema"];
-  expectedAdapterKeys = ["adapter" "conformance_families" "interface_abi" "interface_descriptor" "interface_name" "methods" "provider_contract" "provider_implementation" "scope"];
-  expectedMethodKeys = ["effect_class" "method"];
-  expectedProviderContractKeys = ["resource_lifetime" "state_format"];
+  expectedSurfaceKeys = ["adapters" "families" "invalidation_dimensions" "limits" "matrix_schema" "scenarios" "schema" "subject_schema"];
+  expectedAdapterKeys = ["adapter" "conformance_families" "interface_abi" "interface_descriptor" "interface_name" "methods" "observation_kind" "provider_contract" "provider_implementation" "scope"];
+  expectedMethodKeys = ["method" "required_target_access"];
+  expectedProviderContractKeys = ["lifecycle" "resource_lifetimes" "state_format"];
   expectedProviderImplementationKeys = ["contract" "implementation" "observer"];
   expectedHandlerKeys = ["arguments" "artifact" "entry_point" "result"];
-  expectedScenarioKeys = ["boundary" "candidate" "failure" "family" "id" "postconditions" "predecessor"];
-  expectedPolicyScenarioKeys = ["additional_postconditions" "boundary" "candidate" "failure" "family" "id" "predecessor"];
+  expectedScenarioKeys = ["applicability" "boundary" "candidate" "disposition" "failure" "family" "id" "postconditions" "predecessor"];
+  expectedPolicyScenarioKeys = ["additional_postconditions" "applicability" "boundary" "candidate" "disposition" "failure" "family" "id" "postcondition_groups" "predecessor"];
   expectedPostconditionKeys = ["evidence_kind" "name"];
-  expectedScenarioPolicyKeys = ["baseline_postconditions" "failure_postcondition" "matrix_schema" "postcondition_kinds" "scenarios" "subject_schema"];
-  requiredInvalidation = ["subject" "policy" "executor" "environment"];
+  expectedScenarioPolicyKeys = ["invalidation_dimensions" "matrix_schema" "postcondition_groups" "postcondition_kinds" "scenarios" "subject_schema"];
   allowedRegressions = [
     "checks.fleet.ability-native-activation"
     "checks.fleet.ability-native-foreground-container"
@@ -48,11 +46,10 @@
     lib.unique (map (scenario: scenario.family) scenarioPolicy.scenarios)
   );
   postconditionsFor = scenario:
-    scenarioPolicy.baseline_postconditions
-    ++ lib.optional (scenario.failure != "none") scenarioPolicy.failure_postcondition
+    lib.concatMap (group: scenarioPolicy.postcondition_groups.${group}) scenario.postcondition_groups
     ++ scenario.additional_postconditions;
   scenarioFor = scenario:
-    builtins.removeAttrs scenario ["additional_postconditions"]
+    builtins.removeAttrs scenario ["additional_postconditions" "postcondition_groups"]
     // {
       postconditions = map (name: {
         evidence_kind = scenarioPolicy.postcondition_kinds.${name};
@@ -119,23 +116,15 @@
   };
   interfaceIdentity = interface: lib.abilities.interfaceIdentity interface;
   stateContractFor = entry: let
-    persistentOutput = builtins.any (output: output.lifetime == "persistent") (
-      builtins.concatMap (method: builtins.attrValues method.outputs) (
-        builtins.attrValues entry.interface.interface.methods
-      )
-    );
-    stateFormat = entry.implementation.state_format;
+    interface = entry.interface.interface;
+    outputs =
+      builtins.attrValues interface.outputs
+      ++ builtins.concatMap (method: builtins.attrValues method.outputs) (builtins.attrValues interface.methods);
   in {
-    resource_lifetime =
-      if persistentOutput || stateFormat != null
-      then "persistent"
-      else "instance";
-    state_format = stateFormat;
+    lifecycle = interface.lifecycle;
+    resource_lifetimes = builtins.sort builtins.lessThan (lib.unique (map (output: output.lifetime) outputs));
+    state_format = entry.implementation.state_format;
   };
-  effectClass = method:
-    if method.semantics.required_target_access == "read"
-    then "observation"
-    else "mutation";
   adapterFor = entry: let
     implementation = entry.implementation;
     qualification = entry.qualification;
@@ -151,6 +140,7 @@
     {
       inherit adapter;
       inherit scope;
+      inherit (qualification) observation_kind;
       conformance_families = qualification.conformance_families;
       interface_name = identity.name;
       interface_abi = identity.abi;
@@ -158,7 +148,7 @@
       methods =
         map (methodName: {
           method = methodName;
-          effect_class = effectClass interface.interface.methods.${methodName};
+          inherit (interface.interface.methods.${methodName}.semantics) required_target_access;
         })
         methodNames;
       provider_contract = stateContractFor entry;
@@ -177,6 +167,7 @@
       (left: right: builtins.lessThan left.adapter right.adapter)
       (map adapterFor selectedImplementations);
     families = scenarioFamilies;
+    invalidation_dimensions = scenarioPolicy.invalidation_dimensions;
     scenarios = map scenarioFor scenarioPolicy.scenarios;
     limits = {
       max_adapters = builtins.length selectedImplementations;
@@ -210,19 +201,21 @@
       descriptor = pair.adapter.interface_descriptor;
     };
     method = pair.method.method;
-    effect_class = pair.method.effect_class;
+    required_target_access = pair.method.required_target_access;
     scope = pair.adapter.scope;
     boundary = scenario.boundary;
     failure = scenario.failure;
     predecessor = scenario.predecessor;
     candidate = scenario.candidate;
+    disposition = scenario.disposition;
+    applicability = scenario.applicability;
     postconditions = map (postcondition: postcondition.name) scenario.postconditions;
     postcondition_kinds = builtins.listToAttrs (map (postcondition: {
         name = postcondition.name;
         value = postcondition.evidence_kind;
       })
       scenario.postconditions);
-    invalidated_by = requiredInvalidation;
+    invalidated_by = selectedSurface.invalidation_dimensions;
   };
   expectedCells = builtins.sort (left: right: builtins.lessThan left.id right.id) (
     builtins.concatMap (
@@ -240,11 +233,9 @@
   inapplicableReason = cell: let
     contract = (providerContractFor cell).provider_contract;
   in
-    if !lib.hasSuffix "/adopt-compatible-state" cell.id
-    then null
-    else if contract.resource_lifetime != "persistent"
-    then "non-persistent-lifetime"
-    else if contract.state_format == null
+    if builtins.any (lifetime: !builtins.elem lifetime contract.resource_lifetimes) cell.applicability.required_resource_lifetimes
+    then "required-resource-lifetime-unavailable"
+    else if cell.applicability.requires_state_format && contract.state_format == null
     then "missing-authenticated-state-format"
     else null;
   inapplicableCells = builtins.filter (entry: entry != null) (
@@ -283,11 +274,13 @@
     builtins.attrNames method
     == expectedMethodKeys
     && token method.method
-    && builtins.elem method.effect_class ["mutation" "observation"];
+    && token method.required_target_access;
   validProviderContract = contract:
     builtins.attrNames contract
     == expectedProviderContractKeys
-    && builtins.elem contract.resource_lifetime ["attempt" "transaction" "instance" "persistent"]
+    && builtins.isAttrs contract.lifecycle
+    && unique contract.resource_lifetimes
+    && builtins.all token contract.resource_lifetimes
     && (contract.state_format == null || digest contract.state_format);
   validArtifact = artifact:
     builtins.isAttrs artifact
@@ -313,6 +306,18 @@
     && lib.hasPrefix "/nix/store/" implementation.contract
     && localKey implementation.implementation
     && validHandler implementation.observer;
+  validDisposition = disposition:
+    builtins.isAttrs disposition
+    && (
+      (builtins.attrNames disposition == ["kind" "value"]
+        && disposition.kind == "exact"
+        && token disposition.value)
+      || (builtins.attrNames disposition == ["kind" "supported" "unsupported"]
+        && disposition.kind == "cancellation-route"
+        && token disposition.supported
+        && token disposition.unsupported
+        && disposition.supported != disposition.unsupported)
+    );
   validAdapter = adapter:
     builtins.attrNames adapter
     == expectedAdapterKeys
@@ -325,6 +330,7 @@
     && builtins.all (family: builtins.elem family selectedSurface.families) adapter.conformance_families
     && validProviderContract adapter.provider_contract
     && validProviderImplementation adapter.provider_implementation
+    && token adapter.observation_kind
     && token adapter.scope
     && adapter.methods != []
     && unique (map (method: method.method) adapter.methods)
@@ -342,22 +348,11 @@
       && token postcondition.evidence_kind)
     scenario.postconditions
     && builtins.elem scenario.family selectedSurface.families
-    && builtins.elem scenario.boundary [
-      "after-acquisition"
-      "after-durable-intent"
-      "after-durable-outcome"
-      "after-external-return"
-      "before-acquisition"
-      "before-external-effect"
-      "cancellation"
-      "cleanup"
-      "deadline"
-      "foreign-resource"
-      "prerequisite"
-      "recovery"
-      "release"
-      "retained-target-activation"
-    ];
+    && validDisposition scenario.disposition
+    && builtins.isAttrs scenario.applicability
+    && unique scenario.applicability.required_resource_lifetimes
+    && builtins.all token scenario.applicability.required_resource_lifetimes
+    && builtins.isBool scenario.applicability.requires_state_format;
   validSurface =
     builtins.attrNames selectedSurface
     == expectedSurfaceKeys
@@ -385,21 +380,23 @@
 in
   assert packages != [];
   assert builtins.attrNames scenarioPolicy == expectedScenarioPolicyKeys;
-  assert scenarioPolicy.baseline_postconditions != [];
-  assert unique scenarioPolicy.baseline_postconditions;
-  assert builtins.all token scenarioPolicy.baseline_postconditions;
-  assert token scenarioPolicy.failure_postcondition;
+  assert scenarioPolicy.invalidation_dimensions != [];
+  assert unique scenarioPolicy.invalidation_dimensions;
+  assert builtins.all token scenarioPolicy.invalidation_dimensions;
+  assert builtins.all (group: group != []) (builtins.attrValues scenarioPolicy.postcondition_groups);
+  assert builtins.all token (lib.concatLists (builtins.attrValues scenarioPolicy.postcondition_groups));
   assert builtins.all token (builtins.attrNames scenarioPolicy.postcondition_kinds);
   assert builtins.all token (builtins.attrValues scenarioPolicy.postcondition_kinds);
   assert builtins.all (scenario:
     builtins.attrNames scenario
     == expectedPolicyScenarioKeys
+    && unique scenario.postcondition_groups
+    && builtins.all (group: builtins.hasAttr group scenarioPolicy.postcondition_groups) scenario.postcondition_groups
     && unique scenario.additional_postconditions
     && builtins.all token scenario.additional_postconditions
     && builtins.all (name: builtins.hasAttr name scenarioPolicy.postcondition_kinds) (postconditionsFor scenario))
   scenarioPolicy.scenarios;
   assert validSurface;
-  assert invalidatedBy == requiredInvalidation;
   assert regressions == allowedRegressions;
   assert unique selectedIds;
   assert unique inapplicableCellIds;
@@ -428,6 +425,6 @@ in
       production_only = true;
       checks = [check];
       inherit regressions;
-      invalidated_by = invalidatedBy;
+      invalidated_by = scenarioPolicy.invalidation_dimensions;
     };
   }

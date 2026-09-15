@@ -108,11 +108,24 @@ BUNDLE = MODULE.canonical(
 def cell(scenario: str, postconditions: list[str]) -> dict:
     """Returns one exact matrix cell for the local contract test."""
 
+    dispositions = {
+        MODULE.RETAINED_SCENARIO: "retained-target-activated",
+        MODULE.UNSUPPORTED_SCENARIO: "transfer-rejected-before-effect",
+        MODULE.COMPATIBLE_SCENARIO: "compatible-state-adopted",
+    }
+
     return {
         "adapter": "host-storage",
+        "applicability": {
+            "required_resource_lifetimes": (
+                ["persistent"] if scenario == MODULE.COMPATIBLE_SCENARIO else []
+            ),
+            "requires_state_format": scenario == MODULE.COMPATIBLE_SCENARIO,
+        },
         "boundary": "recovery",
         "candidate": "current-authority",
-        "effect_class": "mutation",
+        "disposition": {"kind": "exact", "value": dispositions[scenario]},
+        "required_target_access": "exclusive-write",
         "failure": "none",
         "id": f"test/test.effects/abi-1/apply/{scenario}",
         "interface": INTERFACE,
@@ -241,6 +254,7 @@ MATRIX = {
         "adapters": [
             {
                 "adapter": "host-storage",
+                "observation_kind": "filesystem",
                 "provider_implementation": {
                     "observer": {
                         "result": {
@@ -254,7 +268,8 @@ MATRIX = {
                     }
                 },
                 "provider_contract": {
-                    "resource_lifetime": "instance",
+                    "lifecycle": {},
+                    "resource_lifetimes": ["instance"],
                     "state_format": None,
                 },
             }
@@ -268,6 +283,7 @@ COMPATIBLE_MATRIX = {
         "adapters": [
             {
                 "adapter": "host-storage",
+                "observation_kind": "filesystem",
                 "provider_implementation": {
                     "observer": {
                         "result": {
@@ -281,7 +297,8 @@ COMPATIBLE_MATRIX = {
                     }
                 },
                 "provider_contract": {
-                    "resource_lifetime": "persistent",
+                    "lifecycle": {},
+                    "resource_lifetimes": ["persistent"],
                     "state_format": STATE_FORMAT["descriptor"],
                 },
             }

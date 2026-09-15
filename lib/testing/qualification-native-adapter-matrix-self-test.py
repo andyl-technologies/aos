@@ -39,9 +39,13 @@ def classify(module, specification):
     contract = specification["surface"]["adapters"][0]["provider_contract"]
     cell = specification["cells"][0]
     reason = None
-    if contract["resource_lifetime"] != "persistent":
-        reason = "non-persistent-lifetime"
-    elif contract["state_format"] is None:
+    applicability = cell["applicability"]
+    if any(
+        lifetime not in contract["resource_lifetimes"]
+        for lifetime in applicability["required_resource_lifetimes"]
+    ):
+        reason = "required-resource-lifetime-unavailable"
+    elif applicability["requires_state_format"] and contract["state_format"] is None:
         reason = "missing-authenticated-state-format"
     excluded = [] if reason is None else [{"cell_id": cell["id"], "reason": reason}]
     specification["applicability"] = {
@@ -59,6 +63,10 @@ def main() -> None:
     cell = {
         "id": "fixture/aos.fixture/abi-1/apply/adopt-compatible-state",
         "adapter": "fixture",
+        "applicability": {
+            "required_resource_lifetimes": ["persistent"],
+            "requires_state_format": True,
+        },
     }
     specification = classify(
         module,
@@ -68,7 +76,8 @@ def main() -> None:
                     {
                         "adapter": "fixture",
                         "provider_contract": {
-                            "resource_lifetime": "instance",
+                            "lifecycle": {},
+                            "resource_lifetimes": ["instance"],
                             "state_format": None,
                         },
                     }
@@ -81,8 +90,8 @@ def main() -> None:
 
     persistent = copy.deepcopy(specification)
     persistent["surface"]["adapters"][0]["provider_contract"][
-        "resource_lifetime"
-    ] = "persistent"
+        "resource_lifetimes"
+    ] = ["persistent"]
     rejected(module, persistent)
     classify(module, persistent)
     assert persistent["applicability"]["inapplicable_cells"] == [

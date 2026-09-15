@@ -14,7 +14,6 @@ from native_adapter_evidence_common import (
     LOCAL_KEY,
     PROBE_SCHEMA,
     RAW_DIGEST,
-    SCENARIO_DISPOSITIONS,
     _adapter_claim,
     _adapter_claim_by_interface,
     _bound_cohort_subject,
@@ -28,7 +27,7 @@ from native_adapter_evidence_common import (
     _is_ordered_boundary_timeline,
     _is_ordered_operation_timeline,
     _matches,
-    _observer_result_value,
+    _observation_kind,
     _operation_key,
     _postcondition_kind,
     _project_operation,
@@ -106,13 +105,13 @@ CANCELLATION_BOUNDARIES = [
 
 
 def _effect_boundary_attempt_timeline(
-    scenario: str, effect_class: str
+    scenario: str, required_target_access: str
 ) -> list[str]:
     """Returns the exact recovery classification for one effect class."""
 
     if (
         scenario == "interrupt-after-durable-intent"
-        and effect_class == "observation"
+        and required_target_access == "read"
     ):
         return [
             "operation-admitted",
@@ -370,7 +369,7 @@ def _validate_effect_boundary_probe_facts(
         interruption = observations.get("interruption-position")
         timeline = observations.get("timeline")
         expected_timeline = _effect_boundary_attempt_timeline(
-            scenario, cell["effect_class"]
+            scenario, cell["required_target_access"]
         )
         if (
             set(observations) != expected_fields
@@ -448,7 +447,7 @@ def _validate_effect_boundary_probe_facts(
                 != observations.get("live-digest-unsettled")
             )
             or (
-                cell["effect_class"] == "mutation"
+                cell["required_target_access"] != "read"
                 and observations.get("mutation-observed-before-loss")
                 is not observations.get("external-effect-returned")
             )
@@ -513,7 +512,7 @@ def _cancellation_oracle_snapshot(
 ) -> bool:
     """Checks that a live snapshot names the adapter's independent oracle kind."""
 
-    expected = _observer_result_value(_adapter_claim(matrix_spec, adapter), "kind")
+    expected = _observation_kind(_adapter_claim(matrix_spec, adapter))
     return provider_evidence.valid_cancellation_snapshot(expected, value)
 
 def _cancellation_foreign_snapshot(
