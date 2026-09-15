@@ -24,6 +24,7 @@
             evalRoot = "/run/aos-eval";
             provisioningState = "/var/lib/aos-provisioning";
             imageVersion = "2026.09";
+            requireAttestationQuote = true;
           };
         }
       ];
@@ -50,6 +51,9 @@
   lifecycle = requests."aos:configuration-evaluation-lifecycle".parameters;
   registryLifecycle = requests."aos:registry-synchronization-lifecycle".parameters;
   dependencies = requests."aos:configuration-evaluation-dependencies".parameters;
+  bootCommitLifecycle = requests."aos:image-boot-commit-lifecycle".parameters;
+  bootCommitDependencies = requests."aos:image-boot-commit-dependencies".parameters;
+  fallbackLifecycle = requests."aos:image-rollout-fallback-lifecycle".parameters;
 in
   assert !(disabled.config.aos.abilities.requests ? "aos:configuration-evaluation-lifecycle");
   assert lifecycle.service == "configuration-evaluation";
@@ -122,4 +126,51 @@ in
     (resultOf "aos:registry-synchronization-lifecycle" "service-resource")
   ];
   assert requests."aos:configuration-evaluation-manager_identity".parameters.name == "aos-eval";
+  assert bootCommitLifecycle.start
+  == [
+    {
+      executable = {
+        artifact = lib.abilities.packageOutput {
+          package = "aos";
+          output = "packageRuntime";
+        };
+        entry_point = "libexec/aos-image-rollout-boot";
+        arguments = ["commit" "--require-attestation-quote"];
+      };
+      ignore_failure = false;
+    }
+  ];
+  assert bootCommitDependencies.after
+  == [
+    (resultOf "aos-boot-storage:aos-mount-esp-lifecycle" "service-resource")
+    (resultOf "aos:aos-graph-compile-lifecycle" "service-resource")
+    (resultOf "aos:aos-activate-lifecycle" "service-resource")
+    (resultOf "aos:aos-config" "activation-resource")
+  ];
+  assert bootCommitDependencies.requires
+  == [
+    (resultOf "aos-boot-storage:aos-mount-esp-lifecycle" "service-resource")
+    (resultOf "aos:aos-graph-compile-lifecycle" "service-resource")
+  ];
+  assert bootCommitDependencies.before
+  == [(resultOf "aos:multi-user" "readiness-resource")];
+  assert bootCommitDependencies.wanted_by
+  == [(resultOf "aos:multi-user" "readiness-resource")];
+  assert requests."aos:image-boot-commit-failure_policy".parameters.handlers
+  == [(resultOf "aos:image-rollout-fallback-lifecycle" "service-resource")];
+  assert fallbackLifecycle.start
+  == [
+    {
+      executable = {
+        artifact = lib.abilities.packageOutput {
+          package = "aos";
+          output = "packageRuntime";
+        };
+        entry_point = "libexec/aos-image-rollout-boot";
+        arguments = ["fallback"];
+      };
+      ignore_failure = false;
+    }
+  ];
+  assert !fallbackLifecycle.enabled;
   assert !(enabled.config ? systemd); true

@@ -28,6 +28,9 @@
   userSessions = producer "user-sessions-ready" interfaces.activationMilestone {
     milestone = "user-sessions-ready";
   };
+  multiUser = producer "multi-user" interfaces.systemMilestoneReadiness {
+    milestone = "multi-user";
+  };
   storeDatabase = {
     requirementTemplates.nix-store-database =
       lib.abilities.interfaceSelector {
@@ -187,6 +190,133 @@
     };
   };
   registryReadiness = resultOf "registry-synchronization-lifecycle" "service-resource";
+  packageRuntimeCommand = arguments: {
+    executable = {
+      artifact = lib.abilities.packageOutput {output = "packageRuntime";};
+      entry_point = "libexec/aos-image-rollout-boot";
+      inherit arguments;
+    };
+    ignore_failure = false;
+  };
+  dependencies = {
+    after ? [],
+    before ? [],
+    requires ? [],
+    wants ? [],
+    wantedBy ? [],
+  }: {
+    prerequisites = [];
+    inherit after before requires wants;
+    requisite = [];
+    conflicts = [];
+    binds_to = [];
+    part_of = [];
+    upholds = [];
+    required_by = [];
+    wanted_by = wantedBy;
+    required_mounts = [];
+    implicit_dependencies = false;
+  };
+  oneshot = {
+    serviceName,
+    managerName,
+    description,
+    command,
+    serviceDependencies,
+    enabled,
+    conditions ? null,
+    failurePolicy ? null,
+  }:
+    serviceManagement.forService {
+      inherit serviceTypes consumerInstance;
+      declaration =
+        {
+          service = serviceName;
+          inherit enabled;
+          lifecycle = {
+            inherit description;
+            execution_model = "oneshot";
+            environment_files = [];
+            condition = [];
+            pre_start = [];
+            start = [command];
+            post_start = [];
+            stop = [];
+            post_stop = [];
+            restart = "never";
+            restart_delay_millis = 0;
+            configuration_change_action = "restart";
+            remain_after_exit = true;
+            start_timeout_millis = 300000;
+            stop_timeout_millis = 90000;
+          };
+          dependencies = serviceDependencies;
+          manager_identity = {
+            name = managerName;
+            aliases = [];
+          };
+          readiness = {
+            mechanism = "successful-exit";
+            signal_scope = "none";
+            timeout_millis = 300000;
+          };
+        }
+        // lib.optionalAttrs (conditions != null) {inherit conditions;}
+        // lib.optionalAttrs (failurePolicy != null) {failure_policy = failurePolicy;};
+    };
+  mountEsp = {
+    _type = "aos-request-output-reference";
+    request = "aos-boot-storage:aos-mount-esp-lifecycle";
+    output = "service-resource";
+  };
+  graphCompile = resultOf "aos-graph-compile-lifecycle" "service-resource";
+  activation = resultOf "aos-activate-lifecycle" "service-resource";
+  configurationReady = resultOf "aos-config" "activation-resource";
+  multiUserReadiness = resultOf "multi-user" "readiness-resource";
+  fallback = oneshot {
+    serviceName = "image-rollout-fallback";
+    managerName = "aos-image-rollout-fallback";
+    description = "Continue counted-boot fallback after qualified rollout failure";
+    command = packageRuntimeCommand ["fallback"];
+    serviceDependencies = dependencies {
+      after = [(resultOf "image-boot-commit-lifecycle" "service-resource")];
+    };
+    enabled = false;
+  };
+  bootCommit = oneshot {
+    serviceName = "image-boot-commit";
+    managerName = "aos-image-boot-commit";
+    description = "Commit a successful image transition";
+    command = packageRuntimeCommand (
+      ["commit"]
+      ++ lib.optional cfg.requireAttestationQuote "--require-attestation-quote"
+    );
+    serviceDependencies = dependencies {
+      after = [mountEsp graphCompile activation configurationReady];
+      before = [multiUserReadiness];
+      requires = [mountEsp graphCompile];
+      wantedBy = [multiUserReadiness];
+    };
+    enabled = true;
+    conditions.all = [
+      {
+        kind = "path";
+        predicate = "exists";
+        path = "/run/aos/image-reeval-required";
+        negated = false;
+      }
+      {
+        kind = "path";
+        predicate = "exists";
+        path = "/sys/firmware/efi";
+        negated = false;
+      }
+    ];
+    failurePolicy = {
+      handlers = [(resultOf "image-rollout-fallback-lifecycle" "service-resource")];
+      dispatch = "replace-active-goal";
+    };
+  };
   service = serviceManagement.forService {
     inherit serviceTypes consumerInstance;
     declaration = {
@@ -373,7 +503,16 @@
       };
     };
   };
-  baseFragments = [localFilesystems networkReadiness userSessions registrySynchronization service];
+  baseFragments = [
+    localFilesystems
+    networkReadiness
+    userSessions
+    multiUser
+    registrySynchronization
+    service
+    fallback
+    bootCommit
+  ];
   baseContributions = builtins.map serviceManagement.splitContribution baseFragments;
   storeDatabaseContribution = serviceManagement.splitContribution storeDatabase;
   fragments = baseFragments ++ [storeDatabase];
@@ -436,6 +575,12 @@ in {
       default = "unknown";
       internal = true;
       description = "Immutable image version recorded with provisioning evidence.";
+    };
+    requireAttestationQuote = lib.mkOption {
+      type = lib.abilities.types.boolean;
+      default = false;
+      internal = true;
+      description = "Whether boot finalization requires a verified measured-boot quote.";
     };
   };
 

@@ -13,6 +13,9 @@
   mkSystem,
 }: let
   baseLib = system.config.aos.config.evalAtBoot.baseLib;
+  abilityRequests = system.config.aos.abilities.requests;
+  imageBootCommitLifecycle = abilityRequests."aos:image-boot-commit-lifecycle".parameters;
+  imageBootCommitDependencies = abilityRequests."aos:image-boot-commit-dependencies".parameters;
   abiOverrideSystem = mkSystem [
     ../../systems/server.nix
     {aos.system.moduleAbi = 2;}
@@ -374,8 +377,8 @@
     then throw "the graph compiler must write only its transaction and runtime unit roots"
     else if !system.config.systemd.services.aos-graph-compile.serviceConfig.NoNewPrivileges
     then throw "the graph compiler must not gain privileges"
-    else if !(builtins.hasAttr "aos-image-boot-commit" system.config.systemd.services)
-    then throw "the stock system must commit or demote pending image transitions after configuration rebind"
+    else if imageBootCommitLifecycle.service != "image-boot-commit"
+    then throw "the stock system must author typed image-transition finalization"
     else if system.config.systemd.services.aos-eval.serviceConfig ? SuccessExitStatus
     then throw "aos-eval failures must remain visible as failed units"
     else if
@@ -401,24 +404,26 @@
     then throw "aos-eval.service must enter the authenticated no-input fallback arm"
     else if
       !(builtins.elem
-        "aos-activate.service"
-        system.config.systemd.services.aos-image-boot-commit.after)
+        {
+          _type = "aos-request-output-reference";
+          request = "aos:aos-activate-lifecycle";
+          output = "service-resource";
+        }
+        imageBootCommitDependencies.after)
     then throw "image boot success must wait for configuration activation"
     else if
       !(builtins.elem
-        "aos-graph-compile.service"
-        system.config.systemd.services.aos-image-boot-commit.requires)
+        {
+          _type = "aos-request-output-reference";
+          request = "aos:aos-graph-compile-lifecycle";
+          output = "service-resource";
+        }
+        imageBootCommitDependencies.requires)
     then throw "image boot assessment must wait for successful no-input or operator-input evaluation"
     else if
-      !(containsStr
-        "gen-$current/manifest.json"
-        system.config.systemd.services.aos-image-boot-commit.script)
-    then throw "image boot success must require a durable committed configuration manifest"
-    else if
-      !(containsStr
-        "${system.config.aos.config.artifacts.esp-sync}/bin/aos-sync-esps"
-        system.config.systemd.services.aos-image-boot-commit.script)
-    then throw "image boot success must invoke ESP synchronization by its immutable store path"
+      (builtins.head imageBootCommitLifecycle.start).executable.entry_point
+      != "libexec/aos-image-rollout-boot"
+    then throw "image boot success must use the package-owned compiled finalizer"
     else if
       !(builtins.elem
         (toString system.config.aos.config.evalAtBoot.baseLib)
@@ -978,7 +983,14 @@
     then throw "ZFS must be the only external early-boot module package"
     else if builtins.length bareMetalStorageSystem.config.aos.kernel.modulePackages != 1
     then throw "ZFS must be available in the runtime module tree"
-    else if !(builtins.elem "aos-mount-esp.service" bareMetalStorageSystem.config.systemd.services.aos-image-boot-commit.requires)
+    else if
+      !(builtins.elem
+        {
+          _type = "aos-request-output-reference";
+          request = "aos-boot-storage:aos-mount-esp-lifecycle";
+          output = "service-resource";
+        }
+        bareMetalStorageSystem.config.aos.abilities.requests."aos:image-boot-commit-dependencies".parameters.requires)
     then throw "image blessing must require authoritative booted-ESP discovery"
     else if bareMetalStorageSystem.config.system.build.installBundle == null
     then throw "ZFS-backed bare-metal systems must expose an installer bundle"
