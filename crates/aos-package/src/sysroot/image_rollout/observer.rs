@@ -16,7 +16,6 @@ use super::ability::AbilityRolloutState;
 use super::{AbRolloutRequest, NativeAbRolloutBackend};
 
 const ADAPTER: &str = "image-rollout";
-const INTERFACE: &str = "aos.ab-image-rollout-effects";
 const KIND: &str = "rollout";
 const SCOPE: &str = "host-machine";
 const IMAGE_PROFILE: &str = "/var/lib/profiles/image";
@@ -102,7 +101,6 @@ fn validate_request(request: &ObserverRequest) -> Result<()> {
     ensure!(
         request.adapter.as_str() == ADAPTER
             && request.scope.as_str() == SCOPE
-            && request.operation.interface.name.as_str() == INTERFACE
             && request.operation.target.interface == request.operation.interface,
         "qualification observer request does not address this provider"
     );
