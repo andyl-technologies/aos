@@ -1022,9 +1022,9 @@
               (.image_gen_parent | type) == "number"
               and (.module_abi_pinned | type) == "number"
               and (.manifest_hash | type) == "string" and (.manifest_hash | length) > 0
-              and (.config_module_closure | type) == "string" and (.config_module_closure | length) > 0
-              and (.config_module_paths | type) == "array"
-              and (.config_module_packages | type) == "array"
+              and (.package_module_closure | type) == "string" and (.package_module_closure | length) > 0
+              and (.package_module_paths | type) == "array"
+              and (.package_module_packages | type) == "array"
               and (.host_nix_ref | type) == "string" and (.host_nix_ref | length) > 0
               and (.facts_hash | type) == "string" and (.facts_hash | length) > 0
               and (.facts_ref | type) == "string" and (.facts_ref | length) > 0
@@ -1040,8 +1040,8 @@
             ${pkgs.jq}/bin/jq '
               .generations |= map({
                 number, image_gen_parent, module_abi_pinned, manifest_hash,
-                config_module_closure, config_module_paths,
-                config_module_packages, host_nix_ref, host_nix_commit,
+                package_module_closure, package_module_paths,
+                package_module_packages, host_nix_ref, host_nix_commit,
                 facts_hash, facts_ref, base_lib_ref, evaluator_ref, created_at
               })' "$profile_dir/.state.json.migrate" \
               > "$profile_dir/.state.json.next"

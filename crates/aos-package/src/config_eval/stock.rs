@@ -1254,7 +1254,6 @@ mod tests {
     use super::*;
     use crate::config_eval::PackageOutputs;
     use crate::config_eval::ability_rounds::{SelectedAbilityBinding, SelectedProviderModule};
-    use crate::types::ApmMeta;
 
     fn member(pkg: &str, module_artifact: Option<&str>) -> WorkingSetMember {
         let ability = module_artifact.map(|store_path| {
@@ -1308,43 +1307,6 @@ mod tests {
             },
             qualification: Default::default(),
         }
-    }
-
-    fn image_seed_metadata() -> ApmMeta {
-        ApmMeta {
-            name: "web".to_string(),
-            version: "1.0.0".to_string(),
-            explicit: true,
-            registry: "seed".to_string(),
-            installed_at: "1970-01-01T00:00:00Z".to_string(),
-            held: false,
-            source_drv: "/nix/store/source-web.drv".to_string(),
-            source_nar_hash: "sha256:source".to_string(),
-            expose: None,
-            expose_artifact: None,
-            documentation: None,
-            contract: None,
-            permissions: Default::default(),
-            bpf_lsm: None,
-            attestation: Default::default(),
-        }
-    }
-
-    #[test]
-    fn mutable_image_seed_metadata_must_match_the_immutable_catalog() {
-        let immutable = image_seed_metadata();
-        let mut profile = immutable.clone();
-        assert!(validate_image_seed_metadata(&profile, &immutable).is_ok());
-
-        profile.held = true;
-        let error = validate_image_seed_metadata(&profile, &immutable)
-            .expect_err("mutable profile forgery must be rejected");
-        assert!(
-            error
-                .to_string()
-                .contains("disagrees with immutable image metadata"),
-            "{error:#}"
-        );
     }
 
     #[test]

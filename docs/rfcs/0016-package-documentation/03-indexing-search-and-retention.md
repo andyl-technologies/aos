@@ -138,15 +138,15 @@ The implementation must simultaneously close the adjacent omission for signed
 companion objects:
 
 ```text
-config_module
+contract
 expose_artifact
 ```
 
 The complete release artifact set therefore includes at least runtime output,
-source derivation, config module, expose artifact, documentation, image, and
-other signed delivery artifacts. A release snapshot must not retain a package
-payload while collecting the configuration, exposure, or documentation objects
-needed to use and understand it.
+source derivation, the package ability contract, expose artifact, documentation,
+image, and other signed delivery artifacts. A release snapshot must not retain
+a package payload while collecting the contract, exposure, or documentation
+objects needed to use and understand it.
 
 ## Hub/cache retention and GC
 

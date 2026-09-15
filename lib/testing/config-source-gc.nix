@@ -133,15 +133,15 @@ in
             facts_json=$(${pkgs.jq}/bin/jq -Rs . "$facts_store")
             base_expr=$(locked_input "$base_lib")
             host_expr=$(locked_input "$host_store")
-            config_module_expr=$(locked_input "$config_module_store")
+            package_module_expr=$(locked_input "$package_module_store")
             cat > "$destination" <<ENTRY
           let
             baseLib = import $base_expr;
             host = import $host_expr;
-            configModule = import $config_module_expr;
+            packageModule = import $package_module_expr;
             facts = builtins.fromJSON $facts_json;
             evaluated = baseLib.evalRetained {
-              inherit host configModule facts;
+              inherit host packageModule facts;
               requestedAbi = $requested_abi;
             };
           in
@@ -185,10 +185,10 @@ in
 
           # Add the exact five identities a committed configuration needs:
           # old and new base libraries, the content-pinned host module, the
-          # normalized facts, and the authenticated package config output.
+          # normalized facts, and the authenticated package module.
           base_v1_store=$(add_tree ${fixture}/base-lib-v1)
           base_v2_store=$(add_tree ${fixture}/base-lib-v2)
-          config_module_store=$(add_tree ${fixture}/config-output)
+          package_module_store=$(add_tree ${fixture}/package-module)
           host_store=$(add_file ${fixture}/host.nix)
           facts_store=$(add_file ${fixture}/facts.json)
 
@@ -201,7 +201,7 @@ in
             .manifest.moduleAbi == 1
             and .manifest.baseLibGeneration == "v1"
             and .manifest.hostName == "cfgsrc-gc-host"
-            and .manifest.configValue == "retained-config-output"
+            and .manifest.configValue == "retained-package-module"
             and .manifest.instanceFact == "retained-instance-fact"
           ' "$work/abi-1-eval.json" >/dev/null
           config_output_store=$(add_file "$work/abi-1-eval.json")
@@ -212,7 +212,7 @@ in
           root_path "$config_output_store" "$system_profile/gen-1/cfg"
           root_path "$host_store" "$system_profile/gen-1/cfgsrc"
           root_path "$facts_store" "$system_profile/gen-1/cfgsrc"
-          root_path "$config_module_store" "$system_profile/gen-1/cfgsrc"
+          root_path "$package_module_store" "$system_profile/gen-1/cfgsrc"
           root_path "$base_v1_store" "$system_profile/gen-1/cfgsrc"
           root_path "$base_v2_store" "$system_profile/gen-1/cfgsrc"
           base_v1_logical="''${base_v1_store#"$aos_root"}"
@@ -236,7 +236,7 @@ in
             "$config_output_store" \
             "$host_store" \
             "$facts_store" \
-            "$config_module_store" \
+            "$package_module_store" \
             "$base_v1_store" \
             "$base_v2_store"; do
             assert_valid "$retained"
@@ -251,7 +251,7 @@ in
             and .manifest.baseLibGeneration == "v2"
             and .manifest.crossAbiReevaluated == true
             and .manifest.hostName == "cfgsrc-gc-host"
-            and .manifest.configValue == "retained-config-output"
+            and .manifest.configValue == "retained-package-module"
             and .manifest.instanceFact == "retained-instance-fact"
           ' "$work/abi-2-eval.json" >/dev/null
           ${pkgs.diffutils}/bin/cmp \
@@ -281,7 +281,7 @@ in
           for collected in \
             "$host_store" \
             "$facts_store" \
-            "$config_module_store" \
+            "$package_module_store" \
             "$base_v1_store" \
             "$base_v2_store"; do
             assert_collected "$collected"

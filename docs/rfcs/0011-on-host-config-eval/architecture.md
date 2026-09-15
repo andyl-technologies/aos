@@ -137,7 +137,7 @@ piecewise. Schematically:
   "presets": [ … ],
   "storePaths": ["/nix/store/<hash>-redis-8.2", "/nix/store/<hash>-curl-8.12"],
   "module_abi": 1,
-  "inputs": { "base_lib": "<hash>", "evaluator": "<hash>", "config_modules": "<closure-hash>",
+  "inputs": { "base_lib": "<hash>", "evaluator": "<hash>", "package_modules": "<closure-hash>",
               "host_nix": "<hash>", "instance_facts": "<facts-hash>" }
 }
 ```

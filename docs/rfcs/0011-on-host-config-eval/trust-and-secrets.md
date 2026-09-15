@@ -187,7 +187,7 @@ cumulative PCR 15; quote covers PCR 7, 11, 12, 15):
       abi_hash       = <hash of the base-lib module API + module_abi>
     evaluator:
       store_path     = <store path of the eval binary>               # ⊂ measured UKI
-    config_modules:
+    package_modules:
       origins        = [<registry|image>, ...]  # aligned with module inputs
       registry       = <name>                   # when any origin is registry
       release_tag    = <semver>                  # verify_tag_chain target

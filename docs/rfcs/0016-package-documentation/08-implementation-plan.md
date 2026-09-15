@@ -72,7 +72,7 @@ documentation Nix object and two isolated publications produce identical bytes.
 - [x] Implement portable tokenization/ranking and prove backend optimization
       parity or use the portable term table.
 - [x] Extend release/catalog artifact enumeration and SQL constraints with
-      `documentation`, `config_module`, and `expose_artifact`.
+      `documentation`, `contract`, and `expose_artifact`.
 - [x] Add registry/release/channel/subscription/manual-root retention and GC
       explanations for all companion objects.
 - [x] Atomically select package, artifact, docs, and search rows as one index

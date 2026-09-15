@@ -68,8 +68,6 @@ catalog.
   "identity": {
     "semantic_schema_sha256": "sha256:...",
     "runtime_nar_hash": "sha256:...",
-    "config_module_nar_hash": "sha256:...",
-    "expose_artifact_nar_hash": "sha256:...",
     "source_nar_hash": "sha256:..."
   },
   "options": [

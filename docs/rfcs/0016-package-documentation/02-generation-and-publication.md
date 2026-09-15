@@ -89,8 +89,8 @@ These constraints are normative:
 
 ## Signed metadata association
 
-`PlatformEntry` gains a generic optional documentation field rather than adding
-it only inside `ConfigModuleMeta`:
+`PlatformEntry` authenticates the documentation companion beside the package's
+single ability contract:
 
 ```toml
 [versions.platforms.x86_64-linux.documentation]

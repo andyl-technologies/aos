@@ -467,7 +467,7 @@ in {
       target.succeed(f"test -e {second['base_lib_ref']}")
       target.succeed(f"test -e {second['host_nix_ref']}")
       target.succeed(f"test -e {second['facts_ref']}")
-      for module_path in second["config_module_paths"]:
+      for module_path in second["package_module_paths"]:
           target.succeed(f"test -e {module_path}")
 
       # Rolling an ABI-1 generation forward while ABI 2 runs must evaluate the
@@ -487,7 +487,7 @@ in {
       assert cross["module_abi_pinned"] == 2, cross
       assert cross["host_nix_ref"] == second["host_nix_ref"], (cross, second)
       assert cross["facts_ref"] == second["facts_ref"], (cross, second)
-      assert cross["config_module_paths"] == second["config_module_paths"], (cross, second)
+      assert cross["package_module_paths"] == second["package_module_paths"], (cross, second)
       running_image = next(
           generation for generation in booted_images["generations"]
           if generation["number"] == booted_images["running"]
