@@ -1,31 +1,25 @@
-//! Package documentation derivation, runtime surface descriptions, and publication.
+//! Package documentation derivation and publication.
 
 use crate::registry_ops::attestation::documentation_nar_identity;
 use crate::registry_ops::config_modules::{
     DerivedOptionDeclaration, PublishConfigModuleManifest, nix_publish_string,
 };
 use crate::registry_ops::mac::PublishExposeManifest;
-use crate::registry_ops::store_paths::{
-    StorePathInfo, introspect_store_path, nix_command, store_dir_from_store_path,
-};
+use crate::registry_ops::store_paths::{StorePathInfo, introspect_store_path, nix_command};
 use crate::registry_ops::uki::sha256_hex;
 use crate::types::{
-    ConfigModuleMeta, ConfinementClass, DocumentationArtifactMeta,
-    validate_documentation_artifact_meta,
+    ConfigModuleMeta, DocumentationArtifactMeta, validate_documentation_artifact_meta,
 };
 use anyhow::{Context, Result, bail};
 use aos_doc_model::{
-    ActivationEffect, ActivationKind, ConfinementSummary, CredentialContract, DOCUMENT_FORMAT,
-    DOCUMENT_SCHEMA, DocumentationIdentity, DocumentedPackage, OptionDocument, OptionOwner,
-    PackageDocumentation, PathSegment, ProseBlock, RuntimeCapability, RuntimeConfigArtifact,
-    RuntimeListener, RuntimeSurface, RuntimeUnit, Section, Visibility,
+    ActivationEffect, DOCUMENT_FORMAT, DOCUMENT_SCHEMA, DocumentationIdentity, DocumentedPackage,
+    OptionDocument, OptionOwner, PackageDocumentation, PathSegment, ProseBlock, Section, Visibility,
 };
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::{Read as _, Write as _};
-use std::path::Path;
+use std::io::Write as _;
 use std::process::Command;
 
 /// Package-authored enrichment that cannot be inferred from option/expose
@@ -70,14 +64,12 @@ pub(in crate::registry_ops) struct PublishedDocumentation {
 #[serde(deny_unknown_fields)]
 struct DerivedSystemDocumentation {
     declarations: Vec<DerivedOptionDeclaration>,
-    units: Vec<String>,
 }
 
 #[derive(Debug)]
 pub(in crate::registry_ops) struct PublishedSystemDocumentation {
     pub(in crate::registry_ops) base_lib: StorePathInfo,
     pub(in crate::registry_ops) declarations: Vec<DerivedOptionDeclaration>,
-    pub(in crate::registry_ops) units: Vec<String>,
 }
 
 /// Extracts system-owned service options from the evaluated image module graph.
@@ -107,7 +99,6 @@ in if service == null then null else {{
         contributable;
       owner = "aos";
     }}) selected;
-    units = service.units or [];
   }}"#,
         nix_publish_string(package_name),
     );
@@ -150,18 +141,15 @@ in if service == null then null else {{
         .with_context(|| {
             format!("parsing system-owned documentation for package '{package_name}'")
         })?;
-    let Some(mut surface) = surface else {
+    let Some(surface) = surface else {
         return Ok(None);
     };
     if surface.declarations.is_empty() {
         bail!("system-owned documentation entry for package '{package_name}' selects no options");
     }
-    surface.units.sort();
-    surface.units.dedup();
     Ok(Some(PublishedSystemDocumentation {
         base_lib,
         declarations: surface.declarations,
-        units: surface.units,
     }))
 }
 
@@ -178,7 +166,7 @@ pub(in crate::registry_ops) fn publish_package_documentation(
     config_module: Option<&ConfigModuleMeta>,
     config_manifest: Option<&PublishConfigModuleManifest>,
     system_documentation: Option<&PublishedSystemDocumentation>,
-    expose_manifest: Option<&PublishExposeManifest>,
+    _expose_manifest: Option<&PublishExposeManifest>,
     expose_artifact: Option<&StorePathInfo>,
     declarations: &[DerivedOptionDeclaration],
 ) -> Result<PublishedDocumentation> {
@@ -295,11 +283,6 @@ pub(in crate::registry_ops) fn publish_package_documentation(
         },
         sections,
         options,
-        runtime: documentation_runtime_surface(
-            expose_manifest,
-            expose_artifact,
-            system_documentation,
-        )?,
     };
     document.identity.semantic_schema_sha256 = document
         .computed_semantic_schema_sha256()
@@ -390,252 +373,6 @@ fn documented_option_declarations(
     declarations
         .iter()
         .filter(|declaration| declaration.visibility != Visibility::Internal)
-}
-
-fn documentation_runtime_surface(
-    manifest: Option<&PublishExposeManifest>,
-    expose_artifact: Option<&StorePathInfo>,
-    system_documentation: Option<&PublishedSystemDocumentation>,
-) -> Result<RuntimeSurface> {
-    let Some(manifest) = manifest else {
-        let units = system_documentation
-            .into_iter()
-            .flat_map(|surface| surface.units.iter())
-            .map(|name| RuntimeUnit {
-                name: name.clone(),
-                kind: name
-                    .rsplit_once('.')
-                    .map_or("unit", |(_, kind)| kind)
-                    .to_string(),
-                summary: "System-owned service unit".to_string(),
-                requires: Vec::new(),
-            })
-            .collect();
-        return Ok(RuntimeSurface {
-            units,
-            ..RuntimeSurface::default()
-        });
-    };
-    let expose_artifact =
-        expose_artifact.context("exposed package documentation has no expose artifact")?;
-    let expose = &manifest.expose;
-    let permissions = &manifest.permissions;
-    let network = match permissions.network {
-        Some(crate::types::NetworkPermission::PrivateOutbound) => "private-outbound",
-        Some(crate::types::NetworkPermission::Host) => "host",
-        Some(crate::types::NetworkPermission::Private) | None => "private",
-    };
-    let mut units = expose
-        .units
-        .iter()
-        .map(|name| {
-            Ok(RuntimeUnit {
-                name: name.clone(),
-                kind: name
-                    .rsplit_once('.')
-                    .map_or("unit", |(_, kind)| kind)
-                    .to_string(),
-                summary: exposed_unit_description(&expose_artifact.path, name)?,
-                requires: Vec::new(),
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    if !units.iter().any(|unit| unit.name == expose.target) {
-        units.push(RuntimeUnit {
-            name: expose.target.clone(),
-            kind: "target".to_string(),
-            summary: "Package activation target".to_string(),
-            requires: Vec::new(),
-        });
-    }
-    units.sort_by(|left, right| left.name.cmp(&right.name));
-
-    let listeners = permissions
-        .tcp_bind
-        .iter()
-        .copied()
-        .map(|port| RuntimeListener {
-            unit: expose.target.clone(),
-            protocol: "tcp".to_string(),
-            port: Some(port),
-            network_mode: network.to_string(),
-        })
-        .collect();
-    let mut managed_paths = permissions
-        .host_paths
-        .iter()
-        .map(|path| aos_doc_model::ManagedPath {
-            path: path.path.clone(),
-            purpose: "host-path".to_string(),
-            writable: path.mode == crate::types::HostPathMode::Rw,
-        })
-        .collect::<Vec<_>>();
-    managed_paths.extend(expose.config.artifacts.iter().map(|artifact| {
-        aos_doc_model::ManagedPath {
-            path: artifact.path.clone(),
-            purpose: "configuration".to_string(),
-            writable: false,
-        }
-    }));
-    managed_paths.sort_by(|left, right| left.path.cmp(&right.path));
-
-    let config_artifacts = expose
-        .config
-        .artifacts
-        .iter()
-        .map(|artifact| {
-            let kind = match artifact.reload {
-                crate::types::ConfigReloadPolicy::Reload => ActivationKind::Reload,
-                crate::types::ConfigReloadPolicy::Restart => ActivationKind::Restart,
-                crate::types::ConfigReloadPolicy::None => ActivationKind::None,
-            };
-            let mut units = artifact.units.clone();
-            units.sort();
-            units.dedup();
-            RuntimeConfigArtifact {
-                name: artifact.name.clone(),
-                destination: artifact.path.clone(),
-                format: match artifact.format {
-                    crate::types::ConfigArtifactFormat::Env => "env",
-                    crate::types::ConfigArtifactFormat::Json => "json",
-                    crate::types::ConfigArtifactFormat::Toml => "toml",
-                }
-                .to_string(),
-                activation: Some(ActivationEffect { kind, units }),
-            }
-        })
-        .collect();
-    let credentials = expose
-        .config
-        .credentials
-        .iter()
-        .map(|credential| CredentialContract {
-            name: credential.name.clone(),
-            purpose: format!("Credential consumed by {}", credential.units.join(", ")),
-            destination: format!("%d/{}", credential.name),
-            accepted_kinds: if credential.encrypted {
-                vec![
-                    "tpm2-credential".to_string(),
-                    "system-credential".to_string(),
-                ]
-            } else {
-                vec!["system-credential".to_string()]
-            },
-            required: !credential.optional,
-            mode: 0o600,
-            activation: Some(ActivationEffect {
-                kind: ActivationKind::Restart,
-                units: {
-                    let mut units = credential.units.clone();
-                    units.sort();
-                    units.dedup();
-                    units
-                },
-            }),
-        })
-        .collect();
-    let mut capabilities = expose
-        .provides
-        .iter()
-        .map(|capability| RuntimeCapability {
-            name: capability.name.clone(),
-            direction: "provides".to_string(),
-        })
-        .chain(expose.uses.iter().map(|capability| RuntimeCapability {
-            name: format!("{}/{}", capability.provider, capability.name),
-            direction: "uses".to_string(),
-        }))
-        .collect::<Vec<_>>();
-    capabilities
-        .sort_by(|left, right| (&left.direction, &left.name).cmp(&(&right.direction, &right.name)));
-    let computed = permissions.computed_confinement();
-    let class = match computed.class {
-        ConfinementClass::Sandboxed => "sandboxed",
-        ConfinementClass::SandboxedWithHoles => "sandboxed-with-holes",
-        ConfinementClass::Unconfined => "unconfined",
-    };
-
-    Ok(RuntimeSurface {
-        units,
-        listeners,
-        managed_paths,
-        config_artifacts,
-        credentials,
-        capabilities,
-        confinement: Some(ConfinementSummary {
-            class: class.to_string(),
-            network: network.to_string(),
-            private_root: computed.class != ConfinementClass::Unconfined,
-        }),
-    })
-}
-
-/// Extracts the human-facing unit description from an authenticated expose artifact.
-fn exposed_unit_description(expose_artifact: &str, unit: &str) -> Result<String> {
-    crate::types::validate_unit_name(unit)
-        .with_context(|| format!("validating documented runtime unit '{unit}'"))?;
-    let path = Path::new(expose_artifact).join("units").join(unit);
-    let link_metadata = fs::symlink_metadata(&path)
-        .with_context(|| format!("inspecting documented runtime unit {}", path.display()))?;
-    let source = if link_metadata.file_type().is_symlink() {
-        let target = fs::read_link(&path)
-            .with_context(|| format!("resolving documented runtime unit {}", path.display()))?;
-        let expose_store_dir = store_dir_from_store_path(expose_artifact);
-        let target_store_path = target.parent().and_then(Path::to_str);
-        if target.file_name() != Some(std::ffi::OsStr::new(unit))
-            || expose_store_dir.is_none()
-            || target_store_path.and_then(store_dir_from_store_path) != expose_store_dir
-        {
-            bail!(
-                "documented runtime unit symlink must select the same unit from one direct store object: {}",
-                path.display()
-            );
-        }
-        target
-    } else {
-        path.clone()
-    };
-    let metadata = fs::metadata(&source)
-        .with_context(|| format!("inspecting documented runtime unit {}", source.display()))?;
-    if !metadata.is_file() {
-        bail!(
-            "documented runtime unit must be one regular file: {}",
-            source.display()
-        );
-    }
-
-    const MAX_DOCUMENTED_UNIT_BYTES: u64 = 1024 * 1024;
-    let mut content = String::new();
-    fs::File::open(&source)?
-        .take(MAX_DOCUMENTED_UNIT_BYTES + 1)
-        .read_to_string(&mut content)
-        .with_context(|| format!("reading documented runtime unit {}", source.display()))?;
-    if content.len() as u64 > MAX_DOCUMENTED_UNIT_BYTES {
-        bail!(
-            "documented runtime unit exceeds {MAX_DOCUMENTED_UNIT_BYTES} bytes: {}",
-            source.display()
-        );
-    }
-
-    let mut in_unit_section = false;
-    let mut description = None;
-    for line in content.lines() {
-        let line = line.trim();
-        if line.starts_with('[') && line.ends_with(']') {
-            in_unit_section = line == "[Unit]";
-            continue;
-        }
-        if in_unit_section && let Some(value) = line.strip_prefix("Description=") {
-            let value = value.trim();
-            description = (!value.is_empty()).then(|| value.to_string());
-        }
-    }
-    description.with_context(|| {
-        format!(
-            "documented runtime unit '{}' has no non-empty [Unit] Description",
-            source.display()
-        )
-    })
 }
 
 #[cfg(test)]

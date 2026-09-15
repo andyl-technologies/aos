@@ -709,8 +709,7 @@ mod tests {
     use aos_contract::Sha256Digest;
     use aos_doc_model::{
         AbilityExportReference, DocumentationIdentity, DocumentedPackage, InlineSpan, OptionOwner,
-        OptionType, PackageAbilityReference, ProseBlock, RuntimeSurface, Section, SourceLocator,
-        Visibility,
+        OptionType, PackageAbilityReference, ProseBlock, Section, SourceLocator, Visibility,
     };
 
     fn document() -> PackageDocumentation {
@@ -775,7 +774,6 @@ mod tests {
                     line: Some(1),
                 }),
             }],
-            runtime: RuntimeSurface::default(),
         };
         document.identity.semantic_schema_sha256 =
             document.computed_semantic_schema_sha256().unwrap();

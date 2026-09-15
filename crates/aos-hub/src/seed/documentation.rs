@@ -151,7 +151,6 @@ pub(super) fn write(root: &Path) -> Result<String> {
             }],
         }],
         options,
-        runtime: aos_doc_model::RuntimeSurface::default(),
     };
     document.identity.semantic_schema_sha256 = document.computed_semantic_schema_sha256()?;
     let contents = document.canonical_json()?;
