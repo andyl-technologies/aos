@@ -417,6 +417,12 @@
   } [];
   failurePolicy = request failurePolicyFeature;
 
+  concurrencyFeature = feature {
+    group = localKey;
+    conflict = types.enum ["reject"];
+  } [];
+  concurrency = request concurrencyFeature;
+
   schedulingFeature = feature {
     nice = types.integer {
       minimum = -20;
@@ -1112,6 +1118,7 @@
       enabled = types.boolean;
       schedule = schedule;
       persistent = types.boolean;
+      accuracy_millis = positiveDurationMillis;
       randomized_delay_millis = durationMillis;
     };
   };
@@ -1510,6 +1517,10 @@
           type = types.optional failurePolicyFeature;
           optional = true;
         };
+        concurrency = {
+          type = types.optional concurrencyFeature;
+          optional = true;
+        };
         scheduling = {
           type = types.optional schedulingFeature;
           optional = true;
@@ -1609,6 +1620,7 @@
     watchdog = observationFor "watchdog" watchdog featureState {};
     startPolicy = observationFor "start-policy" startPolicy featureState {};
     failurePolicy = observationFor "failure-policy" failurePolicy featureState {};
+    concurrency = observationFor "concurrency" concurrency featureState {};
     scheduling = observationFor "scheduling" scheduling featureState {};
     resources = observationFor "resources" resources featureState {};
     environment = observationFor "environment" environment featureState {};
@@ -1683,6 +1695,7 @@ in {
     watchdog
     startPolicy
     failurePolicy
+    concurrency
     scheduling
     resources
     environment

@@ -691,6 +691,17 @@
           "Observes the service's exact failure dispatch policy."
           read;
       });
+    concurrency =
+      canonical "service-concurrency" "aos.service.concurrency"
+      "Contributes a provider-neutral mutual-exclusion group and contention policy to a service resource."
+      serviceTypes.concurrency
+      serviceTypes.observations.concurrency
+      (targetResource: {
+        observe =
+          method serviceTypes.concurrency serviceTypes.observations.concurrency targetResource "observe"
+          "Observes the service's exact mutual-exclusion group and contention policy."
+          read;
+      });
     scheduling =
       canonical "service-scheduling" "aos.service.scheduling"
       "Contributes processor and input-output scheduling intent to a service resource."

@@ -18,6 +18,7 @@
     watchdog = serviceInterfaces.watchdog;
     start_policy = serviceInterfaces.startPolicy;
     failure_policy = serviceInterfaces.failurePolicy;
+    concurrency = serviceInterfaces.concurrency;
     scheduling = serviceInterfaces.scheduling;
     resources = serviceInterfaces.resources;
     environment = serviceInterfaces.environment;

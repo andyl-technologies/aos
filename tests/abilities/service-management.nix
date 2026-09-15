@@ -421,6 +421,10 @@
         handlers = [(resultOf "recovery" "activation-resource")];
         dispatch = "replace-active-goal";
       };
+      concurrency = {
+        group = "maintenance";
+        conflict = "reject";
+      };
       scheduling = {
         nice = 10;
         io_class = "idle";
@@ -553,6 +557,7 @@
       interval_millis = 60000;
     };
     persistent = true;
+    accuracy_millis = 60000;
     randomized_delay_millis = 5000;
   };
   pathActivation = {
@@ -1270,6 +1275,7 @@ in
   assert builtins.attrNames expandedExtended.requests
   == [
     "main-activation"
+    "main-concurrency"
     "main-conditions"
     "main-dependencies"
     "main-directories"
@@ -1318,6 +1324,19 @@ in
       };
     });
   assert succeedsAs serviceTypes.scheduledActivation scheduledActivation;
+  assert !succeedsAs serviceTypes.scheduledActivation (builtins.removeAttrs scheduledActivation ["accuracy_millis"]);
+  assert succeedsAs serviceTypes.concurrency {
+    service = "worker";
+    enabled = true;
+    group = "maintenance";
+    conflict = "reject";
+  };
+  assert !succeedsAs serviceTypes.concurrency {
+    service = "worker";
+    enabled = true;
+    group = "maintenance";
+    conflict = "queue";
+  };
   assert succeedsAs serviceTypes.pathActivation pathActivation;
   assert succeedsAs serviceTypes.mountResource mountResource;
   assert succeedsAs serviceTypes.storage (storageRequestFor providerOwnedStorageMount);
