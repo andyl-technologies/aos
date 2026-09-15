@@ -1373,6 +1373,19 @@ mod tests {
     }
 
     #[test]
+    fn package_option_declarations_reject_open_public_submodules() {
+        let declaration = package_option(
+            "open",
+            OptionType::Submodule {
+                fields: BTreeMap::new(),
+                open: true,
+            },
+        );
+
+        assert!(validate_package_option_declarations(&[declaration], &ABILITY_LIMITS_V1).is_err());
+    }
+
+    #[test]
     fn package_option_declarations_check_literal_defaults_against_the_type() {
         let mut declaration = package_option("enabled", OptionType::Bool);
         declaration.default = Some(DocumentedValue::Literal {
