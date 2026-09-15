@@ -509,6 +509,7 @@
       maximum_size_bytes = 16777216;
     };
     mode = "0600";
+    owner = lib.abilities.resultOf "service-principal" "principal-name";
   };
   protectedRequest = serviceManagement.forConfiguration {
     inherit serviceTypes;

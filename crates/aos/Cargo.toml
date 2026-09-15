@@ -30,6 +30,10 @@ name = "aos-metadata-runtime"
 path = "src/metadata_runtime.rs"
 
 [[bin]]
+name = "aos-configuration-provider"
+path = "src/configuration_provider.rs"
+
+[[bin]]
 name = "aos-release-fleet-fixture"
 path = "tests/support/release_fleet_fixture.rs"
 required-features = ["release-fleet-fixture"]
@@ -63,6 +67,7 @@ aos-proto-types = { workspace = true }
 aos-doc = { workspace = true }
 aos-doc-model = { workspace = true }
 aos-package = { workspace = true }
+aos-configuration-provider = { workspace = true }
 aos-maintain = { workspace = true }
 aos-release = { workspace = true }
 aos-image-finalizer = { workspace = true }

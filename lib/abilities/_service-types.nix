@@ -873,6 +873,10 @@
       name = localKey;
       source = configurationMaterializationSource;
       mode = types.fileMode;
+      owner = {
+        type = types.optional (types.deferredResult principalName);
+        optional = true;
+      };
     };
   };
   configurationMaterializationState = types.enum ["absent" "failed" "materialized" "unknown"];
