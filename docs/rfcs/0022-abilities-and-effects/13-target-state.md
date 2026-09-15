@@ -36,6 +36,12 @@ system. The shared schema module declares a single option tree under
 
 ```nix
 options.aos.abilities = {
+  environment = lib.mkOption {
+    type = lib.types.nullOr environmentIdentityModule;
+    default = null;
+    internal = true;
+  };
+
   interfaces = lib.mkOption {
     type = lib.types.attrsOf (lib.types.submodule interfaceModule);
     default = {};
@@ -81,6 +87,13 @@ assertions to contribute to this tree. Package and provider provenance is
 attached to the definitions by the existing module evaluator. There is no
 second `abilities.exports` / `abilities.imports` / `abilityBindings` module
 schema.
+
+The outer evaluator sets `aos.abilities.environment` for the explicit target.
+It is absent while a package's static projection is evaluated. An enabled
+package module uses that value to derive stable consumer and provider instance
+identities; it never hard-codes a host identity. Consumer instances may emit
+requests without implementing an interface. Provider instances additionally
+refer to their exact selected implementation and its typed configuration.
 
 `lib.abilities.types` is the portable subset of AOS option types. Its Boolean,
 bounded integer, bounded string and enumeration, list, map, record, tagged
@@ -211,6 +224,12 @@ instance references its package-owned template; it does not restate the
 interface, schema, methods, or guarantees. A provider instance likewise
 references its package-owned implementation declaration. This preserves
 static discovery without introducing a second declaration.
+
+The package carrier derives collision-free final keys from the package identity
+and each package-local alias. Package authors may therefore use ordinary local
+names such as `service` without repeating their package name, while bindings
+still identify one exact package declaration when multiple packages use the
+same alias.
 
 Ability-only changes alter the package release contract without needlessly
 rebuilding unchanged payload bytes. The release identity binds the payload,
