@@ -34,7 +34,6 @@ use super::handler_dispatch::HandlerDispatcher;
 use super::materialize::ConfigManifest;
 use super::transaction_store::{AbilityTransactionSession, RetainedAbilityDiagnosticSource};
 use crate::config::ApmConfig;
-use crate::sysroot::image_rollout::authenticate_single_image_rollout_fragment;
 use crate::types::ProfileScope;
 
 const EVALUATOR_CACHE: &str = "/var/cache/aos-ability-evaluator";
@@ -805,38 +804,6 @@ fn new_transaction_id() -> Result<TransactionId> {
     let key = LocalKey::new(format!("activation-{random:032x}"))
         .context("constructing native activation transaction identity")?;
     Ok(TransactionId(key))
-}
-
-/// Verifies the exact successful native rollout transaction before boot commit.
-///
-/// # Errors
-///
-/// Returns an error when the retained plan or journal is invalid, the
-/// transaction did not settle successfully, its rollout requests differ, or
-/// provider-owned health evidence does not authorize the running image.
-pub(crate) fn verify_rollout_boot_commit(
-    generation: u32,
-    transaction: &TransactionId,
-    running: u32,
-) -> Result<()> {
-    let generation = ProfileScope::System
-        .profile_path()
-        .join(format!("gen-{generation}"));
-    let source = RetainedAbilityDiagnosticSource::load(
-        generation,
-        transaction,
-        supported_native_ability_features()?,
-    )
-    .context("authenticating retained rollout transaction")?;
-    let request = authenticate_single_image_rollout_fragment(source.plan())
-        .context("authenticating the retained rollout fragment")?;
-    ensure!(
-        source.terminal_result(JournalLimits::default())? == Some(TerminalResult::Succeeded),
-        "native rollout transaction did not settle successfully"
-    );
-    crate::sysroot::image_rollout::NativeAbRolloutBackend::new("/var/lib/profiles/image", "/boot")
-        .verify_boot_commit(&request, running)
-        .context("verifying provider-owned rollout health evidence")
 }
 
 #[cfg(test)]

@@ -16,6 +16,7 @@ use super::{
 };
 
 mod ability;
+mod boot_commit;
 mod model;
 mod observer;
 mod plan;
@@ -23,6 +24,8 @@ mod process;
 mod provider;
 
 pub(crate) use ability::NativeAbRolloutBackend;
+pub use boot_commit::run_from_process as run_boot_commit_from_process;
+pub(crate) use boot_commit::verify_rollout_boot_commit;
 pub(super) use ability::retained_uki_entry_ids;
 pub(crate) use model::{AbRolloutRequest, MAX_RETENTION_MILLIS, RolloutImageIdentity};
 pub use observer::run_from_process as run_observer_from_process;

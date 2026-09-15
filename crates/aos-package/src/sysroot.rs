@@ -77,6 +77,7 @@ use crate::verify::{verify_download_hash, verify_downloads};
 mod activatability;
 pub(crate) mod image_rollout;
 pub use image_rollout::run_observer_from_process as run_image_rollout_observer;
+pub use image_rollout::run_boot_commit_from_process as run_image_rollout_boot_commit;
 pub use image_rollout::run_provider_from_process as run_image_rollout_provider;
 
 pub use activatability::{
