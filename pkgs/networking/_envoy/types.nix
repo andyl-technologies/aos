@@ -1,376 +1,308 @@
-##! Typed option contracts for the Envoy package configuration module.
+##! Portable option contracts for the Envoy package configuration module.
 {lib}: let
-  inherit (lib) mkOption types;
   abilityTypes = lib.abilities.types;
-  nonEmpty = types.strMatching ".+";
-  positiveInt = types.addCheck types.int (value: value > 0);
-  nonNegativeInt = types.addCheck types.int (value: value >= 0);
+
+  runtimeString = abilityTypes.runtimeString;
+  nonEmpty = abilityTypes.refined {
+    name = "non-empty Envoy string";
+    description = "a non-empty Envoy configuration string";
+    type = runtimeString;
+    predicate = value: builtins.match ".+" value != null;
+  };
+  positiveInt = abilityTypes.integer {
+    minimum = 1;
+    maximum = abilityTypes.limits.maxSafeInteger;
+  };
+  nonNegativeInt = abilityTypes.integer {
+    minimum = 0;
+    maximum = abilityTypes.limits.maxSafeInteger;
+  };
+  port = abilityTypes.integer {
+    minimum = 1;
+    maximum = 65535;
+  };
+  statusCode = abilityTypes.refined {
+    name = "Envoy redirect status";
+    description = "an HTTP redirect status supported by Envoy";
+    type = abilityTypes.integer {
+      minimum = 301;
+      maximum = 308;
+    };
+    predicate = value: builtins.elem value [301 302 303 307 308];
+  };
+  listOf = element:
+    abilityTypes.list {
+      inherit element;
+      maxItems = 4096;
+    };
+  mapOf = value:
+    abilityTypes.map {
+      keyMaxLength = 1024;
+      maxEntries = 4096;
+      inherit value;
+    };
+  nullable = type: description: {
+    type = abilityTypes.optional type;
+    default = null;
+    inherit description;
+  };
+
   runtimeValue = abilityTypes.disjointUnion [
     abilityTypes.boolean
     (abilityTypes.integer {
       minimum = -abilityTypes.limits.maxSafeInteger;
       maximum = abilityTypes.limits.maxSafeInteger;
     })
-    abilityTypes.runtimeString
+    runtimeString
   ];
 
-  socketAddress = types.submodule {
-    config._module.strict = true;
-    options = {
-      address = mkOption {
+  socketAddress = abilityTypes.record {
+    fields = {
+      address = {
         type = nonEmpty;
         default = "127.0.0.1";
         description = "The IPv4, IPv6, or DNS socket address.";
       };
-      port = mkOption {
-        type = types.port;
+      port = {
+        type = port;
         description = "The socket port.";
       };
     };
   };
 
-  tlsContext = types.submodule {
-    config._module.strict = true;
-    options = {
-      sdsSecret = mkOption {
-        type = types.nullOr nonEmpty;
-        default = null;
-        description = "The SDS secret resource name; never secret material.";
-      };
-      validationSdsSecret = mkOption {
-        type = types.nullOr nonEmpty;
-        default = null;
-        description = "The SDS validation-context resource name; never CA material.";
-      };
-      certificateCredential = mkOption {
-        type = types.nullOr (types.enum ["tls-certificate"]);
-        default = null;
-        description = "The credential handle containing the PEM certificate chain.";
-      };
-      privateKeyCredential = mkOption {
-        type = types.nullOr (types.enum ["tls-private-key"]);
-        default = null;
-        description = "The credential handle containing the PEM private key.";
-      };
-      validationCaCredential = mkOption {
-        type = types.nullOr (types.enum ["validation-ca"]);
-        default = null;
-        description = "The credential handle containing trusted CA certificates.";
-      };
-      requireClientCertificate = mkOption {
-        type = types.bool;
+  tlsContext = abilityTypes.record {
+    fields = {
+      sdsSecret = nullable nonEmpty "The SDS secret resource name; never secret material.";
+      validationSdsSecret = nullable nonEmpty "The SDS validation-context resource name; never CA material.";
+      certificateCredential = nullable (abilityTypes.enum ["tls-certificate"]) "The credential handle containing the PEM certificate chain.";
+      privateKeyCredential = nullable (abilityTypes.enum ["tls-private-key"]) "The credential handle containing the PEM private key.";
+      validationCaCredential = nullable (abilityTypes.enum ["validation-ca"]) "The credential handle containing trusted CA certificates.";
+      requireClientCertificate = {
+        type = abilityTypes.boolean;
         default = false;
         description = "Whether a downstream peer must present a valid certificate.";
       };
-      sni = mkOption {
-        type = types.nullOr nonEmpty;
-        default = null;
-        description = "The SNI server name used for an upstream TLS connection.";
-      };
-      alpn = mkOption {
-        type = types.listOf nonEmpty;
+      sni = nullable nonEmpty "The SNI server name used for an upstream TLS connection.";
+      alpn = {
+        type = listOf nonEmpty;
         default = [];
         description = "The ordered ALPN protocol names.";
       };
     };
   };
 
-  directResponse = types.submodule {
-    config._module.strict = true;
-    options = {
-      status = mkOption {
-        type = types.addCheck types.int (value: value >= 100 && value <= 599);
+  directResponse = abilityTypes.record {
+    fields = {
+      status = {
+        type = abilityTypes.integer {
+          minimum = 100;
+          maximum = 599;
+        };
         default = 200;
         description = "The HTTP response status.";
       };
-      body = mkOption {
-        type = types.str;
+      body = {
+        type = runtimeString;
         default = "";
         description = "The non-secret inline response body.";
       };
     };
   };
 
-  redirect = types.submodule {
-    config._module.strict = true;
-    options = {
-      https = mkOption {
-        type = types.bool;
+  redirect = abilityTypes.record {
+    fields = {
+      https = {
+        type = abilityTypes.boolean;
         default = true;
         description = "Whether the redirect changes the scheme to HTTPS.";
       };
-      host = mkOption {
-        type = types.nullOr nonEmpty;
-        default = null;
-        description = "An optional replacement host.";
-      };
-      port = mkOption {
-        type = types.nullOr types.port;
-        default = null;
-        description = "An optional replacement port.";
-      };
-      responseCode = mkOption {
-        type = types.enum [301 302 303 307 308];
+      host = nullable nonEmpty "An optional replacement host.";
+      port = nullable port "An optional replacement port.";
+      responseCode = {
+        type = statusCode;
         default = 301;
         description = "The redirect response status.";
       };
     };
   };
 
-  route = types.submodule ({name, ...}: {
-    config._module.strict = true;
-    options = {
-      name = mkOption {
-        type = nonEmpty;
-        default = name;
-        readOnly = true;
-        description = "The route name.";
+  routeMatch = abilityTypes.record {
+    fields = {
+      prefix = nullable runtimeString "The path prefix to match." // {default = "/";};
+      path = nullable runtimeString "The exact path to match.";
+      safeRegex = nullable nonEmpty "The RE2-compatible path expression to match.";
+      headers = {
+        type = mapOf nonEmpty;
+        default = {};
+        description = "Exact HTTP header matches.";
       };
-      match = mkOption {
-        type = types.submodule {
-          config._module.strict = true;
-          options = {
-            prefix = mkOption {
-              type = types.nullOr types.str;
-              default = "/";
-              description = "The path prefix to match.";
-            };
-            path = mkOption {
-              type = types.nullOr types.str;
-              default = null;
-              description = "The exact path to match.";
-            };
-            safeRegex = mkOption {
-              type = types.nullOr nonEmpty;
-              default = null;
-              description = "The RE2-compatible path expression to match.";
-            };
-            headers = mkOption {
-              type = types.attrsOf nonEmpty;
-              default = {};
-              description = "Exact HTTP header matches.";
-            };
-          };
-        };
+    };
+  };
+
+  route = abilityTypes.record {
+    fields = {
+      match = {
+        type = routeMatch;
         default = {};
         description = "The request match.";
       };
-      cluster = mkOption {
-        type = types.nullOr nonEmpty;
-        default = null;
-        description = "The destination cluster.";
-      };
-      weightedClusters = mkOption {
-        type = types.attrsOf positiveInt;
+      cluster = nullable nonEmpty "The destination cluster.";
+      weightedClusters = {
+        type = mapOf positiveInt;
         default = {};
         description = "Destination clusters and their relative weights.";
       };
-      directResponse = mkOption {
-        type = types.nullOr directResponse;
-        default = null;
-        description = "An immediate local response.";
-      };
-      redirect = mkOption {
-        type = types.nullOr redirect;
-        default = null;
-        description = "An HTTP redirect action.";
-      };
-      timeoutSeconds = mkOption {
+      directResponse = nullable directResponse "An immediate local response.";
+      redirect = nullable redirect "An HTTP redirect action.";
+      timeoutSeconds = {
         type = nonNegativeInt;
         default = 15;
         description = "The upstream request timeout in seconds; zero disables it.";
       };
-      prefixRewrite = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "An optional path prefix rewrite.";
-      };
-      retryCount = mkOption {
+      prefixRewrite = nullable runtimeString "An optional path prefix rewrite.";
+      retryCount = {
         type = nonNegativeInt;
         default = 0;
         description = "The number of retry attempts for connect and reset failures.";
       };
     };
-  });
+  };
 
-  virtualHost = types.submodule ({name, ...}: {
-    config._module.strict = true;
-    options = {
-      name = mkOption {
-        type = nonEmpty;
-        default = name;
-        readOnly = true;
-        description = "The virtual-host name.";
-      };
-      domains = mkOption {
-        type = types.listOf nonEmpty;
-        default = [name];
-        description = "The authority patterns accepted by this virtual host.";
-      };
-      routes = mkOption {
-        type = types.attrsOf route;
+  virtualHost = abilityTypes.record {
+    fields = {
+      domains = nullable (listOf nonEmpty) "The authority patterns accepted by this virtual host.";
+      routes = {
+        type = mapOf route;
         default = {};
         description = "The ordered route map (lexicographic by route name).";
       };
-      requestHeaders = mkOption {
-        type = types.attrsOf types.str;
+      requestHeaders = {
+        type = mapOf runtimeString;
         default = {};
         description = "Request headers added at the virtual-host boundary.";
       };
-      responseHeaders = mkOption {
-        type = types.attrsOf types.str;
+      responseHeaders = {
+        type = mapOf runtimeString;
         default = {};
         description = "Response headers added at the virtual-host boundary.";
       };
     };
-  });
+  };
 
-  filterChain = types.submodule ({name, ...}: {
-    config._module.strict = true;
-    options = {
-      name = mkOption {
-        type = nonEmpty;
-        default = name;
-        readOnly = true;
-        description = "The filter-chain name.";
-      };
-      serverNames = mkOption {
-        type = types.listOf nonEmpty;
+  filterChain = abilityTypes.record {
+    fields = {
+      serverNames = {
+        type = listOf nonEmpty;
         default = [];
         description = "The SNI names selecting this filter chain.";
       };
-      transportProtocol = mkOption {
-        type = types.nullOr (types.enum ["raw_buffer" "tls"]);
-        default = null;
-        description = "An optional transport-protocol match.";
-      };
-      applicationProtocols = mkOption {
-        type = types.listOf nonEmpty;
+      transportProtocol = nullable (abilityTypes.enum ["raw_buffer" "tls"]) "An optional transport-protocol match.";
+      applicationProtocols = {
+        type = listOf nonEmpty;
         default = [];
         description = "The ALPN protocol matches.";
       };
-      tls = mkOption {
-        type = types.nullOr tlsContext;
-        default = null;
-        description = "The downstream TLS context using credentials or SDS.";
-      };
-      virtualHosts = mkOption {
-        type = types.attrsOf virtualHost;
+      tls = nullable tlsContext "The downstream TLS context using credentials or SDS.";
+      virtualHosts = {
+        type = mapOf virtualHost;
         default = {};
         description = "HTTP virtual hosts served by this filter chain.";
       };
-      tcpProxyCluster = mkOption {
-        type = types.nullOr nonEmpty;
-        default = null;
-        description = "The raw TCP proxy destination cluster.";
-      };
-      requestTimeoutSeconds = mkOption {
+      tcpProxyCluster = nullable nonEmpty "The raw TCP proxy destination cluster.";
+      requestTimeoutSeconds = {
         type = nonNegativeInt;
         default = 0;
         description = "The HTTP connection-manager request timeout; zero disables it.";
       };
     };
-  });
+  };
 
-  listener = types.submodule ({name, ...}: {
-    config._module.strict = true;
-    options = {
-      name = mkOption {
-        type = nonEmpty;
-        default = name;
-        readOnly = true;
-        description = "The listener name.";
-      };
-      address = mkOption {
+  listener = abilityTypes.record {
+    fields = {
+      address = {
         type = nonEmpty;
         default = "127.0.0.1";
         description = "The listener bind address.";
       };
-      port = mkOption {
-        type = types.port;
+      port = {
+        type = port;
         description = "The listener bind port.";
       };
-      protocol = mkOption {
-        type = types.enum ["TCP" "UDP"];
+      protocol = {
+        type = abilityTypes.enum ["TCP" "UDP"];
         default = "TCP";
         description = "The listener socket protocol.";
       };
-      transparent = mkOption {
-        type = types.bool;
+      transparent = {
+        type = abilityTypes.boolean;
         default = false;
         description = "Whether the listener accepts transparently redirected traffic.";
       };
-      filterChains = mkOption {
-        type = types.attrsOf filterChain;
+      filterChains = {
+        type = mapOf filterChain;
         default = {};
         description = "The listener filter chains.";
       };
     };
-  });
+  };
 
-  endpoint = types.submodule {
-    config._module.strict = true;
-    options = {
-      address = mkOption {
+  endpoint = abilityTypes.record {
+    fields = {
+      address = {
         type = nonEmpty;
         description = "The endpoint IP address or DNS name.";
       };
-      port = mkOption {
-        type = types.port;
+      port = {
+        type = port;
         description = "The endpoint port.";
       };
-      weight = mkOption {
+      weight = {
         type = positiveInt;
         default = 1;
         description = "The load-balancing weight.";
       };
-      priority = mkOption {
+      priority = {
         type = nonNegativeInt;
         default = 0;
         description = "The failover priority.";
       };
-      locality = mkOption {
-        type = types.nullOr nonEmpty;
-        default = null;
-        description = "An optional locality label.";
-      };
+      locality = nullable nonEmpty "An optional locality label.";
     };
   };
 
-  healthCheck = types.submodule {
-    config._module.strict = true;
-    options = {
-      type = mkOption {
-        type = types.enum ["tcp" "http" "grpc"];
+  healthCheck = abilityTypes.record {
+    fields = {
+      type = {
+        type = abilityTypes.enum ["tcp" "http" "grpc"];
         default = "tcp";
         description = "The active health-check protocol.";
       };
-      path = mkOption {
+      path = {
         type = nonEmpty;
         default = "/healthz";
         description = "The HTTP health-check path.";
       };
-      serviceName = mkOption {
-        type = types.str;
+      serviceName = {
+        type = runtimeString;
         default = "";
         description = "The gRPC health-check service name.";
       };
-      intervalSeconds = mkOption {
+      intervalSeconds = {
         type = positiveInt;
         default = 10;
         description = "The interval between checks.";
       };
-      timeoutSeconds = mkOption {
+      timeoutSeconds = {
         type = positiveInt;
         default = 3;
         description = "The check timeout.";
       };
-      healthyThreshold = mkOption {
+      healthyThreshold = {
         type = positiveInt;
         default = 2;
         description = "The consecutive successes required for health.";
       };
-      unhealthyThreshold = mkOption {
+      unhealthyThreshold = {
         type = positiveInt;
         default = 3;
         description = "The consecutive failures required for unhealth.";
@@ -378,99 +310,150 @@
     };
   };
 
-  cluster = types.submodule ({name, ...}: {
-    config._module.strict = true;
-    options = {
-      name = mkOption {
-        type = nonEmpty;
-        default = name;
-        readOnly = true;
-        description = "The cluster name.";
+  circuitBreakers = abilityTypes.record {
+    fields =
+      builtins.mapAttrs (_: default: {
+        type = positiveInt;
+        inherit default;
+        description = "The default-priority circuit-breaker threshold.";
+      }) {
+        maxConnections = 1024;
+        maxPendingRequests = 1024;
+        maxRequests = 1024;
+        maxRetries = 3;
       };
-      discovery = mkOption {
-        type = types.enum ["STATIC" "STRICT_DNS" "LOGICAL_DNS" "EDS"];
+  };
+
+  cluster = abilityTypes.record {
+    fields = {
+      discovery = {
+        type = abilityTypes.enum ["STATIC" "STRICT_DNS" "LOGICAL_DNS" "EDS"];
         default = "STATIC";
         description = "The endpoint discovery policy.";
       };
-      endpoints = mkOption {
-        type = types.listOf endpoint;
+      endpoints = {
+        type = listOf endpoint;
         default = [];
         description = "The statically or DNS-resolved endpoints.";
       };
-      edsServiceName = mkOption {
-        type = types.nullOr nonEmpty;
-        default = null;
-        description = "The EDS service name; defaults to the cluster name.";
-      };
-      connectTimeoutSeconds = mkOption {
+      edsServiceName = nullable nonEmpty "The EDS service name; defaults to the cluster name.";
+      connectTimeoutSeconds = {
         type = positiveInt;
         default = 5;
         description = "The upstream connection timeout.";
       };
-      lbPolicy = mkOption {
-        type = types.enum ["ROUND_ROBIN" "LEAST_REQUEST" "RING_HASH" "RANDOM" "MAGLEV"];
+      lbPolicy = {
+        type = abilityTypes.enum ["ROUND_ROBIN" "LEAST_REQUEST" "RING_HASH" "RANDOM" "MAGLEV"];
         default = "ROUND_ROBIN";
         description = "The load-balancing policy.";
       };
-      http2 = mkOption {
-        type = types.bool;
+      http2 = {
+        type = abilityTypes.boolean;
         default = false;
         description = "Whether to use HTTP/2 upstream.";
       };
-      tls = mkOption {
-        type = types.nullOr tlsContext;
-        default = null;
-        description = "The upstream TLS context using credentials or SDS.";
-      };
-      healthChecks = mkOption {
-        type = types.listOf healthCheck;
+      tls = nullable tlsContext "The upstream TLS context using credentials or SDS.";
+      healthChecks = {
+        type = listOf healthCheck;
         default = [];
         description = "Active health checks.";
       };
-      circuitBreakers = mkOption {
-        type = types.submodule {
-          config._module.strict = true;
-          options = {
-            maxConnections = mkOption {
-              type = positiveInt;
-              default = 1024;
-            };
-            maxPendingRequests = mkOption {
-              type = positiveInt;
-              default = 1024;
-            };
-            maxRequests = mkOption {
-              type = positiveInt;
-              default = 1024;
-            };
-            maxRetries = mkOption {
-              type = positiveInt;
-              default = 3;
-            };
-          };
-        };
+      circuitBreakers = {
+        type = circuitBreakers;
         default = {};
         description = "The default-priority circuit-breaker thresholds.";
       };
     };
-  });
+  };
 
-  runtimeLayer = types.submodule ({name, ...}: {
-    config._module.strict = true;
-    options = {
-      name = mkOption {
-        type = nonEmpty;
-        default = name;
-        readOnly = true;
-        description = "The runtime layer name.";
-      };
-      values = mkOption {
-        type = types.attrsOf runtimeValue;
-        default = {};
-        description = "Non-secret static runtime keys.";
-      };
+  runtimeLayer = abilityTypes.record {
+    fields.values = {
+      type = mapOf runtimeValue;
+      default = {};
+      description = "Non-secret static runtime keys.";
     };
-  });
+  };
+
+  listeners = mapOf listener;
+  clusters = mapOf cluster;
+  runtimeLayers = mapOf runtimeLayer;
+  metadata = mapOf runtimeValue;
+
+  withNulls = names: value:
+    lib.genAttrs names (_: null) // value;
+  normalizeTls = value:
+    if value == null
+    then null
+    else
+      withNulls [
+        "sdsSecret"
+        "validationSdsSecret"
+        "certificateCredential"
+        "privateKeyCredential"
+        "validationCaCredential"
+        "sni"
+      ]
+      value;
+  normalizeRoute = name: value:
+    (withNulls ["cluster" "directResponse" "redirect" "prefixRewrite"] value)
+    // {
+      inherit name;
+      match = withNulls ["path" "safeRegex"] value.match;
+    };
+  normalizeVirtualHost = name: value:
+    value
+    // {
+      inherit name;
+      domains = value.domains or [name];
+      routes = builtins.mapAttrs normalizeRoute value.routes;
+    };
+  normalizeFilterChain = name: value:
+    (withNulls ["transportProtocol" "tls" "tcpProxyCluster"] value)
+    // {
+      inherit name;
+      tls = normalizeTls (value.tls or null);
+      virtualHosts = builtins.mapAttrs normalizeVirtualHost value.virtualHosts;
+    };
+  normalizeListener = name: value:
+    value
+    // {
+      inherit name;
+      filterChains = builtins.mapAttrs normalizeFilterChain value.filterChains;
+    };
+  normalizeEndpoint = value: withNulls ["locality"] value;
+  normalizeCluster = name: value:
+    (withNulls ["edsServiceName" "tls"] value)
+    // {
+      inherit name;
+      endpoints = builtins.map normalizeEndpoint value.endpoints;
+      tls = normalizeTls (value.tls or null);
+    };
+  normalizeRuntimeLayer = name: value: value // {inherit name;};
+  normalize = config:
+    config
+    // {
+      listeners = builtins.mapAttrs normalizeListener config.listeners;
+      clusters = builtins.mapAttrs normalizeCluster config.clusters;
+      runtimeLayers = builtins.mapAttrs normalizeRuntimeLayer config.runtimeLayers;
+      telemetry = config.telemetry // {statsd = config.telemetry.statsd or null;};
+    };
 in {
-  inherit cluster filterChain healthCheck listener runtimeLayer runtimeValue socketAddress tlsContext virtualHost;
+  inherit
+    cluster
+    clusters
+    filterChain
+    healthCheck
+    listener
+    listeners
+    metadata
+    nonEmpty
+    normalize
+    port
+    runtimeLayer
+    runtimeLayers
+    runtimeValue
+    socketAddress
+    tlsContext
+    virtualHost
+    ;
 }
