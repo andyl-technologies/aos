@@ -201,6 +201,8 @@ fn storage_view_request(
     source_context: ResourceContext,
     path: &Path,
 ) -> AdmissionRequest {
+    let source_provider =
+        decode_provider_context(&source_context).expect("source provider context decodes");
     let interface = interface(STORAGE_VIEW_INTERFACE);
     let target = ResourceReference {
         interface: interface.clone(),
@@ -211,6 +213,7 @@ fn storage_view_request(
     let value = ability_value(json!({
         "name": "socket",
         "source": source,
+        "source_path": source_provider.path,
         "access": "read-write",
         "relative_path": "service.sock",
     }))
@@ -233,6 +236,7 @@ fn storage_view_request(
                 "schema": VIEW_REALIZATION_SCHEMA,
                 "source": source_context.reference,
                 "relative_path": "service.sock",
+                "path": path,
             }))
             .expect("storage-view realization is valid"),
             revision: RevisionId(Sha256Digest::of_bytes(
@@ -645,6 +649,18 @@ fn storage_view_materialize_and_release_only_its_exact_durable_lease() {
         source_request.target.clone(),
         source_context.clone(),
         &view_path,
+    );
+    let mut mismatched = request.clone();
+    let mut mismatched_value = mismatched.resource_spec.value.as_json().clone();
+    mismatched_value["source_path"] = json!(temporary.path().join("foreign-storage"));
+    mismatched.resource_spec.value =
+        ability_value(mismatched_value).expect("mismatched view request remains bounded");
+    let error = provider
+        .admit(mismatched)
+        .expect_err("a view cannot pair its source with another planned path");
+    assert!(
+        error.to_string().contains("planned source path"),
+        "{error:#}"
     );
 
     let admission = provider

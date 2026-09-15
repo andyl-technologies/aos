@@ -75,9 +75,26 @@
         })
         resources;
     };
-  storageViewProvide = {requests, bindings, ...}:
+  storageViewPath = request:
+    if (request.relative_path or null) == null
+    then request.source_path
+    else
+      lib.abilities.pathWithin {
+        base = request.source_path;
+        relativePath = request.relative_path;
+      };
+  storageViewProvide = {
+    requests,
+    bindings,
+    ...
+  }:
     emptyResult
     // {
+      outputs =
+        builtins.mapAttrs (_: request: {
+          planned-path = storageViewPath request.parameters;
+        })
+        requests;
       resourceFragments = builtins.listToAttrs (builtins.map (requestName: let
           request = requests.${requestName};
           binding = bindingFor bindings requestName;
@@ -97,6 +114,7 @@
           schema = "aos.filesystem.storage-view-realization/v1";
           inherit (resource.value) source;
           relative_path = resource.value.relative_path or null;
+          path = storageViewPath resource.value;
         })
         resources;
     };

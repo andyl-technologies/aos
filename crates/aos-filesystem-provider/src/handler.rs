@@ -164,11 +164,19 @@ impl FilesystemProvider {
                     "storage view source is not an admitted allocation"
                 );
                 let root = Path::new(&source_context.path);
+                ensure!(
+                    root == Path::new(&input.source_path),
+                    "storage view planned source path differs from its admitted allocation"
+                );
                 let path = if root.exists() {
                     resolve_storage_view_path(root, input.relative_path.as_deref())?
                 } else {
                     planned_child_path(root, input.relative_path.as_deref())?
                 };
+                ensure!(
+                    path == Path::new(&realization.path),
+                    "storage view realization path differs from its resolved planned path"
+                );
                 let claim = self.view_claim_for(&request.resource_spec.resource)?;
                 let state = inspect_view(
                     root,
@@ -542,10 +550,15 @@ impl FilesystemProvider {
             "storage view source is not an admitted allocation"
         );
         let root = Path::new(&source_context.path);
+        ensure!(
+            root == Path::new(&input.source_path),
+            "storage view planned source path differs from its admitted allocation"
+        );
         ensure!(root.is_dir(), "storage view source is not materialized");
         let path = resolve_storage_view_path(root, input.relative_path.as_deref())?;
+        let realization: StorageViewRealization = decode_value(&bound.resource_spec.realization)?;
         ensure!(
-            Path::new(&context.path) == path,
+            Path::new(&context.path) == path && Path::new(&realization.path) == path,
             "admitted storage-view path drifted before effect"
         );
 
@@ -596,7 +609,8 @@ impl FilesystemProvider {
                 ensure!(
                     realization.schema == VIEW_REALIZATION_SCHEMA
                         && realization.source == input.source
-                        && realization.relative_path == input.relative_path,
+                        && realization.relative_path == input.relative_path
+                        && realization.path == context.path,
                     "storage-view realization drifted before release"
                 );
                 PathBuf::from(&context.path)
@@ -675,6 +689,10 @@ impl FilesystemProvider {
                 let source = exact_resource_context(resources, &input.source)?;
                 let source_context = decode_provider_context(source)?;
                 let root = Path::new(&source_context.path);
+                ensure!(
+                    root == Path::new(&input.source_path),
+                    "storage view planned source path differs from its admitted allocation"
+                );
                 let path = if root.exists() {
                     resolve_storage_view_path(root, input.relative_path.as_deref())?
                 } else {
@@ -1030,6 +1048,7 @@ struct StorageViewRequest {
     #[serde(rename = "name")]
     _name: LocalKey,
     source: ResourceReference,
+    source_path: String,
     #[serde(rename = "access")]
     _access: String,
     #[serde(default)]
@@ -1041,6 +1060,7 @@ struct StorageViewRequest {
 struct StorageViewRealization {
     schema: String,
     source: ResourceReference,
+    path: String,
     #[serde(default)]
     relative_path: Option<String>,
 }

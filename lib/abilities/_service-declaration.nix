@@ -679,9 +679,25 @@
       then selectedInterface.methods
       else methods
     );
+    storageViewPairsValid =
+      selectedInterface.alias
+      != "storage-view"
+      || builtins.all (producer: let
+        source = producer.parameters.source or {};
+        sourcePath = producer.parameters.source_path or {};
+      in
+        (source._type or null)
+        == "aos-request-output-reference"
+        && (sourcePath._type or null) == "aos-request-output-reference"
+        && source.request == sourcePath.request
+        && source.output == "retained-resource"
+        && sourcePath.output == "planned-path")
+      producers;
     contribution =
       if !uniqueBy "key" producers
       then throw "producer request keys must be unique"
+      else if !storageViewPairsValid
+      then throw "storage views must pair retained-resource and planned-path outputs from one allocation request"
       else {
         requirementTemplates.${selectedInterface.alias} = requirementFor selectedInterface selectedMethods [];
         requests = builtins.listToAttrs (builtins.map (producer: {
