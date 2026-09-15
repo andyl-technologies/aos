@@ -840,6 +840,7 @@ pub(crate) mod tests {
             package,
             "1.0.0",
             "x86_64-linux",
+            &ability.store_path,
             &ability,
         )
         .unwrap();

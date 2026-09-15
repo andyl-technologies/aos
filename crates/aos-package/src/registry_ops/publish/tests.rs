@@ -4,9 +4,12 @@ use super::{
     apply_publish_sb_policy, publish_canonical_ability_output, required_publish_metadata,
     validate_release_publish_metadata, validate_release_publish_signing_identity,
 };
-use crate::ability_package::{collect_distinct_artifacts, decode_package_manifest};
+use crate::ability_package::{
+    collect_distinct_artifacts, decode_package_manifest, read_package_manifest,
+};
 use crate::config::ApmConfig;
 use crate::registry::parse::ImageVerificationState;
+use crate::registry::release::RegistryReleaseEntry;
 use crate::registry::sb_certs::{RevokedSbCert, SbCert, SbCertsToml};
 use crate::registry_ops::metadata::build_package_toml_with_documentation;
 use crate::registry_ops::release::ReleaseStorePublish;
@@ -25,7 +28,85 @@ async fn ability_publication_accepts_a_transitive_self_referencing_closure() {
     let Ok(companion_path) = std::env::var("AOS_TEST_ABILITY_PACKAGE_SMOKE") else {
         return;
     };
-    let manifest = fs::read(Path::new(&companion_path).join("package.json")).unwrap();
+    let payload_path = std::env::var("AOS_TEST_ABILITY_PACKAGE_SMOKE_PAYLOAD").unwrap();
+    let provider_path = std::env::var("AOS_TEST_ABILITY_PACKAGE_SMOKE_PROVIDER").unwrap();
+    let source_path = std::env::var("AOS_TEST_ABILITY_PACKAGE_SMOKE_SOURCE").unwrap();
+    let projection =
+        aos_ability_validate::decode_package_projection(&fs::read(&companion_path).unwrap())
+            .unwrap();
+
+    let registry = TempDir::new().unwrap();
+    init_authoring_clone(registry.path());
+    let primary = introspect_store_path(&payload_path).unwrap();
+    let source = introspect_store_path(&source_path).unwrap();
+    let package_toml = build_package_toml_with_documentation(
+        "",
+        projection.package.name.as_str(),
+        &projection.package.version,
+        "x86_64-linux",
+        &primary,
+        Some("Ability publication self-reference fixture"),
+        None,
+        Some("Apache-2.0"),
+        Some("AOS test"),
+        false,
+        None,
+        &[],
+        Some(&source),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let package_dir = registry.path().join("packages/a");
+    fs::create_dir_all(&package_dir).unwrap();
+    let package_path = package_dir.join("ability-package-smoke.toml");
+    fs::write(&package_path, package_toml).unwrap();
+
+    let entries = [
+        release_entry("out", &payload_path),
+        release_entry(crate::types::ABILITY_MANIFEST_OUTPUT, &companion_path),
+        RegistryReleaseEntry {
+            id: "provider".to_string(),
+            name: "ability-package-smoke-provider".to_string(),
+            version: "1.0.0".to_string(),
+            platform: "x86_64-linux".to_string(),
+            output: "out".to_string(),
+            store_path: provider_path.clone(),
+        },
+    ];
+    let selectors = crate::registry_ops::AbilitySelectorRegistry::new(&entries);
+    let mut signer = test_provenance_signer();
+    publish_canonical_ability_output(
+        registry.path(),
+        "test",
+        &companion_path,
+        projection.package.name.as_str(),
+        &projection.package.version,
+        "x86_64-linux",
+        &selectors,
+        &mut signer.signer,
+        &Printer::new(0, true, false),
+    )
+    .await
+    .unwrap();
+
+    let published = fs::read_to_string(package_path).unwrap();
+    let parsed = crate::registry::parse::parse_package_file(&published).unwrap();
+    let ability = parsed.versions[0].platforms["x86_64-linux"]
+        .ability
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        parsed.versions[0].platforms["x86_64-linux"].named_outputs
+            [crate::types::ABILITY_MANIFEST_OUTPUT],
+        companion_path
+    );
+    let manifest = read_package_manifest(&ability.store_path).unwrap();
     let package = decode_package_manifest(&manifest).unwrap();
     let mut fixture_artifacts = collect_distinct_artifacts(&package)
         .unwrap()
@@ -49,58 +130,6 @@ async fn ability_publication_accepts_a_transitive_self_referencing_closure() {
             .trim(),
         dependency_path
     );
-
-    let registry = TempDir::new().unwrap();
-    init_authoring_clone(registry.path());
-    let primary = introspect_store_path(&package.package.payload.store_path).unwrap();
-    let package_toml = build_package_toml_with_documentation(
-        "",
-        package.package.name.as_str(),
-        &package.package.version,
-        "x86_64-linux",
-        &primary,
-        Some("Ability publication self-reference fixture"),
-        None,
-        Some("Apache-2.0"),
-        Some("AOS test"),
-        false,
-        None,
-        &[],
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-    .unwrap();
-    let package_dir = registry.path().join("packages/a");
-    fs::create_dir_all(&package_dir).unwrap();
-    let package_path = package_dir.join("ability-package-smoke.toml");
-    fs::write(&package_path, package_toml).unwrap();
-
-    let mut signer = test_provenance_signer();
-    publish_canonical_ability_output(
-        registry.path(),
-        "test",
-        &companion_path,
-        package.package.name.as_str(),
-        &package.package.version,
-        "x86_64-linux",
-        &mut signer.signer,
-        &Printer::new(0, true, false),
-    )
-    .await
-    .unwrap();
-
-    let published = fs::read_to_string(package_path).unwrap();
-    let parsed = crate::registry::parse::parse_package_file(&published).unwrap();
-    let ability = parsed.versions[0].platforms["x86_64-linux"]
-        .ability
-        .as_ref()
-        .unwrap();
     let published_source = ability
         .artifacts
         .iter()
@@ -140,6 +169,17 @@ async fn ability_publication_accepts_a_transitive_self_referencing_closure() {
             .iter()
             .any(|hash| hash == dependency_hash)
     );
+}
+
+fn release_entry(output: &str, store_path: &str) -> RegistryReleaseEntry {
+    RegistryReleaseEntry {
+        id: output.to_string(),
+        name: "ability-package-smoke".to_string(),
+        version: "1.0.0".to_string(),
+        platform: "x86_64-linux".to_string(),
+        output: output.to_string(),
+        store_path: store_path.to_string(),
+    }
 }
 
 #[test]

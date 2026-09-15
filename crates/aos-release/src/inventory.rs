@@ -154,6 +154,13 @@ impl PackagePublicationMetadata {
 pub struct DerivationOutput {
     /// Nix output name.
     pub name: String,
+    /// Exact owning derivation when this is a separately built companion.
+    ///
+    /// Ordinary outputs inherit the package payload derivation. A distinct
+    /// derivation keeps ability-only source changes from renaming unchanged
+    /// payload outputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation: Option<String>,
     /// Evaluated output store path.
     pub store_path: String,
 }
@@ -199,6 +206,9 @@ impl DerivationInventoryV1 {
             let mut output_paths = BTreeSet::new();
             for output in &package.outputs {
                 require_identifier(&output.name, "derivation output name")?;
+                if let Some(derivation) = &output.derivation {
+                    require_store_path(derivation, true)?;
+                }
                 require_store_path(&output.store_path, false)?;
                 if !output_names.insert(&output.name) || !output_paths.insert(&output.store_path) {
                     bail!("derivation package repeats an output name or store path");
@@ -297,7 +307,12 @@ impl PackageInventoryV1 {
                                             "package/{}/{}/{}",
                                             package.name, cell.platform, output.name
                                         ),
-                                        derivation: Some(evaluated.derivation.clone()),
+                                        derivation: Some(
+                                            output
+                                                .derivation
+                                                .clone()
+                                                .unwrap_or_else(|| evaluated.derivation.clone()),
+                                        ),
                                         output: Some(output.name.clone()),
                                         store_path: Some(output.store_path.clone()),
                                         source_store_paths: evaluated.source_store_paths.clone(),
@@ -499,17 +514,38 @@ mod tests {
                     }),
                     derivation: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv"
                         .to_owned(),
-                    outputs: vec![DerivationOutput {
-                        name: "out".to_owned(),
-                        store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example"
-                            .to_owned(),
-                    }],
+                    outputs: vec![
+                        DerivationOutput {
+                            name: "out".to_owned(),
+                            derivation: None,
+                            store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example"
+                                .to_owned(),
+                        },
+                        DerivationOutput {
+                            name: "module".to_owned(),
+                            derivation: Some(
+                                "/nix/store/cccccccccccccccccccccccccccccccc-example-module.drv"
+                                    .to_owned(),
+                            ),
+                            store_path:
+                                "/nix/store/dddddddddddddddddddddddddddddddd-example-module"
+                                    .to_owned(),
+                        },
+                    ],
                 }],
             })
             .collect::<Vec<_>>();
         let plan = inventory.package_plan(&derivations)?;
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].platforms.len(), 4);
+        let MatrixCell::Artifact { artifact } = &plan[0].platforms[0].decision else {
+            panic!("eligible fixture should produce an artifact plan");
+        };
+        assert_eq!(artifact.artifacts.len(), 2);
+        assert_eq!(
+            artifact.artifacts[1].derivation.as_deref(),
+            Some("/nix/store/cccccccccccccccccccccccccccccccc-example-module.drv")
+        );
         assert_eq!(
             plan[0]
                 .publication
@@ -561,6 +597,7 @@ mod tests {
                         .to_owned(),
                     outputs: vec![DerivationOutput {
                         name: "out".to_owned(),
+                        derivation: None,
                         store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example"
                             .to_owned(),
                     }],
@@ -614,6 +651,7 @@ mod tests {
                         .to_owned(),
                     outputs: vec![DerivationOutput {
                         name: "out".to_owned(),
+                        derivation: None,
                         store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example"
                             .to_owned(),
                     }],

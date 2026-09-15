@@ -1,14 +1,11 @@
-//! Hermetic build-check frontend for the shared ability semantic validator.
+//! Command-line adapter for the hermetic ability build frontend.
 
-use std::ffi::OsStr;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use anyhow::{Context as _, Result, bail};
-use aos_ability_validate::{
-    AbilityContractData, StaticAbilityArtifactClass, StaticAbilityContractExpectation,
-    StaticAbilityExecutionStage, StaticAbilityPlatform, validate_ability_contract,
-    validate_static_ability_artifacts,
+use anyhow::{Result, bail};
+use aos_ability_validate::build_frontend::{
+    assemble_static_contract, resolve_package_projection_file, validate_package_source,
+    validate_static_contract, write_exported_artifact_reference,
 };
 
 fn main() {
@@ -26,6 +23,28 @@ fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
         "package-source" if arguments.len() == 3 => {
             validate_package_source(Path::new(&arguments[1]), Path::new(&arguments[2]))
         }
+        "resolve-package-projection" if arguments.len() == 5 => resolve_package_projection_file(
+            Path::new(&arguments[1]),
+            Path::new(&arguments[2]),
+            Path::new(&arguments[3]),
+            Path::new(&arguments[4]),
+        ),
+        "assemble-static-contract" if arguments.len() == 4 => assemble_static_contract(
+            Path::new(&arguments[1]),
+            Path::new(&arguments[2]),
+            Path::new(&arguments[3]),
+        ),
+        "resolve-exported-artifact" if arguments.len() == 5 => {
+            let graph = arguments[2]
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("exported graph name is not UTF-8"))?;
+            write_exported_artifact_reference(
+                Path::new(&arguments[1]),
+                graph,
+                Path::new(&arguments[3]),
+                Path::new(&arguments[4]),
+            )
+        }
         "static-contract" if arguments.len() == 4 || arguments.len() == 7 => {
             validate_static_contract(&arguments[1..])
         }
@@ -33,86 +52,8 @@ fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
     }
 }
 
-fn validate_package_source(manifest: &Path, interface_directory: &Path) -> Result<()> {
-    let manifest_bytes = fs::read(manifest)
-        .with_context(|| format!("reading ability manifest {}", manifest.display()))?;
-    let mut interface_paths = fs::read_dir(interface_directory)
-        .with_context(|| {
-            format!(
-                "reading retained interface directory {}",
-                interface_directory.display()
-            )
-        })?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<std::io::Result<Vec<_>>>()?;
-    interface_paths.sort();
-    let interface_paths = interface_paths
-        .into_iter()
-        .filter(|path| path.extension() == Some(OsStr::new("json")))
-        .collect::<Vec<_>>();
-    let interfaces = interface_paths
-        .iter()
-        .map(|path| {
-            fs::read(path).with_context(|| format!("reading retained interface {}", path.display()))
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    validate_ability_contract(AbilityContractData::PackageSource {
-        manifest: &manifest_bytes,
-        retained_interfaces: &interfaces,
-    })
-    .context("ability package failed shared Rust semantic validation")?;
-    Ok(())
-}
-
-fn validate_static_contract(arguments: &[std::ffi::OsString]) -> Result<()> {
-    let contract_path = PathBuf::from(&arguments[0]);
-    let artifact_class = match arguments[1].to_str() {
-        Some("container") => StaticAbilityArtifactClass::Container,
-        Some("bootable") => StaticAbilityArtifactClass::Bootable,
-        _ => bail!("artifact class must be container or bootable"),
-    };
-    let execution_stage = match arguments[2].to_str() {
-        Some("-") => None,
-        Some("initrd") => Some(StaticAbilityExecutionStage::Initrd),
-        Some("host") => Some(StaticAbilityExecutionStage::Host),
-        _ => bail!("execution stage must be -, initrd, or host"),
-    };
-    let platform = if arguments.len() == 6 {
-        let text = |index: usize, label: &str| {
-            arguments[index]
-                .to_str()
-                .map(str::to_owned)
-                .with_context(|| format!("{label} is not UTF-8"))
-        };
-        let variant = text(5, "platform variant")?;
-        Some(StaticAbilityPlatform {
-            os: text(3, "platform operating system")?,
-            architecture: text(4, "platform architecture")?,
-            variant: (variant != "-").then_some(variant),
-        })
-    } else {
-        None
-    };
-    let expectation = StaticAbilityContractExpectation {
-        artifact_class,
-        execution_stage,
-        platform,
-    };
-    let bytes = fs::read(&contract_path).with_context(|| {
-        format!(
-            "reading static ability contract {}",
-            contract_path.display()
-        )
-    })?;
-
-    validate_static_ability_artifacts(&bytes, &expectation)
-        .context("static contract failed shared Rust semantic validation")?;
-    Ok(())
-}
-
 fn usage<T>() -> Result<T> {
     bail!(
-        "usage: aos-ability-contract-validator package-source MANIFEST INTERFACES_DIR\n       aos-ability-contract-validator static-contract CONTRACT ARTIFACT_CLASS STAGE [OS ARCH VARIANT]"
+        "usage: aos-ability-contract-validator package-source MANIFEST INTERFACES_DIR\n       aos-ability-contract-validator resolve-package-projection PROJECTION RESOLUTION EXPORTED_GRAPH OUTPUT\n       aos-ability-contract-validator resolve-exported-artifact ROOT GRAPH EXPORTED_GRAPH OUTPUT\n       aos-ability-contract-validator assemble-static-contract SPEC EXPORTED_GRAPH OUTPUT\n       aos-ability-contract-validator static-contract CONTRACT ARTIFACT_CLASS STAGE [OS ARCH VARIANT]"
     )
 }

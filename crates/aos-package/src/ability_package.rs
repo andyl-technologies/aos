@@ -33,8 +33,9 @@ use std::path::Path;
 use anyhow::{Context, Result, bail, ensure};
 use aos_ability_model::document::PlatformIdentity;
 use aos_ability_model::{
-    AbilityActivationMode, ArtifactReference, HandlerDescriptor, LocalKey, PackageDocument,
-    ProviderImplementation, VersionedDocument,
+    AbilityActivationMode, ArtifactClosureMemberInput, ArtifactReference, HandlerDescriptor,
+    LocalKey, PackageDocument, ProviderImplementation, VersionedDocument,
+    artifact_closure_identity,
 };
 use aos_contract::Sha256Digest;
 use serde::Serialize;
@@ -50,7 +51,6 @@ pub(crate) mod retention;
 pub use catalog::VerifiedAbilityPlanningCatalog;
 pub use retention::NativeAbilityRetentionVerifier;
 
-const CLOSURE_DIGEST_DOMAIN: &str = "aos.ability.closure/v1";
 const RETENTION_DIGEST_DOMAIN: &str = "aos.ability.retention/v1";
 const STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
 const PREDICATE_TYPE: &str = "https://andyl.com/aos/ability-package-provenance/v1";
@@ -486,6 +486,58 @@ pub(crate) fn verify_pinned_ability_package(
     trusted_keys: &[crate::provenance::TrustedProvenanceKey],
     retention_verifier: &impl AbilityRetentionVerifier,
 ) -> Result<VerifiedAbilityPackage> {
+    let BoundAbilityManifest {
+        package,
+        manifest_sha256,
+        package_digest,
+        artifacts,
+    } = bind_ability_manifest(&coordinate, ability, manifest_bytes)?;
+    verify_ability_provenance_coordinate(
+        &coordinate,
+        ability,
+        provenance_jsonl,
+        registry_name,
+        trusted_keys,
+    )?;
+
+    let retention = VerifiedAbilityRetentionManifest {
+        companion_store_path: ability.store_path.clone(),
+        companion_nar_hash: validate_sha256_identity(
+            "ability companion NAR hash",
+            &ability.nar_hash,
+        )?,
+        companion_nar_size: ability.nar_size,
+        companion_references: ability.references.clone(),
+        artifacts: ability.artifacts.clone(),
+    };
+    retention_verifier.verify_retention(&retention)?;
+
+    let activation_mode = package.activation_mode;
+    Ok(VerifiedAbilityPackage {
+        package,
+        manifest_sha256,
+        package_digest,
+        package_name: coordinate.name.to_string(),
+        package_version: coordinate.version.to_string(),
+        platform: coordinate.platform.to_string(),
+        activation_mode,
+        artifacts,
+        retention,
+    })
+}
+
+struct BoundAbilityManifest {
+    package: PackageDocument,
+    manifest_sha256: Sha256Digest,
+    package_digest: Sha256Digest,
+    artifacts: Vec<ArtifactReference>,
+}
+
+fn bind_ability_manifest(
+    coordinate: &AbilityPackageCoordinate<'_>,
+    ability: &AbilityPackageMeta,
+    manifest_bytes: &[u8],
+) -> Result<BoundAbilityManifest> {
     validate_ability_package_meta(ability)?;
 
     if manifest_bytes.len() as u64 != ability.manifest_size {
@@ -540,38 +592,49 @@ pub(crate) fn verify_pinned_ability_package(
 
     let artifacts = collect_distinct_artifacts(&package)?;
     verify_artifact_catalog(&artifacts, &ability.artifacts)?;
-    verify_ability_provenance_coordinate(
-        &coordinate,
-        ability,
-        provenance_jsonl,
-        registry_name,
-        trusted_keys,
-    )?;
 
-    let retention = VerifiedAbilityRetentionManifest {
-        companion_store_path: ability.store_path.clone(),
-        companion_nar_hash: validate_sha256_identity(
-            "ability companion NAR hash",
-            &ability.nar_hash,
-        )?,
-        companion_nar_size: ability.nar_size,
-        companion_references: ability.references.clone(),
-        artifacts: ability.artifacts.clone(),
-    };
-    retention_verifier.verify_retention(&retention)?;
-
-    let activation_mode = package.activation_mode;
-    Ok(VerifiedAbilityPackage {
+    Ok(BoundAbilityManifest {
         package,
         manifest_sha256,
         package_digest,
-        package_name: coordinate.name.to_string(),
-        package_version: coordinate.version.to_string(),
-        platform: coordinate.platform.to_string(),
-        activation_mode,
         artifacts,
-        retention,
     })
+}
+
+/// Resolves the sole current package-module locator from signed ability metadata.
+///
+/// The exact manifest bytes, semantic digest, package coordinate, payload
+/// binding, and artifact catalog are checked before the locator is returned.
+/// Legacy `config_module` metadata does not participate in this authority.
+///
+/// # Errors
+///
+/// Returns an error when the package has malformed or inconsistent ability
+/// metadata, its manifest is absent, or its module artifact is not retained.
+pub(crate) fn resolve_package_module(
+    package_meta: &PackageMeta,
+) -> Result<Option<aos_ability_model::ModuleLocator>> {
+    let Some(ability) = package_meta.ability.as_ref() else {
+        return Ok(None);
+    };
+    let manifest_bytes = read_package_manifest(&ability.store_path)?;
+    let coordinate = AbilityPackageCoordinate {
+        name: &package_meta.name,
+        version: &package_meta.version,
+        platform: &package_meta.platform,
+        store_path: &package_meta.store_path,
+        nar_hash: &package_meta.nar_hash,
+    };
+    let bound = bind_ability_manifest(&coordinate, ability, &manifest_bytes)?;
+    ensure!(
+        bound
+            .artifacts
+            .iter()
+            .any(|artifact| artifact == &bound.package.package_module.artifact),
+        "ability package module artifact is absent from the authenticated retention catalog"
+    );
+
+    Ok(Some(bound.package.package_module))
 }
 
 /// Seals a package document for sibling-module tests without registry I/O.
@@ -960,8 +1023,22 @@ pub fn validate_ability_package_meta(ability: &AbilityPackageMeta) -> Result<()>
             validate_sha256_identity("ability artifact closure digest", &artifact.closure_digest)?;
 
         validate_ability_closure(artifact)?;
-        let computed_closure = Sha256Digest::of_canonical(CLOSURE_DIGEST_DOMAIN, &artifact.closure)
-            .context("computing ability artifact closure digest")?;
+        let semantic_closure = artifact
+            .closure
+            .iter()
+            .map(|member| {
+                Ok(ArtifactClosureMemberInput {
+                    key: crate::registry::store_path_hash(&member.store_path).to_string(),
+                    nar_hash: Sha256Digest::parse(&member.nar_hash)?,
+                    references: member.references.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let computed_closure = artifact_closure_identity(
+            crate::registry::store_path_hash(&artifact.store_path),
+            &semantic_closure,
+        )
+        .context("computing ability artifact closure digest")?;
         if recorded_closure != computed_closure {
             bail!(
                 "ability artifact '{}' closure digest does not match its catalog",

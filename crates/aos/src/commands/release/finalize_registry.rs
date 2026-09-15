@@ -74,6 +74,7 @@ pub(super) async fn prepare(
             &config,
             &plan.registry,
             &publications,
+            &intent.entries,
             &mut signer,
             printer,
         );

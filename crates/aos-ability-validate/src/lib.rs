@@ -10,11 +10,13 @@
 
 mod authority;
 mod binding;
+pub mod build_frontend;
 mod effect;
 mod error;
 mod graph;
 mod output;
 mod package_contract;
+mod package_projection;
 mod projection;
 mod schema;
 mod static_contract;
@@ -35,6 +37,12 @@ pub use graph::{
 };
 pub use output::{InputValidationError, OutputValidationError, ProviderReadinessError};
 pub use package_contract::{CheckedPackageContract, PackageContractValidationError};
+pub use package_projection::{
+    CONFIG_ARTIFACT_SELECTOR_MARKER, ConfigArtifactSelector, InterfaceDocumentProjection,
+    PACKAGE_OUTPUT_SELECTOR_MARKER, PACKAGE_PROJECTION_SCHEMA, PackageAbilityProjection,
+    PackageOutputSelector, decode_package_projection, resolve_artifact_selectors,
+    resolve_package_projection,
+};
 pub use schema::{SchemaPath, validate_value};
 pub use static_contract::{
     CheckedStaticAbilityContract, StaticAbilityArtifactClass, StaticAbilityContractExpectation,

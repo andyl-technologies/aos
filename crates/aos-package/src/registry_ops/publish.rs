@@ -2,15 +2,17 @@
 
 use crate::ability_package::{
     AbilityPackageCoordinate, ability_provenance_statement, ability_retention_digest,
-    activation_mode_name, canonical_nar_hash, collect_distinct_artifacts, decode_package_manifest,
-    read_package_manifest,
+    activation_mode_name, canonical_nar_hash, collect_distinct_artifacts,
 };
 use crate::config::ApmConfig;
 use crate::provenance::{ProvenanceSigner, sign_statement_dsse_jsonl_external};
 use crate::registry::parse::{ImageVerificationState, parse_package_file};
 use crate::registry::sb_certs::SbCertsToml;
 use crate::registry::{objectstore, sb_certs, store};
-use crate::registry_ops::ability_artifacts::resolve_store_artifact;
+use crate::registry_ops::ability_artifacts::{
+    AbilitySelectorRegistry, materialize_resolved_companion, resolve_release_projection,
+    resolve_store_artifact,
+};
 use crate::registry_ops::attestation::{
     publish_config_attestation_meta, publish_documentation_attestation_meta,
 };
@@ -902,6 +904,7 @@ pub(crate) async fn publish_canonical_ability_output(
     package: &str,
     version: &str,
     platform: &str,
+    selectors: &AbilitySelectorRegistry,
     provenance_signer: &mut dyn ProvenanceSigner,
     printer: &Printer,
 ) -> Result<()> {
@@ -909,43 +912,9 @@ pub(crate) async fn publish_canonical_ability_output(
     validate_package_name(package)?;
     ensure_writable_registry_clone(registry, dir)?;
 
-    let companion = introspect_store_path(store_path)?;
-    validate_store_path_release_policy(&companion)?;
-    resolve_publish_platform(&companion.path, Some(platform))?;
-    let manifest_bytes = read_package_manifest(&companion.path)?;
-    let package_document = decode_package_manifest(&manifest_bytes)?;
-    let interface_bytes = package_document
-        .exports
-        .iter()
-        .map(|export| {
-            let path = Path::new(&companion.path)
-                .join("interfaces")
-                .join(format!("{}.json", export.interface.descriptor.hex()));
-            crate::ability_package::catalog::read_bounded_regular_file(
-                &path,
-                "ability interface document",
-            )
-        })
-        .collect::<Result<Vec<_>>>()?;
-    aos_ability_validate::validate_ability_contract(
-        aos_ability_validate::AbilityContractData::PackageSource {
-            manifest: &manifest_bytes,
-            retained_interfaces: &interface_bytes,
-        },
-    )
-    .context("validating ability companion with the shared semantic validator")?;
-    if package_document.package.name.as_str() != package {
-        bail!(
-            "ability manifest package '{}' does not match release package '{package}'",
-            package_document.package.name.as_str()
-        );
-    }
-    if package_document.package.version != version {
-        bail!(
-            "ability manifest version '{}' does not match release version '{version}'",
-            package_document.package.version
-        );
-    }
+    let projection = introspect_store_path(store_path)?;
+    validate_store_path_release_policy(&projection)?;
+    resolve_publish_platform(&projection.path, Some(platform))?;
 
     let letter = first_letter(package);
     let toml_path = dir
@@ -966,22 +935,39 @@ pub(crate) async fn publish_canonical_ability_output(
     if versions.next().is_some() {
         bail!("package {package} repeats version {version}");
     }
-    let primary_path = &version_entry
+    let platform_entry = version_entry
         .platforms
         .get(platform)
-        .with_context(|| format!("package {package} {version} is missing platform {platform}"))?
-        .store_path;
+        .with_context(|| format!("package {package} {version} is missing platform {platform}"))?;
+    let primary_path = &platform_entry.store_path;
     let primary = introspect_store_path(primary_path)?;
     validate_store_path_release_policy(&primary)?;
     let primary_nar_hash = canonical_nar_hash(&primary.nar_hash)?;
-    if package_document.package.payload.store_path != primary.path
-        || package_document.package.payload.nar_hash.to_string() != primary_nar_hash
-    {
-        bail!(
-            "ability manifest payload does not match primary package {}",
-            primary.path
-        );
-    }
+    let (package_document, interface_bytes) = resolve_release_projection(
+        &projection.path,
+        package,
+        version,
+        platform,
+        &primary.path,
+        &platform_entry.source_drv,
+        selectors,
+    )?;
+    let manifest_bytes = aos_ability_model::encode_canonical(&package_document)?;
+    aos_ability_validate::validate_ability_contract(
+        aos_ability_validate::AbilityContractData::PackageSource {
+            manifest: &manifest_bytes,
+            retained_interfaces: &interface_bytes,
+        },
+    )
+    .context("validating resolved ability companion with the shared semantic validator")?;
+    let companion = materialize_resolved_companion(
+        &projection.path,
+        package,
+        version,
+        &package_document,
+        &interface_bytes,
+    )?;
+    let companion_info = introspect_store_path(&companion.reference.store_path)?;
 
     let artifacts = collect_distinct_artifacts(&package_document)?;
     let mut artifact_retention = Vec::with_capacity(artifacts.len());
@@ -1010,13 +996,13 @@ pub(crate) async fn publish_canonical_ability_output(
 
     let manifest_sha256 = Sha256Digest::of_bytes(&manifest_bytes);
     let package_digest = package_document.content_digest()?;
-    let mut references = companion.references.clone();
+    let mut references = companion_info.references.clone();
     references.sort();
     references.dedup();
     let mut ability = AbilityPackageMeta {
-        store_path: companion.path.clone(),
-        nar_hash: canonical_nar_hash(&companion.nar_hash)?,
-        nar_size: companion.nar_size,
+        store_path: companion.reference.store_path.clone(),
+        nar_hash: companion.retention.nar_hash.clone(),
+        nar_size: companion.retention.nar_size,
         references,
         manifest_sha256: manifest_sha256.to_string(),
         manifest_size: manifest_bytes.len() as u64,
@@ -1045,7 +1031,14 @@ pub(crate) async fn publish_canonical_ability_output(
         ability_provenance_statement(&coordinate, &ability, registry, provenance_signer.key_id())?;
     let provenance_jsonl =
         sign_statement_dsse_jsonl_external(&statement, provenance_signer).await?;
-    let new_content = record_ability_output(&content, package, version, platform, &ability)?;
+    let new_content = record_ability_output(
+        &content,
+        package,
+        version,
+        platform,
+        &projection.path,
+        &ability,
+    )?;
 
     fs::write(&toml_path, new_content)
         .with_context(|| format!("writing ability output to {}", toml_path.display()))?;
@@ -1066,9 +1059,19 @@ pub(crate) async fn publish_canonical_ability_output(
         .with_context(|| format!("writing ability provenance {}", provenance_path.display()))?;
 
     let content_addressed = registry_content_addressed(dir);
-    write_store_files(dir, &companion.path, content_addressed, false, printer).with_context(
-        || format!("writing store/ realisation graph for ability output {store_path}"),
+    write_store_files(dir, &projection.path, content_addressed, false, printer).with_context(
+        || format!("writing store/ realisation graph for ability projection {store_path}"),
     )?;
+    write_store_files(
+        dir,
+        &companion.reference.store_path,
+        content_addressed,
+        false,
+        printer,
+    )
+    .with_context(|| {
+        format!("writing store/ realisation graph for resolved ability output {store_path}")
+    })?;
     for artifact in &artifacts {
         write_store_files(dir, &artifact.store_path, content_addressed, false, printer)
             .with_context(|| {

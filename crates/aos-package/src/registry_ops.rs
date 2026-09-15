@@ -45,6 +45,7 @@
 //! cloneable.
 
 mod ability_artifacts;
+pub(crate) use ability_artifacts::AbilitySelectorRegistry;
 mod attestation;
 mod cache_validation;
 mod channels;
