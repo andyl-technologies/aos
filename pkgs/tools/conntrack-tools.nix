@@ -208,7 +208,6 @@ in
           (qualifiedResultOf "conntrack-tools:runtime-storage" "planned-path")
           (qualifiedResultOf "conntrack-tools:log-storage" "planned-path")
         ]
-        && !(self ? configModule)
         && !(self ? expose);
     in {
       config =

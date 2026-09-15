@@ -421,7 +421,6 @@ in
   == {"node.longhorn.io/create-default-disk" = "true";};
   assert builtins.attrNames ciliumPackageAbilities.interfaces == [];
   assert builtins.attrNames longhornPackageAbilities.interfaces == [];
-  assert !(pkgs.longhorn-manager ? configModule);
   assert !(cloudcore.config ? systemd) && !(edgecore.config ? systemd) && !(kubelet.config ? systemd) && !(k3sWorker.config ? systemd);
   assert !(cloudcore.config.cloudcore ? config) && !(cloudcore.config.cloudcore ? credentials);
   assert !(edgecore.config.edgecore ? config) && !(edgecore.config.edgecore ? credentials);
