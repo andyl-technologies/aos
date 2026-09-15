@@ -3,7 +3,10 @@
   lib,
   pkgs,
 }: let
-  evaluate = enabled:
+  evaluate = {
+    enabled,
+    stage ? "host",
+  }:
     lib.evalModules {
       inherit lib;
       modules = [
@@ -12,7 +15,7 @@
           aos.abilities.environment = {
             authority = "test";
             key = "aos-package-runtime";
-            stage = "host";
+            inherit stage;
           };
           aos.packageRuntime.packageProfile = {
             enable = enabled;
@@ -31,8 +34,12 @@
         }
       ];
     };
-  disabled = evaluate false;
-  enabled = evaluate true;
+  disabled = evaluate {enabled = false;};
+  enabled = evaluate {enabled = true;};
+  initrd = evaluate {
+    enabled = true;
+    stage = "initrd";
+  };
   disabledRequests = disabled.config.aos.abilities.requests;
   requests = enabled.config.aos.abilities.requests;
   resultOf = request: output: {
@@ -45,6 +52,7 @@ in
   assert !(disabledRequests ? "aos:package-profile-specification");
   assert disabledRequests ? "aos:package-profile-convergence-lifecycle";
   assert disabledRequests ? "aos:aos-attest-lifecycle";
+  assert initrd.config.aos.abilities.requests == {};
   assert requests."aos:package-profile-specification".parameters.source.content
   == ''
     packages = ["nginx"]

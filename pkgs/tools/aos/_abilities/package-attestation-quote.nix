@@ -10,6 +10,9 @@
   resultOf = lib.abilities.resultOf;
   serviceName = "aos-attest";
   packageProfile = resultOf "package-profile-convergence-lifecycle" "service-resource";
+  hostStage =
+    config.aos.abilities.environment != null
+    && config.aos.abilities.environment.stage == "host";
   command = {
     executable = {
       artifact = lib.abilities.packageOutput {output = "packageRuntime";};
@@ -129,9 +132,9 @@ in {
 
   config.aos.abilities = lib.mkMerge [
     contribution.declarations
-    {
-      instances.package-attestation-quote = {};
-    }
-    contribution.configured
+    (lib.mkIf hostStage (
+      {instances.package-attestation-quote = {};}
+      // contribution.configured
+    ))
   ];
 }
