@@ -17,7 +17,10 @@
   effects = import ./effects;
   diagnostics = import ./diagnostic.nix;
   packageOutputSelectors = import ./package-output-selectors.nix {inherit diagnostics;};
-  inherit (packageOutputSelectors) normalizePackageOutputSelectors;
+  inherit (packageOutputSelectors)
+    canonicalizePackageOutputSelectors
+    normalizePackageOutputSelectors
+    ;
 
   fail = message:
     diagnostics.throw "value-type-mismatch" "abilities: ${message}";
@@ -1585,6 +1588,7 @@ in rec {
     interfaceDocumentFromDeclaration
     interfaceDeclarationFromDocument
     interfaceSelectorMatches
+    canonicalizePackageOutputSelectors
     ;
   types = abilityTypes;
   interfaces = rec {

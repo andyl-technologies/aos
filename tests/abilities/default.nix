@@ -463,6 +463,7 @@
     inherit lib;
   };
   smokeAbilityProjection = pkgs.ability-package-smoke.abilities;
+  smokeArtifactSelectors = smokeAbilityProjection._artifact_outputs.selectors;
   oversizedFallback = builtins.tryEval (builtins.deepSeq (
       requirementExport "advisory" {outputs.payload = effectFixture.oversizedValue;}
     )
@@ -868,6 +869,24 @@ in
   assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
   assert builtins.length (builtins.attrNames smokeAbilityProjection.requirementTemplates) == 1;
+  assert smokeArtifactSelectors == [
+    {
+      package = "ability-package-smoke";
+      output = "out";
+    }
+    {
+      package = "ability-package-smoke-provider";
+      output = "out";
+    }
+    {
+      package = "self";
+      output = "module";
+    }
+    {
+      package = "self";
+      output = "out";
+    }
+  ];
   assert builtins.length (builtins.attrNames disabledRsyncProjection.requirementTemplates) > 0;
   assert selectedChronyAbilities.instances ? "chrony:service";
   assert selectedChronyAbilities.requests ? "chrony:chronyd-lifecycle";

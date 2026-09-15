@@ -178,9 +178,7 @@
     })
   implementationNames;
   artifactSelectors =
-    builtins.sort
-    (left: right: builtins.toJSON left < builtins.toJSON right)
-    (lib.unique (
+    abilities.canonicalizePackageOutputSelectors (
       lib.optional
       (packageModuleLocator != null)
       (selector packageModuleLocator.artifact)
@@ -199,7 +197,7 @@
         (implementation.qualification != null)
         (selector implementation.qualification.observer.artifact))
       implementationNames
-    ));
+    );
   qualification = builtins.listToAttrs (lib.concatMap (name: let
     implementation = semanticImplementations.${name};
   in

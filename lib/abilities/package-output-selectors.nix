@@ -28,6 +28,22 @@
     else count;
   reverseList = builtins.foldl' (reversed: value: [value] ++ reversed) [];
 
+  selectorLessThan = left: right:
+    if left.package != right.package
+    then left.package < right.package
+    else left.output < right.output;
+  sameSelector = left: right:
+    left.package == right.package && left.output == right.output;
+
+  canonicalizePackageOutputSelectors = selectors: let
+    sorted = builtins.sort selectorLessThan selectors;
+    deduplicated = builtins.foldl' (reversed: selector:
+      if reversed != [] && sameSelector (builtins.head reversed) selector
+      then reversed
+      else [selector] ++ reversed) [] sorted;
+  in
+    reverseList deduplicated;
+
   normalize = owner: depth: count: value:
     if depth > maxStructuralDepth
     then fail "package output selector value exceeds ${toString maxStructuralDepth} structural levels"
@@ -86,6 +102,8 @@
     then fail "package output selector value contains an oversized string"
     else {inherit count value;};
 in {
+  inherit canonicalizePackageOutputSelectors;
+
   normalizePackageOutputSelectors = {
     owner,
     value,
