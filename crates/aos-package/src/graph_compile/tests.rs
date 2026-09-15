@@ -740,21 +740,6 @@ fn degraded_projection_rejects_unowned_etc_removals() {
 fn staged_render_bytes_and_credential_handles_enter_generation_manifest() {
     let graph = ConfigGraph::default();
     let mut manifest = strict_manifest(&["web"], &graph);
-    manifest
-        .package_outputs
-        .get_mut("web")
-        .unwrap()
-        .legacy_config = Some(crate::types::ExposeConfigMeta {
-        artifacts: Vec::new(),
-        credentials: vec![crate::types::CredentialMeta {
-            name: "join-token".into(),
-            source: Some("/etc/credstore.encrypted/web/join-token".into()),
-            ciphertext: None,
-            units: vec!["web.service".into()],
-            encrypted: true,
-            optional: false,
-        }],
-    });
     manifest.credentials.insert(
         "web".into(),
         json!({
