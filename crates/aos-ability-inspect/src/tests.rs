@@ -614,6 +614,8 @@ fn nested_artifact_view(
                 ValueSchema::List {
                     element: Box::new(ValueSchema::ArtifactReference),
                     max_items: 4,
+                    unique: false,
+                    canonical_order: false,
                 },
             )]),
             optional_fields: Vec::new(),
