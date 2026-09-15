@@ -22,6 +22,28 @@ in
     cargoTestFlags = "-p aos-systemd-provider";
     doCheck = true;
 
+    postInstall = ''
+      for entry_point in \
+        aos-systemd-activation-milestone-effects \
+        aos-systemd-device-presence \
+        aos-systemd-filesystem-readiness-effects \
+        aos-systemd-group-effects \
+        aos-systemd-group-membership-effects \
+        aos-systemd-manager-watchdog-effects \
+        aos-systemd-mount-effects \
+        aos-systemd-network-readiness-effects \
+        aos-systemd-packaged-unit-effects \
+        aos-systemd-principal-effects \
+        aos-systemd-runtime-entry-population-effects \
+        aos-systemd-scheduled-activation-effects \
+        aos-systemd-service-effects \
+        aos-systemd-swap-effects \
+        aos-systemd-system-milestone-readiness-effects
+      do
+        ln -s aos-systemd-provider "$out/bin/$entry_point"
+      done
+    '';
+
     runtimeDeps = [];
 
     meta = {

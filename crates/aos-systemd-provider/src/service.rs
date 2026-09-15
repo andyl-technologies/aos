@@ -23,17 +23,13 @@ use crate::materialize::{
     service_consumer_matches, service_is_absent, service_matches, service_paths_for,
 };
 use crate::model::{
-    PROVIDER_CONTEXT_SCHEMA, ProviderContext, SERVICE_EFFECTS_INTERFACE_NAME,
-    SERVICE_REALIZATION_SCHEMA, ServiceEffectsRequest, ServiceFacetIdentity, ServiceRealization,
-    empty_outputs,
+    PROVIDER_CONTEXT_SCHEMA, ProviderContext, ServiceEffectsRequest, ServiceFacetIdentity,
+    ServiceRealization, empty_outputs,
 };
 use crate::render::{RenderedService, render_service};
 use crate::{decode_value, provider_context, require_resource_contexts, target_context, value};
 
 const ETC_ROOT: &str = "/etc";
-const SERVICE_LIFECYCLE_INTERFACE: &str = "aos.service.lifecycle";
-const SERVICE_READINESS_INTERFACE: &str = "aos.service.readiness";
-const SERVICE_RELOAD_INTERFACE: &str = "aos.service.reload";
 const SERVICE_TEMPLATE_DEFINITION_INTERFACE: &str = "aos.service.template-definition";
 
 pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
@@ -45,13 +41,8 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
 
     let realization: ServiceRealization = decode_value(&request.resource_spec.realization)?;
     let rendered = render_service(&realization)?;
-    let terminal_effect = request.method.interface.name.as_str() == SERVICE_EFFECTS_INTERFACE_NAME;
-    let facet = if terminal_effect {
-        require_effect_method(&request.method, &request.semantics)?;
-        lifecycle_facet(&realization)?
-    } else {
-        require_method(&request.method, &request.semantics, &realization)?
-    };
+    require_effect_method(&request.method, &request.semantics)?;
+    let facet = lifecycle_facet(&realization)?;
     let expected = expected_request(&request.resource_spec.value, facet)?;
     let references = all_service_resource_references(&request.resource_spec.value, &realization)?;
     require_resource_contexts(&references, &request.resources)?;
@@ -106,11 +97,7 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
             AdmissionRevision::Absent
         },
         incarnation: Some(request.assignment.incarnation),
-        observation: if terminal_effect {
-            effect_observation(&inspection.observation)?
-        } else {
-            inspection.observation
-        },
+        observation: effect_observation(&inspection.observation)?,
         native_context: context,
         supported_purposes,
     })
@@ -135,36 +122,13 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
 
     let realization: ServiceRealization = decode_value(&bound.resource_spec.realization)?;
     let rendered = render_service(&realization)?;
-    let terminal_effect =
-        invocation.method.interface.name.as_str() == SERVICE_EFFECTS_INTERFACE_NAME;
-    let primary_terminal_effect =
-        invocation.request.method.interface.name.as_str() == SERVICE_EFFECTS_INTERFACE_NAME;
-    let primary_facet = if terminal_effect && primary_terminal_effect {
-        require_effect_method(&invocation.method, &invocation.semantics)?;
-        require_effect_method(&invocation.request.method, &invocation.request.semantics)?;
-        lifecycle_facet(&realization)?
-    } else if !terminal_effect && !primary_terminal_effect {
-        let selected = require_method(&invocation.method, &invocation.semantics, &realization)?;
-        let primary = require_method(
-            &invocation.request.method,
-            &invocation.request.semantics,
-            &realization,
-        )?;
-        if selected.interface != primary.interface {
-            bail!("service recovery cannot cross feature interfaces");
-        }
-        primary
-    } else {
-        bail!("service recovery cannot cross the controller and terminal interfaces");
-    };
+    require_effect_method(&invocation.method, &invocation.semantics)?;
+    require_effect_method(&invocation.request.method, &invocation.request.semantics)?;
+    let primary_facet = lifecycle_facet(&realization)?;
     let expected = expected_request(&bound.resource_spec.value, primary_facet)?;
-    if terminal_effect {
-        let effect: ServiceEffectsRequest = decode_value(&invocation.request.inputs)?;
-        if effect.desired() != &bound.resource_spec.value {
-            bail!("systemd service effect inputs differ from the checked desired resource");
-        }
-    } else if invocation.request.inputs != expected {
-        bail!("invocation inputs differ from the checked service facet");
+    let effect: ServiceEffectsRequest = decode_value(&invocation.request.inputs)?;
+    if effect.desired() != &bound.resource_spec.value {
+        bail!("systemd service effect inputs differ from the checked desired resource");
     }
     let references = all_service_resource_references(&bound.resource_spec.value, &realization)?;
     require_resource_contexts(&references, &invocation.request.resources)?;
@@ -199,30 +163,17 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
         _ => Goal::Desired,
     };
     if invocation.purpose == InvocationPurpose::Effect {
-        if terminal_effect {
-            apply_effect_method(
-                &manager,
-                selected_method,
-                &bound.resource_spec.value,
-                &realization,
-                &bound.resource_spec.resource,
-                bound.resource_spec.revision,
-                &rendered,
-                &paths,
-            )
-            .await?;
-        } else {
-            apply_method(
-                &manager,
-                selected_method,
-                &realization,
-                &bound.resource_spec.resource,
-                bound.resource_spec.revision,
-                &rendered,
-                &paths,
-            )
-            .await?;
-        }
+        apply_effect_method(
+            &manager,
+            selected_method,
+            &bound.resource_spec.value,
+            &realization,
+            &bound.resource_spec.resource,
+            bound.resource_spec.revision,
+            &rendered,
+            &paths,
+        )
+        .await?;
     } else if invocation.purpose != InvocationPurpose::Reconcile || selected_method != "observe" {
         bail!("systemd service provider does not advertise this invocation purpose");
     }
@@ -244,13 +195,9 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     } else {
         InvocationDisposition::SafeToRetry
     };
-    let observation = if terminal_effect {
-        effect_observation(&inspection.observation)?
-    } else {
-        inspection.observation
-    };
+    let observation = effect_observation(&inspection.observation)?;
     let outputs = if inspection.complete {
-        outputs_for(primary_method, &observation, &invocation, terminal_effect)?
+        outputs_for(&observation)?
     } else {
         empty_outputs()
     };
@@ -454,10 +401,7 @@ async fn inspect(
         discrepancies.push("consumer-state".to_string());
     }
     discrepancies.sort();
-    let lifecycle_state = matches!(
-        facet.interface.name.as_str(),
-        SERVICE_LIFECYCLE_INTERFACE | SERVICE_READINESS_INTERFACE
-    );
+    let lifecycle_state = matches!(facet.facet.as_str(), "lifecycle" | "readiness");
     let state = if lifecycle_state {
         if failed {
             "failed"
@@ -491,59 +435,7 @@ async fn inspect(
     })
 }
 
-fn require_method<'a>(
-    method: &MethodReference,
-    semantics: &MethodSemantics,
-    realization: &'a ServiceRealization,
-) -> Result<&'a ServiceFacetIdentity> {
-    if realization.schema != SERVICE_REALIZATION_SCHEMA {
-        bail!("service realization uses an unsupported schema");
-    }
-    let matches = realization
-        .facets
-        .iter()
-        .filter(|facet| facet.interface == method.interface)
-        .collect::<Vec<_>>();
-    if matches.len() != 1 {
-        bail!("service method does not select one authenticated facet");
-    }
-    let facet = matches[0];
-    let expected = if method.interface.name.as_str() == SERVICE_LIFECYCLE_INTERFACE {
-        if facet.facet.as_str() != "lifecycle" {
-            bail!("service lifecycle interface selects another facet");
-        }
-        match method.method.as_str() {
-            "observe" => MethodSemantics::ordinary(AccessMode::Read),
-            "start" | "restart" | "reload" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
-            "stop" => MethodSemantics::provider_stop(),
-            _ => bail!("unsupported service lifecycle method"),
-        }
-    } else if method.interface.name.as_str() == SERVICE_TEMPLATE_DEFINITION_INTERFACE {
-        if facet.facet.as_str() != "lifecycle" {
-            bail!("service template definition selects another facet");
-        }
-        match method.method.as_str() {
-            "materialize" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
-            "observe" => MethodSemantics::ordinary(AccessMode::Read),
-            "release" => MethodSemantics::provider_stop(),
-            _ => bail!("unsupported service template-definition method"),
-        }
-    } else {
-        if method.method.as_str() != "observe" {
-            bail!("service feature handlers expose observation only");
-        }
-        MethodSemantics::ordinary(AccessMode::Read)
-    };
-    if *semantics != expected {
-        bail!("service method carries mismatched semantics");
-    }
-    Ok(facet)
-}
-
 fn require_effect_method(method: &MethodReference, semantics: &MethodSemantics) -> Result<()> {
-    if method.interface.name.as_str() != SERVICE_EFFECTS_INTERFACE_NAME {
-        bail!("systemd service terminal method selects another interface");
-    }
     let expected = match method.method.as_str() {
         "observe" => MethodSemantics::ordinary(AccessMode::Read),
         "create" | "reconcile" | "update" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
@@ -560,7 +452,7 @@ fn lifecycle_facet(realization: &ServiceRealization) -> Result<&ServiceFacetIden
     let matches = realization
         .facets
         .iter()
-        .filter(|facet| facet.interface.name.as_str() == SERVICE_LIFECYCLE_INTERFACE)
+        .filter(|facet| facet.facet.as_str() == "lifecycle")
         .collect::<Vec<_>>();
     if matches.len() != 1 || matches[0].facet.as_str() != "lifecycle" {
         bail!("systemd service terminal requires one authenticated lifecycle facet");
@@ -592,15 +484,13 @@ fn expected_request(value: &AbilityValue, facet: &ServiceFacetIdentity) -> Resul
             .context("service desired value has no logical key")?
             .clone(),
     );
-    if facet.interface.name.as_str() != SERVICE_TEMPLATE_DEFINITION_INTERFACE {
-        expected.insert(
-            "enabled".to_string(),
-            aggregate
-                .get("enabled")
-                .context("service desired value has no enablement")?
-                .clone(),
-        );
-    }
+    expected.insert(
+        "enabled".to_string(),
+        aggregate
+            .get("enabled")
+            .context("service desired value has no enablement")?
+            .clone(),
+    );
     AbilityValue::new(Value::Object(expected)).map_err(Into::into)
 }
 
@@ -823,7 +713,7 @@ fn observation(
         "discrepancies".to_string(),
         serde_json::to_value(discrepancies)?,
     );
-    if facet.interface.name.as_str() == SERVICE_RELOAD_INTERFACE {
+    if facet.facet.as_str() == "reload" {
         let available = expected
             .as_json()
             .get("strategy")
@@ -834,34 +724,20 @@ fn observation(
     AbilityValue::new(Value::Object(fields)).map_err(Into::into)
 }
 
-fn outputs_for(
-    method: &str,
-    observation: &AbilityValue,
-    invocation: &Invocation,
-    terminal_effect: bool,
-) -> Result<BTreeMap<LocalKey, AbilityValue>> {
+fn outputs_for(observation: &AbilityValue) -> Result<BTreeMap<LocalKey, AbilityValue>> {
     let mut outputs = BTreeMap::new();
     outputs.insert(LocalKey::new("observation")?, observation.clone());
-    if !terminal_effect && matches!(method, "start" | "restart" | "reload" | "materialize") {
-        outputs.insert(
-            LocalKey::new("retained-resource")?,
-            value(&invocation.request.target)?,
-        );
-    }
     Ok(outputs)
 }
 
 #[cfg(test)]
 mod tests {
-    use aos_ability_model::{
-        AbilityValue, AccessMode, InterfaceKey, LocalKey, MethodReference, MethodSemantics,
-    };
+    use aos_ability_model::{AbilityValue, InterfaceKey, LocalKey};
     use aos_contract::Sha256Digest;
 
     use super::{
-        SERVICE_RELOAD_INTERFACE, SERVICE_TEMPLATE_DEFINITION_INTERFACE,
-        all_service_resource_references, expected_request, observation, require_method,
-        require_reusable_facets, service_resource_references,
+        all_service_resource_references, expected_request, observation, require_reusable_facets,
+        service_resource_references,
     };
     use crate::model::{
         SERVICE_REALIZATION_SCHEMA, ServiceFacetIdentity, ServiceRealization, ServiceUnitIdentity,
@@ -909,59 +785,6 @@ mod tests {
     }
 
     #[test]
-    fn service_methods_are_limited_by_the_authenticated_facet_catalog() {
-        let realization = realization();
-        let lifecycle = MethodReference {
-            interface: realization.facets[0].interface.clone(),
-            method: LocalKey::new("start").expect("method parses"),
-        };
-        let logging = MethodReference {
-            interface: realization.facets[1].interface.clone(),
-            method: LocalKey::new("observe").expect("method parses"),
-        };
-
-        assert!(
-            require_method(
-                &lifecycle,
-                &MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
-                &realization,
-            )
-            .is_ok()
-        );
-        assert!(
-            require_method(
-                &logging,
-                &MethodSemantics::ordinary(AccessMode::Read),
-                &realization,
-            )
-            .is_ok()
-        );
-        assert!(
-            require_method(
-                &logging,
-                &MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
-                &realization,
-            )
-            .is_err()
-        );
-
-        let mut template = realization;
-        template.facets[0].interface = interface(SERVICE_TEMPLATE_DEFINITION_INTERFACE, 3);
-        let materialize = MethodReference {
-            interface: template.facets[0].interface.clone(),
-            method: LocalKey::new("materialize").expect("method parses"),
-        };
-        assert!(
-            require_method(
-                &materialize,
-                &MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
-                &template,
-            )
-            .is_ok()
-        );
-    }
-
-    #[test]
     fn expected_feature_request_is_reconstructed_from_the_merged_resource() {
         let realization = realization();
         let value = AbilityValue::new(serde_json::json!({
@@ -980,18 +803,6 @@ mod tests {
                 "service": "main",
                 "enabled": true,
                 "standard_output": "structured",
-            })
-        );
-
-        let mut template = realization;
-        template.facets[0].interface = interface(SERVICE_TEMPLATE_DEFINITION_INTERFACE, 3);
-        let expected = expected_request(&value, &template.facets[0])
-            .expect("template request is reconstructed");
-        assert_eq!(
-            expected.as_json(),
-            &serde_json::json!({
-                "service": "main",
-                "description": "Example",
             })
         );
     }
@@ -1032,7 +843,7 @@ mod tests {
     #[test]
     fn reload_observation_reports_exact_strategy_availability() {
         let facet = ServiceFacetIdentity {
-            interface: interface(SERVICE_RELOAD_INTERFACE, 4),
+            interface: interface("aos.service.reload", 4),
             facet: LocalKey::new("reload").expect("facet parses"),
             observation_schema: "aos.ability.service-reload-observation/v1".to_string(),
         };

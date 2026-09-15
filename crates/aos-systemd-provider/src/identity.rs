@@ -29,9 +29,6 @@ use crate::{decode_value, empty_outputs, target_context, value};
 
 const ETC_ROOT: &str = "/etc";
 const SYSUSERS: &str = "/run/current-system/sw/bin/systemd-sysusers";
-const PRINCIPAL_EFFECTS: &str = "aos.systemd.principal-effects";
-const GROUP_EFFECTS: &str = "aos.systemd.group-effects";
-const MEMBERSHIP_EFFECTS: &str = "aos.systemd.group-membership-effects";
 const REALIZATION_SCHEMA: &str = "aos.systemd.identity-realization/v1";
 const CONTEXT_SCHEMA: &str = "aos.systemd.identity-context/v1";
 const IDENTITY_LOCK: &str = "/run/lock/aos-systemd-identity.lock";
@@ -114,14 +111,17 @@ enum Desired {
     Membership(MembershipDesired),
 }
 
-pub(crate) fn supports(method: &MethodReference) -> bool {
-    matches!(
-        method.interface.name.as_str(),
-        PRINCIPAL_EFFECTS | GROUP_EFFECTS | MEMBERSHIP_EFFECTS
-    )
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum IdentityRole {
+    Group,
+    GroupMembership,
+    Principal,
 }
 
-pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
+pub(crate) async fn admit(
+    role: IdentityRole,
+    request: AdmissionRequest,
+) -> Result<AdmissionResult> {
     if request.schema != ADMISSION_REQUEST_SCHEMA {
         bail!("unsupported identity admission request schema");
     }
@@ -130,7 +130,7 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     require_method(&request.method, &request.semantics)?;
     require_realization(&request.resource_spec.realization)?;
 
-    let desired = desired_from_value(&request.method, &request.resource_spec.value)?;
+    let desired = desired_from_value(role, &request.resource_spec.value)?;
     let resolved = resolve_membership(&desired, &request.resources)?;
     let paths = paths_for(
         Path::new(ETC_ROOT),
@@ -179,7 +179,7 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     })
 }
 
-pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
+pub(crate) async fn invoke(role: IdentityRole, invocation: Invocation) -> Result<InvocationResult> {
     if invocation.schema != INVOCATION_SCHEMA || invocation.request.schema != REQUEST_SCHEMA {
         bail!("unsupported identity invocation schema");
     }
@@ -200,7 +200,7 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
 
     let bound = validate_resource_context(target_context(&invocation)?)?;
     require_realization(&bound.resource_spec.realization)?;
-    let desired = desired_from_value(&invocation.method, &bound.resource_spec.value)?;
+    let desired = desired_from_value(role, &bound.resource_spec.value)?;
     require_inputs(&desired, &invocation.request.inputs)?;
     let resolved = resolve_membership(&desired, &invocation.request.resources)?;
     let paths = paths_for(
@@ -270,9 +270,6 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
 }
 
 fn require_method(method: &MethodReference, semantics: &MethodSemantics) -> Result<()> {
-    if !supports(method) {
-        bail!("identity effect method selects another interface");
-    }
     let expected = match method.method.as_str() {
         "observe" => MethodSemantics::ordinary(AccessMode::Read),
         "create" | "reconcile" | "update" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
@@ -293,12 +290,11 @@ fn require_realization(value: &AbilityValue) -> Result<()> {
     Ok(())
 }
 
-fn desired_from_value(method: &MethodReference, value: &AbilityValue) -> Result<Desired> {
-    match method.interface.name.as_str() {
-        PRINCIPAL_EFFECTS => Ok(Desired::Principal(decode_value(value)?)),
-        GROUP_EFFECTS => Ok(Desired::Group(decode_value(value)?)),
-        MEMBERSHIP_EFFECTS => Ok(Desired::Membership(decode_value(value)?)),
-        _ => bail!("identity effect selects an unsupported desired value"),
+fn desired_from_value(role: IdentityRole, value: &AbilityValue) -> Result<Desired> {
+    match role {
+        IdentityRole::Principal => Ok(Desired::Principal(decode_value(value)?)),
+        IdentityRole::Group => Ok(Desired::Group(decode_value(value)?)),
+        IdentityRole::GroupMembership => Ok(Desired::Membership(decode_value(value)?)),
     }
 }
 

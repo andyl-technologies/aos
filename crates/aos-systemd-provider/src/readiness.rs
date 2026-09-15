@@ -16,12 +16,6 @@ use aos_systemd::{PinnedSystemdManager, UnitActiveState};
 use crate::model::{PROVIDER_CONTEXT_SCHEMA, ProviderContext};
 use crate::{decode_value, provider_context, target_context, value};
 
-const NETWORK_INTERFACE: &str = "aos.systemd.network-readiness-effects";
-const FILESYSTEM_INTERFACE: &str = "aos.systemd.filesystem-readiness-effects";
-const ACTIVATION_MILESTONE_INTERFACE: &str = "aos.systemd.activation-milestone-effects";
-const SYSTEM_MILESTONE_READINESS_INTERFACE: &str =
-    "aos.systemd.system-milestone-readiness-effects";
-const RUNTIME_ENTRY_POPULATION_INTERFACE: &str = "aos.systemd.runtime-entry-population-effects";
 const NETWORK_OBSERVATION_SCHEMA: &str = "aos.ability.network-readiness-observation/v1";
 const FILESYSTEM_OBSERVATION_SCHEMA: &str = "aos.ability.filesystem-readiness-observation/v1";
 const ACTIVATION_MILESTONE_OBSERVATION_SCHEMA: &str =
@@ -31,18 +25,40 @@ const SYSTEM_MILESTONE_READINESS_OBSERVATION_SCHEMA: &str =
 const RUNTIME_ENTRY_POPULATION_OBSERVATION_SCHEMA: &str =
     "aos.ability.runtime-entry-population-observation/v1";
 
-pub(crate) fn supports(method: &MethodReference) -> bool {
-    matches!(
-        method.interface.name.as_str(),
-        NETWORK_INTERFACE
-            | FILESYSTEM_INTERFACE
-            | ACTIVATION_MILESTONE_INTERFACE
-            | SYSTEM_MILESTONE_READINESS_INTERFACE
-            | RUNTIME_ENTRY_POPULATION_INTERFACE
-    )
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ReadinessRole {
+    ActivationMilestone,
+    Filesystem,
+    Network,
+    RuntimeEntryPopulation,
+    SystemMilestone,
 }
 
-pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
+impl ReadinessRole {
+    fn inactive_state(self) -> &'static str {
+        match self {
+            Self::ActivationMilestone | Self::RuntimeEntryPopulation | Self::SystemMilestone => {
+                "pending"
+            }
+            Self::Filesystem | Self::Network => "configuring",
+        }
+    }
+
+    fn observation_schema(self) -> &'static str {
+        match self {
+            Self::ActivationMilestone => ACTIVATION_MILESTONE_OBSERVATION_SCHEMA,
+            Self::Filesystem => FILESYSTEM_OBSERVATION_SCHEMA,
+            Self::Network => NETWORK_OBSERVATION_SCHEMA,
+            Self::RuntimeEntryPopulation => RUNTIME_ENTRY_POPULATION_OBSERVATION_SCHEMA,
+            Self::SystemMilestone => SYSTEM_MILESTONE_READINESS_OBSERVATION_SCHEMA,
+        }
+    }
+}
+
+pub(crate) async fn admit(
+    role: ReadinessRole,
+    request: AdmissionRequest,
+) -> Result<AdmissionResult> {
     if request.schema != ADMISSION_REQUEST_SCHEMA {
         bail!("unsupported admission request schema");
     }
@@ -55,13 +71,7 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
 
     let selected = selected_target(&request.resource_spec.value)?;
     let manager = PinnedSystemdManager::connect().await?;
-    let inspection = inspect(
-        &manager,
-        &request.method,
-        &request.resource_spec.value,
-        selected,
-    )
-    .await?;
+    let inspection = inspect(&manager, role, &request.resource_spec.value, selected).await?;
     let context = provider_context(&manager, inspection.unit_identity.clone(), false)?;
     let supported_purposes = SupportedPurposes::from_ordered(vec![
         InvocationPurpose::Effect,
@@ -82,7 +92,10 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     })
 }
 
-pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
+pub(crate) async fn invoke(
+    role: ReadinessRole,
+    invocation: Invocation,
+) -> Result<InvocationResult> {
     if invocation.schema != INVOCATION_SCHEMA || invocation.request.schema != REQUEST_SCHEMA {
         bail!("unsupported invocation schema");
     }
@@ -127,13 +140,7 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     {
         bail!("systemd manager changed after admission");
     }
-    let inspection = inspect(
-        &manager,
-        &invocation.method,
-        &bound.resource_spec.value,
-        selected,
-    )
-    .await?;
+    let inspection = inspect(&manager, role, &bound.resource_spec.value, selected).await?;
     let mut outputs = BTreeMap::new();
     outputs.insert(
         LocalKey::new("observation")?,
@@ -156,7 +163,7 @@ struct Inspection {
 
 async fn inspect(
     manager: &PinnedSystemdManager,
-    method: &MethodReference,
+    role: ReadinessRole,
     expected: &AbilityValue,
     unit_name: &str,
 ) -> Result<Inspection> {
@@ -170,30 +177,14 @@ async fn inspect(
     } else {
         None
     };
-    let inactive_state = if matches!(
-        method.interface.name.as_str(),
-        ACTIVATION_MILESTONE_INTERFACE
-            | SYSTEM_MILESTONE_READINESS_INTERFACE
-            | RUNTIME_ENTRY_POPULATION_INTERFACE
-    ) {
-        "pending"
-    } else {
-        "configuring"
-    };
+    let inactive_state = role.inactive_state();
     let state = match active_state {
         Some(UnitActiveState::Active | UnitActiveState::Reloading) => "ready",
         Some(UnitActiveState::Failed) => "failed",
         Some(UnitActiveState::Inactive) => inactive_state,
         Some(_) | None => "unknown",
     };
-    let schema = match method.interface.name.as_str() {
-        NETWORK_INTERFACE => NETWORK_OBSERVATION_SCHEMA,
-        FILESYSTEM_INTERFACE => FILESYSTEM_OBSERVATION_SCHEMA,
-        ACTIVATION_MILESTONE_INTERFACE => ACTIVATION_MILESTONE_OBSERVATION_SCHEMA,
-        SYSTEM_MILESTONE_READINESS_INTERFACE => SYSTEM_MILESTONE_READINESS_OBSERVATION_SCHEMA,
-        RUNTIME_ENTRY_POPULATION_INTERFACE => RUNTIME_ENTRY_POPULATION_OBSERVATION_SCHEMA,
-        _ => bail!("handler invocation selects an unsupported readiness interface"),
-    };
+    let schema = role.observation_schema();
     let observation = value(&serde_json::json!({
         "schema": schema,
         "expected": selected_expected(expected)?,
@@ -207,7 +198,7 @@ async fn inspect(
 }
 
 fn require_method(method: &MethodReference, semantics: &MethodSemantics) -> Result<()> {
-    if !supports(method) || method.method.as_str() != "observe" {
+    if method.method.as_str() != "observe" {
         bail!("handler invocation selects an unsupported readiness method");
     }
     if *semantics != MethodSemantics::ordinary(AccessMode::Read) {
@@ -256,25 +247,9 @@ fn selected_expected(expected: &AbilityValue) -> Result<&serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
-    use aos_ability_model::{AbilityValue, LocalKey, MethodReference};
+    use aos_ability_model::AbilityValue;
 
-    use super::{
-        ACTIVATION_MILESTONE_INTERFACE, FILESYSTEM_INTERFACE, NETWORK_INTERFACE,
-        RUNTIME_ENTRY_POPULATION_INTERFACE, SYSTEM_MILESTONE_READINESS_INTERFACE,
-        selected_expected, selected_target,
-    };
-
-    fn method(interface: &str) -> MethodReference {
-        serde_json::from_value(serde_json::json!({
-            "interface": {
-                "name": interface,
-                "abi": 1,
-                "descriptor": format!("sha256:{}", "1".repeat(64)),
-            },
-            "method": LocalKey::new("observe").expect("method parses"),
-        }))
-        .expect("method fixture is valid")
-    }
+    use super::{ReadinessRole, selected_expected, selected_target};
 
     #[test]
     fn readiness_effects_carry_checked_package_owned_manager_targets() {
@@ -304,11 +279,6 @@ mod tests {
             "systemd_unit": {"unit_name": "getty.target"},
         }))
         .expect("request is bounded");
-        let system_milestone = AbilityValue::new(serde_json::json!({
-            "expected": {"milestone": "root-device"},
-            "systemd_unit": {"unit_name": "initrd-root-device.target"},
-        }))
-        .expect("request is bounded");
         let runtime_entries = AbilityValue::new(serde_json::json!({
             "expected": {"scope": "runtime-entries"},
             "systemd_unit": {"unit_name": "systemd-tmpfiles-setup.service"},
@@ -332,10 +302,6 @@ mod tests {
             "getty.target"
         );
         assert_eq!(
-            selected_target(&system_milestone).expect("system milestone target"),
-            "initrd-root-device.target"
-        );
-        assert_eq!(
             selected_expected(&milestone).expect("neutral milestone"),
             &serde_json::json!({"milestone": "interactive-console"})
         );
@@ -344,14 +310,11 @@ mod tests {
             "systemd-tmpfiles-setup.service"
         );
 
-        for interface in [
-            NETWORK_INTERFACE,
-            FILESYSTEM_INTERFACE,
-            ACTIVATION_MILESTONE_INTERFACE,
-            SYSTEM_MILESTONE_READINESS_INTERFACE,
-            RUNTIME_ENTRY_POPULATION_INTERFACE,
-        ] {
-            assert_eq!(method(interface).interface.name.as_str(), interface);
-        }
+        assert_eq!(ReadinessRole::Network.inactive_state(), "configuring");
+        assert_eq!(
+            ReadinessRole::ActivationMilestone.inactive_state(),
+            "pending"
+        );
+        assert_eq!(ReadinessRole::SystemMilestone.inactive_state(), "pending");
     }
 }
