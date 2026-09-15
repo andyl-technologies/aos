@@ -588,6 +588,7 @@ pub(in crate::registry_ops) fn signed_provenance_statement(
         key_id: TEST_PROVENANCE_KEY_ID.to_string(),
         key: test_provenance_signer().trusted_key,
         retired_before_sequence: None,
+        package_contract_retired_before_sequence: None,
     }];
     let (statement, key_id) =
         crate::provenance::verify_statement_dsse_jsonl(&artifact.jsonl, &trusted).unwrap();
@@ -622,6 +623,7 @@ pub(in crate::registry_ops) fn write_test_roster(
                 id: (*id).to_string(),
                 key: None,
                 provenance_before_sequence: None,
+                package_contract_before_sequence: None,
                 reason: Some("test".into()),
             })
             .collect(),

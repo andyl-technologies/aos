@@ -58,6 +58,7 @@ mod images;
 mod lifecycle;
 mod mac;
 mod metadata;
+mod package_contract_transparency;
 mod provenance;
 mod publish;
 mod query;
@@ -81,6 +82,9 @@ pub(crate) use git::{refresh_registry_object_store, validate_canonical_release_r
 pub use lifecycle::{LocalRegistry, authoring_clone_precious, create, local_registries};
 #[cfg(test)]
 pub(crate) use metadata::{record_ability_output, record_named_output};
+pub(crate) use package_contract_transparency::{
+    PACKAGE_CONTRACT_TRANSPARENCY_LOG, package_contract_transparency_sequence,
+};
 pub(crate) use provenance::require_active_registry_key;
 pub use publish::publish;
 pub(crate) use publish::{

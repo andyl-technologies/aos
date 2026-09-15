@@ -2228,6 +2228,13 @@ pub struct RevokedKey {
         skip_serializing_if = "Option::is_none"
     )]
     pub provenance_before_sequence: Option<u64>,
+    /// First package-contract sequence that must not trust this retired key.
+    #[serde(
+        default,
+        rename = "package-contract-before-sequence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub package_contract_before_sequence: Option<u64>,
     /// Optional human-readable revocation reason.
     #[serde(default)]
     pub reason: Option<String>,

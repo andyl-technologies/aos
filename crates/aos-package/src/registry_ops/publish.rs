@@ -33,6 +33,7 @@ use crate::registry_ops::mac::{
 use crate::registry_ops::metadata::{
     build_package_toml_with_documentation, record_ability_output, record_named_output,
 };
+use crate::registry_ops::package_contract_transparency::append_package_contract_transparency_log;
 use crate::registry_ops::provenance::{
     append_package_provenance_transparency_log, bind_documentation_provenance,
     publish_config_provenance_artifact_with_documentation,
@@ -1025,8 +1026,18 @@ pub(crate) async fn publish_canonical_ability_output(
             provenance_parent.display()
         )
     })?;
-    fs::write(&provenance_path, provenance_jsonl)
+    fs::write(&provenance_path, &provenance_jsonl)
         .with_context(|| format!("writing ability provenance {}", provenance_path.display()))?;
+    append_package_contract_transparency_log(
+        dir,
+        package,
+        version,
+        platform,
+        &ability.package_digest,
+        &retention_digest.to_string(),
+        &ability.provenance,
+        provenance_jsonl.as_bytes(),
+    )?;
 
     let content_addressed = registry_content_addressed(dir);
     write_store_files(dir, &projection.path, content_addressed, false, printer).with_context(

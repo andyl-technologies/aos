@@ -195,6 +195,12 @@ fn validate_roster(roster: &KeysToml) -> Result<()> {
                 entry.id
             );
         }
+        if entry.package_contract_before_sequence.is_some() && entry.key.is_none() {
+            bail!(
+                "revoked key '{}' declares a package-contract retirement boundary without key material",
+                entry.id
+            );
+        }
         if let Some(key) = &entry.key {
             parse_signing_key(key)
                 .with_context(|| format!("invalid revoked key '{}'", entry.id))?;
@@ -229,6 +235,7 @@ mod tests {
                 id: "retired".into(),
                 key: Some(KEY1.into()),
                 provenance_before_sequence: Some(17),
+                package_contract_before_sequence: None,
                 reason: Some("planned retirement".into()),
             }],
             ..KeysToml::default()
@@ -286,6 +293,7 @@ schema = 2
                 id: "old".into(),
                 key: None,
                 provenance_before_sequence: None,
+                package_contract_before_sequence: None,
                 reason: None,
             }],
             ..KeysToml::default()
@@ -304,6 +312,7 @@ schema = 2
                 id: "old".into(),
                 key: None,
                 provenance_before_sequence: None,
+                package_contract_before_sequence: None,
                 reason: None,
             }],
             ..KeysToml::default()
@@ -322,6 +331,7 @@ schema = 2
                 id: "old".into(),
                 key: None,
                 provenance_before_sequence: None,
+                package_contract_before_sequence: None,
                 reason: None,
             }],
             ..KeysToml::default()
