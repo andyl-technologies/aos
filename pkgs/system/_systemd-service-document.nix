@@ -590,6 +590,19 @@
       )
       ++ literalList "DeviceAllow" (builtins.map (rule: "${selected rule.selector} ${access rule}") policy.rules);
 
+  terminalDirectives = value: let
+    terminal = value.terminal or null;
+  in
+    if terminal == null
+    then []
+    else [
+      (semantic.directive "TTYPath" (quotedExecutionPath terminal.device))
+      (semantic.directive "TTYReset" (yesNo terminal.reset))
+      (semantic.directive "TTYVHangup" (yesNo terminal.hangup))
+      (semantic.directive "TTYVTDisallocate" (yesNo terminal.deallocate))
+      (semantic.directive "SendSIGHUP" (yesNo terminal.send_hangup_on_stop))
+    ];
+
   serviceDirectives = value: let
     lifecycle = value.lifecycle;
     supervision = value.supervision or null;
@@ -599,6 +612,7 @@
     watchdog = value.watchdog or null;
     startPolicy = value.start_policy or null;
     scheduling = value.scheduling or null;
+    terminal = value.terminal or null;
     signalReadiness = readiness != null && readiness.mechanism == "process-signal";
     notificationAccess =
       if signalReadiness
@@ -634,6 +648,8 @@
     serviceType =
       if !scopesAgree
       then throw "systemd notification supervision and readiness scopes disagree"
+      else if terminal != null && terminal.start_when_idle
+      then "idle"
       else if signalReadiness || (supervision != null && supervision.startup_protocol == "notification")
       then
         if reload != null && reload.completion == "notification"
@@ -781,6 +797,7 @@
     ++ isolationDirectives value
     ++ linuxIsolationDirectives value
     ++ linuxDeviceDirectives value
+    ++ terminalDirectives value
     ++ lib.optional (readiness != null && readiness.mechanism == "successful-exit") (
       semantic.directive "RemainAfterExit" "yes"
     );
