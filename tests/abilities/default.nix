@@ -490,7 +490,7 @@
     inherit lib pkgs;
   };
   stagedEnvironment = import ./staged-environment.nix {
-    inherit lib mkSystem;
+    inherit lib mkSystem pkgs;
   };
   postgresqlService = import ./postgresql-service.nix {
     inherit lib pkgs;

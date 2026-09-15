@@ -194,11 +194,14 @@
       inherit pkgs lib operatorModules runtimeModules packageModules;
       specialArgs = moduleSpecialArgs;
     };
-    selectedAbilityPackages = let
+    selectedAbilityPackagesFrom = packages: let
       selectedByPath = builtins.listToAttrs (
         builtins.map (package: {
           name = builtins.unsafeDiscardStringContext (builtins.toString package);
-          value = package;
+          # Static contract resolution follows each selected runtime root back
+          # to its derivation graph. Force that graph into the evaluator store
+          # before later projections intentionally discard path contexts.
+          value = builtins.seq package.drvPath package;
         })
         (builtins.filter
           (package:
@@ -213,12 +216,17 @@
                 throw
                 "selected package '${package.pname or package.name or "<unnamed>"}' has no package module locator"
             ))
-          selectionEvaluation.config.environment.systemPackages)
+          packages)
       );
     in
       builtins.attrValues selectedByPath;
+    hostSelectedAbilityPackages = selectedAbilityPackagesFrom selectionEvaluation.config.environment.systemPackages;
+    initrdSelectedAbilityPackages = selectedAbilityPackagesFrom selectionEvaluation.config.aos.abilities.stages.initrd.packages;
+    allSelectedAbilityPackages = selectedAbilityPackagesFrom (
+      hostSelectedAbilityPackages ++ initrdSelectedAbilityPackages
+    );
     callerPackageNames = builtins.map (record: record.name) packageModules;
-    nativeAbilityPackageModules =
+    nativeAbilityPackageModulesFor = selectedPackages:
       builtins.map (package: let
         source = package.abilityModuleSource;
       in {
@@ -234,13 +242,14 @@
         };
       }) (builtins.filter
         (package: !(builtins.elem (package.pname or package.name) callerPackageNames))
-        selectedAbilityPackages);
-    finalPackageModules = packageModules ++ nativeAbilityPackageModules;
+        selectedPackages);
+    finalPackageModules = packageModules ++ nativeAbilityPackageModulesFor hostSelectedAbilityPackages;
+    allPackageModules = packageModules ++ nativeAbilityPackageModulesFor allSelectedAbilityPackages;
     selectedPackagesByName = builtins.listToAttrs (builtins.map (package: {
         name = package.pname or package.name;
         value = package;
       })
-      selectedAbilityPackages);
+      allSelectedAbilityPackages);
     buildArtifactLocator = selector: let
       package =
         selectedPackagesByName.${selector.package}
@@ -271,7 +280,7 @@
         then selector // {package = package.pname or package.name;}
         else selector)
       package.contract.selectors)
-    selectedAbilityPackages);
+    allSelectedAbilityPackages);
     buildArtifactLocators = builtins.listToAttrs (
       builtins.map buildArtifactLocator selectedArtifactSelectors
     );
@@ -345,27 +354,40 @@
     initrdPackageModules =
       builtins.filter
       (record: builtins.elem record.name initrdAbilityPackageNames)
-      finalPackageModules;
-    initrdAbilityEvaluation = lib.evalModules {
-      modules =
-        [
-          lib.abilities.module
-          {
-            aos.abilities.environment = {
-              authority = "system-image";
-              key = systemName;
-              stage = "initrd";
+      allPackageModules;
+    evaluateSelectedInitrd = abilityBindings:
+      lib.evalModules {
+        modules =
+          [
+            lib.abilities.module
+            {
+              aos.abilities.environment = {
+                authority = "system-image";
+                key = systemName;
+                stage = "initrd";
+              };
+            }
+          ]
+          ++ builtins.map
+          (intent: {config = intent;})
+          selectionEvaluation.config.aos.abilities.stages.initrd.intent
+          ++ selectionEvaluation.config.aos.abilities.stages.initrd.modules;
+        inherit pkgs lib operatorModules;
+        runtimeModules =
+          runtimeModules
+          ++ lib.optional (abilityBindings != {}) {
+            aos.abilities = {
+              bindings = abilityBindings;
+              instances = synthesizedProviderInstancesFor abilityBindings;
             };
-          }
-        ]
-        ++ [
-          {config = selectionEvaluation.config.aos.abilities.stages.initrd.intent;}
-        ]
-        ++ selectionEvaluation.config.aos.abilities.stages.initrd.modules;
-      inherit pkgs lib operatorModules runtimeModules;
-      packageModules = initrdPackageModules;
-      specialArgs = moduleSpecialArgs;
-    };
+          };
+        packageModules = initrdPackageModules;
+        selectedProviderModules = selectedProviderModulesFor abilityBindings;
+         specialArgs = moduleSpecialArgs;
+       };
+      initrdAbilityEvaluation = import ./lib/build/selected-ability-bindings.nix {inherit lib;} {
+        evaluate = evaluateSelectedInitrd;
+      };
     # Determine the resolved image ABI from the complete caller module list.
     # The base library bundles only source-backed system modules, so without
     # carrying this value explicitly an inline image override would leave the
