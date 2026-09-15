@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, Write};
 
 use anyhow::{bail, Context, Result};
-use aos_doc_model::{document_json_schema, OptionDocument, PackageDocumentation, PathSegment};
+use aos_doc_model::{document_json_schema, OptionDocument, PathSegment};
 use serde_json::{json, Value};
 
 use crate::documentation::LoadedDocumentation;
@@ -143,16 +143,16 @@ impl Server {
                     .or_else(|| {
                         self.options()
                             .find(|(_, option)| option.display_path == label)
-                            .map(|(document, option)| {
+                            .map(|(loaded, option)| {
                                 let mut item = params.clone();
                                 item["documentation"] = json!({
                                     "kind": "markdown",
-                                    "value": option_markdown(document, option)
+                                    "value": option_markdown(loaded, option)
                                 });
                                 item["data"] = json!({
-                                    "package": document.package.name,
-                                    "version": document.package.version,
-                                    "semanticSchemaSha256": document.identity.semantic_schema_sha256
+                                    "package": loaded.document.package.name,
+                                    "version": loaded.document.package.version,
+                                    "packageDigest": package_digest(loaded)
                                 });
                                 item
                             })
@@ -246,12 +246,12 @@ impl Server {
         Some((text, line, character))
     }
 
-    fn options(&self) -> impl Iterator<Item = (&PackageDocumentation, &OptionDocument)> {
-        self.documents.iter().flat_map(|document| {
-            document
+    fn options(&self) -> impl Iterator<Item = (&LoadedDocumentation, &OptionDocument)> {
+        self.documents.iter().flat_map(|loaded| {
+            loaded
                 .ability_options
                 .iter()
-                .map(move |option| (&document.document, option))
+                .map(move |option| (loaded, option))
         })
     }
 
@@ -264,20 +264,20 @@ impl Server {
             .filter(|(_, option)| option.display_path.starts_with(&prefix))
             .filter(|(_, option)| seen.insert(option.display_path.clone()))
             .take(256)
-            .map(|(document, option)| {
+            .map(|(loaded, option)| {
                 json!({
                     "label": option.display_path,
                     "kind": 10,
-                    "detail": format!("{} — {}", option.type_signature, document.package.name),
+                    "detail": format!("{} — {}", option.type_signature, loaded.document.package.name),
                     "documentation": {
                         "kind": "markdown",
-                        "value": option_markdown(document, option)
+                        "value": option_markdown(loaded, option)
                     },
                     "filterText": option.display_path,
                     "insertText": option.display_path,
                     "data": {
-                        "package": document.package.name,
-                        "version": document.package.version,
+                        "package": loaded.document.package.name,
+                        "version": loaded.document.package.version,
                         "path": option.display_path
                     }
                 })
@@ -291,11 +291,11 @@ impl Server {
         let word = word_at_position(text, line, character, false)?;
         self.options()
             .find(|(_, option)| option_matches(option, &word) || option.display_path == word)
-            .map(|(document, option)| {
+            .map(|(loaded, option)| {
                 json!({
                     "contents": {
                         "kind": "markdown",
-                        "value": option_markdown(document, option)
+                        "value": option_markdown(loaded, option)
                     }
                 })
             })
@@ -322,7 +322,7 @@ impl Server {
     fn document_links(&self, text: &str) -> Value {
         let mut links = Vec::new();
         for (line_number, line) in text.lines().enumerate() {
-            for (document, option) in self.options() {
+            for (loaded, option) in self.options() {
                 let Some(start) = line.find(&option.display_path) else {
                     continue;
                 };
@@ -331,8 +331,8 @@ impl Server {
                         "start": { "line": line_number, "character": utf16_len(&line[..start]) },
                         "end": { "line": line_number, "character": utf16_len(&line[..start + option.display_path.len()]) }
                     },
-                    "target": format!("aos-doc://{}/{}#{}", document.package.name, document.package.version, option.display_path),
-                    "tooltip": format!("Open verified {} documentation", document.package.name)
+                    "target": format!("aos-doc://{}/{}#{}", loaded.document.package.name, loaded.document.package.version, option.display_path),
+                    "tooltip": format!("Open verified {} documentation", loaded.document.package.name)
                 }));
             }
         }
@@ -437,15 +437,15 @@ impl Server {
             .options()
             .filter(|(_, option)| option.display_path.to_ascii_lowercase().contains(&normalized))
             .take(256)
-            .map(|(document, option)| {
+            .map(|(loaded, option)| {
                 json!({
                     "name": option.display_path,
                     "kind": 13,
                     "location": {
-                        "uri": format!("aos-doc://{}/{}", document.package.name, document.package.version),
+                        "uri": format!("aos-doc://{}/{}", loaded.document.package.name, loaded.document.package.version),
                         "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }
                     },
-                    "containerName": document.package.name
+                    "containerName": loaded.document.package.name
                 })
             })
             .collect::<Vec<_>>();
@@ -464,18 +464,20 @@ impl Server {
             .unwrap_or_default();
         Value::Array(
             self.options()
-                .filter(|(document, _)| package.is_none_or(|name| document.package.name == name))
+                .filter(|(loaded, _)| {
+                    package.is_none_or(|name| loaded.document.package.name == name)
+                })
                 .filter(|(_, option)| option.display_path.starts_with(prefix))
-                .map(|(document, option)| {
+                .map(|(loaded, option)| {
                     json!({
-                        "package": document.package.name,
-                        "version": document.package.version,
+                        "package": loaded.document.package.name,
+                        "version": loaded.document.package.version,
                         "path": option.display_path,
                         "type": option.type_signature,
                         "required": option.default.is_none(),
                         "readOnly": option.read_only,
                         "contributable": option.contributable,
-                        "semanticSchemaSha256": document.identity.semantic_schema_sha256
+                        "packageDigest": package_digest(loaded)
                     })
                 })
                 .collect(),
@@ -483,26 +485,28 @@ impl Server {
     }
 }
 
-fn option_markdown(document: &PackageDocumentation, option: &OptionDocument) -> String {
-    let summary = document
-        .search_documents()
-        .into_iter()
-        .find(|row| row.kind == "option" && row.key == option.display_path)
-        .map(|row| row.summary)
-        .unwrap_or_default();
+fn option_markdown(loaded: &LoadedDocumentation, option: &OptionDocument) -> String {
     let mut text = format!(
         "{} · {}\n\n{}",
         markdown_code_span(&option.display_path),
         markdown_code_span(&option.type_signature),
-        summary
+        option.plain_description()
     );
     text.push_str(&format!(
-        "\n\nPackage: {} {} · semantic schema {}",
-        markdown_code_span(&document.package.name),
-        markdown_code_span(&document.package.version),
-        markdown_code_span(&document.identity.semantic_schema_sha256)
+        "\n\nPackage: {} {} · package contract {}",
+        markdown_code_span(&loaded.document.package.name),
+        markdown_code_span(&loaded.document.package.version),
+        markdown_code_span(&package_digest(loaded))
     ));
     text
+}
+
+fn package_digest(loaded: &LoadedDocumentation) -> String {
+    loaded
+        .ability_reference
+        .as_ref()
+        .map(|reference| reference.package_digest.to_string())
+        .unwrap_or_default()
 }
 
 pub(super) fn markdown_code_span(value: &str) -> String {
@@ -707,7 +711,7 @@ mod tests {
     use aos_contract::Sha256Digest;
     use aos_doc_model::{
         AbilityExportReference, DocumentationIdentity, DocumentedPackage, OptionType,
-        PackageAbilityReference,
+        PackageAbilityReference, PackageDocumentation,
     };
 
     fn document() -> PackageDocumentation {
@@ -812,33 +816,57 @@ mod tests {
 
     #[test]
     fn wildcard_options_complete_hover_and_diagnose_without_evaluating_nix() {
+        let loaded = loaded_document();
+        let expected_package_digest = loaded
+            .ability_reference
+            .as_ref()
+            .unwrap()
+            .package_digest
+            .to_string();
         let server = Server {
-            documents: vec![loaded_document()],
+            documents: vec![loaded],
             open_files: BTreeMap::new(),
             shutdown: false,
         };
+        let completions = server.completions("nginx.vir", 0, 9);
+        let completion_items = completions["items"].as_array().unwrap();
+        assert_eq!(completion_items.len(), 1);
         assert!(
-            server.completions("nginx.vir", 0, 9)["items"]
-                .as_array()
-                .unwrap()
-                .len()
-                == 1
+            completion_items[0]["documentation"]["value"]
+                .as_str()
+                .is_some_and(|markdown| {
+                    markdown.contains("Sets the virtual host document root.")
+                        && markdown.contains(&expected_package_digest)
+                })
         );
-        assert!(server
-            .hover("nginx.virtualHosts.site.root", 0, 15)
-            .is_some());
-        assert!(server
-            .diagnostics("nginx.virtualHosts.site.root = \"/srv\";")
-            .is_empty());
+
+        let hover = server.hover("nginx.virtualHosts.site.root", 0, 15).unwrap();
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .is_some_and(|markdown| markdown.contains("Sets the virtual host document root."))
+        );
+
+        let hints = server.option_hints(&json!({ "package": "nginx" }));
+        assert_eq!(hints[0]["packageDigest"], expected_package_digest);
+        assert!(hints[0].get("semanticSchemaSha256").is_none());
+
+        assert!(
+            server
+                .diagnostics("nginx.virtualHosts.site.root = \"/srv\";")
+                .is_empty()
+        );
         let invalid = server.diagnostics("nginx.virtualHosts.site.missing = true;");
         assert_eq!(invalid.len(), 1);
         assert_eq!(invalid[0]["code"], "aos-unknown-option");
-        assert!(server
-            .definition("nginx.virtualHosts.site.root", 0, 15)
-            .unwrap()["uri"]
-            .as_str()
-            .unwrap()
-            .starts_with("aos-source:///"));
+        assert!(
+            server
+                .definition("nginx.virtualHosts.site.root", 0, 15)
+                .unwrap()["uri"]
+                .as_str()
+                .unwrap()
+                .starts_with("aos-source:///")
+        );
         assert_eq!(
             server
                 .document_links("nginx.virtualHosts.<name>.root = \"/srv\";")

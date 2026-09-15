@@ -367,6 +367,14 @@ pub struct OptionDocument {
     pub source: Option<SourceLocator>,
 }
 
+impl OptionDocument {
+    /// Renders the projected option description as bounded plain text.
+    #[must_use]
+    pub fn plain_description(&self) -> String {
+        prose_plain_text(&self.description)
+    }
+}
+
 /// One deterministic search row derived from a canonical document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
