@@ -591,8 +591,9 @@ mod tests {
     use std::num::NonZeroU32;
 
     use aos_ability_model::{
-        AbilityActivationMode, InterfaceDescriptor, InterfaceDocument, InterfaceName,
-        LifecycleSemantics, LocalKey, RequiredFeature, ValueSchema,
+        AbilityActivationMode, AggregationContract, AggregationScope, InterfaceDescriptor,
+        InterfaceDocument, InterfaceName, LifecycleSemantics, LocalKey, RequiredFeature,
+        ValueSchema,
     };
     use aos_doc_model::AbilityExportReference;
 
@@ -660,6 +661,13 @@ mod tests {
     }
 
     fn reference() -> PackageAbilityReference {
+        let aggregation = AggregationContract {
+            scope: AggregationScope::ProviderInstance,
+            key: LocalKey::new("service").expect("aggregation key"),
+            controller_group: LocalKey::new("service").expect("controller group"),
+            reject_slot_collisions: true,
+            merge_contract: None,
+        };
         let interface = InterfaceDocument {
             schema: "aos.ability.interface/v1".to_string(),
             required_features: vec![RequiredFeature::new("abilities-v1").expect("feature")],
@@ -676,6 +684,7 @@ mod tests {
                     retains_persistent_by_default: false,
                     persistent_delete_method: None,
                 },
+                aggregation: aggregation.clone(),
                 guarantees: Vec::new(),
             },
         };
@@ -690,7 +699,7 @@ mod tests {
             exports: vec![AbilityExportReference {
                 name: LocalKey::new("service").expect("export"),
                 interface,
-                aggregation: None,
+                aggregation: Some(aggregation),
                 implementation: Sha256Digest::of_bytes(b"implementation"),
                 requirements: Vec::new(),
             }],

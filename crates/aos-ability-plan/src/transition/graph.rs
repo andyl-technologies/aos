@@ -16,10 +16,10 @@ use aos_ability_model::{
     EffectPlanDocument, InstanceId, LocalKey, MergeNode, Operation, OperationResultReference,
     PackageDocument, PlanNodeKey, ProviderAdoptionAuthorization, ProviderAdoptionEndpoint,
     ProviderImplementation, ProviderImplementationReference, ProviderReadiness, ResourceId,
-    ResourceLifetime, ScopePath, ServiceAction, ValueExpression, VersionedDocument, compare_edges,
+    ResourceLifetime, ScopePath, ValueExpression, VersionedDocument, compare_edges,
     compare_operation_keys,
 };
-use aos_ability_validate::{CheckedBindingPlan, CheckedTransitionAuthority};
+use aos_ability_validate::{CheckedBindingPlan, CheckedTransitionAuthority, ValidationContext};
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
@@ -819,6 +819,7 @@ fn retain_foreign_results(
 }
 
 pub(super) fn merge_fragments(
+    context: &ValidationContext,
     binding_plan: &CheckedBindingPlan,
     provider_adoptions: &[ProviderAdoptionAuthorization],
     linked_healthy_adoptions: &BTreeSet<ResourceId>,
@@ -1037,6 +1038,7 @@ pub(super) fn merge_fragments(
     }
     edges.extend(imported_edges);
     edges.extend(provider_adoption_handoffs(
+        context,
         binding_plan,
         &operations,
         provider_adoptions,
@@ -1088,6 +1090,7 @@ pub(super) fn merge_fragments(
 }
 
 fn provider_adoption_handoffs(
+    context: &ValidationContext,
     binding_plan: &CheckedBindingPlan,
     operations: &[Operation],
     adoptions: &[ProviderAdoptionAuthorization],
@@ -1105,12 +1108,10 @@ fn provider_adoption_handoffs(
                     adoption,
                     &adoption.source,
                     false,
-                ) && matches!(
-                    operation.family,
-                    aos_ability_model::OperationFamily::ServiceLifecycle {
-                        action: ServiceAction::Stop
-                    }
-                )
+                ) && context
+                    .interface(&operation.interface)
+                    .and_then(|interface| interface.interface.methods.get(&operation.method))
+                    .is_some_and(|method| method.semantics.stops_provider)
             })
             .collect::<Vec<_>>();
         let candidate = operations

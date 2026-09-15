@@ -14,8 +14,8 @@ use aos_ability_validate::CheckedEffectPlan;
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
-use super::inventory::provider_state_transfer_owner;
 use super::GenerationAbilityStoreError;
+use super::inventory::provider_state_transfer_owner;
 use crate::config_eval::native_adapter_surface::matches_provider_contract;
 
 /// Identifies the canonical provider state-transfer inspection contract.
@@ -277,10 +277,12 @@ mod tests {
             contract.disposition,
             ProviderStateTransferDisposition::Unsupported { .. }
         ));
-        assert!(!contract
-            .canonical_bytes()
-            .expect("canonical contract")
-            .is_empty());
+        assert!(
+            !contract
+                .canonical_bytes()
+                .expect("canonical contract")
+                .is_empty()
+        );
     }
 
     #[test]

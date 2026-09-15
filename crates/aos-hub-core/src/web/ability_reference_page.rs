@@ -178,7 +178,7 @@ pub fn section(
                     html,
                     "<li><code>{}</code> — {} targeting <code>{}</code>",
                     escape(name.as_str()),
-                    scalar(&method.operation_family),
+                    scalar(&method.semantics),
                     escape(method.target_resource.as_str()),
                 );
                 if !method.permitted_operations.is_empty() {
@@ -434,11 +434,7 @@ fn scalar(value: &impl serde::Serialize) -> String {
 }
 
 const fn yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
+    if value { "yes" } else { "no" }
 }
 
 #[cfg(test)]

@@ -183,10 +183,6 @@ in {
       authority = "caller";
       interface = binding.interface;
       method = route.method;
-      family = {
-        kind = "service-lifecycle";
-        action = route.method;
-      };
       phase = "converging";
       input_phase = "planning";
       target = {

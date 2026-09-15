@@ -9,20 +9,36 @@ use aos_ability_model::{
     BranchMembership, ContributionPermission, ControllerAssignment, DecisionAlternative,
     DecisionNode, DecisionPredicate, DecisionSelector, DependencyEdge, DependencyKind,
     DiagnosticCode, ExecutionStage, ExportDeclaration, HandlerDescriptor, ImplementationKind,
-    IncarnationId, LocalKey, MergeNode, MergedOutput, MethodReference, OperationFamily,
+    IncarnationId, LocalKey, MergeNode, MergedOutput, MethodReference, MethodSemantics,
     OperationResultReference, OutputDescriptor, PROVIDER_STATE_FORMAT_V1, PackageDocument,
     PackageImplementation, PlanNodeKey, ProviderAssignment, ProviderImplementation,
     ProviderStateFormat, RequiredFeature, RequirementDeclaration, RequirementFallback,
     RequirementStrength, ResourceId, ResourceLifetime, ResourcePermission, ResourceReference,
-    ResourceRevision, ResultProducerKey, RevisionId, ScopePath, ScopedOperationKey, ServiceAction,
+    ResourceRevision, ResultProducerKey, RevisionId, ScopePath, ScopedOperationKey,
     StringConstraint, ValueExpression, ValuePhase, ValueSchema, ValueVisibility, VersionedDocument,
     compare_edges, compare_operation_keys, compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
 
 use crate::test_support::{
-    PlanFixture, plan_fixture, planned_provider_chain_fixture, systemd_manager_plan_fixture,
+    PlanFixture, checked_systemd_manager_effect_plan, plan_fixture, planned_provider_chain_fixture,
+    systemd_manager_plan_fixture,
 };
+
+#[test]
+fn operation_rejects_caller_authored_method_semantics() {
+    let checked = checked_systemd_manager_effect_plan();
+    let mut document = serde_json::to_value(checked.document()).unwrap();
+    document["operations"][0]["semantics"] = serde_json::json!({
+        "required_target_access": "read",
+        "stops_provider": false,
+    });
+
+    assert!(
+        serde_json::from_value::<aos_ability_model::EffectPlanDocument>(document).is_err(),
+        "portable operations must derive semantics from their authenticated method"
+    );
+}
 
 #[test]
 fn systemd_manager_accepts_exact_system_container_delegation() {
@@ -225,9 +241,7 @@ fn read_only_primary_cannot_authorize_write_recovery() {
     fixture.interfaces[0].interface.methods.insert(
         key("stop"),
         aos_ability_model::MethodDescriptor {
-            operation_family: OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Stop,
-            },
+            semantics: MethodSemantics::provider_stop(),
             ..primary
         },
     );
@@ -944,6 +958,79 @@ fn materialized_input_rechecks_empty_resource_projection_baseline() {
 }
 
 #[test]
+fn nested_operation_result_accepts_the_exact_producer_output_schema() {
+    let fixture = nested_operation_result_fixture(ValueSchema::Boolean);
+
+    fixture
+        .validate()
+        .expect("nested result reference must match the exact producer output schema");
+}
+
+#[test]
+fn nested_operation_result_rejects_a_different_producer_output_schema() {
+    let fixture = nested_operation_result_fixture(ValueSchema::String {
+        max_length: 32,
+        syntax: None,
+    });
+
+    assert_diagnostic(fixture, DiagnosticCode::ValueTypeMismatch);
+}
+
+fn assert_retained_reference_mismatch(mutate: impl FnOnce(&mut ResourceReference)) {
+    let plan = checked_systemd_manager_effect_plan();
+    let operation = &plan.operations()[0];
+    let mut reference = operation.target.clone();
+    mutate(&mut reference);
+    let outputs = BTreeMap::from([
+        (
+            key("active"),
+            AbilityValue::new(serde_json::Value::Bool(true)).expect("boolean output"),
+        ),
+        (
+            key("retained-resource"),
+            AbilityValue::new(
+                serde_json::to_value(reference).expect("resource reference must serialize"),
+            )
+            .expect("resource reference must be a bounded canonical value"),
+        ),
+    ]);
+
+    assert_eq!(
+        plan.validate_operation_outputs(operation, &outputs),
+        Err(crate::OutputValidationError::RetainedResourceMismatch)
+    );
+}
+
+#[test]
+fn retained_output_rejects_a_different_interface() {
+    assert_retained_reference_mismatch(|reference| {
+        reference.interface.name =
+            aos_ability_model::InterfaceName::new("test.other").expect("interface name");
+    });
+}
+
+#[test]
+fn retained_output_rejects_a_different_resource() {
+    assert_retained_reference_mismatch(|reference| {
+        reference.resource.key = key("other-resource");
+    });
+}
+
+#[test]
+fn retained_output_rejects_different_operations() {
+    assert_retained_reference_mismatch(|reference| {
+        reference.operations = vec![key("observe")];
+    });
+}
+
+#[test]
+fn retained_output_rejects_a_different_lifetime() {
+    assert_retained_reference_mismatch(|reference| {
+        reference.lifetime = ResourceLifetime::Persistent;
+    });
+}
+
+#[test]
 fn runtime_output_rejects_reference_shorter_than_declared_output() {
     let mut fixture = plan_fixture();
     let ready = fixture.interfaces[0]
@@ -955,6 +1042,7 @@ fn runtime_output_rejects_reference_shorter_than_declared_output() {
         .get_mut(&key("ready"))
         .expect("fixture ready output");
     ready.schema = ValueSchema::ResourceReference;
+    ready.phase = ValuePhase::Planning;
     ready.lifetime = ResourceLifetime::Instance;
     fixture.refresh_interface();
     let plan = fixture
@@ -1027,6 +1115,7 @@ fn runtime_output_rechecks_nested_resource_authority() {
         .get_mut(&key("ready"))
         .expect("fixture ready output");
     ready.schema = ValueSchema::ResourceReference;
+    ready.phase = ValuePhase::Planning;
     ready.lifetime = ResourceLifetime::Instance;
     fixture.refresh_interface();
     let ungranted = add_ungranted_resource(&mut fixture);
@@ -1368,7 +1457,6 @@ fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
         exports: vec![ExportDeclaration {
             name: key("provider"),
             interface: binding.interface.clone(),
-            aggregation: None,
             implementation: descriptor,
         }],
         requirements: Vec::new(),
@@ -1480,6 +1568,13 @@ fn configure_primary_state_format(fixture: &mut PlanFixture, mode: StateFormatFi
 fn contribution_fixture(schema: ValueSchema) -> PlanFixture {
     let mut fixture = plan_fixture();
     fixture.interfaces[0].interface.request = schema;
+    fixture.interfaces[0].interface.aggregation = AggregationContract {
+        scope: AggregationScope::ProviderInstance,
+        key: key("slot"),
+        controller_group: key("aggregate"),
+        reject_slot_collisions: true,
+        merge_contract: None,
+    };
     fixture.refresh_interface();
     pin_primary_binding_to_pure_package(&mut fixture);
 
@@ -1488,13 +1583,6 @@ fn contribution_fixture(schema: ValueSchema) -> PlanFixture {
         provider,
         group: key("aggregate"),
     };
-    fixture.binding_inputs.packages[0].exports[0].aggregation = Some(AggregationContract {
-        scope: AggregationScope::ProviderInstance,
-        key: key("slot"),
-        controller_group: aggregate.group.clone(),
-        reject_slot_collisions: true,
-        merge_contract: None,
-    });
     fixture.binding_plan.bindings[0].caller_grant.contributions = vec![ContributionPermission {
         aggregate,
         slot: key("primary"),
@@ -1621,6 +1709,56 @@ fn operation_result(producer: &str, output: &str) -> OperationResultReference {
         },
         output: key(output),
     }
+}
+
+fn nested_operation_result_fixture(producer_schema: ValueSchema) -> PlanFixture {
+    let mut fixture = plan_fixture();
+    let parameters = ValueSchema::Record {
+        fields: BTreeMap::from([(key("nested"), ValueSchema::Boolean)]),
+        optional_fields: Vec::new(),
+    };
+    let method = fixture.interfaces[0]
+        .interface
+        .methods
+        .get_mut(&key("observe"))
+        .expect("fixture observe method");
+    method.parameters = parameters;
+    method
+        .outputs
+        .get_mut(&key("ready"))
+        .expect("fixture ready output")
+        .schema = producer_schema;
+    fixture.refresh_interface();
+
+    let producer = &mut fixture.effect_plan.operations[0];
+    producer.inputs = ValueExpression::Literal {
+        value: AbilityValue::new(serde_json::json!({"nested": true}))
+            .expect("fixture producer input is bounded"),
+    };
+    let mut consumer = producer.clone();
+    consumer.key = scoped("consume");
+    consumer.inputs = ValueExpression::Object {
+        fields: BTreeMap::from([(
+            "nested".to_string(),
+            ValueExpression::OperationResult {
+                reference: operation_result("observe", "ready"),
+            },
+        )]),
+    };
+    fixture.effect_plan.operations.push(consumer);
+    fixture
+        .effect_plan
+        .operations
+        .sort_by(|left, right| compare_operation_keys(&left.key, &right.key));
+    fixture.effect_plan.edges.push(DependencyEdge {
+        from: operation_node("observe"),
+        to: operation_node("consume"),
+        kind: DependencyKind::Data,
+    });
+    fixture.effect_plan.edges.sort_by(compare_edges);
+    fixture.refresh_commitments();
+
+    fixture
 }
 
 fn grant_exclusive_access(fixture: &mut PlanFixture) {

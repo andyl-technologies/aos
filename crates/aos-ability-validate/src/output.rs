@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use aos_ability_model::{
     AbilityValue, LocalKey, MethodReference, Operation, ProviderAssignment, ProviderReadiness,
-    ScopedOperationKey,
+    ResourceReference, ScopedOperationKey,
 };
 use thiserror::Error;
 
@@ -70,6 +70,9 @@ pub enum OutputValidationError {
     /// A nested typed reference exceeds retained artifact or caller authority.
     #[error("output reference is unauthorized: {0}")]
     UnauthorizedReference(#[source] ValueAuthorizationError),
+    /// A retained-resource result does not identify the operation's exact target authority.
+    #[error("retained-resource result differs from the operation's exact target authority")]
+    RetainedResourceMismatch,
 }
 
 /// Reports why runtime assignment evidence does not satisfy a planned binding.
@@ -105,7 +108,7 @@ impl CheckedEffectPlan {
         &self,
         operation: &Operation,
     ) -> Result<&aos_ability_model::OutcomeSemantics, OutputValidationError> {
-        self.operation_method(operation)
+        self.checked_operation_method(operation)
             .map(|method| &method.outcome)
     }
 
@@ -144,7 +147,7 @@ impl CheckedEffectPlan {
             return Err(InputValidationError::UnknownOperation);
         }
         let method = self
-            .operation_method(operation)
+            .checked_operation_method(operation)
             .map_err(|_| InputValidationError::MissingMethod)?;
         validate_materialized_value(&method.parameters, inputs)
             .map_err(InputValidationError::InvalidValue)?;
@@ -339,7 +342,9 @@ impl CheckedEffectPlan {
                 .outputs
                 .get(output)
                 .ok_or(OutputValidationError::MissingOutput)?;
-            self.validate_operation_value(
+            validate_ability_value(&descriptor.schema, value)?;
+            validate_retained_resource(operation, descriptor, value)?;
+            self.authorize_operation_value(
                 operation,
                 &descriptor.schema,
                 value,
@@ -361,12 +366,14 @@ impl CheckedEffectPlan {
         output: &LocalKey,
         value: &AbilityValue,
     ) -> Result<(), OutputValidationError> {
-        let method = self.operation_method(operation)?;
+        let method = self.checked_operation_method(operation)?;
         let descriptor = method
             .outputs
             .get(output)
             .ok_or(OutputValidationError::MissingOutput)?;
-        self.validate_operation_value(
+        validate_ability_value(&descriptor.schema, value)?;
+        validate_retained_resource(operation, descriptor, value)?;
+        self.authorize_operation_value(
             operation,
             &descriptor.schema,
             value,
@@ -427,22 +434,19 @@ impl CheckedEffectPlan {
         Ok(())
     }
 
-    fn operation_method(
+    fn checked_operation_method(
         &self,
         operation: &Operation,
     ) -> Result<&aos_ability_model::MethodDescriptor, OutputValidationError> {
-        if self.operation(&operation.key) != Some(operation) {
-            return Err(OutputValidationError::UnknownOperation);
-        }
-        let interface = self
-            .interfaces
-            .get(&operation.interface)
-            .ok_or(OutputValidationError::MissingInterface)?;
-        interface
-            .interface
-            .methods
-            .get(&operation.method)
-            .ok_or(OutputValidationError::MissingMethod)
+        self.operation_method(operation).ok_or_else(|| {
+            if self.operation(&operation.key).is_none() {
+                OutputValidationError::UnknownOperation
+            } else if !self.interfaces.contains_key(&operation.interface) {
+                OutputValidationError::MissingInterface
+            } else {
+                OutputValidationError::MissingMethod
+            }
+        })
     }
 
     fn operation_method_reference(
@@ -485,6 +489,16 @@ impl CheckedEffectPlan {
         required_lifetime: Option<aos_ability_model::ResourceLifetime>,
     ) -> Result<(), OutputValidationError> {
         validate_ability_value(schema, value)?;
+        self.authorize_operation_value(operation, schema, value, required_lifetime)
+    }
+
+    fn authorize_operation_value(
+        &self,
+        operation: &Operation,
+        schema: &aos_ability_model::ValueSchema,
+        value: &AbilityValue,
+        required_lifetime: Option<aos_ability_model::ResourceLifetime>,
+    ) -> Result<(), OutputValidationError> {
         let binding = self
             .binding_plan()
             .binding(&operation.binding)
@@ -516,4 +530,22 @@ fn validate_ability_value(
     value: &AbilityValue,
 ) -> Result<(), OutputValidationError> {
     validate_materialized_value(schema, value).map_err(OutputValidationError::InvalidValue)
+}
+
+fn validate_retained_resource(
+    operation: &Operation,
+    descriptor: &aos_ability_model::OutputDescriptor,
+    value: &AbilityValue,
+) -> Result<(), OutputValidationError> {
+    if !descriptor.is_retained_resource() {
+        return Ok(());
+    }
+
+    let reference = serde_json::from_value::<ResourceReference>(value.as_json().clone())
+        .map_err(|_| OutputValidationError::RetainedResourceMismatch)?;
+    if reference != operation.target {
+        return Err(OutputValidationError::RetainedResourceMismatch);
+    }
+
+    Ok(())
 }

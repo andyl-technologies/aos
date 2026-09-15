@@ -2052,7 +2052,7 @@ mod tests {
         AbilityActivationMode, AbilityValue, AccessMode, AggregateId, AggregateOutput,
         ArtifactReference, BindingId, EnvironmentId, ExecutionStage, ExportDeclaration,
         HandlerDescriptor, ImplementationKind, InstanceId, InterfaceKey, InterfaceName, LocalKey,
-        OperationFamily, OperationPhase, OutputDescriptor, PackageDocument, PackageImplementation,
+        MethodSemantics, OperationPhase, OutputDescriptor, PackageDocument, PackageImplementation,
         PlanId, ProviderImplementation, ProviderImplementationReference, ResourceId,
         ResourceLifetime, ResourceReference, RevisionId, ScopePath, TransactionId, ValueExpression,
         ValuePhase, ValueSchema, ValueVisibility,
@@ -2502,7 +2502,7 @@ mod tests {
         interface.methods.insert(
             local("prepare"),
             aos_ability_model::MethodDescriptor {
-                operation_family: OperationFamily::PrepareManagedConfiguration,
+                semantics: MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
                 parameters: method.parameters,
                 target_resource: interface.name.clone(),
                 outputs: method.outputs,
@@ -2552,7 +2552,6 @@ mod tests {
             exports: vec![ExportDeclaration {
                 name: local("managed-configuration"),
                 interface: interface_key.clone(),
-                aggregation: None,
                 implementation: provider_descriptor,
             }],
             requirements: Vec::new(),
@@ -2585,7 +2584,6 @@ mod tests {
         let operation = &mut fixture.effect_plan.operations[0];
         operation.key.key = local("prepare");
         operation.method = local("prepare");
-        operation.family = OperationFamily::PrepareManagedConfiguration;
         operation.phase = OperationPhase::Preparing;
         operation.input_phase = ValuePhase::Planning;
         operation.target.operations = vec![local("prepare")];

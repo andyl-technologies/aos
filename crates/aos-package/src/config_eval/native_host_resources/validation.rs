@@ -3,10 +3,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use aos_ability_model::{
-    AbilityValue, CredentialAction, LocalKey, NetworkEndpointAction, NetworkPolicyAction,
-    Operation, OperationFamily, ResourceId, RevisionId, ServiceAction,
-};
+use aos_ability_model::{AbilityValue, LocalKey, Operation, ResourceId, RevisionId};
 use aos_ability_runtime::adapter::InvocationPurpose;
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
@@ -148,8 +145,7 @@ pub(super) fn validate_inputs(
             NativeResourceQualification::HostNetworkPolicy { .. },
         ) => {
             let input: PolicyInput = decode_input(inputs, "host network policy")?;
-            if !matches!(input.direction.as_str(), "egress" | "ingress")
-                || input.protocol != "tcp"
+            if !matches!(input.direction.as_str(), "egress" | "ingress") || input.protocol != "tcp"
             {
                 return Err(invalid(
                     "network policy supports only loopback TCP ingress or egress",
@@ -222,117 +218,30 @@ pub(super) fn require_operation_kind(
     operation: &Operation,
     kind: NativeHostResourceKind,
 ) -> Result<(), io::Error> {
-    let supported = match (kind, operation.method.as_str(), &operation.family) {
-        (
-            NativeHostResourceKind::Credential,
-            "acquire",
-            OperationFamily::Credential {
-                action: CredentialAction::Acquire,
-            },
-        )
-        | (
-            NativeHostResourceKind::Credential,
-            "deliver",
-            OperationFamily::Credential {
-                action: CredentialAction::Deliver,
-            },
-        )
-        | (NativeHostResourceKind::Credential, "release", OperationFamily::ReleaseResource)
-        | (
-            NativeHostResourceKind::Endpoint,
-            "materialize",
-            OperationFamily::NetworkEndpoint {
-                action: NetworkEndpointAction::Materialize,
-            },
-        )
-        | (
-            NativeHostResourceKind::Endpoint,
-            "observe",
-            OperationFamily::NetworkEndpoint {
-                action: NetworkEndpointAction::Observe,
-            },
-        )
-        | (
-            NativeHostResourceKind::Endpoint,
-            "release",
-            OperationFamily::NetworkEndpoint {
-                action: NetworkEndpointAction::Release,
-            },
-        )
-        | (
-            NativeHostResourceKind::Storage,
-            "ensure",
-            OperationFamily::HostStorage {
-                action: aos_ability_model::HostStorageAction::Ensure,
-            },
-        )
-        | (
-            NativeHostResourceKind::Storage,
-            "observe",
-            OperationFamily::HostStorage {
-                action: aos_ability_model::HostStorageAction::Observe,
-            },
-        )
-        | (
-            NativeHostResourceKind::Storage,
-            "release",
-            OperationFamily::HostStorage {
-                action: aos_ability_model::HostStorageAction::Release,
-            },
-        )
-        | (
-            NativeHostResourceKind::NetworkPolicy,
-            "apply",
-            OperationFamily::HostNetworkPolicy {
-                action: NetworkPolicyAction::Apply,
-            },
-        )
-        | (
-            NativeHostResourceKind::NetworkPolicy,
-            "observe",
-            OperationFamily::HostNetworkPolicy {
-                action: NetworkPolicyAction::Observe,
-            },
-        )
-        | (
-            NativeHostResourceKind::NetworkPolicy,
-            "remove",
-            OperationFamily::HostNetworkPolicy {
-                action: NetworkPolicyAction::Remove,
-            },
-        )
-        | (
-            NativeHostResourceKind::Postgresql,
-            "materialize",
-            OperationFamily::PrepareManagedConfiguration,
-        )
-        | (NativeHostResourceKind::Postgresql, "observe", OperationFamily::ObserveReadiness)
-        | (
-            NativeHostResourceKind::Postgresql,
-            "start",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Start,
-            },
-        )
-        | (
-            NativeHostResourceKind::Postgresql,
-            "restart",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Restart,
-            },
-        )
-        | (
-            NativeHostResourceKind::Postgresql,
-            "stop",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Stop,
-            },
-        ) => true,
-        _ => false,
+    let supported = match kind {
+        NativeHostResourceKind::Credential => {
+            matches!(operation.method.as_str(), "acquire" | "deliver" | "release")
+        }
+        NativeHostResourceKind::Endpoint => {
+            matches!(
+                operation.method.as_str(),
+                "materialize" | "observe" | "release"
+            )
+        }
+        NativeHostResourceKind::Storage => {
+            matches!(operation.method.as_str(), "ensure" | "observe" | "release")
+        }
+        NativeHostResourceKind::NetworkPolicy => {
+            matches!(operation.method.as_str(), "apply" | "observe" | "remove")
+        }
+        NativeHostResourceKind::Postgresql => matches!(
+            operation.method.as_str(),
+            "materialize" | "observe" | "start" | "restart" | "stop"
+        ),
     };
     if !supported {
         return Err(invalid(
-            "operation family does not match the host-resource method",
+            "operation method is unsupported by the host-resource adapter",
         ));
     }
     Ok(())

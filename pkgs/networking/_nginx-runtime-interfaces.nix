@@ -173,7 +173,7 @@
       else "exclusive-write";
     stopsProvider = name == "stop";
   };
-  method = targetResource: operationFamily: name: {
+  method = targetResource: name: {
     description = "Performs the ${name} operation on ${targetResource}.";
     inherit targetResource;
     semantics = methodSemantics name;
@@ -188,8 +188,8 @@
       indeterminate = "reconcile";
     };
   };
-  credentialMethod = operationFamily: name: outputs:
-    (method "aos.credential-delivery-effects" operationFamily name)
+  credentialMethod = name: outputs:
+    (method "aos.credential-delivery-effects" name)
     // {
       inherit outputs;
       parameters = credentialRequest;
@@ -200,8 +200,8 @@
         indeterminate = "reconcile";
       };
     };
-  foregroundMethod = operationFamily: name:
-    (method "aos.foreground-process" operationFamily name)
+  foregroundMethod = name:
+    (method "aos.foreground-process" name)
     // {
       outcome = {
         completionEvidence = foregroundObservation;
@@ -242,9 +242,9 @@
     name = "aos.managed-configuration-effects";
     group = "managed-configuration-effects";
     methods = {
-      prepare = method "aos.managed-configuration-effects" {kind = "prepare-managed-configuration";} "prepare";
-      publish = method "aos.managed-configuration-effects" {kind = "publish-configuration";} "publish";
-      release = method "aos.managed-configuration-effects" {kind = "release-resource";} "release";
+      prepare = method "aos.managed-configuration-effects" "prepare";
+      publish = method "aos.managed-configuration-effects" "publish";
+      release = method "aos.managed-configuration-effects" "release";
     };
   });
   credentialDeliveryEffects = canonical (terminal {
@@ -253,21 +253,13 @@
     requestType = credentialRequest;
     selectedLifecycle = ephemeralLifecycle;
     methods = {
-      acquire =
-        credentialMethod {
-          kind = "credential";
-          action = "acquire";
-        } "acquire" {
-          credential-view = runtimeOutput credentialView;
-        };
-      deliver =
-        credentialMethod {
-          kind = "credential";
-          action = "deliver";
-        } "deliver" {
-          credential-view = runtimeOutput credentialView;
-        };
-      release = credentialMethod {kind = "release-resource";} "release" {};
+      acquire = credentialMethod "acquire" {
+        credential-view = runtimeOutput credentialView;
+      };
+      deliver = credentialMethod "deliver" {
+        credential-view = runtimeOutput credentialView;
+      };
+      release = credentialMethod "release" {};
     };
   });
   httpBackend = canonical (declareInterface {
@@ -364,15 +356,9 @@
     selectedLifecycle = ephemeralLifecycle;
     guarantees = [foregroundProcessSupervisionGuarantee];
     methods = {
-      observe = foregroundMethod {kind = "observe-readiness";} "observe";
-      start = foregroundMethod {
-        kind = "service-lifecycle";
-        action = "start";
-      } "start";
-      stop = foregroundMethod {
-        kind = "service-lifecycle";
-        action = "stop";
-      } "stop";
+      observe = foregroundMethod "observe";
+      start = foregroundMethod "start";
+      stop = foregroundMethod "stop";
     };
   });
 in {

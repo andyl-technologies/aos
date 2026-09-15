@@ -21,9 +21,8 @@ use std::time::Duration;
 
 use aos_ability_model::{
     AbilityActivationMode, AbilityValue, ExecutionStage, IncarnationId, InterfaceKey,
-    InterfaceName, LocalKey, MethodReference, Operation, OperationFamily, ProviderAssignment,
-    ProviderImplementationReference, ResourceAccess, ResourceId, RevisionId, ServiceAction,
-    ValueSchema,
+    InterfaceName, LocalKey, MethodReference, Operation, ProviderAssignment,
+    ProviderImplementationReference, ResourceAccess, ResourceId, RevisionId, ValueSchema,
     builtin::{
         systemd_manager_handler, systemd_manager_handler_key, systemd_manager_interface_key,
         systemd_manager_provider, systemd_provider_bootstrap_interface_key,
@@ -1705,30 +1704,18 @@ enum SystemdAbilityAction {
 
 impl SystemdAbilityAction {
     fn from_operation(operation: &Operation) -> Result<Self, io::Error> {
-        let action = match operation.family {
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Start,
-            } => Self::Start,
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Reload,
-            } => Self::Reload,
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Restart,
-            } => Self::Restart,
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Stop,
-            } => Self::Stop,
-            OperationFamily::ObserveReadiness => Self::Observe,
-            _ => return Err(invalid_data("unsupported systemd operation family")),
+        let action = match operation.method.as_str() {
+            "start" => Self::Start,
+            "reload" => Self::Reload,
+            "restart" => Self::Restart,
+            "stop" => Self::Stop,
+            "observe" | "observe-manager" => Self::Observe,
+            _ => return Err(invalid_data("unsupported systemd method")),
         };
-        if !action.matches_method(operation.method.as_str()) {
-            return Err(invalid_data(
-                "systemd method disagrees with operation family",
-            ));
-        }
         Ok(action)
     }
 
+    #[cfg(test)]
     const fn label(self) -> &'static str {
         match self {
             Self::Start => "start",
@@ -1739,6 +1726,7 @@ impl SystemdAbilityAction {
         }
     }
 
+    #[cfg(test)]
     fn matches_method(self, method: &str) -> bool {
         method == self.label() || (self == Self::Observe && method == "observe-manager")
     }

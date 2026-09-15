@@ -83,7 +83,7 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
                 output,
                 "  declared method\t{}\t{}\ttarget {}\toperations [{}]",
                 name.as_str(),
-                scalar(&method.operation_family)?,
+                scalar(&method.semantics)?,
                 method.target_resource.as_str(),
                 operations
             );
@@ -236,7 +236,7 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
                 output.push_str("<li><code>");
                 escape_html_into(name.as_str(), &mut output);
                 output.push_str("</code> - ");
-                escape_html_into(&scalar(&method.operation_family)?, &mut output);
+                escape_html_into(&scalar(&method.semantics)?, &mut output);
                 output.push_str(" targeting <code>");
                 escape_html_into(method.target_resource.as_str(), &mut output);
                 output.push_str("</code>");

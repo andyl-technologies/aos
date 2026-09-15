@@ -17,7 +17,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, anyhow, ensure};
 use aos_ability_model::{
     AbilityValue, AggregateOutput, Binding, DependencyKind, DesiredStateDocument,
-    EffectPlanDocument, IncarnationId, MethodReference, Operation, OperationFamily, PlanNodeKey,
+    EffectPlanDocument, IncarnationId, InterfaceDocument, MethodReference, Operation, PlanNodeKey,
     ProviderAssignment, ResourceId, ResultProducerKey, RevisionId, ScopedOperationKey,
     TransactionId, ValueExpression,
 };
@@ -111,11 +111,15 @@ const RETRY_CANCELLATION_POLL: Duration = Duration::from_millis(50);
 /// one literal request, and the exact nine-operation built-in lifecycle graph.
 pub(crate) fn authenticate_single_image_rollout_fragment(
     document: &EffectPlanDocument,
+    interface: &InterfaceDocument,
 ) -> Result<AbRolloutRequest> {
+    let rollout_interface = interface
+        .interface_key()
+        .context("identifying the authenticated rollout interface")?;
     let rollout_operations = document
         .operations
         .iter()
-        .filter(|operation| matches!(operation.family, OperationFamily::ImageRollout { .. }))
+        .filter(|operation| operation.interface == rollout_interface)
         .collect::<Vec<_>>();
     ensure!(
         !rollout_operations.is_empty(),
@@ -134,8 +138,7 @@ pub(crate) fn authenticate_single_image_rollout_fragment(
         .context("boot commit transaction has no rollout resource")?;
     ensure!(
         document.operations.iter().all(|operation| {
-            operation.target.resource != *resource
-                || matches!(operation.family, OperationFamily::ImageRollout { .. })
+            operation.target.resource != *resource || operation.interface == rollout_interface
         }),
         "boot commit rollout resource is shared with a non-rollout operation"
     );
@@ -161,7 +164,7 @@ pub(crate) fn authenticate_single_image_rollout_fragment(
         .iter()
         .find(|operation| operation.key.key.as_str() == "retain")
         .context("boot commit rollout graph has no retention operation")?;
-    let expected = lower_ab_rollout_fragment(retain)
+    let expected = lower_ab_rollout_fragment(retain, interface)
         .context("lowering the expected boot commit rollout graph")?;
     ensure!(
         rollout_operations.len() == expected.operations.len()
@@ -524,11 +527,9 @@ impl<'a> NativeAdapterRegistry<'a> {
             .operations()
             .iter()
             .filter_map(|operation| {
-                matches!(
-                    &operation.family,
-                    aos_ability_model::OperationFamily::ImageRollout { .. }
-                )
-                .then_some(operation.target.resource.clone())
+                self.route(operation)
+                    .is_ok_and(|route| route.kind == NativeAdapterKind::ImageRollout)
+                    .then_some(operation.target.resource.clone())
             })
             .collect::<BTreeSet<_>>();
 
@@ -552,11 +553,7 @@ impl<'a> NativeAdapterRegistry<'a> {
         ensure!(
             route.kind == NativeAdapterKind::ImageRollout
                 && operations.iter().all(|operation| {
-                    matches!(
-                        &operation.family,
-                        aos_ability_model::OperationFamily::ImageRollout { .. }
-                    ) && self
-                        .route(operation)
+                    self.route(operation)
                         .is_ok_and(|candidate| candidate.mapping == route.mapping)
                 }),
             "native rollout resource mixes operations or authenticated mappings"
@@ -610,7 +607,12 @@ impl<'a> NativeAdapterRegistry<'a> {
             .iter()
             .find(|operation| operation.key.key.as_str() == "retain")
             .context("native rollout graph has no retention operation")?;
-        let expected = lower_ab_rollout_fragment(retain)
+        let interface = self
+            .plan
+            .interfaces()
+            .get(&retain.interface)
+            .context("native rollout interface is absent")?;
+        let expected = lower_ab_rollout_fragment(retain, interface)
             .context("lowering the admitted native rollout graph")?;
         ensure!(
             operations.len() == expected.operations.len()
@@ -907,8 +909,7 @@ impl<'a> NativeAdapterRegistry<'a> {
         mapping: &NativeResourceMapping,
     ) -> Result<Vec<NativeDependencyBinding>> {
         let mut validations = self.plan.operations().iter().filter(|operation| {
-            operation.target.resource == mapping.resource
-                && operation.family == aos_ability_model::OperationFamily::ValidateCandidate
+            operation.target.resource == mapping.resource && operation.method.as_str() == "validate"
         });
         let Some(operation) = validations.next() else {
             return Ok(Vec::new());
@@ -999,8 +1000,7 @@ impl<'a> NativeAdapterRegistry<'a> {
         mapping: &NativeResourceMapping,
     ) -> Result<Vec<NativeDependencyBinding>> {
         let mut validations = self.plan.operations().iter().filter(|operation| {
-            operation.target.resource == mapping.resource
-                && operation.family == aos_ability_model::OperationFamily::ValidateCandidate
+            operation.target.resource == mapping.resource && operation.method.as_str() == "validate"
         });
         let Some(operation) = validations.next() else {
             return Ok(Vec::new());
@@ -4168,7 +4168,6 @@ mod tests {
         package.exports = vec![ExportDeclaration {
             name: LocalKey::new("foreground").expect("export name is valid"),
             interface: interface_key.clone(),
-            aggregation: None,
             implementation: implementation.descriptor,
         }];
         package.requirements.clear();
@@ -4375,7 +4374,11 @@ mod tests {
             )
             .expect("bounded rollout request"),
         };
-        let fragment = lower_ab_rollout_fragment(&template).expect("built-in rollout fragment");
+        let interface = aos_ability_model::builtin::ab_image_rollout_interface()
+            .expect("built-in rollout interface");
+        template.interface = interface.interface_key().expect("rollout interface key");
+        let fragment =
+            lower_ab_rollout_fragment(&template, &interface).expect("built-in rollout fragment");
         document.operations.extend(fragment.operations);
         document
             .operations
@@ -4400,11 +4403,10 @@ mod tests {
             .iter()
             .find(|operation| operation.key.key.as_str() == "retain")
             .expect("rollout operation template");
-        let operation = |key: &str, method: &str, action, mode| {
+        let operation = |key: &str, method: &str, mode| {
             let mut operation = template.clone();
             operation.key.key = LocalKey::new(key).expect("retirement operation key");
             operation.method = LocalKey::new(method).expect("retirement method");
-            operation.family = OperationFamily::ImageRollout { action };
             operation.target.operations = vec![operation.method.clone()];
             for access in &mut operation.accesses {
                 access.mode = mode;
@@ -4414,13 +4416,11 @@ mod tests {
         let retire = operation(
             "retire",
             "retire",
-            aos_ability_model::ImageRolloutAction::Retire,
             aos_ability_model::AccessMode::ExclusiveWrite,
         );
         let observation = operation(
             "retirement-observation",
             "observe-health",
-            aos_ability_model::ImageRolloutAction::ObserveHealth,
             aos_ability_model::AccessMode::Read,
         );
         let edge = aos_ability_model::DependencyEdge {
@@ -4471,8 +4471,11 @@ mod tests {
     #[test]
     fn boot_commit_rollout_fragment_coexists_with_a_non_rollout_operation() {
         let document = rollout_document_with_non_rollout_operation();
+        let interface = aos_ability_model::builtin::ab_image_rollout_interface()
+            .expect("built-in rollout interface");
+        let interface_key = interface.interface_key().expect("rollout interface key");
         assert_eq!(
-            authenticate_single_image_rollout_fragment(&document)
+            authenticate_single_image_rollout_fragment(&document, &interface)
                 .expect("one exact rollout fragment beside an unrelated checked effect"),
             rollout_request("one")
         );
@@ -4480,17 +4483,20 @@ mod tests {
             document
                 .operations
                 .iter()
-                .any(|operation| !matches!(operation.family, OperationFamily::ImageRollout { .. }))
+                .any(|operation| operation.interface != interface_key)
         );
     }
 
     #[test]
     fn boot_commit_rejects_duplicate_rollout_resources_and_requests() {
+        let interface = aos_ability_model::builtin::ab_image_rollout_interface()
+            .expect("built-in rollout interface");
+        let interface_key = interface.interface_key().expect("rollout interface key");
         let mut duplicate_resource = rollout_document_with_non_rollout_operation();
         let mut duplicate_operations = duplicate_resource
             .operations
             .iter()
-            .filter(|operation| matches!(operation.family, OperationFamily::ImageRollout { .. }))
+            .filter(|operation| operation.interface == interface_key)
             .cloned()
             .collect::<Vec<_>>();
         for operation in &mut duplicate_operations {
@@ -4502,7 +4508,7 @@ mod tests {
         }
         duplicate_resource.operations.extend(duplicate_operations);
         assert!(
-            authenticate_single_image_rollout_fragment(&duplicate_resource).is_err(),
+            authenticate_single_image_rollout_fragment(&duplicate_resource, &interface).is_err(),
             "two rollout resources must not authorize one boot commit"
         );
 
@@ -4510,7 +4516,7 @@ mod tests {
         let operation = different_request
             .operations
             .iter_mut()
-            .find(|operation| matches!(operation.family, OperationFamily::ImageRollout { .. }))
+            .find(|operation| operation.interface == interface_key)
             .expect("rollout operation");
         operation.inputs = ValueExpression::Literal {
             value: AbilityValue::new(
@@ -4519,18 +4525,21 @@ mod tests {
             .expect("bounded rollout request"),
         };
         assert!(
-            authenticate_single_image_rollout_fragment(&different_request).is_err(),
+            authenticate_single_image_rollout_fragment(&different_request, &interface).is_err(),
             "different rollout requests must not authorize one boot commit"
         );
     }
 
     #[test]
     fn boot_commit_rejects_edges_crossing_the_rollout_fragment_boundary() {
+        let interface = aos_ability_model::builtin::ab_image_rollout_interface()
+            .expect("built-in rollout interface");
+        let interface_key = interface.interface_key().expect("rollout interface key");
         let mut document = rollout_document_with_non_rollout_operation();
         let non_rollout = document
             .operations
             .iter()
-            .find(|operation| !matches!(operation.family, OperationFamily::ImageRollout { .. }))
+            .find(|operation| operation.interface != interface_key)
             .expect("non-rollout operation");
         let retain = document
             .operations
@@ -4549,7 +4558,7 @@ mod tests {
         document.edges.sort_by(aos_ability_model::compare_edges);
 
         assert!(
-            authenticate_single_image_rollout_fragment(&document).is_err(),
+            authenticate_single_image_rollout_fragment(&document, &interface).is_err(),
             "an incident edge must be part of the exact built-in fragment"
         );
     }

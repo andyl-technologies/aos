@@ -336,14 +336,12 @@ mod tests {
                 ExportDeclaration {
                     name: aos_ability_model::LocalKey::new("echo").expect("valid export"),
                     interface: interface_key.clone(),
-                    aggregation: None,
                     implementation: provider_digest,
                 },
                 ExportDeclaration {
                     name: aos_ability_model::LocalKey::new("echo-alias")
                         .expect("valid export alias"),
                     interface: interface_key.clone(),
-                    aggregation: None,
                     implementation: provider_digest,
                 },
             ],

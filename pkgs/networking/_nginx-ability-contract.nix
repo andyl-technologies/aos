@@ -305,7 +305,7 @@
       else "exclusive-write";
     stopsProvider = name == "stop";
   };
-  method = targetResource: operationFamily: name: {
+  method = targetResource: name: {
     inherit targetResource;
     semantics = methodSemantics name;
     parameters = types.boolean;
@@ -320,11 +320,11 @@
     };
   };
 
-  validationMethod = operationFamily: name:
-    (method nginxValidationDeclaration.name operationFamily name)
+  validationMethod = name:
+    (method nginxValidationDeclaration.name name)
     // {parameters = nginxValidationRequest;};
 
-  endpointEffectMethod = operationFamily: name: outputs: {
+  endpointEffectMethod = name: outputs: {
     targetResource = endpointEffectsDeclaration.name;
     inherit outputs;
     semantics = methodSemantics name;
@@ -339,7 +339,7 @@
     };
   };
 
-  storageEffectMethod = operationFamily: name: outputs: {
+  storageEffectMethod = name: outputs: {
     targetResource = storageEffectsDeclaration.name;
     inherit outputs;
     semantics = methodSemantics name;
@@ -354,7 +354,7 @@
     };
   };
 
-  networkPolicyEffectMethod = operationFamily: name: parameters: outputs: guarantees: {
+  networkPolicyEffectMethod = name: parameters: outputs: guarantees: {
     targetResource = networkPolicyEffectsDeclaration.name;
     inherit parameters outputs guarantees;
     semantics = methodSemantics name;
@@ -402,9 +402,9 @@
     group = "nginx-validation";
     handler = "nginx-terminal";
     methods = {
-      record = validationMethod {kind = "record-generation-association";} "record";
-      release = validationMethod {kind = "release-resource";} "release";
-      validate = validationMethod {kind = "validate-candidate";} "validate";
+      record = validationMethod "record";
+      release = validationMethod "release";
+      validate = validationMethod "validate";
     };
   };
   endpointEffectsDefinition = terminalExport {
@@ -414,24 +414,13 @@
     requestSchema = endpointRequest;
     selectedLifecycle = ephemeralLifecycle;
     methods = {
-      materialize =
-        endpointEffectMethod {
-          kind = "network-endpoint";
-          action = "materialize";
-        } "materialize" {
-          endpoint = runtimeMethodOutput endpoint;
-        };
-      observe =
-        endpointEffectMethod {
-          kind = "network-endpoint";
-          action = "observe";
-        } "observe" {
-          endpoint = runtimeMethodOutput endpoint;
-        };
-      release = endpointEffectMethod {
-        kind = "network-endpoint";
-        action = "release";
-      } "release" {};
+      materialize = endpointEffectMethod "materialize" {
+        endpoint = runtimeMethodOutput endpoint;
+      };
+      observe = endpointEffectMethod "observe" {
+        endpoint = runtimeMethodOutput endpoint;
+      };
+      release = endpointEffectMethod "release" {};
     };
   };
   networkPolicyEffectsDefinition = terminalExport {
@@ -442,24 +431,13 @@
     selectedLifecycle = ephemeralLifecycle;
     guarantees = [loopbackEgressGuarantee loopbackIngressGuarantee];
     methods = {
-      apply =
-        networkPolicyEffectMethod {
-          kind = "host-network-policy";
-          action = "apply";
-        } "apply" (networkPolicyRequest true) {
-          active = runtimeMethodOutput types.boolean;
-        } [loopbackEgressGuarantee loopbackIngressGuarantee];
-      observe =
-        networkPolicyEffectMethod {
-          kind = "host-network-policy";
-          action = "observe";
-        } "observe" (networkPolicyRequest true) {
-          active = runtimeMethodOutput types.boolean;
-        } [loopbackEgressGuarantee loopbackIngressGuarantee];
-      remove = networkPolicyEffectMethod {
-        kind = "host-network-policy";
-        action = "remove";
-      } "remove" (networkPolicyRequest false) {} [];
+      apply = networkPolicyEffectMethod "apply" (networkPolicyRequest true) {
+        active = runtimeMethodOutput types.boolean;
+      } [loopbackEgressGuarantee loopbackIngressGuarantee];
+      observe = networkPolicyEffectMethod "observe" (networkPolicyRequest true) {
+        active = runtimeMethodOutput types.boolean;
+      } [loopbackEgressGuarantee loopbackIngressGuarantee];
+      remove = networkPolicyEffectMethod "remove" (networkPolicyRequest false) {} [];
     };
   };
   storageEffectsDefinition = terminalExport {
@@ -468,24 +446,13 @@
     handler = "native-host-storage";
     requestSchema = storageRequest;
     methods = {
-      ensure =
-        storageEffectMethod {
-          kind = "host-storage";
-          action = "ensure";
-        } "ensure" {
-          path = runtimeMethodOutput resourcePath;
-        };
-      observe =
-        storageEffectMethod {
-          kind = "host-storage";
-          action = "observe";
-        } "observe" {
-          path = runtimeMethodOutput resourcePath;
-        };
-      release = storageEffectMethod {
-        kind = "host-storage";
-        action = "release";
-      } "release" {};
+      ensure = storageEffectMethod "ensure" {
+        path = runtimeMethodOutput resourcePath;
+      };
+      observe = storageEffectMethod "observe" {
+        path = runtimeMethodOutput resourcePath;
+      };
+      release = storageEffectMethod "release" {};
     };
   };
   interfaceFor = export:

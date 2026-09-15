@@ -7,10 +7,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::{
-    AccessMode, BranchMembership, DecisionAlternative, DecisionNode, DecisionPredicate,
-    DecisionSelector, DependencyEdge, DependencyKind, ImageRolloutAction, IncarnationId, LocalKey,
-    MergeNode, MergedOutput, MethodReference, Operation, OperationFamily, OperationPhase,
-    OperationResultReference, PlanNodeKey, ResultProducerKey, RevisionId, ScopedOperationKey,
+    BranchMembership, DecisionAlternative, DecisionNode, DecisionPredicate, DecisionSelector,
+    DependencyEdge, DependencyKind, IncarnationId, InterfaceDocument, LocalKey, MergeNode,
+    MergedOutput, MethodReference, Operation, OperationPhase, OperationResultReference,
+    PlanNodeKey, ResultProducerKey, RevisionId, ScopedOperationKey,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -415,28 +415,30 @@ pub fn retention_dominates_effects(plan: &AdmittedAbRollout) -> bool {
 /// Returns an error if a stable built-in node or method key cannot be built.
 pub fn lower_ab_rollout_fragment(
     template: &Operation,
+    interface: &InterfaceDocument,
 ) -> anyhow::Result<crate::TransitionFragment> {
+    anyhow::ensure!(
+        interface.interface_key()? == template.interface,
+        "rollout lowering interface differs from the template operation"
+    );
+
     let operation = |key: &str,
                      method: &str,
-                     action: ImageRolloutAction,
                      phase: OperationPhase,
                      branch_context: Vec<BranchMembership>|
      -> anyhow::Result<Operation> {
         let mut operation = template.clone();
         operation.key = scoped_key(template, key)?;
         operation.method = LocalKey::new(method)?;
-        operation.family = OperationFamily::ImageRollout { action };
+        let method_descriptor = interface
+            .interface
+            .methods
+            .get(&operation.method)
+            .ok_or_else(|| anyhow::anyhow!("rollout method '{method}' is absent"))?;
         operation.phase = phase;
         operation.branch_context = branch_context;
         operation.target.operations = vec![operation.method.clone()];
-        let access = if matches!(
-            action,
-            ImageRolloutAction::ObserveBoot | ImageRolloutAction::ObserveHealth
-        ) {
-            AccessMode::Read
-        } else {
-            AccessMode::ExclusiveWrite
-        };
+        let access = method_descriptor.semantics.required_target_access;
         for resource in &mut operation.accesses {
             resource.mode = access;
         }
@@ -461,87 +463,55 @@ pub fn lower_ab_rollout_fragment(
         alternative: healthy.clone(),
     }];
     let operations = vec![
-        operation(
-            "drain",
-            "drain",
-            ImageRolloutAction::Drain,
-            OperationPhase::Converging,
-            Vec::new(),
-        )?,
+        operation("drain", "drain", OperationPhase::Converging, Vec::new())?,
         operation(
             "hold-fallback",
             "hold",
-            ImageRolloutAction::Hold,
             OperationPhase::Recovering,
             fallback_context.clone(),
         )?,
         operation(
             "hold-healthy",
             "hold",
-            ImageRolloutAction::Hold,
             OperationPhase::Recovering,
             healthy_context.clone(),
         )?,
         operation(
             "observe-boot",
             "observe-boot",
-            ImageRolloutAction::ObserveBoot,
             OperationPhase::Converging,
             Vec::new(),
         )?,
         operation(
             "observe-health",
             "observe-health",
-            ImageRolloutAction::ObserveHealth,
             OperationPhase::Converging,
             Vec::new(),
         )?,
-        operation(
-            "prepare",
-            "prepare",
-            ImageRolloutAction::Prepare,
-            OperationPhase::Preparing,
-            Vec::new(),
-        )?,
-        operation(
-            "retain",
-            "retain",
-            ImageRolloutAction::Retain,
-            OperationPhase::Preparing,
-            Vec::new(),
-        )?,
-        operation(
-            "select",
-            "select",
-            ImageRolloutAction::Select,
-            OperationPhase::Publishing,
-            Vec::new(),
-        )?,
+        operation("prepare", "prepare", OperationPhase::Preparing, Vec::new())?,
+        operation("retain", "retain", OperationPhase::Preparing, Vec::new())?,
+        operation("select", "select", OperationPhase::Publishing, Vec::new())?,
         operation(
             "settle-hold-fallback",
             "hold",
-            ImageRolloutAction::Hold,
             OperationPhase::Recovering,
             fallback_context.clone(),
         )?,
         operation(
             "settle-hold-healthy",
             "hold",
-            ImageRolloutAction::Hold,
             OperationPhase::Recovering,
             healthy_context.clone(),
         )?,
         operation(
             "settle-observe-health",
             "observe-health",
-            ImageRolloutAction::ObserveHealth,
             OperationPhase::Converging,
             Vec::new(),
         )?,
         operation(
             "withdraw",
             "withdraw",
-            ImageRolloutAction::Withdraw,
             OperationPhase::Recovering,
             fallback_context.clone(),
         )?,
@@ -955,7 +925,9 @@ mod tests {
         fixture.effect_plan.operations[0].inputs = ValueExpression::Literal {
             value: AbilityValue::new(serde_json::to_value(request()).unwrap()).unwrap(),
         };
-        let fragment = lower_ab_rollout_fragment(&fixture.effect_plan.operations[0]).unwrap();
+        let fragment =
+            lower_ab_rollout_fragment(&fixture.effect_plan.operations[0], &fixture.interfaces[0])
+                .unwrap();
         fixture.effect_plan.operations = fragment.operations;
         fixture.effect_plan.decisions = fragment.decisions;
         fixture.effect_plan.merges = fragment.merges;

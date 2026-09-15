@@ -197,7 +197,7 @@ in rec {
       if builtins.length controllers == 1
       then (builtins.head controllers).controller
       else throw "credential-delivery transition requires one resource controller";
-    operation = authorityRole: change: method: family: phase: access: let
+    operation = authorityRole: change: method: phase: access: let
       terminal = terminalFor authorityRole change method access;
       version =
         if authorityRole == "teardown"
@@ -209,7 +209,7 @@ in rec {
       binding = terminal.id;
       authority = "caller";
       interface = terminal.interface;
-      inherit method family phase;
+      inherit method phase;
       input_phase = "planning";
       target = {
         interface = terminal.interface;
@@ -250,22 +250,17 @@ in rec {
     deliveries =
       builtins.map
       (change:
-        operation "desired" change "deliver" {
-          kind = "credential";
-          action = "deliver";
-        } "preparing" "exclusive-write")
+        operation "desired" change "deliver" "preparing" "exclusive-write")
       changed;
     observes =
       builtins.map
       (change:
-        operation "desired" change "acquire" {
-          kind = "credential";
-          action = "acquire";
-        } "preparing" "read")
+        operation "desired" change "acquire" "preparing" "read")
       unchanged;
     releases =
       builtins.map
-      (change: operation "teardown" change "release" {kind = "release-resource";} "converging" "exclusive-write")
+      (change:
+        operation "teardown" change "release" "converging" "exclusive-write")
       removed;
     viewExports =
       builtins.map
@@ -348,10 +343,6 @@ in rec {
       // {
         key = operation.key // {key = "settle-${operation.key.key}";};
         inherit method;
-        family = {
-          kind = "credential";
-          action = method;
-        };
         target = operation.target // {operations = [method];};
         accesses = builtins.map (entry:
           entry
@@ -425,10 +416,6 @@ in rec {
       // {
         key = operation.key // {key = "state-deliver-${operation.target.resource.key}";};
         method = "deliver";
-        family = {
-          kind = "credential";
-          action = "deliver";
-        };
         target = operation.target // {operations = ["deliver"];};
         accesses = builtins.map (access: access // {mode = "exclusive-write";}) operation.accesses;
         recovery =

@@ -92,17 +92,15 @@ pub(super) fn validate_operation(
         return;
     };
 
-    if operation.family != method.operation_family
-        || operation.target.interface != operation.interface
-        || method.target_resource != operation.interface.name
+    if method.target_resource != operation.target.interface.name
+        || context.interface(&operation.target.interface).is_none()
     {
         push_operation_diagnostic(
             operation,
             index,
             DiagnosticCode::MethodContractMismatch,
             DiagnosticClass::IncompatibleInterface,
-            "operation family or exact target interface disagrees with the method descriptor"
-                .to_string(),
+            "operation exact target interface disagrees with the method descriptor".to_string(),
             diagnostics,
         );
     }
@@ -157,7 +155,7 @@ pub(super) fn validate_operation(
         "operations.accesses",
         diagnostics,
     );
-    let required_target_access = required_target_access(&operation.family);
+    let required_target_access = method.semantics.required_target_access;
     if !operation.accesses.iter().any(|access| {
         access.resource == operation.target.resource && access.mode.permits(required_target_access)
     }) {
@@ -165,7 +163,8 @@ pub(super) fn validate_operation(
             operation,
             index,
             DiagnosticCode::ResourceScopeEscape,
-            "operation omits the target resource access required by its method family".to_string(),
+            "operation omits the target resource access required by its method semantics"
+                .to_string(),
             &operation.target.resource,
             diagnostics,
         );
@@ -372,7 +371,6 @@ fn validate_recovery_contract(
         }
         if recovery_descriptor.is_some_and(|recovery| {
             recovery.parameters != method.parameters
-                || recovery.outputs != method.outputs
                 || recovery.outcome.completion_evidence != method.outcome.completion_evidence
                 || recovery.outcome.observation_evidence != method.outcome.observation_evidence
         }) {
@@ -381,7 +379,7 @@ fn validate_recovery_contract(
                 index,
                 DiagnosticCode::MethodContractMismatch,
                 DiagnosticClass::IncompatibleInterface,
-                "recovery method must accept the retained primary request and return the same checked output and evidence schemas"
+                "recovery method must accept the retained primary request and share its checked evidence schemas"
                     .to_string(),
                 diagnostics,
             );

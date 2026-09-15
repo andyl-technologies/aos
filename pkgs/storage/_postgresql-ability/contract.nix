@@ -218,7 +218,7 @@
       else "exclusive-write";
     stopsProvider = name == "stop";
   };
-  method = target: name: operationFamily: parameters: outputs: evidence: {
+  method = target: name: parameters: outputs: evidence: {
     targetResource = target;
     inherit parameters outputs;
     semantics = methodSemantics name;
@@ -229,56 +229,32 @@
 
   endpointMethods = {
     materialize =
-      method endpointDeclaration.name "materialize" {
-        kind = "network-endpoint";
-        action = "materialize";
-      }
-      endpointRequest {
+      method endpointDeclaration.name "materialize" endpointRequest {
         endpoint = runtimeOutput endpoint "instance";
       }
       endpointObservation;
     observe =
-      method endpointDeclaration.name "observe" {
-        kind = "network-endpoint";
-        action = "observe";
-      }
-      endpointRequest {
+      method endpointDeclaration.name "observe" endpointRequest {
         endpoint = runtimeOutput endpoint "instance";
       }
       endpointObservation;
     release =
-      method endpointDeclaration.name "release" {
-        kind = "network-endpoint";
-        action = "release";
-      }
-      endpointRequest {}
+      method endpointDeclaration.name "release" endpointRequest {}
       endpointObservation;
   };
   storageMethods = {
     ensure =
-      method storageDeclaration.name "ensure" {
-        kind = "host-storage";
-        action = "ensure";
-      }
-      storageRequest {
+      method storageDeclaration.name "ensure" storageRequest {
         path = runtimeOutput path "instance";
       }
       storageObservation;
     observe =
-      method storageDeclaration.name "observe" {
-        kind = "host-storage";
-        action = "observe";
-      }
-      storageRequest {
+      method storageDeclaration.name "observe" storageRequest {
         path = runtimeOutput path "instance";
       }
       storageObservation;
     release =
-      method storageDeclaration.name "release" {
-        kind = "host-storage";
-        action = "release";
-      }
-      storageRequest {}
+      method storageDeclaration.name "release" storageRequest {}
       storageObservation;
   };
   networkPolicyMethods = let
@@ -289,95 +265,57 @@
       };
   in {
     apply = withEnforcement (
-      method networkPolicyDeclaration.name "apply" {
-        kind = "host-network-policy";
-        action = "apply";
-      } (networkPolicyRequest true) {
+      method networkPolicyDeclaration.name "apply" (networkPolicyRequest true) {
         active = runtimeOutput types.boolean "instance";
       }
       networkPolicyObservation
     );
     observe = withEnforcement (
-      method networkPolicyDeclaration.name "observe" {
-        kind = "host-network-policy";
-        action = "observe";
-      } (networkPolicyRequest true) {
+      method networkPolicyDeclaration.name "observe" (networkPolicyRequest true) {
         active = runtimeOutput types.boolean "instance";
       }
       networkPolicyObservation
     );
     remove =
-      method networkPolicyDeclaration.name "remove" {
-        kind = "host-network-policy";
-        action = "remove";
-      } (networkPolicyRequest false) {}
+      method networkPolicyDeclaration.name "remove" (networkPolicyRequest false) {}
       networkPolicyObservation;
   };
   credentialMethods = {
     acquire =
-      method credentialDeclaration.name "acquire" {
-        kind = "credential";
-        action = "acquire";
-      }
-      credentialRequest {
+      method credentialDeclaration.name "acquire" credentialRequest {
         credential-view = runtimeOutput credentialView "instance";
       }
       credentialObservation;
     deliver =
-      method credentialDeclaration.name "deliver" {
-        kind = "credential";
-        action = "deliver";
-      }
-      credentialRequest {
+      method credentialDeclaration.name "deliver" credentialRequest {
         credential-view = runtimeOutput credentialView "instance";
       }
       credentialObservation;
     release =
-      method credentialDeclaration.name "release" {
-        kind = "release-resource";
-      }
-      credentialRequest {}
+      method credentialDeclaration.name "release" credentialRequest {}
       credentialObservation;
   };
   postgresqlMethods = {
     materialize =
-      method postgresqlEffectsDeclaration.name "materialize" {
-        kind = "prepare-managed-configuration";
-      }
-      postgresqlRequest {
+      method postgresqlEffectsDeclaration.name "materialize" postgresqlRequest {
         configuration-revision = runtimeOutput revision "persistent";
       }
       postgresqlObservation;
     observe =
-      method postgresqlEffectsDeclaration.name "observe" {
-        kind = "observe-readiness";
-      }
-      postgresqlRequest {
+      method postgresqlEffectsDeclaration.name "observe" postgresqlRequest {
         observed-revision = observationOutput optionalRevision;
         ready = observationOutput types.boolean;
         submitted-revision = observationOutput revision;
       }
       postgresqlObservation;
     start =
-      method postgresqlEffectsDeclaration.name "start" {
-        kind = "service-lifecycle";
-        action = "start";
-      }
-      postgresqlRequest {}
+      method postgresqlEffectsDeclaration.name "start" postgresqlRequest {}
       postgresqlObservation;
     restart =
-      method postgresqlEffectsDeclaration.name "restart" {
-        kind = "service-lifecycle";
-        action = "restart";
-      }
-      postgresqlRequest {}
+      method postgresqlEffectsDeclaration.name "restart" postgresqlRequest {}
       postgresqlObservation;
     stop =
-      method postgresqlEffectsDeclaration.name "stop" {
-        kind = "service-lifecycle";
-        action = "stop";
-      }
-      postgresqlRequest {}
+      method postgresqlEffectsDeclaration.name "stop" postgresqlRequest {}
       postgresqlObservation;
   };
 

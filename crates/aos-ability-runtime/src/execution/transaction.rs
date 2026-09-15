@@ -17,7 +17,7 @@ use thiserror::Error;
 use crate::adapter::{
     PlanRetentionReceipt, RootRetentionReceipt, TrustedPlanStore, TrustedRootStore,
 };
-use crate::execution::summary::{operation_status, transaction_result};
+use crate::execution::summary::{operation_status, retained_resource_outputs, transaction_result};
 use crate::execution::{
     CompensationInterventionReason, ExecutionEvent, ExecutionEventKind, OperationHistory,
     OperationInterventionReason, OperationState, OperationStatus, OperationSummary, StateError,
@@ -192,6 +192,7 @@ impl CheckedExecutionJournalSnapshot {
                 },
                 attempt: history.current_attempt(),
                 elapsed_millis: history.elapsed_millis(),
+                retained_resources: retained_resource_outputs(plan, history),
             })
             .collect::<Vec<_>>();
         let terminal = transaction_result(&operations);

@@ -344,21 +344,6 @@
       inherit pkgs lib;
     })
     .productionStructured;
-  acceptedEffectImageFamily =
-    (builtins.head
-      (effectFixture.familyPlan {
-        kind = "image-rollout";
-        action = "retain";
-      })
-      .operations)
-    .family;
-  invalidEffectImageFamily = builtins.tryEval (builtins.deepSeq (
-      effectFixture.familyPlan {
-        kind = "image-rollout";
-        action = "unknown";
-      }
-    )
-    true);
   oversizedFallback = builtins.tryEval (builtins.deepSeq (
       requirementExport "advisory" {outputs.payload = effectFixture.oversizedValue;}
     )
@@ -557,13 +542,7 @@ in
     required_target_access = "exclusive-write";
     stops_provider = false;
   };
-  assert acceptedEffectImageFamily
-  == {
-    kind = "image-rollout";
-    action = "retain";
-  };
   assert !invalidMethodSemantics.success;
-  assert !invalidEffectImageFamily.success;
   assert advisoryRequirement.strength == "advisory";
   assert advisoryRequirement.fallback.outputs
   == {
@@ -722,11 +701,7 @@ in
     kind = "readiness";
   }
   effectFixture.bootstrap.edges;
-  assert (builtins.head effectFixture.kubernetes.operations).family
-  == {
-    kind = "kubernetes-object";
-    action = "apply";
-  };
+  assert !(builtins.head effectFixture.kubernetes.operations ? semantics);
   assert effectFixture.omitted == emptyEffects;
   assert postgresqlReconciliation.reconcile_stopped == ["materialize" "observe" "start" "stop"];
   assert postgresqlReconciliation.reconcile_divergent == ["materialize" "observe" "restart" "stop"];

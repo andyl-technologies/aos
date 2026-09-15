@@ -224,7 +224,6 @@ fn stateful_package() -> PackageDocument {
         exports: vec![ExportDeclaration {
             name: LocalKey::new("stateful").unwrap(),
             interface,
-            aggregation: None,
             implementation,
         }],
         requirements: Vec::new(),

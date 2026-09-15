@@ -178,10 +178,6 @@
       binding = binding.id;
       authority = "caller";
       interface = binding.interface;
-      family = {
-        kind = "image-rollout";
-        inherit action;
-      };
       input_phase = "planning";
       target = {
         interface = binding.interface;

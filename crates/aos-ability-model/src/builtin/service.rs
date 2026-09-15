@@ -11,9 +11,9 @@ use std::num::NonZeroU32;
 use anyhow::Result;
 
 use crate::{
-    GuaranteeKey, IndeterminateSemantics, InterfaceDescriptor, InterfaceDocument, InterfaceKey,
-    InterfaceName, LifecycleSemantics, LocalKey, MethodDescriptor, OperationFamily,
-    OutcomeSemantics, ServiceAction, ValueSchema, VersionedDocument,
+    AccessMode, GuaranteeKey, IndeterminateSemantics, InterfaceDescriptor, InterfaceDocument,
+    InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey, MethodDescriptor, MethodSemantics,
+    OutcomeSemantics, ValueSchema, VersionedDocument,
 };
 
 /// Names the manager-neutral service lifecycle interface.
@@ -116,39 +116,28 @@ pub fn service_feature_guarantees() -> Result<Vec<GuaranteeKey>> {
 pub fn service_management_interface() -> Result<InterfaceDocument> {
     let interface_name = InterfaceName::new(SERVICE_MANAGEMENT_INTERFACE_NAME)?;
     let methods = [
-        ("observe", OperationFamily::ObserveReadiness),
+        ("observe", MethodSemantics::ordinary(AccessMode::Read)),
         (
             "reload",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Reload,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
         ),
         (
             "restart",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Restart,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
         ),
         (
             "start",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Start,
-            },
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
         ),
-        (
-            "stop",
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Stop,
-            },
-        ),
+        ("stop", MethodSemantics::provider_stop()),
     ]
     .into_iter()
-    .map(|(name, operation_family)| {
+    .map(|(name, semantics)| {
         let method = LocalKey::new(name)?;
         Ok((
             method.clone(),
             MethodDescriptor {
-                operation_family,
+                semantics,
                 parameters: ValueSchema::Boolean,
                 target_resource: interface_name.clone(),
                 outputs: BTreeMap::new(),
@@ -226,10 +215,8 @@ mod tests {
         );
         assert!(!document.interface.lifecycle.retains_persistent_by_default);
         assert_eq!(
-            document.interface.methods["restart"].operation_family,
-            OperationFamily::ServiceLifecycle {
-                action: ServiceAction::Restart
-            }
+            document.interface.methods["restart"].semantics,
+            MethodSemantics::ordinary(AccessMode::ExclusiveWrite)
         );
         assert!(document.interface.methods["observe"].outputs.is_empty());
         assert_eq!(

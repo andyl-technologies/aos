@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 
 use aos_ability_model::{
     AbilityActivationMode, AbilityValue, ExecutionStage, InterfaceKey, InterfaceName, LocalKey,
-    MethodReference, Operation, OperationFamily, ProviderAssignment,
-    ProviderImplementationReference, ResourceAccess, ResourceId, RevisionId, ValueSchema,
+    MethodReference, Operation, ProviderAssignment, ProviderImplementationReference,
+    ResourceAccess, ResourceId, RevisionId, ValueSchema,
 };
 use aos_ability_plan::{RuntimeResourceHealth, RuntimeResourceState};
 use aos_ability_runtime::adapter::{
@@ -890,26 +890,12 @@ fn verify_candidate(resource: &QualifiedManagedConfiguration) -> Result<(), io::
 }
 
 fn action_for(operation: &Operation) -> Result<ManagedConfigurationAction, io::Error> {
-    let action = match operation.family {
-        OperationFamily::PrepareManagedConfiguration => ManagedConfigurationAction::Prepare,
-        OperationFamily::PublishConfiguration => ManagedConfigurationAction::Publish,
-        OperationFamily::ReleaseResource => ManagedConfigurationAction::Release,
-        _ => {
-            return Err(invalid_data(
-                "unsupported managed configuration operation family",
-            ));
-        }
+    let action = match operation.method.as_str() {
+        "prepare" => ManagedConfigurationAction::Prepare,
+        "publish" => ManagedConfigurationAction::Publish,
+        "release" => ManagedConfigurationAction::Release,
+        _ => return Err(invalid_data("unsupported managed configuration method")),
     };
-    let expected = match action {
-        ManagedConfigurationAction::Prepare => "prepare",
-        ManagedConfigurationAction::Publish => "publish",
-        ManagedConfigurationAction::Release => "release",
-    };
-    if operation.method.as_str() != expected {
-        return Err(invalid_data(
-            "managed configuration method disagrees with operation family",
-        ));
-    }
     Ok(action)
 }
 

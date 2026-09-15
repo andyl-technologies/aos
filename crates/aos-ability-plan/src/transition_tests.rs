@@ -805,18 +805,10 @@ fn package_upgrade_stops_old_provider_and_starts_new_provider_through_exact_role
 
     assert_eq!(operations.len(), 2);
     assert!(operations.iter().any(|operation| {
-        operation.binding == fixture.old_manager_binding
-            && operation.family
-                == OperationFamily::ServiceLifecycle {
-                    action: ServiceAction::Stop,
-                }
+        operation.binding == fixture.old_manager_binding && operation.method == key("stop")
     }));
     assert!(operations.iter().any(|operation| {
-        operation.binding == fixture.new_manager_binding
-            && operation.family
-                == OperationFamily::ServiceLifecycle {
-                    action: ServiceAction::Start,
-                }
+        operation.binding == fixture.new_manager_binding && operation.method == key("start")
     }));
     assert_eq!(evaluator.old_teardown_bindings, 1);
     assert_eq!(evaluator.new_desired_bindings, 1);
@@ -1150,7 +1142,7 @@ impl CompositionEvaluator for RootRetirementEvaluator {
             &context.operation_scope,
             manager_binding.binding.id.clone(),
             "stop-disabled-root",
-            ServiceAction::Stop,
+            "stop",
             self.resource.clone(),
             self.controller.clone(),
         );
@@ -1433,7 +1425,7 @@ impl CompositionEvaluator for LifecycleUpgradeEvaluator {
                         &context.operation_scope,
                         binding.id.clone(),
                         "a-stop-old",
-                        ServiceAction::Stop,
+                        "stop",
                         self.old_resource.clone(),
                         self.old_controller.clone(),
                     ));
@@ -1447,7 +1439,7 @@ impl CompositionEvaluator for LifecycleUpgradeEvaluator {
                         &context.operation_scope,
                         binding.id.clone(),
                         "b-start-new",
-                        ServiceAction::Start,
+                        "start",
                         self.new_resource.clone(),
                         self.new_controller.clone(),
                     ));
@@ -1532,7 +1524,7 @@ fn lifecycle_operation(
     scope: &ScopePath,
     binding: BindingId,
     key_name: &str,
-    action: ServiceAction,
+    method: &str,
     resource: ResourceId,
     controller: AggregateId,
 ) -> Operation {
@@ -1542,12 +1534,7 @@ fn lifecycle_operation(
         key: key(key_name),
     };
     operation.binding = binding;
-    operation.method = match action {
-        ServiceAction::Stop => key("stop"),
-        ServiceAction::Start => key("start"),
-        ServiceAction::Reload | ServiceAction::Restart => unreachable!("static test action"),
-    };
-    operation.family = OperationFamily::ServiceLifecycle { action };
+    operation.method = key(method);
     operation.target.resource = resource.clone();
     operation.target.operations = vec![operation.method.clone()];
     operation.accesses = vec![ResourceAccess {
@@ -1827,7 +1814,6 @@ fn pure_service_package(
         exports: vec![ExportDeclaration {
             name: key("service"),
             interface: interface.clone(),
-            aggregation: None,
             implementation: descriptor,
         }],
         requirements: Vec::new(),
@@ -1869,7 +1855,6 @@ fn terminal_package(
         exports: vec![ExportDeclaration {
             name: key("manager"),
             interface: interface.clone(),
-            aggregation: None,
             implementation: descriptor,
         }],
         requirements: Vec::new(),
@@ -1985,13 +1970,6 @@ fn lifecycle_planning_snapshot(
             .descriptor_digest()
             .expect("enabled root implementation must digest");
         pure_package.exports[0].implementation = descriptor;
-        pure_package.exports[0].aggregation = Some(AggregationContract {
-            scope: AggregationScope::ProviderInstance,
-            key: key("service"),
-            controller_group: key("service"),
-            reject_slot_collisions: true,
-            merge_contract: None,
-        });
     }
 
     let pure_package_digest = pure_package
@@ -2226,7 +2204,15 @@ fn lifecycle_planning_snapshot(
                 .expect("enabled implementation digest"),
             selection.implementation.descriptor
         );
-        assert!(package.exports[0].aggregation.is_some());
+        assert_eq!(
+            context
+                .interface(&selection.interface)
+                .expect("enabled interface contract")
+                .interface
+                .aggregation
+                .controller_group,
+            key("service")
+        );
         let ImplementationKind::PureComposition {
             compose_entry,
             transition_entry,
@@ -2613,7 +2599,6 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
         exports: vec![ExportDeclaration {
             name: key("provider"),
             interface: interface.clone(),
-            aggregation: None,
             implementation: pure_descriptor,
         }],
         requirements: Vec::new(),
@@ -2664,7 +2649,6 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
         exports: vec![ExportDeclaration {
             name: key("provider"),
             interface: interface.clone(),
-            aggregation: None,
             implementation: terminal_reference.descriptor,
         }],
         requirements: Vec::new(),

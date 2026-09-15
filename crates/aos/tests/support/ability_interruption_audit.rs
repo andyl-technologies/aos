@@ -830,7 +830,6 @@ fn checked_plan(
     let operation = &mut fixture.effect_plan.operations[0];
     operation.key.key = LocalKey::new(&matrix_method.method)?;
     operation.method = LocalKey::new(&matrix_method.method)?;
-    operation.family = descriptor.operation_family.clone();
     operation.target.resource.key = LocalKey::new("qualified-resource")?;
     operation.target.operations = descriptor.permitted_operations.clone();
     operation.inputs = ValueExpression::Literal { value: input };

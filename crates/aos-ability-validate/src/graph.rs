@@ -6,9 +6,9 @@ use std::sync::Arc;
 use aos_ability_model::{
     ArtifactReference, Binding, BindingId, BindingPlanDocument, DecisionNode, DesiredStateDocument,
     Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase, EffectPlanDocument,
-    EnvironmentDocument, InterfaceDocument, InterfaceKey, MergeNode, MethodReference, Operation,
-    PackageDocument, PlanId, PlanNodeKey, ProviderReadiness, RequiredFeature, ScopedOperationKey,
-    encode_canonical,
+    EnvironmentDocument, InterfaceDocument, InterfaceKey, MergeNode, MethodDescriptor,
+    MethodReference, Operation, PackageDocument, PlanId, PlanNodeKey, ProviderReadiness,
+    RequiredFeature, ScopedOperationKey, encode_canonical,
 };
 use aos_contract::Sha256Digest;
 
@@ -49,7 +49,7 @@ impl ValidationContext {
     ///
     /// Returns structured diagnostics for an invalid document, unsupported
     /// required feature, invalid schema, duplicate exact key, or method whose
-    /// target resource differs from its owning version-1 interface.
+    /// declared target resource interface is absent.
     pub fn new(
         supported_features: BTreeSet<RequiredFeature>,
         interface_documents: impl IntoIterator<Item = InterfaceDocument>,
@@ -148,6 +148,33 @@ impl ValidationContext {
                         "duplicate exact interface descriptor".to_string(),
                     ),
                 );
+            }
+        }
+
+        for (interface_key, document) in &interfaces {
+            for (method_name, method) in &document.interface.methods {
+                if !interfaces
+                    .keys()
+                    .any(|candidate| candidate.name == method.target_resource)
+                {
+                    push_diagnostic(
+                        &mut diagnostics,
+                        diagnostic(
+                            DiagnosticCode::MissingReference,
+                            DiagnosticClass::IncompatibleInterface,
+                            DiagnosticPhase::Schema,
+                            vec![
+                                "interfaces".to_string(),
+                                interface_key.name.as_str().to_string(),
+                                "methods".to_string(),
+                                method_name.as_str().to_string(),
+                                "target_resource".to_string(),
+                            ],
+                            "method target resource interface is absent from the catalog"
+                                .to_string(),
+                        ),
+                    );
+                }
             }
         }
 
@@ -485,6 +512,18 @@ impl CheckedEffectPlan {
         &self.document.operations
     }
 
+    /// Resolves the exact authenticated descriptor selected by an operation.
+    #[must_use]
+    pub fn operation_method(&self, operation: &Operation) -> Option<&MethodDescriptor> {
+        if self.operation(&operation.key) != Some(operation) {
+            return None;
+        }
+
+        self.interfaces
+            .get(&operation.interface)
+            .and_then(|interface| interface.interface.methods.get(&operation.method))
+    }
+
     /// Resolves the exact assignment-readiness declaration for a planned binding.
     #[must_use]
     pub fn provider_readiness(&self, binding: &BindingId) -> Option<&ProviderReadiness> {
@@ -674,6 +713,38 @@ fn validate_interface_document(
                 diagnostics,
             );
         }
+        let retained_resource_outputs = method
+            .outputs
+            .values()
+            .filter(|output| output.is_retained_resource())
+            .count();
+        if retained_resource_outputs > 1 {
+            push_diagnostic(
+                diagnostics,
+                diagnostic(
+                    DiagnosticCode::MethodContractMismatch,
+                    DiagnosticClass::IncompatibleInterface,
+                    DiagnosticPhase::Schema,
+                    method_path.child("outputs").components().to_vec(),
+                    "method declares more than one retained-resource result".to_string(),
+                ),
+            );
+        }
+        if retained_resource_outputs == 1
+            && (!method.semantics.required_target_access.is_write()
+                || method.semantics.stops_provider)
+        {
+            push_diagnostic(
+                diagnostics,
+                diagnostic(
+                    DiagnosticCode::MethodContractMismatch,
+                    DiagnosticClass::IncompatibleInterface,
+                    DiagnosticPhase::Schema,
+                    method_path.child("outputs").components().to_vec(),
+                    "a retained-resource result requires a non-stopping write method".to_string(),
+                ),
+            );
+        }
         check_strict_order(
             &method.permitted_operations,
             &method_path.child("permitted_operations"),
@@ -684,7 +755,10 @@ fn validate_interface_document(
             &method_path.child("guarantees"),
             diagnostics,
         );
-        if method.target_resource != document.interface.name {
+        if method.semantics.stops_provider
+            && method.semantics.required_target_access
+                != aos_ability_model::AccessMode::ExclusiveWrite
+        {
             push_diagnostic(
                 diagnostics,
                 diagnostic(
@@ -692,7 +766,7 @@ fn validate_interface_document(
                     DiagnosticClass::IncompatibleInterface,
                     DiagnosticPhase::Schema,
                     method_path.components().to_vec(),
-                    "version-1 method target must be its exact owning interface".to_string(),
+                    "a provider-stopping method must require exclusive target access".to_string(),
                 ),
             );
         }
@@ -729,7 +803,8 @@ mod instance_configuration_tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use aos_ability_model::{
-        DiagnosticCode, InterfaceDocument, LocalKey, StringConstraint, ValueSchema,
+        AccessMode, DiagnosticCode, InterfaceDocument, InterfaceName, LocalKey, StringConstraint,
+        ValueSchema, builtin::service_management_interface,
     };
 
     use super::{ValidationContext, instance_configuration_schema_is_literal};
@@ -753,6 +828,69 @@ mod instance_configuration_tests {
         assert!(errors.diagnostics().iter().any(|diagnostic| {
             diagnostic.code == DiagnosticCode::ResourceScopeEscape
                 && diagnostic.path == ["interfaces", "0", "interface", "configuration"]
+        }));
+    }
+
+    #[test]
+    fn method_target_may_name_another_declared_interface() {
+        let mut controller = service_management_interface().expect("service interface");
+        let mut resource = service_management_interface().expect("resource interface template");
+        let resource_name = InterfaceName::new("test.declarative-object").expect("resource name");
+        resource.interface.name = resource_name.clone();
+        for method in resource.interface.methods.values_mut() {
+            method.target_resource = resource_name.clone();
+        }
+        controller
+            .interface
+            .methods
+            .get_mut(&key("start"))
+            .expect("start method")
+            .target_resource = resource_name;
+
+        ValidationContext::new(BTreeSet::new(), [controller, resource])
+            .expect("cross-interface target exists in the catalog");
+    }
+
+    #[test]
+    fn method_target_must_name_a_declared_interface() {
+        let mut document = service_management_interface().expect("service interface");
+        document
+            .interface
+            .methods
+            .get_mut(&key("start"))
+            .expect("start method")
+            .target_resource = InterfaceName::new("test.missing-resource").expect("resource name");
+
+        let errors = ValidationContext::new(BTreeSet::new(), [document])
+            .expect_err("missing target resource interface must fail closed");
+
+        assert!(errors.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::MissingReference
+                && diagnostic
+                    .path
+                    .last()
+                    .is_some_and(|field| field == "target_resource")
+        }));
+    }
+
+    #[test]
+    fn stopping_provider_requires_exclusive_target_access() {
+        let mut document = service_management_interface().expect("service interface");
+        let stop = document
+            .interface
+            .methods
+            .get_mut(&key("stop"))
+            .expect("stop method");
+        stop.semantics.required_target_access = AccessMode::Read;
+
+        let errors = ValidationContext::new(BTreeSet::new(), [document])
+            .expect_err("provider stop with read authority must fail closed");
+
+        assert!(errors.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::MethodContractMismatch
+                && diagnostic
+                    .message
+                    .contains("must require exclusive target access")
         }));
     }
 

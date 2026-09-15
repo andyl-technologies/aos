@@ -10,7 +10,6 @@ let
 
   fail = message:
     diagnostics.throw "value-type-mismatch" "ability effects: ${message}";
-  normalizeOperationFamily = import ../_operation-family.nix {inherit fail;};
   failLimit = message:
     diagnostics.throw "limit-exceeded" "ability effects: ${message}";
   failMissingReference = message:
@@ -816,7 +815,6 @@ let
       "through"
       "authority"
       "method"
-      "family"
       "phase"
       "inputPhase"
       "inputs"
@@ -895,7 +893,6 @@ let
           authority = requireChoice "operation '${name}' authority" ["caller" "provider"] invocation.authority;
           interface = through.interface;
           method = requireLocalKey "operation '${name}' method" invocation.method;
-          family = normalizeOperationFamily invocation.family;
           phase = requireChoice "operation '${name}' phase" ["preparing" "publishing" "converging" "recovering"] invocation.phase;
           input_phase = requireChoice "operation '${name}' input phase" ["evaluation" "artifact" "planning" "admission" "runtime" "observation"] invocation.inputPhase;
           inherit target inputs;
@@ -1231,7 +1228,6 @@ in rec {
         "through"
         "authority"
         "method"
-        "family"
         "phase"
         "inputPhase"
         "inputs"
@@ -1249,7 +1245,6 @@ in rec {
         target
         through
         authority
-        family
         phase
         inputs
         preconditions

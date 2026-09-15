@@ -320,6 +320,11 @@ pub(super) fn validate_planned_provider_readiness(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> BTreeMap<aos_ability_model::BindingId, usize> {
     let mut readiness_indices = BTreeMap::new();
+    let readiness_producers = document
+        .provider_readiness
+        .iter()
+        .map(|readiness| readiness.producer.clone())
+        .collect::<BTreeSet<_>>();
 
     for (index, readiness) in document.provider_readiness.iter().enumerate() {
         if readiness_indices
@@ -389,16 +394,6 @@ pub(super) fn validate_planned_provider_readiness(
                 DiagnosticClass::UnavailableProvider,
                 "readiness observation is not grounded in an available or planned terminal provider"
                     .to_string(),
-                diagnostics,
-            );
-        }
-        if producer.family != OperationFamily::ObserveReadiness {
-            push_operation_diagnostic(
-                producer,
-                *producer_index,
-                DiagnosticCode::MethodContractMismatch,
-                DiagnosticClass::InvalidContract,
-                "provider readiness must be produced by an observe-readiness operation".to_string(),
                 diagnostics,
             );
         }
@@ -494,9 +489,7 @@ pub(super) fn validate_planned_provider_readiness(
             continue;
         }
         let source_is_observation = match from {
-            PlanNodeKey::Operation { key } => operation_indices.get(key).is_some_and(|index| {
-                document.operations[*index].family == OperationFamily::ObserveReadiness
-            }),
+            PlanNodeKey::Operation { key } => readiness_producers.contains(key),
             PlanNodeKey::Decision { .. } | PlanNodeKey::Merge { .. } => false,
         };
         if !source_is_observation {
@@ -506,7 +499,7 @@ pub(super) fn validate_planned_provider_readiness(
                     DiagnosticCode::MethodContractMismatch,
                     DiagnosticClass::InvalidContract,
                     vec!["edges".to_string()],
-                    "ordinary readiness dependencies must originate at an observe-readiness operation with typed completion evidence"
+                    "ordinary readiness dependencies must originate at the operation declared to produce the exact typed provider-assignment observation"
                         .to_string(),
                 ),
             );

@@ -211,22 +211,16 @@ fn classify_changed_node(
         }
         (
             InspectionNode::Operation {
-                family: before_family,
+                sensitive_references: before_sensitive,
                 ..
             },
             InspectionNode::Operation {
-                family: after_family,
+                sensitive_references: after_sensitive,
                 ..
             },
         ) => {
             kinds.insert(SemanticChangeKind::TransitionStrategy);
-            if matches!(
-                before_family,
-                aos_ability_model::OperationFamily::Credential { .. }
-            ) || matches!(
-                after_family,
-                aos_ability_model::OperationFamily::Credential { .. }
-            ) {
+            if *before_sensitive || *after_sensitive {
                 kinds.insert(SemanticChangeKind::CredentialReference);
             }
         }
@@ -264,16 +258,11 @@ fn classify_node(node: &InspectionNode, kinds: &mut BTreeSet<SemanticChangeKind>
             kinds.insert(SemanticChangeKind::ConfigurationContribution);
         }
         InspectionNode::Operation {
-            interface, family, ..
+            sensitive_references,
+            ..
         } => {
             kinds.insert(SemanticChangeKind::TransitionStrategy);
-            let name = interface.name.as_str();
-            if name.contains("credential")
-                || matches!(
-                    family,
-                    aos_ability_model::OperationFamily::Credential { .. }
-                )
-            {
+            if *sensitive_references {
                 kinds.insert(SemanticChangeKind::CredentialReference);
             }
         }

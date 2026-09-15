@@ -1010,10 +1010,7 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
         .operations
         .iter()
         .find(|operation| {
-            operation.family
-                == OperationFamily::Credential {
-                    action: CredentialAction::Deliver,
-                }
+            operation.method.as_str() == "deliver"
                 && operation.target.resource.key.as_str() == "nginx-two-credential-view"
         })
         .unwrap();
@@ -1120,7 +1117,7 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
         .operations
         .iter()
         .find(|operation| {
-            operation.family == OperationFamily::ReleaseResource
+            operation.method.as_str() == "release"
                 && operation.target.resource.provider.key.as_str() == "shared-credential"
                 && operation.target.resource.key.as_str() == "nginx-two-credential-view"
         })
@@ -1133,10 +1130,7 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
         .operations
         .iter()
         .find(|operation| {
-            operation.family
-                == OperationFamily::Credential {
-                    action: CredentialAction::Acquire,
-                }
+            operation.method.as_str() == "acquire"
                 && operation.target.resource.key.as_str() == "nginx-one-credential-view"
         })
         .unwrap();
@@ -1182,7 +1176,7 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
         .operations
         .iter()
         .find(|operation| {
-            operation.family == OperationFamily::ObserveReadiness
+            operation.method.as_str() == "observe"
                 && operation.target.resource.key.as_str() == "nginx-two-service"
         })
         .unwrap();
@@ -1224,7 +1218,7 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
         .operations
         .iter()
         .find(|operation| {
-            operation.family == OperationFamily::ReleaseResource
+            operation.method.as_str() == "release"
                 && operation.target.resource.provider.key.as_str() == "shared-credential"
                 && operation.target.resource.key.as_str() == "nginx-two-credential-view"
         })
@@ -1233,12 +1227,8 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
         .operations
         .iter()
         .find(|operation| {
-            matches!(
-                &operation.family,
-                OperationFamily::ServiceLifecycle {
-                    action: ServiceAction::Stop
-                }
-            ) && operation.target.resource.key.as_str() == "nginx-two-service"
+            operation.method.as_str() == "stop"
+                && operation.target.resource.key.as_str() == "nginx-two-service"
         })
         .unwrap();
     assert_operation_edge(
@@ -2041,14 +2031,7 @@ fn assert_disable_pipeline(
     assert_eq!(operations.len(), 8);
     let stop = operations
         .iter()
-        .filter(|operation| {
-            matches!(
-                &operation.family,
-                OperationFamily::ServiceLifecycle {
-                    action: ServiceAction::Stop
-                }
-            )
-        })
+        .filter(|operation| operation.method.as_str() == "stop")
         .collect::<Vec<_>>();
     assert_eq!(stop.len(), 1);
     assert_eq!(stop[0].target.resource.key.as_str(), "nginx-main-service");
@@ -2056,7 +2039,7 @@ fn assert_disable_pipeline(
 
     let releases = operations
         .iter()
-        .filter(|operation| operation.family == OperationFamily::ReleaseResource)
+        .filter(|operation| operation.method.as_str() == "release")
         .collect::<Vec<_>>();
     assert_eq!(releases.len(), 2);
     let edges = &transition.checked_effect().document().edges;
@@ -2077,25 +2060,11 @@ fn assert_disable_pipeline(
 
     let policy_remove = operations
         .iter()
-        .find(|operation| {
-            matches!(
-                &operation.family,
-                OperationFamily::HostNetworkPolicy {
-                    action: NetworkPolicyAction::Remove
-                }
-            )
-        })
+        .find(|operation| operation.method.as_str() == "remove")
         .unwrap();
     let endpoint_release = operations
         .iter()
-        .find(|operation| {
-            matches!(
-                &operation.family,
-                OperationFamily::NetworkEndpoint {
-                    action: NetworkEndpointAction::Release
-                }
-            )
-        })
+        .find(|operation| operation.method.as_str() == "release")
         .unwrap();
     assert_operation_edge(
         transition.checked_effect().document(),
@@ -2771,13 +2740,13 @@ fn interface_document(
     outputs: Vec<(&str, ValueSchema, ValueVisibility)>,
 ) -> InterfaceDocument {
     let interface_name = InterfaceName::new(name).unwrap();
-    let methods = reference_method_families(name)
+    let methods = reference_method_semantics(name)
         .into_iter()
-        .map(|(method, operation_family)| {
+        .map(|(method, semantics)| {
             (
                 key(method),
                 MethodDescriptor {
-                    operation_family,
+                    semantics,
                     parameters: ValueSchema::Boolean,
                     target_resource: interface_name.clone(),
                     outputs: BTreeMap::new(),
@@ -2847,59 +2816,56 @@ fn reference_method_is_recoverable(method: &str) -> bool {
     )
 }
 
-fn reference_method_families(name: &str) -> Vec<(&'static str, OperationFamily)> {
+fn reference_method_semantics(name: &str) -> Vec<(&'static str, MethodSemantics)> {
     match name {
         "aos.credential-delivery-effects" => vec![
-            (
-                "acquire",
-                OperationFamily::Credential {
-                    action: CredentialAction::Acquire,
-                },
-            ),
+            ("acquire", MethodSemantics::ordinary(AccessMode::Read)),
             (
                 "deliver",
-                OperationFamily::Credential {
-                    action: CredentialAction::Deliver,
-                },
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             ),
-            ("release", OperationFamily::ReleaseResource),
+            (
+                "release",
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            ),
         ],
         "aos.nginx-validation" => vec![
-            ("record", OperationFamily::RecordGenerationAssociation),
-            ("release", OperationFamily::ReleaseResource),
-            ("validate", OperationFamily::ValidateCandidate),
+            ("record", MethodSemantics::ordinary(AccessMode::SharedWrite)),
+            (
+                "release",
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            ),
+            ("validate", MethodSemantics::ordinary(AccessMode::Read)),
         ],
         "aos.managed-configuration-effects" => vec![
-            ("prepare", OperationFamily::PrepareManagedConfiguration),
-            ("publish", OperationFamily::PublishConfiguration),
-            ("release", OperationFamily::ReleaseResource),
+            (
+                "prepare",
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            ),
+            (
+                "publish",
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            ),
+            (
+                "release",
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            ),
         ],
         "aos.service-management" => vec![
-            ("observe", OperationFamily::ObserveReadiness),
+            ("observe", MethodSemantics::ordinary(AccessMode::Read)),
             (
                 "reload",
-                OperationFamily::ServiceLifecycle {
-                    action: ServiceAction::Reload,
-                },
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             ),
             (
                 "restart",
-                OperationFamily::ServiceLifecycle {
-                    action: ServiceAction::Restart,
-                },
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             ),
             (
                 "start",
-                OperationFamily::ServiceLifecycle {
-                    action: ServiceAction::Start,
-                },
+                MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
             ),
-            (
-                "stop",
-                OperationFamily::ServiceLifecycle {
-                    action: ServiceAction::Stop,
-                },
-            ),
+            ("stop", MethodSemantics::provider_stop()),
         ],
         _ => Vec::new(),
     }

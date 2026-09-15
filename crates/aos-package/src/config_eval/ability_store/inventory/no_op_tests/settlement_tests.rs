@@ -74,28 +74,14 @@ fn mixed_terminal_successful_stop_detaches_the_prior_consumer() {
         .state
         .operations
         .iter()
-        .find_map(|(key, operation)| {
-            matches!(
-                operation.operation.family,
-                aos_ability_model::OperationFamily::ServiceLifecycle {
-                    action: ServiceAction::Stop
-                }
-            )
-            .then(|| key.clone())
-        })
+        .find_map(|(key, operation)| operation.semantics.stops_provider.then(|| key.clone()))
         .expect("stop operation");
     let reservation_operation_key = fixture
         .state
         .operations
         .iter()
         .find_map(|(key, operation)| {
-            matches!(
-                operation.operation.family,
-                aos_ability_model::OperationFamily::ServiceLifecycle {
-                    action: ServiceAction::Start
-                }
-            )
-            .then(|| key.clone())
+            (operation.operation.method.as_str() == "start").then(|| key.clone())
         })
         .expect("candidate Start operation");
     fixture

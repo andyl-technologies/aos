@@ -13,10 +13,17 @@ use std::path::{Path, PathBuf};
 
 use aos_ability_model::{
     AbilityActivationMode, AbilityValue, ArtifactReference, ExecutionStage, IncarnationId,
-    InterfaceKey, InterfaceName, KubernetesObjectAction, LocalKey, MethodReference, Operation,
-    OperationFamily, ProviderAssignment, ProviderImplementationReference, ResourceAccess,
-    ResourceId, RevisionId,
+    InterfaceKey, InterfaceName, LocalKey, MethodReference, Operation, ProviderAssignment,
+    ProviderImplementationReference, ResourceAccess, ResourceId, RevisionId,
 };
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum KubernetesObjectAction {
+    Apply,
+    Observe,
+    Delete,
+}
 use aos_ability_plan::{RuntimeResourceHealth, RuntimeResourceState};
 use aos_ability_runtime::adapter::{
     AdapterCompletion, AdapterRecord, CancellationDisposition, CatalogReservation,
@@ -1299,20 +1306,12 @@ fn validate_observed_identity(
 }
 
 fn action_for(operation: &Operation) -> Result<KubernetesObjectAction, io::Error> {
-    let OperationFamily::KubernetesObject { action } = operation.family else {
-        return Err(invalid_data("unsupported Kubernetes operation family"));
-    };
-    let expected = match action {
-        KubernetesObjectAction::Apply => "apply",
-        KubernetesObjectAction::Observe => "observe",
-        KubernetesObjectAction::Delete => "delete",
-    };
-    if operation.method.as_str() != expected {
-        return Err(invalid_data(
-            "Kubernetes method disagrees with operation family",
-        ));
+    match operation.method.as_str() {
+        "apply" => Ok(KubernetesObjectAction::Apply),
+        "observe" => Ok(KubernetesObjectAction::Observe),
+        "delete" => Ok(KubernetesObjectAction::Delete),
+        _ => Err(invalid_data("unsupported Kubernetes object method")),
     }
-    Ok(action)
 }
 
 fn validate_action_spec(

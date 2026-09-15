@@ -2148,9 +2148,8 @@ mod tests {
 
     use aos_ability_model::{
         AbilityValue, AccessMode, AggregateId, ControllerAssignment, DependencyEdge,
-        DependencyKind, LocalKey, MethodReference, OperationFamily, OperationId, PlanNodeKey,
-        ProviderAssignment, ProviderImplementationReference, ServiceAction, ValueExpression,
-        ValuePhase, builtin,
+        DependencyKind, LocalKey, MethodReference, OperationId, PlanNodeKey, ProviderAssignment,
+        ProviderImplementationReference, ValueExpression, ValuePhase, builtin,
     };
     use aos_ability_plan::test_support::verified_planning_transition_plan;
     use aos_ability_runtime::adapter::ReservationContext;
@@ -2250,9 +2249,6 @@ mod tests {
         let mut start = observe_a.clone();
         start.key.key = LocalKey::new("start").unwrap();
         start.method = LocalKey::new("start").unwrap();
-        start.family = OperationFamily::ServiceLifecycle {
-            action: ServiceAction::Start,
-        };
         start.input_phase = ValuePhase::Planning;
         start.target.operations = vec![LocalKey::new("start").unwrap()];
         start.accesses[0].mode = AccessMode::ExclusiveWrite;

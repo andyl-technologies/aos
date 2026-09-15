@@ -1172,12 +1172,7 @@ impl NativeInventoryState {
                 operation.operation.target.resource == owner.resource
                     && operation.owner.as_ref() == Some(&receipt.source)
                     && operation.owner_handler.as_ref() == Some(&receipt.source_handler)
-                    && matches!(
-                        operation.operation.family,
-                        aos_ability_model::OperationFamily::ServiceLifecycle {
-                            action: aos_ability_model::ServiceAction::Stop
-                        }
-                    )
+                    && operation.semantics.stops_provider
             });
             let acquisitions =
                 self.operations.iter().filter(|(_, operation)| {
@@ -1191,33 +1186,28 @@ impl NativeInventoryState {
                             access.resource == owner.resource && access.mode.is_write()
                         })
                 });
-            let starts = self.operations.iter().filter(|(_, operation)| {
+            let retained_lifecycle_operations = self.operations.iter().filter(|(_, operation)| {
                 operation.operation.target.resource == owner.resource
                     && operation.retains_consumer
                     && operation.owner.as_ref() == Some(&owner.identity)
                     && operation.owner_handler.as_ref() == Some(&owner.handler)
-                    && matches!(
-                        operation.operation.family,
-                        aos_ability_model::OperationFamily::ServiceLifecycle {
-                            action: aos_ability_model::ServiceAction::Start
-                                | aos_ability_model::ServiceAction::Restart
-                        }
-                    )
             });
             let stop_keys = stops.map(|(key, _)| key).collect::<Vec<_>>();
             let acquisition_keys = acquisitions.map(|(key, _)| key).collect::<Vec<_>>();
-            let start_keys = starts.map(|(key, _)| key).collect::<Vec<_>>();
+            let lifecycle_keys = retained_lifecycle_operations
+                .map(|(key, _)| key)
+                .collect::<Vec<_>>();
             if stop_keys.is_empty()
                 && acquisition_keys.is_empty()
-                && start_keys.is_empty()
+                && lifecycle_keys.is_empty()
                 && self.allows_effect_free_linked_adoption_recovery(owner, receipt)?
             {
                 continue;
             }
-            let ([stop], [acquisition], [start]) = (
+            let ([stop], [acquisition], [lifecycle]) = (
                 stop_keys.as_slice(),
                 acquisition_keys.as_slice(),
-                start_keys.as_slice(),
+                lifecycle_keys.as_slice(),
             ) else {
                 return Err(GenerationAbilityStoreError::Conflict(
                     "provider replacement requires one exact source Stop, candidate acquisition, and candidate lifecycle operation before native effects"
@@ -1230,7 +1220,7 @@ impl NativeInventoryState {
                         .to_string(),
                 ));
             }
-            if !self.has_required_success_path(stop, start) {
+            if !self.has_required_success_path(stop, lifecycle) {
                 return Err(GenerationAbilityStoreError::Conflict(
                     "provider replacement candidate lacks a RequiredSuccess path from its source Stop"
                         .to_string(),

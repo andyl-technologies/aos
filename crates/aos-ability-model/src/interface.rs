@@ -13,7 +13,7 @@ use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
 use crate::identity::{InterfaceKey, InterfaceName, LocalKey};
-use crate::plan::OperationFamily;
+use crate::plan::AccessMode;
 use crate::schema::ValueSchema;
 use crate::value::{AbilityValue, ArtifactReference, ResourceLifetime};
 
@@ -76,6 +76,20 @@ pub struct OutputDescriptor {
     pub lifetime: ResourceLifetime,
 }
 
+impl OutputDescriptor {
+    /// Reports whether this output carries a retained-resource result.
+    #[must_use]
+    pub const fn is_retained_resource(&self) -> bool {
+        matches!(self.schema, ValueSchema::ResourceReference)
+            && matches!(self.phase, ValuePhase::Runtime | ValuePhase::Observation)
+            && matches!(self.visibility, ValueVisibility::Protected)
+            && matches!(
+                self.lifetime,
+                ResourceLifetime::Instance | ResourceLifetime::Persistent
+            )
+    }
+}
+
 /// Defines how an indeterminate method outcome can be resolved.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -118,8 +132,8 @@ pub struct LifecycleSemantics {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MethodDescriptor {
-    /// Retains the method's high-level semantic operation family.
-    pub operation_family: OperationFamily,
+    /// Declares the provider-neutral authority and scheduling semantics.
+    pub semantics: MethodSemantics,
     /// Defines the closed parameter record.
     pub parameters: ValueSchema,
     /// Names the resource interface targeted by the method.
@@ -132,6 +146,34 @@ pub struct MethodDescriptor {
     pub guarantees: Vec<GuaranteeKey>,
     /// Defines caller-visible completion and ambiguous-outcome behavior.
     pub outcome: OutcomeSemantics,
+}
+
+/// Declares the generic semantics needed to authorize and schedule a method.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MethodSemantics {
+    /// States the minimum authority required over the target resource.
+    pub required_target_access: AccessMode,
+    /// States whether the method stops a provider before an ownership handoff.
+    pub stops_provider: bool,
+}
+
+impl MethodSemantics {
+    /// Declares ordinary method semantics for the required target access.
+    pub const fn ordinary(required_target_access: AccessMode) -> Self {
+        Self {
+            required_target_access,
+            stops_provider: false,
+        }
+    }
+
+    /// Declares an exclusive mutation that stops a provider before handoff.
+    pub const fn provider_stop() -> Self {
+        Self {
+            required_target_access: AccessMode::ExclusiveWrite,
+            stops_provider: true,
+        }
+    }
 }
 
 /// Defines one exact public ability interface without provider internals.
@@ -495,6 +537,31 @@ mod tests {
             | serde_json::Value::Number(_)
             | serde_json::Value::String(_) => 0,
         }
+    }
+
+    #[test]
+    fn retained_resource_output_is_derived_from_schema_phase_and_lifetime() {
+        let mut output = OutputDescriptor {
+            schema: ValueSchema::ResourceReference,
+            phase: ValuePhase::Runtime,
+            visibility: ValueVisibility::Protected,
+            lifetime: ResourceLifetime::Instance,
+        };
+        assert!(output.is_retained_resource());
+
+        output.visibility = ValueVisibility::Public;
+        assert!(!output.is_retained_resource());
+        output.visibility = ValueVisibility::Private;
+        assert!(!output.is_retained_resource());
+        output.visibility = ValueVisibility::Protected;
+        output.phase = ValuePhase::Planning;
+        assert!(!output.is_retained_resource());
+        output.phase = ValuePhase::Observation;
+        output.lifetime = ResourceLifetime::Transaction;
+        assert!(!output.is_retained_resource());
+        output.lifetime = ResourceLifetime::Persistent;
+        output.schema = ValueSchema::Boolean;
+        assert!(!output.is_retained_resource());
     }
 
     fn provider_implementation() -> ProviderImplementation {

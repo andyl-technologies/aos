@@ -25,9 +25,8 @@ use std::time::{Duration, Instant};
 use aos_ability_model::builtin::credential_view_schema;
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityActivationMode, AbilityValue, ArtifactReference, ExecutionStage,
-    InterfaceKey, InterfaceName, LocalKey, MethodReference, Operation, OperationFamily,
-    ProviderAssignment, ProviderImplementationReference, ResourceAccess, ResourceId, RevisionId,
-    ValueSchema,
+    InterfaceKey, InterfaceName, LocalKey, MethodReference, Operation, ProviderAssignment,
+    ProviderImplementationReference, ResourceAccess, ResourceId, RevisionId, ValueSchema,
 };
 use aos_ability_plan::{RuntimeResourceHealth, RuntimeResourceState};
 use aos_ability_runtime::adapter::{
@@ -1140,20 +1139,12 @@ fn verify_candidate(resource: &QualifiedNginxResource) -> Result<(), io::Error> 
 }
 
 fn action_for(operation: &Operation) -> Result<NginxAction, io::Error> {
-    let action = match operation.family {
-        OperationFamily::ValidateCandidate => NginxAction::Validate,
-        OperationFamily::RecordGenerationAssociation => NginxAction::Record,
-        OperationFamily::ReleaseResource => NginxAction::Release,
-        _ => return Err(invalid_data("unsupported nginx operation family")),
+    let action = match operation.method.as_str() {
+        "validate" => NginxAction::Validate,
+        "record" => NginxAction::Record,
+        "release" => NginxAction::Release,
+        _ => return Err(invalid_data("unsupported nginx method")),
     };
-    let expected = match action {
-        NginxAction::Validate => "validate",
-        NginxAction::Record => "record",
-        NginxAction::Release => "release",
-    };
-    if operation.method.as_str() != expected {
-        return Err(invalid_data("nginx method disagrees with operation family"));
-    }
     Ok(action)
 }
 

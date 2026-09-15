@@ -110,7 +110,6 @@ fn install_package_with_feature(
     let mut exports = vec![ExportDeclaration {
         name: LocalKey::new("provider")?,
         interface: binding.interface.clone(),
-        aggregation: None,
         implementation: descriptor,
     }];
     let mut providers = vec![implementation];
@@ -139,7 +138,6 @@ fn install_package_with_feature(
         exports.push(ExportDeclaration {
             name: LocalKey::new("state-owner")?,
             interface: owner_interface_key,
-            aggregation: None,
             implementation: owner.descriptor_digest()?,
         });
         providers.push(owner);

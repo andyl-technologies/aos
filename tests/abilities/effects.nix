@@ -114,7 +114,6 @@
     target,
     through,
     method,
-    family,
     inputs ? {},
     phase ? "converging",
     inputPhase ? "observation",
@@ -122,7 +121,7 @@
     group,
   }:
     effects.invoke {
-      inherit target through method family inputs phase inputPhase deadline recovery;
+      inherit target through method inputs phase inputPhase deadline recovery;
       authority = "provider";
       preconditions = [];
       accesses = [
@@ -144,17 +143,13 @@
     lifetime = "attempt";
   };
 
-  readyBranch = method: family:
+  readyBranch = method: mode:
     effects.graph {
       apply = invoke {
         target = service method;
         through = serviceBinding;
-        inherit method family;
+        inherit method mode;
         inputs.revision = effects.ancestorResult 2 "publish" "revision";
-        mode =
-          if family.kind == "service-lifecycle"
-          then "exclusive-write"
-          else "read";
         group = "services";
       };
       nested = effects.ifResult {
@@ -172,7 +167,6 @@
       target = service "observe";
       through = serviceBinding;
       method = "observe";
-      family = {kind = "observe-readiness";};
       inputs = {};
       group = "services";
     };
@@ -181,7 +175,6 @@
       target = configuration "prepare";
       through = configurationBinding;
       method = "prepare";
-      family = {kind = "prepare-managed-configuration";};
       inputs.source = sourceArtifact;
       phase = "preparing";
       inputPhase = "artifact";
@@ -193,7 +186,6 @@
       target = configuration "publish";
       through = configurationBinding;
       method = "publish";
-      family = {kind = "publish-configuration";};
       inputs.candidate = effects.result "candidate" "candidate";
       phase = "publishing";
       inputPhase = "runtime";
@@ -205,7 +197,6 @@
       target = service "observe";
       through = serviceBinding;
       method = "observe";
-      family = {kind = "observe-readiness";};
       inputs.revision = effects.result "publish" "revision";
       group = "services";
     });
@@ -213,11 +204,8 @@
     choice = effects.ifResult {
       selector = effects.result "change" "needs_reload";
       alternatives = {
-        false = readyBranch "observe" {kind = "observe-readiness";};
-        true = readyBranch "reload" {
-          kind = "service-lifecycle";
-          action = "reload";
-        };
+        false = readyBranch "observe" "read";
+        true = readyBranch "reload" "exclusive-write";
       };
       outputs.ready = {
         descriptor = readyDescriptor;
@@ -232,7 +220,6 @@
       target = configuration "record";
       through = configurationBinding;
       method = "record";
-      family = {kind = "record-generation-association";};
       inputs.ready = effects.mergedResult "choice" "ready";
       mode = "exclusive-write";
       group = "configuration";
@@ -242,7 +229,6 @@
       target = service "classify";
       through = serviceBinding;
       method = "classify";
-      family = {kind = "observe-readiness";};
       inputs = {};
       group = "services";
     });
@@ -251,14 +237,8 @@
       selector = effects.result "mode" "action";
       tagField = "kind";
       alternatives = {
-        reload = readyBranch "reload" {
-          kind = "service-lifecycle";
-          action = "reload";
-        };
-        restart = readyBranch "restart" {
-          kind = "service-lifecycle";
-          action = "restart";
-        };
+        reload = readyBranch "reload" "exclusive-write";
+        restart = readyBranch "restart" "exclusive-write";
       };
       outputs.ready = {
         descriptor = readyDescriptor;
@@ -273,7 +253,6 @@
       target = service "observe";
       through = serviceBinding;
       method = "observe";
-      family = {kind = "observe-readiness";};
       inputs.ready = effects.mergedResult "modeChoice" "ready";
       group = "services";
     };
@@ -284,7 +263,6 @@
       target = service "observe";
       through = serviceBinding;
       method = "observe";
-      family = {kind = "observe-readiness";};
       inputs = {};
       group = "services";
     };
@@ -293,7 +271,6 @@
       target = configuration "prepare";
       through = configurationBinding;
       method = "prepare";
-      family = {kind = "prepare-managed-configuration";};
       inputs.source = sourceArtifact;
       phase = "preparing";
       inputPhase = "artifact";
@@ -314,10 +291,6 @@
       target = kubernetesObject "apply";
       through = kubernetesBinding;
       method = "apply";
-      family = {
-        kind = "kubernetes-object";
-        action = "apply";
-      };
       inputs = {};
       mode = "exclusive-write";
       group = "kubernetes";
@@ -374,7 +347,6 @@
       target = service "observe";
       through = serviceBinding;
       method = "observe";
-      family = {kind = "observe-readiness";};
       inputs.value = effects.result "absent" "value";
       group = "services";
     };
@@ -385,7 +357,6 @@
       target = service "observe";
       through = serviceBinding;
       method = "observe";
-      family = {kind = "observe-readiness";};
       inputs.value = effects.result "second" "value";
       group = "services";
     };
@@ -393,7 +364,6 @@
       target = service "observe";
       through = serviceBinding;
       method = "observe";
-      family = {kind = "observe-readiness";};
       inputs.value = effects.result "first" "value";
       group = "services";
     };
@@ -412,7 +382,6 @@
       target = service "observe";
       through = serviceBinding;
       method = "observe";
-      family = {kind = "observe-readiness";};
       inputs.value = effects.ancestorResult 1 "absent" "value";
       group = "services";
     };
@@ -423,7 +392,6 @@
       target = service "observe";
       through = serviceBinding;
       method = "observe";
-      family = {kind = "observe-readiness";};
       inputs = {};
       group = "services";
     };
@@ -450,7 +418,6 @@
           target = service "observe";
           through = serviceBinding;
           method = "observe";
-          family = {kind = "observe-readiness";};
           inputs = {};
           group = "services";
         };
@@ -474,23 +441,10 @@
       target = service "observe";
       through = serviceBinding;
       method = "observe";
-      family = {kind = "observe-readiness";};
       inputs.payload = oversizedValue;
       group = "services";
     };
   };
-
-  familyPlan = family:
-    effects.normalize ["family"] (effects.graph {
-      operation = invoke {
-        target = service "observe";
-        through = serviceBinding;
-        method = "observe";
-        inherit family;
-        inputs = {};
-        group = "services";
-      };
-    });
 in {
   normalized = effects.normalize ["nginx"] transition;
   reversed = effects.normalize ["nginx"] (effects.graph {
@@ -515,6 +469,5 @@ in {
     missingReadinessProducer
     unusedProviderReadiness
     oversizedProviderReadiness
-    familyPlan
     ;
 }
