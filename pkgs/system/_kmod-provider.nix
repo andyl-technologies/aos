@@ -1,6 +1,13 @@
-##! Selected pure composition for the kmod kernel-module provider.
-{lib, ...}: let
+##! Selected pure controller for the kmod kernel-module provider.
+{
+  config,
+  lib,
+  packageName,
+  ...
+}: let
   kernelModules = lib.abilities.interfaces.serviceManagement.interfaces.kernelModules;
+  controller = config.aos.abilities.implementations."${packageName}:kernel-modules";
+  effectsInterface = builtins.head controller.requirements.effects.accepted_interfaces;
 
   emptyResult = {
     requests = {};
@@ -22,7 +29,8 @@
     else parameters // {modules = builtins.sort builtins.lessThan moduleNames;};
 
   bindingFor = bindings: requestName: let
-    matches = builtins.filter
+    matches =
+      builtins.filter
       (binding: binding.request == requestName)
       (builtins.attrValues bindings);
   in
@@ -47,12 +55,14 @@
     ...
   }: let
     requestNames = builtins.attrNames requests;
-    entries = builtins.map (requestName: let
-      binding = bindingFor bindings requestName;
-      parameters = checkedParameters requests.${requestName}.parameters;
-    in {
-      inherit requestName binding parameters;
-    }) requestNames;
+    entries =
+      builtins.map (requestName: let
+        binding = bindingFor bindings requestName;
+        parameters = checkedParameters requests.${requestName}.parameters;
+      in {
+        inherit requestName binding parameters;
+      })
+      requestNames;
   in
     emptyResult
     // {
@@ -72,17 +82,56 @@
         entries);
     };
 
+  effectRequest = key: resource: {
+    requirement = "effects";
+    scope = [key];
+    slot = key;
+    parameters = resource.value;
+  };
+
   compose = {resources, ...}:
     emptyResult
     // {
-      realizations = builtins.mapAttrs (_: resource: {
+      requests = builtins.mapAttrs effectRequest resources;
+      realizations =
+        builtins.mapAttrs (_: resource: {
           schema = "aos.kmod.module-set-realization/v1";
           inherit (resource.value) modules required;
         })
-      resources;
+        resources;
+    };
+
+  transition = context:
+    lib.abilities.resourceControllerTransition {
+      inherit context;
+      terminalInterface = effectsInterface;
+      actions = {
+        create = {
+          method = "load";
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        update = {
+          method = "load";
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        unchanged = null;
+        remove = null;
+        reconcile-stopped = {
+          method = "load";
+          phase = "recovering";
+          access = "exclusive-write";
+        };
+        reconcile-divergent = {
+          method = "load";
+          phase = "recovering";
+          access = "exclusive-write";
+        };
+      };
     };
 in {
   config.aos.abilities.implementations.kernel-modules = {
-    inherit provide compose;
+    inherit provide compose transition;
   };
 }
