@@ -14,6 +14,7 @@
   interfaceIdentity,
   normalizeSemanticValue,
   resourceRevision,
+  coreInterfaces,
 }: let
   strictSubmodule = options: let
     submoduleType = moduleTypes.submodule {
@@ -1328,5 +1329,8 @@ in {
     };
   };
 
-  config.aos.abilities.instanceIdentities = projectedInstanceIdentities;
+  config.aos.abilities = {
+    interfaces = coreInterfaces;
+    instanceIdentities = projectedInstanceIdentities;
+  };
 }

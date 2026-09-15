@@ -5,6 +5,4 @@
 ##! point exactly once.
 {lib, ...}: {
   imports = [lib.abilities.module];
-
-  aos.abilities.interfaces = lib.abilities.interfaces.serviceManagement.declarations;
 }
