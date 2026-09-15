@@ -131,10 +131,7 @@
   cachePath = resultOf "cache-storage" "storage-path";
   storePath = resultOf "store-storage" "storage-path";
   runtimePath = resultOf "runtime-storage" "storage-path";
-  repositoryPath = pathWithin {
-    base = registryPath;
-    relativePath = cfg.git.repositoryPath;
-  };
+  repositoryPath = registryPath;
   bootstrapSocket = pathWithin {
     base = runtimePath;
     relativePath = cfg.cache.bootstrapSocket;
@@ -337,11 +334,6 @@ in {
         type = port;
         default = 9418;
         description = "Git protocol listen port.";
-      };
-      repositoryPath = lib.mkOption {
-        type = abilityTypes.relativePath;
-        default = "repositories";
-        description = "Repository directory below the provider-managed registry state root.";
       };
       exportAll = lib.mkOption {
         type = abilityTypes.boolean;
