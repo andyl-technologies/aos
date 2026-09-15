@@ -212,15 +212,15 @@ in
       testing,
       self,
       pkgs,
+      mkSystem,
       ...
     }: let
       serviceManagement = lib.abilities.interfaces.serviceManagement;
       environmentId = lib.abilities.environmentId {
-        authority = "deployment";
-        key = "nginx-test";
+        authority = "system-image";
+        key = "nginx-package-check";
         stage = "host";
       };
-      environment = builtins.removeAttrs environmentId ["_type"];
       credentialProvider = lib.abilities.instanceId {
         environment = environmentId;
         key = "credential-provider";
@@ -236,24 +236,12 @@ in
           lifetime = "persistent";
         };
       evaluate = nginxConfig:
-        lib.evalModules {
-          inherit lib;
+        mkSystem {
+          systemName = "nginx-package-check";
           modules = [
-            ../../modules/abilities/default.nix
             {
-              options.assertions = lib.mkOption {
-                type = lib.types.listOf lib.types.attrs;
-                default = [];
-                contributable = true;
-              };
-              aos.abilities.environment = environment;
+              environment.systemPackages = [self];
               nginx = nginxConfig;
-            }
-          ];
-          packageModules = [
-            {
-              name = "nginx";
-              module.imports = [./_nginx/module.nix];
             }
           ];
         };
@@ -281,6 +269,7 @@ in
       };
       assertionsHold = evaluation:
         builtins.all (assertion: assertion.assertion) evaluation.config.assertions;
+      ownedValues = lib.filterAttrs (name: _: lib.hasPrefix "nginx:" name);
       disabledAbilities = disabled.config.aos.abilities;
       cleartextAbilities = cleartext.config.aos.abilities;
       tlsAbilities = tls.config.aos.abilities;
@@ -305,8 +294,8 @@ in
         builtins.deepSeq publicOptionSchemas true
         && assertionsHold cleartext
         && assertionsHold tls
-        && disabledAbilities.instances == {}
-        && disabledAbilities.requests == {}
+        && ownedValues disabledAbilities.instances == {}
+        && ownedValues disabledAbilities.requests == {}
         && builtins.elem "nginx:configuration-materialization" (builtins.attrNames disabledAbilities.requirementTemplates)
         && builtins.elem "nginx:service-lifecycle" (builtins.attrNames disabledAbilities.requirementTemplates)
         && builtins.elem "nginx:main-lifecycle" cleartextRequests

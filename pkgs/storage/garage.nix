@@ -92,14 +92,14 @@ in
       testing,
       self,
       pkgs,
+      mkSystem,
     }: let
       serviceManagement = lib.abilities.interfaces.serviceManagement;
       environmentId = lib.abilities.environmentId {
-        authority = "deployment";
-        key = "garage-test";
+        authority = "system-image";
+        key = "garage-package-check";
         stage = "host";
       };
-      environment = builtins.removeAttrs environmentId ["_type"];
       credentialProvider = lib.abilities.instanceId {
         environment = environmentId;
         key = "credential-provider";
@@ -119,26 +119,14 @@ in
           lifetime = "persistent";
         };
       evaluate = garageConfig:
-        lib.evalModules {
+        mkSystem {
+          systemName = "garage-package-check";
           modules = [
-            ../../modules/abilities/default.nix
             {
-              options.assertions = lib.mkOption {
-                type = lib.types.listOf lib.types.attrs;
-                default = [];
-                contributable = true;
-              };
-              aos.abilities.environment = environment;
+              environment.systemPackages = [self];
               garage = garageConfig;
             }
           ];
-          packageModules = [
-            {
-              name = "garage";
-              module.imports = [./_garage-config/module.nix];
-            }
-          ];
-          inherit lib;
         };
       evaluated = evaluate {
         enable = true;
@@ -182,6 +170,7 @@ in
       };
       assertionsHold = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
+      ownedValues = lib.filterAttrs (name: _: lib.hasPrefix "garage:" name);
       invalidRpc = evaluate {enable = true;};
       invalidAdmin = evaluate {
         enable = true;
@@ -221,8 +210,8 @@ in
         && !assertionsHold invalidRpc
         && !assertionsHold invalidAdmin
         && !assertionsHold invalidPeers
-        && disabledAbilities.instances == {}
-        && disabledAbilities.requests == {}
+        && ownedValues disabledAbilities.instances == {}
+        && ownedValues disabledAbilities.requests == {}
         && builtins.elem "garage:credential-delivery" disabledRequirements
         && builtins.elem "garage:service-lifecycle" disabledRequirements
         && builtins.elem "garage:main-lifecycle" requests

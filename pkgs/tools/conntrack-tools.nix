@@ -138,34 +138,19 @@ in
       testing,
       self,
       pkgs,
+      mkSystem,
     }: let
       qualifiedResultOf = request: output: {
         _type = "aos-request-output-reference";
         inherit request output;
       };
       evaluate = conntrackdConfig:
-        lib.evalModules {
-          inherit lib;
+        mkSystem {
+          systemName = "conntrack-tools-package-check";
           modules = [
-            ../../modules/abilities/default.nix
             {
-              options.assertions = lib.mkOption {
-                type = lib.types.listOf lib.types.attrs;
-                default = [];
-                contributable = true;
-              };
-              aos.abilities.environment = {
-                authority = "deployment";
-                key = "conntrackd-test";
-                stage = "host";
-              };
+              environment.systemPackages = [self];
               conntrackd = conntrackdConfig;
-            }
-          ];
-          packageModules = [
-            {
-              name = "conntrack-tools";
-              module.imports = [./_conntrackd/module.nix];
             }
           ];
         };
@@ -185,6 +170,7 @@ in
       };
       assertionsHold = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
+      ownedValues = lib.filterAttrs (name: _: lib.hasPrefix "conntrack-tools:" name);
       requests = evaluated.config.aos.abilities.requests;
       disabledAbilities = disabled.config.aos.abilities;
       disabledRequirements = builtins.attrNames disabledAbilities.requirementTemplates;
@@ -201,8 +187,8 @@ in
       contractHolds =
         assertionsHold evaluated
         && !assertionsHold invalidHashRange
-        && disabledAbilities.instances == {}
-        && disabledAbilities.requests == {}
+        && ownedValues disabledAbilities.instances == {}
+        && ownedValues disabledAbilities.requests == {}
         && builtins.elem "conntrack-tools:configuration-materialization" disabledRequirements
         && builtins.elem "conntrack-tools:service-lifecycle" disabledRequirements
         && source.kind == "interpolated-text"

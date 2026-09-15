@@ -198,35 +198,20 @@ in
       testing,
       self,
       pkgs,
+      mkSystem,
       ...
     }: let
-      evaluated = lib.evalModules {
-        inherit lib;
+      evaluated = mkSystem {
+        systemName = "bind-package-check";
         modules = [
-          lib.abilities.module
           {
-            options.assertions = lib.mkOption {
-              type = lib.types.listOf lib.types.attrs;
-              default = [];
-              contributable = true;
-            };
-            aos.abilities.environment = {
-              authority = "deployment";
-              key = "bind-test";
-              stage = "host";
-            };
+            environment.systemPackages = [self];
             aos.services.bind = {
               enable = true;
               port = 5353;
               listenIPv4 = ["127.0.0.1"];
               listenIPv6 = [];
             };
-          }
-        ];
-        packageModules = [
-          {
-            name = "bind";
-            module.imports = [./_bind/module.nix];
           }
         ];
       };

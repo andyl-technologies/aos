@@ -883,10 +883,10 @@
       then
         acc
         // prefixAttrs name (
-          pkg.checks {
-            inherit testing pkgs;
+          pkg.checks (builtins.intersectAttrs (builtins.functionArgs pkg.checks) {
+            inherit testing pkgs mkSystem;
             self = pkg;
-          }
+          })
         )
       else acc
   ) {} (builtins.attrNames pkgs);

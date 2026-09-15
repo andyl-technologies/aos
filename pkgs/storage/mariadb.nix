@@ -672,14 +672,14 @@ in
       testing,
       self,
       pkgs,
+      mkSystem,
     }: let
       serviceManagement = lib.abilities.interfaces.serviceManagement;
       environmentId = lib.abilities.environmentId {
-        authority = "deployment";
-        key = "mariadb-test";
+        authority = "system-image";
+        key = "mariadb-package-check";
         stage = "host";
       };
-      environment = builtins.removeAttrs environmentId ["_type"];
       credentialProvider = lib.abilities.instanceId {
         environment = environmentId;
         key = "credential-provider";
@@ -695,26 +695,14 @@ in
           lifetime = "persistent";
         };
       evaluate = mariadbConfig:
-        lib.evalModules {
+        mkSystem {
+          systemName = "mariadb-package-check";
           modules = [
-            ../../modules/abilities/default.nix
             {
-              options.assertions = lib.mkOption {
-                type = lib.types.listOf lib.types.attrs;
-                default = [];
-                contributable = true;
-              };
-              aos.abilities.environment = environment;
+              environment.systemPackages = [self];
               mariadb = mariadbConfig;
             }
           ];
-          packageModules = [
-            {
-              name = "mariadb";
-              module.imports = [./_mariadb/module.nix];
-            }
-          ];
-          inherit lib;
         };
       variants = [
         {
@@ -817,6 +805,7 @@ in
       disabled = evaluate {};
       assertionsHold = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
+      ownedValues = lib.filterAttrs (name: _: lib.hasPrefix "mariadb:" name);
       invalidTls = evaluate {
         enable = true;
         tls = {
@@ -887,8 +876,8 @@ in
         && assertionsHold disabledTlsCredentials
         && assertionsHold disabledIncompleteTls
         && !assertionsHold invalidTls
-        && disabledAbilities.instances == {}
-        && disabledAbilities.requests == {}
+        && ownedValues disabledAbilities.instances == {}
+        && ownedValues disabledAbilities.requests == {}
         && builtins.elem "mariadb:credential-delivery" disabledRequirements
         && builtins.elem "mariadb:service-credentials" disabledRequirements
         && builtins.elem "mariadb:service-lifecycle" disabledRequirements
