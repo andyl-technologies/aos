@@ -459,6 +459,9 @@
   postgresqlService = import ./postgresql-service.nix {
     inherit lib pkgs;
   };
+  releaseCoordinatorService = import ./release-coordinator-service.nix {
+    inherit lib;
+  };
   networkPolicyCore = import ./network-policy-core.nix {
     inherit lib;
   };
@@ -904,6 +907,7 @@ in
   assert nixStoreDatabase;
   assert postgresqlService;
   assert securityWrappers;
+  assert releaseCoordinatorService;
   assert networkPolicyCore;
   assert kernelTunables;
   assert fails (normalizeBounded [true false null true false]);

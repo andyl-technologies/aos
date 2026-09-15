@@ -234,7 +234,7 @@ in
 
     outputs = ["out" "apm" "apr" "packageRuntime" "metadataRuntime" "testSupport"];
 
-    abilities = ./_configuration-provider/module.nix;
+    abilities = ./_abilities;
 
     # Enforce command-surface separation after fixup and reference scrubbing.
     # Cross-linkers can leave build-environment paths in intermediate binaries;
