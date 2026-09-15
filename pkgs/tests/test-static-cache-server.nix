@@ -89,11 +89,6 @@ mkDerivation {
     };
   };
 
-  passthru.serviceDocumentation = {
-    kind = "fixture";
-    summary = "Static cache service fixture for integration tests.";
-  };
-
   meta = {
     description = "AOS exposed static cache test HTTP server package";
     license = "Apache-2.0";

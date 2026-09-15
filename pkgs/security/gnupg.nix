@@ -257,11 +257,6 @@ in
       };
     };
 
-    passthru.serviceDocumentation = {
-      kind = "on-demand";
-      summary = "Interactive CLI suite with a per-user on-demand agent.";
-    };
-
     meta = {
       description = "Complete OpenPGP and X.509 implementation (the gpg tool)";
       homepage = "https://gnupg.org/";

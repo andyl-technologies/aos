@@ -304,11 +304,6 @@ in
       };
     };
 
-    passthru.serviceDocumentation = {
-      kind = "on-demand";
-      summary = "Package and store CLI used by AOS control services.";
-    };
-
     meta = {
       description = "Nix — the purely functional package manager";
       homepage = "https://nixos.org/nix";

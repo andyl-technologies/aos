@@ -1684,11 +1684,6 @@ in
       else [glibc];
     propagatedDeps = [];
 
-    passthru.serviceDocumentation = {
-      kind = "on-demand";
-      summary = "Source-built runtime invoked for one authored Worker deployment.";
-    };
-
     meta = {
       description = "Cloudflare workerd Workers runtime (built from source via AOS Bazel)";
       homepage = "https://github.com/cloudflare/workerd";

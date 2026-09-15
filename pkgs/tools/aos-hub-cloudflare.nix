@@ -66,11 +66,6 @@ mkDerivation {
   ];
 
   passthru.evidenceSources = [./aos-hub-cloudflare.nix];
-  passthru.serviceDocumentation = {
-    kind = "on-demand";
-    summary = "Deployment bundle configured by the Hub Worker installer.";
-  };
-
   meta = {
     description = "aos-hub packaged with wrangler + the Worker wasm dist as a Cloudflare installer";
     homepage = "https://github.com/andyl-technologies/aos";
