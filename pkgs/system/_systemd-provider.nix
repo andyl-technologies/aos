@@ -17,6 +17,14 @@
   serviceTransition = import ./_systemd-service-transition.nix {
     effectsInterface = serviceEffectsInterface;
   };
+  managerWatchdogAlias = "systemd-manager-watchdog";
+  managerWatchdogImplementation = "${packageName}:${managerWatchdogAlias}";
+  managerWatchdogEffectsInterface = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration config.aos.abilities.interfaces."${packageName}:systemd-manager-watchdog-effects"
+  );
+  managerWatchdogTransition = import ./_systemd-manager-watchdog-transition.nix {
+    effectsInterface = managerWatchdogEffectsInterface;
+  };
   serviceResourceFields = serviceManagement.types.serviceDeclaration._abilitySchema.fields;
   serviceImplementationNames = builtins.filter (featureName: let
     selected = serviceInterfaces.${featureName};
@@ -258,6 +266,47 @@
           value.${outputName} = entry.reference;
         })
         entries);
+    };
+
+  provideManagerWatchdog = context: let
+    entries = builtins.map (requestName: let
+      binding = bindingFor context.bindings requestName;
+    in {
+      inherit requestName binding;
+      parameters = context.requests.${requestName}.parameters;
+    }) (builtins.attrNames context.requests);
+  in
+    emptyResult
+    // {
+      resourceFragments = builtins.listToAttrs (builtins.map (entry: {
+          name = entry.binding.slot;
+          value = {
+            kind = "aos.systemd.manager-watchdog";
+            lifetime = "instance";
+            value = entry.parameters;
+          };
+        })
+        entries);
+    };
+
+  composeManagerWatchdog = {resources, ...}:
+    emptyResult
+    // {
+      requests = builtins.mapAttrs (key: resource: {
+        requirement = "manager-watchdog-effects";
+        scope = ["manager-watchdog-effects"];
+        slot = key;
+        parameters = {
+          kind = "manager-watchdog";
+          desired = resource.value;
+        };
+      }) resources;
+      realizations = builtins.mapAttrs (_: resource:
+        {
+          schema = "aos.systemd.manager-watchdog-realization/v1";
+        }
+        // resource.value)
+      resources;
     };
 
   resolveReference = value:
@@ -603,6 +652,11 @@
     config.aos.abilities.bindings.${resource.controller}.implementation
     nativeResourceImplementationNames)
   (builtins.attrValues config.aos.abilities.resolvedResources);
+  selectedManagerWatchdogResources = builtins.filter (resource:
+    resource.controller
+    != null
+    && config.aos.abilities.bindings.${resource.controller}.implementation == managerWatchdogImplementation)
+  (builtins.attrValues config.aos.abilities.resolvedResources);
   staticArtifactFor = resource: let
     realization = builtins.toJSON resource.realization;
     rendered =
@@ -636,6 +690,10 @@
     else
       builtins.map staticArtifactFor (selectedResources ++ selectedServiceResources)
       ++ builtins.map staticNativeArtifactFor selectedNativeResources;
+  managerWatchdogArtifacts =
+    if config.aos.abilities.compositionPendingRequests != {}
+    then []
+    else builtins.map staticArtifactFor selectedManagerWatchdogResources;
   serviceProviderImplementations = builtins.listToAttrs (builtins.map (featureName: let
       selected = serviceInterfaces.${featureName};
     in {
@@ -672,10 +730,16 @@ in {
     // identityProviderImplementations
     // nativeResourceProviderImplementations
     // {
+      ${managerWatchdogAlias} = {
+        provide = provideManagerWatchdog;
+        compose = composeManagerWatchdog;
+        transition = managerWatchdogTransition;
+      };
       ${implementationAlias} = {
         inherit provide compose;
       };
     };
 
   config.systemd.providerUnitArtifacts = staticArtifacts;
+  config.systemd.providerManagerConfigurationArtifacts = managerWatchdogArtifacts;
 }

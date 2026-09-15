@@ -387,7 +387,7 @@ fn service_receipt_bytes(
     aos_contract::canonical::to_vec(&receipt).context("encoding service revision receipt")
 }
 
-fn ensure_directory(path: &Path) -> Result<()> {
+pub(crate) fn ensure_directory(path: &Path) -> Result<()> {
     let mut current = PathBuf::new();
     for component in path.components() {
         current.push(component);
@@ -432,7 +432,7 @@ fn verify_symlink_exact_or_absent(path: &Path, expected: &Path) -> Result<bool> 
     }
 }
 
-fn verify_file_exact_or_absent(path: &Path, expected: &[u8]) -> Result<bool> {
+pub(crate) fn verify_file_exact_or_absent(path: &Path, expected: &[u8]) -> Result<bool> {
     match fs::read(path) {
         Ok(bytes) if bytes == expected => Ok(true),
         Ok(_) => bail!("refusing to remove changed file {}", path.display()),
@@ -441,7 +441,7 @@ fn verify_file_exact_or_absent(path: &Path, expected: &[u8]) -> Result<bool> {
     }
 }
 
-fn remove_managed_path(path: &Path) -> Result<()> {
+pub(crate) fn remove_managed_path(path: &Path) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("managed path has no parent"))?;
@@ -475,7 +475,7 @@ fn publish_symlink(path: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-fn publish_file(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn publish_file(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Ok(metadata) = fs::symlink_metadata(path)
         && (!metadata.is_file() || metadata.file_type().is_symlink())
     {

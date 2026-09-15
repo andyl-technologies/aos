@@ -6,6 +6,7 @@
 //! pinned systemd manager over D-Bus.
 
 mod identity;
+mod manager_watchdog;
 mod materialize;
 mod model;
 mod native_resource;
@@ -99,6 +100,8 @@ async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
         admit_packaged_unit(request).await
     } else if identity::supports(&request.method) {
         identity::admit(request).await
+    } else if manager_watchdog::supports(&request.method) {
+        manager_watchdog::admit(request).await
     } else if readiness::supports(&request.method) {
         readiness::admit(request).await
     } else if native_resource::supports(&request.method) {
@@ -171,6 +174,8 @@ async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
         invoke_packaged_unit(invocation).await
     } else if identity::supports(&invocation.method) {
         identity::invoke(invocation).await
+    } else if manager_watchdog::supports(&invocation.method) {
+        manager_watchdog::invoke(invocation).await
     } else if readiness::supports(&invocation.method) {
         readiness::invoke(invocation).await
     } else if native_resource::supports(&invocation.method) {

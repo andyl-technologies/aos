@@ -105,6 +105,14 @@ in {
       '';
     };
 
+    providerManagerConfigurationArtifacts = lib.mkOption {
+      type = lib.types.listOf lib.types.path;
+      default = [];
+      internal = true;
+      contributable = true;
+      description = "Manager configuration trees produced by authenticated systemd providers.";
+    };
+
     globalEnvironment = lib.mkOption {
       type = with lib.types; attrsOf (nullOr (oneOf [str path package]));
       default = {};
@@ -509,7 +517,13 @@ in {
     assertions =
       stopOnReconfAttrAsserts
       ++ stopOnReconfListAsserts
-      ++ targetReloadTriggerAsserts;
+      ++ targetReloadTriggerAsserts
+      ++ [
+        {
+          assertion = builtins.length config.systemd.providerManagerConfigurationArtifacts <= 1;
+          message = "systemd manager configuration must have at most one authenticated provider owner";
+        }
+      ];
 
     warnings = reloadWithoutExecReloadWarnings;
 
@@ -576,6 +590,11 @@ in {
     # without one side shadowing the other.
     environment.etc."systemd/system" = {
       source = config.system.build.systemdSystemUnits;
+    };
+    environment.etc."systemd/system.conf.d/50-aos-watchdog.conf" = lib.mkIf (
+      config.systemd.providerManagerConfigurationArtifacts != []
+    ) {
+      source = "${builtins.head config.systemd.providerManagerConfigurationArtifacts}/systemd/system.conf.d/50-aos-watchdog.conf";
     };
   };
 }

@@ -421,6 +421,178 @@
     configurationType = null;
     guarantees = [];
   };
+  managerWatchdogFields = {
+    enabled = types.boolean;
+    runtime_timeout_millis = types.integer {
+      minimum = 1000;
+      maximum = 86400000;
+    };
+    reboot_timeout_millis = types.integer {
+      minimum = 1000;
+      maximum = 172800000;
+    };
+    kexec_timeout_millis = types.integer {
+      minimum = 1000;
+      maximum = 172800000;
+    };
+  };
+  managerWatchdogRequest = types.record {
+    fields = managerWatchdogFields;
+  };
+  managerWatchdogRealization = types.record {
+    fields =
+      {
+        schema = types.enum ["aos.systemd.manager-watchdog-realization/v1"];
+      }
+      // managerWatchdogFields;
+  };
+  managerWatchdogObservation = types.record {
+    fields = {
+      schema = types.enum ["aos.ability.systemd-manager-watchdog-observation/v1"];
+      expected = managerWatchdogRequest;
+      observed = {
+        type = types.optional managerWatchdogRequest;
+        optional = true;
+      };
+      state = types.enum ["absent" "configured" "divergent" "unknown"];
+      manager_incarnation_changed = types.boolean;
+      discrepancies = types.list {
+        element = types.localKey;
+        maxItems = 16;
+        unique = true;
+        canonicalOrder = true;
+      };
+    };
+  };
+  managerWatchdogMethod = name: description: access: stopsProvider: retained: {
+    inherit description;
+    semantics = {
+      requiredTargetAccess = access;
+      inherit stopsProvider;
+    };
+    parameters = managerWatchdogRequest;
+    targetResource = "aos.systemd.manager-watchdog";
+    outputs = {
+      observation =
+        output
+        (if name == "observe" then "observation" else "runtime")
+        "attempt"
+        "Reports exact manager watchdog configuration and reload state."
+        managerWatchdogObservation;
+    }
+    // lib.optionalAttrs retained {
+      retained-resource =
+        output
+        "runtime"
+        "instance"
+        "References the retained manager watchdog configuration."
+        types.resourceReference;
+    };
+    permittedOperations = [name];
+    guarantees = [];
+    outcome = {
+      completionEvidence = managerWatchdogObservation;
+      observationEvidence = managerWatchdogObservation;
+      supportsRejectedBeforeEffect = true;
+      indeterminate = "reconcile";
+    };
+  };
+  managerWatchdogDeclaration = lib.abilities.declareInterface {
+    name = "aos.systemd.manager-watchdog";
+    description = "Controls systemd manager hardware-watchdog configuration with re-execution.";
+    abi = 1;
+    requestType = managerWatchdogRequest;
+    outputs = {};
+    methods = {
+      apply = managerWatchdogMethod "apply" "Applies watchdog configuration and re-executes the manager." "exclusive-write" false true;
+      observe = managerWatchdogMethod "observe" "Observes exact watchdog configuration." "read" false false;
+      remove = managerWatchdogMethod "remove" "Removes owned watchdog configuration and re-executes the manager." "exclusive-write" true false;
+    };
+    lifecycle = lifecycle;
+    aggregation = {
+      scope = "provider-instance";
+      key = "slot";
+      rejectSlotCollisions = true;
+      mergeContract = null;
+      controllerGroup = "systemd-manager-watchdog";
+    };
+    configurationType = null;
+    guarantees = [];
+  };
+  managerWatchdogEffectsRequest = types.taggedUnion {
+    tag = "kind";
+    variants.manager-watchdog = types.record {
+      fields = {
+        kind = types.enum ["manager-watchdog"];
+        desired = managerWatchdogRequest;
+      };
+    };
+  };
+  managerWatchdogEffectsObservation = types.record {
+    fields = {
+      kind = types.enum ["manager-watchdog"];
+      observation = managerWatchdogObservation;
+    };
+  };
+  managerWatchdogEffectMethod = name: description: access: stopsProvider: {
+    inherit description;
+    semantics = {
+      requiredTargetAccess = access;
+      inherit stopsProvider;
+    };
+    parameters = managerWatchdogEffectsRequest;
+    targetResource = "aos.systemd.manager-watchdog";
+    outputs.observation =
+      output
+      (if name == "observe" then "observation" else "runtime")
+      "attempt"
+      "Reports the exact terminal manager-watchdog effect state."
+      managerWatchdogEffectsObservation;
+    permittedOperations = [name];
+    guarantees = [];
+    outcome = {
+      completionEvidence = managerWatchdogEffectsObservation;
+      observationEvidence = managerWatchdogEffectsObservation;
+      supportsRejectedBeforeEffect = true;
+      indeterminate = "reconcile";
+    };
+  };
+  managerWatchdogEffectsDeclaration = lib.abilities.declareInterface {
+    name = "aos.systemd.manager-watchdog-effects";
+    description = "Executes checked terminal systemd manager-watchdog effects.";
+    abi = 1;
+    requestType = managerWatchdogEffectsRequest;
+    outputs = {};
+    methods = {
+      create = managerWatchdogEffectMethod "create" "Creates exact watchdog manager configuration." "exclusive-write" false;
+      observe = managerWatchdogEffectMethod "observe" "Observes exact watchdog manager configuration." "read" false;
+      reconcile = managerWatchdogEffectMethod "reconcile" "Repairs divergent watchdog manager configuration." "exclusive-write" false;
+      remove = managerWatchdogEffectMethod "remove" "Removes exact watchdog manager configuration." "exclusive-write" true;
+      update = managerWatchdogEffectMethod "update" "Updates exact watchdog manager configuration." "exclusive-write" false;
+    };
+    lifecycle = lifecycle;
+    aggregation = {
+      scope = "provider-instance";
+      key = "slot";
+      rejectSlotCollisions = true;
+      mergeContract = null;
+      controllerGroup = "systemd-manager-watchdog-effects";
+    };
+    configurationType = null;
+    guarantees = [];
+  };
+  managerWatchdogEffectsIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration managerWatchdogEffectsDeclaration
+  );
+  managerWatchdogEffectsRequirement = {
+    alias = "manager-watchdog-effects";
+    description = "Selects the checked lower systemd manager-watchdog effect handler.";
+    accepted_interfaces = [managerWatchdogEffectsIdentity];
+    methods = ["create" "observe" "reconcile" "remove" "update"];
+    guarantees = [];
+    strength = "required";
+    fallback = null;
+  };
   serviceEffectsName = "aos.systemd.service-effects";
   serviceEffectsRequest = types.taggedUnion {
     tag = "kind";
@@ -866,9 +1038,27 @@
       serviceInterfaces.filesystemReadiness
     ]);
 in {
+  options.aos.monitoring.hardware = {
+    watchdog = lib.mkOption {
+      type = types.boolean;
+      default = true;
+      description = "Enable the systemd manager hardware watchdog when hardware monitoring is selected.";
+    };
+    watchdogTimeout = lib.mkOption {
+      type = types.integer {
+        minimum = 1;
+        maximum = 86400;
+      };
+      default = 30;
+      description = "Watchdog timeout in seconds before hardware recovery.";
+    };
+  };
+
   config.aos.abilities = {
     interfaces = {
       systemd-packaged-unit = packagedUnitDeclaration;
+      systemd-manager-watchdog = managerWatchdogDeclaration;
+      systemd-manager-watchdog-effects = managerWatchdogEffectsDeclaration;
       systemd-service-effects = serviceEffectsDeclaration;
     }
     // builtins.listToAttrs (builtins.map (kind: {
@@ -889,6 +1079,35 @@ in {
       // nativeTerminalImplementations
       // devicePresenceImplementation
       // {
+        systemd-manager-watchdog = {
+          description = "Controls systemd manager watchdog configuration through a pure package-owned controller.";
+          interface = "systemd-manager-watchdog";
+          inherit artifact;
+          methods = ["apply" "observe" "remove"];
+          guarantees = [];
+          requirements.manager-watchdog-effects = managerWatchdogEffectsRequirement;
+          providerModule = {
+            inherit artifact;
+            path = "share/aos/providers/systemd.nix";
+          };
+          desiredType = managerWatchdogRealization;
+          requiredFeatures = [];
+        };
+        systemd-manager-watchdog-effects = {
+          description = "Executes checked terminal systemd manager-watchdog effects.";
+          interface = "systemd-manager-watchdog-effects";
+          artifact = handlerArtifact;
+          methods = ["create" "observe" "reconcile" "remove" "update"];
+          guarantees = [];
+          handlerDescriptor = {
+            artifact = handlerArtifact;
+            entryPoint = "bin/aos-systemd-provider";
+            arguments = managerWatchdogEffectsRequest;
+            result = managerWatchdogEffectsObservation;
+          };
+          desiredType = null;
+          requiredFeatures = [];
+        };
         systemd-service-effects = {
           description = "Executes checked systemd service effects selected by the package-owned service controller.";
           interface = "systemd-service-effects";

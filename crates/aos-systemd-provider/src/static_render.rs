@@ -8,7 +8,8 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::model::{
-    Activation, PackagedUnitRealization, REALIZATION_SCHEMA, SERVICE_REALIZATION_SCHEMA,
+    Activation, MANAGER_WATCHDOG_REALIZATION_SCHEMA, ManagerWatchdogRealization,
+    PackagedUnitRealization, REALIZATION_SCHEMA, SERVICE_REALIZATION_SCHEMA,
     STATIC_MANIFEST_SCHEMA, ServiceRealization, ServiceUnitIdentity, StaticPrimaryUnit,
     StaticUnitManifest, StaticUnitManifestEntry,
 };
@@ -32,6 +33,9 @@ pub(crate) fn run() -> Result<()> {
         REALIZATION_SCHEMA => render_packaged_unit(value, Path::new(&output_path)),
         SERVICE_REALIZATION_SCHEMA => render_service_unit(value, Path::new(&output_path)),
         NATIVE_STATIC_INPUT_SCHEMA => render_native_resource(value, Path::new(&output_path)),
+        MANAGER_WATCHDOG_REALIZATION_SCHEMA => {
+            render_manager_watchdog(value, Path::new(&output_path))
+        }
         _ => bail!("static systemd realization uses an unsupported schema"),
     }
 }
@@ -41,6 +45,19 @@ fn render_native_resource(value: serde_json::Value, output: &Path) -> Result<()>
         serde_json::from_value(value).context("decoding static native-resource input")?;
     let rendered = crate::native_resource::render_static(input)?;
     write_rendered_service(rendered, None, output)
+}
+
+fn render_manager_watchdog(value: serde_json::Value, output: &Path) -> Result<()> {
+    let realization: ManagerWatchdogRealization =
+        serde_json::from_value(value).context("decoding manager-watchdog realization")?;
+    let bytes = crate::manager_watchdog::render(&realization)?;
+    let path = output.join("systemd/system.conf.d/50-aos-watchdog.conf");
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("static manager-watchdog path has no parent"))?;
+
+    fs::create_dir_all(parent).context("creating static manager-watchdog directory")?;
+    fs::write(path, bytes).context("writing static manager-watchdog configuration")
 }
 
 fn render_service_unit(value: serde_json::Value, output: &Path) -> Result<()> {
