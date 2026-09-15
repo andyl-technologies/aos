@@ -344,12 +344,15 @@
       concrete = unwrapOptional schema;
     in
       if current == null && schema.kind == "optional"
-      then [
-        {
-          kind = "null";
-          inherit path;
-        }
-      ]
+      then
+        if format == "toml"
+        then []
+        else [
+          {
+            kind = "null";
+            inherit path;
+          }
+        ]
       else if builtins.isAttrs current && (current._type or null) == "aos-request-output-reference"
       then [
         {

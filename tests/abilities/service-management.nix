@@ -278,16 +278,24 @@
   systemOwnedService = serviceManagement.forService {
     inherit serviceTypes;
     consumerInstance = "system:bind";
-    declaration = minimalService // {
-      lifecycle = minimalService.lifecycle // {
-        start = [{
-          executable = command.executable // {
-            arguments = [(resultOf "configuration" "execution-path")];
+    declaration =
+      minimalService
+      // {
+        lifecycle =
+          minimalService.lifecycle
+          // {
+            start = [
+              {
+                executable =
+                  command.executable
+                  // {
+                    arguments = [(resultOf "configuration" "execution-path")];
+                  };
+                ignore_failure = false;
+              }
+            ];
           };
-          ignore_failure = false;
-        }];
       };
-    };
   };
   scheduledActivation = {
     name = "periodic";
@@ -354,6 +362,17 @@
     interface = interfaces.credentialDelivery;
     producers = credentialProducers;
   };
+  principalResolution = {
+    name = "service-user";
+    allocation = "managed";
+    requested_id = 804;
+    description = "Service runtime account";
+    home_directory = resultOf "service-home" "storage-path";
+    login_access = "disabled";
+    primary_group = resultOf "service-group" "group-name";
+    supplementary_groups = [];
+  };
+  invalidPrincipalResolution = principalResolution // {requested_id = 0;};
   structuredConfiguration = {
     name = "structured";
     source = {
@@ -403,6 +422,16 @@
         };
       };
     };
+  projectedTomlConfiguration = serviceManagement.structuredSource {
+    format = "toml";
+    valueType = lib.abilities.types.record {
+      fields.optional = {
+        type = lib.abilities.types.optional lib.abilities.types.runtimeString;
+        optional = true;
+      };
+    };
+    value.optional = null;
+  };
   invalidStructuredConfiguration =
     structuredConfiguration
     // {
@@ -540,11 +569,13 @@ in
   assert systemOwnedService.requests."system:main-lifecycle".consumer == "system:bind";
   assert systemOwnedService.requests."system:main-lifecycle".requirement == "system:service-lifecycle";
   assert (builtins.head systemOwnedService.requests."system:main-lifecycle".parameters.start).executable.arguments
-  == [{
-    _type = "aos-request-output-reference";
-    request = "system:configuration";
-    output = "execution-path";
-  }];
+  == [
+    {
+      _type = "aos-request-output-reference";
+      request = "system:configuration";
+      output = "execution-path";
+    }
+  ];
   assert expandedExtended.requests.main-lifecycle.parameters.start_timeout_unbounded;
   assert expandedExtended.requests.main-environment.parameters.variables.INSTANCE == "blue";
   assert !validates (extendedService
@@ -613,9 +644,18 @@ in
   assert builtins.attrNames systemCredentialBatch.requirementTemplates == ["system:credential-delivery"];
   assert builtins.length (builtins.attrNames systemCredentialBatch.requests) == 6;
   assert systemCredentialBatch.requests."system:credential-0".consumer == "system:secrets";
+  assert succeedsAs serviceTypes.principalResolution principalResolution;
+  assert !succeedsAs serviceTypes.principalResolution invalidPrincipalResolution;
   assert succeedsAs serviceTypes.configurationMaterialization structuredConfiguration;
   assert succeedsAs serviceTypes.configurationMaterialization projectedStructuredConfiguration;
   assert builtins.elem "boolean" (builtins.map (node: node.kind) projectedStructuredConfiguration.source.document);
+  assert projectedTomlConfiguration.document
+  == [
+    {
+      kind = "object";
+      path = [];
+    }
+  ];
   assert !succeedsAs serviceTypes.structuredConfigurationSource invalidStructuredConfiguration.source;
   assert !succeedsAs serviceTypes.structuredConfigurationSource sparseArraySource;
   assert !(builtins.tryEval (builtins.deepSeq (serviceManagement.forConfiguration {
