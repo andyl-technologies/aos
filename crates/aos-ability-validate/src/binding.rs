@@ -12,8 +12,8 @@ use aos_ability_model::{
     AccessMode, AuthorityGrant, Binding, BindingPlanDocument, BindingSource, Diagnostic,
     DiagnosticClass, DiagnosticCode, DiagnosticPhase, InstanceId, InterfaceKey,
     PROVIDER_STATE_FORMAT_V1, PackageDocument, PlanId, ProviderImplementation, RequestId,
-    RequirementDeclaration, RequirementStrength, ResourceLifetime, ResourceReference,
-    ValueExpression, VersionedDocument, compare_resource_ids,
+    RequirementDeclaration, RequirementStrength, ResourceReference, ValueExpression,
+    VersionedDocument, compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
 
@@ -2310,11 +2310,6 @@ fn binding_diagnostic(
     );
     item.request = Some(binding.request.clone());
     item
-}
-
-#[allow(dead_code)]
-fn lifetime_covers(available: ResourceLifetime, requested: ResourceLifetime) -> bool {
-    available >= requested
 }
 
 #[cfg(test)]
