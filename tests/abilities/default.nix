@@ -517,7 +517,7 @@
     inherit pkgs lib;
   };
   utilLinuxGetty = import ./util-linux-getty.nix {
-    inherit pkgs lib;
+    inherit pkgs lib mkSystem;
   };
   systemdDirectoryPreparation = import ./systemd-directory-preparation.nix {
     inherit pkgs lib;

@@ -2,6 +2,7 @@
 {
   lib,
   pkgs,
+  mkSystem,
 }: let
   environment = stage: {
     authority = "test";
@@ -55,6 +56,21 @@
   initrdVirtual = request initrdRequests "virtual-console-lifecycle";
   initrdVirtualDependencies = request initrdRequests "virtual-console-dependencies";
   initrdVirtualTerminal = request initrdRequests "virtual-console-terminal";
+  debugSystem = mkSystem {
+    modules = [../../systems/server-test.nix];
+    systemName = "debug-profile-getty";
+  };
+  debugConfig = debugSystem.config;
+  debugPackageNames =
+    builtins.map
+    (package: package.pname or package.name)
+    debugConfig.environment.systemPackages;
+  debugInitrdPackageNames =
+    builtins.map
+    (package: package.pname or package.name)
+    debugConfig.aos.abilities.stages.initrd.packages;
+  debugHostRequests = debugConfig.aos.abilities.requests;
+  debugInitrdRequests = debugConfig.system.build.initrdAbilityGraph.requests;
   portableOptionTree = options:
     builtins.all (option:
       if (option._type or null) == "option"
@@ -101,6 +117,7 @@ in
     deallocate = true;
     send_hangup_on_stop = true;
     start_when_idle = true;
+    session_identifier = "tty1";
   };
   assert builtins.length (builtins.attrNames initrdRequests) == 9;
   assert !(builtins.hasAttr "util-linux:user-sessions-milestone" initrdRequests);
@@ -112,4 +129,18 @@ in
   assert initrdVirtualTerminal.device == "/dev/tty0";
   assert !initrdVirtualTerminal.deallocate;
   assert !initrdVirtualTerminal.send_hangup_on_stop;
-  assert !initrdVirtualTerminal.start_when_idle; true
+  assert !initrdVirtualTerminal.start_when_idle;
+  assert !(initrdVirtualTerminal ? session_identifier);
+  assert debugConfig.aos.services.getty.autologin.enable;
+  assert builtins.elem "util-linux" debugPackageNames;
+  assert builtins.elem "util-linux" debugInitrdPackageNames;
+  assert builtins.elem "systemd" debugInitrdPackageNames;
+  assert debugConfig.aos.abilities.stages.initrd.intent.aos.services.getty.autologin
+  == {
+    enable = true;
+    stage = "initrd";
+  };
+  assert builtins.hasAttr "util-linux:virtual-console-terminal" debugHostRequests;
+  assert builtins.hasAttr "util-linux:user-sessions-milestone" debugHostRequests;
+  assert builtins.hasAttr "util-linux:virtual-console-terminal" debugInitrdRequests;
+  assert !(builtins.hasAttr "util-linux:user-sessions-milestone" debugInitrdRequests); true

@@ -1,8 +1,8 @@
 ##! Package-owned util-linux console getty service declarations.
 ##!
-##! The same package module participates in host and initrd fixed points. It
-##! selects the console devices and activation milestones from the evaluated
-##! environment stage, while keeping the service contract manager-neutral.
+##! The same package module participates in host and initrd fixed points. A
+##! typed stage option selects their console devices and activation milestones
+##! while keeping the service contract manager-neutral.
 {
   config,
   lib,
@@ -45,6 +45,7 @@
     terminal,
     arguments,
     deallocate,
+    sessionIdentifier ? null,
   }:
     serviceManagement.forService {
       inherit serviceTypes consumerInstance;
@@ -81,14 +82,18 @@
           signal_scope = "none";
           timeout_millis = 90000;
         };
-        terminal = {
-          device = "/dev/${terminal}";
-          reset = true;
-          hangup = true;
-          inherit deallocate;
-          send_hangup_on_stop = !isInitrd;
-          start_when_idle = !isInitrd;
-        };
+        terminal =
+          {
+            device = "/dev/${terminal}";
+            reset = true;
+            hangup = true;
+            inherit deallocate;
+            send_hangup_on_stop = !isInitrd;
+            start_when_idle = !isInitrd;
+          }
+          // lib.optionalAttrs (sessionIdentifier != null) {
+            session_identifier = sessionIdentifier;
+          };
       };
     };
 
@@ -112,6 +117,10 @@
       "linux"
     ];
     deallocate = !isInitrd;
+    sessionIdentifier =
+      if isInitrd
+      then null
+      else "tty1";
   };
   serialConsole = consoleService {
     service = "serial-console";

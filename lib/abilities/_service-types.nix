@@ -676,7 +676,11 @@
     deallocate = types.boolean;
     send_hangup_on_stop = types.boolean;
     start_when_idle = types.boolean;
-  } [];
+    session_identifier = {
+      type = types.optional localKey;
+      optional = true;
+    };
+  } ["session_identifier"];
   terminal = request terminalFeature;
 
   identityFeature = feature {

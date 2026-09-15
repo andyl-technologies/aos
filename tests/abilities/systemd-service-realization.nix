@@ -165,6 +165,7 @@
             deallocate = true;
             send_hangup_on_stop = true;
             start_when_idle = true;
+            session_identifier = "tty1";
           };
         };
       };
@@ -345,6 +346,7 @@ in
   assert templates "TTYVHangup" serviceSection == ["yes"];
   assert templates "TTYVTDisallocate" serviceSection == ["yes"];
   assert templates "SendSIGHUP" serviceSection == ["yes"];
+  assert templates "UtmpIdentifier" serviceSection == ["tty1"];
   assert executable.source.artifact == artifact // {package = "consumer";};
   assert executable.source.relative_path == "bin/example";
   assert lib.hasInfix "@@AOS_SYSTEMD_SUBSTITUTION:" execStart.value.template;
