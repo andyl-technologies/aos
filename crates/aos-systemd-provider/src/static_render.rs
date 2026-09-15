@@ -33,6 +33,11 @@ pub(crate) fn run() -> Result<()> {
         REALIZATION_SCHEMA => render_packaged_unit(value, Path::new(&output_path)),
         SERVICE_REALIZATION_SCHEMA => render_service_unit(value, Path::new(&output_path)),
         NATIVE_STATIC_INPUT_SCHEMA => render_native_resource(value, Path::new(&output_path)),
+        crate::network_configuration::STATIC_INPUT_SCHEMA => {
+            let input = serde_json::from_value(value)
+                .context("decoding static network-configuration input")?;
+            crate::network_configuration::render_static(input, Path::new(&output_path))
+        }
         MANAGER_WATCHDOG_REALIZATION_SCHEMA => {
             render_manager_watchdog(value, Path::new(&output_path))
         }

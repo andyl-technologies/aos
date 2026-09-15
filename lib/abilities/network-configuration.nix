@@ -1,0 +1,219 @@
+##! Canonical provider-neutral host network configuration resource.
+{
+  types,
+  declareInterface,
+  interfaceDocumentFromDeclaration,
+  interfaceIdentity,
+}: let
+  alias = "network-configuration";
+  interfaceName = "aos.network.configuration";
+
+  optional = type: {
+    type = types.optional type;
+    optional = true;
+  };
+  text = maxLength:
+    types.string {
+      inherit maxLength;
+      syntax = null;
+    };
+  selector = types.taggedUnion {
+    tag = "kind";
+    variants = {
+      name = types.record {
+        fields = {
+          kind = types.enum ["name"];
+          value = text 64;
+        };
+      };
+      mac = types.record {
+        fields = {
+          kind = types.enum ["mac"];
+          value = text 32;
+        };
+      };
+      ethernet = types.record {
+        fields.kind = types.enum ["ethernet"];
+      };
+    };
+  };
+  addresses = types.list {
+    element = text 128;
+    maxItems = 64;
+    unique = true;
+    canonicalOrder = true;
+  };
+  dnsServers = types.list {
+    element = text 128;
+    maxItems = 32;
+    unique = true;
+    canonicalOrder = true;
+  };
+  addressing = types.record {
+    fields = {
+      dhcp = types.boolean;
+      inherit addresses;
+      gateway = optional (text 128);
+      dns = dnsServers;
+    };
+  };
+  link = types.taggedUnion {
+    tag = "kind";
+    variants = {
+      ethernet = types.record {
+        fields = {
+          kind = types.enum ["ethernet"];
+          name = types.localKey;
+          inherit selector addressing;
+        };
+      };
+      vlan = types.record {
+        fields = {
+          kind = types.enum ["vlan"];
+          name = types.localKey;
+          parent = selector;
+          id = types.integer {
+            minimum = 1;
+            maximum = 4094;
+          };
+          inherit addressing;
+        };
+      };
+      bond = types.record {
+        fields = {
+          kind = types.enum ["bond"];
+          name = types.localKey;
+          members = types.list {
+            element = selector;
+            maxItems = 64;
+            unique = true;
+            canonicalOrder = true;
+          };
+          mode = text 64;
+          inherit addressing;
+        };
+      };
+    };
+  };
+  bootstrap = types.record {
+    fields = {
+      inherit selector;
+      inherit addresses;
+      gateway = optional (text 128);
+      dns = dnsServers;
+    };
+  };
+  resolver = types.record {
+    fields = {
+      enabled = types.boolean;
+      nameservers = types.list {
+        element = text 128;
+        maxItems = 32;
+        unique = true;
+        canonicalOrder = true;
+      };
+      search = types.list {
+        element = text 253;
+        maxItems = 64;
+        unique = true;
+        canonicalOrder = true;
+      };
+      dnssec = types.enum ["allow-downgrade" "no" "yes"];
+    };
+  };
+  prerequisites = types.list {
+    element = types.deferredResult types.resourceReference;
+    maxItems = 64;
+    unique = true;
+    canonicalOrder = true;
+  };
+  requestType = types.record {
+    fields = {
+      authority = types.enum ["image" "operator"];
+      links = types.list {
+        element = link;
+        maxItems = 256;
+        unique = true;
+        canonicalOrder = false;
+      };
+      inherit resolver prerequisites;
+      bootstrap = optional bootstrap;
+    };
+  };
+  observationType = types.record {
+    fields = {
+      schema = types.enum ["aos.ability.network-configuration-observation/v1"];
+      expected = requestType;
+      state = types.enum ["absent" "ready" "drifted" "unknown"];
+      discrepancies = types.list {
+        element = types.localKey;
+        maxItems = 512;
+        unique = true;
+        canonicalOrder = true;
+      };
+    };
+  };
+  realizationType = types.record {
+    fields.schema = types.enum ["aos.systemd.network-configuration-realization/v1"];
+  };
+  output = phase: lifetime: description: schema: {
+    inherit phase lifetime description schema;
+    visibility = "protected";
+  };
+  method = name: description: access: stopsProvider: outputs: {
+    inherit description outputs;
+    semantics = {
+      requiredTargetAccess = access;
+      inherit stopsProvider;
+    };
+    parameters = requestType;
+    targetResource = interfaceName;
+    permittedOperations = [name];
+    guarantees = [];
+    outcome = {
+      completionEvidence = observationType;
+      observationEvidence = observationType;
+      supportsRejectedBeforeEffect = true;
+      indeterminate = "reconcile";
+    };
+  };
+  observation = phase:
+    output phase "attempt" "Reports the exact observed host network configuration." observationType;
+  methods = {
+    apply = method "apply" "Converges the exact provider-neutral host network configuration." "exclusive-write" false {
+      observation = observation "runtime";
+      retained-resource = output "runtime" "persistent" "References the retained network configuration." types.resourceReference;
+    };
+    observe = method "observe" "Observes the exact host network configuration." "read" false {
+      observation = observation "observation";
+    };
+    remove = method "remove" "Releases the exact host network configuration owned by this controller." "exclusive-write" true {
+      observation = observation "runtime";
+    };
+  };
+  lifecycle.persistentDeleteMethod = null;
+  aggregation = {
+    scope = "provider-instance";
+    key = "slot";
+    rejectSlotCollisions = true;
+    mergeContract = null;
+    controllerGroup = alias;
+  };
+  declaration = declareInterface {
+    name = interfaceName;
+    description = "Converges semantic host networking without exposing a service manager or configuration-file backend.";
+    abi = 1;
+    inherit requestType methods lifecycle aggregation;
+    outputs.readiness-resource =
+      output "planning" "persistent" "References readiness for this exact network configuration." types.resourceReference;
+    guarantees = [];
+  };
+  document = interfaceDocumentFromDeclaration declaration;
+  identity = interfaceIdentity document;
+in {
+  interface = {
+    inherit alias declaration document identity requestType observationType realizationType;
+    methods = builtins.attrNames methods;
+  };
+  declarations.${alias} = declaration;
+}

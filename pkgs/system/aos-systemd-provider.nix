@@ -17,6 +17,7 @@
     "aos-systemd-group-membership-effects"
     "aos-systemd-manager-watchdog-effects"
     "aos-systemd-mount-effects"
+    "aos-systemd-network-configuration-effects"
     "aos-systemd-network-readiness-effects"
     "aos-systemd-packaged-unit-effects"
     "aos-systemd-principal-effects"

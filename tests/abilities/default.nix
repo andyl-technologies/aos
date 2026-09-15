@@ -585,6 +585,9 @@
   systemdManagerWatchdog = import ./systemd-manager-watchdog.nix {
     inherit pkgs lib;
   };
+  systemdNetworkConfiguration = import ./systemd-network-configuration.nix {
+    inherit pkgs lib;
+  };
   providerTerminalSeparation = import ./provider-terminal-separation.nix {
     inherit pkgs lib;
   };
@@ -1017,6 +1020,7 @@ in
   assert securitySelinuxNative;
   assert securitySshNative;
   assert systemdManagerWatchdog;
+  assert systemdNetworkConfiguration;
   assert providerTerminalSeparation;
   assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];

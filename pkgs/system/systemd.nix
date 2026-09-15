@@ -481,6 +481,7 @@ in
           mkdir -p "$out/share/aos/providers"
           cp ${./_systemd-provider.nix} "$out/share/aos/providers/systemd.nix"
           cp ${./_systemd-manager-watchdog-transition.nix} "$out/share/aos/providers/_systemd-manager-watchdog-transition.nix"
+          cp ${./_systemd-network-configuration-transition.nix} "$out/share/aos/providers/_systemd-network-configuration-transition.nix"
           cp ${./_systemd-native-resource-provider.nix} "$out/share/aos/providers/_systemd-native-resource-provider.nix"
           cp ${./_systemd-native-resource-transition.nix} "$out/share/aos/providers/_systemd-native-resource-transition.nix"
           cp ${./_systemd-packaged-unit-transition.nix} "$out/share/aos/providers/_systemd-packaged-unit-transition.nix"

@@ -85,6 +85,25 @@ in {
       description = "Manager configuration trees produced by authenticated systemd providers.";
     };
 
+    providerNetworkConfigurationArtifacts = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          root = lib.mkOption {
+            type = lib.types.path;
+            description = "Authenticated network configuration tree rendered by the selected systemd provider.";
+          };
+          resolver_enabled = lib.mkOption {
+            type = lib.types.bool;
+            description = "Whether the rendered tree contains authoritative resolver configuration.";
+          };
+        };
+      });
+      default = [];
+      internal = true;
+      contributable = true;
+      description = "Network configuration trees produced by the authenticated systemd network controller.";
+    };
+
     globalEnvironment = lib.mkOption {
       type = with lib.types; attrsOf (nullOr (oneOf [str path package]));
       default = {};
@@ -482,6 +501,10 @@ in {
           assertion = builtins.length config.systemd.providerManagerConfigurationArtifacts <= 1;
           message = "systemd manager configuration must have at most one authenticated provider owner";
         }
+        {
+          assertion = builtins.length config.systemd.providerNetworkConfigurationArtifacts <= 1;
+          message = "systemd network configuration must have at most one authenticated provider owner";
+        }
       ];
 
     warnings = reloadWithoutExecReloadWarnings;
@@ -554,6 +577,23 @@ in {
       config.systemd.providerManagerConfigurationArtifacts != []
     ) {
       source = "${builtins.head config.systemd.providerManagerConfigurationArtifacts}/systemd/system.conf.d/50-aos-watchdog.conf";
+    };
+    environment.etc."systemd/network" = lib.mkIf (
+      config.systemd.providerNetworkConfigurationArtifacts != []
+    ) {
+      source = "${(builtins.head config.systemd.providerNetworkConfigurationArtifacts).root}/etc/systemd/network";
+    };
+    environment.etc."systemd/resolved.conf" = lib.mkIf (
+      config.systemd.providerNetworkConfigurationArtifacts != []
+      && (builtins.head config.systemd.providerNetworkConfigurationArtifacts).resolver_enabled
+    ) {
+      source = "${(builtins.head config.systemd.providerNetworkConfigurationArtifacts).root}/etc/systemd/resolved.conf";
+    };
+    environment.etc."tmpfiles.d/aos-resolved.conf" = lib.mkIf (
+      config.systemd.providerNetworkConfigurationArtifacts != []
+      && (builtins.head config.systemd.providerNetworkConfigurationArtifacts).resolver_enabled
+    ) {
+      source = "${(builtins.head config.systemd.providerNetworkConfigurationArtifacts).root}/etc/tmpfiles.d/aos-resolved.conf";
     };
   };
 }
