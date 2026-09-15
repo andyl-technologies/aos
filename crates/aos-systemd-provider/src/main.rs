@@ -1,13 +1,18 @@
 //! Package-owned systemd ability handler.
 //!
-//! The binary implements the bounded AOS provider protocol for exact packaged
-//! unit activation. It validates and materializes only the realization carried
-//! by the checked target resource, then drives the pinned systemd manager over
-//! D-Bus.
+//! The binary implements the bounded AOS provider protocol for package-shipped
+//! units and provider-neutral services selected for systemd. It consumes exact
+//! checked realizations, materializes their authenticated bytes, and drives a
+//! pinned systemd manager over D-Bus.
 
 mod materialize;
 mod model;
+mod readiness;
 mod render;
+mod semantic;
+mod service;
+mod static_assemble;
+mod static_render;
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -17,7 +22,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, AccessMode, IncarnationId, LocalKey, MethodSemantics,
-    RevisionId,
+    ResourceReference, RevisionId,
 };
 use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
@@ -50,6 +55,12 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let arguments = std::env::args().collect::<Vec<_>>();
+    if arguments.len() == 2 && arguments[1] == "render" {
+        return static_render::run();
+    }
+    if arguments.len() == 2 && arguments[1] == "assemble" {
+        return static_assemble::run();
+    }
     if arguments.len() != 3 || arguments[1] != HANDLER_ABI_ARGUMENT {
         bail!("expected --aos-primitive-v1 and one invocation purpose");
     }
@@ -83,6 +94,16 @@ async fn run() -> Result<()> {
 }
 
 async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
+    if request.method.interface.name.as_str() == INTERFACE_NAME {
+        admit_packaged_unit(request).await
+    } else if readiness::supports(&request.method) {
+        readiness::admit(request).await
+    } else {
+        service::admit(request).await
+    }
+}
+
+async fn admit_packaged_unit(request: AdmissionRequest) -> Result<AdmissionResult> {
     if request.schema != ADMISSION_REQUEST_SCHEMA {
         bail!("unsupported admission request schema");
     }
@@ -93,7 +114,7 @@ async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
     validate_contexts(&request.resources)?;
 
     let expected: PackagedUnitRequest = decode_value(&request.resource_spec.value)?;
-    require_prerequisite_contexts(&expected.prerequisites, &request.resources)?;
+    require_resource_contexts(&packaged_resource_references(&expected), &request.resources)?;
     let realization: PackagedUnitRealization = decode_value(&request.resource_spec.realization)?;
     require_matching_request(&expected, &realization)?;
     let rendered = render(&realization)?;
@@ -144,6 +165,16 @@ async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
 }
 
 async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
+    if invocation.method.interface.name.as_str() == INTERFACE_NAME {
+        invoke_packaged_unit(invocation).await
+    } else if readiness::supports(&invocation.method) {
+        readiness::invoke(invocation).await
+    } else {
+        service::invoke(invocation).await
+    }
+}
+
+async fn invoke_packaged_unit(invocation: Invocation) -> Result<InvocationResult> {
     if invocation.schema != INVOCATION_SCHEMA || invocation.request.schema != REQUEST_SCHEMA {
         bail!("unsupported invocation schema");
     }
@@ -168,7 +199,10 @@ async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     }
     require_target_revision(bound.resource_spec.revision, target.revision)?;
     let expected: PackagedUnitRequest = decode_value(&bound.resource_spec.value)?;
-    require_prerequisite_contexts(&expected.prerequisites, &invocation.request.resources)?;
+    require_resource_contexts(
+        &packaged_resource_references(&expected),
+        &invocation.request.resources,
+    )?;
     let method_inputs: PackagedUnitRequest = decode_value(&invocation.request.inputs)?;
     if method_inputs != expected {
         bail!("invocation inputs differ from the checked target value");
@@ -506,7 +540,7 @@ fn validate_contexts(contexts: &[ResourceContext]) -> Result<()> {
     Ok(())
 }
 
-fn require_prerequisite_contexts(
+fn require_resource_contexts(
     prerequisites: &[aos_ability_model::ResourceReference],
     contexts: &[ResourceContext],
 ) -> Result<()> {
@@ -516,10 +550,27 @@ fn require_prerequisite_contexts(
             .filter(|context| context.reference == *prerequisite)
             .count();
         if matches != 1 {
-            bail!("packaged-unit prerequisite lacks one exact checked resource context");
+            bail!("provider input lacks one exact checked resource context");
         }
     }
     Ok(())
+}
+
+fn packaged_resource_references(request: &PackagedUnitRequest) -> Vec<ResourceReference> {
+    let candidates = request
+        .prerequisites
+        .iter()
+        .chain(&request.dependencies.after)
+        .chain(&request.dependencies.before)
+        .chain(&request.dependencies.requires)
+        .chain(&request.dependencies.wants);
+    let mut references = Vec::new();
+    for reference in candidates {
+        if !references.contains(reference) {
+            references.push(reference.clone());
+        }
+    }
+    references
 }
 
 fn require_method(
@@ -647,7 +698,11 @@ mod tests {
     use aos_contract::Sha256Digest;
     use aos_provider_protocol::ResourceContext;
 
-    use super::{require_method, require_prerequisite_contexts, require_target_revision};
+    use super::{
+        packaged_resource_references, require_method, require_resource_contexts,
+        require_target_revision,
+    };
+    use crate::model::PackagedUnitRequest;
 
     fn method(name: &str) -> MethodReference {
         serde_json::from_value(serde_json::json!({
@@ -733,28 +788,65 @@ mod tests {
     }
 
     #[test]
-    fn prerequisites_require_one_exact_checked_context() {
+    fn every_packaged_unit_reference_requires_one_exact_checked_context() {
         let expected = resource_reference("configured");
         let changed = resource_reference("other");
 
         assert!(
-            require_prerequisite_contexts(
+            require_resource_contexts(
                 std::slice::from_ref(&expected),
                 &[context(expected.clone())],
             )
             .is_ok()
         );
-        assert!(require_prerequisite_contexts(std::slice::from_ref(&expected), &[]).is_err());
+        assert!(require_resource_contexts(std::slice::from_ref(&expected), &[]).is_err());
         assert!(
-            require_prerequisite_contexts(std::slice::from_ref(&expected), &[context(changed)],)
+            require_resource_contexts(std::slice::from_ref(&expected), &[context(changed)],)
                 .is_err()
         );
         assert!(
-            require_prerequisite_contexts(
+            require_resource_contexts(
                 &[expected.clone()],
                 &[context(expected.clone()), context(expected)],
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn packaged_unit_context_set_covers_native_dependencies() {
+        let prerequisite = resource_reference("configured");
+        let dependency = resource_reference("service");
+        let request: PackagedUnitRequest = serde_json::from_value(serde_json::json!({
+            "source": {
+                "artifact": {
+                    "content": format!("sha256:{}", "1".repeat(64)),
+                    "store_path": "/nix/store/11111111111111111111111111111111-systemd",
+                    "nar_hash": format!("sha256:{}", "2".repeat(64)),
+                    "closure": format!("sha256:{}", "3".repeat(64)),
+                },
+                "unit_file": "lib/systemd/system/example.service",
+                "unit_name": "example.service",
+            },
+            "activation": "reference",
+            "prerequisites": [prerequisite.clone()],
+            "dependencies": {
+                "after": [dependency.clone()],
+                "before": [],
+                "requires": [dependency],
+                "wants": [],
+            },
+            "drop_in": {
+                "accepted_exit_statuses": [],
+                "reload_triggers": [],
+                "search_path": [],
+            },
+        }))
+        .expect("packaged-unit request fixture is valid");
+
+        let references = packaged_resource_references(&request);
+
+        assert_eq!(references.len(), 2);
+        assert_eq!(references[0], prerequisite);
     }
 }

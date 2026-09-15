@@ -9,14 +9,21 @@ use anyhow::{Context, Result, bail};
 use aos_ability_model::{ResourceId, RevisionId};
 use tempfile::NamedTempFile;
 
-use crate::model::RevisionReceipt;
-use crate::render::{DROP_IN_FILE, RenderedUnit};
+use crate::model::{RevisionReceipt, ServiceReceiptLink, ServiceRevisionReceipt};
+use crate::render::{DROP_IN_FILE, RenderedService, RenderedUnit};
 
 const RECEIPT_SCHEMA: &str = "aos.systemd.packaged-unit-revision/v1";
+const SERVICE_RECEIPT_SCHEMA: &str = "aos.systemd.service-revision/v1";
 
 pub(crate) struct UnitPaths {
     pub(crate) unit: PathBuf,
     pub(crate) drop_in: PathBuf,
+    pub(crate) receipt: PathBuf,
+}
+
+pub(crate) struct ServicePaths {
+    pub(crate) units: Vec<PathBuf>,
+    pub(crate) links: Vec<PathBuf>,
     pub(crate) receipt: PathBuf,
 }
 
@@ -63,6 +70,149 @@ pub(crate) fn materialize(
     publish_file(&paths.receipt, &bytes)?;
 
     Ok(paths)
+}
+
+pub(crate) fn service_paths_for(
+    root: &Path,
+    primary_unit: &str,
+    revision: RevisionId,
+    rendered: &RenderedService,
+) -> ServicePaths {
+    ServicePaths {
+        units: rendered
+            .units
+            .iter()
+            .map(|unit| root.join("systemd/system").join(&unit.name))
+            .collect(),
+        links: rendered
+            .links
+            .iter()
+            .map(|link| root.join("systemd/system").join(&link.path))
+            .collect(),
+        receipt: root
+            .join("aos/ability-revisions")
+            .join(primary_unit)
+            .join("sha256")
+            .join(revision.0.hex()),
+    }
+}
+
+pub(crate) fn materialize_service(
+    root: &Path,
+    primary_unit: &str,
+    revision: RevisionId,
+    resource: &ResourceId,
+    rendered: &RenderedService,
+) -> Result<ServicePaths> {
+    let paths = service_paths_for(root, primary_unit, revision, rendered);
+    let systemd_root = root.join("systemd/system");
+    ensure_directory(&systemd_root)?;
+
+    for (path, unit) in paths.units.iter().zip(&rendered.units) {
+        publish_file(path, &unit.bytes)?;
+    }
+    for (path, link) in paths.links.iter().zip(&rendered.links) {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("service installation link has no parent"))?;
+        ensure_directory(parent)?;
+        publish_symlink(path, Path::new(&link.target))?;
+    }
+
+    let receipt_directory = paths
+        .receipt
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("service receipt path has no parent"))?;
+    ensure_directory(receipt_directory)?;
+    publish_file(
+        &paths.receipt,
+        &service_receipt_bytes(resource, revision, rendered)?,
+    )?;
+
+    Ok(paths)
+}
+
+pub(crate) fn service_matches(
+    paths: &ServicePaths,
+    rendered: &RenderedService,
+    resource: &ResourceId,
+    revision: RevisionId,
+) -> Result<bool> {
+    if paths.units.len() != rendered.units.len() {
+        bail!("service path set differs from its rendered unit set");
+    }
+    for (path, unit) in paths.units.iter().zip(&rendered.units) {
+        match fs::read(path) {
+            Ok(bytes) if bytes == unit.bytes => {}
+            Ok(_) => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading {}", path.display()));
+            }
+        }
+    }
+    if paths.links.len() != rendered.links.len() {
+        bail!("service link path set differs from its rendered installation set");
+    }
+    for (path, link) in paths.links.iter().zip(&rendered.links) {
+        match fs::read_link(path) {
+            Ok(target) if target == Path::new(&link.target) => {}
+            Ok(_) => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading {}", path.display()));
+            }
+        }
+    }
+
+    let expected_receipt = service_receipt_bytes(resource, revision, rendered)?;
+    match fs::read(&paths.receipt) {
+        Ok(bytes) => Ok(bytes == expected_receipt),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).context("reading service revision receipt"),
+    }
+}
+
+pub(crate) fn remove_service(
+    paths: &ServicePaths,
+    rendered: &RenderedService,
+    resource: &ResourceId,
+    revision: RevisionId,
+) -> Result<()> {
+    let presence = service_removal_presence(paths, rendered, resource, revision)?;
+
+    for (path, present) in paths.units.iter().zip(presence.units) {
+        if present {
+            remove_managed_path(path)?;
+        }
+    }
+    for (path, present) in paths.links.iter().zip(presence.links) {
+        if present {
+            remove_managed_path(path)?;
+        }
+    }
+    if presence.receipt {
+        remove_managed_path(&paths.receipt)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn service_is_absent(paths: &ServicePaths) -> Result<bool> {
+    for path in paths
+        .units
+        .iter()
+        .chain(&paths.links)
+        .chain(std::iter::once(&paths.receipt))
+    {
+        match fs::symlink_metadata(path) {
+            Ok(_) => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("inspecting {}", path.display()));
+            }
+        }
+    }
+    Ok(true)
 }
 
 pub(crate) fn matches(
@@ -129,6 +279,46 @@ struct RemovalPresence {
     receipt: bool,
 }
 
+struct ServiceRemovalPresence {
+    units: Vec<bool>,
+    links: Vec<bool>,
+    receipt: bool,
+}
+
+fn service_removal_presence(
+    paths: &ServicePaths,
+    rendered: &RenderedService,
+    resource: &ResourceId,
+    revision: RevisionId,
+) -> Result<ServiceRemovalPresence> {
+    if paths.units.len() != rendered.units.len() || paths.links.len() != rendered.links.len() {
+        bail!("service path set differs from its rendered materialization");
+    }
+
+    let units = paths
+        .units
+        .iter()
+        .zip(&rendered.units)
+        .map(|(path, unit)| verify_file_exact_or_absent(path, &unit.bytes))
+        .collect::<Result<Vec<_>>>()?;
+    let links = paths
+        .links
+        .iter()
+        .zip(&rendered.links)
+        .map(|(path, link)| verify_symlink_exact_or_absent(path, Path::new(&link.target)))
+        .collect::<Result<Vec<_>>>()?;
+    let receipt = verify_file_exact_or_absent(
+        &paths.receipt,
+        &service_receipt_bytes(resource, revision, rendered)?,
+    )?;
+
+    Ok(ServiceRemovalPresence {
+        units,
+        links,
+        receipt,
+    })
+}
+
 fn removal_presence(
     paths: &UnitPaths,
     rendered: &RenderedUnit,
@@ -169,6 +359,32 @@ fn receipt_bytes(resource: &ResourceId, unit_name: &str, revision: RevisionId) -
         revision,
     };
     aos_contract::canonical::to_vec(&receipt).context("encoding revision receipt")
+}
+
+fn service_receipt_bytes(
+    resource: &ResourceId,
+    revision: RevisionId,
+    rendered: &RenderedService,
+) -> Result<Vec<u8>> {
+    let receipt = ServiceRevisionReceipt {
+        schema: SERVICE_RECEIPT_SCHEMA,
+        resource,
+        units: rendered
+            .units
+            .iter()
+            .map(|unit| unit.name.as_str())
+            .collect(),
+        links: rendered
+            .links
+            .iter()
+            .map(|link| ServiceReceiptLink {
+                path: &link.path,
+                target: &link.target,
+            })
+            .collect(),
+        revision,
+    };
+    aos_contract::canonical::to_vec(&receipt).context("encoding service revision receipt")
 }
 
 fn ensure_directory(path: &Path) -> Result<()> {
@@ -302,8 +518,11 @@ mod tests {
     use aos_contract::Sha256Digest;
     use tempfile::TempDir;
 
-    use super::{is_absent, matches, materialize, paths_for, remove};
-    use crate::render::RenderedUnit;
+    use super::{
+        is_absent, matches, materialize, materialize_service, paths_for, remove, remove_service,
+        service_is_absent, service_matches, service_paths_for,
+    };
+    use crate::render::{RenderedService, RenderedServiceLink, RenderedServiceUnit, RenderedUnit};
 
     fn resource() -> ResourceId {
         ResourceId {
@@ -317,6 +536,90 @@ mod tests {
             },
             key: LocalKey::new("unit").expect("resource key parses"),
         }
+    }
+
+    fn rendered_service() -> RenderedService {
+        RenderedService {
+            primary_unit: "example.service".to_string(),
+            units: vec![
+                RenderedServiceUnit {
+                    name: "example.service".to_string(),
+                    bytes: b"[Service]\nExecStart=/example\n".to_vec(),
+                },
+                RenderedServiceUnit {
+                    name: "example.socket".to_string(),
+                    bytes: b"[Socket]\nListenStream=1\n".to_vec(),
+                },
+            ],
+            links: vec![RenderedServiceLink {
+                path: "multi-user.target.wants/example.service".to_string(),
+                target: "../example.service".to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn service_materialization_binds_all_exact_unit_bytes_to_the_receipt() {
+        let root = TempDir::new().expect("temporary root");
+        let revision = RevisionId(Sha256Digest::from_bytes([9; 32]));
+        let rendered = rendered_service();
+        let paths = materialize_service(
+            root.path(),
+            "example.service",
+            revision,
+            &resource(),
+            &rendered,
+        )
+        .expect("service materializes");
+
+        assert!(
+            service_matches(&paths, &rendered, &resource(), revision)
+                .expect("service state is readable")
+        );
+        assert_eq!(
+            fs::read_link(&paths.links[0]).expect("installation link is readable"),
+            std::path::Path::new("../example.service")
+        );
+        fs::write(&paths.units[1], b"[Socket]\nListenStream=2\n").expect("unit changes");
+        assert!(
+            !service_matches(&paths, &rendered, &resource(), revision)
+                .expect("changed service state is readable")
+        );
+        assert_eq!(
+            service_paths_for(root.path(), "example.service", revision, &rendered).units,
+            paths.units
+        );
+    }
+
+    #[test]
+    fn service_removal_is_exact_and_idempotent() {
+        let root = TempDir::new().expect("temporary root");
+        let revision = RevisionId(Sha256Digest::from_bytes([10; 32]));
+        let rendered = rendered_service();
+        let paths = materialize_service(
+            root.path(),
+            "example.service",
+            revision,
+            &resource(),
+            &rendered,
+        )
+        .expect("service materializes");
+
+        remove_service(&paths, &rendered, &resource(), revision).expect("service removes");
+        assert!(service_is_absent(&paths).expect("absence is observable"));
+        remove_service(&paths, &rendered, &resource(), revision).expect("removal is idempotent");
+
+        materialize_service(
+            root.path(),
+            "example.service",
+            revision,
+            &resource(),
+            &rendered,
+        )
+        .expect("service rematerializes");
+        fs::write(&paths.units[0], b"[Service]\nExecStart=/changed\n").expect("unit changes");
+        assert!(remove_service(&paths, &rendered, &resource(), revision).is_err());
+        assert!(paths.units[0].exists());
     }
 
     #[test]

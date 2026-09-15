@@ -93,33 +93,15 @@ in {
       '';
     };
 
-    packagedUnitSources = lib.mkOption {
-      type = lib.types.listOf (lib.types.submodule {
-        options = {
-          artifactRoot = lib.mkOption {
-            type = lib.types.path;
-            description = "Authenticated artifact root containing the packaged unit.";
-          };
-          unitFile = lib.mkOption {
-            type = lib.types.str;
-            description = "Unit file path relative to the authenticated artifact root.";
-          };
-          unitName = lib.mkOption {
-            type = lib.types.str;
-            description = "Exact backend unit name selected by the provider.";
-          };
-          owner = lib.mkOption {
-            type = lib.types.str;
-            description = "Selected controller binding that owns this source projection.";
-          };
-        };
-      });
+    providerUnitArtifacts = lib.mkOption {
+      type = lib.types.listOf lib.types.path;
       default = [];
       internal = true;
       contributable = true;
       description = ''
-        Authenticated unit sources projected by selected systemd providers.
-        This backend carrier avoids reconstructing package inventory metadata.
+        Unit trees and manifests produced by authenticated provider renderers.
+        The compiled systemd assembler validates each manifest and rejects all
+        collisions before adding its entries to the boot unit tree.
       '';
     };
 
@@ -318,7 +300,6 @@ in {
       upstreamUnits = [];
       upstreamWants = [];
       packages = config.systemd.packages;
-      packagedUnitSources = config.systemd.packagedUnitSources;
       package = config.systemd.package;
       packageOwners = builtins.listToAttrs (builtins.map (package:
         lib.nameValuePair
@@ -538,14 +519,28 @@ in {
     # the *-ToUnit renderers) in a single place.
     systemd.units = renderedUnits;
 
-    # Materialize the builder-side directory from the same manifest emitted by
-    # the on-host evaluator. No independently assembled systemd derivation path
-    # remains: byte layout and job-script substitution are driven by
-    # `configManifest.etc` and `configManifest.jobScripts`.
-    system.build.systemdSystemUnits = systemdLib.materializeUnits {
-      type = "system";
-      inherit (config.system.build.systemdMaterializationData) etc jobScripts;
-    };
+    # Provider-owned units are rendered by the same compiled implementation
+    # used at runtime. Its manifest is the only filename authority for those
+    # entries; the assembler validates bytes, links, and collisions with the
+    # ordinary module-rendered tree before publishing the boot unit directory.
+    system.build.systemdSystemUnits = let
+      baseUnits = systemdLib.materializeUnits {
+        type = "system";
+        inherit (config.system.build.systemdMaterializationData) etc jobScripts;
+      };
+      providerArtifacts = config.systemd.providerUnitArtifacts;
+      providerArtifactsJson = builtins.toJSON providerArtifacts;
+    in
+      if providerArtifacts == []
+      then baseUnits
+      else
+        pkgs.runCommand "systemd-system-units-with-provider-artifacts" {
+          inherit baseUnits providerArtifactsJson;
+          passAsFile = ["providerArtifactsJson"];
+        } ''
+          providerArtifactsPath="$providerArtifactsJsonPath" \
+            ${pkgs.buildPackages.aos-systemd-provider}/bin/aos-systemd-provider assemble
+        '';
 
     # --- Pure render values ---------------------------------------------
     #

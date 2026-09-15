@@ -1,14 +1,16 @@
-//! Typed systemd packaged-unit realization and observation values.
+//! Typed systemd realization, observation, and pinned-context values.
 
 use std::collections::BTreeMap;
 
-use aos_ability_model::{ArtifactReference, ResourceReference};
+use aos_ability_model::{ArtifactReference, InterfaceKey, LocalKey, ResourceReference};
 use serde::{Deserialize, Serialize};
 
 pub(crate) const INTERFACE_NAME: &str = "aos.systemd.packaged-unit";
 pub(crate) const OBSERVATION_SCHEMA: &str = "aos.ability.systemd-packaged-unit-observation/v1";
 pub(crate) const REALIZATION_SCHEMA: &str = "aos.systemd.packaged-unit-realization/v1";
 pub(crate) const PROVIDER_CONTEXT_SCHEMA: &str = "aos.systemd.packaged-unit-context/v1";
+pub(crate) const SERVICE_REALIZATION_SCHEMA: &str = "aos.systemd.service-realization/v2";
+pub(crate) const STATIC_MANIFEST_SCHEMA: &str = "aos.systemd.static-unit-manifest/v1";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -66,13 +68,148 @@ pub(crate) struct PackagedUnitRealization {
     pub(crate) source: RealizedUnitSource,
     pub(crate) systemd_unit: SystemdUnitIdentity,
     pub(crate) activation: Activation,
-    pub(crate) drop_in_text: String,
+    pub(crate) drop_in: Vec<SystemdSection>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SystemdUnitIdentity {
     pub(crate) unit_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SemanticUnitText {
+    pub(crate) template: String,
+    pub(crate) substitutions: BTreeMap<LocalKey, SemanticSubstitution>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SemanticSubstitution {
+    pub(crate) prefix: String,
+    pub(crate) suffix: String,
+    pub(crate) encoding: SemanticSubstitutionEncoding,
+    pub(crate) source: SemanticSubstitutionSource,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum SemanticSubstitutionEncoding {
+    Escaped,
+    Quoted,
+    Raw,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub(crate) enum SemanticSubstitutionSource {
+    ArtifactPath {
+        artifact: ArtifactReference,
+        relative_path: String,
+    },
+    ExecutionPath {
+        value: String,
+    },
+    GroupName {
+        value: String,
+    },
+    PrincipalName {
+        value: String,
+    },
+    RuntimeString {
+        value: String,
+    },
+    SystemdUnitName {
+        identity: ServiceUnitIdentity,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SystemdDirective {
+    pub(crate) name: String,
+    pub(crate) value: SemanticUnitText,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) enum SystemdSectionName {
+    Install,
+    Service,
+    Socket,
+    Unit,
+}
+
+impl SystemdSectionName {
+    pub(crate) const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Install => "Install",
+            Self::Service => "Service",
+            Self::Socket => "Socket",
+            Self::Unit => "Unit",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SystemdSection {
+    pub(crate) name: SystemdSectionName,
+    pub(crate) directives: Vec<SystemdDirective>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SystemdUnitDocument {
+    pub(crate) systemd_unit: SystemdUnitIdentity,
+    pub(crate) sections: Vec<SystemdSection>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ServiceFacetIdentity {
+    pub(crate) interface: InterfaceKey,
+    pub(crate) facet: LocalKey,
+    pub(crate) observation_schema: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub(crate) enum ServiceUnitIdentity {
+    Unit {
+        unit_name: String,
+    },
+    TemplateInstance {
+        template_unit_name: String,
+        instance: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ServiceLinkRelationship {
+    Requires,
+    Wants,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RealizedServiceLink {
+    pub(crate) parent: ServiceUnitIdentity,
+    pub(crate) child: ServiceUnitIdentity,
+    pub(crate) relationship: ServiceLinkRelationship,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ServiceRealization {
+    pub(crate) schema: String,
+    pub(crate) systemd_unit: ServiceUnitIdentity,
+    pub(crate) units: Vec<SystemdUnitDocument>,
+    pub(crate) facets: Vec<ServiceFacetIdentity>,
+    pub(crate) links: Vec<RealizedServiceLink>,
+    pub(crate) enabled: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -114,6 +251,52 @@ pub(crate) struct RevisionReceipt<'a> {
     pub(crate) resource: &'a aos_ability_model::ResourceId,
     pub(crate) unit_name: &'a str,
     pub(crate) revision: aos_ability_model::RevisionId,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ServiceRevisionReceipt<'a> {
+    pub(crate) schema: &'static str,
+    pub(crate) resource: &'a aos_ability_model::ResourceId,
+    pub(crate) units: Vec<&'a str>,
+    pub(crate) links: Vec<ServiceReceiptLink<'a>>,
+    pub(crate) revision: aos_ability_model::RevisionId,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ServiceReceiptLink<'a> {
+    pub(crate) path: &'a str,
+    pub(crate) target: &'a str,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StaticUnitManifest {
+    pub(crate) schema: String,
+    pub(crate) primary: StaticPrimaryUnit,
+    pub(crate) entries: Vec<StaticUnitManifestEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StaticPrimaryUnit {
+    pub(crate) unit_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) logical_instance: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub(crate) enum StaticUnitManifestEntry {
+    File {
+        path: String,
+        content: aos_contract::Sha256Digest,
+    },
+    Symlink {
+        path: String,
+        target: String,
+    },
 }
 
 pub(crate) fn empty_outputs()

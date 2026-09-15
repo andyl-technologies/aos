@@ -4,10 +4,34 @@
   config,
   lib,
   packageName,
+  pkgs,
   ...
 }: let
   implementationAlias = "systemd-packaged-unit";
   implementationName = "${packageName}:${implementationAlias}";
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
+  serviceInterfaces = serviceManagement.interfaces;
+  serviceResourceFields = serviceManagement.types.serviceDeclaration._abilitySchema.fields;
+  serviceImplementationNames = builtins.filter (featureName: let
+    selected = serviceInterfaces.${featureName};
+    aggregation = selected.document.interface.aggregation;
+  in
+    selected.methods
+    != []
+    && aggregation.controller_group == "service"
+    && aggregation.merge_contract != null)
+  (builtins.attrNames serviceInterfaces);
+  controlsService = featureName: let
+    selected = serviceInterfaces.${featureName};
+  in
+    builtins.any (methodName:
+      selected.declaration.methods.${methodName}.semantics.requiredTargetAccess == "exclusive-write")
+    selected.methods;
+  serviceControllerImplementationNames = builtins.map
+    (featureName: "${packageName}:${serviceInterfaces.${featureName}.alias}")
+    (builtins.filter controlsService serviceImplementationNames);
+  networkReadinessAlias = serviceInterfaces.networkReadiness.alias;
+  filesystemReadinessAlias = serviceInterfaces.filesystemReadiness.alias;
   interface = config.aos.abilities.interfaces.${implementationName};
 
   emptyResult = {
@@ -93,6 +117,99 @@
       realizations = builtins.mapAttrs (_: realizationFor) resources;
     };
 
+  facetNameFor = selected: let
+    requestFields = builtins.removeAttrs selected.requestType._abilitySchema.fields ["service" "enabled"];
+    candidates = builtins.filter (fieldName: let
+      schema = serviceResourceFields.${fieldName};
+      unwrapped =
+        if schema.kind == "optional"
+        then schema.value
+        else schema;
+    in
+      fieldName
+      != "service"
+      && fieldName != "enabled"
+      && unwrapped.kind == "record"
+      && unwrapped.fields == requestFields)
+    (builtins.attrNames serviceResourceFields);
+  in
+    if builtins.length candidates != 1
+    then throw "systemd service interface must select exactly one canonical service resource facet"
+    else builtins.head candidates;
+  provideServiceFacet = featureName: context: let
+    selected = serviceInterfaces.${featureName};
+    facetName = facetNameFor selected;
+    publishesServiceResource = builtins.hasAttr "service-resource" selected.declaration.outputs;
+    entries = builtins.map (requestName: let
+      binding = bindingFor context.bindings requestName;
+    in {
+      inherit requestName binding;
+      parameters = context.requests.${requestName}.parameters;
+      reference = {
+        interface = selected.identity;
+        resource = {
+          provider = context.instance.id;
+          key = binding.slot;
+        };
+        operations = ["observe"];
+        lifetime = "instance";
+      };
+    }) (builtins.attrNames context.requests);
+  in
+    emptyResult
+    // {
+      outputs =
+        if publishesServiceResource
+        then builtins.listToAttrs (builtins.map (entry: {
+          name = entry.requestName;
+          value.service-resource = entry.reference;
+        }) entries)
+        else {};
+      resourceFragments = builtins.listToAttrs (builtins.map (entry: {
+          name = entry.binding.slot;
+          value = {
+            kind = "aos.service.instance";
+            lifetime = "instance";
+            value = {
+              inherit (entry.parameters) service;
+              enabled = entry.parameters.enabled or false;
+              ${facetName} = builtins.removeAttrs entry.parameters ["service" "enabled"];
+            };
+          };
+        })
+        entries);
+    };
+
+  provideReadiness = alias: outputName: context: let
+    declaration = config.aos.abilities.interfaces."${packageName}:${alias}";
+    interfaceIdentity = lib.abilities.interfaceIdentity (
+      lib.abilities.interfaceDocumentFromDeclaration declaration
+    );
+    entries = builtins.map (requestName: let
+      binding = bindingFor context.bindings requestName;
+    in {
+      inherit requestName;
+      reference = {
+        interface = interfaceIdentity;
+        resource = {
+          provider = context.instance.id;
+          key = binding.slot;
+        };
+        operations = ["observe"];
+        lifetime = "instance";
+      };
+    }) (builtins.attrNames context.requests);
+  in
+    emptyResult
+    // {
+      resourceFragments = {};
+      outputs = builtins.listToAttrs (builtins.map (entry: {
+          name = entry.requestName;
+          value.${outputName} = entry.reference;
+        })
+        entries);
+    };
+
   resolveReference = value:
     if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
     then let
@@ -138,7 +255,20 @@
     if reference.operations == [] || !operationsAreReadable
     then throw "systemd dependency ResourceReference does not grant exact read authority"
     else true;
-  unitNameForReference = deferred: let
+  validServiceUnitIdentity = identity:
+    builtins.isAttrs identity
+    && (
+      (identity.kind or null) == "unit"
+      && builtins.attrNames identity == ["kind" "unit_name"]
+      && validUnitName identity.unit_name
+      || (identity.kind or null) == "template-instance"
+      && builtins.attrNames identity == ["instance" "kind" "template_unit_name"]
+      && builtins.isString identity.instance
+      && identity.instance != ""
+      && validUnitName identity.template_unit_name
+      && lib.hasSuffix "@.service" identity.template_unit_name
+    );
+  unitIdentityForReference = deferred: let
     reference = resolveReference deferred;
     identity = resourceIdentity reference.resource;
     matches = resourcesByIdentity.${identity} or [];
@@ -150,11 +280,14 @@
     unitIdentity =
       if realization == null
       then null
-      else realization.systemd_unit or null;
-    unitName =
-      if unitIdentity == null
-      then null
-      else unitIdentity.unit_name or null;
+      else if (realization.schema or null) == "aos.systemd.packaged-unit-realization/v1"
+      then {
+        kind = "unit";
+        unit_name = realization.systemd_unit.unit_name or null;
+      }
+      else if (realization.schema or null) == "aos.systemd.service-realization/v2"
+      then realization.systemd_unit or null
+      else null;
   in
     if resource.resource != reference.resource
     then throw "systemd dependency resolved to another ResourceId"
@@ -162,39 +295,113 @@
     then throw "systemd dependency realization does not match its ResourceReference authority"
     else if !requireReferenceAuthority reference resource
     then throw "systemd dependency has invalid ResourceReference authority"
-    else if unitName == null || !validUnitName unitName
+    else if !validServiceUnitIdentity unitIdentity
     then throw "systemd dependency has no valid systemd unit identity"
-    else unitName;
-  concreteUnitNames = references: let
-    units = builtins.sort builtins.lessThan (builtins.map unitNameForReference references);
+    else unitIdentity;
+  concreteUnitIdentities = references: let
+    units = builtins.sort
+      (left: right: builtins.toJSON left < builtins.toJSON right)
+      (builtins.map unitIdentityForReference references);
   in
     if builtins.length units != builtins.length (lib.unique units)
     then throw "systemd dependencies resolve multiple resources to the same unit"
     else units;
 
-  directive = name: values:
-    lib.optionalString (values != []) "${name}=${builtins.concatStringsSep " " values}\n";
-
-  dropInText = parameters: let
-    dependencies = parameters.dependencies;
-    searchRoots =
-      builtins.map
-      (selector: (artifactLocatorFor selector).path)
-      parameters.drop_in.search_path;
-    searchPath = builtins.concatStringsSep ":" (
-      builtins.concatMap (root: ["${root}/bin" "${root}/sbin"]) searchRoots
-    );
-    serviceDirectives =
-      lib.optionalString (parameters.drop_in.accepted_exit_statuses != [])
-      "SuccessExitStatus=${builtins.concatStringsSep " " (builtins.map builtins.toString parameters.drop_in.accepted_exit_statuses)}\n"
-      + lib.optionalString (searchPath != "") "Environment=\"PATH=${searchPath}\"\n";
+  observationSchemaFor = selected: let
+    values = selected.observationType._abilitySchema.fields.schema.values or [];
   in
-    "[Unit]\n"
-    + directive "After" (concreteUnitNames dependencies.after)
-    + directive "Before" (concreteUnitNames dependencies.before)
-    + directive "Requires" (concreteUnitNames dependencies.requires)
-    + directive "Wants" (concreteUnitNames dependencies.wants)
-    + lib.optionalString (serviceDirectives != "") "\n[Service]\n${serviceDirectives}";
+    if builtins.length values != 1
+    then throw "systemd service observation must declare one exact schema"
+    else builtins.head values;
+  serviceFacets =
+    builtins.sort
+    (left: right: builtins.toJSON left < builtins.toJSON right)
+    (builtins.map (featureName: let
+        selected = serviceInterfaces.${featureName};
+      in {
+        interface = selected.identity;
+        facet = facetNameFor selected;
+        observation_schema = observationSchemaFor selected;
+      })
+      serviceImplementationNames);
+
+  serviceRenderer = import ./_systemd-service-document.nix {
+    inherit lib serviceFacets;
+    unitNameForReference = unitIdentityForReference;
+  };
+  composeServices = controllerInterface: {resources, ...}:
+    emptyResult
+    // {
+      realizations = builtins.mapAttrs (_: serviceRenderer.realizationFor controllerInterface) resources;
+    };
+
+  unitDocument = import ./_systemd-unit-document.nix {inherit lib;};
+  joinDocuments = separator: documents:
+    if documents == []
+    then unitDocument.literal ""
+    else
+      builtins.foldl'
+      (combined: document: unitDocument.concat [combined (unitDocument.literal separator) document])
+      (builtins.head documents)
+      (builtins.tail documents);
+  literalValues = values:
+    joinDocuments " " (builtins.map unitDocument.literal values);
+  dropInDocument = parameters: let
+    dependencies = parameters.dependencies;
+    dependencyDirective = name: values:
+      lib.optional (values != []) (unitDocument.directive name (
+        joinDocuments " " (builtins.map
+          (identity: unitDocument.systemdUnitName {inherit identity;})
+          (concreteUnitIdentities values))
+      ));
+    reloadTriggers = builtins.map
+      (value: unitDocument.executionPath {
+        inherit value;
+        encoding = "escaped";
+      })
+      parameters.drop_in.reload_triggers;
+    searchPath = joinDocuments ":" (
+      builtins.concatMap (artifact: [
+          (unitDocument.artifactPath {
+            inherit artifact;
+            relativePath = "bin";
+            encoding = "escaped";
+          })
+          (unitDocument.artifactPath {
+            inherit artifact;
+            relativePath = "sbin";
+            encoding = "escaped";
+          })
+        ])
+      parameters.drop_in.search_path
+    );
+    unitDirectives =
+      dependencyDirective "After" dependencies.after
+      ++ dependencyDirective "Before" dependencies.before
+      ++ dependencyDirective "Requires" dependencies.requires
+      ++ dependencyDirective "Wants" dependencies.wants
+      ++ lib.optional (reloadTriggers != []) (
+        unitDocument.directive "X-Reload-Triggers" (joinDocuments " " reloadTriggers)
+      );
+    serviceDirectives =
+      lib.optional (parameters.drop_in.accepted_exit_statuses != []) (
+        unitDocument.directive "SuccessExitStatus" (
+          literalValues (builtins.map builtins.toString parameters.drop_in.accepted_exit_statuses)
+        )
+      )
+      ++ lib.optional (parameters.drop_in.search_path != []) (
+        unitDocument.directive "Environment" (
+          unitDocument.concat [
+            (unitDocument.literal "\"")
+            (unitDocument.literal "PATH=")
+            searchPath
+            (unitDocument.literal "\"")
+          ]
+        )
+      );
+  in
+    [(unitDocument.section "Unit" unitDirectives)]
+    ++ lib.optional (serviceDirectives != []) (unitDocument.section "Service" serviceDirectives);
 
   realizationFor = resource: let
     parameters = resource.value;
@@ -207,7 +414,7 @@
     };
     systemd_unit.unit_name = parameters.source.unit_name;
     inherit (parameters) activation;
-    drop_in_text = dropInText parameters;
+    drop_in = dropInDocument parameters;
   };
 
   selectedResources = builtins.filter (resource:
@@ -215,26 +422,52 @@
     != null
     && config.aos.abilities.bindings.${resource.controller}.implementation == implementationName)
   (builtins.attrValues config.aos.abilities.resolvedResources);
-  staticSource = resource: {
-    artifactRoot = resource.realization.source.artifact.store_path;
-    unitFile = resource.realization.source.unit_file;
-    unitName = resource.realization.systemd_unit.unit_name;
-    owner = resource.controller;
-  };
-  staticUnits = builtins.listToAttrs (builtins.map (resource: {
-      name = resource.realization.systemd_unit.unit_name;
+  selectedServiceResources = builtins.filter (resource:
+    resource.controller
+    != null
+    && builtins.elem
+    config.aos.abilities.bindings.${resource.controller}.implementation
+    serviceControllerImplementationNames)
+  (builtins.attrValues config.aos.abilities.resolvedResources);
+  staticArtifactFor = resource: let
+    realization = builtins.toJSON resource.realization;
+    rendered = pkgs.runCommand "systemd-ability-${builtins.hashString "sha256" realization}" {
+      inherit realization;
+      passAsFile = ["realization"];
+    } ''
+      ${pkgs.buildPackages.aos-systemd-provider}/bin/aos-systemd-provider render
+    '';
+  in
+    rendered;
+  staticArtifacts = builtins.map staticArtifactFor (selectedResources ++ selectedServiceResources);
+  serviceProviderImplementations = builtins.listToAttrs (builtins.map (featureName: let
+      selected = serviceInterfaces.${featureName};
+    in {
+      name = selected.alias;
       value = {
-        overrideStrategy = "asDropin";
-        text = resource.realization.drop_in_text;
-        wantedBy = lib.optional (resource.realization.activation == "enabled") "multi-user.target";
+        provide = provideServiceFacet featureName;
+        compose =
+          if controlsService featureName
+          then composeServices selected.identity
+          else null;
       };
     })
-    selectedResources);
-in {
-  config.aos.abilities.implementations.${implementationAlias} = {
-    inherit provide compose;
+    serviceImplementationNames);
+  readinessProviderImplementations = {
+    ${networkReadinessAlias}.provide =
+      provideReadiness networkReadinessAlias "readiness-resource";
+    ${filesystemReadinessAlias}.provide =
+      provideReadiness filesystemReadinessAlias "readiness-resource";
   };
+in {
+  config.aos.abilities.implementations =
+    serviceProviderImplementations
+    // readinessProviderImplementations
+    // {
+      ${implementationAlias} = {
+        inherit provide compose;
+      };
+    };
 
-  config.systemd.packagedUnitSources = builtins.map staticSource selectedResources;
-  config.systemd.units = staticUnits;
+  config.systemd.providerUnitArtifacts = staticArtifacts;
 }

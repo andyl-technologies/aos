@@ -477,6 +477,12 @@
   systemdPackagedUnit = import ./systemd-packaged-unit.nix {
     inherit pkgs lib;
   };
+  systemdServiceRealization = import ./systemd-service-realization.nix {
+    inherit pkgs lib;
+  };
+  systemdReadiness = import ./systemd-readiness.nix {
+    inherit pkgs lib;
+  };
   smokeAbilityProjection = pkgs.ability-package-smoke.abilities;
   smokeArtifactSelectors = smokeAbilityProjection._artifact_outputs.selectors;
   oversizedFallback = builtins.tryEval (builtins.deepSeq (
@@ -883,6 +889,8 @@ in
   assert systemServiceModules;
   assert compositionDriver;
    assert systemdPackagedUnit;
+   assert systemdServiceRealization;
+   assert systemdReadiness;
   assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
   assert builtins.length (builtins.attrNames smokeAbilityProjection.requirementTemplates) == 1;
