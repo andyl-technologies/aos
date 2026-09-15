@@ -555,6 +555,9 @@
   systemdStageMilestones = import ./systemd-stage-milestones.nix {
     inherit pkgs lib;
   };
+  initrdSecurityServices = import ./initrd-security-services.nix {
+    inherit pkgs lib;
+  };
   baseKernelNative = import ./base-kernel-native.nix {
     inherit pkgs lib;
   };
@@ -1010,6 +1013,7 @@ in
   assert aosControlPlane;
   assert systemdReadiness;
   assert systemdStageMilestones;
+  assert initrdSecurityServices;
   assert baseKernelNative;
   assert baseNixDbNative;
   assert baseNetworkingNative;

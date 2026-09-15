@@ -5,12 +5,14 @@
   bash,
   coreutils,
   cryptsetup,
+  e2fsprogs,
   jq,
   systemd,
   util-linux,
 }:
 mkDerivation {
   pname = "aos-var-policy-migrate";
+  abilities = ./_aos-var-policy-migrate/module.nix;
   qualification.packageProbe = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
@@ -68,6 +70,7 @@ mkDerivation {
   runtimeDeps = [
     coreutils
     cryptsetup
+    e2fsprogs
     jq
     systemd
     util-linux
@@ -509,11 +512,25 @@ mkDerivation {
         publish_record
         SCRIPT
         chmod 0755 $out/bin/aos-var-policy-migrate
+
+        sed \
+          -e 's|@bash@|${bash}|g' \
+          -e 's|@coreutils@|${coreutils}|g' \
+          -e 's|@cryptsetup@|${cryptsetup}|g' \
+          -e 's|@e2fsprogs@|${e2fsprogs}|g' \
+          -e 's|@systemd@|${systemd}|g' \
+          -e 's|@util-linux@|${util-linux}|g' \
+          ${./_aos-var-policy-migrate/aos-var-crypt.sh} \
+          > $out/bin/aos-var-crypt
+        chmod 0755 $out/bin/aos-var-crypt
       '';
     }
   ];
 
-  passthru.evidenceSources = [./aos-var-policy-migrate.nix];
+  passthru.evidenceSources = [
+    ./aos-var-policy-migrate.nix
+    ./_aos-var-policy-migrate/aos-var-crypt.sh
+  ];
 
   meta = {
     description = "Migrate /var TPM enrollment to the PCR-7+12 policy";

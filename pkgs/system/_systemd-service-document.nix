@@ -140,6 +140,8 @@
       ++ one "OnFailureJobMode" (
         if policy.dispatch == "replace-active-goal"
         then "replace"
+        else if policy.dispatch == "isolate-active-goal"
+        then "isolate"
         else "fail"
       );
   startLimitDirectives = value: let

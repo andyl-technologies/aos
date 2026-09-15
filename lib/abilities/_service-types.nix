@@ -413,7 +413,7 @@
       element = types.deferredResult types.resourceReference;
       maxItems = 256;
     };
-    dispatch = types.enum ["enqueue" "replace-active-goal"];
+    dispatch = types.enum ["enqueue" "isolate-active-goal" "replace-active-goal"];
   } [];
   failurePolicy = request failurePolicyFeature;
 
@@ -1213,6 +1213,10 @@
       "run-etc"
       "device-settle"
       "kernel-modules"
+      "boot-identity-validated"
+      "boot-integrity-failure"
+      "partition-layout-ready"
+      "verity-root-verified"
     ];
   };
   systemMilestoneReadinessObservation = types.record {

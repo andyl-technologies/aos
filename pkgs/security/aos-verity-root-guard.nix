@@ -6,9 +6,11 @@
   coreutils,
   efitools,
   openssl,
+  systemd,
 }:
 mkDerivation {
   pname = "aos-verity-root-guard";
+  abilities = ./_aos-verity-root-guard/module.nix;
   qualification.packageProbe = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
@@ -68,6 +70,7 @@ mkDerivation {
     coreutils
     efitools
     openssl
+    systemd
   ];
   propagatedDeps = [];
 
@@ -229,6 +232,14 @@ mkDerivation {
         exec "''${cmd[@]}"
         EOF
         chmod +x $out/bin/aos-verity-root-guard
+
+        sed \
+          -e 's|@bash@|${bash}|g' \
+          -e 's|@coreutils@|${coreutils}|g' \
+          -e 's|@systemd@|${systemd}|g' \
+          ${./_aos-verity-root-guard/aos-verity-root-verify.sh} \
+          > $out/bin/aos-verity-root-verify
+        chmod +x $out/bin/aos-verity-root-verify
       '';
     }
   ];
@@ -240,6 +251,7 @@ mkDerivation {
       path = ./aos-verity-root-guard.nix;
       name = "aos-verity-root-guard.nix";
     })
+    ./_aos-verity-root-guard/aos-verity-root-verify.sh
   ];
 
   meta = {
