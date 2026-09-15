@@ -538,6 +538,23 @@ impl RetainedAbilityDiagnosticSource {
 }
 
 impl<'plan> AbilityTransactionSession<'plan> {
+    /// Opens the runtime-owned blob store inside this durable transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the protected transaction or blob directories
+    /// cannot be created, verified, or synchronized.
+    pub(crate) fn transaction_blob_store(
+        &self,
+    ) -> Result<super::transaction_blob::TransactionBlobStore, GenerationTransactionStoreError>
+    {
+        let transaction = self.transaction.transaction();
+        let directory = self.store.prepare_transaction_dir(transaction)?;
+        super::transaction_blob::TransactionBlobStore::open(&directory, transaction).map_err(
+            |source| io_error("opening ability transaction blob store", &directory, source),
+        )
+    }
+
     /// Opens or recovers an exact checked plan beneath one config generation.
     ///
     /// `packages` must contain freshly verified seals for every desired and

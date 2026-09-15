@@ -166,6 +166,7 @@ let
         "artifact-reference"
         "resource-reference"
         "provider-assignment"
+        "transaction-blob-reference"
         "operation-result-reference"
       ]
     then "object"
@@ -375,6 +376,7 @@ let
         "artifact-reference"
         "resource-reference"
         "provider-assignment"
+        "transaction-blob-reference"
         "operation-result-reference"
       ]
     then exact []
@@ -544,6 +546,7 @@ let
         "artifact-reference"
         "resource-reference"
         "provider-assignment"
+        "transaction-blob-reference"
         "operation-result-reference"
       ]
     then
@@ -574,6 +577,8 @@ let
         else invalid "a resource-reference"
       else if schema.kind == "provider-assignment"
       then fail "provider-assignment values are unavailable during pure authoring"
+      else if schema.kind == "transaction-blob-reference"
+      then fail "transaction-blob-reference values must originate from a runtime operation output"
       else fail "operation-result-reference values are unavailable until scoped producer normalization is implemented"
     else fail "unsupported schema kind '${schema.kind}'";
 
@@ -764,6 +769,7 @@ in rec {
   artifactReference = {kind = "artifact-reference";};
   resourceReference = {kind = "resource-reference";};
   providerAssignment = {kind = "provider-assignment";};
+  transactionBlobReference = {kind = "transaction-blob-reference";};
   operationResultReference = {kind = "operation-result-reference";};
 
   topLevelKind = schema:

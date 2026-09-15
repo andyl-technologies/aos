@@ -458,6 +458,7 @@ fn value_requires_authority(
             (aos_ability_model::ValueSchema::ArtifactReference, _)
             | (aos_ability_model::ValueSchema::ResourceReference, _)
             | (aos_ability_model::ValueSchema::ProviderAssignment, _)
+            | (aos_ability_model::ValueSchema::TransactionBlobReference, _)
             | (aos_ability_model::ValueSchema::OperationResultReference, _) => return true,
             (aos_ability_model::ValueSchema::Optional { value: nested }, nested_value) => {
                 stack.push((nested, nested_value))
@@ -545,6 +546,7 @@ fn schema_may_carry_authority(schema: &aos_ability_model::ValueSchema) -> bool {
             aos_ability_model::ValueSchema::ArtifactReference
             | aos_ability_model::ValueSchema::ResourceReference
             | aos_ability_model::ValueSchema::ProviderAssignment
+            | aos_ability_model::ValueSchema::TransactionBlobReference
             | aos_ability_model::ValueSchema::OperationResultReference => return true,
             aos_ability_model::ValueSchema::List { element, .. }
             | aos_ability_model::ValueSchema::Map { value: element, .. }

@@ -351,3 +351,43 @@ fn authored_provider_assignment_is_rejected_but_materialized_evidence_is_accepte
     );
     assert!(validate_materialized_value(&ValueSchema::ProviderAssignment, &assignment).is_ok());
 }
+
+#[test]
+fn authored_transaction_blob_is_rejected_but_materialized_reference_is_accepted() {
+    let digest = format!("sha256:{}", "00".repeat(32));
+    let reference = AbilityValue::new(serde_json::json!({
+        "_type": TRANSACTION_BLOB_REFERENCE_TYPE,
+        "transaction": "transaction-1",
+        "handle": "blob-content",
+        "content_sha256": digest,
+        "size_bytes": 4096,
+    }))
+    .expect("valid canonical transaction blob reference");
+    let authored = ValueExpression::Literal {
+        value: reference.clone(),
+    };
+
+    let errors = validate_value(&ValueSchema::TransactionBlobReference, &authored)
+        .expect_err("authored transaction blob references must be rejected");
+    assert!(
+        errors
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::MissingReference)
+    );
+    assert!(
+        validate_materialized_value(&ValueSchema::TransactionBlobReference, &reference).is_ok()
+    );
+
+    let oversized = AbilityValue::new(serde_json::json!({
+        "_type": TRANSACTION_BLOB_REFERENCE_TYPE,
+        "transaction": "transaction-1",
+        "handle": "blob-content",
+        "content_sha256": digest,
+        "size_bytes": MAX_TRANSACTION_BLOB_BYTES + 1,
+    }))
+    .expect("canonical oversized reference");
+    assert!(
+        validate_materialized_value(&ValueSchema::TransactionBlobReference, &oversized).is_err()
+    );
+}

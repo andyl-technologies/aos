@@ -36,6 +36,7 @@ use aos_provider_protocol::{
 use serde::{Deserialize, Serialize};
 
 use super::handler_process::{DescendantPolicy, FixedBudgetControl, run_bounded};
+use super::transaction_blob::TransactionBlobStore;
 use crate::package_contract::{VerifiedPackageContract, VerifiedPackageContractSet};
 
 #[derive(Clone, Debug)]
@@ -446,6 +447,7 @@ impl CommandHandlerResourceEntry {
             "admit",
             &encode(&request)?,
             &FixedBudgetControl::new(remaining_millis),
+            &[],
         )?;
         let admission: AdmissionResult = decode(&output)?;
         let observation_schema = &self
@@ -555,6 +557,7 @@ pub(crate) struct CommandHandlerAdapter {
     assignment: ProviderAssignment,
     interface: InterfaceDocument,
     handler: AuthenticatedCommandHandler,
+    blobs: TransactionBlobStore,
 }
 
 /// Authenticates the terminal handler selected by one provider assignment.
@@ -594,6 +597,7 @@ impl CommandHandlerAdapter {
         package: &VerifiedPackageContract,
         assignment: ProviderAssignment,
         interface: InterfaceDocument,
+        blobs: TransactionBlobStore,
     ) -> Result<Self, io::Error> {
         let authenticated =
             authenticate(package, &assignment.interface, &assignment.implementation)?;
@@ -602,6 +606,7 @@ impl CommandHandlerAdapter {
             handler: authenticated,
             assignment,
             interface,
+            blobs,
         })
     }
     fn call(
@@ -623,13 +628,19 @@ impl CommandHandlerAdapter {
                 control.is_cancelled(),
             ),
         };
+        let blob_invocation = self.blobs.prepare(&request.durable)?;
         let output = invoke(
             &self.handler.executable,
             purpose_name(purpose),
             &encode(&invocation)?,
             control,
+            &blob_invocation.environment(),
         )?;
-        let result: InvocationResult = decode(&output)?;
+        let mut result: InvocationResult = decode(&output)?;
+        if result.disposition == HandlerInvocationDisposition::Completed {
+            self.blobs
+                .finalize_outputs(&blob_invocation, &mut result.outputs)?;
+        }
         if result.schema != RESULT_SCHEMA
             || request.durable.native_context_digest != result.native_context_digest
         {
@@ -1161,6 +1172,7 @@ fn invoke(
     purpose: &str,
     input: &[u8],
     control: &dyn RuntimeControl,
+    environment: &[(std::ffi::OsString, std::ffi::OsString)],
 ) -> Result<Vec<u8>, io::Error> {
     let mut command = Command::new(executable);
     command.arg(HANDLER_ABI_ARGUMENT).arg(purpose);
@@ -1170,6 +1182,7 @@ fn invoke(
         MAX_HANDLER_RESULT_BYTES,
         DescendantPolicy::Reap,
         control,
+        environment,
     )?;
     if !output.status.success() {
         return Err(invalid("command handler exited unsuccessfully"));

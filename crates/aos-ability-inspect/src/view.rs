@@ -988,6 +988,7 @@ fn schema_contains_sensitive_reference(schema: &ValueSchema) -> bool {
     match schema {
         ValueSchema::ResourceReference
         | ValueSchema::ProviderAssignment
+        | ValueSchema::TransactionBlobReference
         | ValueSchema::OperationResultReference => true,
         ValueSchema::List { element, .. }
         | ValueSchema::Map { value: element, .. }

@@ -870,6 +870,7 @@ fn instance_configuration_schema_is_literal(schema: &aos_ability_model::ValueSch
             ValueSchema::ArtifactReference
             | ValueSchema::ResourceReference
             | ValueSchema::ProviderAssignment
+            | ValueSchema::TransactionBlobReference
             | ValueSchema::OperationResultReference => return false,
         }
     }

@@ -28,6 +28,7 @@ pub(crate) fn validate_schema_definition(
         | ValueSchema::ArtifactReference
         | ValueSchema::ResourceReference
         | ValueSchema::ProviderAssignment
+        | ValueSchema::TransactionBlobReference
         | ValueSchema::OperationResultReference => {}
         ValueSchema::Integer { minimum, maximum } => {
             const MAX_EXACT_INTEGER: i64 = 9_007_199_254_740_991;

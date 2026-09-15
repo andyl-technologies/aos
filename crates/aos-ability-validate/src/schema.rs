@@ -5,8 +5,9 @@ use std::fmt;
 
 use aos_ability_model::{
     ABILITY_LIMITS_V1, ArtifactReference, Diagnostic, DiagnosticClass, DiagnosticCode,
-    DiagnosticPhase, InterfaceName, JsonValueKind, LocalKey, OperationResultReference,
-    ProviderAssignment, ResourceReference, StringSyntax, ValueExpression, ValueSchema,
+    DiagnosticPhase, InterfaceName, JsonValueKind, LocalKey, MAX_TRANSACTION_BLOB_BYTES,
+    OperationResultReference, ProviderAssignment, ResourceReference, StringSyntax,
+    TRANSACTION_BLOB_REFERENCE_TYPE, TransactionBlobReference, ValueExpression, ValueSchema,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -541,6 +542,37 @@ fn validate_literal(
                     path,
                     diagnostics,
                 );
+            }
+        }
+        (ValueSchema::TransactionBlobReference, value) => {
+            if literal_source == LiteralSource::Authored {
+                push_diagnostic(
+                    diagnostics,
+                    schema_diagnostic(
+                        DiagnosticCode::MissingReference,
+                        path,
+                        "transaction blob reference must originate from an observed operation output"
+                            .to_string(),
+                    ),
+                );
+            } else if let Some(reference) = validate_typed_reference::<TransactionBlobReference>(
+                value,
+                "transaction blob reference",
+                path,
+                diagnostics,
+            ) {
+                if reference.kind != TRANSACTION_BLOB_REFERENCE_TYPE
+                    || reference.size_bytes > MAX_TRANSACTION_BLOB_BYTES
+                {
+                    push_diagnostic(
+                        diagnostics,
+                        schema_diagnostic(
+                            DiagnosticCode::ValueTypeMismatch,
+                            path,
+                            "transaction blob reference has invalid type or size".to_string(),
+                        ),
+                    );
+                }
             }
         }
         (ValueSchema::OperationResultReference, value) => {
@@ -1341,6 +1373,7 @@ fn schema_kind(schema: &ValueSchema) -> &'static str {
         ValueSchema::ArtifactReference => "artifact-reference",
         ValueSchema::ResourceReference => "resource-reference",
         ValueSchema::ProviderAssignment => "provider-assignment",
+        ValueSchema::TransactionBlobReference => "transaction-blob-reference",
         ValueSchema::OperationResultReference => "operation-result-reference",
     }
 }

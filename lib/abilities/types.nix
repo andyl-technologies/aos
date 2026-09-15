@@ -80,6 +80,7 @@
         "artifact-reference"
         "resource-reference"
         "provider-assignment"
+        "transaction-blob-reference"
         "operation-result-reference"
       ]
     then {inherit (schema) kind;}
@@ -403,6 +404,8 @@ in rec {
     then resourceReference
     else if normalized.kind == "provider-assignment"
     then providerAssignment
+    else if normalized.kind == "transaction-blob-reference"
+    then transactionBlobReference
     else operationResultReferenceType;
 
   boolean = decorate "boolean" schemas.boolean moduleTypes.bool;
@@ -810,6 +813,13 @@ in rec {
       handler = moduleTypes.nullOr localKeyType;
     };
     incarnation = moduleTypes.str;
+  };
+  transactionBlobReference = specialType "transaction-blob-reference" schemas.transactionBlobReference {
+    _type = moduleTypes.enum ["aos-transaction-blob-reference"];
+    transaction = localKeyType;
+    handle = localKeyType;
+    content_sha256 = digestType;
+    size_bytes = moduleTypes.ints.between 0 (32 * 1024 * 1024);
   };
   deferredResult = expectedType: let
     schema = schemaOf "deferred result" expectedType;
