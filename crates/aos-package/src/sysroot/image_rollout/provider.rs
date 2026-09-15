@@ -10,7 +10,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, ensure};
 use aos_ability_model::{ABILITY_LIMITS_V1, AbilityValue, LocalKey};
-use aos_ability_plan::AbRolloutRequest;
 use aos_ability_runtime::adapter::RuntimeControl;
 use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
@@ -20,9 +19,9 @@ use aos_provider_protocol::{
     validate_resource_contexts,
 };
 
-use super::NativeAbRolloutBackend;
 use super::ability::{AbilityRolloutOutcome, AbilityRolloutPhase, AbilityRolloutState};
 use super::process::run_bounded_command;
+use super::{AbRolloutRequest, NativeAbRolloutBackend};
 
 const INTERFACE_NAME: &str = "aos.apm.ab-image-rollout-terminal";
 const OBSERVATION_SCHEMA: &str = "aos.ability.ab-image-rollout-observation/v1";
@@ -554,7 +553,7 @@ fn system_now_millis() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use aos_ability_plan::RolloutImageIdentity;
+    use super::super::RolloutImageIdentity;
 
     use super::*;
 

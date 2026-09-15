@@ -856,16 +856,8 @@ pub(crate) fn verify_rollout_boot_commit(
         supported_native_ability_features()?,
     )
     .context("authenticating retained rollout transaction")?;
-    let mut rollout_requests = source.plan().interfaces().values().filter_map(|interface| {
-        authenticate_single_image_rollout_fragment(source.plan().document(), interface).ok()
-    });
-    let request = rollout_requests
-        .next()
-        .context("retained transaction contains no authenticated rollout fragment")?;
-    ensure!(
-        rollout_requests.next().is_none(),
-        "retained transaction contains ambiguous rollout fragments"
-    );
+    let request = authenticate_single_image_rollout_fragment(source.plan())
+        .context("authenticating the retained rollout fragment")?;
     ensure!(
         source.terminal_result(JournalLimits::default())? == Some(TerminalResult::Succeeded),
         "native rollout transaction did not settle successfully"
