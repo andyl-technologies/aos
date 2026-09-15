@@ -143,6 +143,8 @@ in {
     operatorModules ? [],
     runtimeModules ? [],
     packageModules ? [],
+    selectedProviderModules ? [],
+    abilityBindings ? {},
     factsModules ? [],
   }:
     lib.evalModules {
@@ -164,6 +166,11 @@ in {
           }
         ];
       pkgs = frozenPkgs;
-      inherit lib operatorModules runtimeModules packageModules;
+      inherit lib operatorModules packageModules selectedProviderModules;
+      runtimeModules =
+        runtimeModules
+        ++ lib.optional (abilityBindings != {}) {
+          aos.abilities.bindings = abilityBindings;
+        };
     };
 }
