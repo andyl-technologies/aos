@@ -9,8 +9,8 @@
 use std::collections::BTreeMap;
 
 use aos_ability_model::{
-    AbilityValue, IncarnationId, LocalKey, MethodReference, MethodSemantics, ResourceId,
-    ResourceReference, RevisionId,
+    AbilityValue, IncarnationId, InterfaceName, LocalKey, MethodReference, MethodSemantics,
+    ResourceId, ResourceLifetime, ResourceReference, RevisionId,
 };
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
@@ -49,9 +49,110 @@ pub fn native_context_digest(context: &AbilityValue) -> anyhow::Result<Sha256Dig
 ///
 /// # Errors
 ///
-/// Returns an error when the contexts cannot be encoded in canonical AOS JSON.
+/// Returns an error when a context is invalid, the set is not in strict
+/// resource-identity order, or canonical AOS JSON encoding fails.
 pub fn resource_set_digest(resources: &[ResourceContext]) -> anyhow::Result<Sha256Digest> {
+    validate_resource_contexts(resources)?;
     Sha256Digest::of_canonical(RESOURCE_SET_DIGEST_DOMAIN, &resources)
+}
+
+/// Validates one admitted resource against its selected provider and bound context.
+///
+/// # Errors
+///
+/// Returns an error when the resource reference, provider assignment, semantic
+/// revision, or bound native context disagree.
+pub fn validate_resource_context(context: &ResourceContext) -> anyhow::Result<BoundNativeContext> {
+    anyhow::ensure!(
+        context.assignment.provider == context.reference.resource.provider,
+        "resource context provider assignment differs from the resource owner"
+    );
+    anyhow::ensure!(
+        context.assignment.interface == context.reference.interface,
+        "resource context provider assignment differs from the referenced interface"
+    );
+    anyhow::ensure!(
+        !context.reference.operations.is_empty()
+            && context
+                .reference
+                .operations
+                .windows(2)
+                .all(|pair| pair[0] < pair[1]),
+        "resource context operations are empty or noncanonical"
+    );
+    anyhow::ensure!(
+        native_context_digest(&context.native_context)? == context.native_context_digest,
+        "resource native-context digest does not match"
+    );
+
+    let bound: BoundNativeContext =
+        serde_json::from_value(context.native_context.as_json().clone())?;
+    anyhow::ensure!(
+        bound.schema == RESOURCE_CONTEXT_SCHEMA,
+        "unsupported bound native-context schema"
+    );
+    anyhow::ensure!(
+        bound.resource_spec.resource == context.reference.resource
+            && bound.resource_spec.kind == context.reference.interface.name
+            && bound.resource_spec.lifetime == context.reference.lifetime
+            && bound.resource_spec.revision == context.revision,
+        "bound native context differs from the checked resource authority"
+    );
+    Ok(bound)
+}
+
+/// Validates a canonical, duplicate-free admitted resource set.
+///
+/// # Errors
+///
+/// Returns an error when any context is invalid or resource identities are not
+/// in strict canonical order.
+pub fn validate_resource_contexts(resources: &[ResourceContext]) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        resources
+            .windows(2)
+            .all(|pair| pair[0].reference.resource < pair[1].reference.resource),
+        "resource contexts are not in strict resource identity order"
+    );
+    for context in resources {
+        validate_resource_context(context)?;
+    }
+    Ok(())
+}
+
+/// Validates the exact resource authority carried by an admission request.
+///
+/// # Errors
+///
+/// Returns an error when the selected method, target reference, or resolved
+/// resource specification disagree on resource, interface, operation, or
+/// lifetime identity.
+pub fn validate_admission_resource(request: &AdmissionRequest) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        request.target.resource == request.resource_spec.resource,
+        "admission target differs from the resolved resource"
+    );
+    anyhow::ensure!(
+        request.target.interface.name == request.resource_spec.kind,
+        "admission target differs from the resolved resource kind"
+    );
+    anyhow::ensure!(
+        request.target.lifetime == request.resource_spec.lifetime,
+        "admission target differs from the resolved resource lifetime"
+    );
+    anyhow::ensure!(
+        request.method.interface == request.target.interface,
+        "admission method interface differs from the target reference"
+    );
+    anyhow::ensure!(
+        request
+            .target
+            .operations
+            .binary_search(&request.method.method)
+            .is_ok(),
+        "admission method is outside the target reference authority"
+    );
+    Ok(())
 }
 
 /// Carries the exact fixed-point resource specification authenticated for use.
@@ -60,6 +161,10 @@ pub fn resource_set_digest(resources: &[ResourceContext]) -> anyhow::Result<Sha2
 pub struct ResourceSpec {
     /// Identifies the provider-owned logical resource.
     pub resource: ResourceId,
+    /// Identifies the canonical interface that owns the resource value.
+    pub kind: InterfaceName,
+    /// Declares the resource retention boundary.
+    pub lifetime: ResourceLifetime,
     /// Carries the provider-neutral desired value.
     pub value: AbilityValue,
     /// Carries the selected provider's checked backend realization.
@@ -74,6 +179,8 @@ pub struct ResourceSpec {
 pub struct ResourceContext {
     /// Retains the full checked reference and its operation/lifetime authority.
     pub reference: ResourceReference,
+    /// Pins the exact selected implementation and live provider incarnation.
+    pub assignment: aos_ability_model::ProviderAssignment,
     /// Identifies the desired semantic resource content.
     pub revision: RevisionId,
     /// Carries fresh method-typed admission observation evidence.
@@ -359,12 +466,18 @@ pub enum InvocationDisposition {
 mod tests {
     use std::num::NonZeroU32;
 
-    use aos_ability_model::{InterfaceKey, InterfaceName, LocalKey, MethodReference};
+    use aos_ability_model::{
+        AbilityValue, AccessMode, InterfaceKey, InterfaceName, LocalKey, MethodReference,
+        MethodSemantics, ResourceId, ResourceLifetime, RevisionId,
+    };
     use aos_contract::Sha256Digest;
 
     use super::{
-        AdmissionDisposition, AdmissionRevision, InvocationDisposition, InvocationPurpose,
-        NATIVE_CONTEXT_DIGEST_DOMAIN, RecoveryMethods, SupportedPurposes, native_context_digest,
+        native_context_digest, validate_admission_resource, validate_resource_contexts,
+        AdmissionDisposition, AdmissionRequest, AdmissionRevision, BoundNativeContext,
+        InvocationControl, InvocationDisposition, InvocationPurpose, RecoveryMethods,
+        ResourceContext, ResourceSpec, SupportedPurposes, ADMISSION_REQUEST_SCHEMA,
+        NATIVE_CONTEXT_DIGEST_DOMAIN,
     };
 
     #[test]
@@ -440,6 +553,163 @@ mod tests {
             recovery.method_for(&effect, InvocationPurpose::Cancel),
             None
         );
+    }
+
+    #[test]
+    fn admission_resource_validation_binds_kind_lifetime_and_method_authority() {
+        let resource_interface = InterfaceKey {
+            name: InterfaceName::new("aos.test.resource").expect("interface is valid"),
+            abi: NonZeroU32::MIN,
+            descriptor: Sha256Digest::of_bytes(b"test-resource-interface"),
+        };
+        let resource: ResourceId = serde_json::from_value(serde_json::json!({
+            "provider": {
+                "environment": {"authority":"test","key":"host","stage":"host"},
+                "key":"provider"
+            },
+            "key":"resource"
+        }))
+        .expect("resource identity is valid");
+        let request = AdmissionRequest {
+            schema: ADMISSION_REQUEST_SCHEMA.into(),
+            method: MethodReference {
+                interface: resource_interface.clone(),
+                method: LocalKey::new("apply").expect("method is valid"),
+            },
+            semantics: MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            target: aos_ability_model::ResourceReference {
+                interface: resource_interface,
+                resource: resource.clone(),
+                operations: vec![LocalKey::new("apply").expect("operation is valid")],
+                lifetime: ResourceLifetime::Instance,
+            },
+            resource_spec: ResourceSpec {
+                resource,
+                kind: InterfaceName::new("aos.test.resource").expect("kind is valid"),
+                lifetime: ResourceLifetime::Instance,
+                value: AbilityValue::new(serde_json::json!({"enabled":true}))
+                    .expect("value is valid"),
+                realization: AbilityValue::new(serde_json::json!({"native":"resource"}))
+                    .expect("realization is valid"),
+                revision: RevisionId(Sha256Digest::of_bytes(b"resource-revision")),
+            },
+            resources: Vec::new(),
+            control: InvocationControl {
+                attempt_remaining_millis: 1_000,
+                recovery_remaining_millis: 1_000,
+                cancelled: false,
+            },
+        };
+
+        validate_admission_resource(&request).expect("matching authority is accepted");
+
+        let mut wrong_lifetime = request.clone();
+        wrong_lifetime.resource_spec.lifetime = ResourceLifetime::Persistent;
+        assert!(validate_admission_resource(&wrong_lifetime).is_err());
+
+        let mut wrong_interface = request.clone();
+        wrong_interface.method.interface.name =
+            InterfaceName::new("aos.test.other").expect("interface is valid");
+        assert!(validate_admission_resource(&wrong_interface).is_err());
+
+        let mut missing_method = request;
+        missing_method.target.operations.clear();
+        assert!(validate_admission_resource(&missing_method).is_err());
+    }
+
+    fn resource_context(key: &str) -> ResourceContext {
+        let reference: aos_ability_model::ResourceReference =
+            serde_json::from_value(serde_json::json!({
+                "interface": {
+                    "name": "aos.test.resource",
+                    "abi": 1,
+                    "descriptor": format!("sha256:{}", "1".repeat(64)),
+                },
+                "resource": {
+                    "provider": {
+                        "environment": {"authority":"test","key":"host","stage":"host"},
+                        "key":"provider",
+                    },
+                    "key": key,
+                },
+                "operations": ["observe"],
+                "lifetime": "instance",
+            }))
+            .expect("resource reference is valid");
+        let revision = RevisionId(Sha256Digest::of_bytes(format!("revision-{key}")));
+        let native_context = AbilityValue::new(
+            serde_json::to_value(BoundNativeContext {
+                schema: super::RESOURCE_CONTEXT_SCHEMA.into(),
+                resource_spec: ResourceSpec {
+                    resource: reference.resource.clone(),
+                    kind: reference.interface.name.clone(),
+                    lifetime: reference.lifetime,
+                    value: AbilityValue::new(serde_json::json!({"enabled":true}))
+                        .expect("value is valid"),
+                    realization: AbilityValue::new(serde_json::json!({"path":"/run/test"}))
+                        .expect("realization is valid"),
+                    revision,
+                },
+                provider_context: AbilityValue::new(serde_json::json!({"present":true}))
+                    .expect("provider context is valid"),
+            })
+            .expect("bound context serializes"),
+        )
+        .expect("bound context is valid");
+        ResourceContext {
+            assignment: serde_json::from_value(serde_json::json!({
+                "provider": reference.resource.provider,
+                "interface": {
+                    "name": "aos.test.resource",
+                    "abi": 1,
+                    "descriptor": format!("sha256:{}", "1".repeat(64)),
+                },
+                "implementation": {
+                    "descriptor": format!("sha256:{}", "3".repeat(64)),
+                    "artifact": {
+                        "content": format!("sha256:{}", "4".repeat(64)),
+                        "store_path": "/nix/store/00000000000000000000000000000000-provider",
+                        "nar_hash": format!("sha256:{}", "5".repeat(64)),
+                        "closure": format!("sha256:{}", "6".repeat(64)),
+                    },
+                    "handler": "test",
+                },
+                "incarnation": "test-incarnation",
+            }))
+            .expect("assignment is valid"),
+            reference,
+            revision,
+            observation: AbilityValue::new(serde_json::json!({"state":"ready"}))
+                .expect("observation is valid"),
+            native_context_digest: native_context_digest(&native_context)
+                .expect("context digest computes"),
+            native_context,
+        }
+    }
+
+    #[test]
+    fn resource_context_validation_rejects_drift_and_noncanonical_sets() {
+        let first = resource_context("first");
+        let second = resource_context("second");
+        validate_resource_contexts(&[first.clone(), second.clone()])
+            .expect("matching canonical contexts are accepted");
+
+        let mut wrong_revision = first.clone();
+        wrong_revision.revision = RevisionId(Sha256Digest::of_bytes(b"wrong-revision"));
+        assert!(validate_resource_contexts(&[wrong_revision]).is_err());
+
+        let mut wrong_provider = first.clone();
+        wrong_provider.assignment.provider.key =
+            LocalKey::new("other-provider").expect("provider key is valid");
+        assert!(validate_resource_contexts(&[wrong_provider]).is_err());
+
+        let mut wrong_interface = first.clone();
+        wrong_interface.assignment.interface.name =
+            InterfaceName::new("aos.test.other").expect("interface is valid");
+        assert!(validate_resource_contexts(&[wrong_interface]).is_err());
+
+        assert!(validate_resource_contexts(&[first.clone(), first.clone()]).is_err());
+        assert!(validate_resource_contexts(&[second, first]).is_err());
     }
 
     #[test]
