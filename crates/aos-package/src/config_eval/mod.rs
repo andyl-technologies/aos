@@ -1,12 +1,9 @@
 //! The on-host resolve/evaluate fixpoint driver.
 //!
-//! Stock Nix gives no read-access instrumentation, so the set of config
-//! providers a host needs cannot be statically closed: it is *discovered* by
-//! evaluating the module set, observing what is missing, fetching the named
-//! provider's `config` output, and re-evaluating until the eval succeeds or a
-//! terminal state is reached. [`run_fixpoint`] is that deterministic state
-//! machine; it is the driver *around* the existing closure resolver
-//! ([`crate::resolve`]).
+//! Package selection resolves the complete runtime closure and each selected
+//! package's authenticated contract before Nix evaluates the module fixed
+//! point. [`run_fixpoint`] evaluates that closed set once and preserves typed
+//! Nix failures for the command boundary.
 //!
 //! # Module map
 //!
@@ -16,17 +13,14 @@
 //!   shells out to `nix-instantiate --eval --strict --json --pure-eval
 //!   --option restrict-eval true
 //!   --option allow-import-from-derivation false` with an empty environment,
-//!   and classifies the result, plus the registry-backed
-//!   [`PackageModuleFetcher`]. Builder-gated:
-//!   it requires a real
-//!   stock-nix and registry, so it is unit-tested only for `entry.nix`
-//!   rendering.
+//!   and classifies the result. Builder-gated: it requires a real stock-nix,
+//!   so it is unit-tested only for `entry.nix` rendering.
 //!
 //! # The seam
 //!
 //! The evaluator boundary is `eval(working_set, host_nix, base_lib) ->
-//! Result<EvalClass>`. The resolver, registry index, fetch order (package module artifact
-//! first), `module_abi` gate, and manifest contract remain outside it.
+//! Result<EvalClass>`. Contract authentication, package resolution, and
+//! manifest construction remain outside it.
 //!
 //! # Failure-safe
 //!
