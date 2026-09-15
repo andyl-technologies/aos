@@ -1621,7 +1621,6 @@
     "aos-verity-root-guard"
     "aos-vm"
     "apm-systemd-client-test"
-    "config-module-smoke"
     "crucible"
     "crucible-controller"
     "crucible-fixtures"
