@@ -801,9 +801,8 @@
           ''}
 
           # ── 7c. Enable systemd-networkd-wait-online via network-online.target.
-          #    [Install] sections of upstream units aren't realized in the
-          #    initrd (generateUnits doesn't process upstreamUnits here), so
-          #    this .wants symlink is what makes the gate's `systemctl start
+          #    [Install] sections of systemd's packaged units aren't realized
+          #    in the initrd, so this .wants symlink makes `systemctl start
           #    network-online.target` pull in wait-online → networkd. The
           #    rendered-units copy above left /etc/systemd/system read-only
           #    (store perms), so make it writable before adding the subdir.

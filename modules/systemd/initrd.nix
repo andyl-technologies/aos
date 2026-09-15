@@ -61,9 +61,6 @@
   pureInitrdUnits = systemdLib.generateUnits {
     type = "initrd";
     units = renderedInitrdUnits;
-    upstreamUnits = [];
-    upstreamWants = [];
-    packages = [];
   };
   initrdJobScripts = lib.listToAttrs (builtins.map (job:
     lib.nameValuePair job.key {

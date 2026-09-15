@@ -22,37 +22,6 @@
   systemdModule = import ../../modules/systemd/system.nix;
   systemdLib = import ../modules/systemd/lib.nix {inherit lib pkgs;};
 
-  # A package-shaped fixture with the same mixture the historical imperative
-  # generateUnits walker handled: plain units, a source symlink, a drop-in,
-  # and a pre-existing .wants link. The inventory is authored as derivation
-  # metadata, so evaluating the system manifest never reads this output.
-  packagedUnits =
-    pkgs.runCommand "systemd-package-inventory-fixture" {
-      passthru.systemdUnitInventory.system = [
-        "lib/systemd/system/vendor.service"
-        "lib/systemd/system/linked.service"
-        "lib/systemd/system/vendor.service.d/10-vendor.conf"
-        "lib/systemd/system/multi-user.target.wants/linked.service"
-        "lib/systemd/system/alias.service"
-        "lib/systemd/system/multi-user.target.wants/replacement.service"
-      ];
-    } ''
-      mkdir -p \
-        "$out/lib/systemd/system/vendor.service.d" \
-        "$out/lib/systemd/system/multi-user.target.wants"
-      printf '%s\n' '[Unit]' 'Description=Vendor unit' '[Service]' 'ExecStart=/bin/true' \
-        > "$out/lib/systemd/system/vendor.service"
-      ln -s vendor.service "$out/lib/systemd/system/linked.service"
-      printf '%s\n' '[Service]' 'Environment=VENDOR_DROPIN=1' \
-        > "$out/lib/systemd/system/vendor.service.d/10-vendor.conf"
-      ln -s ../linked.service \
-        "$out/lib/systemd/system/multi-user.target.wants/linked.service"
-      printf '%s\n' '[Service]' 'ExecStart=/bin/false' \
-        > "$out/lib/systemd/system/alias.service"
-      ln -s ../linked.service \
-        "$out/lib/systemd/system/multi-user.target.wants/replacement.service"
-    '';
-
   # Minimal module set: just system.nix plus a synthetic config module
   # that declares a handful of services covering the patterns we care
   # about at stage 3. Deliberately does NOT pull in the whole AOS
@@ -61,8 +30,6 @@
   # module deep in modules/services/.
   syntheticConfig = {
     config.systemd = {
-      packages = [packagedUnits];
-
       # A plain service with a compiled script.
       services.hello-world = {
         description = "Hello world stage-3 service";
@@ -114,19 +81,10 @@
         text = null;
       };
 
-      # The package already provides this name, so the default
-      # asDropinIfExists strategy must preserve the package unit and render the
-      # authored text as overrides.conf.
-      units."vendor.service".text = ''
-        [Service]
-        Environment=AOS_OVERRIDE=1
-      '';
-
       # A default-strategy unit without a package peer remains top-level.
       units."fresh.service".text = "[Service]\nExecStart=/bin/true\n";
 
-      # Historical alias/install ln -sfn operations replace package leaves at
-      # the exact same final path.
+      # Alias and install metadata become exact dependency links.
       units."primary.service" = {
         text = "[Service]\nExecStart=/bin/true\n";
         aliases = ["alias.service"];
@@ -242,28 +200,6 @@
     }
     {
       cond =
-        manifest.etc."systemd/system/vendor.service"
-        == {
-          kind = "symlink";
-          target = "${packagedUnits}/lib/systemd/system/vendor.service";
-        };
-      msg = "systemd-generate: package unit was not preserved by asDropinIfExists";
-    }
-    {
-      cond = manifest.etc."systemd/system/vendor.service.d/overrides.conf".kind == "text";
-      msg = "systemd-generate: asDropinIfExists did not render overrides.conf";
-    }
-    {
-      cond =
-        manifest.etc."systemd/system/vendor.service.d/10-vendor.conf"
-        == {
-          kind = "symlink";
-          target = "${packagedUnits}/lib/systemd/system/vendor.service.d/10-vendor.conf";
-        };
-      msg = "systemd-generate: package drop-in was not merged";
-    }
-    {
-      cond =
         manifest.etc."systemd/system/alias.service"
         == {
           kind = "symlink";
@@ -329,8 +265,8 @@
   # farm for this same evaluated unit set. The final check canonicalizes
   # absolute store links by their target bytes (the pure materializer may use
   # a differently named one-file derivation) while retaining relative link
-  # targets verbatim. This pins the historical package merge semantics rather
-  # than merely checking a few expected filenames.
+  # targets verbatim. This pins the authored-unit materialization semantics
+  # rather than merely checking a few expected filenames.
   legacyUnitDrvs =
     lib.mapAttrs (
       name: unit:
@@ -371,25 +307,6 @@
         exit 1
       fi
     }
-
-    for base in \
-      "${packagedUnits}/etc/systemd/system" \
-      "${packagedUnits}/lib/systemd/system"; do
-      [ -d "$base" ] || continue
-      for fn in "$base"/*; do
-        [ -e "$fn" ] || continue
-        bn=$(basename "$fn")
-        if [ -d "$fn" ]; then
-          mkdir -p "$out/$bn"
-          for inner in "$fn"/*; do
-            [ -e "$inner" ] || continue
-            ln -s "$inner" "$out/$bn/$(basename "$inner")"
-          done
-        else
-          ln -s "$fn" "$out/$bn"
-        fi
-      done
-    done
 
     for unit_dir in ${builtins.toString autoUnitDrvs}; do
       unit_filename "$unit_dir"
@@ -479,11 +396,6 @@ in
             my-target.target \
             upstream.service.d/overrides.conf \
             masked.service \
-            vendor.service \
-            vendor.service.d/10-vendor.conf \
-            vendor.service.d/overrides.conf \
-            linked.service \
-            multi-user.target.wants/linked.service \
             fresh.service \
             primary.service \
             alias.service \
@@ -515,29 +427,6 @@ in
             exit 1
           fi
 
-          # Package leaves retain the historical symlink-to-package shape,
-          # including a package source that is itself a symlink. Drop-ins merge
-          # rather than shadowing the package-provided directory.
-          if [ "$(readlink "$units_dir/vendor.service")" != \
-               "${packagedUnits}/lib/systemd/system/vendor.service" ]; then
-            echo "FAIL: vendor.service does not point at the package leaf"
-            exit 1
-          fi
-          if [ "$(readlink "$units_dir/linked.service")" != \
-               "${packagedUnits}/lib/systemd/system/linked.service" ]; then
-            echo "FAIL: linked.service did not preserve the package source symlink boundary"
-            exit 1
-          fi
-          if ! grep -Fq 'Environment=VENDOR_DROPIN=1' \
-               "$units_dir/vendor.service.d/10-vendor.conf"; then
-            echo "FAIL: package drop-in bytes changed"
-            exit 1
-          fi
-          if ! grep -Fq 'Environment=AOS_OVERRIDE=1' \
-               "$units_dir/vendor.service.d/overrides.conf"; then
-            echo "FAIL: asDropinIfExists override bytes changed"
-            exit 1
-          fi
           if [ "$(readlink "$units_dir/alias.service")" != "primary.service" ]; then
             echo "FAIL: generated alias did not replace the package unit"
             exit 1
