@@ -108,9 +108,6 @@
     };
   };
   controllerLifecycle = {
-    stableResourceIdentity = true;
-    releasesEphemeralOnDisable = true;
-    retainsPersistentByDefault = false;
     persistentDeleteMethod = null;
   };
   aggregation = {
@@ -142,7 +139,7 @@
     abi = 1;
     requestType = contributionRequest;
     methods = contributionMethods;
-    lifecycle = controllerLifecycle // {releasesEphemeralOnDisable = false;};
+    lifecycle = controllerLifecycle;
     inherit aggregation;
     outputs = {
       execution-path = output "planning" "instance" "Returns the aggregate K3s configuration path." types.executionPath;

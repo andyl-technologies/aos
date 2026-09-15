@@ -127,12 +127,8 @@
     };
   };
   controllerLifecycle = {
-    stableResourceIdentity = true;
-    releasesEphemeralOnDisable = true;
-    retainsPersistentByDefault = false;
     persistentDeleteMethod = null;
   };
-  facetLifecycle = controllerLifecycle // {releasesEphemeralOnDisable = false;};
   mergeContract = descriptorFor "aos.ability.network-policy-aggregate/v1" (
     types.schemaOf "network ruleset aggregate" aggregateRequest
   );
@@ -164,7 +160,7 @@
     abi = 1;
     requestType = ingressRequest;
     methods = ingressMethods;
-    lifecycle = facetLifecycle;
+    lifecycle = controllerLifecycle;
     inherit aggregation;
     outputs.readiness-resource =
       readinessOutput "References the aggregate ruleset containing these ingress endpoints.";
@@ -178,7 +174,7 @@
     abi = 1;
     requestType = forwardingRequest;
     methods = forwardingMethods;
-    lifecycle = facetLifecycle;
+    lifecycle = controllerLifecycle;
     inherit aggregation;
     outputs.readiness-resource =
       readinessOutput "References the aggregate ruleset containing this forwarding policy.";

@@ -362,9 +362,6 @@ in
   == {
     lifecycle = {
       persistent_delete_method = null;
-      releases_ephemeral_on_disable = false;
-      retains_persistent_by_default = true;
-      stable_resource_identity = true;
     };
     resource_lifetimes = ["attempt" "persistent"];
     state_format = null;

@@ -138,15 +138,11 @@
     };
   };
   controllerLifecycle = {
-    stableResourceIdentity = true;
-    releasesEphemeralOnDisable = true;
-    retainsPersistentByDefault = false;
     persistentDeleteMethod = null;
   };
   contributionLifecycle =
     controllerLifecycle
     // {
-      releasesEphemeralOnDisable = false;
     };
   mergeContract = lib.abilities.descriptorFor "aos.ability.merge-contract/v1" {
     schema = types.schemaOf "Kubernetes object-set aggregate" aggregateRequest;

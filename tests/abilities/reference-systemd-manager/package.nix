@@ -53,9 +53,6 @@
     optional = [];
   };
   lifecycle = {
-    stableResourceIdentity = true;
-    releasesEphemeralOnDisable = false;
-    retainsPersistentByDefault = true;
     persistentDeleteMethod = null;
   };
   aggregation = group: {

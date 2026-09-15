@@ -85,9 +85,6 @@
     };
   };
   lifecycle = {
-    stableResourceIdentity = true;
-    releasesEphemeralOnDisable = true;
-    retainsPersistentByDefault = false;
     persistentDeleteMethod = null;
   };
   aggregation = {

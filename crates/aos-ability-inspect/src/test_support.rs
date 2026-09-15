@@ -50,9 +50,6 @@ pub fn package_reference() -> PackageAbilityReference {
             outputs: BTreeMap::new(),
             methods: BTreeMap::new(),
             lifecycle: LifecycleSemantics {
-                stable_resource_identity: true,
-                releases_ephemeral_on_disable: true,
-                retains_persistent_by_default: false,
                 persistent_delete_method: None,
             },
             aggregation,

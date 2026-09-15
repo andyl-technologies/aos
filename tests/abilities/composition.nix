@@ -25,9 +25,6 @@
     "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
   emptyLifecycle = {
-    stableResourceIdentity = true;
-    releasesEphemeralOnDisable = false;
-    retainsPersistentByDefault = true;
     persistentDeleteMethod = null;
   };
   aggregation = group: {

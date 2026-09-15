@@ -33,7 +33,7 @@
       inherit key;
     };
     operations = ["observe"];
-    lifetime = "instance";
+    lifetime = "persistent";
   };
   checkedParameters = parameters:
     if parameters.scope != "local"
@@ -63,7 +63,7 @@
           name = entry.binding.slot;
           value = {
             kind = identity.name;
-            lifetime = "instance";
+            lifetime = "persistent";
             value = entry.parameters;
           };
         })

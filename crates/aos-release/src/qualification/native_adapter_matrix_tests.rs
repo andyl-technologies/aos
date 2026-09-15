@@ -73,9 +73,6 @@ pub(crate) fn fixture_surface() -> NativeAdapterSurfaceSpec {
             observation_kind: "fixture-observation".into(),
             provider_contract: NativeAdapterProviderContract {
                 lifecycle: LifecycleSemantics {
-                    stable_resource_identity: true,
-                    releases_ephemeral_on_disable: true,
-                    retains_persistent_by_default: true,
                     persistent_delete_method: None,
                 },
                 resource_lifetimes: vec![ResourceLifetime::Persistent],
@@ -907,9 +904,6 @@ fn provider_contract_metadata_changes_adoption_applicability_and_surface_identit
 
     let mut contract = NativeAdapterProviderContract {
         lifecycle: LifecycleSemantics {
-            stable_resource_identity: true,
-            releases_ephemeral_on_disable: true,
-            retains_persistent_by_default: true,
             persistent_delete_method: None,
         },
         resource_lifetimes: vec![ResourceLifetime::Persistent],

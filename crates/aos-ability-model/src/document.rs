@@ -7,7 +7,7 @@
 //! An interface envelope uses this closed shape:
 //!
 //! ```json
-//! {"interface":{"abi":1,"guarantees":[],"lifecycle":{"persistent_delete_method":null,"releases_ephemeral_on_disable":true,"retains_persistent_by_default":true,"stable_resource_identity":true},"methods":{},"name":"test.echo","outputs":{},"request":{"kind":"boolean"}},"required_features":[],"schema":"aos.ability.interface/v1"}
+//! {"interface":{"abi":1,"guarantees":[],"lifecycle":{"persistent_delete_method":null},"methods":{},"name":"test.echo","outputs":{},"request":{"kind":"boolean"}},"required_features":[],"schema":"aos.ability.interface/v1"}
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -1661,9 +1661,6 @@ mod tests {
                 )]),
                 methods: BTreeMap::new(),
                 lifecycle: LifecycleSemantics {
-                    stable_resource_identity: true,
-                    releases_ephemeral_on_disable: true,
-                    retains_persistent_by_default: true,
                     persistent_delete_method: None,
                 },
                 aggregation: AggregationContract {
@@ -1782,7 +1779,7 @@ mod tests {
 
     #[test]
     fn equivalent_but_noncanonical_json_is_rejected() {
-        let bytes = br#"{"schema":"aos.ability.interface/v1","required_features":[],"interface":{"name":"test.echo","abi":1,"request":{"kind":"boolean"},"outputs":{},"methods":{},"lifecycle":{"stable_resource_identity":true,"releases_ephemeral_on_disable":true,"retains_persistent_by_default":true,"persistent_delete_method":null},"guarantees":[]}}"#;
+        let bytes = br#"{"schema":"aos.ability.interface/v1","required_features":[],"interface":{"name":"test.echo","abi":1,"request":{"kind":"boolean"},"outputs":{},"methods":{},"lifecycle":{"persistent_delete_method":null},"guarantees":[]}}"#;
 
         assert!(
             decode_canonical::<InterfaceDocument>(bytes, ABILITY_LIMITS_V1, &BTreeSet::new())
@@ -1951,7 +1948,7 @@ mod tests {
         assert_eq!(encode_canonical(&document)?, bytes);
         assert_eq!(
             document.interface_key()?.descriptor.to_string(),
-            "sha256:bd3fdf9b30dc21a40ae0c7369f12bf12a6cbf88a70ebaf5771fc25c1a05fad2a"
+            "sha256:a178ff66b89a0543d28a49000b548e9f01d75170aa1d32489ebd633d03e51374"
         );
         Ok(())
     }

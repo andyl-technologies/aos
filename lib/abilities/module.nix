@@ -380,9 +380,6 @@
   };
 
   projectedLifecycleType = strictSubmodule {
-    stable_resource_identity = mkOption {type = moduleTypes.bool;};
-    releases_ephemeral_on_disable = mkOption {type = moduleTypes.bool;};
-    retains_persistent_by_default = mkOption {type = moduleTypes.bool;};
     persistent_delete_method = mkOption {
       type = moduleTypes.nullOr packageNameType;
     };
@@ -442,9 +439,6 @@
   };
 
   authoredLifecycleType = strictSubmodule {
-    stableResourceIdentity = mkOption {type = moduleTypes.bool;};
-    releasesEphemeralOnDisable = mkOption {type = moduleTypes.bool;};
-    retainsPersistentByDefault = mkOption {type = moduleTypes.bool;};
     persistentDeleteMethod = mkOption {
       type = moduleTypes.nullOr localKeyType;
       default = null;
@@ -1346,21 +1340,11 @@
           if builtins.length resourceDeclarations == 1
           then builtins.head resourceDeclarations
           else null;
-        lifetimeAllowed =
-          resourceDeclaration
-          != null
-          && (
-            resource.lifetime
-            != "persistent"
-            || resourceDeclaration.lifecycle.retainsPersistentByDefault
-            || resourceDeclaration.lifecycle.persistentDeleteMethod != null
-          );
       in
         resourceDeclaration
         != null
         && resource.resource.provider == config.aos.abilities.instanceIdentities.${binding.providerInstance}
         && controlsKind
-        && lifetimeAllowed
         && typeAccepts resourceDeclaration.requestType resource.value
         && implementation.desiredType != null
         && typeAccepts implementation.desiredType resource.realization;

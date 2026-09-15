@@ -306,19 +306,15 @@ pub fn section(
         }
 
         let lifecycle = &interface.lifecycle;
-        let _ = write!(
-            html,
-            "<h5>Lifecycle</h5><ul><li>Stable resource identity: {}</li><li>Release ephemeral resources on disable: {}</li><li>Retain persistent state by default: {}</li>",
-            yes_no(lifecycle.stable_resource_identity),
-            yes_no(lifecycle.releases_ephemeral_on_disable),
-            yes_no(lifecycle.retains_persistent_by_default),
-        );
+        html.push_str("<h5>Lifecycle</h5><ul>");
         if let Some(method) = &lifecycle.persistent_delete_method {
             let _ = write!(
                 html,
                 "<li>Persistent deletion method: <code>{}</code></li>",
                 escape(method.as_str())
             );
+        } else {
+            html.push_str("<li>No persistent deletion method declared.</li>");
         }
         html.push_str("</ul>");
 
@@ -530,10 +526,6 @@ fn scalar(value: &impl serde::Serialize) -> String {
         .unwrap_or_else(|_| "unavailable".to_string())
 }
 
-const fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -603,9 +595,6 @@ mod tests {
                 outputs: BTreeMap::new(),
                 methods: BTreeMap::new(),
                 lifecycle: LifecycleSemantics {
-                    stable_resource_identity: true,
-                    releases_ephemeral_on_disable: true,
-                    retains_persistent_by_default: false,
                     persistent_delete_method: None,
                 },
                 aggregation: aggregation.clone(),

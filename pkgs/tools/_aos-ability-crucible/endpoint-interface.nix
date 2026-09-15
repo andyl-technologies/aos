@@ -61,9 +61,6 @@
         types.executionPath;
     };
     lifecycle = {
-      stableResourceIdentity = true;
-      releasesEphemeralOnDisable = false;
-      retainsPersistentByDefault = false;
       persistentDeleteMethod = null;
     };
     aggregation = {

@@ -37,9 +37,6 @@
     };
   };
   lifecycle = {
-    stableResourceIdentity = true;
-    releasesEphemeralOnDisable = false;
-    retainsPersistentByDefault = false;
     persistentDeleteMethod = null;
   };
   declaration = declareInterface {

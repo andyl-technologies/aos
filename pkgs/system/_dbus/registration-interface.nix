@@ -92,9 +92,6 @@
     };
   };
   lifecycle = {
-    stableResourceIdentity = true;
-    releasesEphemeralOnDisable = true;
-    retainsPersistentByDefault = false;
     persistentDeleteMethod = null;
   };
   aggregation = {
@@ -133,7 +130,7 @@
     abi = 1;
     requestType = contributionRequest;
     methods = contributionMethods;
-    lifecycle = lifecycle // {releasesEphemeralOnDisable = false;};
+    inherit lifecycle;
     inherit aggregation;
     outputs.registration-resource =
       output "planning" "instance"
