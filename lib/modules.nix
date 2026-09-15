@@ -670,6 +670,11 @@
     # ownership. Write authority comes from the declarations and definition
     # provenance in this same module graph.
     packageModules ? [],
+    # Resolver-selected provider modules use the same authenticated package
+    # provenance and confined import rules. Unlike a package's canonical
+    # `module.nix`, their entry path comes from the selected implementation's
+    # signed ModuleLocator and may lie anywhere below its authenticated root.
+    selectedProviderModules ? [],
     # Nested submodule evaluation retains resolver provenance for priority and
     # ownership, but the outer evaluation already validates the same authored
     # config at its full absolute option path. Re-checking a nested relative
@@ -921,6 +926,39 @@
         else record // {inherit configRoot;} // {outputs = record.outputs or null;})
       packageModules;
 
+      validatedProviderModules = builtins.map (record: let
+        keys =
+          if builtins.isAttrs record
+          then builtins.attrNames record
+          else [];
+        configRoot = record.configRoot or null;
+        root =
+          if builtins.isPath configRoot
+          then builtins.toString configRoot
+          else "";
+        modulePath =
+          if builtins.isPath (record.module or null)
+          then builtins.toString record.module
+          else "";
+      in
+        if
+          !builtins.isAttrs record
+          || keys != ["configRoot" "module" "name" "outputs"]
+        then throw "evalModules: selectedProviderModules entries must contain exactly configRoot/module/name/outputs"
+        else if !builtins.isString record.name || builtins.match "[a-z0-9][a-z0-9._+-]*" record.name == null
+        then throw "evalModules: invalid resolver-supplied provider package provenance name"
+        else if
+          root
+          == ""
+          || modulePath == ""
+          || !strings.hasPrefix "${root}/" modulePath
+          || !builtins.pathExists record.module
+        then throw "evalModules: selected provider module for '${record.name}' escapes or is absent from its authenticated root"
+        else if !validPackageOutputs record.outputs
+        then throw "evalModules: selected provider module for '${record.name}' has invalid resolver-supplied outputs"
+        else record)
+      selectedProviderModules;
+
       packageOwnedRoots = lists.unique (builtins.map
         (decl: builtins.head decl.path)
         (builtins.filter
@@ -934,12 +972,17 @@
         collectModules "package:${record.name}" record.configRoot record.outputs true [record.module])
       validatedPackageModules);
 
+      evaluatedProviderModules = builtins.concatLists (builtins.map (record:
+        collectModules "package:${record.name}" record.configRoot record.outputs true [record.module])
+      validatedProviderModules);
+
       # Image modules carry `@base`; operator (host.nix) modules carry
       # `@host`. Appended last so their tier-75 defs also win any
       # `lastValue` tie at equal priority, matching "the operator overrides".
       evaluatedModules =
         collectModules "@base" null null false ([internalModule] ++ modules)
         ++ evaluatedPackageModules
+        ++ evaluatedProviderModules
         ++ collectModules "@host" null null false operatorModules
         ++ collectModules "@runtime" null null false runtimeModules;
 

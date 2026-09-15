@@ -1,5 +1,6 @@
 ##! Fixed-point composition across terminal and pure feature implementations.
-{lib}: let
+args @ {lib, ...}: let
+  returnPending = args.returnPending or false;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   interfaces = serviceManagement.interfaces;
   lifecycleDeclaration =
@@ -563,66 +564,69 @@
   );
   pendingRequest = pendingChildRequest.config.aos.abilities.compositionPendingRequests.${childRequestKey};
 in
-  assert builtins.length (builtins.attrNames abilities.desiredResources) == 1;
-  assert desired.controller == "test:lifecycle";
-  assert desired.kind == interfaces.serviceInstance.identity.name;
-  assert desired.value.lifecycle == builtins.removeAttrs lifecycleRequest ["service" "enabled"];
-  assert desired.value.dependencies == builtins.removeAttrs dependencyRequest ["service" "enabled"];
-  assert desired.realization == {backend = "fixture";};
-  assert builtins.length resolved == 2;
-  assert controlledResource.controller == "test:lifecycle";
-  assert publishedResource.controller == null;
-  assert publishedResource.kind == interfaces.networkReadiness.identity.name;
-  assert publishedResource.value == networkOutput.value;
-  assert publishedResource.realization == null;
-  assert publishedRevision evaluated != publishedRevision changedPublishedOperations;
-  assert publishedRevision evaluated != publishedRevision changedObserverHandler;
-  assert networkOutput.phase == "planning";
-  assert networkOutput.visibility == "protected";
-  assert networkOutput.lifetime == "instance";
-  assert networkOutput.value.resource.provider == abilities.instanceIdentities."provider:manager";
-  assert networkOutput.value.resource.key == "network-online";
-  assert abilities.compositionOutputs."consumer:lifecycle".marker.value;
-  assert rejects duplicateDependency.config.aos.abilities.desiredResources;
-  assert rejects ambiguousController.config.aos.abilities.desiredResources;
-  assert rejects duplicateOutput.config.aos.abilities.desiredResources;
-  assert builtins.attrNames pendingChildRequest.config.aos.abilities.compositionPendingRequests == [childRequestKey];
-  assert pendingRequest.localRequestKey == "child";
-  assert pendingRequest.implementation == "provider:service-lifecycle";
-  assert pendingRequest.providerInstance == "provider:manager";
-  assert pendingRequest.requirement == "network";
-  assert pendingRequest.declaration.requirement == childRequirementKey;
-  assert lib.abilities.types.declarationKey.check childRequirementKey;
-  assert lib.abilities.types.declarationKey.check childRequestKey;
-  assert childRequirementKey
-  == lib.abilities.compositionRequirementKey {
-    implementation = "provider:service-lifecycle";
-    alias = "network";
-  };
-  assert childRequestKey
-  == lib.abilities.compositionRequestKey {
-    implementation = "provider:service-lifecycle";
-    providerInstance = "provider:manager";
-    key = "child";
-  };
-  assert childRequestKey
-  != lib.abilities.compositionRequestKey {
-    implementation = "provider:service-lifecycle";
-    providerInstance = "provider:alternate-manager";
-    key = "child";
-  };
-  assert rejects pendingChildRequest.config.aos.abilities.desiredResources;
-  assert rejects duplicatePendingChildRequest.config.aos.abilities.compositionPendingRequests;
-  assert pendingRequirement.implementation == "provider:service-lifecycle";
-  assert pendingRequirement.providerInstance == "provider:manager";
-  assert pendingRequirement.requirements == ["network"];
-  assert resolvedChild.config.aos.abilities.compositionPendingRequests == {};
-  assert resolvedChild.config.aos.abilities.compositionRequests.${childRequestKey}.parameters == childParameters;
-  assert builtins.length (builtins.attrNames resolvedChild.config.aos.abilities.desiredResources) == 1;
-  assert rejects authoredConditionalRequirement.config.aos.abilities.compositionPendingRequirements;
-  assert rejects collidingAuthoredChild.config.aos.abilities.desiredResources;
-  assert rejects forgedAuthoredChild.config.aos.abilities.requests;
-  assert rejects orphanChildBinding.config.aos.abilities.desiredResources;
-  assert rejects mismatchedChildBinding.config.aos.abilities.desiredResources;
-  assert rejects multiplyBoundChild.config.aos.abilities.desiredResources;
-  assert rejects runtimeOutput.config.aos.abilities.compositionOutputs; true
+  if returnPending
+  then {requests = pendingChildRequest.config.aos.abilities.compositionPendingRequests;}
+  else
+    assert builtins.length (builtins.attrNames abilities.desiredResources) == 1;
+    assert desired.controller == "test:lifecycle";
+    assert desired.kind == interfaces.serviceInstance.identity.name;
+    assert desired.value.lifecycle == builtins.removeAttrs lifecycleRequest ["service" "enabled"];
+    assert desired.value.dependencies == builtins.removeAttrs dependencyRequest ["service" "enabled"];
+    assert desired.realization == {backend = "fixture";};
+    assert builtins.length resolved == 2;
+    assert controlledResource.controller == "test:lifecycle";
+    assert publishedResource.controller == null;
+    assert publishedResource.kind == interfaces.networkReadiness.identity.name;
+    assert publishedResource.value == networkOutput.value;
+    assert publishedResource.realization == null;
+    assert publishedRevision evaluated != publishedRevision changedPublishedOperations;
+    assert publishedRevision evaluated != publishedRevision changedObserverHandler;
+    assert networkOutput.phase == "planning";
+    assert networkOutput.visibility == "protected";
+    assert networkOutput.lifetime == "instance";
+    assert networkOutput.value.resource.provider == abilities.instanceIdentities."provider:manager";
+    assert networkOutput.value.resource.key == "network-online";
+    assert abilities.compositionOutputs."consumer:lifecycle".marker.value;
+    assert rejects duplicateDependency.config.aos.abilities.desiredResources;
+    assert rejects ambiguousController.config.aos.abilities.desiredResources;
+    assert rejects duplicateOutput.config.aos.abilities.desiredResources;
+    assert builtins.attrNames pendingChildRequest.config.aos.abilities.compositionPendingRequests == [childRequestKey];
+    assert pendingRequest.localRequestKey == "child";
+    assert pendingRequest.implementation == "provider:service-lifecycle";
+    assert pendingRequest.providerInstance == "provider:manager";
+    assert pendingRequest.requirement == "network";
+    assert pendingRequest.declaration.requirement == childRequirementKey;
+    assert lib.abilities.types.declarationKey.check childRequirementKey;
+    assert lib.abilities.types.declarationKey.check childRequestKey;
+    assert childRequirementKey
+    == lib.abilities.compositionRequirementKey {
+      implementation = "provider:service-lifecycle";
+      alias = "network";
+    };
+    assert childRequestKey
+    == lib.abilities.compositionRequestKey {
+      implementation = "provider:service-lifecycle";
+      providerInstance = "provider:manager";
+      key = "child";
+    };
+    assert childRequestKey
+    != lib.abilities.compositionRequestKey {
+      implementation = "provider:service-lifecycle";
+      providerInstance = "provider:alternate-manager";
+      key = "child";
+    };
+    assert rejects pendingChildRequest.config.aos.abilities.desiredResources;
+    assert rejects duplicatePendingChildRequest.config.aos.abilities.compositionPendingRequests;
+    assert pendingRequirement.implementation == "provider:service-lifecycle";
+    assert pendingRequirement.providerInstance == "provider:manager";
+    assert pendingRequirement.requirements == ["network"];
+    assert resolvedChild.config.aos.abilities.compositionPendingRequests == {};
+    assert resolvedChild.config.aos.abilities.compositionRequests.${childRequestKey}.parameters == childParameters;
+    assert builtins.length (builtins.attrNames resolvedChild.config.aos.abilities.desiredResources) == 1;
+    assert rejects authoredConditionalRequirement.config.aos.abilities.compositionPendingRequirements;
+    assert rejects collidingAuthoredChild.config.aos.abilities.desiredResources;
+    assert rejects forgedAuthoredChild.config.aos.abilities.requests;
+    assert rejects orphanChildBinding.config.aos.abilities.desiredResources;
+    assert rejects mismatchedChildBinding.config.aos.abilities.desiredResources;
+    assert rejects multiplyBoundChild.config.aos.abilities.desiredResources;
+    assert rejects runtimeOutput.config.aos.abilities.compositionOutputs; true

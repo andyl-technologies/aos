@@ -40,8 +40,12 @@ use std::process::{Command, Output, Stdio};
 
 use anyhow::{Context, Result, bail, ensure};
 use base64::Engine as _;
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use super::ability_rounds::{
+    AbilityRoundEvaluation, AbilityRoundEvaluator, AbilityRoundSelections, PendingAbilityProjection,
+};
 use super::classify::{EvalClass, KillReason, classify};
 use super::system_roots::{ConfigModuleResolver, ResolvedConfigModule};
 use super::{ConfigOutputFetcher, EvalAttempt, NixEvaluator, SelectedProvider, WorkingSetMember};
@@ -70,6 +74,20 @@ pub struct StockNixEvaluator {
     root: PathBuf,
     /// `verbose > 0` adds `--show-trace`.
     verbose: u8,
+}
+
+/// Binds one stock-Nix evaluator to the unchanged inputs of a complete module graph.
+pub struct StockAbilityRoundEvaluator<'a> {
+    evaluator: &'a StockNixEvaluator,
+    attempt: EvalAttempt<'a>,
+}
+
+impl<'a> StockAbilityRoundEvaluator<'a> {
+    /// Creates a complete-fixed-point adapter around one immutable eval attempt.
+    #[must_use]
+    pub const fn new(evaluator: &'a StockNixEvaluator, attempt: EvalAttempt<'a>) -> Self {
+        Self { evaluator, attempt }
+    }
 }
 
 impl StockNixEvaluator {
@@ -103,6 +121,8 @@ impl StockNixEvaluator {
         self.render_entry_nix_with_inputs(
             attempt,
             &package_modules,
+            "[ ]",
+            "{}",
             &nix_path(attempt.base_lib),
             &nix_path(attempt.host_nix),
         )
@@ -112,13 +132,35 @@ impl StockNixEvaluator {
         let package_modules = render_package_module_list(attempt.working_set, true)?;
         let base = locked_store_input(attempt.base_lib, None)?;
         let host = locked_store_input(attempt.host_nix, None)?;
-        self.render_entry_nix_with_inputs(attempt, &package_modules, &base, &host)
+        self.render_entry_nix_with_inputs(attempt, &package_modules, "[ ]", "{}", &base, &host)
+    }
+
+    fn render_locked_ability_round_entry_nix(
+        &self,
+        attempt: &EvalAttempt<'_>,
+        selections: &AbilityRoundSelections,
+    ) -> Result<String> {
+        let package_modules = render_package_module_list(attempt.working_set, true)?;
+        let provider_modules = render_selected_provider_module_list(selections, true)?;
+        let bindings = render_selected_ability_bindings(selections);
+        let base = locked_store_input(attempt.base_lib, None)?;
+        let host = locked_store_input(attempt.host_nix, None)?;
+        self.render_entry_nix_with_inputs(
+            attempt,
+            &package_modules,
+            &provider_modules,
+            &bindings,
+            &base,
+            &host,
+        )
     }
 
     fn render_entry_nix_with_inputs(
         &self,
         attempt: &EvalAttempt<'_>,
         package_modules: &str,
+        selected_provider_modules: &str,
+        ability_bindings: &str,
         base: &str,
         host: &str,
     ) -> Result<String> {
@@ -152,6 +194,8 @@ impl StockNixEvaluator {
             \x20   operatorModules = [ hostModule ];\n\
             \x20   runtimeModules = [ {runtime_modules} ];\n\
             \x20   packageModules = {modules};\n\
+            \x20   selectedProviderModules = {selected_provider_modules};\n\
+            \x20   abilityBindings = {ability_bindings};\n\
             \x20   factsModules = {facts_modules};\n\
             \x20 }};\n\
             \x20 baselineSystem = baseLib.evalHostConfig {{\n\
@@ -162,9 +206,7 @@ impl StockNixEvaluator {
             \x20 candidate = system.config.system.build.configManifest;\n\
             \x20 baseline = baselineSystem.config.system.build.configManifest;\n\
             \x20 mergedManifest = baseLib.mergeImageManifest {{ inherit baseline candidate; }};\n\
-             in {{\n\
-            \x20 optionWrites = system._optionWrites;\n\
-            \x20 manifest = mergedManifest // {{\n\
+            \x20 finalManifest = mergedManifest // {{\n\
             \x20   config = baseLib.lib.recursiveUpdate\n\
             \x20     candidate.config\n\
             \x20     system.config.aos.apm.installAtBoot.config;\n\
@@ -184,10 +226,23 @@ impl StockNixEvaluator {
             \x20           handles)\n\
             \x20         system.config.aos.apm.installAtBoot.systemCredentials));\n\
             \x20 }};\n\
+            \x20 pendingAbilityRequests = system.config.aos.abilities.compositionPendingRequests;\n\
+             in {{\n\
+            \x20 optionWrites = system._optionWrites;\n\
+            \x20 manifest = finalManifest;\n\
+            \x20 abilityRound =\n\
+            \x20   if pendingAbilityRequests == {{}}\n\
+            \x20   then {{ status = \"complete\"; manifest = finalManifest; }}\n\
+            \x20   else {{\n\
+            \x20     status = \"pending\";\n\
+            \x20     pending = {{ requests = pendingAbilityRequests; }};\n\
+            \x20   }};\n\
              }}\n",
             base = base,
             host = host,
             modules = package_modules,
+            selected_provider_modules = selected_provider_modules,
+            ability_bindings = ability_bindings,
             facts_binding = facts_binding,
             facts_modules = facts_modules,
             runtime_modules = runtime_modules,
@@ -244,6 +299,53 @@ impl NixEvaluator for StockNixEvaluator {
         let kill = kill_reason(&output.status, &stderr);
 
         classify(output.status.success(), &stdout, &stderr, kill)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
+enum StockAbilityRoundResult {
+    Complete { manifest: serde_json::Value },
+    Pending { pending: PendingAbilityProjection },
+}
+
+impl AbilityRoundEvaluator for StockAbilityRoundEvaluator<'_> {
+    fn evaluate(
+        &self,
+        _round: u32,
+        selections: &AbilityRoundSelections,
+    ) -> Result<AbilityRoundEvaluation> {
+        let expression = self
+            .evaluator
+            .render_locked_ability_round_entry_nix(&self.attempt, selections)?;
+        let mut command = pure_eval_command()?;
+        command.arg("-A").arg("abilityRound").arg("-");
+        if self.evaluator.verbose > 0 {
+            command.arg("--show-trace");
+        }
+
+        let output = output_with_expression(&mut command, &expression)
+            .context("running bounded ability-round module evaluation")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let kill = kill_reason(&output.status, &stderr);
+            bail!(
+                "complete ability module evaluation failed{}: {}",
+                kill.map_or_else(String::new, |reason| format!(" ({reason:?})")),
+                stderr.trim()
+            );
+        }
+
+        let result: StockAbilityRoundResult = serde_json::from_slice(&output.stdout)
+            .context("decoding complete ability-round module result")?;
+        match result {
+            StockAbilityRoundResult::Complete { manifest } => Ok(AbilityRoundEvaluation::Complete(
+                serde_json::to_string(&manifest)?,
+            )),
+            StockAbilityRoundResult::Pending { pending } => {
+                Ok(AbilityRoundEvaluation::Pending(pending))
+            }
+        }
     }
 }
 
@@ -425,6 +527,87 @@ where
     } else {
         Ok(format!("[\n{}\n  ]", items.join("\n")))
     }
+}
+
+fn render_selected_provider_module_list(
+    selections: &AbilityRoundSelections,
+    locked: bool,
+) -> Result<String> {
+    let mut items = Vec::new();
+    for selected in selections.provider_modules() {
+        let artifact = &selected.locator.artifact;
+        let authenticated_root = if locked {
+            let input = locked_store_input(
+                Path::new(&artifact.store_path),
+                Some(&artifact.nar_hash.to_string()),
+            )?;
+            format!("(/. + builtins.unsafeDiscardStringContext ({input}))")
+        } else {
+            nix_path_str(&artifact.store_path)
+        };
+        let self_output = selected
+            .outputs
+            .self_output
+            .as_deref()
+            .context("selected provider module has no authenticated self output")?;
+        let self_output = render_output_path(self_output, locked)?;
+        let dependencies = selected
+            .outputs
+            .dependencies
+            .iter()
+            .map(|(package, output)| {
+                Ok(format!(
+                    "{} = {};",
+                    nix_string(package),
+                    render_output_path(output, locked)?
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .join(" ");
+
+        items.push(format!(
+            "    (let configRoot = {authenticated_root}; in {{ name = {}; inherit configRoot; module = configRoot + {}; outputs = {{ self = {self_output}; dependencies = {{ {dependencies} }}; }}; }})",
+            nix_string(&selected.package),
+            nix_string(&format!("/{}", selected.locator.path.as_str())),
+        ));
+    }
+
+    if items.is_empty() {
+        Ok("[ ]".to_string())
+    } else {
+        Ok(format!("[\n{}\n  ]", items.join("\n")))
+    }
+}
+
+fn render_output_path(path: &str, locked: bool) -> Result<String> {
+    if locked {
+        locked_store_input(Path::new(path), None)
+    } else {
+        Ok(nix_string(path))
+    }
+}
+
+fn render_selected_ability_bindings(selections: &AbilityRoundSelections) -> String {
+    if selections.bindings().is_empty() {
+        return "{}".to_string();
+    }
+
+    let bindings = selections
+        .bindings()
+        .iter()
+        .map(|(key, binding)| {
+            format!(
+                "  {} = {{ request = {}; implementation = {}; providerInstance = {}; slot = {}; }};",
+                nix_string(key),
+                nix_string(&binding.request),
+                nix_string(&binding.implementation),
+                nix_string(&binding.provider_instance),
+                nix_string(&binding.slot),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{{\n{bindings}\n}}")
 }
 
 /// Renders one store path as a fixed, pure evaluator input.
@@ -1037,7 +1220,12 @@ impl ConfigModuleResolver for RegistryConfigModules {
 
 #[cfg(test)]
 mod tests {
+    use aos_ability_model::{ArtifactReference, ModuleLocator, RelativePath};
+    use aos_contract::Sha256Digest;
+
     use super::*;
+    use crate::config_eval::PackageOutputs;
+    use crate::config_eval::ability_rounds::{SelectedAbilityBinding, SelectedProviderModule};
     use crate::types::{ApmMeta, ConfigModuleMeta, ConfigOutputMeta, ModuleAbiCompat};
 
     fn member(pkg: &str, config_output: Option<&str>) -> WorkingSetMember {
@@ -1358,6 +1546,114 @@ max = 1
         };
         let text = evaluator.render_entry_nix(&attempt).unwrap();
         assert!(text.contains("packageModules = [ ]"), "{text}");
+    }
+
+    #[test]
+    fn selected_provider_round_keeps_original_inputs_and_exact_selections() {
+        let evaluator = StockNixEvaluator::new("/run/aos-eval", 0);
+        let working = vec![member("consumer", Some("/nix/store/hash-consumer-config"))];
+        let attempt = EvalAttempt {
+            host_nix: Path::new("/nix/store/hash-host.nix"),
+            runtime_modules: &[],
+            base_lib: Path::new("/nix/store/hash-aos-base-lib"),
+            facts_json: None,
+            working_set: &working,
+            iteration: 0,
+        };
+        let module = SelectedProviderModule {
+            package: "provider".to_string(),
+            locator: ModuleLocator {
+                artifact: ArtifactReference {
+                    content: Sha256Digest::from_bytes([1; 32]),
+                    store_path: "/nix/store/00000000000000000000000000000000-provider".to_string(),
+                    nar_hash: Sha256Digest::from_bytes([2; 32]),
+                    closure: Sha256Digest::from_bytes([3; 32]),
+                },
+                path: RelativePath::new("lib/aos/provider.nix").unwrap(),
+            },
+            outputs: PackageOutputs {
+                self_output: Some(
+                    "/nix/store/00000000000000000000000000000000-provider".to_string(),
+                ),
+                dependencies: BTreeMap::from([(
+                    "helper".to_string(),
+                    "/nix/store/11111111111111111111111111111111-helper".to_string(),
+                )]),
+            },
+        };
+        let binding = SelectedAbilityBinding {
+            key: "binding-child".to_string(),
+            request: "request-child".to_string(),
+            implementation: "provider:implementation".to_string(),
+            provider_instance: "provider:instance".to_string(),
+            slot: "service".to_string(),
+            provider_module: Some(module.clone()),
+        };
+        let selections = AbilityRoundSelections {
+            bindings: BTreeMap::from([(binding.key.clone(), binding)]),
+            provider_modules: BTreeMap::from([("module".to_string(), module)]),
+        };
+
+        let package_modules = render_package_module_list(&working, false).unwrap();
+        let provider_modules = render_selected_provider_module_list(&selections, false).unwrap();
+        let bindings = render_selected_ability_bindings(&selections);
+        let rendered = evaluator
+            .render_entry_nix_with_inputs(
+                &attempt,
+                &package_modules,
+                &provider_modules,
+                &bindings,
+                &nix_path(attempt.base_lib),
+                &nix_path(attempt.host_nix),
+            )
+            .unwrap();
+
+        assert!(rendered.contains("operatorModules = [ hostModule ]"));
+        assert!(rendered.contains("name = \"consumer\""));
+        assert!(rendered.contains("name = \"provider\""));
+        assert!(rendered.contains("module = configRoot + \"/lib/aos/provider.nix\""));
+        assert!(rendered.contains("\"binding-child\" = { request = \"request-child\""));
+        assert!(!rendered.contains("-A abilityRound"));
+    }
+
+    #[test]
+    fn pending_child_projection_decodes_from_the_real_module_fixed_point() {
+        let Ok(mut command) = command_from_path("nix-instantiate") else {
+            return;
+        };
+        let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let repository = crate_root
+            .parent()
+            .and_then(Path::parent)
+            .expect("aos-package must remain below the workspace root");
+        let expression = format!(
+            "let pkgs = import {} {{}}; in import {} {{ inherit (pkgs) lib; returnPending = true; }}",
+            nix_path(&repository.join("default.nix")),
+            nix_path(&repository.join("tests/abilities/composition-driver.nix")),
+        );
+        command.env_remove("LD_LIBRARY_PATH");
+        command.args(["--eval", "--strict", "--json", "--expr", &expression]);
+
+        let output = command
+            .output()
+            .expect("the AOS Nix evaluator must execute the fixed-point fixture");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let projection: PendingAbilityProjection = serde_json::from_slice(&output.stdout)
+            .expect("the real camelCase Nix projection must decode");
+        let pending = projection
+            .requests
+            .values()
+            .next()
+            .expect("the fixture must emit one pending child");
+
+        assert_eq!(projection.requests.len(), 1);
+        assert_eq!(pending.local_request_key, "child");
+        assert_eq!(pending.requirement, "network");
+        assert_eq!(pending.provider_instance, "provider:manager");
     }
 
     #[test]
