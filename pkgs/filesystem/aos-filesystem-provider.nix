@@ -13,7 +13,7 @@ in
     pname = "aos-filesystem-provider";
     qualification.packageProbe = lib.qualification.providerExecutableProbe {
       name = "aos-filesystem-provider";
-      entryPoint = "libexec/aos-filesystem-provider";
+      entryPoint = "libexec/aos-storage-allocation-effects";
     };
 
     inherit version src cargoDeps;
@@ -26,7 +26,15 @@ in
 
     postInstall = ''
       mkdir -p "$out/libexec" "$out/share/aos/providers"
-      mv "$out/bin/aos-filesystem-provider" "$out/libexec/"
+      mv "$out/bin/aos-filesystem-provider" "$out/libexec/.aos-filesystem-provider"
+      for role in \
+        storage-allocation-effects \
+        persistent-storage-allocation-effects \
+        storage-view-effects \
+        filesystem-entry-effects
+      do
+        ln -s .aos-filesystem-provider "$out/libexec/aos-$role"
+      done
       install -m 444 \
         ${./_aos-filesystem-provider/provider.nix} \
         "$out/share/aos/providers/filesystem.nix"

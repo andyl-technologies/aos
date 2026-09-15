@@ -11,6 +11,11 @@ use tempfile::tempdir;
 
 use super::*;
 
+const TEST_INSTANCE_INTERFACE: &str = "aos.test.instance-allocation";
+const TEST_PERSISTENT_INTERFACE: &str = "aos.test.persistent-allocation";
+const TEST_VIEW_INTERFACE: &str = "aos.test.storage-view";
+const TEST_ENTRY_INTERFACE: &str = "aos.test.filesystem-entry";
+
 fn key(value: &str) -> LocalKey {
     LocalKey::new(value).expect("test key is valid")
 }
@@ -86,7 +91,7 @@ fn provider(temporary: &Path) -> FilesystemProvider {
 }
 
 fn admission_request(provider: &FilesystemProvider, resource: ResourceId) -> AdmissionRequest {
-    let interface = interface(STORAGE_ALLOCATION_INTERFACE);
+    let interface = interface(TEST_INSTANCE_INTERFACE);
     let assignment = assignment(&resource, &interface);
     let value = ability_value(json!({
         "name": "runtime",
@@ -96,7 +101,7 @@ fn admission_request(provider: &FilesystemProvider, resource: ResourceId) -> Adm
     .expect("request value is valid");
     let decoded: StorageAllocationRequest = decode_value(&value).expect("request fixture decodes");
     let path = provider
-        .storage_path(STORAGE_ALLOCATION_INTERFACE, &resource, &decoded)
+        .storage_path(FilesystemRole::InstanceAllocation, &resource, &decoded)
         .expect("planned path computes");
     let target = ResourceReference {
         interface: interface.clone(),
@@ -115,7 +120,7 @@ fn admission_request(provider: &FilesystemProvider, resource: ResourceId) -> Adm
         assignment,
         resource_spec: ResourceSpec {
             resource,
-            kind: aos_ability_model::InterfaceName::new(STORAGE_ALLOCATION_INTERFACE)
+            kind: aos_ability_model::InterfaceName::new(TEST_INSTANCE_INTERFACE)
                 .expect("storage resource kind is valid"),
             lifetime: aos_ability_model::ResourceLifetime::Instance,
             value,
@@ -144,7 +149,7 @@ fn entry_request(
     prerequisites: Vec<ResourceReference>,
     resources: Vec<ResourceContext>,
 ) -> AdmissionRequest {
-    let interface = interface(FILESYSTEM_ENTRY_INTERFACE);
+    let interface = interface(TEST_ENTRY_INTERFACE);
     let assignment = assignment(&resource, &interface);
     let destination = provider.mutable_roots[0].join(relative_path);
     let target = ResourceReference {
@@ -174,8 +179,7 @@ fn entry_request(
         assignment,
         resource_spec: ResourceSpec {
             resource,
-            kind: InterfaceName::new(FILESYSTEM_ENTRY_INTERFACE)
-                .expect("filesystem entry kind is valid"),
+            kind: InterfaceName::new(TEST_ENTRY_INTERFACE).expect("filesystem entry kind is valid"),
             lifetime: ResourceLifetime::Instance,
             value,
             realization: ability_value(json!({
@@ -197,19 +201,19 @@ fn entry_request(
 
 fn persistent_request(provider: &FilesystemProvider, resource: ResourceId) -> AdmissionRequest {
     let mut request = admission_request(provider, resource);
-    let interface = interface(PERSISTENT_STORAGE_ALLOCATION_INTERFACE);
+    let interface = interface(TEST_PERSISTENT_INTERFACE);
     request.method.interface = interface.clone();
     request.target.interface = interface.clone();
     request.assignment.interface = interface;
     request.target.lifetime = ResourceLifetime::Persistent;
-    request.resource_spec.kind = InterfaceName::new(PERSISTENT_STORAGE_ALLOCATION_INTERFACE)
-        .expect("persistent storage kind is valid");
+    request.resource_spec.kind =
+        InterfaceName::new(TEST_PERSISTENT_INTERFACE).expect("persistent storage kind is valid");
     request.resource_spec.lifetime = ResourceLifetime::Persistent;
     let input: StorageAllocationRequest =
         decode_value(&request.resource_spec.value).expect("persistent request fixture decodes");
     let path = provider
         .storage_path(
-            PERSISTENT_STORAGE_ALLOCATION_INTERFACE,
+            FilesystemRole::PersistentAllocation,
             &request.resource_spec.resource,
             &input,
         )
@@ -230,7 +234,7 @@ fn storage_view_request(
 ) -> AdmissionRequest {
     let source_provider =
         decode_provider_context(&source_context).expect("source provider context decodes");
-    let interface = interface(STORAGE_VIEW_INTERFACE);
+    let interface = interface(TEST_VIEW_INTERFACE);
     let assignment = assignment(&target_resource, &interface);
     let target = ResourceReference {
         interface: interface.clone(),
@@ -257,7 +261,7 @@ fn storage_view_request(
         assignment,
         resource_spec: ResourceSpec {
             resource: target_resource,
-            kind: InterfaceName::new(STORAGE_VIEW_INTERFACE)
+            kind: InterfaceName::new(TEST_VIEW_INTERFACE)
                 .expect("storage-view resource kind is valid"),
             lifetime: ResourceLifetime::Instance,
             value,
@@ -367,18 +371,46 @@ fn invocation_with_dependencies(
 }
 
 #[test]
+fn package_entry_points_select_closed_filesystem_roles() {
+    assert_eq!(
+        FilesystemRole::from_entry_point(OsStr::new("aos-storage-allocation-effects"))
+            .expect("instance allocation role parses"),
+        FilesystemRole::InstanceAllocation,
+    );
+    assert_eq!(
+        FilesystemRole::from_entry_point(OsStr::new("aos-persistent-storage-allocation-effects",))
+            .expect("persistent allocation role parses"),
+        FilesystemRole::PersistentAllocation,
+    );
+    assert_eq!(
+        FilesystemRole::from_entry_point(OsStr::new("aos-storage-view-effects"))
+            .expect("storage view role parses"),
+        FilesystemRole::StorageView,
+    );
+    assert_eq!(
+        FilesystemRole::from_entry_point(OsStr::new("aos-filesystem-entry-effects"))
+            .expect("filesystem entry role parses"),
+        FilesystemRole::FilesystemEntry,
+    );
+    assert!(FilesystemRole::from_entry_point(OsStr::new("aos-filesystem-provider")).is_err());
+}
+
+#[test]
 fn allocation_effect_creates_an_owned_exact_directory() {
     let temporary = tempdir().expect("temporary directory exists");
     let provider = provider(temporary.path());
     let request = admission_request(&provider, resource("runtime"));
     let admission = provider
-        .admit(request.clone())
+        .admit(FilesystemRole::InstanceAllocation, request.clone())
         .expect("absent allocation admits");
     assert_eq!(admission.revision, AdmissionRevision::Absent);
     let context = target_context(&request, &admission);
 
     let result = provider
-        .invoke(invocation(InvocationPurpose::Effect, &request, context))
+        .invoke(
+            FilesystemRole::InstanceAllocation,
+            invocation(InvocationPurpose::Effect, &request, context),
+        )
         .expect("allocation effect succeeds");
     assert_eq!(result.disposition, InvocationDisposition::Completed);
     assert!(result.outputs.contains_key(&key("storage-path")));
@@ -386,7 +418,7 @@ fn allocation_effect_creates_an_owned_exact_directory() {
     assert!(result.outputs.contains_key(&key("observation")));
 
     let observed = provider
-        .admit(request)
+        .admit(FilesystemRole::InstanceAllocation, request)
         .expect("created allocation observes");
     assert_eq!(
         observed.revision,
@@ -412,12 +444,15 @@ fn allocation_applies_and_observes_resolved_principal_and_group() {
     }))
     .expect("owned request is valid");
     let admission = provider
-        .admit(request.clone())
+        .admit(FilesystemRole::InstanceAllocation, request.clone())
         .expect("owned allocation admits");
     let context = target_context(&request, &admission);
 
     let result = provider
-        .invoke(invocation(InvocationPurpose::Effect, &request, context))
+        .invoke(
+            FilesystemRole::InstanceAllocation,
+            invocation(InvocationPurpose::Effect, &request, context),
+        )
         .expect("owned allocation effect succeeds");
 
     assert_eq!(result.disposition, InvocationDisposition::Completed);
@@ -427,7 +462,7 @@ fn allocation_applies_and_observes_resolved_principal_and_group() {
     assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
     assert_eq!(metadata.gid(), rustix::process::getegid().as_raw());
     let observed = provider
-        .admit(request)
+        .admit(FilesystemRole::InstanceAllocation, request)
         .expect("owned allocation remains admissible");
     assert_eq!(
         observed.revision,
@@ -449,7 +484,7 @@ fn admission_rejects_a_realization_that_differs_from_the_planned_path() {
     .expect("drifted realization is valid JSON");
 
     let error = provider
-        .admit(request)
+        .admit(FilesystemRole::InstanceAllocation, request)
         .expect_err("a drifted planned path must be rejected");
 
     assert!(error.to_string().contains("planned path"), "{error:#}");
@@ -494,7 +529,7 @@ fn requested_path_admission_rejects_an_overlapping_durable_claim() {
     .expect("requested-path realization is valid");
 
     let error = provider
-        .admit(request)
+        .admit(FilesystemRole::InstanceAllocation, request)
         .expect_err("an overlapping requested path must fail before effect");
 
     assert!(error.to_string().contains("overlaps"), "{error:#}");
@@ -506,14 +541,17 @@ fn cancellation_of_an_absent_allocation_never_creates_it() {
     let provider = provider(temporary.path());
     let request = admission_request(&provider, resource("cancelled"));
     let admission = provider
-        .admit(request.clone())
+        .admit(FilesystemRole::InstanceAllocation, request.clone())
         .expect("absent allocation admits");
     let context = target_context(&request, &admission);
     let provider_context: StorageProviderContext =
         decode_value(&admission.native_context).expect("provider context decodes");
 
     let result = provider
-        .invoke(invocation(InvocationPurpose::Cancel, &request, context))
+        .invoke(
+            FilesystemRole::InstanceAllocation,
+            invocation(InvocationPurpose::Cancel, &request, context),
+        )
         .expect("cancellation observes absence");
     assert_eq!(
         result.disposition,
@@ -527,14 +565,15 @@ fn release_removes_only_the_exact_claimed_directory_and_reconciles_absence() {
     let temporary = tempdir().expect("temporary directory exists");
     let provider = provider(temporary.path());
     let mut request = admission_request(&provider, resource("released"));
-    let allocation = provider.admit(request.clone()).expect("allocation admits");
+    let allocation = provider
+        .admit(FilesystemRole::InstanceAllocation, request.clone())
+        .expect("allocation admits");
     let allocation_context = target_context(&request, &allocation);
     provider
-        .invoke(invocation(
-            InvocationPurpose::Effect,
-            &request,
-            allocation_context,
-        ))
+        .invoke(
+            FilesystemRole::InstanceAllocation,
+            invocation(InvocationPurpose::Effect, &request, allocation_context),
+        )
         .expect("allocation effect succeeds");
     let provider_context: StorageProviderContext =
         decode_value(&allocation.native_context).expect("provider context decodes");
@@ -547,15 +586,14 @@ fn release_removes_only_the_exact_claimed_directory_and_reconciles_absence() {
     request.method.method = key("release");
     request.target.operations.push(key("release"));
     let release = provider
-        .admit(request.clone())
+        .admit(FilesystemRole::InstanceAllocation, request.clone())
         .expect("present allocation admits for release");
     let release_context = target_context(&request, &release);
     let result = provider
-        .invoke(invocation(
-            InvocationPurpose::Effect,
-            &request,
-            release_context.clone(),
-        ))
+        .invoke(
+            FilesystemRole::InstanceAllocation,
+            invocation(InvocationPurpose::Effect, &request, release_context.clone()),
+        )
         .expect("release effect succeeds");
 
     assert_eq!(result.disposition, InvocationDisposition::Completed);
@@ -570,11 +608,10 @@ fn release_removes_only_the_exact_claimed_directory_and_reconciles_absence() {
     );
 
     let reconciled = provider
-        .invoke(invocation(
-            InvocationPurpose::Reconcile,
-            &request,
-            release_context,
-        ))
+        .invoke(
+            FilesystemRole::InstanceAllocation,
+            invocation(InvocationPurpose::Reconcile, &request, release_context),
+        )
         .expect("released absence reconciles");
     assert_eq!(reconciled.disposition, InvocationDisposition::Completed);
     assert_eq!(observation_state(&reconciled.evidence), Some("absent"));
@@ -596,17 +633,20 @@ fn filesystem_entries_enforce_declared_parent_order_and_copy_exact_content() {
         Vec::new(),
     );
     let parent_admission = provider
-        .admit(parent_request.clone())
+        .admit(FilesystemRole::FilesystemEntry, parent_request.clone())
         .expect("parent directory admits");
     provider
-        .invoke(invocation(
-            InvocationPurpose::Effect,
-            &parent_request,
-            target_context(&parent_request, &parent_admission),
-        ))
+        .invoke(
+            FilesystemRole::FilesystemEntry,
+            invocation(
+                InvocationPurpose::Effect,
+                &parent_request,
+                target_context(&parent_request, &parent_admission),
+            ),
+        )
         .expect("parent directory materializes");
     let observed_parent = provider
-        .admit(parent_request.clone())
+        .admit(FilesystemRole::FilesystemEntry, parent_request.clone())
         .expect("parent directory observes");
     let parent_context = target_context(&parent_request, &observed_parent);
 
@@ -640,15 +680,18 @@ fn filesystem_entries_enforce_declared_parent_order_and_copy_exact_content() {
         vec![parent_context.clone()],
     );
     let child_admission = provider
-        .admit(child_request.clone())
+        .admit(FilesystemRole::FilesystemEntry, child_request.clone())
         .expect("child file with an exact parent prerequisite admits");
     let result = provider
-        .invoke(invocation_with_dependencies(
-            InvocationPurpose::Effect,
-            &child_request,
-            target_context(&child_request, &child_admission),
-            vec![parent_context.clone()],
-        ))
+        .invoke(
+            FilesystemRole::FilesystemEntry,
+            invocation_with_dependencies(
+                InvocationPurpose::Effect,
+                &child_request,
+                target_context(&child_request, &child_admission),
+                vec![parent_context.clone()],
+            ),
+        )
         .expect("child file materializes");
 
     assert_eq!(result.disposition, InvocationDisposition::Completed);
@@ -675,7 +718,7 @@ fn filesystem_entries_enforce_declared_parent_order_and_copy_exact_content() {
         Vec::new(),
     );
     let error = provider
-        .admit(undeclared_child)
+        .admit(FilesystemRole::FilesystemEntry, undeclared_child)
         .expect_err("an undeclared claimed parent must fail admission");
     assert!(error.to_string().contains("parent"), "{error:#}");
 }
@@ -686,17 +729,20 @@ fn storage_view_materialize_and_release_only_its_exact_durable_lease() {
     let provider = provider(temporary.path());
     let source_request = admission_request(&provider, resource("source"));
     let source_admission = provider
-        .admit(source_request.clone())
+        .admit(FilesystemRole::InstanceAllocation, source_request.clone())
         .expect("source allocation admits");
     provider
-        .invoke(invocation(
-            InvocationPurpose::Effect,
-            &source_request,
-            target_context(&source_request, &source_admission),
-        ))
+        .invoke(
+            FilesystemRole::InstanceAllocation,
+            invocation(
+                InvocationPurpose::Effect,
+                &source_request,
+                target_context(&source_request, &source_admission),
+            ),
+        )
         .expect("source allocation materializes");
     let source_observation = provider
-        .admit(source_request.clone())
+        .admit(FilesystemRole::InstanceAllocation, source_request.clone())
         .expect("source allocation observes");
     let source_context = target_context(&source_request, &source_observation);
     let source_root: StorageProviderContext =
@@ -714,7 +760,7 @@ fn storage_view_materialize_and_release_only_its_exact_durable_lease() {
     mismatched.resource_spec.value =
         ability_value(mismatched_value).expect("mismatched view request remains bounded");
     let error = provider
-        .admit(mismatched)
+        .admit(FilesystemRole::StorageView, mismatched)
         .expect_err("a view cannot pair its source with another planned path");
     assert!(
         error.to_string().contains("planned source path"),
@@ -722,31 +768,37 @@ fn storage_view_materialize_and_release_only_its_exact_durable_lease() {
     );
 
     let admission = provider
-        .admit(request.clone())
+        .admit(FilesystemRole::StorageView, request.clone())
         .expect("absent storage-view lease admits");
     assert_eq!(admission.revision, AdmissionRevision::Absent);
     let effect = provider
-        .invoke(invocation_with_dependencies(
-            InvocationPurpose::Effect,
-            &request,
-            target_context(&request, &admission),
-            vec![source_context.clone()],
-        ))
+        .invoke(
+            FilesystemRole::StorageView,
+            invocation_with_dependencies(
+                InvocationPurpose::Effect,
+                &request,
+                target_context(&request, &admission),
+                vec![source_context.clone()],
+            ),
+        )
         .expect("storage-view lease materializes");
     assert_eq!(effect.disposition, InvocationDisposition::Completed);
     assert_eq!(observation_state(&effect.evidence), Some("ready"));
 
     request.method.method = key("release");
     let release_admission = provider
-        .admit(request.clone())
+        .admit(FilesystemRole::StorageView, request.clone())
         .expect("active storage-view lease admits for release");
     let release = provider
-        .invoke(invocation_with_dependencies(
-            InvocationPurpose::Effect,
-            &request,
-            target_context(&request, &release_admission),
-            vec![source_context],
-        ))
+        .invoke(
+            FilesystemRole::StorageView,
+            invocation_with_dependencies(
+                InvocationPurpose::Effect,
+                &request,
+                target_context(&request, &release_admission),
+                vec![source_context],
+            ),
+        )
         .expect("storage-view lease releases");
     assert_eq!(release.disposition, InvocationDisposition::Completed);
     assert_eq!(observation_state(&release.evidence), Some("absent"));
@@ -759,14 +811,17 @@ fn persistent_release_detaches_ownership_without_deleting_retained_data() {
     let provider = provider(temporary.path());
     let mut request = persistent_request(&provider, resource("persistent"));
     let admission = provider
-        .admit(request.clone())
+        .admit(FilesystemRole::PersistentAllocation, request.clone())
         .expect("persistent allocation admits");
     provider
-        .invoke(invocation(
-            InvocationPurpose::Effect,
-            &request,
-            target_context(&request, &admission),
-        ))
+        .invoke(
+            FilesystemRole::PersistentAllocation,
+            invocation(
+                InvocationPurpose::Effect,
+                &request,
+                target_context(&request, &admission),
+            ),
+        )
         .expect("persistent allocation materializes");
     let context: StorageProviderContext =
         decode_value(&admission.native_context).expect("provider context decodes");
@@ -776,14 +831,17 @@ fn persistent_release_detaches_ownership_without_deleting_retained_data() {
     request.method.method = key("release");
     request.target.operations.push(key("release"));
     let release = provider
-        .admit(request.clone())
+        .admit(FilesystemRole::PersistentAllocation, request.clone())
         .expect("persistent release admits");
     provider
-        .invoke(invocation(
-            InvocationPurpose::Effect,
-            &request,
-            target_context(&request, &release),
-        ))
+        .invoke(
+            FilesystemRole::PersistentAllocation,
+            invocation(
+                InvocationPurpose::Effect,
+                &request,
+                target_context(&request, &release),
+            ),
+        )
         .expect("persistent allocation detaches");
 
     assert_eq!(
@@ -792,7 +850,7 @@ fn persistent_release_detaches_ownership_without_deleting_retained_data() {
     );
     let resource_id = request.resource_spec.resource.clone();
     let detached = provider
-        .admit(request)
+        .admit(FilesystemRole::PersistentAllocation, request)
         .expect("detached persistent allocation remains observable");
     assert!(matches!(
         detached.revision,
@@ -813,7 +871,7 @@ fn invocation_rejects_resource_set_drift_before_allocation() {
     let provider = provider(temporary.path());
     let request = admission_request(&provider, resource("drifted"));
     let admission = provider
-        .admit(request.clone())
+        .admit(FilesystemRole::InstanceAllocation, request.clone())
         .expect("absent allocation admits");
     let context = target_context(&request, &admission);
     let provider_context: StorageProviderContext =
@@ -822,7 +880,7 @@ fn invocation_rejects_resource_set_drift_before_allocation() {
     invocation.request.native_context_digest = Sha256Digest::of_bytes(b"other-resource-set");
 
     let error = provider
-        .invoke(invocation)
+        .invoke(FilesystemRole::InstanceAllocation, invocation)
         .expect_err("resource-set drift must fail before effect");
 
     assert!(

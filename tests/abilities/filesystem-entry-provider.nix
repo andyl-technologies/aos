@@ -105,4 +105,12 @@ in
   assert resource.value.destination == "/run/example";
   assert resource.realization.path == "/run/example";
   assert abilities.implementations."aos-filesystem-provider:filesystem-entry".handlerDescriptor == null;
-  assert abilities.implementations."aos-filesystem-provider:filesystem-entry-effects".providerModule == null; true
+  assert abilities.implementations."aos-filesystem-provider:filesystem-entry-effects".providerModule == null;
+  assert abilities.implementations."aos-filesystem-provider:filesystem-entry-effects".handlerDescriptor.entryPoint
+  == "libexec/aos-filesystem-entry-effects";
+  assert abilities.implementations."aos-filesystem-provider:storage-allocation-effects".handlerDescriptor.entryPoint
+  == "libexec/aos-storage-allocation-effects";
+  assert abilities.implementations."aos-filesystem-provider:persistent-storage-allocation-effects".handlerDescriptor.entryPoint
+  == "libexec/aos-persistent-storage-allocation-effects";
+  assert abilities.implementations."aos-filesystem-provider:storage-view-effects".handlerDescriptor.entryPoint
+  == "libexec/aos-storage-view-effects"; true
