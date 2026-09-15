@@ -105,7 +105,6 @@ pub(super) fn activate_config(
         VerifiedAbilityActivationInputs::load(&desired_manifest, &operator_authority)
             .context("authenticating desired native activation inputs")?;
     let current_inputs = current_manifest
-        .filter(|manifest| manifest.inputs.ability_activation.is_some())
         .map(|manifest| VerifiedAbilityActivationInputs::load(manifest, &operator_authority))
         .transpose()
         .context("authenticating retained native activation inputs")?;
@@ -288,7 +287,6 @@ pub(crate) fn preflight_retained_manifest(
             .map_err(RetainedNativePreflightError::Artifact)?;
     let current_inputs = current_manifest
         .as_ref()
-        .filter(|manifest| manifest.inputs.ability_activation.is_some())
         .map(|manifest| VerifiedAbilityActivationInputs::load(manifest, &operator_authority))
         .transpose()
         .context("authenticating current ability inputs")

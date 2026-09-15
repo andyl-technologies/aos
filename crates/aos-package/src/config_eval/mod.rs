@@ -721,26 +721,17 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
             },
         );
         let ability_resolver =
-            stock::StockAbilityRoundResolver::new(&candidate.working_set, planning.as_ref());
+            stock::StockAbilityRoundResolver::new(&candidate.working_set, &planning);
         let mut ability = ability_rounds::resolve_ability_rounds(
             &ability_evaluator,
             &ability_resolver,
             aos_ability_model::ABILITY_LIMITS_V1.max_resolver_rounds,
         )
         .context("resolving the final ability module fixed point")?;
-        match planning.as_ref() {
-            Some(planning) => ability
-                .fixed_point
-                .bind_checked_planning(planning, &ability.selections)
-                .context("binding final module selections to the authenticated ability plan")?,
-            None => anyhow::ensure!(
-                ability.selections.bindings().is_empty()
-                    && ability.fixed_point.bindings.is_empty()
-                    && ability.fixed_point.resolved_resources.is_empty()
-                    && ability.fixed_point.execution_observer.is_none(),
-                "an ability fixed point without authenticated activation authority is not empty"
-            ),
-        }
+        ability
+            .fixed_point
+            .bind_checked_planning(&planning, &ability.selections)
+            .context("binding final module selections to the authenticated ability plan")?;
         candidate.manifest = ability.manifest;
         candidate.ability_fixed_point = ability.fixed_point;
         let selected: Vec<String> = candidate
@@ -795,12 +786,14 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
 
 fn replay_candidate_ability_plan(
     candidate: &FixpointOutcome,
-) -> Result<Option<aos_ability_plan::VerifiedPlanningSnapshot>> {
+) -> Result<aos_ability_plan::VerifiedPlanningSnapshot> {
     let manifest: materialize::ConfigManifest =
         serde_json::from_str(&candidate.manifest).context("decoding candidate config manifest")?;
-    let Some(activation) = manifest.inputs.ability_activation.as_ref() else {
-        return Ok(None);
-    };
+    let activation = manifest
+        .inputs
+        .ability_activation
+        .as_ref()
+        .context("configuration evaluation requires authenticated ability activation inputs")?;
 
     let operator_authority = ability_policy_authority::OperatorPolicyAuthorityStore::open()
         .context("opening operator ability-policy authority")?;
@@ -828,7 +821,7 @@ fn replay_candidate_ability_plan(
             documents,
         )?;
     let mut evaluator = native_activation::production_evaluator()?;
-    ability_activation::specialize_planning(&inputs, &catalog, &mut evaluator).map(Some)
+    ability_activation::specialize_planning(&inputs, &catalog, &mut evaluator)
 }
 
 /// Renders one provider-discovery step for the dry-run JSON contract.

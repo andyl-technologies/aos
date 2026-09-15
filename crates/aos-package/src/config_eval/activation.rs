@@ -280,14 +280,6 @@ pub struct ActivationFailure {
 }
 
 impl ActivationFailure {
-    /// Classifies an indeterminate post-swap failure as requiring rescue.
-    pub(crate) fn rescue(message: impl Into<String>) -> Self {
-        Self {
-            exit_code: 4,
-            message: message.into(),
-        }
-    }
-
     /// Classifies a post-commit structured transition failure as degraded.
     pub(crate) fn degraded(message: impl Into<String>) -> Self {
         Self {
@@ -327,16 +319,12 @@ impl Error for ActivationFailure {}
 /// degraded.
 pub fn activate_config(params: &ActivateConfigParams) -> Result<u32> {
     let manifest = load_config_manifest(&params.manifest)?;
-    if manifest.inputs.ability_activation.is_some() {
-        return super::native_activation::activate_config(params, manifest);
-    }
-    activate_config_with(
-        params,
-        true,
-        true,
-        true,
-        run_activation_with_credential_barrier,
-    )
+    manifest
+        .inputs
+        .ability_activation
+        .as_ref()
+        .context("configuration activation requires a checked ability plan")?;
+    super::native_activation::activate_config(params, manifest)
 }
 
 pub(crate) fn load_config_manifest(path: &Path) -> Result<ConfigManifest> {
@@ -467,15 +455,19 @@ pub(crate) fn commit_structured_config_while_locked(
     )
 }
 
-/// Rejects structured manifests until the native activation dispatcher owns the commit path.
+/// Requires structured manifests to carry an authenticated native transaction context.
 ///
 /// # Errors
 ///
-/// Returns an error when the manifest carries structured activation inputs.
-pub(crate) fn reject_structured_activation_on_legacy_path(manifest: &ConfigManifest) -> Result<()> {
-    if manifest.inputs.ability_activation.is_some() {
+/// Returns an error when a structured manifest reaches the internal generation
+/// commit without the native transaction that authorized it.
+pub(crate) fn require_native_transaction_context(
+    manifest: &ConfigManifest,
+    transaction_present: bool,
+) -> Result<()> {
+    if manifest.inputs.ability_activation.is_some() && !transaction_present {
         bail!(
-            "structured ability activation requires the native dispatcher; refusing the legacy activation path"
+            "checked ability activation reached generation commit without its native transaction"
         );
     }
     Ok(())
@@ -646,6 +638,7 @@ pub(crate) fn run_activation_with_credential_barrier(
     Ok(status.code())
 }
 
+#[cfg(test)]
 fn activate_config_with<F>(
     params: &ActivateConfigParams,
     verify_realized_paths: bool,
@@ -681,6 +674,7 @@ where
     )
 }
 
+#[cfg(test)]
 fn activate_config_with_reconciliation<F, G>(
     params: &ActivateConfigParams,
     verify_realized_paths: bool,
@@ -743,9 +737,7 @@ where
         Some(manifest) => manifest.clone(),
         None => load_config_manifest(&params.manifest)?,
     };
-    if structured_transaction.is_none() {
-        reject_structured_activation_on_legacy_path(&manifest)?;
-    }
+    require_native_transaction_context(&manifest, structured_transaction.is_some())?;
     if manifest.module_abi != params.module_abi || manifest.module_abi != running_image.module_abi {
         bail!(
             "manifest module_abi {} does not match running image ABI {}",
@@ -1363,23 +1355,6 @@ fn manifest_string_array(manifest: &Value, key: &str) -> Vec<String> {
         .collect()
 }
 
-fn nested_string_array(manifest: &Value, keys: &[&str]) -> Vec<String> {
-    let mut value = manifest;
-    for key in keys {
-        let Some(next) = value.get(*key) else {
-            return Vec::new();
-        };
-        value = next;
-    }
-    value
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(str::to_string)
-        .collect()
-}
-
 fn write_json_atomic(path: &Path, value: &Value) -> Result<()> {
     let parent = path.parent().context("JSON output path has no parent")?;
     std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
@@ -1731,18 +1706,20 @@ mod tests {
     }
 
     #[test]
-    fn production_activation_rejects_unrealized_pinned_paths_before_prepare() {
+    fn production_activation_requires_a_checked_plan_before_prepare() {
         let (_root, params, _manifest) = setup();
-        let error = activate_config(&params).expect_err("fixture store paths are not realized");
+        let error = activate_config(&params).expect_err("fixture has no checked ability plan");
         assert!(
-            error.to_string().contains("required manifest store path"),
+            error
+                .to_string()
+                .contains("requires a checked ability plan"),
             "{error}"
         );
         assert!(!params.profile.join("gen-2").exists());
     }
 
     #[test]
-    fn direct_activation_rejects_structured_effects_before_generation_mutation() {
+    fn internal_commit_rejects_checked_plan_without_transaction() {
         let (_root, params, mut manifest) = setup();
         manifest["schema"] = json!(ConfigManifest::SCHEMA_V2);
         manifest["inputs"]["expected_current_generation"] = json!(1);
@@ -1765,7 +1742,13 @@ mod tests {
                 "document_sha256": format!("sha256:{}", "b".repeat(64)),
                 "document_size": 1
             },
-            "packages": []
+            "packages": [],
+            "fixed_point": {
+                "bindings": {},
+                "resolvedResources": {},
+                "bindingPlan": format!("sha256:{}", "c".repeat(64)),
+                "checkedBindings": []
+            }
         });
         for package in ["firewall", "web"] {
             let nar_hash = format!("sha256:{}", "0".repeat(52));
@@ -1784,12 +1767,15 @@ mod tests {
             false,
             false,
             |_activate, _number, _nonce, _barrier| {
-                panic!("legacy activation must not execute structured effects")
+                panic!("unauthorized internal commit must not execute structured effects")
             },
         )
         .unwrap_err();
 
-        assert!(error.to_string().contains("native dispatcher"), "{error:#}");
+        assert!(
+            error.to_string().contains("without its native transaction"),
+            "{error:#}"
+        );
         let state = load_generation_state_pub(&params.profile).unwrap();
         assert_eq!(state.current, 1);
         assert!(!params.profile.join("gen-2").exists());
