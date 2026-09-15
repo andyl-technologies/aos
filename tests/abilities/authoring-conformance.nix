@@ -261,6 +261,163 @@
       }
     ];
   };
+
+  revisionValueType = lib.abilities.types.record {
+    fields = {
+      enabled = lib.abilities.types.boolean;
+      artifact = {
+        type = lib.abilities.types.artifactReference;
+        optional = true;
+      };
+    };
+  };
+  revisionInterface =
+    crossSourceInterface
+    // {
+      name = "aos.test.revision-resource";
+      description = "Exercises centrally derived resource revisions.";
+      requestType = revisionValueType;
+      methods =
+        crossSourceInterface.methods
+        // {
+          invoke =
+            crossSourceInterface.methods.invoke
+            // {
+              targetResource = "aos.test.revision-resource";
+            };
+        };
+      lifecycle = crossSourceInterface.lifecycle // {retainsPersistentByDefault = true;};
+    };
+  revisionInterfaceIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration revisionInterface
+  );
+  revisionEvaluation = {
+    value ? {enabled = true;},
+    realization ? true,
+    implementation ? "primary",
+    desiredType ? lib.abilities.types.boolean,
+    lifetime ? "instance",
+    slot ? "resource",
+    unrelated ? false,
+  }: let
+    implementationName = "authoring:${implementation}";
+  in
+    (lib.evalModules {
+      modules = [
+        lib.abilities.module
+        {
+          config.aos.abilities = {
+            environment = plainIdentity.environment;
+            interfaces."authoring:resource" = revisionInterface;
+            implementations.${implementationName} = {
+              description = "Provides the resource revision conformance fixture.";
+              interface = "authoring:resource";
+              methods = ["invoke"];
+              inherit desiredType;
+            };
+            instances."authoring:provider" = {
+              implementation = implementationName;
+              configuration = {};
+            };
+            requirementTemplates."authoring:resource" = {
+              description = "Requires the resource revision conformance fixture.";
+              interface = revisionInterfaceIdentity.name;
+              inherit (revisionInterfaceIdentity) abi descriptor;
+              methods = ["invoke"];
+            };
+            requests = {
+              "authoring:resource" = {
+                requirement = "authoring:resource";
+                consumer = "authoring:provider";
+                parameters = value;
+              };
+            }
+            // lib.optionalAttrs unrelated {
+              "authoring:unrelated" = {
+                requirement = "authoring:resource";
+                consumer = "authoring:provider";
+                parameters.enabled = false;
+              };
+            };
+            bindings = {
+              "authoring:controller" = {
+                request = "authoring:resource";
+                implementation = implementationName;
+                providerInstance = "authoring:provider";
+                inherit slot;
+              };
+            }
+            // lib.optionalAttrs unrelated {
+              "authoring:unrelated-controller" = {
+                request = "authoring:unrelated";
+                implementation = implementationName;
+                providerInstance = "authoring:provider";
+                slot = "unrelated";
+              };
+            };
+            desiredResources = {
+              "authoring:resource" = {
+                resource = {
+                  provider = revisionProviderIdentity;
+                  key = "resource";
+                };
+                kind = revisionInterface.name;
+                controller = "authoring:controller";
+                inherit lifetime;
+                inherit value realization;
+              };
+            }
+            // lib.optionalAttrs unrelated {
+              "authoring:unrelated" = {
+                resource = {
+                  provider = revisionProviderIdentity;
+                  key = "unrelated";
+                };
+                kind = revisionInterface.name;
+                controller = "authoring:unrelated-controller";
+                lifetime = "instance";
+                value.enabled = false;
+                realization = true;
+              };
+            };
+          };
+        }
+      ];
+    })
+    .config
+    .aos
+    .abilities;
+  primaryRevisionEvaluation = revisionEvaluation {};
+  changedValueRevisionEvaluation = revisionEvaluation {value.enabled = false;};
+  changedRealizationRevisionEvaluation = revisionEvaluation {realization = false;};
+  changedImplementationRevisionEvaluation = revisionEvaluation {implementation = "secondary";};
+  changedLifetimeRevisionEvaluation = revisionEvaluation {lifetime = "persistent";};
+  changedControllerRevisionEvaluation = revisionEvaluation {slot = "alternate";};
+  unrelatedRevisionEvaluation = revisionEvaluation {unrelated = true;};
+  invalidRealizationEvaluation = builtins.tryEval (builtins.deepSeq
+    (revisionEvaluation {realization = "invalid";}).resolvedResources
+    true);
+  missingDesiredTypeEvaluation = builtins.tryEval (builtins.deepSeq
+    (revisionEvaluation {desiredType = null;}).resolvedResources
+    true);
+
+  semanticArtifact = storePath: narHash:
+    lib.abilities.artifactReference {
+      content = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      storePath = storePath;
+      narHash = narHash;
+      closure = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    };
+  artifactRevision = storePath: narHash:
+    (revisionEvaluation {
+      value = {
+        enabled = true;
+        artifact = semanticArtifact storePath narHash;
+      };
+    }).resolvedResources."authoring:resource".revision;
+  artifactRevisionA = artifactRevision "/nix/store/aaaaaaaa-source" "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  artifactRevisionRelocated = artifactRevision "/nix/store/dddddddd-source" "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  artifactRevisionChanged = artifactRevision "/nix/store/aaaaaaaa-source" "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
   missingCrossTarget = builtins.tryEval (builtins.deepSeq
     (lib.evalModules {
       modules = [
@@ -490,6 +647,13 @@
     };
     key = "instance";
   };
+  revisionProviderIdentity = {
+    environment = plainIdentity.environment;
+    key = "instance-${builtins.hashString "sha256" (builtins.toJSON {
+      schema = "aos.ability.instance-key/v1";
+      declaration = "authoring:provider";
+    })}";
+  };
   invalidPackageOutputField = builtins.tryEval (builtins.deepSeq
     (lib.abilities.packageOutput {unknown = true;})
     true);
@@ -557,7 +721,8 @@ in
   assert combinedImplementationKeys == ["alpha:test" "beta:test"];
   assert builtins.attrNames combinedPackageEvaluation.config.aos.abilities.implementations == ["alpha:test" "beta:test"];
   assert builtins.isFunction combinedPackageEvaluation.config.aos.abilities.implementations."alpha:test".provide;
-  assert derivedInstanceIdentity.environment == {
+  assert derivedInstanceIdentity.environment
+  == {
     authority = "fleet";
     key = "host";
     stage = "host";
@@ -695,6 +860,35 @@ in
   assert crossTargetEvaluation.config.aos.abilities.interfaces."authoring:source".methods.invoke.targetResource == crossTargetInterface.name;
   assert crossTargetEvaluation.config.aos.abilities.interfaces."authoring:source".methods.invoke.outputs.observed.phase == "observation";
   assert !missingCrossTarget.success;
+  assert primaryRevisionEvaluation.instanceIdentities."authoring:provider"
+  == {
+    environment = plainIdentity.environment;
+    key = "instance-${builtins.hashString "sha256" (builtins.toJSON {
+      schema = "aos.ability.instance-key/v1";
+      declaration = "authoring:provider";
+    })}";
+  };
+  assert primaryRevisionEvaluation.resolvedResources."authoring:resource".resource
+  == {
+    provider = primaryRevisionEvaluation.instanceIdentities."authoring:provider";
+    key = "resource";
+  };
+  assert primaryRevisionEvaluation.resolvedResources."authoring:resource".revision
+  != changedValueRevisionEvaluation.resolvedResources."authoring:resource".revision;
+  assert primaryRevisionEvaluation.resolvedResources."authoring:resource".revision
+  != changedRealizationRevisionEvaluation.resolvedResources."authoring:resource".revision;
+  assert primaryRevisionEvaluation.resolvedResources."authoring:resource".revision
+  != changedImplementationRevisionEvaluation.resolvedResources."authoring:resource".revision;
+  assert primaryRevisionEvaluation.resolvedResources."authoring:resource".revision
+  != changedLifetimeRevisionEvaluation.resolvedResources."authoring:resource".revision;
+  assert primaryRevisionEvaluation.resolvedResources."authoring:resource".revision
+  != changedControllerRevisionEvaluation.resolvedResources."authoring:resource".revision;
+  assert primaryRevisionEvaluation.resolvedResources."authoring:resource".revision
+  == unrelatedRevisionEvaluation.resolvedResources."authoring:resource".revision;
+  assert !invalidRealizationEvaluation.success;
+  assert !missingDesiredTypeEvaluation.success;
+  assert artifactRevisionA == artifactRevisionRelocated;
+  assert artifactRevisionA != artifactRevisionChanged;
   assert rejectsAbilityModule (executableModule {
     entryPoint = "/bin/server";
     selector = selfOutput;

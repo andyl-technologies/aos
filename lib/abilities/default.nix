@@ -74,6 +74,23 @@
 
   descriptorFor = domain: document: "sha256:${builtins.hashString "sha256" (builtins.toJSON {inherit domain document;})}";
 
+  normalizeSemanticValue = value:
+    if
+      builtins.isAttrs value
+      && builtins.attrNames value == ["_type" "closure" "content" "nar_hash" "store_path"]
+      && value._type == "aos-artifact-reference"
+    then {
+      inherit (value) _type closure content nar_hash;
+    }
+    else if builtins.isAttrs value
+    then builtins.mapAttrs (_: normalizeSemanticValue) value
+    else if builtins.isList value
+    then builtins.map normalizeSemanticValue value
+    else value;
+
+  resourceRevision = material:
+    descriptorFor "aos.ability.resource-revision/v1" (normalizeSemanticValue material);
+
   interfaceIdentity = document: {
     inherit (document.interface) name abi;
     descriptor = descriptorFor "aos.ability.interface/v1" document;
@@ -236,6 +253,10 @@
       if implementation.transition == null
       then null
       else "transition";
+    desired_schema =
+      if implementation.desired_type == null
+      then null
+      else schemas.validateSchema "implementation '${implementationName}' desired type" implementation.desired_type;
     owns_resource_kinds = builtins.attrNames (builtins.listToAttrs (builtins.map
       (method: {
         name = method.target_resource;
@@ -751,6 +772,7 @@
         "composeEntry"
         "transitionEntry"
         "ownsResourceKinds"
+        "desiredType"
         "stateFormat"
         "compose"
         "transition"
@@ -816,6 +838,10 @@
         builtins.map
         (requireQualifiedName "owned resource kind")
         (uniqueSortedStrings "owned resource kinds" (checked.ownsResourceKinds or []));
+      desired_schema =
+        if (checked.desiredType or null) == null
+        then null
+        else schemas.validateSchema "provider desiredType" checked.desiredType;
       state_format =
         if (checked.stateFormat or null) == null
         then null
@@ -885,6 +911,11 @@
         };
       owns_resource_kinds = export.owns_resource_kinds;
     }
+    // (
+      if export.desired_schema == null
+      then {}
+      else {desired_schema = export.desired_schema;}
+    )
     // (
       if export.state_format == null
       then {}
@@ -1511,7 +1542,17 @@ in rec {
   };
   module = {config, ...}:
     import ./module.nix {
-      inherit config mkOption abilityTypes schemas evalModules interfaceDocumentFromDeclaration interfaceIdentity;
+      inherit
+        config
+        mkOption
+        abilityTypes
+        schemas
+        evalModules
+        interfaceDocumentFromDeclaration
+        interfaceIdentity
+        normalizeSemanticValue
+        resourceRevision
+        ;
       moduleTypes = moduleOptionTypes;
     };
 

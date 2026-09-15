@@ -6,12 +6,11 @@
 //! fragment validation against the retained transcript without executing
 //! provider code. An optional live replay can invoke the exact evaluator again.
 
-use std::collections::BTreeMap;
 use std::io::{self, Write};
 
 use aos_ability_model::{
     ABILITY_LIMITS_V1, BindingPlanDocument, DesiredStateDocument, EnvironmentDocument,
-    PackageDocument, PlanId, RevisionId, VersionedDocument, encode_canonical,
+    PackageDocument, PlanId, VersionedDocument, encode_canonical,
 };
 use aos_ability_validate::CheckedBindingPlan;
 use aos_contract::Sha256Digest;
@@ -91,8 +90,6 @@ pub struct PlanningSnapshot {
     schema: String,
     seed: DesiredStateDocument,
     seed_digest: Sha256Digest,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    activation_revisions: BTreeMap<Sha256Digest, RevisionId>,
     desired_state: DesiredStateDocument,
     desired_state_digest: Sha256Digest,
     policies: Vec<ResolutionPolicyDocument>,
@@ -205,7 +202,6 @@ impl PlanningSnapshot {
             schema: PLANNING_SNAPSHOT_SCHEMA.to_string(),
             seed: outcome.seed.clone(),
             seed_digest,
-            activation_revisions: outcome.activation_revisions.clone(),
             desired_state: outcome.desired_state.clone(),
             desired_state_digest,
             policies: outcome.policies.clone(),
@@ -357,12 +353,11 @@ impl PlanningSnapshot {
         self.validate_external_inputs(expected_digest, authenticated_policies, &seed)?;
         let mut evaluator = TranscriptEvaluator::new(&self.evaluations);
         let outcome = composer
-            .compose_with_activation_revisions(
+            .compose(
                 authenticated_policies,
                 seed,
                 environment,
                 packages,
-                self.activation_revisions.clone(),
                 &mut evaluator,
             )
             .map_err(PlanningSnapshotError::Replay)?;
@@ -394,12 +389,11 @@ impl PlanningSnapshot {
         } = inputs;
         self.validate_external_inputs(expected_digest, authenticated_policies, &seed)?;
         let outcome = composer
-            .compose_with_activation_revisions(
+            .compose(
                 authenticated_policies,
                 seed,
                 environment,
                 packages,
-                self.activation_revisions.clone(),
                 evaluator,
             )
             .map_err(PlanningSnapshotError::Replay)?;

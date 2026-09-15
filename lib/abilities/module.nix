@@ -12,6 +12,8 @@
   evalModules,
   interfaceDocumentFromDeclaration,
   interfaceIdentity,
+  normalizeSemanticValue,
+  resourceRevision,
 }: let
   strictSubmodule = options: let
     submoduleType = moduleTypes.submodule {
@@ -682,7 +684,8 @@
       implementation.qualification
       == null
       || (
-        implementation.qualification.conformanceFamilies != []
+        implementation.qualification.conformanceFamilies
+        != []
         && uniqueValues implementation.qualification.conformanceFamilies
       )
     )
@@ -888,7 +891,20 @@
     };
   };
 
+  resourceIdentityType = strictSubmodule {
+    provider = mkOption {
+      type = abilityTypes.instanceId;
+    };
+    key = mkOption {
+      type = localKeyType;
+    };
+  };
+
   desiredResourceBaseType = strictSubmodule {
+    resource = mkOption {
+      type = resourceIdentityType;
+      description = "Exact logical resource identity emitted by provider composition.";
+    };
     kind = mkOption {
       type = qualifiedNameType;
       description = "Provider-neutral resource kind.";
@@ -910,6 +926,187 @@
       description = "Provider-owned realization checked against the selected implementation type.";
     };
   };
+
+  resolvedResourceType = strictSubmodule {
+    resource = mkOption {
+      type = resourceIdentityType;
+      description = "Exact logical resource identity derived from its selected controller.";
+    };
+    kind = mkOption {
+      type = qualifiedNameType;
+    };
+    controller = mkOption {
+      type = moduleTypes.nullOr declarationKeyType;
+      description = "Selected write controller, absent for a published read-only resource.";
+    };
+    lifetime = mkOption {
+      type = lifetimeType;
+    };
+    value = mkOption {
+      type = canonicalValueType;
+    };
+    realization = mkOption {
+      type = canonicalValueType;
+    };
+    revision = mkOption {
+      type = digestType;
+      description = "Semantic revision of the complete selected resource projection.";
+    };
+  };
+
+  semanticImplementation = name: implementation: let
+    declaration = config.aos.abilities.interfaces.${implementation.interface};
+    normalizeHandler = handler:
+      if handler == null
+      then null
+      else {
+        artifact = handler.artifact;
+        entry_point = handler.entryPoint;
+        arguments = abilityTypes.schemaOf "handler arguments" handler.arguments;
+        result = abilityTypes.schemaOf "handler result" handler.result;
+      };
+  in {
+    declaration = name;
+    package = implementation.package;
+    interface = interfaceIdentity (interfaceDocumentFromDeclaration declaration);
+    inherit
+      (implementation)
+      requirements
+      methods
+      guarantees
+      state_format
+      artifact
+      artifacts
+      providerModule
+      requiredFeatures
+      ;
+    handler = normalizeHandler implementation.handlerDescriptor;
+    desired_schema =
+      if implementation.desiredType == null
+      then null
+      else abilityTypes.schemaOf "provider realization" implementation.desiredType;
+  };
+
+  resolveResource = _: authored: let
+    binding = config.aos.abilities.bindings.${authored.controller};
+    providerDeclaration = binding.providerInstance;
+    provider = config.aos.abilities.instances.${providerDeclaration};
+    implementationName = binding.implementation;
+    implementation = config.aos.abilities.implementations.${implementationName};
+    resource = authored.resource;
+    selected = {
+      schema = "aos.ability.selected-resource/v1";
+      instance = {
+        inherit providerDeclaration;
+        identity = resource.provider;
+        configuration = provider.configuration;
+      };
+      controller = {
+        binding = authored.controller;
+        inherit (binding) slot;
+      };
+      implementation = semanticImplementation implementationName implementation;
+      resource = {
+        inherit resource;
+        inherit (authored) kind controller lifetime value realization;
+      };
+    };
+  in {
+    inherit resource;
+    inherit (authored) kind controller lifetime value realization;
+    revision = resourceRevision (normalizeSemanticValue selected);
+  };
+
+  resourceIdentityKey = resource:
+    builtins.hashString "sha256" (builtins.toJSON resource);
+
+  bindingForPublishedRequest = requestName: let
+    matching =
+      builtins.filter
+      (name: config.aos.abilities.bindings.${name}.request == requestName)
+      (builtins.attrNames config.aos.abilities.bindings);
+  in
+    if builtins.length matching == 1
+    then {
+      name = builtins.head matching;
+      value = config.aos.abilities.bindings.${builtins.head matching};
+    }
+    else throw "Published resource output '${requestName}' must have exactly one selected binding.";
+
+  resolvePublishedResource = requestName: output: let
+    reference = output.value;
+    binding = bindingForPublishedRequest requestName;
+    implementation = config.aos.abilities.implementations.${binding.value.implementation};
+    selectedImplementation = semanticImplementation binding.value.implementation implementation;
+    publication = {
+      schema = "aos.ability.resource-publication/v1";
+      inherit (reference) interface resource lifetime;
+      implementation = selectedImplementation;
+    };
+    selected = {
+      schema = "aos.ability.selected-published-resource/v1";
+      inherit publication;
+      value = reference;
+      realization = null;
+    };
+  in {
+    inherit (reference) resource lifetime;
+    kind = reference.interface.name;
+    controller = null;
+    value = reference;
+    realization = null;
+    revision = resourceRevision (normalizeSemanticValue selected);
+  };
+
+  publishedResourceCandidates = builtins.concatLists (builtins.map
+    (requestName:
+      builtins.concatLists (builtins.map
+        (outputName: let
+          output = config.aos.abilities.compositionOutputs.${requestName}.${outputName};
+        in
+          if abilityTypes.resourceReference.check output.value
+          then [(resolvePublishedResource requestName output)]
+          else [])
+        (builtins.attrNames config.aos.abilities.compositionOutputs.${requestName})))
+    (builtins.attrNames config.aos.abilities.compositionOutputs));
+
+  resolvedResourceProjection = let
+    desired = builtins.mapAttrs resolveResource config.aos.abilities.desiredResources;
+    desiredValues = builtins.attrValues desired;
+    desiredIdentities = builtins.map (entry: resourceIdentityKey entry.resource) desiredValues;
+    uniqueDesiredIdentities = builtins.attrNames (builtins.listToAttrs (builtins.map (identity: {
+        name = identity;
+        value = true;
+      })
+      desiredIdentities));
+    publicationGroups =
+      builtins.foldl' (groups: publication: let
+        identity = resourceIdentityKey publication.resource;
+      in
+        groups // {${identity} = (groups.${identity} or []) ++ [publication];})
+      {}
+      publishedResourceCandidates;
+    observerOnly =
+      builtins.filter
+      (identity: !(builtins.elem identity desiredIdentities))
+      (builtins.attrNames publicationGroups);
+    checkedPublication = identity: let
+      publications = publicationGroups.${identity};
+      first = builtins.head publications;
+    in
+      if builtins.all (publication: publication == first) publications
+      then first
+      else throw "Published resource '${identity}' has conflicting declarations or implementations.";
+    published = builtins.listToAttrs (builtins.map (identity: {
+        name = "publication-${identity}";
+        value = checkedPublication identity;
+      })
+      observerOnly);
+  in
+    if builtins.length desiredIdentities == builtins.length uniqueDesiredIdentities
+    then desired // published
+    else throw "Desired resources contain a duplicate logical ResourceId.";
+
   desiredResourceAccepted = resource:
     if config == null
     then true
@@ -930,7 +1127,8 @@
           builtins.any
           (method:
             builtins.hasAttr method controllerDeclaration.methods
-            && controllerDeclaration.methods.${method}.targetResource == resource.kind)
+            && controllerDeclaration.methods.${method}.targetResource == resource.kind
+            && controllerDeclaration.methods.${method}.semantics.requiredTargetAccess != "read")
           implementation.methods;
         resourceDeclaration =
           if builtins.length resourceDeclarations == 1
@@ -948,6 +1146,7 @@
       in
         resourceDeclaration
         != null
+        && resource.resource.provider == config.aos.abilities.instanceIdentities.${binding.providerInstance}
         && controlsKind
         && lifetimeAllowed
         && typeAccepts resourceDeclaration.requestType resource.value
@@ -1110,6 +1309,13 @@ in {
         then resources
         else throw "A desired ability resource does not match its declared interface request type.";
       description = "Provider-owned desired resources derived during module evaluation.";
+    };
+    resolvedResources = mkOption {
+      type = moduleTypes.attrsOf resolvedResourceType;
+      default = resolvedResourceProjection;
+      internal = true;
+      readOnly = true;
+      description = "Checked desired and published resources with exact identities and semantic revisions.";
     };
   };
 

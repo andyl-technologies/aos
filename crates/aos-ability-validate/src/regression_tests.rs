@@ -8,22 +8,22 @@ use aos_ability_model::{
     AggregateOutputReference, AggregationContract, AggregationScope, ArtifactReference, BindingId,
     BranchMembership, ContributionPermission, ControllerAssignment, DecisionAlternative,
     DecisionNode, DecisionPredicate, DecisionSelector, DependencyEdge, DependencyKind,
-    DiagnosticCode, ExecutionStage, ExportDeclaration, HandlerDescriptor,
-    IncarnationId, LocalKey, MergeNode, MergedOutput, MethodReference, MethodSemantics,
-    ModuleLocator, OperationResultReference,
-    OutputDescriptor, PROVIDER_STATE_FORMAT_V1, PackageDocument, PackageImplementation,
-    PlanNodeKey, ProviderAssignment, ProviderImplementation, ProviderStateFormat, RelativePath,
-    RequiredFeature, RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceId,
-    ResourceLifetime, ResourcePermission, ResourceReference, ResourceRevision, ResultProducerKey,
-    RevisionId, ScopePath, ScopedOperationKey, StringConstraint, ValueExpression, ValuePhase,
-    ValueSchema, ValueVisibility, VersionedDocument, compare_edges, compare_operation_keys,
+    DiagnosticCode, ExecutionStage, ExportDeclaration, HandlerDescriptor, IncarnationId, LocalKey,
+    MergeNode, MergedOutput, MethodReference, MethodSemantics, ModuleLocator,
+    OperationResultReference, OutputDescriptor, PROVIDER_STATE_FORMAT_V1, PackageDocument,
+    PackageImplementation, PlanNodeKey, ProviderAssignment, ProviderImplementation,
+    ProviderStateFormat, RelativePath, RequiredFeature, RequirementDeclaration,
+    RequirementFallback, RequirementStrength, ResourceId, ResourceLifetime, ResourcePermission,
+    ResourceReference, ResourceRevision, ResultProducerKey, RevisionId, ScopePath,
+    ScopedOperationKey, StringConstraint, ValueExpression, ValuePhase, ValueSchema,
+    ValueVisibility, VersionedDocument, compare_edges, compare_operation_keys,
     compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
 
 use crate::test_support::{
     PlanFixture, checked_systemd_manager_effect_plan, plan_fixture, planned_provider_chain_fixture,
-    systemd_manager_plan_fixture,
+    stateful_owner_plan_fixture, systemd_manager_plan_fixture,
 };
 
 #[test]
@@ -39,6 +39,206 @@ fn operation_rejects_caller_authored_method_semantics() {
         serde_json::from_value::<aos_ability_model::EffectPlanDocument>(document).is_err(),
         "portable operations must derive semantics from their authenticated method"
     );
+}
+
+#[test]
+fn desired_realization_must_match_the_selected_controller_schema() {
+    let mut fixture = stateful_owner_plan_fixture();
+    let resource = fixture.binding_inputs.desired_state.controllers[0]
+        .resource
+        .clone();
+    let invalid = AbilityValue::new(serde_json::json!("not-a-boolean"))
+        .expect("bounded invalid realization fixture");
+
+    for revisions in [
+        &mut fixture.binding_inputs.desired_state.resources,
+        &mut fixture.binding_plan.resources,
+    ] {
+        for revision in revisions
+            .iter_mut()
+            .filter(|revision| revision.resource == resource)
+        {
+            revision.realization = invalid.clone();
+        }
+    }
+    fixture.refresh_commitments();
+
+    let errors = fixture
+        .context
+        .validate_binding_plan(fixture.binding_plan, fixture.binding_inputs)
+        .expect_err("a realization outside the selected provider schema must fail closed");
+
+    assert!(
+        errors.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::ValueTypeMismatch
+                && diagnostic
+                    .path
+                    .first()
+                    .is_some_and(|field| field == "desired_state")
+                && diagnostic
+                    .path
+                    .last()
+                    .is_some_and(|field| field == "realization")
+                && diagnostic.resource.as_ref() == Some(&resource)
+        }),
+        "unexpected diagnostics: {:?}",
+        errors.diagnostics()
+    );
+}
+
+#[test]
+fn published_read_only_resource_must_retain_its_exact_reference() {
+    let mut fixture = stateful_owner_plan_fixture();
+    let controlled = fixture.binding_inputs.desired_state.controllers[0]
+        .resource
+        .clone();
+    let published = fixture
+        .binding_inputs
+        .desired_state
+        .resources
+        .iter_mut()
+        .find(|resource| resource.resource != controlled)
+        .expect("stateful fixture publishes one read-only resource");
+    let mut value = published.value.as_json().clone();
+    value["resource"]["key"] = serde_json::json!("substituted-resource");
+    published.value = AbilityValue::new(value).expect("bounded mismatched reference");
+    let published_resource = published.resource.clone();
+    fixture.binding_plan.resources = fixture.binding_inputs.desired_state.resources.clone();
+    fixture.refresh_commitments();
+
+    let errors = fixture
+        .context
+        .validate_binding_plan(fixture.binding_plan, fixture.binding_inputs)
+        .expect_err("a published reference for another resource must fail closed");
+
+    assert!(errors.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == DiagnosticCode::BindingInterfaceMismatch
+            && diagnostic.resource.as_ref() == Some(&published_resource)
+    }));
+}
+
+#[test]
+fn published_read_only_resource_requires_its_exact_read_grant() {
+    let mut fixture = stateful_owner_plan_fixture();
+    let controlled = fixture.binding_inputs.desired_state.controllers[0]
+        .resource
+        .clone();
+    let published = fixture
+        .binding_inputs
+        .desired_state
+        .resources
+        .iter()
+        .find(|resource| resource.resource != controlled)
+        .expect("stateful fixture publishes one read-only resource")
+        .resource
+        .clone();
+    let binding = fixture
+        .binding_plan
+        .bindings
+        .iter_mut()
+        .find(|binding| {
+            binding
+                .caller_grant
+                .resources
+                .iter()
+                .any(|permission| permission.resource == published)
+        })
+        .expect("published resource binding");
+    binding
+        .caller_grant
+        .resources
+        .retain(|permission| permission.resource != published);
+    fixture.refresh_commitments();
+
+    let errors = fixture
+        .context
+        .validate_binding_plan(fixture.binding_plan, fixture.binding_inputs)
+        .expect_err("a publication without its exact read grant must fail closed");
+
+    assert!(errors.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == DiagnosticCode::ResourceScopeEscape
+            && diagnostic.resource.as_ref() == Some(&published)
+            && diagnostic
+                .message
+                .contains("exact request, method, and read resource grant")
+    }));
+}
+
+#[test]
+fn published_read_only_resource_rejects_ambiguous_provider_bindings() {
+    let mut fixture = stateful_owner_plan_fixture();
+    let controlled = fixture.binding_inputs.desired_state.controllers[0]
+        .resource
+        .clone();
+    let published = fixture
+        .binding_inputs
+        .desired_state
+        .resources
+        .iter()
+        .find(|resource| resource.resource != controlled)
+        .expect("stateful fixture publishes one read-only resource")
+        .resource
+        .clone();
+    let original_binding = fixture
+        .binding_plan
+        .bindings
+        .iter()
+        .find(|binding| {
+            binding
+                .caller_grant
+                .resources
+                .iter()
+                .any(|permission| permission.resource == published)
+        })
+        .expect("published resource binding")
+        .clone();
+    let mut duplicate_request = fixture
+        .binding_plan
+        .requests
+        .iter()
+        .find(|request| request.id == original_binding.request)
+        .expect("published resource request")
+        .clone();
+    duplicate_request.id.key = key("duplicate-publication");
+    let mut duplicate_binding = original_binding;
+    duplicate_binding.id = BindingId(key("duplicate-publication"));
+    duplicate_binding.request = duplicate_request.id.clone();
+
+    fixture
+        .binding_inputs
+        .desired_state
+        .child_requests
+        .push(duplicate_request.clone());
+    fixture.binding_plan.requests.push(duplicate_request);
+    fixture.binding_plan.bindings.push(duplicate_binding);
+    fixture
+        .binding_inputs
+        .desired_state
+        .child_requests
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    fixture
+        .binding_plan
+        .requests
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    fixture.binding_plan.bindings.sort_by(|left, right| {
+        left.request
+            .cmp(&right.request)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    fixture.refresh_commitments();
+
+    let errors = fixture
+        .context
+        .validate_binding_plan(fixture.binding_plan, fixture.binding_inputs)
+        .expect_err("multiple candidate publication bindings must fail closed");
+
+    assert!(errors.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == DiagnosticCode::DuplicateIdentity
+            && diagnostic.resource.as_ref() == Some(&published)
+            && diagnostic
+                .message
+                .contains("multiple candidate provider bindings")
+    }));
 }
 
 #[test]
@@ -1202,6 +1402,10 @@ fn conditional_ordering_fixture(direct_order: bool) -> PlanFixture {
     };
     let shared_revision = ResourceRevision {
         resource: shared_resource.clone(),
+        kind: fixture.binding_plan.bindings[0].interface.name.clone(),
+        lifetime: aos_ability_model::ResourceLifetime::Instance,
+        value: aos_ability_model::AbilityValue::new(serde_json::json!(true)).unwrap(),
+        realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
         revision: RevisionId(digest('8')),
     };
     fixture
@@ -1380,6 +1584,10 @@ fn add_ungranted_resource(fixture: &mut PlanFixture) -> ResourceId {
     };
     let revision = ResourceRevision {
         resource: resource.clone(),
+        kind: fixture.binding_plan.bindings[0].interface.name.clone(),
+        lifetime: aos_ability_model::ResourceLifetime::Instance,
+        value: aos_ability_model::AbilityValue::new(serde_json::json!(true)).unwrap(),
+        realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
         revision: RevisionId(digest('a')),
     };
     fixture

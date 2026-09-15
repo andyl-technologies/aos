@@ -820,6 +820,11 @@ impl VersionedDocument for PackageDocument {
     }
 
     fn validate_structure(&self, limits: &LimitProfile) -> Result<(), DocumentError> {
+        for provider in &self.implementation.providers {
+            if let Some(schema) = &provider.desired_schema {
+                ensure_schema_depth(schema, limits)?;
+            }
+        }
         for handler in self.implementation.handlers.values() {
             ensure_schema_depth(&handler.arguments, limits)?;
             ensure_schema_depth(&handler.result, limits)?;

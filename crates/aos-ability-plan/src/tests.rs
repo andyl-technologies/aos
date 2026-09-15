@@ -4,12 +4,13 @@ use std::collections::BTreeMap;
 
 use aos_ability_model::document::{DesiredInstance, PackageSubject};
 use aos_ability_model::{
-    AbilityActivationMode, AbilityValue, AccessMode, ArtifactReference, AuthorityGrant,
-    BindingRequest, DeploymentObligation, DesiredStateDocument, ExportDeclaration,
-    HandlerDescriptor, InstanceId, LocalKey, ModuleLocator, ObligationKind, PackageDocument,
-    PackageImplementation, ProviderImplementation, ProviderImplementationReference, RelativePath,
-    RequestId, RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceLifetime,
-    ResourcePermission, ScopePath, ValueSchema, VersionedDocument,
+    AbilityActivationMode, AbilityValue, AccessMode, AggregationContract, AggregationScope,
+    ArtifactReference, AuthorityGrant, BindingRequest, DeploymentObligation, DesiredStateDocument,
+    ExportDeclaration, HandlerDescriptor, InstanceId, LocalKey, ModuleLocator, ObligationKind,
+    PackageDocument, PackageImplementation, ProviderImplementation,
+    ProviderImplementationReference, RelativePath, RequestId, RequirementDeclaration,
+    RequirementFallback, RequirementStrength, ResourceLifetime, ResourcePermission, ScopePath,
+    ValueSchema, VersionedDocument,
 };
 use aos_ability_validate::ValidationContext;
 use aos_contract::Sha256Digest;
@@ -503,49 +504,6 @@ fn declared_operator_configuration_is_checked_and_forwarded_to_the_provider() {
         evaluator.contexts[0].configuration,
         Some(value(serde_json::json!(true)))
     );
-}
-
-#[test]
-fn activation_revision_is_forwarded_and_retained_for_replay() {
-    let mut fixture = planner_fixture(0);
-    fixture.enable_provider(true);
-    let activation_revision =
-        aos_ability_model::RevisionId(Sha256Digest::of_bytes("rendered package activation"));
-    let revisions = BTreeMap::from([(fixture.package, activation_revision)]);
-    let mut evaluator = EmptyEvaluator::default();
-
-    let outcome = RecursiveComposer::new(&fixture.context)
-        .compose_with_activation_revisions(
-            std::slice::from_ref(&fixture.policy),
-            fixture.desired.clone(),
-            fixture.environment.clone(),
-            fixture.packages.clone(),
-            revisions,
-            &mut evaluator,
-        )
-        .expect("package activation revision must reach pure evaluation");
-
-    assert_eq!(
-        evaluator.contexts[0].activation_revision,
-        Some(activation_revision)
-    );
-
-    let snapshot = PlanningSnapshot::from_outcome(&outcome)
-        .expect("activation revision must fit the planning snapshot");
-    let snapshot_digest = snapshot.digest().expect("snapshot must have a commitment");
-    let authenticated_policies = snapshot.policies().to_vec();
-    snapshot
-        .verify_structure(
-            &RecursiveComposer::new(&fixture.context),
-            PlanningReplayInputs {
-                expected_digest: snapshot_digest,
-                authenticated_policies: &authenticated_policies,
-                seed: fixture.desired,
-                environment: fixture.environment,
-                packages: fixture.packages,
-            },
-        )
-        .expect("retained activation revision must reproduce composition");
 }
 
 #[test]

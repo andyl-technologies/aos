@@ -405,7 +405,7 @@
     builtins.map (resource: {
       name = "resource-${builtins.hashString "sha256" (builtins.toJSON resource.resource)}";
       value = {
-        inherit (resource) kind lifetime value;
+        inherit (resource) resource kind lifetime value;
         controller = resource.controller.bindingName;
         realization = composition.result.realizations.${resource.resource.key};
       };

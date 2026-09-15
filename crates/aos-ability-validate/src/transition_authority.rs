@@ -1752,6 +1752,10 @@ mod tests {
             };
             let owner_revision = aos_ability_model::ResourceRevision {
                 resource: owner_resource.clone(),
+                kind: fixture.binding_plan.bindings[0].interface.name.clone(),
+                lifetime: aos_ability_model::ResourceLifetime::Instance,
+                value: aos_ability_model::AbilityValue::new(serde_json::json!(true)).unwrap(),
+                realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
                 revision: RevisionId(Sha256Digest::of_bytes("owner revision")),
             };
             let owner_request = BindingRequest {

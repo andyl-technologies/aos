@@ -8,8 +8,8 @@ use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
 use crate::identity::{
-    AggregateId, IncarnationId, InstanceId, InterfaceKey, LocalKey, RequestId, ResourceId,
-    RevisionId, ScopePath, ScopedOperationKey,
+    AggregateId, IncarnationId, InstanceId, InterfaceKey, InterfaceName, LocalKey, RequestId,
+    ResourceId, RevisionId, ScopePath, ScopedOperationKey,
 };
 use crate::interface::{
     GuaranteeKey, OutputDescriptor, ProviderImplementationReference, ValuePhase,
@@ -192,6 +192,14 @@ pub struct DeploymentObligation {
 pub struct ResourceRevision {
     /// Identifies the logical provider-owned resource.
     pub resource: ResourceId,
+    /// Identifies the schema that owns the desired or observed resource value.
+    pub kind: InterfaceName,
+    /// Declares the resource retention boundary.
+    pub lifetime: ResourceLifetime,
+    /// Retains the exact semantic desired or observed resource value.
+    pub value: AbilityValue,
+    /// Retains the selected provider's typed backend realization.
+    pub realization: AbilityValue,
     /// Identifies its semantic desired or observed content.
     pub revision: RevisionId,
 }

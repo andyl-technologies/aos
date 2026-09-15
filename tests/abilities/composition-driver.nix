@@ -151,6 +151,8 @@
           interface = interfaces.networkReadiness.alias;
           methods = interfaces.networkReadiness.methods;
           guarantees = [];
+          artifact = handlerArtifact;
+          handlerDescriptor = handler interfaces.networkReadiness;
           provide = {
             instance,
             requests,
@@ -267,6 +269,9 @@
   evaluated = evaluate {};
   abilities = evaluated.config.aos.abilities;
   desired = builtins.head (builtins.attrValues abilities.desiredResources);
+  resolved = builtins.attrValues abilities.resolvedResources;
+  controlledResource = builtins.head (builtins.filter (resource: resource.controller != null) resolved);
+  publishedResource = builtins.head (builtins.filter (resource: resource.controller == null) resolved);
   networkOutput = abilities.compositionOutputs."consumer:network".readiness-resource;
   rejects = value: !(builtins.tryEval (builtins.deepSeq value true)).success;
 
@@ -362,6 +367,46 @@
         requests.child = childRequest;
       };
   };
+  changedPublishedOperations = evaluate {
+    providerAdditions = [
+      {
+        config.aos.abilities.implementations.network-readiness.provide = {
+          instance,
+          requests,
+          ...
+        }:
+          emptyProvision
+          // {
+            outputs =
+              builtins.mapAttrs (_: _: {
+                readiness-resource = {
+                  interface = interfaces.networkReadiness.identity;
+                  resource = {
+                    provider = instance.id;
+                    key = "network-online";
+                  };
+                  operations = [];
+                  lifetime = "instance";
+                };
+              })
+              requests;
+          };
+      }
+    ];
+  };
+  changedObserverHandler = evaluate {
+    providerAdditions = [
+      {
+        config.aos.abilities.implementations.network-readiness.handlerDescriptor =
+          (handler interfaces.networkReadiness)
+          // {entryPoint = "libexec/changed-fixture-handler";};
+      }
+    ];
+  };
+  publishedRevision = evaluation: let
+    resources = builtins.attrValues evaluation.config.aos.abilities.resolvedResources;
+  in
+    (builtins.head (builtins.filter (resource: resource.controller == null) resources)).revision;
   pendingChildRequest = evaluate {
     providerAdditions = [lifecycleWithChild];
   };
@@ -524,6 +569,14 @@ in
   assert desired.value.lifecycle == builtins.removeAttrs lifecycleRequest ["service" "enabled"];
   assert desired.value.dependencies == builtins.removeAttrs dependencyRequest ["service" "enabled"];
   assert desired.realization == {backend = "fixture";};
+  assert builtins.length resolved == 2;
+  assert controlledResource.controller == "test:lifecycle";
+  assert publishedResource.controller == null;
+  assert publishedResource.kind == interfaces.networkReadiness.identity.name;
+  assert publishedResource.value == networkOutput.value;
+  assert publishedResource.realization == null;
+  assert publishedRevision evaluated != publishedRevision changedPublishedOperations;
+  assert publishedRevision evaluated != publishedRevision changedObserverHandler;
   assert networkOutput.phase == "planning";
   assert networkOutput.visibility == "protected";
   assert networkOutput.lifetime == "instance";
