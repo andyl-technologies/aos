@@ -1,31 +1,89 @@
-//! Checks the aggregate `gate:patch-microtests` wiring.
-//!
-//! The carried-QEMU-patch roster, the per-patch evidence table, and the
-//! source-shape assertions live in the `support/gate_patch_microtests/`
-//! modules; this file holds only the two test entry points so it stays within
-//! the RFC-0010 file-shape limits as the roster grows with each carried patch.
+//! Checks the atomic QEMU patch and its gate:patch-microtests contract.
 
 #![forbid(unsafe_code)]
 
 use std::error::Error;
+use std::fs;
+use std::path::{Path, PathBuf};
 
-#[path = "support/gate_patch_microtests/aggregate.rs"]
-mod aggregate;
-#[path = "support/gate_patch_microtests/common.rs"]
-mod common;
-#[path = "support/gate_patch_microtests/evidence.rs"]
-mod evidence;
-#[path = "support/gate_patch_microtests/surfaces.rs"]
-mod surfaces;
+const ATOMIC_PATCH: &str = "crucible-qemu-11.1.1.patch";
 
-#[test]
-fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dyn Error>> {
-    aggregate::assert_aggregate_and_default()?;
-    surfaces::assert_plugin_and_series_surfaces()?;
-    Ok(())
+fn workspace_root() -> Result<PathBuf, Box<dyn Error>> {
+    let mut current = std::env::current_dir()?;
+    loop {
+        if current.join("crates/Cargo.toml").is_file()
+            && current.join("tests/crucible/default.nix").is_file()
+        {
+            return Ok(current);
+        }
+        if !current.pop() {
+            return Err("could not locate workspace root".into());
+        }
+    }
+}
+
+fn read(root: &Path, path: &str) -> Result<String, Box<dyn Error>> {
+    Ok(fs::read_to_string(root.join(path))?)
+}
+
+fn assert_contains(source: &str, needle: &str) {
+    assert!(
+        source.contains(needle),
+        "expected to find {} in checked source",
+        needle
+    );
 }
 
 #[test]
-fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>> {
-    evidence::assert_per_patch_evidence()
+fn gate_patch_microtests_covers_atomic_qemu_artifact() -> Result<(), Box<dyn Error>> {
+    let root = workspace_root()?;
+    let patch_dir = root.join("pkgs/emulation/qemu-patches");
+    let patch_files = fs::read_dir(&patch_dir)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".patch"))
+        .collect::<Vec<_>>();
+    assert_eq!(patch_files, [ATOMIC_PATCH]);
+
+    let descriptor = read(&root, "pkgs/emulation/qemu-patches/_atomic-patch.nix")?;
+    assert_contains(&descriptor, &format!("file = \"{ATOMIC_PATCH}\";"));
+    for field in [
+        "sha256 = ",
+        "commit = ",
+        "tree = ",
+        "baseCommit = ",
+        "bundleSha256 = ",
+    ] {
+        assert_contains(&descriptor, field);
+    }
+    assert_contains(
+        &read(
+            &root,
+            &format!("pkgs/emulation/qemu-patches/{ATOMIC_PATCH}"),
+        )?,
+        "Signed-off-by",
+    );
+
+    let qemu_nix = read(&root, "pkgs/emulation/qemu.nix")?;
+    assert_contains(
+        &qemu_nix,
+        "atomicPatch ? import ./qemu-patches/_atomic-patch.nix",
+    );
+    assert_contains(&qemu_nix, "< ${atomicPatchPath}");
+    assert_contains(&qemu_nix, "qemu_atomic_patch_hash=${atomicPatchHash}");
+
+    let aggregate = read(&root, "tests/crucible/phase2-patch-microtests.nix")?;
+    for evidence in [
+        "gate=gate:patch-microtests",
+        "evidence_scope=atomic-apply-commit-tree-build-behavior",
+        "apply_commit_tree_verified=true",
+        "bundle_matches_patch_commit=true",
+        "atomic_patch_regenerated_exactly=true",
+        "atomic_patch_live_checkpoint_delta_gate_passed=true",
+        "stock_qemu_lacks_atomic_exports=true",
+        "qemu_inert_depends_on_patch_microtests=true",
+    ] {
+        assert_contains(&aggregate, evidence);
+    }
+    Ok(())
 }

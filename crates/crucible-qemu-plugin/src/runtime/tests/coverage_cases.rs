@@ -17,7 +17,6 @@ fn install_coverage_on_owns_callback_model_registration() {
     let runtime = install_live_runtime(
         0xC0E0,
         fixture.coverage_args(),
-        test_state(),
         capabilities,
         &SuccessfulCallbackRegistrar,
         &mut reservation,

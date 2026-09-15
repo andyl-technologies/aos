@@ -230,12 +230,12 @@ prefixes:
 | `TAX` | Cross-domain taxonomy and extension rules | 04 |
 | `REP` | Recording, replay, observability, checkpoints, and calibration | 05 |
 | `FX` | Closed executable effect registry and taxonomy ledger | 08 |
-| `SCHEMA` | Normative v2 scenario schema and canonical encoding | 09 |
+| `SCHEMA` | Normative v7 scenario schema and canonical encoding | 09 |
 | `NTECH` | Network technology and transition contracts | 10 |
 | `STORE` | Storage durability, media, controller, array, and 9p semantics | 11 |
 | `SENSOR` | Complete future sensor-adapter specification | 12 |
 | `LIMIT` | Admission ceilings and performance gates | 13 |
-| `QFP` | QEMU patch-series boundary, licensing, and aggregate gates | 14 |
+| `QFP` | Atomic QEMU integration boundary, licensing, and aggregate gates | 14 |
 
 All fenced blocks are tagged `text` or `toml`. Blocks in §9 are normative schema
 fragments; §6 explicitly labels its focused authoring excerpts and any
@@ -280,9 +280,9 @@ requirements win if explanatory excerpts omit surrounding context.
     code.
 13. [`13-resource-and-performance-bounds.md`](13-resource-and-performance-bounds.md)
     fixes hard admission ceilings, required algorithms, and performance gates.
-14. [`14-qemu-fault-patches/`](14-qemu-fault-patches/) specifies each required
-    QEMU mutation as a separate ordered, licensed patch with live acceptance
-    tests.
+14. [`14-qemu-fault-patches/`](14-qemu-fault-patches/) specifies the numbered
+    QEMU capability tasks carried by the single atomic patch, with live
+    acceptance tests.
 
 ## Locked architectural decisions
 
@@ -332,7 +332,7 @@ The RFC resolves the formerly merge-blocking design gaps before implementation:
 | --- | --- |
 | Closed effect ledger | [§8](08-executable-effect-contracts.md) maps every `Core`, `Next`, and `Advanced` network, storage/9p, and node row to registered executable semantics and evidence. |
 | Exhaustive schema | [§9](09-normative-schema.md) fixes the strict v2 grammar, values, defaults, validation, canonicalization, and rejection behavior. |
-| QEMU ABI and mutations | [§14](14-qemu-fault-patches/) separates thirteen required patches and fixes their commands, phases, state, architecture behavior, live tests, and GPL/DCO obligations. |
+| QEMU ABI and mutations | [§14](14-qemu-fault-patches/) defines the numbered capability tasks within the atomic patch and fixes their commands, phases, state, architecture behavior, live tests, and GPL/DCO obligations. |
 | Storage state machines | [§11](11-storage-durability-and-media.md) fixes cache, persistence, atomicity, reset, power loss, media, wear, retry, controller, array, and 9p behavior. |
 | Network technology models | [§10](10-network-technology-contracts.md) fixes wired, shared-medium, routed, overlay, radio, mobile, and satellite state machines and in-flight policies. |
 | Future sensor adapter | [§12](12-sensor-adapter-specification.md) is complete design vocabulary but creates no accepted v2 schema or implementation path. |

@@ -4,13 +4,6 @@
 //! [`SingleScheduler`], one live QEMU node per World VM, and the node-addressed
 //! backend loop consumed by [`LifecycleControlPlane`](crate::LifecycleControlPlane).
 
-use crate::vm_resume::{
-    PRODUCTION_ROOT_OVERLAY_FILE_NAME, PRODUCTION_VMSTATE_FILE_NAME, ProductionAppRandomConfig,
-    ProductionGdbstubChannelConfig, ProductionGuestArchitecture, ProductionLiveNodeStepGateConfig,
-    ProductionNodeSet, ProductionPluginSwitch, ProductionRootImageFormat,
-    launch_production_live_node, launch_production_live_node_exact_snapshot,
-    launch_production_live_node_exact_snapshot_paused,
-};
 use crate::{LifecycleApiError, debug_gateway::DebugGatewayProcess};
 use crucible::model::{
     FaultCoordinate, FaultResourceLimits, HostFaultAdapterManifests,
@@ -36,14 +29,23 @@ pub use crucible_qemu::{
     BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceSnapshot,
 };
 use crucible_qemu::{
+    DEFAULT_ROOT_OVERLAY_FILE_NAME, LivePluginGuestArchitecture, QemuGdbstubChannelConfig,
+    QemuLaunchAppRandomConfig, QemuLaunchPluginSwitch, QemuLiveNodeStepGateConfig, QemuNodeSet,
+    QemuRootImageFormat,
+};
+use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
-    QemuHostIoCheckpoint, QemuLaunchResourceRequirements, QemuNode, QemuNodeLifecycleDecision,
-    QemuNodeLifecycleIntent as LifecycleMutationIntent, QemuProcessIdentity, QemuReplayOracleCheck,
-    QemuReplayOracleValidation, QemuSharedBlockDevice, QemuVmSnapshot as ExactSnapshotHandle,
+    QemuExactCheckpointCaptureResult, QemuHostIoCheckpoint, QemuLaunchResourceRequirements,
+    QemuNode, QemuNodeLifecycleDecision, QemuNodeLifecycleIntent as LifecycleMutationIntent,
+    QemuPreparedRunDirectory, QemuProcessIdentity, QemuReplayOracleMatch, QemuSharedBlockDevice,
+    QemuVmSnapshot as ExactSnapshotHandle, QmpCheckpointIdentity, QmpCheckpointRamKind,
     linux_process_identity, quarantine_orphaned_qemu_process,
 };
 #[cfg(target_os = "linux")]
-use crucible_qemu::{QemuNodeSetPreparedHotForkSource, QemuNodeSetPreparedHotForkTemplate};
+use crucible_qemu::{
+    QemuExactCheckpointCaptureAdmission, QemuNodeSetPreparedHotForkSource,
+    QemuNodeSetPreparedHotForkTemplate,
+};
 use quantum_loop::{
     DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
     decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
@@ -52,38 +54,38 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::net::SocketAddr;
+#[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod assets;
-use assets::*;
+use assets::{
+    ProductionVmGuestAssets, production_kernel_cmdline_prefix, validate_guest_asset_references,
+};
+pub use assets::{ProductionVmPortableReplayAssetPaths, ProductionVmPortableReplayGuestAssetPaths};
 mod checkpoint_store;
 use checkpoint_store::load_exact_checkpoint_set;
 #[cfg(feature = "test-support")]
 pub use checkpoint_store::{
-    AuthenticatedProductionCheckpointCodecFixture,
+    AuthenticatedProductionCheckpointCodecFixture, AuthenticatedProductionExactRamCodecFixture,
     build_authenticated_production_checkpoint_codec_fixture,
-    build_raw_production_checkpoint_codec_fixture,
+    build_exact_ram_production_checkpoint_codec_fixture,
 };
 pub use checkpoint_store::{
-    PreparedProductionReplayOraclePromotion, ProductionExactCheckpointClosure,
-    ProductionExactCheckpointObject, ProductionExactCheckpointReplayArtifact,
-    ProductionExactCheckpointReplayCatalog, ProductionExactCheckpointReplayTarget,
-    ProductionExactCheckpointReplayTargets, ProductionExactCheckpointResumeBasis,
+    DecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
+    ProductionBakedSnapshotCatalog, ProductionExactCheckpointClosure,
+    ProductionExactCheckpointObject, ProductionExactCheckpointResumeBasis,
     ProductionExactCheckpointRetirement, ProductionExactCheckpointRetirementError,
-    ProductionExactCheckpointRetirementReport, ProductionExactCheckpointSource,
-    authenticate_portable_exact_checkpoint_replay_oracle_promotion,
-    authenticate_portable_exact_checkpoint_replay_oracle_promotion_with_boundary,
-    authenticate_portable_exact_checkpoint_resume_basis,
-    authenticate_portable_exact_checkpoint_resume_basis_with_boundary,
-    install_exact_checkpoint_closure, install_exact_checkpoint_closure_with_boundary,
-    install_exact_checkpoint_closure_with_boundary_and_admission, open_exact_checkpoint_closure,
+    ProductionExactCheckpointRetirementReport, ProductionVmExactNodeRestoreAdmissions,
+    decode_authenticated_production_exact_checkpoint, open_exact_checkpoint_closure,
     retire_production_exact_checkpoint_catalog,
 };
 mod checkpoint_dependencies;
-pub use checkpoint_dependencies::collect_signal_artifact_objects;
+pub use checkpoint_dependencies::{
+    collect_signal_artifact_objects, collect_signal_artifact_objects_bounded,
+    collect_signal_artifact_objects_with_budget,
+};
 mod fault_implementation;
 pub use fault_implementation::{
     network_effect_implementation_registry, storage_effect_implementation_registry,
@@ -152,16 +154,16 @@ pub struct ProductionVmLifecycleConfig {
     guest_assets: BTreeMap<VmArchitecture, ProductionVmGuestAssets>,
     initrd: Option<PathBuf>,
     kernel_cmdline_prefix: Option<String>,
-    root_image_format: ProductionRootImageFormat,
+    root_image_format: QemuRootImageFormat,
     run_state_root: PathBuf,
     run_ceiling_icount: u64,
     quantum_budget: u64,
+    maximum_host_workers: usize,
     rendezvous_interval_icount: Option<u64>,
     completion_timeout: Duration,
-    coverage: ProductionPluginSwitch,
+    coverage: QemuLaunchPluginSwitch,
     debug_gateway_executable: Option<PathBuf>,
     debug: Option<ProductionVmDebugConfig>,
-    logical_replay_boundary: Option<ProductionVmLogicalReplayBoundary>,
     branch: Option<ProductionVmBranchConfig>,
     continuation_branches: Vec<ProductionVmBranchConfig>,
     signal_fault_replay: Option<SignalFaultCampaignReplayPlan>,
@@ -172,7 +174,6 @@ pub struct ProductionVmLifecycleConfig {
     signal_artifacts: Option<Arc<dyn DagStore>>,
     fault_replay: Option<ResolvedEffectTrace>,
     world_artifacts: Option<Arc<dyn DagStore>>,
-    validate_guest_asset_references: bool,
     bounded_scheduler_preemption: Option<BoundedSchedulerPreemptionFlights>,
 }
 
@@ -227,10 +228,10 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
             .field("run_state_root", &self.run_state_root)
             .field("run_ceiling_icount", &self.run_ceiling_icount)
             .field("quantum_budget", &self.quantum_budget)
+            .field("maximum_host_workers", &self.maximum_host_workers)
             .field("completion_timeout", &self.completion_timeout)
             .field("coverage", &self.coverage)
             .field("debug", &self.debug)
-            .field("logical_replay_boundary", &self.logical_replay_boundary)
             .field("branch", &self.branch)
             .field(
                 "signal_fault_replay_branch_count",
@@ -280,12 +281,6 @@ struct ProductionVmBranchConfig {
     frontier: VirtualTime,
     decisions: Vec<Decision>,
     seed: Option<Seed>,
-}
-
-#[derive(Clone, Debug)]
-struct ProductionVmLogicalReplayBoundary {
-    configuration: Configuration,
-    frontier: VirtualTime,
 }
 
 fn production_fault_search_overrides(
@@ -348,18 +343,245 @@ struct ProductionVmDebugRuntimeEvidence {
 
 #[derive(Debug)]
 struct ProductionVmExactCheckpointTarget {
-    configuration: Configuration,
-    immutable_backing: Option<ContentHash>,
+    configuration: Arc<Configuration>,
+    immutable_backing: ContentHash,
     counter: u64,
     scheduler_time: VirtualTime,
     snapshot: ExactSnapshotHandle,
-    overlay_artifact: ProductionCheckpointArtifact,
-    vmstate_artifact: ProductionCheckpointArtifact,
-    manifest_identity: crucible::ContentHash,
+    materialization: ProductionVmExactCheckpointMaterialization,
+}
+
+#[derive(Debug)]
+enum ProductionVmExactCheckpointMaterialization {
+    Native {
+        overlay_artifact: ProductionCheckpointArtifact,
+        exact_ram: Box<ProductionExactRamCheckpoint>,
+        manifest_identity: ContentHash,
+    },
+    Repository,
 }
 
 #[derive(Clone, Debug)]
-struct ProductionCheckpointArtifact {
+struct ProductionExactRamPublishedParent {
+    closure: ContentHash,
+    targets: BTreeMap<NodeId, ProductionExactRamCheckpoint>,
+}
+
+impl ProductionVmExactCheckpointTarget {
+    fn native_materialization(
+        &self,
+    ) -> Option<(
+        &ProductionCheckpointArtifact,
+        &ProductionExactRamCheckpoint,
+        ContentHash,
+    )> {
+        let ProductionVmExactCheckpointMaterialization::Native {
+            overlay_artifact,
+            exact_ram,
+            manifest_identity,
+        } = &self.materialization
+        else {
+            return None;
+        };
+        Some((overlay_artifact, exact_ram, *manifest_identity))
+    }
+
+    fn native_exact_ram(&self) -> Option<&ProductionExactRamCheckpoint> {
+        self.native_materialization()
+            .map(|(_, exact_ram, _)| exact_ram)
+    }
+
+    fn machine_state_artifacts(&self) -> impl Iterator<Item = &ProductionCheckpointArtifact> {
+        self.native_materialization()
+            .into_iter()
+            .flat_map(|(_, exact_ram, _)| {
+                std::iter::once(&exact_ram.device_artifact)
+                    .chain(exact_ram.layers.iter().map(|layer| &layer.artifact))
+            })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ProductionExactRamKind {
+    Direct,
+    Delta,
+}
+
+impl From<QmpCheckpointRamKind> for ProductionExactRamKind {
+    fn from(kind: QmpCheckpointRamKind) -> Self {
+        match kind {
+            QmpCheckpointRamKind::Direct => Self::Direct,
+            QmpCheckpointRamKind::Delta => Self::Delta,
+        }
+    }
+}
+
+impl From<ProductionExactRamKind> for QmpCheckpointRamKind {
+    fn from(kind: ProductionExactRamKind) -> Self {
+        match kind {
+            ProductionExactRamKind::Direct => Self::Direct,
+            ProductionExactRamKind::Delta => Self::Delta,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ProductionExactCheckpointIdentity {
+    checkpoint: ContentHash,
+    target: ContentHash,
+    frontier: ContentHash,
+}
+
+impl From<QmpCheckpointIdentity> for ProductionExactCheckpointIdentity {
+    fn from(identity: QmpCheckpointIdentity) -> Self {
+        Self {
+            checkpoint: identity.checkpoint(),
+            target: identity.target(),
+            frontier: identity.frontier(),
+        }
+    }
+}
+
+impl From<ProductionExactCheckpointIdentity> for QmpCheckpointIdentity {
+    fn from(identity: ProductionExactCheckpointIdentity) -> Self {
+        Self::new(identity.checkpoint, identity.target, identity.frontier)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ProductionExactRamLayer {
+    kind: ProductionExactRamKind,
+    identity: ProductionExactCheckpointIdentity,
+    parent: Option<ProductionExactCheckpointIdentity>,
+    topology: ContentHash,
+    ram_regions: u64,
+    ram_records: u64,
+    content_sha256: ContentHash,
+    artifact: ProductionCheckpointArtifact,
+}
+
+impl ProductionExactRamLayer {
+    pub(super) fn from_capture(
+        capture: &QemuExactCheckpointCaptureResult,
+        content_sha256: ContentHash,
+        artifact: ProductionCheckpointArtifact,
+    ) -> Result<Self, SchedulerError> {
+        if artifact.length != capture.ram_bytes() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "exact RAM artifact length differs from QEMU's capture report",
+                ),
+            });
+        }
+
+        Ok(Self {
+            kind: capture.ram_kind().into(),
+            identity: capture.identity().into(),
+            parent: capture.parent().map(Into::into),
+            topology: capture.topology(),
+            ram_regions: capture.ram_regions(),
+            ram_records: capture.ram_records(),
+            content_sha256,
+            artifact,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ProductionExactRamCheckpoint {
+    parent_closure: Option<ContentHash>,
+    identity: ProductionExactCheckpointIdentity,
+    device_content_sha256: ContentHash,
+    device_artifact: ProductionCheckpointArtifact,
+    layers: Vec<ProductionExactRamLayer>,
+}
+
+impl ProductionExactRamCheckpoint {
+    pub(super) fn new(
+        parent_closure: Option<ContentHash>,
+        device_content_sha256: ContentHash,
+        device_artifact: ProductionCheckpointArtifact,
+        layers: Vec<ProductionExactRamLayer>,
+    ) -> Result<Self, SchedulerError> {
+        let identity = layers.last().map(|layer| layer.identity).ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
+                message: String::from("exact RAM checkpoint has no direct base"),
+            }
+        })?;
+        let checkpoint = Self {
+            parent_closure,
+            identity,
+            device_content_sha256,
+            device_artifact,
+            layers,
+        };
+        checkpoint.validate()?;
+
+        Ok(checkpoint)
+    }
+
+    pub(super) fn validate(&self) -> Result<(), SchedulerError> {
+        if self.layers.is_empty()
+            || self.layers.len() > crucible::exact_checkpoint::MAX_EXACT_CHECKPOINT_RAM_LAYERS
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("exact RAM checkpoint has an invalid layer count"),
+            });
+        }
+        let Some(first) = self.layers.first() else {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("exact RAM checkpoint has no direct base"),
+            });
+        };
+        if first.kind != ProductionExactRamKind::Direct || first.parent.is_some() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "exact RAM checkpoint chain does not start with a direct layer",
+                ),
+            });
+        }
+        if (self.layers.len() > 1) != self.parent_closure.is_some() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "exact RAM parent-closure provenance differs from the retained chain",
+                ),
+            });
+        }
+        let topology = first.topology;
+        for pair in self.layers.windows(2) {
+            let [parent, child] = pair else {
+                continue;
+            };
+            if child.kind != ProductionExactRamKind::Delta
+                || child.parent != Some(parent.identity)
+                || child.topology != topology
+            {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from("exact RAM checkpoint delta chain is not contiguous"),
+                });
+            }
+        }
+        if self.layers.iter().any(|layer| {
+            layer.ram_regions == 0 || layer.artifact.length == 0 || layer.artifact.sparse
+        }) || self.device_artifact.length == 0
+            || self.device_artifact.sparse
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("exact RAM checkpoint contains empty QEMU artifacts"),
+            });
+        }
+        Ok(())
+    }
+
+    pub(super) const fn requires_direct_compaction(&self) -> bool {
+        self.layers.len() >= crucible::exact_checkpoint::MAX_EXACT_CHECKPOINT_RAM_LAYERS
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ProductionCheckpointArtifact {
     source: ProductionCheckpointArtifactSource,
     identity: ContentHash,
     length: u64,
@@ -370,8 +592,29 @@ struct ProductionCheckpointArtifact {
 
 #[derive(Clone, Debug)]
 enum ProductionCheckpointArtifactSource {
+    #[cfg(any(test, feature = "test-support"))]
     File(PathBuf),
+    /// Private capture staging whose bytes have not crossed durable publication.
     ChunkStore(PathBuf),
+    /// Shared CAS storage guarded by authenticated inode metadata.
+    RetainedChunkStore(Arc<RetainedChunkStoreLease>),
+}
+
+#[derive(Debug)]
+struct RetainedChunkStoreLease {
+    directory: PathBuf,
+    objects: BTreeMap<ContentHash, RetainedCheckpointObject>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RetainedCheckpointObject {
+    device: u64,
+    inode: u64,
+    length: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
 }
 
 #[derive(Debug)]
@@ -395,6 +638,69 @@ struct ProductionVmExactCheckpointSet {
     failed_host_io: BTreeMap<NodeId, ProductionFailedNodeState>,
     node_generations: BTreeMap<NodeId, u64>,
     node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
+    repository_restore: Option<RepositoryExactRestoreAuthority>,
+}
+
+struct RepositoryExactRestoreAuthority {
+    targets: crucible::exact_checkpoint::ExactCheckpointTraversedClosureBinding,
+    configuration: Arc<Configuration>,
+    scheduler: Arc<SingleSchedulerCheckpoint>,
+    open: Arc<dyn Fn(ContentHash) -> std::io::Result<Box<dyn std::io::Read + Send>> + Send + Sync>,
+}
+
+impl std::fmt::Debug for RepositoryExactRestoreAuthority {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RepositoryExactRestoreAuthority")
+            .field("targets", &self.targets)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RepositoryExactRestoreAuthority {
+    fn take_node_admission(
+        &mut self,
+        node: &NodeId,
+        snapshot: ExactSnapshotHandle,
+        paused: bool,
+    ) -> Result<ProductionVmExactNodeRestoreAdmission, LifecycleApiError> {
+        let target = self.targets.take_target(node).map_err(|error| {
+            loop_factory_error(format!("claim authenticated exact target: {error}"))
+        })?;
+        Ok(ProductionVmExactNodeRestoreAdmission {
+            basis: ProductionVmExactNodeRestoreBasis {
+                target,
+                node: node.clone(),
+                configuration: Arc::clone(&self.configuration),
+                scheduler: Arc::clone(&self.scheduler),
+                snapshot,
+                paused,
+                open: Arc::clone(&self.open),
+            },
+        })
+    }
+
+    fn take_replay_node_admission(
+        &mut self,
+        node: &NodeId,
+        snapshot: ExactSnapshotHandle,
+        paused: bool,
+    ) -> Result<ProductionVmReplayExactNodeRestoreAdmission, LifecycleApiError> {
+        let target = self.targets.take_target(node).map_err(|error| {
+            loop_factory_error(format!("claim authenticated exact replay target: {error}"))
+        })?;
+        Ok(ProductionVmReplayExactNodeRestoreAdmission {
+            basis: ProductionVmExactNodeRestoreBasis {
+                target,
+                node: node.clone(),
+                configuration: Arc::clone(&self.configuration),
+                scheduler: Arc::clone(&self.scheduler),
+                snapshot,
+                paused,
+                open: Arc::clone(&self.open),
+            },
+        })
+    }
 }
 
 /// Process-free authority retained after a node commits permanent failure.
@@ -524,6 +830,7 @@ fn validate_exact_checkpoint_artifact(
     role: &str,
 ) -> Result<(), LifecycleApiError> {
     let observed = match &artifact.source {
+        #[cfg(any(test, feature = "test-support"))]
         ProductionCheckpointArtifactSource::File(path) => hash_file(path).map_err(|error| {
             loop_factory_error(format!(
                 "read exact checkpoint {role} artifact {}: {error}",
@@ -533,6 +840,13 @@ fn validate_exact_checkpoint_artifact(
         ProductionCheckpointArtifactSource::ChunkStore(directory) => {
             checkpoint_store::validate_chunked_artifact(directory, artifact)?
         }
+        ProductionCheckpointArtifactSource::RetainedChunkStore(lease) => {
+            let _ = lease;
+            checkpoint_store::validate_retained_chunked_artifact_with_boundary(
+                artifact,
+                &mut || Ok(()),
+            )?
+        }
     };
     if observed != artifact.identity {
         return Err(loop_factory_error(format!(
@@ -540,34 +854,6 @@ fn validate_exact_checkpoint_artifact(
         )));
     }
     Ok(())
-}
-
-fn copy_exact_checkpoint_artifact(
-    source: &ProductionCheckpointArtifact,
-    destination: &Path,
-    role: &str,
-) -> Result<(), LifecycleApiError> {
-    checkpoint_store::materialize_checkpoint_artifact(source, destination, role)?;
-    if source.sparse {
-        // Sparse materialization authenticates every stored extent before it
-        // writes into a new empty staging file; omitted ranges are created as
-        // filesystem holes and therefore read as zeroes. Rehashing the dense
-        // logical file here would make restore work proportional to virtual
-        // disk size and would compare against the extent-map identity rather
-        // than a dense byte-stream hash.
-        return Ok(());
-    }
-    validate_exact_checkpoint_artifact(
-        &ProductionCheckpointArtifact {
-            source: ProductionCheckpointArtifactSource::File(destination.to_path_buf()),
-            identity: source.identity,
-            length: source.length,
-            chunks: Vec::new(),
-            sparse: false,
-            extents: Vec::new(),
-        },
-        role,
-    )
 }
 
 #[derive(Clone, Debug)]
@@ -582,6 +868,16 @@ enum ProductionNodeServiceState {
     Running,
     PoweredOff,
     PermanentlyFailed,
+}
+
+fn restored_node_paused(state: ProductionNodeServiceState) -> Result<bool, LifecycleApiError> {
+    match state {
+        ProductionNodeServiceState::Running => Ok(false),
+        ProductionNodeServiceState::PoweredOff => Ok(true),
+        ProductionNodeServiceState::PermanentlyFailed => Err(loop_factory_error(
+            "permanently failed node cannot carry an exact restore target",
+        )),
+    }
 }
 
 /// Read-only evidence for one active production network outage.
@@ -708,8 +1004,7 @@ impl ProductionRunDirectory {
 
 /// Lifecycle loop backed by an authoritative scheduler and live QEMU node set.
 pub struct ProductionVmLifecycleLoop {
-    inner:
-        BackendQuantumLoop<SingleScheduler, ProductionNodeSet, ProductionFaultNetworkInterceptor>,
+    inner: BackendQuantumLoop<SingleScheduler, QemuNodeSet, ProductionFaultNetworkInterceptor>,
     trigger_graph: EventGraph,
     trigger_state: EventGraphState,
     trigger_world: World,
@@ -718,12 +1013,11 @@ pub struct ProductionVmLifecycleLoop {
     terminal_verdict: Option<QuantumTerminalVerdict>,
     checkpoint_terminal_cause: Option<CheckpointTerminalCause>,
     initial_lifecycle_observations_pending: bool,
-    logical_replay_boundary: Option<ProductionVmLogicalReplayBoundary>,
     branch: Option<ProductionVmBranchConfig>,
     continuation_branches: VecDeque<ProductionVmBranchConfig>,
     signal_fault_branches: VecDeque<crucible::SignalFaultCampaignBranch>,
     promote_signal_fault_campaign_choices: bool,
-    launch_configs: BTreeMap<NodeId, ProductionLiveNodeStepGateConfig>,
+    launch_configs: BTreeMap<NodeId, QemuLiveNodeStepGateConfig>,
     block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
     ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
     block_devices: storage_faults::ProductionBlockDevices,
@@ -732,7 +1026,6 @@ pub struct ProductionVmLifecycleLoop {
     fault_runtime: Arc<std::sync::Mutex<ProductionFaultRuntime>>,
     fault_replay_installed: bool,
     fault_search_overrides_installed: bool,
-    fault_evaluation_cursor: network_faults::SharedProductionFaultEvaluationCursor,
     icount_shift: u8,
     node_indexes: BTreeMap<NodeId, usize>,
     node_run_directories: BTreeMap<NodeId, PathBuf>,
@@ -748,6 +1041,7 @@ pub struct ProductionVmLifecycleLoop {
     source: ScenarioDefForm,
     config: ProductionVmLifecycleConfig,
     checkpoint_targets: BTreeMap<ContentHash, quantum_loop::ExactCheckpointPublicationState>,
+    exact_ram_parents: BTreeMap<ContentHash, ProductionExactRamPublishedParent>,
     recorded_controls: Vec<ProductionVmRecordedControl>,
     signal_artifact_objects: BTreeMap<ContentHash, Vec<u8>>,
     debug_backend_paths: BTreeMap<NodeId, PathBuf>,
@@ -838,87 +1132,205 @@ impl ProductionVmLifecycleResumeState {
     }
 }
 
+/// One-shot exact-node restore admitted by complete API semantic validation.
+#[must_use = "an authenticated node restore must be consumed by the guarded launcher"]
+pub struct ProductionVmExactNodeRestoreAdmission {
+    basis: ProductionVmExactNodeRestoreBasis,
+}
+
+struct ProductionVmExactNodeRestoreBasis {
+    target: crucible::exact_checkpoint::ExactCheckpointStructuralTargetClaim,
+    node: NodeId,
+    configuration: Arc<Configuration>,
+    scheduler: Arc<SingleSchedulerCheckpoint>,
+    snapshot: ExactSnapshotHandle,
+    paused: bool,
+    open: Arc<dyn Fn(ContentHash) -> std::io::Result<Box<dyn std::io::Read + Send>> + Send + Sync>,
+}
+
+impl std::fmt::Debug for ProductionVmExactNodeRestoreAdmission {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProductionVmExactNodeRestoreAdmission")
+            .field("target", &self.basis.target)
+            .field("snapshot", &self.basis.snapshot)
+            .field("paused", &self.basis.paused)
+            .finish_non_exhaustive()
+    }
+}
+
+/// One-shot exact-node restore admitted only for replay validation.
+#[must_use = "an authenticated replay restore must be consumed by the replay coordinator"]
+pub struct ProductionVmReplayExactNodeRestoreAdmission {
+    basis: ProductionVmExactNodeRestoreBasis,
+}
+
+impl std::fmt::Debug for ProductionVmReplayExactNodeRestoreAdmission {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProductionVmReplayExactNodeRestoreAdmission")
+            .field("target", &self.basis.target)
+            .field("snapshot", &self.basis.snapshot)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Atomic exact restore whose final run state comes from authenticated lifecycle state.
+#[must_use = "an authenticated exact restore must be launched or discarded"]
+pub struct ProductionVmAtomicExactRestore {
+    request: crucible_qemu::QemuProductionExactRestoreRequest,
+    paused: bool,
+}
+
+impl ProductionVmAtomicExactRestore {
+    /// Materializes and restores the exact node at its persisted service disposition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crucible_qemu::QemuLiveNodeStepGateError`] when authenticated
+    /// materialization, QEMU restore, or the persisted running transition fails.
+    pub fn launch(
+        self,
+    ) -> Result<(QemuNode, QemuPreparedRunDirectory), crucible_qemu::QemuLiveNodeStepGateError>
+    {
+        let launched = self.request.launch()?;
+        if self.paused {
+            Ok(launched.into_node_and_run_directory())
+        } else {
+            launched.into_running_node_and_run_directory()
+        }
+    }
+}
+
+impl ProductionVmExactNodeRestoreAdmission {
+    /// Authenticates the concrete node continuation and launches its atomic restore.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the structural target differs from
+    /// the decoded continuation, an authenticated object cannot be opened, or
+    /// QEMU rejects materialization, sealing, restore, or disposition.
+    pub fn into_atomic_restore(
+        self,
+        request: ProductionVmNodeLaunchRequest<'_>,
+        run_directory: QemuPreparedRunDirectory,
+        process_contract: &crucible_qemu::QemuChildProcessContract,
+    ) -> Result<ProductionVmAtomicExactRestore, LifecycleApiError> {
+        let paused = self.basis.paused;
+        let launch = request
+            .launch()
+            .clone()
+            .with_run_directory(run_directory.path());
+        let request = admit_atomic_exact_restore(
+            self.basis,
+            launch,
+            run_directory,
+            process_contract,
+            request.node().clone(),
+            request.router_name(),
+            request.crash_detector(),
+        )?;
+        Ok(ProductionVmAtomicExactRestore { request, paused })
+    }
+}
+
+impl ProductionVmReplayExactNodeRestoreAdmission {
+    /// Returns the authenticated World node identity used to select baked genesis.
+    #[must_use]
+    pub fn node(&self) -> &NodeId {
+        &self.basis.node
+    }
+
+    /// Returns the authenticated modeled snapshot used by replay comparison.
+    #[must_use]
+    pub const fn snapshot(&self) -> &ExactSnapshotHandle {
+        &self.basis.snapshot
+    }
+
+    /// Returns the authenticated modeled configuration identity.
+    #[must_use]
+    pub fn configuration_id(&self) -> ContentHash {
+        self.basis.configuration.id()
+    }
+
+    /// Consumes this admission into one replay-owned atomic exact restore.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when structural execution authentication
+    /// or atomic QEMU restore admission fails.
+    pub fn into_replay_admission(
+        self,
+        launch: QemuLiveNodeStepGateConfig,
+        run_directory: QemuPreparedRunDirectory,
+        process_contract: &crucible_qemu::QemuChildProcessContract,
+        crash_detector: impl Into<String>,
+    ) -> Result<crucible_qemu::QemuReplayValidationExactAdmission, LifecycleApiError> {
+        let node = self.basis.node.clone();
+        let snapshot = self.basis.snapshot.clone();
+        let request = admit_atomic_exact_restore(
+            self.basis,
+            launch.clone(),
+            run_directory,
+            process_contract,
+            node.clone(),
+            "crucible-router",
+            crash_detector,
+        )?;
+        crucible_qemu::QemuReplayValidationExactAdmission::admit_atomic(
+            launch, request, &snapshot, node,
+        )
+        .map_err(|error| loop_factory_error(format!("admit exact replay executor: {error}")))
+    }
+}
+
+fn admit_atomic_exact_restore(
+    admission: ProductionVmExactNodeRestoreBasis,
+    launch: QemuLiveNodeStepGateConfig,
+    run_directory: QemuPreparedRunDirectory,
+    process_contract: &crucible_qemu::QemuChildProcessContract,
+    node: impl Into<NodeId>,
+    router: impl Into<String>,
+    crash_detector: impl Into<String>,
+) -> Result<crucible_qemu::QemuProductionExactRestoreRequest, LifecycleApiError> {
+    let snapshot = admission.snapshot;
+    let (target, streams) = admission
+        .target
+        .authenticate_execution_and_open_streams(
+            &admission.configuration,
+            snapshot.checkpoint(),
+            &admission.scheduler,
+            move |identity| (admission.open)(identity),
+        )
+        .map_err(|error| loop_factory_error(format!("authenticate exact node: {error}")))?;
+    crucible_qemu::QemuProductionExactRestoreRequest::new(
+        crucible_qemu::QemuProductionExactRestoreProfile {
+            config: launch,
+            run_directory,
+            snapshot,
+            node: node.into(),
+            router: router.into(),
+            crash_detector: crash_detector.into(),
+        },
+        process_contract,
+        target,
+        streams,
+    )
+    .map_err(|error| loop_factory_error(format!("admit atomic exact restore: {error}")))
+}
+
 /// Process materialization requested by the authoritative production lifecycle.
-#[derive(Clone, Copy, Debug)]
-pub enum ProductionVmNodeLaunchKind<'a> {
+#[derive(Debug)]
+pub(crate) enum ProductionVmNodeLaunchKind {
     /// Starts one freshly provisioned node at its baked ready boundary.
     Fresh,
     /// Restores one authenticated exact snapshot.
-    Exact {
-        /// Snapshot paired with the scheduler and host-I/O continuation.
-        snapshot: &'a ExactSnapshotHandle,
-        /// Whether the restored node remains paused after installation.
-        paused: bool,
-    },
-}
-
-/// Immutable checkpoint artifact offered to one node-generation preparer.
-///
-/// The capability keeps the checkpoint store representation private while
-/// allowing an injected preparation authority to authenticate and materialize
-/// the exact bytes only after it has installed its writable-storage policy.
-#[derive(Clone, Copy, Debug)]
-pub struct ProductionVmNodeCheckpointArtifact<'a> {
-    artifact: &'a ProductionCheckpointArtifact,
-    role: &'static str,
-}
-
-impl ProductionVmNodeCheckpointArtifact<'_> {
-    /// Returns the exact authenticated identity of the artifact.
-    ///
-    /// Dense artifacts identify their complete byte stream. Sparse overlays
-    /// identify their logical length and canonical changed-chunk extent map;
-    /// omitted chunks have the authenticated meaning of zeroes.
-    #[must_use]
-    pub const fn identity(&self) -> ContentHash {
-        self.artifact.identity
-    }
-
-    /// Returns the exact logical byte length of the artifact.
-    #[must_use]
-    pub const fn length(&self) -> u64 {
-        self.artifact.length
-    }
-
-    /// Streams and authenticates the complete artifact into `destination`.
-    ///
-    /// The method bounds its temporary memory independently of artifact size
-    /// and validates both the declared length and authenticated identity before
-    /// returning success. A destination may have received a partial prefix on
-    /// failure; callers must use a fail-closed staging or linear materialization
-    /// authority when partial output cannot be reused.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError::LoopFactory`] when the retained source is
-    /// unavailable or changed, a chunk closure is invalid, the destination
-    /// rejects a write, or the final length or authenticated identity differs.
-    pub fn stream_into(
-        &self,
-        destination: &mut impl std::io::Write,
-    ) -> Result<(), LifecycleApiError> {
-        checkpoint_store::stream_checkpoint_artifact(self.artifact, destination, self.role)
-    }
-
-    /// Materializes and reauthenticates the artifact at `destination`.
-    ///
-    /// The destination must not already exist. The copy is staged under its
-    /// parent and durably published only after its length and authenticated
-    /// identity match this capability.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError::LoopFactory`] when source authentication,
-    /// bounded copying, destination publication, or directory synchronization
-    /// fails.
-    pub fn materialize_into(&self, destination: &Path) -> Result<(), LifecycleApiError> {
-        copy_exact_checkpoint_artifact(self.artifact, destination, self.role)
-    }
+    Exact(Box<ProductionVmExactNodeRestoreAdmission>),
 }
 
 /// Filesystem preparation requested for one production node generation.
 #[derive(Clone, Copy, Debug)]
-pub enum ProductionVmNodePreparationKind<'a> {
+pub(crate) enum ProductionVmNodePreparationKind<'a> {
     /// Creates a fresh writable root overlay from one immutable root image.
     Fresh {
         /// QEMU executable whose adjacent `qemu-img` owns the image format.
@@ -926,25 +1338,13 @@ pub enum ProductionVmNodePreparationKind<'a> {
         /// Immutable root image used only as the overlay size and backing basis.
         root_image: &'a Path,
     },
-    /// Materializes the two authenticated artifacts of an exact restore.
-    Exact {
-        /// Complete authenticated per-node checkpoint manifest identity.
-        root: ContentHash,
-        /// Exact writable-root overlay artifact.
-        root_overlay: ProductionVmNodeCheckpointArtifact<'a>,
-        /// Exact QEMU VMState artifact.
-        vmstate: ProductionVmNodeCheckpointArtifact<'a>,
-    },
-    /// Clones the current generation's writable artifacts for replacement.
-    Replacement {
-        /// Exact prior generation directory owned by the same launcher.
-        source_run_directory: &'a Path,
-    },
+    /// Uses the repository-authenticated state retained by the launcher.
+    Exact,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct ProductionVmNodeLaunchBasis<'a> {
-    launch: &'a ProductionLiveNodeStepGateConfig,
+    launch: &'a QemuLiveNodeStepGateConfig,
     run_directory: &'a Path,
     node: &'a NodeId,
     generation: u64,
@@ -952,7 +1352,7 @@ struct ProductionVmNodeLaunchBasis<'a> {
 
 impl<'a> ProductionVmNodeLaunchBasis<'a> {
     const fn new(
-        launch: &'a ProductionLiveNodeStepGateConfig,
+        launch: &'a QemuLiveNodeStepGateConfig,
         run_directory: &'a Path,
         node: &'a NodeId,
         generation: u64,
@@ -969,14 +1369,12 @@ impl<'a> ProductionVmNodeLaunchBasis<'a> {
 /// Borrowed launch request for one production lifecycle node generation.
 #[derive(Clone, Copy, Debug)]
 pub struct ProductionVmNodeLaunchRequest<'a> {
-    launch: &'a ProductionLiveNodeStepGateConfig,
+    launch: &'a QemuLiveNodeStepGateConfig,
     run_directory: &'a Path,
     node: &'a NodeId,
     generation: u64,
     router_name: &'a str,
     crash_detector: &'a str,
-    preparation: ProductionVmNodePreparationKind<'a>,
-    kind: ProductionVmNodeLaunchKind<'a>,
 }
 
 impl<'a> ProductionVmNodeLaunchRequest<'a> {
@@ -984,8 +1382,6 @@ impl<'a> ProductionVmNodeLaunchRequest<'a> {
         basis: ProductionVmNodeLaunchBasis<'a>,
         router_name: &'a str,
         crash_detector: &'a str,
-        preparation: ProductionVmNodePreparationKind<'a>,
-        kind: ProductionVmNodeLaunchKind<'a>,
     ) -> Self {
         Self {
             launch: basis.launch,
@@ -994,14 +1390,12 @@ impl<'a> ProductionVmNodeLaunchRequest<'a> {
             generation: basis.generation,
             router_name,
             crash_detector,
-            preparation,
-            kind,
         }
     }
 
     /// Returns the validated production launch profile.
     #[must_use]
-    pub const fn launch(&self) -> &ProductionLiveNodeStepGateConfig {
+    pub const fn launch(&self) -> &QemuLiveNodeStepGateConfig {
         self.launch
     }
 
@@ -1039,18 +1433,6 @@ impl<'a> ProductionVmNodeLaunchRequest<'a> {
     #[must_use]
     pub const fn crash_detector(&self) -> &str {
         self.crash_detector
-    }
-
-    /// Returns the exact writable-artifact operation preceding process spawn.
-    #[must_use]
-    pub const fn preparation(&self) -> ProductionVmNodePreparationKind<'a> {
-        self.preparation
-    }
-
-    /// Returns the fresh or exact process materialization request.
-    #[must_use]
-    pub const fn kind(&self) -> ProductionVmNodeLaunchKind<'a> {
-        self.kind
     }
 }
 
@@ -1211,13 +1593,13 @@ impl ProductionVmHotForkNodeAdoption {
 #[derive(Clone, Debug)]
 pub struct ProductionVmNodeReplayLaunchProfile {
     node: NodeId,
-    launch: ProductionLiveNodeStepGateConfig,
+    launch: QemuLiveNodeStepGateConfig,
 }
 
 impl ProductionVmNodeReplayLaunchProfile {
     /// Binds one immutable launch profile to its exact World node.
     #[must_use]
-    pub fn new(node: NodeId, launch: ProductionLiveNodeStepGateConfig) -> Self {
+    pub fn new(node: NodeId, launch: QemuLiveNodeStepGateConfig) -> Self {
         Self { node, launch }
     }
 
@@ -1236,7 +1618,7 @@ impl ProductionVmNodeReplayLaunchProfile {
         &self,
         run_directory: impl Into<PathBuf>,
         generation: u64,
-    ) -> ProductionLiveNodeStepGateConfig {
+    ) -> QemuLiveNodeStepGateConfig {
         self.launch
             .clone()
             .with_run_directory(run_directory)
@@ -1378,10 +1760,10 @@ pub trait ProductionVmNodeLauncher: Send {
     /// resource enforcement can no longer be authenticated.
     fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError>;
 
-    /// Launches one requested node generation.
+    /// Launches one freshly provisioned node generation.
     ///
     /// Before spawning any process, the implementation creates the generation
-    /// run directory and performs [`ProductionVmNodeLaunchRequest::preparation`]
+    /// run directory and performs the operation-specific artifact preparation
     /// under the same aggregate storage, cancellation, and cleanup authority.
     /// Success returns the node and a linear containment lease whose identity
     /// exactly matches the request. The lifecycle retains that lease until the
@@ -1390,13 +1772,27 @@ pub trait ProductionVmNodeLauncher: Send {
     /// # Errors
     ///
     /// Returns [`LifecycleApiError`] when admission, namespace or artifact
-    /// preparation, process launch, exact restore, or post-launch
-    /// authentication fails. The implementation must retain or clean every
+    /// preparation, process launch, or post-launch authentication fails. The
+    /// implementation must retain or clean every
     /// partial artifact and retain or reap every process it may have spawned
     /// before returning.
-    fn launch(
+    fn launch_fresh(
         &mut self,
         request: ProductionVmNodeLaunchRequest<'_>,
+        qemu_executable: &Path,
+        root_image: &Path,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError>;
+
+    /// Launches one descriptor-backed exact node generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when exact artifact materialization,
+    /// process launch, restore, or post-launch authentication fails.
+    fn launch_restored(
+        &mut self,
+        request: ProductionVmNodeLaunchRequest<'_>,
+        admission: ProductionVmExactNodeRestoreAdmission,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError>;
 
     /// Creates an independent authority for whole-world debugger replay.
@@ -1428,23 +1824,11 @@ pub trait ProductionVmNodeLauncher: Send {
     fn finish(&mut self) -> Result<(), LifecycleApiError>;
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, Debug, Default)]
 struct PackagedProductionVmNodeLauncher;
 
-struct PackagedProductionVmNodeLease {
-    identity: ProductionVmNodeGeneration,
-}
-
-impl ProductionVmNodeLease for PackagedProductionVmNodeLease {
-    fn identity(&self) -> &ProductionVmNodeGeneration {
-        &self.identity
-    }
-
-    fn finish(&mut self) -> Result<(), LifecycleApiError> {
-        Ok(())
-    }
-}
-
+#[cfg(any(test, feature = "test-support"))]
 impl ProductionVmNodeLauncher for PackagedProductionVmNodeLauncher {
     fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
         Ok(())
@@ -1454,99 +1838,31 @@ impl ProductionVmNodeLauncher for PackagedProductionVmNodeLauncher {
         Ok(())
     }
 
-    fn launch(
+    fn launch_fresh(
         &mut self,
-        request: ProductionVmNodeLaunchRequest<'_>,
+        _request: ProductionVmNodeLaunchRequest<'_>,
+        _qemu_executable: &Path,
+        _root_image: &Path,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
-        fs::create_dir_all(request.run_directory()).map_err(|error| {
-            loop_factory_error(format!(
-                "create QEMU node run directory {}: {error}",
-                request.run_directory().display()
-            ))
-        })?;
-        match request.preparation() {
-            ProductionVmNodePreparationKind::Fresh {
-                qemu_executable,
-                root_image,
-            } => prepare_root_overlay(qemu_executable, root_image, request.run_directory()),
-            ProductionVmNodePreparationKind::Exact {
-                root: _,
-                root_overlay,
-                vmstate,
-            } => {
-                root_overlay.materialize_into(
-                    &request
-                        .run_directory()
-                        .join(PRODUCTION_ROOT_OVERLAY_FILE_NAME),
-                )?;
-                vmstate
-                    .materialize_into(&request.run_directory().join(PRODUCTION_VMSTATE_FILE_NAME))
-            }
-            ProductionVmNodePreparationKind::Replacement {
-                source_run_directory,
-            } => {
-                for artifact in [
-                    PRODUCTION_ROOT_OVERLAY_FILE_NAME,
-                    PRODUCTION_VMSTATE_FILE_NAME,
-                ] {
-                    let source = source_run_directory.join(artifact);
-                    let target = request.run_directory().join(artifact);
-                    fs::copy(&source, &target).map_err(|error| {
-                        loop_factory_error(format!(
-                            "copy production lifecycle artifact {} to {}: {error}",
-                            source.display(),
-                            target.display()
-                        ))
-                    })?;
-                }
-                Ok(())
-            }
-        }?;
-        let launched = match request.kind() {
-            ProductionVmNodeLaunchKind::Fresh => launch_production_live_node(
-                request.launch(),
-                request.run_directory(),
-                request.node_name(),
-                request.router_name(),
-                request.crash_detector(),
-            ),
-            ProductionVmNodeLaunchKind::Exact {
-                snapshot,
-                paused: false,
-            } => launch_production_live_node_exact_snapshot(
-                request.launch(),
-                request.run_directory(),
-                request.node_name(),
-                request.router_name(),
-                request.crash_detector(),
-                snapshot,
-            ),
-            ProductionVmNodeLaunchKind::Exact {
-                snapshot,
-                paused: true,
-            } => launch_production_live_node_exact_snapshot_paused(
-                request.launch(),
-                request.run_directory(),
-                request.node_name(),
-                request.router_name(),
-                request.crash_detector(),
-                snapshot,
-            ),
-        };
-        let node = launched.map_err(|error| {
-            loop_factory_error(format!(
-                "launch QEMU node `{}` through packaged authority: {}",
-                request.node_name(),
-                diagnostics::error_chain(&error),
-            ))
-        })?;
-        let identity =
-            ProductionVmNodeGeneration::new(request.node().clone(), request.generation())?;
-        ProductionVmNodeLaunch::new(request, node, PackagedProductionVmNodeLease { identity })
+        Err(loop_factory_error(
+            "test lifecycle has no production process authority",
+        ))
+    }
+
+    fn launch_restored(
+        &mut self,
+        _request: ProductionVmNodeLaunchRequest<'_>,
+        _admission: ProductionVmExactNodeRestoreAdmission,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        Err(loop_factory_error(
+            "test lifecycle has no production process authority",
+        ))
     }
 
     fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
-        Ok(Box::new(Self))
+        Err(loop_factory_error(
+            "test lifecycle has no production replay authority",
+        ))
     }
 
     fn finish(&mut self) -> Result<(), LifecycleApiError> {
@@ -1559,31 +1875,25 @@ fn launch_production_node_generation(
     basis: ProductionVmNodeLaunchBasis<'_>,
     crash_detector: &str,
     preparation: ProductionVmNodePreparationKind<'_>,
-    kind: ProductionVmNodeLaunchKind<'_>,
+    kind: ProductionVmNodeLaunchKind,
 ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
     ProductionVmNodeGeneration::new(basis.node.clone(), basis.generation)?;
-    if !matches!(
-        (preparation, kind),
+    let request = ProductionVmNodeLaunchRequest::new(basis, "crucible-router", crash_detector);
+    match (preparation, kind) {
         (
-            ProductionVmNodePreparationKind::Fresh { .. },
-            ProductionVmNodeLaunchKind::Fresh
-        ) | (
-            ProductionVmNodePreparationKind::Exact { .. }
-                | ProductionVmNodePreparationKind::Replacement { .. },
-            ProductionVmNodeLaunchKind::Exact { .. }
-        )
-    ) {
-        return Err(loop_factory_error(
-            "production QEMU node preparation does not match its launch kind",
-        ));
+            ProductionVmNodePreparationKind::Fresh {
+                qemu_executable,
+                root_image,
+            },
+            ProductionVmNodeLaunchKind::Fresh,
+        ) => launcher.launch_fresh(request, qemu_executable, root_image),
+        (ProductionVmNodePreparationKind::Exact, ProductionVmNodeLaunchKind::Exact(admission)) => {
+            launcher.launch_restored(request, *admission)
+        }
+        _ => Err(loop_factory_error(
+            "production QEMU node preparation does not match its launch operation",
+        )),
     }
-    launcher.launch(ProductionVmNodeLaunchRequest::new(
-        basis,
-        "crucible-router",
-        crash_detector,
-        preparation,
-        kind,
-    ))
 }
 
 fn finish_reaped_node_lease_map(
@@ -1638,7 +1948,6 @@ mod checkpoint_recovery;
 use checkpoint_recovery::durable_run_state_api_error;
 mod config;
 mod construction;
-mod diagnostics;
 use construction::build_production_vm_lifecycle_loop_with_restore;
 mod helpers;
 mod network_faults;
@@ -1875,125 +2184,17 @@ use network_faults::{
 pub use search::production_vm_search_frontier;
 use storage_faults::{ProductionBlockFaultCoordinator, block_binding_for_vm, ninep_binding_for_vm};
 
-/// Builds a production lifecycle by directly restoring a durable fat checkpoint.
-///
-/// The checkpoint must have an exact execution closure below the configured run
-/// state root. The closure and every referenced object are authenticated before
-/// any replacement process is published, and this path never falls back to
-/// replay.
+/// Builds one exact-resume lifecycle from an authenticated repository admission.
 ///
 /// # Errors
 ///
-/// Returns [`LifecycleApiError::LoopFactory`] when the scenario/checkpoint pair
-/// has no durable exact continuation or its authenticated artifacts and
-/// scheduler identity cannot be restored as one transaction.
-pub fn build_production_vm_lifecycle_loop_from_checkpoint(
+/// Returns [`LifecycleApiError`] when launcher construction or restored
+/// lifecycle validation fails.
+pub fn build_production_vm_exact_resume_lifecycle<L>(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     config: &ProductionVmLifecycleConfig,
-    checkpoint: &Checkpoint,
-) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
-    build_production_vm_lifecycle_loop_from_checkpoint_with_launcher(
-        scenario,
-        source,
-        config,
-        checkpoint,
-        PackagedProductionVmNodeLauncher,
-    )
-}
-
-/// Builds a production lifecycle from an exact checkpoint and launch authority.
-///
-/// The supplied authority owns every initial and modeled replacement QEMU
-/// process generation. It is retained by the returned lifecycle.
-///
-/// # Errors
-///
-/// Returns [`LifecycleApiError::LoopFactory`] when the checkpoint closure is
-/// invalid, materialization fails, or `launcher` cannot produce an exact
-/// contained process generation.
-pub fn build_production_vm_lifecycle_loop_from_checkpoint_with_launcher<L>(
-    scenario: &ScenarioDef,
-    source: &ScenarioDefForm,
-    config: &ProductionVmLifecycleConfig,
-    checkpoint: &Checkpoint,
-    launcher: L,
-) -> Result<ProductionVmLifecycleLoop, LifecycleApiError>
-where
-    L: ProductionVmNodeLauncher + 'static,
-{
-    if checkpoint.kind != CheckpointKind::Fat
-        || checkpoint.scenario_ref != scenario.id()
-        || checkpoint.configuration != checkpoint.id
-    {
-        return Err(loop_factory_error(
-            "production direct restore requires a matching recorded fat checkpoint",
-        ));
-    }
-    let closure = checkpoint.execution_closure.ok_or_else(|| {
-        loop_factory_error("production direct restore requires a concrete execution closure")
-    })?;
-    let restored = load_exact_checkpoint_set(&config.run_state_root, scenario, source, closure)?;
-    if restored.configuration.id() != checkpoint.configuration
-        || restored.scheduler.frontier() != checkpoint.virtual_time
-        || restored.identity != closure
-    {
-        return Err(loop_factory_error(
-            "durable production continuation does not match checkpoint model state",
-        ));
-    }
-    build_production_vm_lifecycle_loop_with_restore(
-        scenario,
-        source,
-        config,
-        Some(restored),
-        Box::new(launcher),
-        None,
-    )
-}
-
-/// Builds a production lifecycle directly from one installed exact closure.
-///
-/// The closure identity must already name a complete native version-four
-/// continuation below `config.run_state_root`. This boundary reauthenticates
-/// the full scenario-aware closure and never substitutes fresh construction or
-/// replay when it is absent.
-///
-/// # Errors
-///
-/// Returns [`LifecycleApiError::LoopFactory`] when the closure is unavailable,
-/// corrupt, belongs to another scenario, or cannot restore a complete guarded
-/// production lifecycle.
-pub fn build_production_vm_lifecycle_loop_from_exact_closure(
-    scenario: &ScenarioDef,
-    source: &ScenarioDefForm,
-    config: &ProductionVmLifecycleConfig,
-    closure: ContentHash,
-) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
-    build_production_vm_lifecycle_loop_from_exact_closure_with_launcher(
-        scenario,
-        source,
-        config,
-        closure,
-        PackagedProductionVmNodeLauncher,
-    )
-}
-
-/// Builds a production lifecycle from one installed closure and launch authority.
-///
-/// The supplied authority owns every restored and later modeled replacement
-/// generation. Closure loading and complete semantic validation finish before
-/// any generation is offered to it.
-///
-/// # Errors
-///
-/// Returns [`LifecycleApiError::LoopFactory`] when closure authentication,
-/// restore admission, or guarded node construction fails.
-pub fn build_production_vm_lifecycle_loop_from_exact_closure_with_launcher<L>(
-    scenario: &ScenarioDef,
-    source: &ScenarioDefForm,
-    config: &ProductionVmLifecycleConfig,
-    closure: ContentHash,
+    decoded: DecodedProductionExactCheckpoint,
     launcher: L,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError>
 where
@@ -2001,20 +2202,14 @@ where
 {
     if source.scenario_def() != *scenario {
         return Err(loop_factory_error(
-            "production exact closure source does not reconstruct the requested scenario",
-        ));
-    }
-    let restored = load_exact_checkpoint_set(&config.run_state_root, scenario, source, closure)?;
-    if restored.identity != closure {
-        return Err(loop_factory_error(
-            "production exact closure restored a different identity",
+            "repository checkpoint source does not reconstruct the requested scenario",
         ));
     }
     build_production_vm_lifecycle_loop_with_restore(
         scenario,
         source,
         config,
-        Some(restored),
+        Some(decoded.into_checkpoint()),
         Box::new(launcher),
         None,
     )
@@ -2229,31 +2424,6 @@ fn validate_hot_fork_adoption_inventory(
     })
 }
 
-/// Builds a production local-QEMU lifecycle loop for `scenario`.
-///
-/// Every World VM receives an independent QEMU process and writable overlay.
-/// The scheduler is admitted only after all nodes report the same primed
-/// instruction boundary.
-///
-/// # Errors
-///
-/// Returns [`LifecycleApiError::LoopFactory`] when the World is empty, VM shifts
-/// differ, time conversion overflows, a run directory or overlay cannot be
-/// prepared, a live node cannot be launched, primed boundaries differ, or the
-/// authoritative scheduler rejects the runtime scenario.
-pub fn build_production_vm_lifecycle_loop(
-    scenario: &ScenarioDef,
-    source: &ScenarioDefForm,
-    config: &ProductionVmLifecycleConfig,
-) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
-    build_production_vm_lifecycle_loop_with_launcher(
-        scenario,
-        source,
-        config,
-        PackagedProductionVmNodeLauncher,
-    )
-}
-
 /// Builds a fresh production lifecycle under one retained launch authority.
 ///
 /// The authority is invoked for every initial node and every later modeled
@@ -2285,7 +2455,7 @@ where
 }
 
 fn validate_app_random_branch_replay_config(
-    nodes: &[crucible::WorldNode],
+    nodes: crucible::WorldVmNodes<'_>,
     config: &ProductionVmLifecycleConfig,
 ) -> Result<(), LifecycleApiError> {
     let mut planned_selection_ids = BTreeMap::<[u8; 32], usize>::new();

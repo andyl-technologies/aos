@@ -4,8 +4,9 @@ use serde_json::Value;
 
 use super::{
     QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION, QMP_HOT_FORK_PLUGIN_WORKER_ALL,
-    QMP_HOT_FORK_PLUGIN_WORKER_REQUIRED, QmpCommandKind, QmpError,
+    QMP_HOT_FORK_PLUGIN_WORKER_REQUIRED,
 };
+use crate::qmp::{QmpCommandKind, QmpError};
 
 /// Process-local phase of the registered fork-child runtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

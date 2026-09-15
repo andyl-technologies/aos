@@ -571,7 +571,7 @@ mod tests {
         ))
         .expect("observation");
         let candidate_content =
-            ContentId::for_bytes(ObjectKind::Finding, 1, b"bounded pending finding candidate");
+            ContentId::for_bytes(ObjectKind::Finding, 5, b"bounded pending finding candidate");
         let candidate = FindingCandidateBundleId::parse(&format!(
             "crucible.campaign.finding-candidate-bundle@{candidate_content}"
         ))

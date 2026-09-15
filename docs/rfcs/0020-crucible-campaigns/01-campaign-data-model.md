@@ -25,7 +25,7 @@ CampaignLineageId = H(
   GenesisConfigurationId,
   ConfigurationArtifactId,
   CrucibleVersion,
-  QemuBuildAndPatchSeries,
+  QemuBuildAndAtomicPatch,
   ProtocolVersions
 )
 
@@ -84,25 +84,18 @@ configuration record binds its semantic `ConfigurationId`, its
 Repository reads resolve these records and recheck every cross-record binding;
 validation is not limited to the campaign-creation path.
 
-Finding reproduction uses the same exact-artifact rule. A schema-v1
+Finding reproduction uses the same exact-artifact rule. The current schema-v2
 `ReproductionArtifact` binds semantic and exact scenario/configuration
-identities, a stable failure fingerprint, and verifier-checked self-contained
-execution-model bytes. Schema v2 is used only for a minimized reproduction and
-additionally retains its original schema-v1 reproduction, versioned exact
-minimization policy, dense bounded candidate history, and final replayed state.
-A schema-v1 `Finding` binds its normalized signature, representative and
-occurrence observations, original and optional legacy minimized reproductions,
-the authenticated first-seen parent snapshot, and optional untyped exact
-checkpoint accelerators. Schema v2 replaces that untyped accelerator set with
-bounded pre-failure, last-successful-measurement, post-failure, and additional
-role sets and requires every minimized reproduction to carry schema-v2
-minimization evidence. A schema-v1 Finding references only schema-v1
-reproductions; a schema-v2 Finding retains a schema-v1 original and, when
-present, a schema-v2 minimized reproduction whose trace also names that v1
-original. Both record families preserve schema-v1 body/envelope
-identity on legacy reads. They remain `ObjectKind::Finding` records with
-distinct registered schemas; a broad finding content ID is not authoritative
-until its envelope schema and complete child table are authenticated.
+identities, a stable failure fingerprint, verifier-checked self-contained
+execution-model bytes, its original reproduction, the exact minimization
+policy, bounded candidate history, and the final replayed state. The current
+schema-v4 `Finding` binds its normalized signature, representative and
+occurrence observations, reproduction artifacts, authenticated first-seen
+parent snapshot, role-tagged exact checkpoint retention, and the authenticated
+candidate bundle and occurrence set. Repository admission verifies those
+relationships and fails closed on any other schema version. A broad finding
+content ID is not authoritative until its envelope schema and complete child
+table are authenticated.
 
 Campaign creation inserts the exact genesis configuration artifact into the
 canonical graph and corpus keys, publishes any candidate-generator closure,
@@ -178,16 +171,8 @@ pub struct CampaignSnapshot {
 }
 ```
 
-Version-3 snapshots append a required budget ledger child after the transition
-field. The version-1 ledger body is `u32 version`, two `u128` cumulative
-grants (proposals, attempts), and two `u64` cumulative spending counts in the
-same order, all big-endian. Genesis requires zero totals. Successor validation
-reconstructs exact deltas from the causal fact and unique admission sequence;
-the ledger's bytes alone never confer authority. Version-2 snapshots retain
-their original encoding and identities. New successors upgrade them with exact
-historical debt; a version-3 lineage cannot downgrade to version 2.
-
-New ledgers use schema version 2, appending a `ContentId` for the authenticated
+Version-3 snapshots require a schema-version-2 budget-ledger child after the
+transition field. The ledger appends a `ContentId` for the authenticated
 request-spending Merkle map. This is the ledger's sole child. Its outer map
 indexes request identities; each value is a nested map from semantic attempt
 identity to the exact execution-basis admission. Additional causes and
@@ -195,10 +180,9 @@ discovery admissions do not spend a request-local attempt. The nested root's
 authenticated entry count gives exact local spending without scanning campaign
 history. Genesis requires the canonical empty map. Successors derive updates
 from newly added dense global admissions; validation recomputes the root without
-publishing objects. The first new successor of a version-1 ledger reconstructs
-the index from its complete admission sequence, preserving all spending.
-Historical version-1 identities remain readable, but an indexed lineage cannot
-downgrade to a version-1 ledger.
+publishing objects. Historical ledgers require translation outside ordinary
+runtime before a current snapshot may use them; the current repository provides
+no live upgrade path.
 
 Snapshot ancestry for one campaign ref is linear in this RFC because exactly
 one coordinator owns that ref. `derive` creates another named ref whose first
@@ -269,7 +253,6 @@ pub enum CampaignFact {
         branch_point: BranchPointId,
         opportunity: ChoiceOpportunityId,
     },
-    BranchRequestIssued(BranchRequestId), // legacy, readable on import and replay
     BranchRequestAccepted {
         request: BranchRequestId,
         summary: BranchAcceptanceSummary,
@@ -313,11 +296,6 @@ the source owner can prove a total and inclusive ranges otherwise. Source
 cardinality is distinct from the proposal window: the latter is capped by the
 request proposal limit, while generators whose definition incorporates that
 limit may also have a limit-bounded source cardinality.
-
-Repositories continue to authenticate and replay legacy
-`BranchRequestIssued` transitions. Because those facts have no recorded
-summary, replay recomputes it against the transition's immutable parent graph
-and identifies the result as legacy-recomputed rather than recorded evidence.
 
 Publishing a valid `ChoiceOpportunity` body does not make it campaign
 knowledge. The graph owner admits it only through an exact
@@ -573,12 +551,8 @@ by-value interpretation bundle auditable even when two requests share one
 `PlannerInvocationId`. Standalone step loading cannot prove the request's
 snapshot precondition and therefore requires the exact owning snapshot. The
 complete layout is registered as
-`crucible.campaign.planner-step` schema v4; v1 through v3 envelopes are rejected
-rather than reinterpreted under the new field order. The typed `PlannerStepId`
-decoder continues to admit schema-v3 content IDs so an existing
-`CampaignFact` schema-v2 `PlannerAdvanced` body remains canonically readable;
-dereferencing that legacy ID as a current planner-step record still fails
-closed because only a schema-v4 envelope is executable or owner-validatable.
+`crucible.campaign.planner-step` schema v4. Earlier envelopes and typed IDs are
+rejected rather than reinterpreted under the current field order.
 
 `PlannerCandidateGuidance` is the schema-v2, at-most-64-KiB owner projection
 used by canonical frontier engine version 2. Its exact envelope children are
@@ -867,10 +841,8 @@ budget semantics remain unchanged.
 `BranchPath` schema version 2 retains each `BranchPointId` beside its
 non-invertible `BranchEdgeId`. This lets a restart rebuild observation credit
 for every ancestor without an in-memory MCTS stack or a reverse hash lookup.
-Version 1 edge-only paths retain their exact body and envelope identity for
-historical reads, but new writers always produce version 2. The current
-admission owner accepts a legacy path only for a single-edge genesis request.
-A version-2 path must end in the exact `(BranchPointId, BranchEdgeId)` selected
+The current admission owner accepts only version-2 paths. A version-2 path must
+end in the exact `(BranchPointId, BranchEdgeId)` selected
 by its request. Its prefix is empty for genesis; for a non-genesis parent, the
 prefix identity must be a member of that exact parent configuration's
 authenticated nested path set in the source snapshot's observation root.
@@ -918,9 +890,9 @@ Planner cause names policy and observation basis directly rather than the
 acyclic while preserving the full causal chain.
 
 `ScenarioDefault` is distinct from adaptive planner and exhaustive-policy
-causes. It records the compatibility path that follows exactly one
-scenario-declared default and cannot widen that choice. Its policy child makes
-default admission replayable and fail-closed after import.
+causes. It follows exactly one scenario-declared default and cannot widen that
+choice. Its policy child makes default admission replayable and fail-closed
+after import.
 
 `AttemptId` is the digest of the canonical `Attempt` semantic inputs. Executor,
 reservation generation, retry number, start time, preferred materialization,
@@ -1041,7 +1013,7 @@ keys are the big-endian `u32` version followed by 28 zero bytes. This preserves
 `PlanningScanPosition` ordering across request schemas 1 through 4. Request
 transitions update the index atomically, and cold validation recomputes every
 delta. Other transitions preserve it. An indexed lineage cannot drop or omit
-positions. Histories without the anchor retain the legacy exploration scan.
+positions. Current histories require the anchor.
 
 Planner page construction reads only the requested ordered window plus one
 lookahead position. Invocation closure validation reuses exact roots already
@@ -1059,10 +1031,8 @@ budget and source state. Generated requests start and remain `Open` at this
 checkpoint because deterministic generated-source enumeration and feedback
 ownership remain an implementation-plan gate.
 
-Legacy schema-v2 snapshots without the frontier-index anchor remain readable,
-but proof-bearing frontier queries fail closed. Ordinary mutations preserve
-that unindexed shape and MUST NOT synthesize a partial index; a future migration
-must rebuild and authenticate the complete index atomically.
+Snapshots without the frontier-index anchor are rejected before ordinary
+runtime admission.
 
 `FeedbackWait` is constructed only when `completed_visits < required_visits`;
 its fields are private and strict decoding enforces the same invariant. Reaching

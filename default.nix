@@ -417,305 +417,15 @@
   # T-PKG-15: the shared Crucible VM/fleet check substrate. It assembles the
   # whole Crucible closure (patched QEMU + plugin + CLI + kernel + fixtures) as
   # hermetic inputs and runs the built CLI under TCG with NO `kvm` system
-  # feature ([PKG-29], [PKG-30], spec §26.8). Both the e2e-determinism fleet
-  # check and the real-VM performance checks ride this same runner.
+  # feature ([PKG-29], [PKG-30], spec §26.8). The canonical Phase 4 gate and
+  # the real-VM performance checks ride this same runner.
   crucibleFleetRunner = import ./tests/crucible/_fleet-runner.nix {inherit pkgs lib;};
 
-  nginxCurlGuest = import ./tests/crucible/_nginx-curl-http-200-guest.nix {inherit pkgs;};
-  representativeScenario = ./tests/crucible/fixtures/e2e-determinism.scenario.toml;
-  representativeRunPhase = ''
-
-    scenario_materializer="$CRUCIBLE/bin/crucible-e2e-determinism-scenario"
-    test -x "$scenario_materializer"
-    "$scenario_materializer" --emit-scenario > "$FLEET_WORKDIR/e2e-determinism.scenario.toml"
-    cmp ${representativeScenario} "$FLEET_WORKDIR/e2e-determinism.scenario.toml"
-    "$scenario_materializer" --populate-store "$FLEET_STORE" \
-      > "$FLEET_WORKDIR/e2e-determinism.store"
-    grep -q '^block=[0-9a-f]\{64\}$' "$FLEET_WORKDIR/e2e-determinism.store"
-    grep -q '^ninep=[0-9a-f]\{64\}$' "$FLEET_WORKDIR/e2e-determinism.store"
-
-    # Produce one artifact from the representative workload while the
-    # entire CLI and all three QEMU children are restricted to one
-    # host CPU. Replay the retained artifact with two host CPUs and an
-    # authenticated bounded SIGSTOP/SIGCONT sequence over QEMU's first
-    # pending quantum. The replay command itself compares the canonical
-    # guest event and fingerprint streams byte for byte.
-    allowed_cpus="$(sed -n 's/^Cpus_allowed_list:[[:space:]]*//p' /proc/self/status)"
-    first_group="''${allowed_cpus%%,*}"
-    case "$first_group" in
-      *-*)
-        first_cpu="''${first_group%%-*}"
-        first_group_end="''${first_group#*-}"
-        second_cpu="$((first_cpu + 1))"
-        test "$second_cpu" -le "$first_group_end"
-        ;;
-      *)
-        first_cpu="$first_group"
-        remaining_cpus="''${allowed_cpus#*,}"
-        test "$remaining_cpus" != "$allowed_cpus"
-        second_group="''${remaining_cpus%%,*}"
-        second_cpu="''${second_group%%-*}"
-        ;;
-    esac
-    test -n "$first_cpu"
-    test -n "$second_cpu"
-
-    native_artifacts="$FLEET_ARTIFACTS/e2e-determinism"
-    mkdir -p "$native_artifacts"
-    native_verify="$FLEET_WORKDIR/e2e-determinism.verify.jsonl"
-    CRUCIBLE_ROOT_IMAGE=${nginxCurlGuest}/root.ext4 \
-    CRUCIBLE_KERNEL_CMDLINE='console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init' \
-    CRUCIBLE_VERIFY_BOUNDED_SCHEDULER_PREEMPTION=0 \
-      taskset -c "$first_cpu" \
-      "$crucible_bin" \
-        --backend qemu \
-        --seed 0xe2e \
-        --store "$FLEET_STORE" \
-        --artifact-dir "$native_artifacts" \
-        --format jsonl \
-        verify ${representativeScenario} \
-        --runs 2 \
-        --adversarial \
-        --bisect \
-        > "$native_verify"
-    grep -q '"kind":"final_outcome".*subcommand=verify status=passed' "$native_verify"
-    native_reductions="$(grep -c '"kind":"independent_reduction"' "$native_verify")"
-    test "$native_reductions" -ge 2
-    native_profiles="$(
-      grep '"kind":"independent_reduction"' "$native_verify" \
-        | grep -o 'profile=[^ ]*' \
-        | sort -u \
-        | wc -l
-    )"
-    test "$native_profiles" -ge 2
-    test "$native_reductions" -eq "$((2 * native_profiles))"
-    for profile in $(
-      grep '"kind":"independent_reduction"' "$native_verify" \
-        | grep -o 'profile=[^ ]*' \
-        | sort -u
-    ); do
-      profile_reductions="$(grep '"kind":"independent_reduction"' "$native_verify" \
-        | grep -Fc "$profile ")"
-      test "$profile_reductions" -eq 2
-      profile_runs="$(grep '"kind":"independent_reduction"' "$native_verify" \
-        | grep -F "$profile " \
-        | grep -o 'run=[0-9]*' \
-        | sort -u \
-        | wc -l)"
-      test "$profile_runs" -eq 2
-    done
-    native_fingerprint_reductions="$(grep '"kind":"independent_reduction"' "$native_verify" \
-      | grep -c 'samples=[1-9][0-9]*')"
-    test "$native_fingerprint_reductions" -eq "$native_reductions"
-    native_satisfied_reductions="$(grep '"kind":"independent_reduction"' "$native_verify" \
-      | grep -c 'assertion_transitions=[^ ]*curl-receives-http-200:Satisfied')"
-    test "$native_satisfied_reductions" -eq "$native_reductions"
-    native_io_satisfied_reductions="$(grep '"kind":"independent_reduction"' "$native_verify" \
-      | grep -c 'assertion_transitions=[^ ]*io-probe-eventually-restarts:Satisfied')"
-    test "$native_io_satisfied_reductions" -eq "$native_reductions"
-    for binding in \
-      crash-io-probe \
-      latency-curl-to-nginx \
-      loss-curl-to-nginx \
-      partition-curl-to-nginx
-    do
-      applied="$(grep '"kind":"independent_reduction"' "$native_verify" \
-        | grep -c "applied_fault_bindings=[^ ]*$binding")"
-      test "$applied" -eq "$native_reductions"
-    done
-    native_effect_reductions="$(grep '"kind":"independent_reduction"' "$native_verify" \
-      | grep -c 'effect_applied=[1-9][0-9]*')"
-    test "$native_effect_reductions" -eq "$native_reductions"
-    distinct_logs="$(
-      grep '"kind":"independent_reduction"' "$native_verify" \
-        | grep -o 'canonical_log=[^ ]*' \
-        | sort -u \
-        | wc -l
-    )"
-    test "$distinct_logs" -eq 1
-    distinct_fingerprints="$(
-      grep '"kind":"independent_reduction"' "$native_verify" \
-        | grep -o 'fingerprint=[^ ]*' \
-        | sort -u \
-        | wc -l
-    )"
-    test "$distinct_fingerprints" -eq 1
-
-    set -- "$native_artifacts"/repro-passed-reduction-0-*.crucible
-    test "$#" -eq 1
-    test -f "$1"
-    native_artifact="$1"
-    replay_store="$FLEET_WORKDIR/replay-store"
-    mkdir -p "$replay_store"
-    test -z "$(ls -A "$replay_store")"
-    native_replay="$FLEET_WORKDIR/e2e-determinism.replay.jsonl"
-    CRUCIBLE_ROOT_IMAGE=${nginxCurlGuest}/root.ext4 \
-    CRUCIBLE_KERNEL_CMDLINE='console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init' \
-    CRUCIBLE_REPLAY_BOUNDED_SCHEDULER_PREEMPTION=1 \
-      taskset -c "$first_cpu,$second_cpu" \
-      "$crucible_bin" \
-        --backend qemu \
-        --store "$replay_store" \
-        --artifact-dir "$native_artifacts" \
-        --format jsonl \
-        replay "$native_artifact" \
-        > "$native_replay"
-    grep -q '"kind":"replay_live_qemu".*validation=passed.*reproduced_status=passed.*reproduced_outcome=passed' "$native_replay"
-    grep -q '"node":"host","kind":"bounded_scheduler_preemption".*applied=true.*pending_quantum_certified=true' "$native_replay"
-    grep -q '"kind":"final_outcome".*subcommand=replay status=passed' "$native_replay"
-  '';
-
   crucibleFleetChecks = {
-    # Native repeated-run evidence for gate:e2e-determinism ([PKG-29], [PKG-30]).
-    # It builds the entire Crucible closure hermetically and executes the built
-    # `crucible` CLI over the existing four-scenario corpus and one
-    # representative three-VM scenario with block and 9p sub-nodes,
-    # partition/loss/latency/crash bindings, and always/eventually/sometimes
-    # properties. `--adversarial` perturbs observer polling and scheduling
-    # around each run. The representative flight also produces an artifact
-    # under one-CPU affinity and replays it under two-CPU affinity with bounded
-    # host preemption and an otherwise empty content store.
-    #
-    # Each independent reduction launches the closure-owned patched QEMU and
-    # production plugin under TCG before the session-level comparison.
-    crucible-e2e-determinism = let
-      e2eComponent = crucibleChecks.phase7.gates.e2eDeterminism.rawGate;
-    in
-      crucibleFleetRunner.mkCrucibleFleetCheck {
-        name = "crucible-e2e-determinism";
-        gateResults = [e2eComponent];
-        extraClosure = [pkgs.util-linux nginxCurlGuest];
-        runPhaseScript =
-          ''
-            # The modeled artifact component must be green before the native
-            # repeated-run slice executes.
-            grep -q '^PASS$' "${e2eComponent}/result"
-            grep -q '^component=gate:e2e-determinism/mock-artifact-validation$' "${e2eComponent}/result"
-            grep -q '^canonical_gate_status=unmet$' "${e2eComponent}/result"
-
-            crucible_bin="$CRUCIBLE/bin/crucible"
-
-            # Retain the established two-run adversarial matrix over every
-            # built-in example. Each reduction must contain live fingerprints,
-            # and the event and fingerprint streams must agree across profiles.
-            for scenario in \
-              happy-path.scn \
-              partition-recovery.scn \
-              crash-restart.scn \
-              fault-campaign.fam
-            do
-              verify_out="$FLEET_WORKDIR/verify-$scenario.out"
-              "$crucible_bin" \
-                --backend qemu \
-                --seed 31 \
-                --store "$FLEET_STORE" \
-                --artifact-dir "$FLEET_ARTIFACTS" \
-                verify "$scenario" \
-                --runs 2 \
-                --adversarial \
-                --bisect \
-                > "$verify_out"
-
-              grep -q '"kind":"final_outcome".*subcommand=verify status=passed' "$verify_out"
-
-              reductions="$(grep -c '"kind":"independent_reduction"' "$verify_out")"
-              test "$reductions" -ge 4
-              distinct_profiles="$(
-                grep '"kind":"independent_reduction"' "$verify_out" \
-                  | grep -o 'profile=[^ ]*' \
-                  | sort -u \
-                  | wc -l
-              )"
-              test "$distinct_profiles" -ge 2
-              test "$reductions" -eq "$((distinct_profiles * 2))"
-              positive_sample_reductions="$(grep '"kind":"independent_reduction"' "$verify_out" \
-                | grep -c 'samples=[1-9][0-9]*')"
-              test "$positive_sample_reductions" -eq "$reductions"
-              distinct_logs="$(
-                grep '"kind":"independent_reduction"' "$verify_out" \
-                  | grep -o 'canonical_log=[^ ]*' \
-                  | sort -u \
-                  | wc -l
-              )"
-              test "$distinct_logs" -eq 1
-              distinct_fingerprints="$(
-                grep '"kind":"independent_reduction"' "$verify_out" \
-                  | grep -o 'fingerprint=[^ ]*' \
-                  | sort -u \
-                  | wc -l
-              )"
-              test "$distinct_fingerprints" -eq 1
-            done
-          ''
-          + representativeRunPhase;
-        resultLines = [
-          "component=gate:e2e-determinism/native-repeated-run"
-          "canonical_gate=gate:e2e-determinism"
-          "canonical_gate_status=unmet"
-          "source_component=checks.crucible.phase7.gates.e2eDeterminism.rawGate"
-          "source_component_result=${e2eComponent}/result"
-          "source_component_scope=modeled-artifact-validation"
-          "source_component_canonical_status=unmet"
-          "fleet_surface=true"
-          "scenario=built-in-corpus-plus-representative-three-vm-fault-injected"
-          "scenario_corpus=happy-path.scn,partition-recovery.scn,crash-restart.scn,fault-campaign.fam,e2e-determinism.scenario.toml"
-          "observer_perturbations=poll-yield-order-timeout-profiles"
-          "observer_profile_count=at-least-two"
-          "built_in_repetitions_per_observer_profile=2"
-          "representative_repetitions_per_observer_profile=2"
-          "cli_backend=qemu-tcg-production-vm-lifecycle"
-          "live_qemu_per_reduction=true"
-          "live_event_streams=bit-identical"
-          "live_execution_fingerprint_streams=bit-identical-nonempty"
-          "native_workload=nginx-curl-block-ninep"
-          "producer_host_cpu_count=1"
-          "replay_host_cpu_count=2"
-          "physical_host_count=1"
-          "replay_host_scheduler_preemption=pidfd-sigstop-sigcont"
-          "different_machine_profile_reproduction=true"
-          "physical_cross_host_reproduction=false"
-          "artifact_replay=true"
-          "artifact_replay_identity=canonical-event-and-fingerprint-streams-byte-identical"
-          "completed_requirements=HARN-23"
-          "partial_requirements=HARN-22"
-          "missing_evidence=representative-native-randomized-worker-wall-clock-io-stall-varied-core-matrix"
-          "remaining_non_gate_evidence=physical-cross-host-reproduction"
-          "lib_testing_runner=tests/crucible/_fleet-runner.nix"
-          "tcg_only_vm_runner=crucible-cli-verify-observer-perturbation-bisect"
-        ];
-      };
-
-    # Focused evidence runner for the representative three-VM workload. This
-    # check has no modeled-gate ancestor and intentionally omits the built-in
-    # scenario corpus so a native failure can be reproduced without paying for
-    # unrelated work. Its successful result is diagnostic evidence only; the
-    # canonical gate remains unmet until its complete check succeeds.
-    crucible-e2e-representative-focused = crucibleFleetRunner.mkCrucibleFleetCheck {
-      name = "crucible-e2e-representative-focused";
-      gateResults = [];
-      extraClosure = [pkgs.util-linux nginxCurlGuest];
-      runPhaseScript =
-        ''
-          crucible_bin="$CRUCIBLE/bin/crucible"
-        ''
-        + representativeRunPhase;
-      resultLines = [
-        "component=diagnostic:e2e-determinism/representative-three-vm"
-        "evidence_scope=representative-three-vm-verify-and-artifact-replay"
-        "evidence_status=diagnostic-run-completed"
-        "canonical_gate=gate:e2e-determinism"
-        "canonical_gate_status=unmet"
-        "canonical_closure_claim=false"
-        "modeled_gate_ancestor=false"
-        "built_in_corpus=false"
-        "scenario=e2e-determinism.scenario.toml"
-        "native_workload=nginx-curl-block-ninep"
-        "producer_host_cpu_count=1"
-        "replay_host_cpu_count=2"
-        "artifact_replay=true"
-        "lib_testing_runner=tests/crucible/_fleet-runner.nix"
-      ];
-    };
+    # Preserve the established fleet check name as the same derivation as the
+    # canonical Phase 4 gate. One execution therefore supplies both check-tree
+    # surfaces and one retained evidence bundle.
+    crucible-e2e-determinism = crucibleChecks.phase4.gates.e2eDeterminism.rawGate;
 
     # The real-process performance discharge for RFC-0010 §25 ([PERF-3],
     # [PERF-12], [PERF-13], [PERF-14], [PERF-27]): the deterministic
@@ -726,17 +436,27 @@
     # against the AOS-built kernel/root fixture before its session workload.
     crucible-perf = let
       perfGate = crucibleChecks.phase7.gates.perfBench.rawGate;
-      savevmLoadvmGate = crucibleChecks.phase0.s3SavevmLoadvm;
+      checkpointDeltaFlight = crucibleChecks.phase2.qemuCheckpointDeltaFlight;
     in
       crucibleFleetRunner.mkCrucibleFleetCheck {
         name = "crucible-perf";
-        gateResults = [perfGate savevmLoadvmGate];
+        gateResults = [perfGate checkpointDeltaFlight];
         runPhaseScript = ''
           # The modeled perf-bench gate must be green before the fleet numbers
           # are captured: the ratchet compares fleet numbers against baselines
           # the modeled gate already holds structurally.
           grep -q '^PASS$' "${perfGate}/result"
           grep -q '^gate=gate:perf-bench$' "${perfGate}/result"
+          restore_result="${checkpointDeltaFlight}/result"
+          grep -q '^PASS$' "$restore_result"
+          grep -q '^restore_latency_measurement=descriptor-restore-through-cont-ack$' \
+            "$restore_result"
+          direct_restore_us="$(sed -n 's/^direct_restore_to_runnable_us=//p' "$restore_result")"
+          delta_restore_us="$(sed -n 's/^delta_restore_to_runnable_us=//p' "$restore_result")"
+          test -n "$direct_restore_us"
+          test -n "$delta_restore_us"
+          restore_ms=$(( (delta_restore_us + 999) / 1000 ))
+          restore_source=exact-descriptor-delta-restore-through-cont-ack
 
           crucible_bin="$CRUCIBLE/bin/crucible"
           scenario="happy-path.scn"
@@ -859,50 +579,6 @@
             } >> "$fleet_sweep"
           done
 
-          # --- Restore latency ([PERF-12]): the Phase-0 live QEMU corpus
-          # measures snapshot-load through the runnable `cont` acknowledgement.
-          # The production thin-checkpoint fallback is measured here by
-          # replaying an artifact whose prefix was produced by a live QEMU run.
-          loadvm_boot_ms=
-          loadvm_cpu_timer_ms=
-          loadvm_mid_io_ms=
-          while IFS='=' read -r key value; do
-            case "$key" in
-              boot_window_restore_to_runnable_ms) loadvm_boot_ms="$value" ;;
-              cpu_timer_restore_to_runnable_ms) loadvm_cpu_timer_ms="$value" ;;
-              mid_io_restore_to_runnable_ms) loadvm_mid_io_ms="$value" ;;
-            esac
-          done < "${savevmLoadvmGate}/result"
-          test -n "$loadvm_boot_ms"
-          test -n "$loadvm_cpu_timer_ms"
-          test -n "$loadvm_mid_io_ms"
-
-          set +e
-          "$crucible_bin" \
-            --backend qemu --seed 31 \
-            --store "$FLEET_STORE" --artifact-dir "$FLEET_ARTIFACTS" \
-            run "$scenario" --max-quanta 1 \
-            > "$FLEET_WORKDIR/replay-source.out" 2>&1
-          replay_source_status=$?
-          set -e
-          test "$replay_source_status" -eq 2
-          grep -q '"kind":"final_outcome".*status=timeout' \
-            "$FLEET_WORKDIR/replay-source.out"
-          set -- "$FLEET_ARTIFACTS"/repro-timeout-*.crucible
-          test "$#" -eq 1
-          test -s "$1"
-          replay_source="$1"
-          r_start=$(now_ns)
-          "$crucible_bin" \
-            --backend qemu --seed 31 \
-            --store "$FLEET_STORE" --artifact-dir "$FLEET_ARTIFACTS" \
-            replay "$replay_source" \
-            > "$FLEET_WORKDIR/replay.out" 2>&1
-          r_end=$(now_ns)
-          grep -q '"kind":"final_outcome".*status=passed' "$FLEET_WORKDIR/replay.out"
-          restore_ms=$(( (r_end - r_start) / 1000000 ))
-          restore_source=thin-replay-from-live-qemu-artifact
-
           # --- Idle compression ([PERF-2], real): the same scenario at the
           # QEMU-backed workflow runs in bounded wall-clock; record it. ---
           idle_ms=$seq_ms
@@ -917,9 +593,6 @@
             echo "realized_speedup_x100=$speedup_x100"
             echo "restore_latency_ms=$restore_ms"
             echo "restore_source=$restore_source"
-            echo "loadvm_boot_window_restore_ms=$loadvm_boot_ms"
-            echo "loadvm_cpu_timer_restore_ms=$loadvm_cpu_timer_ms"
-            echo "loadvm_mid_io_restore_ms=$loadvm_mid_io_ms"
             echo "idle_batch_ms=$idle_ms"
             echo "batch_size=$batch"
           } > "$FLEET_WORKDIR/perf-numbers.txt"
@@ -944,15 +617,14 @@
           "realized_speedup_x100=$speedup_x100"
           "restore_latency_ms=$restore_ms"
           "restore_source=$restore_source"
-          "loadvm_boot_window_restore_ms=$loadvm_boot_ms"
-          "loadvm_cpu_timer_restore_ms=$loadvm_cpu_timer_ms"
-          "loadvm_mid_io_restore_ms=$loadvm_mid_io_ms"
+          "direct_restore_to_runnable_us=$direct_restore_us"
+          "delta_restore_to_runnable_us=$delta_restore_us"
           "idle_batch_ms=$idle_ms"
           "batch_size=$batch"
           "$(cat \"$fleet_sweep\")"
           "metric_throughput=real-process-wall-clock-batch [PERF-13]"
           "metric_parallelism=real-process-concurrent-speedup [PERF-3]"
-          "metric_restore_latency=live-qmp-loadvm-plus-thin-replay-fallback [PERF-12]"
+          "metric_restore_latency=exact-descriptor-restore-through-runnable-cont [PERF-12]"
           "metric_coverage_ips=checks.crucible.phase0.coverageOverhead [PERF-14]"
           "metric_fleet_sweep=logical-host-concurrency-on-reference-runner [PERF-27]"
           "modeled_gate=checks.crucible.phase7.gates.perfBench"
@@ -1007,8 +679,8 @@
 
               result="${e2eNativeSlice}/result"
               grep -q '^PASS$' "$result"
-              grep -q '^component=gate:e2e-determinism/native-repeated-run$' "$result"
-              grep -q '^canonical_gate_status=unmet$' "$result"
+              grep -q '^component=gate:e2e-determinism/native-qemu-acceptance$' "$result"
+              grep -q '^canonical_gate_status=satisfied$' "$result"
 
               fleet_store_result="${fleetStoreGate}/result"
               grep -q '^PASS$' "$fleet_store_result"
@@ -1185,7 +857,7 @@
               component_status=passed
               canonical_gate=gate:fleet-equivalence
               canonical_gate_status=unmet
-              canonical_gate_blocked_by=gate:e2e-determinism
+              e2e_determinism_gate_status=satisfied
               source_check=checks.crucible.phase7.crucibleSharedDagStore
               package_check=checks.crucible.phase7.crucibleFleetStore
               e2e_native_slice_result=${e2eNativeSlice}/result

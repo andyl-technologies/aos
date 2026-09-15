@@ -1,7 +1,7 @@
 //! Ordered, authenticated planner positions independent of exploration history.
 //!
 //! New campaign genesis owns an empty index. Request transitions extend it;
-//! proposals, admissions, and coordination steps preserve it. Legacy histories
+//! proposals, admissions, and coordination steps preserve it. Imported histories
 //! without the anchor retain their original scan semantics.
 //! ```text
 //! exploration[planner-scan-index.v1]
@@ -33,7 +33,7 @@ impl CampaignRepository {
             return Ok(0);
         }
         let requests = match fact {
-            CampaignFact::BranchRequestIssued(_) | CampaignFact::BranchRequestAccepted { .. } => 1,
+            CampaignFact::BranchRequestAccepted { .. } => 1,
             CampaignFact::PlannerAdvanced(step) => {
                 match self.read_planner_step(step.content_id())?.disposition() {
                     PlannerDisposition::Issue {
@@ -133,13 +133,11 @@ impl CampaignRepository {
         exploration: ContentId,
         after: Option<PlanningScanPosition>,
         limit: usize,
-    ) -> Result<Option<BTreeMap<PlanningScanPosition, u64>>, CampaignRepositoryError> {
-        let Some(index) = self
+    ) -> Result<BTreeMap<PlanningScanPosition, u64>, CampaignRepositoryError> {
+        let index = self
             .merkle
             .get(exploration, planner_scan_index_anchor_key())?
-        else {
-            return Ok(None);
-        };
+            .ok_or_else(|| integrity("current-campaign-planner-scan-index-is-missing"))?;
         let mut positions = BTreeMap::new();
         let mut branch_after = after.map(|position| position.branch_point().as_hash());
         if let Some(after) = after {
@@ -168,7 +166,7 @@ impl CampaignRepository {
                     &mut positions,
                 )?;
                 if positions.len() == limit {
-                    return Ok(Some(positions));
+                    return Ok(positions);
                 }
             }
             let Some(next) = page.next_after() else {
@@ -176,7 +174,7 @@ impl CampaignRepository {
             };
             branch_after = Some(next);
         }
-        Ok(Some(positions))
+        Ok(positions)
     }
 
     fn append_planner_scan_branch(
@@ -187,11 +185,7 @@ impl CampaignRepository {
         limit: usize,
         positions: &mut BTreeMap<PlanningScanPosition, u64>,
     ) -> Result<(), CampaignRepositoryError> {
-        let versions = self.merkle.scan(
-            root,
-            None,
-            crate::exploration::SMC_BRANCH_REQUEST_SCHEMA_VERSION as usize,
-        )?;
+        let versions = self.merkle.scan(root, None, 1)?;
         if versions.entries().is_empty() || versions.next_after().is_some() {
             return Err(integrity("planner-scan-index-schema-set"));
         }
@@ -239,10 +233,9 @@ fn schema_key(version: u32) -> CampaignHash {
 }
 
 fn schema_from_key(key: CampaignHash) -> Result<u32, CampaignRepositoryError> {
-    for version in 1..=crate::exploration::SMC_BRANCH_REQUEST_SCHEMA_VERSION {
-        if key == schema_key(version) {
-            return Ok(version);
-        }
+    if key == schema_key(crate::exploration::BRANCH_REQUEST_SCHEMA_VERSION) {
+        Ok(crate::exploration::BRANCH_REQUEST_SCHEMA_VERSION)
+    } else {
+        Err(integrity("planner-scan-index-unknown-request-schema"))
     }
-    Err(integrity("planner-scan-index-unknown-request-schema"))
 }

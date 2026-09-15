@@ -1,16 +1,44 @@
 //! Prepared finding publication and reconciliation tests.
 
 use super::*;
+use crucible::{
+    EventLogTime, FailureClusterReportFailure, FailureTriageReplayEvidence, Icount, NodeId,
+    SchedulerEventLogEntry,
+};
+use crucible_campaign::{
+    FindingCandidateCore, FindingExactRetentionDisposition, FindingExactRetentionIncomplete,
+};
+
+fn prepared_finding_triage_logs() -> (Vec<SchedulerEventLogEntry>, Vec<SchedulerEventLogEntry>) {
+    let node = NodeId {
+        name: String::from("prepared-finding-triage"),
+    };
+    let at = EventLogTime::from_virtual_time(VirtualTime { ticks: 9 })
+        .with_icount(node, Icount { retired: 37 });
+    let expected = SchedulerEventLogEntry::execution_budget_exhausted_with_time(
+        0,
+        at.clone(),
+        "execution-quanta",
+    );
+    let reproduced =
+        SchedulerEventLogEntry::execution_budget_exhausted_with_time(0, at, "virtual-time");
+    (vec![expected], vec![reproduced])
+}
 
 #[test]
 fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure() {
     let scenario = crucible::happy_path_scenario()
         .expect("happy-path scenario")
         .scenario;
-    let schedule = Schedule::empty().appended(Decision::DeliveryOrder(DeliveryOrderDecision {
-        at: VirtualTime { ticks: 1 },
-        order: Vec::new(),
-    }));
+    let schedule = Schedule::empty()
+        .appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+            at: VirtualTime { ticks: 1 },
+            order: Vec::new(),
+        }))
+        .appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+            at: VirtualTime { ticks: 2 },
+            order: Vec::new(),
+        }));
     let scenario_record = encode_crucible_scenario_artifact(&scenario).expect("scenario record");
     let genesis = encode_crucible_configuration_artifact(&scenario_record, &Schedule::empty())
         .expect("genesis configuration");
@@ -61,20 +89,24 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     )
     .expect("widening policy");
     let policy = CampaignPolicy::new(
-        lineage.scenario(),
-        CampaignSeed::from_bytes([7; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            widening: Some(widening),
-            puct: PuctPolicy::new(1_000_000, 1, 0),
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness policy"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            lineage.scenario(),
+            CampaignSeed::from_bytes([7; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                widening: Some(widening),
+                puct: PuctPolicy::new(1_000_000, 1, 0),
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness policy"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("campaign policy");
     let created = repository
@@ -142,19 +174,21 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     .expect("choice opportunity");
     let discovery =
         ChoiceDiscovery::new(declaration, domain, opportunity.clone()).expect("discovery");
-    let measurements = MeasurementSet::new(BTreeMap::new()).expect("measurements");
+    let measurements = crate::crucible_measurement::empty_test_measurement_set();
     let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
     let coverage =
         CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage projection");
     let observation = Observation::new(
         attempt,
-        child.configuration(),
-        child.id().expect("child ID"),
-        attempt_record.path(),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements.id().expect("measurement ID"),
-        properties.id().expect("property ID"),
-        coverage.id().expect("coverage ID"),
+        Observation::outcome(
+            child.configuration(),
+            child.id().expect("child ID"),
+            attempt_record.path(),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurements.id().expect("measurement ID"),
+            properties.id().expect("property ID"),
+            coverage.id().expect("coverage ID"),
+        ),
         BTreeSet::from([opportunity.id().expect("opportunity ID")]),
     )
     .expect("observation");
@@ -173,7 +207,36 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         .id()
         .expect("observation ID");
 
-    let fingerprint = ContentHash::from_bytes(b"published-finding-fingerprint");
+    let provisional_fingerprint = ContentHash::from_bytes(b"published-finding-fingerprint");
+    let finding = FindingReproductionArtifact::capture(
+        FindingDiscoveryPath::StateSpaceSearch,
+        provisional_fingerprint,
+        &scenario,
+        &Configuration {
+            def: scenario.scenario_def(),
+            schedule: schedule.clone(),
+        },
+    )
+    .expect("capture finding reproduction");
+    let (expected, reproduced) = prepared_finding_triage_logs();
+    let triage_probe = FailureTriageReplayEvidence::new_paired_divergence(
+        finding,
+        expected,
+        reproduced,
+        ContentHash::from_bytes(b"prepared-finding-triage-coverage"),
+        Vec::new(),
+    )
+    .expect("derive prepared finding divergence");
+    let FailureClusterReportFailure::Divergence(divergence) = triage_probe.failure() else {
+        panic!("paired divergence evidence must contain a divergence");
+    };
+    let fingerprint = ContentHash {
+        bytes: crate::automatic_finding_runner::divergence_fingerprint_for_scenario(
+            scenario_record.scenario(),
+            divergence,
+        )
+        .as_bytes(),
+    };
     let finding = FindingReproductionArtifact::capture(
         FindingDiscoveryPath::StateSpaceSearch,
         fingerprint,
@@ -183,7 +246,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             schedule,
         },
     )
-    .expect("capture finding reproduction");
+    .expect("capture signature-bound finding reproduction");
     let property = properties.id().expect("causal property record");
     let signature = FindingSignature::new(
         FindingKind::Divergence,
@@ -235,7 +298,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
                 Ok(CrucibleFindingReplayEvidence::new(
                     Some(observed),
                     candidate_configuration,
-                    MeasurementSet::new(BTreeMap::new()).expect("replay measurements"),
+                    crate::crucible_measurement::empty_test_measurement_set(),
                     properties.clone(),
                     CoverageProjection::new(BTreeSet::new(), BTreeSet::new())
                         .expect("replay coverage"),
@@ -272,7 +335,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let (observation_evidence, _, observation_measurements) = observation_publication.into_parts();
     let observation_candidate_v2 =
         observation_with_measurements(&observation_candidate, observation_measurements);
-    let observation_result = PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
+    let observation_result = PreparedSemanticAttemptResult::new(
         observation_candidate_v2.clone(),
         vec![observation_evidence],
         None,
@@ -281,10 +344,12 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let v2_bytes = observation_result
         .canonical_bytes()
         .expect("encode v2 observation result");
-    assert_eq!(
-        PreparedSemanticResultVersion::from_payload(&v2_bytes),
-        Some(PreparedSemanticResultVersion::V2)
-    );
+    let mut retired_magic = v2_bytes.clone();
+    retired_magic[0] ^= 1;
+    assert!(matches!(
+        PreparedSemanticAttemptResult::from_canonical_bytes(&retired_magic),
+        Err(PreparedSemanticResultCodecError::Version)
+    ));
     assert_eq!(
         PreparedSemanticAttemptResult::from_canonical_bytes(&v2_bytes)
             .expect("decode v2 observation result"),
@@ -316,10 +381,6 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let terminal_bytes = terminal_result
         .canonical_bytes()
         .expect("encode v3 terminal observation result");
-    assert_eq!(
-        PreparedSemanticResultVersion::from_payload(&terminal_bytes),
-        Some(PreparedSemanticResultVersion::V3)
-    );
     assert_eq!(
         PreparedSemanticAttemptResult::from_canonical_bytes(&terminal_bytes)
             .expect("decode v3 terminal observation result"),
@@ -363,12 +424,229 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         })
     ));
 
-    let v3_result = prepare_automatic_signature_preserving_finding(
+    let retention_basis = repository
+        .attempt_retention_policy_basis_at(
+            repository
+                .head("prepared-finding")
+                .expect("prepared finding campaign head")
+                .snapshot_id(),
+            attempt,
+        )
+        .expect("prepared finding retention basis");
+    let exact_retention = FindingExactRetention::new(
+        retention_basis.snapshot(),
+        retention_basis.policy(),
+        retention_basis.admission(),
+        0,
+        FindingExactRetentionDisposition::Incomplete(
+            FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+        ),
+    )
+    .expect("prepared incomplete exact retention");
+    let v4_result = prepare_automatic_signature_preserving_finding_with_outcomes(
+        terminal_result.clone(),
+        AutomaticFindingPreparation {
+            signature: signature.clone(),
+            finding: &finding,
+            exact_pins: FindingExactPins::default(),
+            exact_retention: PreparedFindingExactRetention {
+                retention: exact_retention,
+                evidence: None,
+            },
+            seed,
+        },
+        |candidate| {
+            let candidate_scenario =
+                encode_crucible_scenario_artifact(candidate.artifact.scenario_form())
+                    .expect("v2 candidate scenario");
+            let candidate_configuration = encode_crucible_configuration_artifact(
+                &candidate_scenario,
+                candidate.artifact.schedule(),
+            )
+            .expect("v2 candidate configuration");
+            if candidate.artifact.schedule().is_empty() {
+                return Ok(
+                    AutomaticFindingReplayOutcome::DeterministicallyIncompatible {
+                        configuration: candidate_configuration,
+                        reason: FindingReplayIncompatibility::PrefixDiverged,
+                    },
+                );
+            }
+            let publication = empty_measurement_publication(
+                candidate_scenario.scenario(),
+                candidate_configuration.configuration(),
+            );
+            let (evidence, _, measurements) = publication.into_parts();
+            let observed = if candidate.artifact.schedule() == finding.artifact.schedule() {
+                signature.clone()
+            } else {
+                FindingSignature::new(
+                    FindingKind::Divergence,
+                    CampaignHash::derive("test", b"v4-reduced-candidate-divergence"),
+                    None,
+                    String::from("qemu.different-v4-replay-divergence"),
+                    Some(FindingTarget::Configuration(
+                        candidate_configuration.id().expect("v4 candidate target"),
+                    )),
+                    BTreeSet::from([property.content_id()]),
+                )
+                .expect("v4 rejected candidate signature")
+            };
+            let replay = CrucibleFindingReplayEvidence::new(
+                Some(observed),
+                candidate_configuration,
+                measurements,
+                properties.clone(),
+                CoverageProjection::new(BTreeSet::new(), BTreeSet::new())
+                    .expect("v2 replay coverage"),
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("v2 replay evidence");
+
+            let (expected, reproduced) = prepared_finding_triage_logs();
+            let triage = FailureTriageReplayEvidence::new_paired_divergence(
+                candidate.clone(),
+                expected,
+                reproduced,
+                ContentHash::from_bytes(b"prepared-finding-triage-coverage"),
+                Vec::new(),
+            )
+            .expect("v4 native triage replay evidence");
+            Ok(AutomaticFindingReplayOutcome::observed_with_triage(
+                replay,
+                vec![evidence],
+                triage,
+            ))
+        },
+    )
+    .expect("automatically prepare v4 finding candidate");
+    assert_eq!(
+        v4_result.terminal_fingerprints(),
+        Some(terminal_fingerprints.as_slice()),
+        "finding attachment must preserve the completed terminal set"
+    );
+    let v4_bytes = v4_result
+        .canonical_bytes()
+        .expect("encode typed incompatibility result");
+    let decoded_v4 = PreparedSemanticAttemptResult::from_canonical_bytes(&v4_bytes)
+        .expect("decode typed incompatibility result");
+    assert_eq!(decoded_v4, v4_result);
+    decoded_v4
+        .verify_measurement_publications(&scenario)
+        .expect("verify v4 replay measurement owners");
+    let reduced_leaf = decoded_v4
+        .measurement_replay_evidence()
+        .iter()
+        .find(|evidence| evidence.configuration() != child.configuration())
+        .expect("v4 retains an observed reduced-candidate leaf")
+        .clone();
+    assert!(
+        decoded_v4
+            .finding()
+            .expect("v4 finding")
+            .minimization_replays
+            .iter()
+            .chain(
+                decoded_v4
+                    .finding()
+                    .expect("v4 finding")
+                    .verification_replays
+                    .iter()
+            )
+            .any(|replay| replay.incompatibility().is_some())
+    );
+
+    let mut missing_reduced_leaf = decoded_v4.measurement_replay_evidence().to_vec();
+    missing_reduced_leaf.retain(|evidence| evidence != &reduced_leaf);
+    assert!(matches!(
+        PreparedSemanticAttemptResult::new(
+            observation_candidate_v2.clone(),
+            missing_reduced_leaf,
+            decoded_v4.finding().cloned(),
+        ),
+        Err(PreparedSemanticResultCodecError::Inconsistent {
+            component: "missing measurement replay evidence"
+        })
+    ));
+    let mut tampered_reduced_leaf = reduced_leaf
+        .canonical_bytes()
+        .expect("encode reduced-candidate leaf");
+    tampered_reduced_leaf.push(0);
+    assert!(
+        executor_store
+            .publish_executor_trace_leaf(
+                reduced_leaf.id().expect("reduced-candidate leaf ID"),
+                reduced_leaf.schema_version(),
+                &tampered_reduced_leaf,
+            )
+            .is_err()
+    );
+
+    let published_v4 = crate::executor_worker::publish_prepared_semantic_attempt_result(
+        &executor_store,
+        crate::automatic_finding_runner::test_finding_exact_retention_source().as_ref(),
+        &decoded_v4,
+    )
+    .expect("publish decoded v4 observation and finding closure");
+    assert_eq!(
+        published_v4,
+        decoded_v4
+            .observation()
+            .observation()
+            .id()
+            .expect("v4 observation ID")
+    );
+    let published_v4_finding = decoded_v4.finding().expect("published v4 finding");
+    assert_eq!(
+        published_v4_finding
+            .publish_for_executor(
+                &executor_store,
+                crate::automatic_finding_runner::test_finding_exact_retention_source().as_ref(),
+            )
+            .expect("idempotently publish v4 finding"),
+        published_v4_finding.id().expect("v4 finding ID")
+    );
+    let mut mismatched_incompatibility = v4_result
+        .finding()
+        .expect("typed incompatibility finding")
+        .clone();
+    let reason = mismatched_incompatibility
+        .verification_replays
+        .iter_mut()
+        .find_map(|replay| match replay {
+            RecordedFindingReplay::DeterministicallyIncompatible { reason, .. } => Some(reason),
+            RecordedFindingReplay::Observed { .. } => None,
+        })
+        .expect("verification incompatibility");
+    *reason = FindingReplayIncompatibility::PrefixTerminated;
+    let mismatched_incompatibility = PreparedSemanticAttemptResult::new(
+        observation_candidate_v2.clone(),
+        v4_result.measurement_replay_evidence().to_vec(),
+        Some(mismatched_incompatibility),
+    )
+    .expect("structurally retain mismatched incompatibility");
+    assert!(matches!(
+        mismatched_incompatibility.canonical_bytes(),
+        Err(PreparedSemanticResultCodecError::Artifact(
+            CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "finding replay deterministic incompatibility passes"
+            }
+        ))
+    ));
+
+    let v3_result = prepare_automatic_signature_preserving_finding_with_outcomes(
         terminal_result,
-        signature.clone(),
-        &finding,
-        FindingExactPins::default(),
-        seed,
+        AutomaticFindingPreparation {
+            signature: signature.clone(),
+            finding: &finding,
+            exact_pins: FindingExactPins::default(),
+            exact_retention: PreparedFindingExactRetention {
+                retention: exact_retention,
+                evidence: None,
+            },
+            seed,
+        },
         |candidate| {
             let candidate_scenario =
                 encode_crucible_scenario_artifact(candidate.artifact.scenario_form())
@@ -409,7 +687,20 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
                 Vec::new(),
             )
             .expect("v2 replay evidence");
-            Ok((replay, vec![evidence]))
+            let (expected, reproduced) = prepared_finding_triage_logs();
+            let triage = FailureTriageReplayEvidence::new_paired_divergence(
+                candidate.clone(),
+                expected,
+                reproduced,
+                ContentHash::from_bytes(b"prepared-finding-triage-coverage"),
+                Vec::new(),
+            )
+            .expect("v3 native triage replay evidence");
+            Ok(AutomaticFindingReplayOutcome::observed_with_triage(
+                replay,
+                vec![evidence],
+                triage,
+            ))
         },
     )
     .expect("automatically prepare v3 finding candidate");
@@ -449,15 +740,25 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         .map(|evidence| evidence.id().expect("shared evidence ID"))
         .find(|evidence| {
             prepared_v2.minimization_replays.iter().any(|replay| {
-                measurement_records
-                    .get(&replay.measurements)
-                    .and_then(|measurement| measurement.evaluation())
-                    .is_some_and(|evaluation| evaluation.evidence().contains(evidence))
+                replay
+                    .observed_components()
+                    .and_then(|(measurement, _, _, _, _)| {
+                        measurement_records
+                            .get(&measurement)
+                            .map(|measurement| measurement.evaluation())
+                            .map(|evaluation| evaluation.evidence().contains(evidence))
+                    })
+                    .unwrap_or(false)
             }) && prepared_v2.verification_replays.iter().any(|replay| {
-                measurement_records
-                    .get(&replay.measurements)
-                    .and_then(|measurement| measurement.evaluation())
-                    .is_some_and(|evaluation| evaluation.evidence().contains(evidence))
+                replay
+                    .observed_components()
+                    .and_then(|(measurement, _, _, _, _)| {
+                        measurement_records
+                            .get(&measurement)
+                            .map(|measurement| measurement.evaluation())
+                            .map(|evaluation| evaluation.evidence().contains(evidence))
+                    })
+                    .unwrap_or(false)
             })
         })
         .expect("one raw leaf shared by both replay passes");
@@ -465,19 +766,26 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         .verification_replays
         .iter()
         .position(|replay| {
-            measurement_records
-                .get(&replay.measurements)
-                .and_then(|measurement| measurement.evaluation())
-                .is_some_and(|evaluation| evaluation.evidence().contains(&shared_evidence))
+            replay
+                .observed_components()
+                .and_then(|(measurement, _, _, _, _)| {
+                    measurement_records
+                        .get(&measurement)
+                        .map(|measurement| measurement.evaluation())
+                        .map(|evaluation| evaluation.evidence().contains(&shared_evidence))
+                })
+                .unwrap_or(false)
         })
         .expect("verification owner of shared raw leaf");
+    let (original_measurement_id, _, _, _, _) = prepared_v2.verification_replays
+        [verification_replay]
+        .observed_components()
+        .expect("shared replay is observed");
     let original_measurement = measurement_records
-        .get(&prepared_v2.verification_replays[verification_replay].measurements)
+        .get(&original_measurement_id)
         .copied()
         .expect("shared replay measurement");
-    let retained = original_measurement
-        .evaluation()
-        .expect("shared replay evaluation");
+    let retained = original_measurement.evaluation();
     let mut tampered_payload = retained.payload().to_vec();
     tampered_payload.push(b' ');
     let tampered_measurement = MeasurementSet::from_evaluation(
@@ -496,9 +804,13 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         .replay_records
         .measurements
         .push(tampered_measurement);
-    tampered_finding.verification_replays[verification_replay].measurements =
-        tampered_measurement_id;
-    let tampered_result = PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
+    let RecordedFindingReplay::Observed { measurements, .. } =
+        &mut tampered_finding.verification_replays[verification_replay]
+    else {
+        panic!("shared replay is observed")
+    };
+    *measurements = tampered_measurement_id;
+    let tampered_result = PreparedSemanticAttemptResult::new(
         observation_candidate_v2.clone(),
         measurement_evidence.clone(),
         Some(tampered_finding),
@@ -513,10 +825,6 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         .canonical_bytes()
         .expect("encode v3 prepared result");
     assert_eq!(
-        PreparedSemanticResultVersion::from_payload(&v3_bytes),
-        Some(PreparedSemanticResultVersion::V3)
-    );
-    assert_eq!(
         PreparedSemanticAttemptResult::from_canonical_bytes(&v3_bytes)
             .expect("decode v3 prepared result"),
         v3_result
@@ -525,7 +833,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let mut unordered_evidence = measurement_evidence.clone();
     unordered_evidence.reverse();
     assert!(matches!(
-        PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
+        PreparedSemanticAttemptResult::new(
             observation_candidate_v2.clone(),
             unordered_evidence,
             Some(prepared_v2.clone()),
@@ -553,7 +861,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         unused_evidence.clone(),
     );
     assert!(matches!(
-        PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
+        PreparedSemanticAttemptResult::new(
             observation_candidate_v2.clone(),
             evidence_with_extra.values().cloned().collect(),
             Some(prepared_v2.clone()),
@@ -568,7 +876,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         .measurements
         .push(unused_measurements);
     assert!(matches!(
-        PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
+        PreparedSemanticAttemptResult::new(
             observation_candidate_v2.clone(),
             evidence_with_extra.into_values().collect(),
             Some(finding_with_unused_measurement),
@@ -601,7 +909,6 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             observation_candidate_v2
                 .measurements()
                 .evaluation()
-                .expect("v2 measurement evaluation")
                 .definitions()
         });
         let wrong_measurements = measurement_with_evidence(
@@ -612,34 +919,31 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         let wrong_candidate =
             observation_with_measurements(&observation_candidate_v2, wrong_measurements);
         assert!(matches!(
-            PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
-                wrong_candidate,
-                vec![wrong_evidence],
-                None,
-            ),
+            PreparedSemanticAttemptResult::new(wrong_candidate, vec![wrong_evidence], None,),
             Err(PreparedSemanticResultCodecError::Inconsistent {
                 component: "measurement replay evidence binding"
             })
         ));
     }
 
-    let smuggled_v1 = prepared_result::encode_v1_without_measurement_evidence_for_test(
-        &observation_candidate_v2,
-        None,
-    )
-    .expect("encode invalid legacy v1 payload");
-    assert!(matches!(
-        PreparedSemanticAttemptResult::from_canonical_bytes(&smuggled_v1),
-        Err(PreparedSemanticResultCodecError::Inconsistent {
-            component: "missing measurement replay evidence"
-        })
-    ));
-
+    let observation_candidate = decoded_v4.observation().clone();
+    let observation = observation_candidate
+        .observation()
+        .id()
+        .expect("current observation ID");
+    let prepared = decoded_v4
+        .finding()
+        .expect("current prepared finding")
+        .clone();
+    let current_measurement_evidence = decoded_v4.measurement_replay_evidence().to_vec();
     let expected = prepared.id().expect("prepared candidate ID");
     let expected_bundle = prepared.bundle().clone();
-    let durable_result =
-        PreparedSemanticAttemptResult::new(observation_candidate.clone(), Some(prepared.clone()))
-            .expect("bind prepared semantic result");
+    let durable_result = PreparedSemanticAttemptResult::new(
+        observation_candidate.clone(),
+        current_measurement_evidence.clone(),
+        Some(prepared.clone()),
+    )
+    .expect("bind prepared semantic result");
     let durable_bytes = durable_result
         .canonical_bytes()
         .expect("encode prepared semantic result");
@@ -655,22 +959,24 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
 
     let unrelated_observation = Observation::new(
         attempt,
-        genesis.configuration(),
-        genesis.id().expect("unrelated observation child"),
-        attempt_record.path(),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        observation_candidate
-            .measurements()
-            .id()
-            .expect("unrelated observation measurements"),
-        observation_candidate
-            .properties()
-            .id()
-            .expect("unrelated observation properties"),
-        observation_candidate
-            .coverage()
-            .id()
-            .expect("unrelated observation coverage"),
+        Observation::outcome(
+            genesis.configuration(),
+            genesis.id().expect("unrelated observation child"),
+            attempt_record.path(),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            observation_candidate
+                .measurements()
+                .id()
+                .expect("unrelated observation measurements"),
+            observation_candidate
+                .properties()
+                .id()
+                .expect("unrelated observation properties"),
+            observation_candidate
+                .coverage()
+                .id()
+                .expect("unrelated observation coverage"),
+        ),
         BTreeSet::from([opportunity.id().expect("unrelated observation choice")]),
     )
     .expect("unrelated observation");
@@ -684,20 +990,28 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     )
     .expect("unrelated observation candidate");
     let mut mismatched_finding = prepared.clone();
-    mismatched_finding.bundle = FindingCandidateBundle::new(
-        unrelated_candidate
-            .observation()
-            .id()
-            .expect("unrelated observation ID"),
-        signature.clone(),
-        prepared.bundle().reproduction(),
-        prepared.bundle().minimized(),
-        prepared.bundle().signature_minimization().clone(),
-        prepared.bundle().exact_pins().clone(),
+    mismatched_finding.bundle = FindingCandidateBundle::new_with_exact_retention(
+        FindingCandidateCore::new(
+            unrelated_candidate
+                .observation()
+                .id()
+                .expect("unrelated observation ID"),
+            signature.clone(),
+            prepared.bundle().reproduction(),
+            prepared.bundle().minimized(),
+            prepared.bundle().signature_minimization().clone(),
+            prepared.bundle().exact_pins().clone(),
+        ),
+        None,
+        prepared.bundle().exact_retention(),
     )
     .expect("finding rebound to unrelated observation ID");
     assert!(matches!(
-        PreparedSemanticAttemptResult::new(unrelated_candidate, Some(mismatched_finding)),
+        PreparedSemanticAttemptResult::new(
+            unrelated_candidate,
+            current_measurement_evidence.clone(),
+            Some(mismatched_finding),
+        ),
         Err(PreparedSemanticResultCodecError::Inconsistent {
             component: "finding observation reproduction basis"
         })
@@ -717,20 +1031,24 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             .expect("unrelated replay configuration")
             .id()
             .expect("unrelated replay configuration ID");
-    inconsistent_finding.minimization_replays[0].configuration = unrelated_configuration;
-    let inconsistent = PreparedSemanticAttemptResult::new(
-        observation_candidate.clone(),
-        Some(inconsistent_finding),
-    )
-    .expect("observation binding remains valid");
+    match &mut inconsistent_finding.minimization_replays[0] {
+        RecordedFindingReplay::Observed { configuration, .. }
+        | RecordedFindingReplay::DeterministicallyIncompatible { configuration, .. } => {
+            *configuration = unrelated_configuration;
+        }
+    }
     assert!(matches!(
-        inconsistent.canonical_bytes_with_limit(1),
+        durable_result.canonical_bytes_with_limit(1),
         Err(PreparedSemanticResultCodecError::LimitExceeded)
     ));
     assert!(matches!(
-        inconsistent.canonical_bytes(),
+        PreparedSemanticAttemptResult::new(
+            observation_candidate.clone(),
+            current_measurement_evidence.clone(),
+            Some(inconsistent_finding),
+        ),
         Err(PreparedSemanticResultCodecError::Inconsistent {
-            component: "finding replay record index"
+            component: "finding replay measurement configuration"
         })
     ));
 
@@ -742,6 +1060,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         attempt,
         AttemptResourceLimits::new(1, 4096, 4096, 64).expect("attempt resources"),
         ExecutionRetentionIntent::RetainOnFailure,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("submit request");
     let mut supervisor = LocalExecutorSupervisor::new(
@@ -766,12 +1085,15 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         1024 * 1024,
     )
     .expect("checkpoint store");
+    let semantic = PreparedSemanticAttemptResult::new(
+        observation_candidate,
+        current_measurement_evidence,
+        Some(prepared),
+    )
+    .expect("prepare paired semantic result");
     let work = AttemptWorkResult::<()>::new(
         queued,
-        Ok(AttemptExecutionProduct::observation_with_finding(
-            observation_candidate,
-            prepared,
-        )),
+        Ok(AttemptExecutionProduct::prepared_semantic(semantic)),
     );
     let prepared = prepare_attempt_result(&executor_store, &checkpoints, work)
         .expect("prepare paired worker result");
@@ -798,18 +1120,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             ..
         }) if retained_observation == observation && retained_candidate == expected
     ));
-    assert_eq!(
-        supervisor
-            .stage_observation_and_finding_candidate_publication(
-                staged.queued(),
-                observation,
-                expected,
-            )
-            .expect("retry exact staged pair"),
-        crate::ObservationPublicationOutcome::AlreadyStaged
-    );
     let wrong_candidate_content =
-        ContentId::for_bytes(ObjectKind::Finding, 1, b"wrong staged finding candidate");
+        ContentId::for_bytes(ObjectKind::Finding, 5, b"wrong staged finding candidate");
     let wrong_candidate = FindingCandidateBundleId::parse(&format!(
         "crucible.campaign.finding-candidate-bundle@{wrong_candidate_content}"
     ))
@@ -823,7 +1135,12 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         Err(LocalExecutorError::ConflictingCompletion)
     ));
 
-    let published = publish_prepared_attempt_result(&executor_store, staged)
+    let exact_authenticator =
+        crate::exact_checkpoint_store::ExactFindingCheckpointAuthenticator::new(
+            &executor_store,
+            &checkpoints,
+        );
+    let published = publish_prepared_attempt_result(&executor_store, &exact_authenticator, staged)
         .expect("publish paired finding result");
     assert_eq!(published.finding_candidate(), Some(expected));
     let reconciled = reconcile_published_attempt_result::<_, _, ()>(&mut supervisor, published)

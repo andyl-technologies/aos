@@ -29,9 +29,11 @@ use crucible::{
     Seed, SignaturePolicy, VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
 use crucible_campaign::{
-    CampaignHash, ConfigurationArtifactId, ConfigurationId, FindingCandidateBundle,
-    FindingExactPins, FindingKind, FindingMinimizationAttempt, FindingMinimizationEvidence,
-    FindingReplaySignature, FindingSignature, FindingSignatureMinimizationEvidence, FindingTarget,
+    AttemptAdmissionId, CampaignHash, CampaignPolicyId, CampaignSnapshotId,
+    ConfigurationArtifactId, ConfigurationId, FindingCandidateBundle, FindingCandidateCore,
+    FindingExactPins, FindingExactRetention, FindingExactRetentionDisposition, FindingKind,
+    FindingMinimizationAttempt, FindingMinimizationEvidence, FindingReplaySignature,
+    FindingSignature, FindingSignatureMinimizationEvidence, FindingTarget,
     FindingTriageEvidenceSet, FindingTriageReplayEvidence, ObservationId,
     ReproductionArtifact as CampaignReproductionArtifact, ScenarioArtifactId, ScenarioDefId,
 };
@@ -278,7 +280,7 @@ fn consume_export(directory: &Path) -> Result<(), Box<dyn Error>> {
         SELECTED_REPRODUCTION_FILE,
     )?)?;
 
-    if bundle.schema_version() != 2
+    if bundle.schema_version() != 5
         || original.id()? != bundle.reproduction()
         || selected.id()? != bundle.minimized()
     {
@@ -493,11 +495,13 @@ fn replay_export() -> Result<ReplayExport, Box<dyn Error>> {
     )?;
     let campaign_fingerprint = CampaignHash::from_bytes(fingerprint.bytes);
     let original_reproduction = CampaignReproductionArtifact::new(
-        scenario_id,
-        scenario_artifact,
-        original_configuration,
-        original_configuration_artifact,
-        campaign_fingerprint,
+        crucible_campaign::ReproductionArtifactBasis::new(
+            scenario_id,
+            scenario_artifact,
+            original_configuration,
+            original_configuration_artifact,
+            campaign_fingerprint,
+        ),
         1,
         original_finding.artifact.to_compact_binary(),
     )?;
@@ -505,7 +509,7 @@ fn replay_export() -> Result<ReplayExport, Box<dyn Error>> {
     let selected_state = CampaignHash::from_bytes(selected_finding.replay.state.bytes);
     let minimization = FindingMinimizationEvidence::new(
         original_reproduction_id,
-        1,
+        3,
         b"portable lexicographic minimization".to_vec(),
         vec![FindingMinimizationAttempt::new(
             0,
@@ -518,11 +522,13 @@ fn replay_export() -> Result<ReplayExport, Box<dyn Error>> {
         selected_state,
     )?;
     let selected_reproduction = CampaignReproductionArtifact::new_minimized(
-        scenario_id,
-        scenario_artifact,
-        selected_configuration,
-        selected_configuration_artifact,
-        campaign_fingerprint,
+        crucible_campaign::ReproductionArtifactBasis::new(
+            scenario_id,
+            scenario_artifact,
+            selected_configuration,
+            selected_configuration_artifact,
+            campaign_fingerprint,
+        ),
         1,
         selected_finding.artifact.to_compact_binary(),
         minimization.clone(),
@@ -626,14 +632,17 @@ fn replay_export() -> Result<ReplayExport, Box<dyn Error>> {
     );
     let observation =
         content_id::<ObservationId>(ObjectKind::Observation, 1, b"portable finding observation")?;
-    let bundle = FindingCandidateBundle::new_with_triage_evidence(
-        observation,
-        original_signature,
-        original_reproduction_id,
-        selected_reproduction_id,
-        signature_minimization,
-        FindingExactPins::default(),
-        triage,
+    let bundle = FindingCandidateBundle::new_with_exact_retention(
+        FindingCandidateCore::new(
+            observation,
+            original_signature,
+            original_reproduction_id,
+            selected_reproduction_id,
+            signature_minimization,
+            FindingExactPins::default(),
+        ),
+        Some(triage),
+        disabled_finding_exact_retention()?,
     )?;
 
     Ok(ReplayExport {
@@ -647,6 +656,27 @@ fn replay_export() -> Result<ReplayExport, Box<dyn Error>> {
         alternate_original,
         native_key,
     })
+}
+
+fn disabled_finding_exact_retention() -> Result<FindingExactRetention, Box<dyn Error>> {
+    let snapshot = ContentId::for_bytes(
+        ObjectKind::CampaignSnapshot,
+        3,
+        b"portable-replay-retention-snapshot",
+    );
+    let policy = ContentId::for_bytes(ObjectKind::Policy, 4, b"portable-replay-retention-policy");
+    let admission = ContentId::for_bytes(
+        ObjectKind::CampaignFact,
+        3,
+        b"portable-replay-retention-admission",
+    );
+    Ok(FindingExactRetention::new(
+        CampaignSnapshotId::parse(&format!("crucible.campaign.snapshot@{snapshot}"))?,
+        CampaignPolicyId::parse(&format!("crucible.campaign.policy@{policy}"))?,
+        AttemptAdmissionId::parse(&format!("crucible.campaign.attempt-admission@{admission}"))?,
+        0,
+        FindingExactRetentionDisposition::Disabled,
+    )?)
 }
 
 fn campaign_evidence(

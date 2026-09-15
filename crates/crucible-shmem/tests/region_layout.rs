@@ -84,7 +84,7 @@ fn region_header_layout_matches_wire_contract() {
     assert_eq!(SLOT_NET_ROUTER, 31);
     assert_eq!(SLOT_BLK_IO, 30);
     assert_eq!(SLOT_9P_IO, 29);
-    assert_eq!(NODE_SLOT_SIZE, 128);
+    assert_eq!(NODE_SLOT_SIZE, 256);
     assert_eq!(NODE_SLOT_ALIGN, 128);
     assert_eq!(NODE_SLOT_CURRENT_ICOUNT_OFFSET, 0);
     assert_eq!(NODE_SLOT_CURRENT_NS_OFFSET, 8);

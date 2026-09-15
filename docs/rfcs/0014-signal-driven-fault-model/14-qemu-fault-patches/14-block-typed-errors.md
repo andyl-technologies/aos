@@ -1,6 +1,7 @@
-# 14.14 — Typed block errors
+# Capability task 0060 — Typed block errors
 
-`0060-crucible-block-typed-errors.patch` carries a closed storage result from
+The atomic patch `crucible-qemu-11.1.1.patch` carries a
+closed storage result from
 the Crucible block worker through the GPL plugin callback and returns the exact
 Linux errno from QEMU's `crucible-shmem` block driver. The executable protocol
 definitions are [`BlockErrorCode`](../../../../../crates/crucible-device/src/block/codec.rs)
@@ -11,12 +12,12 @@ process/license boundary and are checked for byte-for-byte semantic agreement.
 
 ## Capability and activation
 
-The patch applies only to requests using the explicitly selected
+The capability applies only to requests using the explicitly selected
 `crucible-shmem` block driver with registered Crucible block callbacks. It does
 not alter any upstream block driver or any `crucible-shmem` request before the
 plugin registers the callback. The capability key is
 `storage.block.typed-result.v1`; block wire ABI version 3 is mandatory and
-version 1 is rejected rather than translated through a compatibility path.
+only version 3 is accepted.
 
 ## Callback encoding
 
@@ -67,16 +68,15 @@ not a modeled storage fault.
 
 ## Acceptance tests
 
-The focused patch microtest includes the patched QEMU driver source and invokes
-its real submit/poll path. It must prove all of the following:
+The focused atomic-patch capability test includes the QEMU driver source and
+invokes its real submit/poll path. It must prove all of the following:
 
 1. every accepted typed callback value becomes the exact negative errno;
 2. pending, untyped `EIO`, zero-length success, typed errors, and malformed
    negative values are mutually distinct;
 3. oversized successful completions still return `EOVERFLOW`;
-4. removing only patch `0060` makes the typed-error assertion fail;
-5. stock QEMU exposes neither the Crucible driver nor the new constants; and
-6. non-Crucible block drivers and an unregistered callback retain upstream
+4. pristine QEMU exposes neither the Crucible driver nor the new constants; and
+5. non-Crucible block drivers and an unregistered callback retain upstream
    behavior.
 
 The aggregate live test additionally boots a guest on the patched driver,
@@ -86,9 +86,9 @@ double is not acceptable for that aggregate gate.
 
 ## Licensing and source obligations
 
-The patch modifies existing `block/crucible-shmem.c` and
-`include/qemu/qemu-plugin.h`; both retain their current GPL-compatible notices.
-It creates no QEMU file, so `LICENSES.md` needs no new-file row. The patch commit
-requires DCO sign-off and is included in the pinned branch bundle, patch-series
-identity, corresponding-source artifact, prefix/drop-one checks, and release
-closure.
+The atomic patch modifies existing `block/crucible-shmem.c` and
+`include/plugins/qemu-plugin.h`; both retain their current GPL-compatible notices.
+It creates no QEMU file, so `LICENSES.md` needs no new-file row. The atomic
+commit requires DCO sign-off and is covered by the retained atomic bundle,
+atomic-patch identity, corresponding-source artifact, pristine-QEMU negative,
+and release closure.

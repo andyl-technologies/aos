@@ -55,15 +55,20 @@ payload_hash(const unsigned char *payload, size_t len)
 static void
 ring_s5_doorbell(uint64_t kind, const void *payload, uint64_t len)
 {
+  /*
+   * Keep the argument registers stable until the sim observer reaches its next
+   * exact boundary. The hold exceeds the gate's 4,096-instruction RR slice.
+   */
   __asm__ volatile(
-      "movq %0, %%rdi\n\t"
-      "movq %1, %%rsi\n\t"
-      "movq %2, %%rdx\n\t"
       ".byte 0x0f, 0x1f, 0x84, 0x00\n\t"
       ".long 0xc0100505\n\t"
+      "movl $8192, %%ecx\n\t"
+      "1: pause\n\t"
+      "decl %%ecx\n\t"
+      "jnz 1b\n\t"
       :
-      : "r"(kind), "r"((uintptr_t)payload), "r"(len)
-      : "rdi", "rsi", "rdx", "memory");
+      : "D"(kind), "S"((uintptr_t)payload), "d"(len)
+      : "rcx", "cc", "memory");
 }
 
 static void *

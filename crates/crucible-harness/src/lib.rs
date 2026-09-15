@@ -2,15 +2,13 @@
 //!
 //! Spec index: RFC-0010 files 24, 27.
 //!
-//! This test-only workspace member will host the fingerprint comparator,
-//! divergence bisector, replay-oracle checker, ABI golden-vector runner, and
-//! adversarial-host driver, and mock e2e gate driver described by RFC-0010
-//! files 24 and 27.
+//! This test-only workspace member hosts the fingerprint comparator, divergence
+//! bisector, replay-oracle checker, ABI golden-vector runner, adversarial-host
+//! driver, and mock e2e gate driver described by RFC-0010 files 24 and 27.
 //!
 //! The crate also exposes the canonical gate catalog used by the RFC lint and
-//! the red placeholder targets that make early phase wiring visible before the
-//! owning subsystems turn the gates green. It is not an L0-L4 runtime layer and
-//! is not a shipped crate.
+//! the isolable Cargo targets used by gate wiring. It is not an L0-L4 runtime
+//! layer and is not a shipped crate.
 //!
 //! Module map: [`abi`] compares golden vectors, [`adversarial`] compares
 //! hostile-profile runs, [`divergence`] localizes mismatches, [`e2e`] runs the
@@ -20,11 +18,7 @@
 //! cost-model perf-bench gate substrate, [`phase_plan`] records the ordered gate
 //! occurrences, [`replay_oracle`] compares replay hashes, [`reproduction`] owns
 //! the versioned reproduction artifact format, [`segment_replay`] coordinates
-//! checkpoint-parallel replay, [`native_event_segment`] decodes retained
-//! production event segments for bounded diagnostics, and [`spec_index`] owns
-//! the crate-to-RFC map.
-//! The package also contains an unshipped native event collector binary for
-//! bounded, read-only inspection of preserved production run-state trees.
+//! checkpoint-parallel replay, and [`spec_index`] owns the crate-to-RFC map.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -37,7 +31,6 @@ pub mod divergence;
 pub mod e2e;
 pub mod fingerprint;
 pub mod gate_targets;
-pub mod native_event_segment;
 pub mod perf;
 pub mod phase_plan;
 pub mod replay_oracle;
@@ -153,7 +146,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
     GateSpec {
         name: "gate:layer0-determinism",
         phase: GatePhase::Phase1,
-        owner: "crucible-sim",
+        owner: "crucible-qemu",
         status: GateStatus::Implemented,
     },
     GateSpec {
@@ -195,7 +188,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
     GateSpec {
         name: "gate:scheduler-liveness",
         phase: GatePhase::Phase3,
-        owner: "crucible",
+        owner: "crucible-qemu",
         status: GateStatus::Implemented,
     },
     GateSpec {
@@ -244,7 +237,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:e2e-determinism",
         phase: GatePhase::Phase4,
         owner: "crucible-harness",
-        status: GateStatus::RedPlaceholder,
+        status: GateStatus::Implemented,
     },
     GateSpec {
         name: "gate:campaign-statistics",
@@ -286,6 +279,12 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:campaign-continuity",
         phase: GatePhase::Phase7,
         owner: "crucible-harness",
+        status: GateStatus::Implemented,
+    },
+    GateSpec {
+        name: "gate:production-rust-plugin-flight",
+        phase: GatePhase::Phase7,
+        owner: "crucible-qemu",
         status: GateStatus::Implemented,
     },
     GateSpec {

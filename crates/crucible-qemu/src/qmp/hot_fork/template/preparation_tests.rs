@@ -6,15 +6,15 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::{QMP_HOT_FORK_AIO_PROOF, native_worker_tests::prepared_report};
-use crate::{QmpClient, QmpError, QmpJobPollPolicy, QmpTimeoutStream};
+use crate::{QmpClient, QmpError, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpTimeoutStream};
 
 #[test]
 fn acquisition_advances_prepare_until_non_plugin_proofs_are_complete()
 -> Result<(), Box<dyn std::error::Error>> {
     let complete = barriers_report();
     let mut pending = complete.clone();
-    pending["bh-timer-barrier"]["admissions-in-flight"] = json!(1);
-    pending["bh-timer-barrier"]["quiescent"] = json!(false);
+    pending["async-worker-barrier"]["admissions-in-flight"] = json!(1);
+    pending["async-worker-barrier"]["quiescent"] = json!(false);
     pending["acknowledged-proofs"] = json!(55);
     pending["missing-proofs"] = json!(72);
     let mut client = client([pending, complete], 3)?;
@@ -181,14 +181,14 @@ fn abort_pending_report() -> Value {
     let mut report = barriers_report();
     report["acknowledged-proofs"] = json!(39);
     report["missing-proofs"] = json!(88);
-    for barrier in ["plugin-barrier", "rcu-barrier", "bh-timer-barrier"] {
+    for barrier in ["plugin-barrier", "rcu-barrier", "async-worker-barrier"] {
         report[barrier]["held"] = json!(false);
         report[barrier]["quiescent"] = json!(false);
     }
     report["plugin-barrier"]["mapping-dontfork"] = json!(false);
     report["plugin-barrier"]["rings-held"] = json!(0);
     report["rcu-barrier"]["owner-thread-id"] = json!(0);
-    report["bh-timer-barrier"]["owner-thread-id"] = json!(0);
+    report["async-worker-barrier"]["owner-thread-id"] = json!(0);
     report
 }
 
@@ -241,12 +241,13 @@ fn client<const N: usize>(
         input.push_str(&json!({ "return": report }).to_string());
         input.push_str("\r\n");
     }
-    QmpClient::connect_with_job_poll_policy(
+    QmpClient::connect_with_policies(
         ScriptedStream {
             input: Cursor::new(input.into_bytes()),
             output: Vec::new(),
         },
         QmpJobPollPolicy::fast_test(maximum_polls),
+        QmpIoTimeoutPolicy::default(),
     )
 }
 

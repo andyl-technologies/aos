@@ -86,26 +86,26 @@ fn parse_canonical_length(value: &str) -> Option<usize> {
 
 /// One completed deterministic app-random request.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AppRandomDecisionTransportRecord {
+pub struct BackendRngEvidenceTransportRecord {
     request_id: u32,
     width_bytes: u8,
     value: u64,
     stream_tag: String,
 }
 
-impl AppRandomDecisionTransportRecord {
+impl BackendRngEvidenceTransportRecord {
     /// Builds a transport record after validating the requested width and value.
     ///
     /// # Errors
     ///
-    /// Returns [`AppRandomDecisionTransportError`] when the width is outside
+    /// Returns [`BackendRngEvidenceTransportError`] when the width is outside
     /// `1..=8`, the value does not fit that width, or the stream tag is too long.
     pub fn new(
         request_id: u32,
         width_bytes: u8,
         value: u64,
         stream_tag: impl Into<String>,
-    ) -> Result<Self, AppRandomDecisionTransportError> {
+    ) -> Result<Self, BackendRngEvidenceTransportError> {
         let stream_tag = stream_tag.into();
         validate(width_bytes, value, stream_tag.len())?;
         Ok(Self {
@@ -120,11 +120,11 @@ impl AppRandomDecisionTransportRecord {
     ///
     /// # Errors
     ///
-    /// Returns [`AppRandomDecisionTransportError`] when the bytes are truncated,
+    /// Returns [`BackendRngEvidenceTransportError`] when the bytes are truncated,
     /// have trailing data, contain invalid UTF-8, or fail width/value validation.
-    pub fn decode(bytes: &[u8]) -> Result<Self, AppRandomDecisionTransportError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, BackendRngEvidenceTransportError> {
         if bytes.len() < FIXED_LEN {
-            return Err(AppRandomDecisionTransportError::Truncated {
+            return Err(BackendRngEvidenceTransportError::Truncated {
                 len: bytes.len(),
                 minimum_len: FIXED_LEN,
             });
@@ -137,13 +137,13 @@ impl AppRandomDecisionTransportRecord {
         let tag_len = usize::from(u16::from_le_bytes([bytes[13], bytes[14]]));
         let expected_len = FIXED_LEN.saturating_add(tag_len);
         if bytes.len() != expected_len {
-            return Err(AppRandomDecisionTransportError::LengthMismatch {
+            return Err(BackendRngEvidenceTransportError::LengthMismatch {
                 expected_len,
                 actual_len: bytes.len(),
             });
         }
         let stream_tag = std::str::from_utf8(&bytes[FIXED_LEN..])
-            .map_err(|_source| AppRandomDecisionTransportError::InvalidUtf8)?
+            .map_err(|_source| BackendRngEvidenceTransportError::InvalidUtf8)?
             .to_owned();
         Self::new(request_id, width_bytes, value, stream_tag)
     }
@@ -189,16 +189,16 @@ fn validate(
     width_bytes: u8,
     value: u64,
     stream_tag_len: usize,
-) -> Result<(), AppRandomDecisionTransportError> {
+) -> Result<(), BackendRngEvidenceTransportError> {
     if !(1..=8).contains(&width_bytes) {
-        return Err(AppRandomDecisionTransportError::InvalidWidth { width_bytes });
+        return Err(BackendRngEvidenceTransportError::InvalidWidth { width_bytes });
     }
     let width_bits = width_bytes.saturating_mul(8);
     if width_bits < 64 && value >= (1_u64 << width_bits) {
-        return Err(AppRandomDecisionTransportError::ValueOutOfRange { width_bits, value });
+        return Err(BackendRngEvidenceTransportError::ValueOutOfRange { width_bits, value });
     }
     if stream_tag_len > usize::from(u16::MAX) {
-        return Err(AppRandomDecisionTransportError::StreamTagTooLong {
+        return Err(BackendRngEvidenceTransportError::StreamTagTooLong {
             len: stream_tag_len,
             maximum: usize::from(u16::MAX),
         });
@@ -208,7 +208,7 @@ fn validate(
 
 /// Invalid plugin-to-host app-random result bytes.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum AppRandomDecisionTransportError {
+pub enum BackendRngEvidenceTransportError {
     /// The fixed portion of the record was missing.
     #[error("app-random decision record has {len} bytes, expected at least {minimum_len}")]
     Truncated {
@@ -258,10 +258,10 @@ mod tests {
 
     #[test]
     fn completed_decision_round_trips() {
-        let record = AppRandomDecisionTransportRecord::new(7, 3, 0x0000_beef, "node-local")
+        let record = BackendRngEvidenceTransportRecord::new(7, 3, 0x0000_beef, "node-local")
             .unwrap_or_else(|error| panic!("record should validate: {error}"));
         assert_eq!(
-            AppRandomDecisionTransportRecord::decode(&record.encode()),
+            BackendRngEvidenceTransportRecord::decode(&record.encode()),
             Ok(record)
         );
     }
@@ -269,8 +269,8 @@ mod tests {
     #[test]
     fn completed_decision_rejects_out_of_range_value() {
         assert_eq!(
-            AppRandomDecisionTransportRecord::new(7, 1, 0x100, "node-local"),
-            Err(AppRandomDecisionTransportError::ValueOutOfRange {
+            BackendRngEvidenceTransportRecord::new(7, 1, 0x100, "node-local"),
+            Err(BackendRngEvidenceTransportError::ValueOutOfRange {
                 width_bits: 8,
                 value: 0x100,
             })

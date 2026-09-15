@@ -16,10 +16,17 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crucible_campaign::{
-    CampaignHash, CampaignName, CampaignRepository, CampaignRepositoryError, ConfigurationId,
-    ExactCheckpointId, PinRetention,
+    AuthenticatedFindingExactCheckpoint, CampaignExecutorStore, CampaignHash, CampaignName,
+    CampaignRepository, CampaignRepositoryError, ConfigurationId, ExactCheckpointId,
+    FindingExactCheckpointAuthenticationError, FindingExactCheckpointAuthenticator, PinRetention,
+    ScenarioArtifactId, ScenarioDefId,
 };
+use crucible_cas::content_store::{BlobHandle, ContentId};
 
+use crate::automatic_finding_runner::{
+    FindingExactCandidateInventoryError, FindingExactRetentionSource,
+};
+use crate::exact_checkpoint_store::ExactFindingCheckpointAuthenticator;
 use crate::executor_pool::PausedCheckpointObserver;
 use crate::{
     AssignmentLedger, DirectoryAssignmentLedger, DirectoryExactPinMaterializationStore,
@@ -78,6 +85,11 @@ enum MaterializerCommand {
         campaign: CampaignName,
         snapshot: crucible_campaign::CampaignSnapshotId,
         response: SyncSender<Result<PackagedExactPinStatus, PackagedExactPinMaterializerError>>,
+    },
+    FindingCandidates {
+        configuration: ConfigurationId,
+        maximum_candidates: usize,
+        response: SyncSender<Result<Vec<ExactCheckpointId>, FindingExactCandidateInventoryError>>,
     },
     Shutdown,
 }
@@ -157,6 +169,14 @@ pub(crate) fn prepare_packaged_exact_pin_materializer(
 }
 
 impl PreparedPackagedExactPinMaterializer {
+    pub(crate) fn finding_retention_source(&self) -> Arc<dyn FindingExactRetentionSource> {
+        Arc::new(PackagedFindingExactRetentionSource {
+            sender: self.sender.clone(),
+            store: CampaignExecutorStore::new(Arc::clone(&self.repository)),
+            checkpoints: Arc::clone(&self.checkpoints),
+        })
+    }
+
     pub(crate) fn start(
         self,
         terminal_shutdown: impl Fn() + Send + Sync + 'static,
@@ -242,6 +262,23 @@ impl PreparedPackagedExactPinMaterializer {
                     let _ = response.try_send(status);
                     continue;
                 }
+                Ok(MaterializerCommand::FindingCandidates {
+                    configuration,
+                    maximum_candidates,
+                    response,
+                }) => {
+                    let candidates = self
+                        .catalog
+                        .get(&configuration)
+                        .map_or_else(Vec::new, |roots| roots.iter().copied().collect());
+                    let result = if candidates.len() > maximum_candidates {
+                        Err(FindingExactCandidateInventoryError::LimitExceeded)
+                    } else {
+                        Ok(candidates)
+                    };
+                    let _ = response.try_send(result);
+                    continue;
+                }
                 Ok(MaterializerCommand::Shutdown) => {
                     reconcile_exact_pins(
                         &self.repository,
@@ -263,6 +300,61 @@ impl PreparedPackagedExactPinMaterializer {
                 &mut self.selections,
             )?;
         }
+    }
+}
+
+struct PackagedFindingExactRetentionSource {
+    sender: SyncSender<MaterializerCommand>,
+    store: CampaignExecutorStore,
+    checkpoints: Arc<ExactCheckpointStore>,
+}
+
+impl FindingExactRetentionSource for PackagedFindingExactRetentionSource {
+    fn candidate_checkpoints(
+        &self,
+        configuration: ConfigurationId,
+        maximum_candidates: usize,
+    ) -> Result<Vec<ExactCheckpointId>, FindingExactCandidateInventoryError> {
+        let (response, completed) = sync_channel(1);
+        self.sender
+            .try_send(MaterializerCommand::FindingCandidates {
+                configuration,
+                maximum_candidates,
+                response,
+            })
+            .map_err(|_| FindingExactCandidateInventoryError::Unavailable)?;
+        completed
+            .recv_timeout(STATUS_TIMEOUT)
+            .map_err(|_| FindingExactCandidateInventoryError::Unavailable)?
+    }
+}
+
+impl FindingExactCheckpointAuthenticator for PackagedFindingExactRetentionSource {
+    fn authenticate_finding_exact_checkpoint(
+        &self,
+        checkpoint: ExactCheckpointId,
+        scenario: ScenarioDefId,
+        scenario_artifact: ScenarioArtifactId,
+        configuration: ConfigurationId,
+        maximum_metadata_bytes: u64,
+    ) -> Result<AuthenticatedFindingExactCheckpoint, FindingExactCheckpointAuthenticationError>
+    {
+        ExactFindingCheckpointAuthenticator::new(&self.store, &self.checkpoints)
+            .authenticate_finding_exact_checkpoint(
+                checkpoint,
+                scenario,
+                scenario_artifact,
+                configuration,
+                maximum_metadata_bytes,
+            )
+    }
+
+    fn read_finding_exact_checkpoint_object(
+        &self,
+        object: ContentId,
+    ) -> Result<BlobHandle, FindingExactCheckpointAuthenticationError> {
+        ExactFindingCheckpointAuthenticator::new(&self.store, &self.checkpoints)
+            .read_finding_exact_checkpoint_object(object)
     }
 }
 

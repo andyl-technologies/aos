@@ -60,7 +60,7 @@ in
             -- --test-threads=1
           cargo test --frozen --offline --manifest-path crates/Cargo.toml \
             --target-dir "$target" -p crucible-campaign --lib \
-            statistical_design_requires_static_exhaustive_policy_and_legacy_reports_fail_closed \
+            statistical_design_requires_static_exhaustive_policy_and_unconfigured_reports_fail_closed \
             -- --test-threads=1
           cargo test --frozen --offline --manifest-path crates/Cargo.toml \
             --target-dir "$target" -p crucible-campaign --lib \

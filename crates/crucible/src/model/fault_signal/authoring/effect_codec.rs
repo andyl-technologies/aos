@@ -336,9 +336,12 @@ pub(super) fn parse_hex_value(value: toml::Value) -> Result<Vec<u8>, FaultSignal
     {
         return Err(FaultSignalAuthoringError::InvalidHex);
     }
-    value
-        .as_bytes()
-        .chunks_exact(2)
+    let (pairs, remainder) = value.as_bytes().as_chunks::<2>();
+    if !remainder.is_empty() {
+        return Err(FaultSignalAuthoringError::InvalidHex);
+    }
+    pairs
+        .iter()
         .map(|pair| {
             let high = hex_digit(pair[0])?;
             let low = hex_digit(pair[1])?;

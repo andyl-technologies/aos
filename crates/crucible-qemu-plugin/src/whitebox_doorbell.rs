@@ -54,12 +54,8 @@ pub use selectable::{
     SelectableReplyService, handle_whitebox_selectable_callback,
 };
 
-/// QEMU plugin API label for translation-block instrumentation.
-pub const QEMU_PLUGIN_DOORBELL_TRANSLATION_SYMBOL: &str = "qemu_plugin_register_vcpu_tb_trans_cb";
 /// QEMU plugin API label for installing callbacks on translated instructions.
 pub const QEMU_PLUGIN_DOORBELL_EXEC_CB_SYMBOL: &str = "qemu_plugin_register_vcpu_insn_exec_cb";
-/// QEMU plugin API label for reading a register during a callback.
-pub const QEMU_PLUGIN_READ_REGISTER_SYMBOL: &str = "qemu_plugin_read_register";
 /// QEMU capability label for registering the reserved white-box doorbell trap.
 pub const QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL: &str = QEMU_PLUGIN_DOORBELL_EXEC_CB_SYMBOL;
 /// QEMU capability label for reading guest memory at the trap icount.
@@ -181,7 +177,7 @@ impl PluginWhiteboxDoorbell {
     /// payload range is too large, the guest-memory API fails or returns a
     /// different byte count, the frame is malformed, or the marker sink rejects
     /// the observational entry.
-    pub fn service_trap<R, S>(
+    fn service_trap<R, S>(
         &self,
         reader: &mut R,
         sink: &mut S,
@@ -461,7 +457,7 @@ where
 /// Returns [`AppRandomDoorbellError`] when the white-box capability path fails,
 /// the decision source cannot record the draw, or the reply cannot be delivered
 /// at the trap icount.
-pub fn handle_whitebox_app_random_callback<R, D, W>(
+pub(crate) fn handle_whitebox_app_random_callback<R, D, W>(
     doorbell: &PluginWhiteboxDoorbell,
     capability: &WhiteboxGuestInputCapability,
     reader: &mut R,
@@ -472,7 +468,7 @@ pub fn handle_whitebox_app_random_callback<R, D, W>(
 ) -> Result<AppRandomDoorbellOutcome, AppRandomDoorbellError>
 where
     R: GuestMemoryReader + ?Sized,
-    D: AppRandomDecisionSource + ?Sized,
+    D: BackendRngEvidenceSource + ?Sized,
     W: WhiteboxGuestInputWriter + ?Sized,
 {
     let payload =
@@ -680,9 +676,9 @@ impl AppRandomDoorbellRequest {
     }
 }
 
-/// Decision metadata returned after recording `Decision::AppRandom`.
+/// Typed backend evidence returned after serving application randomness.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AppRandomDecisionRecord {
+pub(crate) struct BackendRngEvidenceRecord {
     node_name: String,
     stream_tag: String,
     request_id: u64,
@@ -690,8 +686,8 @@ pub struct AppRandomDecisionRecord {
     value: u64,
 }
 
-impl AppRandomDecisionRecord {
-    /// Builds a decision record matching the engine's `Decision::AppRandom` data.
+impl BackendRngEvidenceRecord {
+    /// Builds a record matching the served backend RNG evidence.
     #[must_use]
     pub fn new(
         node_name: impl Into<String>,
@@ -741,27 +737,27 @@ impl AppRandomDecisionRecord {
 }
 
 /// Source that records and serves app-controlled randomness decisions.
-pub trait AppRandomDecisionSource {
-    /// Draws from the seeded decision source and records `Decision::AppRandom`.
+pub(crate) trait BackendRngEvidenceSource {
+    /// Draws from the seeded decision source and returns typed RNG evidence.
     ///
     /// # Errors
     ///
-    /// Returns [`AppRandomDecisionError`] when the engine-side recorder cannot
+    /// Returns [`BackendRngEvidenceError`] when the engine-side recorder cannot
     /// serve the request.
     fn serve_app_random(
         &mut self,
         request: &AppRandomDoorbellRequest,
-    ) -> Result<AppRandomDecisionRecord, AppRandomDecisionError>;
+    ) -> Result<BackendRngEvidenceRecord, BackendRngEvidenceError>;
 }
 
 /// A failure from the engine-side app-random decision source.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 #[error("app-random decision source failed: {message}")]
-pub struct AppRandomDecisionError {
+pub(crate) struct BackendRngEvidenceError {
     message: String,
 }
 
-impl AppRandomDecisionError {
+impl BackendRngEvidenceError {
     /// Builds an app-random decision source failure.
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
@@ -769,17 +765,11 @@ impl AppRandomDecisionError {
             message: message.into(),
         }
     }
-
-    /// Returns the backend diagnostic.
-    #[must_use]
-    pub fn message(&self) -> &str {
-        &self.message
-    }
 }
 
 /// Result of handling one app-random doorbell request.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AppRandomDoorbellOutcome {
+pub(crate) enum AppRandomDoorbellOutcome {
     /// A valid request was recorded and replied to at the trap icount.
     Served(AppRandomDoorbellService),
     /// A malformed or non-random-request frame was diagnosed and dropped.
@@ -791,9 +781,9 @@ pub enum AppRandomDoorbellOutcome {
 
 /// Metadata for one served app-random request.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AppRandomDoorbellService {
+pub(crate) struct AppRandomDoorbellService {
     request: AppRandomDoorbellRequest,
-    decision: AppRandomDecisionRecord,
+    decision: BackendRngEvidenceRecord,
     injection: WhiteboxGuestInputInjection,
 }
 
@@ -804,16 +794,10 @@ impl AppRandomDoorbellService {
         &self.request
     }
 
-    /// Returns the recorded `Decision::AppRandom` metadata.
+    /// Returns the typed backend RNG evidence.
     #[must_use]
-    pub const fn decision(&self) -> &AppRandomDecisionRecord {
+    pub const fn decision(&self) -> &BackendRngEvidenceRecord {
         &self.decision
-    }
-
-    /// Returns the exact host-to-guest injection metadata.
-    #[must_use]
-    pub const fn injection(&self) -> WhiteboxGuestInputInjection {
-        self.injection
     }
 }
 
@@ -1041,11 +1025,11 @@ pub enum AppRandomDecodeDiagnosticKind {
 
 /// An error while serving an app-random doorbell request.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum AppRandomDoorbellError {
+pub(crate) enum AppRandomDoorbellError {
     /// The underlying white-box doorbell path failed.
     #[error("white-box doorbell path failed while serving app-random: {0}")]
     Doorbell(WhiteboxDoorbellError),
-    /// The decision source failed to draw or record `Decision::AppRandom`.
+    /// The decision source failed to draw or record typed RNG evidence.
     #[error(
         "app-random decision source failed for node {node_name} stream {stream_tag} width {width_bits}: {source}"
     )]
@@ -1057,7 +1041,7 @@ pub enum AppRandomDoorbellError {
         /// Requested decision width in bits.
         width_bits: u8,
         /// Engine-side decision source error.
-        source: AppRandomDecisionError,
+        source: BackendRngEvidenceError,
     },
     /// The decision source returned metadata for the wrong node.
     #[error("app-random decision node {actual} does not match request node {expected}")]
@@ -1109,7 +1093,7 @@ pub enum AppRandomDoorbellError {
 
 fn validate_decision_record(
     request: &AppRandomDoorbellRequest,
-    decision: &AppRandomDecisionRecord,
+    decision: &BackendRngEvidenceRecord,
 ) -> Result<(), AppRandomDoorbellError> {
     if decision.node_name() != request.node_name() {
         return Err(AppRandomDoorbellError::DecisionNodeMismatch {

@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(in super::super) struct DebugGdbLoop;
+pub(in crate::tests) struct DebugGdbLoop;
 
 impl QuantumLoop for DebugGdbLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
@@ -66,7 +66,7 @@ impl QuantumLoop for DebugGdbLoop {
     }
 }
 
-pub(in super::super) struct MismatchingDebugRepositionLoop;
+pub(in crate::tests) struct MismatchingDebugRepositionLoop;
 
 impl QuantumLoop for MismatchingDebugRepositionLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
@@ -106,10 +106,10 @@ impl QuantumLoop for MismatchingDebugRepositionLoop {
     }
 }
 
-pub(in super::super) struct RejectingDebugRepositionLoop {
-    pub(in super::super) scheduler_run_active: bool,
-    pub(in super::super) acquire_attempts: u64,
-    pub(in super::super) release_attempts: u64,
+pub(in crate::tests) struct RejectingDebugRepositionLoop {
+    pub(in crate::tests) scheduler_run_active: bool,
+    pub(in crate::tests) acquire_attempts: u64,
+    pub(in crate::tests) release_attempts: u64,
 }
 
 impl QuantumLoop for RejectingDebugRepositionLoop {

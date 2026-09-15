@@ -255,6 +255,14 @@ impl QemuHotForkChildQmpStage {
         }
     }
 
+    pub(super) const fn host_endpoint_available(&self) -> bool {
+        match self {
+            Self::Installed(endpoint) | Self::TransferUncertain(endpoint) => {
+                endpoint.host.is_some()
+            }
+        }
+    }
+
     pub(super) fn bind_resource_plan(
         &mut self,
         state: &crate::QmpHotForkChildQmpState,

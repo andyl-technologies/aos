@@ -14,11 +14,12 @@ use crate::{
     BranchPointId, BranchRequestCause, CampaignCommandId, CampaignPolicyId, CampaignRoots,
     CampaignViewId, CandidateSource, ChoiceClassContext, ChoiceCoordinate, ChoiceDomainId,
     ChoiceOpportunityId, ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationArtifactId,
-    ConfigurationId, ContinuationState, CoverageProjectionId, FindingKind, FindingOccurrenceSet,
-    FindingSignature, GuidanceEvidence, MeasurementSetId, ObservationId, PlannerDisposition,
-    PlannerEngineId, PlannerInvocationId, PlannerStateId, PlanningAccounting, PlanningScanPosition,
-    PlanningUsage, PolicyArtifactId, PropertyVerdictSetId, ReproductionArtifactId,
-    RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId, StopCondition, StopOutcome,
+    ConfigurationId, ContinuationState, CoverageProjectionId, FindingExactPins, FindingKind,
+    FindingOccurrenceSet, FindingSignature, GuidanceEvidence, MeasurementSetId, ObservationId,
+    PlannerDisposition, PlannerEngineId, PlannerInvocationId, PlannerStateId, PlanningAccounting,
+    PlanningScanPosition, PlanningUsage, PolicyArtifactId, PropertyVerdictSetId,
+    ReproductionArtifactId, RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId,
+    StopCondition, StopOutcome,
 };
 
 fn hash(label: &str) -> CampaignHash {
@@ -28,7 +29,7 @@ fn hash(label: &str) -> CampaignHash {
 fn snapshot(label: &str) -> CampaignSnapshotId {
     CampaignSnapshotId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignSnapshot,
-        2,
+        3,
         label.as_bytes(),
     ))
     .expect("snapshot")
@@ -49,25 +50,27 @@ fn branch_request(label: &str) -> BranchRequest {
         )
     };
     BranchRequest::new(
-        BranchPointId::from_hash(hash("branch-point")),
-        ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
-            ObjectKind::Configuration,
-            1,
-            format!("{label}-parent").as_bytes(),
-        ))
-        .expect("parent id"),
-        ChoiceOpportunityId::from_content_id(ContentId::for_bytes(
-            ObjectKind::CampaignFact,
-            1,
-            format!("{label}-opportunity").as_bytes(),
-        ))
-        .expect("opportunity id"),
-        ChoiceDomainId::from_content_id(ContentId::for_bytes(
-            ObjectKind::CampaignFact,
-            1,
-            format!("{label}-domain").as_bytes(),
-        ))
-        .expect("domain id"),
+        BranchRequest::identity(
+            BranchPointId::from_hash(hash("branch-point")),
+            ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Configuration,
+                1,
+                format!("{label}-parent").as_bytes(),
+            ))
+            .expect("parent id"),
+            ChoiceOpportunityId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                format!("{label}-opportunity").as_bytes(),
+            ))
+            .expect("opportunity id"),
+            ChoiceDomainId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                format!("{label}-domain").as_bytes(),
+            ))
+            .expect("domain id"),
+        ),
         CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(true)]))
             .expect("finite source"),
         BranchRequestCause::Operator(CampaignCommandId::from_hash(hash("command"))),
@@ -142,27 +145,30 @@ fn finding(label: &str, occurrence_root: ContentId) -> Finding {
         format!("{label}-observation").as_bytes(),
     ))
     .expect("observation id");
-    Finding::new(
-        FindingSignature::new(
-            FindingKind::Timeout,
-            CampaignHash::derive("campaign-query-finding-fingerprint", label.as_bytes()),
-            None,
-            format!("timeout.{label}"),
-            None,
-            BTreeSet::new(),
-        )
-        .expect("finding signature"),
-        observation,
-        ReproductionArtifactId::from_content_id(ContentId::for_bytes(
-            ObjectKind::Finding,
-            1,
-            format!("{label}-reproduction").as_bytes(),
-        ))
-        .expect("reproduction id"),
-        snapshot(&format!("{label}-first-seen")),
-        FindingOccurrenceSet::new(occurrence_root, 1, observation).expect("finding occurrences"),
+    Finding::new_current_for_test(
+        Finding::basis(
+            FindingSignature::new(
+                FindingKind::Timeout,
+                CampaignHash::derive("campaign-query-finding-fingerprint", label.as_bytes()),
+                None,
+                format!("timeout.{label}"),
+                None,
+                BTreeSet::new(),
+            )
+            .expect("finding signature"),
+            observation,
+            ReproductionArtifactId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Finding,
+                2,
+                format!("{label}-reproduction").as_bytes(),
+            ))
+            .expect("reproduction id"),
+            snapshot(&format!("{label}-first-seen")),
+            FindingOccurrenceSet::new(occurrence_root, 1, observation)
+                .expect("finding occurrences"),
+        ),
         None,
-        BTreeSet::new(),
+        FindingExactPins::default(),
     )
     .expect("finding")
 }
@@ -227,6 +233,7 @@ fn graph_pages_are_canonical_bounded_snapshot_and_cursor_bound() {
         ))
         .expect("policy"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("query snapshot");
     let request = QueryCampaignGraphRequest::new(
@@ -275,8 +282,8 @@ fn graph_pages_are_canonical_bounded_snapshot_and_cursor_bound() {
                 .to_string(),
         ],
         [
-            String::from("1bf139d3ed67872df2ec5241f5b1f3ffa578372fb8899deda231919342a834c0"),
-            String::from("3d774c8603010f829bc81f672cabc7c683c98f9adeb8e10c7d8753f39b51f323"),
+            String::from("60695dd8c9e86f73ca7ca374af7ab9389b339f09e5094ebab1942fbb90f2993b"),
+            String::from("81cb0d70c16de9fccc5e2f540401fdba722415f9c97b8d2373c3b73f41310946"),
         ]
     );
 
@@ -434,6 +441,7 @@ fn finding_pages_authenticate_complete_bodies_order_and_exact_eof() {
         ))
         .expect("policy"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("finding query snapshot");
     let request = QueryCampaignFindingsRequest::new(
@@ -529,64 +537,70 @@ fn finding_object_reads_authenticate_exact_child_kind_and_identity() {
             b"finding-object-attempt",
         ))
         .expect("attempt ID"),
-        configuration,
-        configuration_artifact,
-        BranchPathId::from_content_id(ContentId::for_bytes(
-            ObjectKind::CampaignFact,
-            2,
-            b"finding-object-path",
-        ))
-        .expect("path ID"),
-        StopOutcome::ModeledTimeout("execution".to_owned()),
-        MeasurementSetId::from_content_id(ContentId::for_bytes(
-            ObjectKind::Observation,
-            1,
-            b"finding-object-measurements",
-        ))
-        .expect("measurement ID"),
-        PropertyVerdictSetId::from_content_id(ContentId::for_bytes(
-            ObjectKind::Observation,
-            1,
-            b"finding-object-properties",
-        ))
-        .expect("property ID"),
-        CoverageProjectionId::from_content_id(ContentId::for_bytes(
-            ObjectKind::Projection,
-            1,
-            b"finding-object-coverage",
-        ))
-        .expect("coverage ID"),
+        Observation::outcome(
+            configuration,
+            configuration_artifact,
+            BranchPathId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                2,
+                b"finding-object-path",
+            ))
+            .expect("path ID"),
+            StopOutcome::ModeledTimeout("execution".to_owned()),
+            MeasurementSetId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Observation,
+                2,
+                b"finding-object-measurements",
+            ))
+            .expect("measurement ID"),
+            PropertyVerdictSetId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Observation,
+                1,
+                b"finding-object-properties",
+            ))
+            .expect("property ID"),
+            CoverageProjectionId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Projection,
+                1,
+                b"finding-object-coverage",
+            ))
+            .expect("coverage ID"),
+        ),
         BTreeSet::new(),
     )
     .expect("observation");
     let observation_id = observation.id().expect("observation ID");
     let reproduction = ReproductionArtifact::new(
-        scenario,
-        scenario_artifact,
-        configuration,
-        configuration_artifact,
-        hash("finding-object-fingerprint"),
+        crate::ReproductionArtifactBasis::new(
+            scenario,
+            scenario_artifact,
+            configuration,
+            configuration_artifact,
+            hash("finding-object-fingerprint"),
+        ),
         1,
         b"reproduce".to_vec(),
     )
     .expect("reproduction");
-    let finding = Finding::new(
-        FindingSignature::new(
-            FindingKind::Timeout,
-            hash("finding-object-fingerprint"),
-            None,
-            "timeout.execution".to_owned(),
-            None,
-            BTreeSet::new(),
-        )
-        .expect("finding signature"),
-        observation_id,
-        reproduction.id().expect("reproduction ID"),
-        snapshot("finding-object-first-seen"),
-        FindingOccurrenceSet::new(empty.content_id(), 1, observation_id)
-            .expect("finding occurrences"),
+    let finding = Finding::new_current_for_test(
+        Finding::basis(
+            FindingSignature::new(
+                FindingKind::Timeout,
+                hash("finding-object-fingerprint"),
+                None,
+                "timeout.execution".to_owned(),
+                None,
+                BTreeSet::new(),
+            )
+            .expect("finding signature"),
+            observation_id,
+            reproduction.id().expect("reproduction ID"),
+            snapshot("finding-object-first-seen"),
+            FindingOccurrenceSet::new(empty.content_id(), 1, observation_id)
+                .expect("finding occurrences"),
+        ),
         None,
-        BTreeSet::new(),
+        FindingExactPins::default(),
     )
     .expect("finding");
     let finding_id = finding.id().expect("finding ID");
@@ -622,6 +636,7 @@ fn finding_object_reads_authenticate_exact_child_kind_and_identity() {
         ))
         .expect("policy"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("finding object snapshot");
     let request = GetCampaignFindingObjectRequest::new(
@@ -705,10 +720,12 @@ fn attempt_explanations_authenticate_execution_proposal_selection_and_completion
         .expect("attempt branch path");
     let path_id = path.id().expect("attempt branch path ID");
     let request = BranchRequest::new(
-        branch_point,
-        parent,
-        opportunity.id().expect("attempt opportunity ID"),
-        domain.id().expect("attempt domain ID"),
+        BranchRequest::identity(
+            branch_point,
+            parent,
+            opportunity.id().expect("attempt opportunity ID"),
+            domain.id().expect("attempt domain ID"),
+        ),
         CandidateSource::finite(BTreeSet::from([value.clone()])).expect("attempt source"),
         BranchRequestCause::Operator(CampaignCommandId::from_hash(hash("attempt-command"))),
         BranchBudget::new(1, 1).expect("attempt budget"),
@@ -820,32 +837,35 @@ fn attempt_explanations_authenticate_execution_proposal_selection_and_completion
             cause: request.cause(),
             admission_ordinal: AdmissionOrdinal::new(1),
         },
+        proposal.policy(),
     );
     let admission_id = admission.id().expect("attempt admission ID");
     let observation = Observation::new(
         attempt_id,
-        parent_configuration,
-        parent,
-        path_id,
-        StopOutcome::TerminalSuccess,
-        MeasurementSetId::from_content_id(ContentId::for_bytes(
-            ObjectKind::Observation,
-            1,
-            b"attempt-explanation-measurements",
-        ))
-        .expect("attempt measurement ID"),
-        PropertyVerdictSetId::from_content_id(ContentId::for_bytes(
-            ObjectKind::Observation,
-            1,
-            b"attempt-explanation-properties",
-        ))
-        .expect("attempt property ID"),
-        CoverageProjectionId::from_content_id(ContentId::for_bytes(
-            ObjectKind::Projection,
-            1,
-            b"attempt-explanation-coverage",
-        ))
-        .expect("attempt coverage ID"),
+        Observation::outcome(
+            parent_configuration,
+            parent,
+            path_id,
+            StopOutcome::TerminalSuccess,
+            MeasurementSetId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Observation,
+                2,
+                b"attempt-explanation-measurements",
+            ))
+            .expect("attempt measurement ID"),
+            PropertyVerdictSetId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Observation,
+                1,
+                b"attempt-explanation-properties",
+            ))
+            .expect("attempt property ID"),
+            CoverageProjectionId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Projection,
+                1,
+                b"attempt-explanation-coverage",
+            ))
+            .expect("attempt coverage ID"),
+        ),
         BTreeSet::new(),
     )
     .expect("attempt observation");
@@ -911,6 +931,7 @@ fn attempt_explanations_authenticate_execution_proposal_selection_and_completion
         ))
         .expect("attempt snapshot policy ID"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("attempt explanation snapshot");
     let explanation_request = ExplainCampaignAttemptRequest::new(
@@ -988,18 +1009,6 @@ fn attempt_explanations_authenticate_execution_proposal_selection_and_completion
             .terms_micros()["selected-total-micros"],
         375_000
     );
-    let mut legacy = response.clone();
-    legacy.schema_version = 1;
-    legacy.planner_step = None;
-    legacy.planner_step_proof = None;
-    let legacy_bytes = legacy.canonical_bytes();
-    let legacy_decoded = ExplainCampaignAttemptResponse::from_canonical_bytes(&legacy_bytes)
-        .expect("legacy attempt explanation response");
-    assert_eq!(legacy_decoded.canonical_bytes(), legacy_bytes);
-    legacy_decoded
-        .validate_for(&explanation_request)
-        .expect("legacy explanation binding");
-
     let mut wrong = response.clone();
     let Some(proposal) = wrong.proposal.as_mut() else {
         unreachable!("branch proposal")
@@ -1067,20 +1076,20 @@ fn discovery_attempt_explanations_authenticate_absent_branch_and_completion_stat
     )
     .expect("discovery attempt");
     let attempt_id = attempt.id().expect("discovery attempt ID");
+    let discovery_policy = CampaignPolicyId::from_content_id(ContentId::for_bytes(
+        ObjectKind::Policy,
+        1,
+        b"discovery-explanation-policy",
+    ))
+    .expect("discovery policy ID");
     let admission = AttemptAdmission::new(
         attempt_id,
         AttemptAdmissionRole::ExecutionBasis {
             proposal: None,
-            cause: BranchRequestCause::ExhaustivePolicy(
-                CampaignPolicyId::from_content_id(ContentId::for_bytes(
-                    ObjectKind::Policy,
-                    1,
-                    b"discovery-explanation-policy",
-                ))
-                .expect("discovery policy ID"),
-            ),
+            cause: BranchRequestCause::ExhaustivePolicy(discovery_policy),
             admission_ordinal: AdmissionOrdinal::new(1),
         },
+        discovery_policy,
     );
     let accounting = map
         .insert(
@@ -1121,6 +1130,7 @@ fn discovery_attempt_explanations_authenticate_absent_branch_and_completion_stat
         ))
         .expect("discovery active policy ID"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("discovery explanation snapshot");
     let request = ExplainCampaignAttemptRequest::new(
@@ -1209,6 +1219,7 @@ fn graph_object_response_authenticates_snapshot_key_and_exact_envelope() {
         ))
         .expect("policy"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("snapshot");
     let request = GetCampaignGraphObjectRequest::new(
@@ -1305,6 +1316,7 @@ fn choice_pages_authenticate_the_nested_index_and_exact_eof() {
         ))
         .expect("policy"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("snapshot");
     let request = QueryCampaignChoicesRequest::new(
@@ -1358,8 +1370,8 @@ fn choice_pages_authenticate_the_nested_index_and_exact_eof() {
                 .to_string(),
         ],
         [
-            String::from("3d04a1a5b7687ffd4398b162b8b14566e1c56a16b47446db3dc734ac1b318eee"),
-            String::from("9b5d7589cad830b6f816c31d5a4c8e9edae7deea41703d4993ec337833e0172f"),
+            String::from("4cab59b2bc7a6c4c63b954a899655cf0178b1ad347d19823104a9311236801f7"),
+            String::from("0232d8315aef88d88b828b505a37cf4386f9b42a04bcc788f7668feed64478d6"),
         ]
     );
 
@@ -1400,7 +1412,7 @@ fn frontier_pages_authenticate_projection_bodies_and_exact_eof() {
     .map(|(label, state)| {
         let request = BranchRequestId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignFact,
-            1,
+            9,
             label.as_bytes(),
         ))
         .expect("request id");
@@ -1455,6 +1467,7 @@ fn frontier_pages_authenticate_projection_bodies_and_exact_eof() {
         ))
         .expect("policy"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("snapshot");
     let request = QueryCampaignFrontierRequest::new(
@@ -1510,8 +1523,8 @@ fn frontier_pages_authenticate_projection_bodies_and_exact_eof() {
                 .to_string(),
         ],
         [
-            String::from("483028d0eea2e19495841dd35e1d12e209c7f6ab06e37f659e5e1dcd98edbca4"),
-            String::from("ff72a3caeb93adf388ca3bdd3a7a7fed45479a7b033ed3dfac0fdd4ed2485c26"),
+            String::from("50c34188bbfc7f2f75598274dfbf19358b4f6ec4ac1c55d9a604a4f2e46c60a2"),
+            String::from("10b2f67ac2aa2863f551c0c1070522f7fa640e96b8a997da26de8aad6a638720"),
         ]
     );
 
@@ -1574,6 +1587,7 @@ fn frontier_object_reads_authenticate_exact_request_membership() {
             accounting: empty.content_id(),
             coordination: empty.content_id(),
         },
+        crate::test_budget_ledger_id(),
     )
     .expect("snapshot");
     let request = GetCampaignFrontierObjectRequest::new(
@@ -1618,8 +1632,8 @@ fn frontier_object_reads_authenticate_exact_request_membership() {
                 .to_string(),
         ],
         [
-            String::from("ded2cdc531496795ce795c8f01a5fd093fba3917917ba03221248533a7d4e90f"),
-            String::from("3a48809b35eeb65b37ec29ae4dc51b1d877ebbed1f182cab8c61e2a52b35efd4"),
+            String::from("56f6c92e13e61fc53541b9e2f3cae7a2a71972f4e8f3d2b461629306626bc799"),
+            String::from("159e843869517e6d156ee9e4b47d42233f11f9b623432479b89ee23ea4e41ecc"),
         ]
     );
 
@@ -1674,6 +1688,7 @@ fn choice_object_reads_authenticate_exact_opportunity_dependencies() {
         ))
         .expect("policy"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("snapshot");
     let request = GetCampaignChoiceObjectRequest::new(
@@ -1749,8 +1764,8 @@ fn choice_object_reads_authenticate_exact_opportunity_dependencies() {
                 .to_string(),
         ],
         [
-            String::from("b3a99f45d1c4d84be0175b9f4b2408877d93a6ea4796466e48350ae035d6da38"),
-            String::from("74abc6ab91c7dec2cb1cde83dad1afc81e1707bf9f0717ebab4b008792a92286"),
+            String::from("5749125328934994e3bd1742872ff7725d97ceb8d97c52364299ae7b8f415157"),
+            String::from("13271a838705a79cc0e914033247b6f940315537893b587656b6eabe1c3e4e0b"),
         ]
     );
 }

@@ -1,15 +1,16 @@
-# Patch 0075 - `crucible-authenticated-event-request-envelope`
+# Capability task 0075 — `crucible-authenticated-event-request-envelope`
 
-Patch `0075` makes QEMU occurrence events independently verifiable after a
+This capability makes QEMU occurrence events independently verifiable after a
 checkpoint is restored into a fresh plugin process. It also closes the
-accelerator one-shot identity gap left by patch `0074`: a result transform is
+accelerator one-shot identity relationship specified by capability task
+`0074`: a result transform is
 selected by the exact opportunity-chosen job sequence, and its event carries
 the original opportunity identity rather than a digest invented at completion.
 
 ## Mandatory event envelope
 
-Every QEMU node occurrence payload uses event-envelope version 1. There is no
-raw-evidence compatibility path. The GPL plugin refuses to initialize unless
+Every QEMU node occurrence payload uses event-envelope version 1. The GPL plugin
+refuses to initialize unless
 QEMU exports the matching envelope-version function, and it rejects a missing,
 unknown, truncated, oversized, or trailing envelope before publishing anything
 to the public event ring.
@@ -111,12 +112,13 @@ section before live state changes.
   occurrence.
 - Both x86_64 and AArch64 TCG builds compile the API and event consumers; live
   behavior runs on each architecture supported by the gate environment.
-- Removing patch `0075` makes the envelope-version, fresh-restore, and exact-job
-  negative controls fail.
-- Patch regeneration verifies the deterministic commit and tree, DCO sign-off,
-  catalog row, and thin corresponding-source bundle.
+- The pristine-QEMU negative proves the envelope capability is absent; the
+  envelope-version, fresh-restore, and exact-job negative controls require the
+  atomic implementation.
+- Atomic-patch regeneration verifies the deterministic commit and tree, DCO
+  sign-off, catalog row, and corresponding-source bundle.
 
-This patch changes only QEMU and QEMU-plugin GPL-side files. The public
+The atomic patch changes only QEMU and QEMU-plugin GPL-side files. The public
 fixed-width command/result/event and shared-memory layouts are unchanged; the
 envelope is an internal QEMU-to-plugin byte protocol that the plugin validates
 before producing the existing public event representation.

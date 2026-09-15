@@ -38,6 +38,18 @@ _start:
     or $0x80010000, %eax
     mov %eax, %cr0
     movb $0x5a, paging_ready
+.ifdef CRUCIBLE_CHECKPOINT_DELTA_GUEST
+    mov $0x00110000, %edi
+1:
+    cmpb $0, checkpoint_delta_fresh_tlb
+    je 2f
+    /* The fresh-fill phase discards the writable translation each time. */
+    mov %cr3, %eax
+    mov %eax, %cr3
+2:
+    incl (%edi)
+    jmp 1b
+.else
     mov $stack_top, %esp
 1:
     xor %edi, %edi
@@ -46,8 +58,14 @@ _start:
     movb %al, mutation_execution_result
     add $1, %eax
     jmp 1b
+.endif
 
 .section .data
+.ifdef CRUCIBLE_CHECKPOINT_DELTA_GUEST
+.global checkpoint_delta_fresh_tlb
+checkpoint_delta_fresh_tlb:
+    .byte 0x00
+.endif
 .global mutation_byte
 mutation_byte:
     .byte 0x5a

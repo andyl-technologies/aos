@@ -27,18 +27,45 @@ use crucible_qemu::QemuNodeSelectablePendingRequest;
 
 use super::QemuHotForkCompleteWorldAssembly;
 use crate::qemu_hot_fork_reconciliation::LinuxQemuHotForkWorldReconciliationSet;
+use crate::qemu_hot_fork_world_resource::QemuHotForkWorldAuxiliaryResourceBinding;
 use crate::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionReconciliationStep,
     AttemptExecutionRuntimeBasis, CapturedAttemptCheckpoint, LinuxQemuHotForkReconciliationBackend,
     QemuAttemptGenerationResourceOwner, QemuAttemptProcessResourceGuard,
     QemuAttemptProductionVmNodeLauncher, QemuFreshAttemptLifecycleOwner,
-    QemuFreshStartMaterialization, QemuHotForkAttemptReconciliation, QemuHotForkWorldNodeTarget,
+    QemuFreshStartMaterialization, QemuHotForkAttemptReconciliation, QemuHotForkSourceWorldLease,
+    QemuHotForkWorldAuxiliaryResourceBroker, QemuHotForkWorldNodeTarget,
     QemuHotForkWorldResourceOwner,
 };
 
 type ProductionWorldChild<G> = QemuHotForkAttemptReconciliation<
     LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
 >;
+
+/// Immutable inputs used to install one complete hot-fork world.
+pub(crate) struct QemuHotForkProductionLifecycleContext<'a> {
+    scenario: &'a crucible::ScenarioDef,
+    source: &'a crucible::ScenarioDefForm,
+    runtime_basis: AttemptExecutionRuntimeBasis,
+    run_state_root: PathBuf,
+}
+
+impl<'a> QemuHotForkProductionLifecycleContext<'a> {
+    /// Groups one installation's semantic and runtime inputs.
+    pub(crate) fn new(
+        scenario: &'a crucible::ScenarioDef,
+        source: &'a crucible::ScenarioDefForm,
+        runtime_basis: AttemptExecutionRuntimeBasis,
+        run_state_root: PathBuf,
+    ) -> Self {
+        Self {
+            scenario,
+            source,
+            runtime_basis,
+            run_state_root,
+        }
+    }
+}
 
 struct QuarantinedProductionHotForkLifecycleInstall<G>
 where
@@ -57,9 +84,12 @@ where
 {
     runtime_basis: AttemptExecutionRuntimeBasis,
     lifecycle: ProductionVmLifecycleLoop,
+    source_lease: Option<QemuHotForkSourceWorldLease>,
     source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
     reconciliations: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
     resources: QemuHotForkWorldResourceOwner<G>,
+    auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<G>>,
+    auxiliary_binding: Option<QemuHotForkWorldAuxiliaryResourceBinding<G>>,
     shutdown_complete: bool,
     aggregate_released: bool,
     source_recovery_failed: bool,
@@ -148,25 +178,27 @@ where
                 "release hot-fork world aggregate resources after publication: {error}"
             ))
         })?;
+        self.auxiliary_binding = None;
         self.aggregate_released = true;
         Ok(AttemptExecutionReconciliationStep::Complete)
     }
 
     /// Transfers child and aggregate ownership to fail-closed quarantine.
     pub fn quarantine(&mut self) {
+        self.auxiliary_binding = None;
         self.reconciliations.quarantine();
         self.resources.quarantine();
     }
 
-    /// Recovers the complete prepared source world after final reconciliation.
+    /// Recovers the authenticated source lease after final reconciliation.
     ///
     /// # Errors
     ///
-    /// Returns the lifecycle with all live process and resource ownership until
-    /// aggregate release completes, or when another owner still retains the
-    /// source-world capability. Reaped modeled-channel loans may already have
-    /// been released after final reconciliation.
-    pub fn into_source_world(mut self) -> Result<ProductionVmHotForkSourceWorld, Box<Self>> {
+    /// Returns the lifecycle with all live process and resource ownership when
+    /// aggregate release is incomplete, the source lock is poisoned, modeled
+    /// process-loan release fails, or the lease is absent. Reaped modeled-channel
+    /// loans may already have been released after final reconciliation.
+    pub(crate) fn into_source_lease(mut self) -> Result<QemuHotForkSourceWorldLease, Box<Self>> {
         if !self.aggregate_released
             || self.source_recovery_failed
             || self.source_world.is_poisoned()
@@ -181,47 +213,7 @@ where
             self.source_recovery_failed = true;
             return Err(Box::new(self));
         }
-        let Self {
-            source_world,
-            runtime_basis,
-            lifecycle,
-            reconciliations,
-            resources,
-            shutdown_complete,
-            aggregate_released,
-            source_recovery_failed,
-        } = self;
-        let source_world = match Arc::try_unwrap(source_world) {
-            Ok(source_world) => source_world,
-            Err(source_world) => {
-                return Err(Box::new(Self {
-                    runtime_basis,
-                    lifecycle,
-                    source_world,
-                    reconciliations,
-                    resources,
-                    shutdown_complete,
-                    aggregate_released,
-                    source_recovery_failed,
-                }));
-            }
-        };
-        match source_world.into_inner() {
-            Ok(source_world) => Ok(source_world),
-            Err(poisoned) => {
-                let source_world = Arc::new(Mutex::new(poisoned.into_inner()));
-                Err(Box::new(Self {
-                    runtime_basis,
-                    lifecycle,
-                    source_world,
-                    reconciliations,
-                    resources,
-                    shutdown_complete,
-                    aggregate_released,
-                    source_recovery_failed: true,
-                }))
-            }
-        }
+        self.source_lease.take().ok_or_else(|| Box::new(self))
     }
 
     #[cfg(test)]
@@ -300,7 +292,7 @@ where
                 }
                 Ok(())
             })
-            .map(Into::into)
+            .map(CapturedAttemptCheckpoint::from_production_closure)
     }
 
     fn replay_launch_profiles(
@@ -326,6 +318,10 @@ where
         QuantumLoop::sample_fingerprint(&mut self.lifecycle, node)
     }
 
+    fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
     fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
         // crucible-lint: allow host-nondeterminism-state -- this copies the scheduler-retained RecomputedCause trace; the observation never feeds back into modeled execution.
         QuantumLoop::resolved_effect_trace(&self.lifecycle)
@@ -343,6 +339,14 @@ where
             .map_err(|error| SchedulerError::BoundaryViolation {
                 message: error.to_string(),
             })?;
+        if let Some(broker) = &self.auxiliary_resources {
+            let binding = broker.bind(&self.resources).map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!("bind hot-fork auxiliary resources after shutdown: {error}"),
+                }
+            })?;
+            self.auxiliary_binding = Some(binding);
+        }
         self.shutdown_complete = true;
         Ok(events)
     }
@@ -360,13 +364,18 @@ where
     /// Installs this complete assembly as one production lifecycle transaction.
     pub(crate) fn install_production_lifecycle(
         self,
-        scenario: &crucible::ScenarioDef,
-        source: &crucible::ScenarioDefForm,
+        context: QemuHotForkProductionLifecycleContext<'_>,
+        source_lease: QemuHotForkSourceWorldLease,
         source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
-        runtime_basis: AttemptExecutionRuntimeBasis,
-        run_state_root: PathBuf,
         mut resources: QemuHotForkWorldResourceOwner<G>,
+        auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<G>>,
     ) -> Result<QemuProductionHotForkWorldLifecycle<G>, LifecycleApiError> {
+        let QemuHotForkProductionLifecycleContext {
+            scenario,
+            source,
+            runtime_basis,
+            run_state_root,
+        } = context;
         let boundaries = self
             .continuation
             .nodes()
@@ -517,9 +526,12 @@ where
         Ok(QemuProductionHotForkWorldLifecycle {
             runtime_basis,
             lifecycle,
+            source_lease: Some(source_lease),
             source_world,
             reconciliations: completed,
             resources,
+            auxiliary_resources,
+            auxiliary_binding: None,
             shutdown_complete: false,
             aggregate_released: false,
             source_recovery_failed: false,

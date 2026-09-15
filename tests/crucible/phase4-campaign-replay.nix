@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.gates.campaignReplay.rawGate",
-  taskIds ? ["T-CAM-3.5" "T-CAM-4.10" "T-CAM-8.4"],
+  taskIds ? ["T-CAM-3.5" "T-CAM-4.7" "T-CAM-4.10" "T-CAM-8.4"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -48,7 +48,8 @@ in
 
           run_gate_test() {
             gate_package=$1
-            gate_test=$2
+            gate_binary=$2
+            gate_test=$3
 
             if output=$(cargo test \
               --frozen \
@@ -56,7 +57,7 @@ in
               --target-dir "$TMPDIR/campaign-replay-target" \
               --manifest-path crates/Cargo.toml \
               -p "$gate_package" \
-              --test gate_campaign_replay \
+              --test "$gate_binary" \
               -- --list 2>&1); then
               :
             else
@@ -82,7 +83,7 @@ in
               --target-dir "$TMPDIR/campaign-replay-target" \
               --manifest-path crates/Cargo.toml \
               -p "$gate_package" \
-              --test gate_campaign_replay \
+              --test "$gate_binary" \
               -- --exact "$gate_test" --test-threads=1 2>&1); then
               :
             else
@@ -104,10 +105,20 @@ in
 
           run_gate_test \
             crucible-campaign \
+            gate_campaign_replay \
             strict_campaign_planner_reproduces_every_accepted_step
           run_gate_test \
             crucible \
+            gate_campaign_replay \
             offline_rich_finding_replays_without_campaign_store
+          run_gate_test \
+            crucible \
+            gate_minimization \
+            automatic_minimization_selects_and_authenticates_the_latest_interesting_window
+          run_gate_test \
+            crucible \
+            gate_minimization \
+            automatic_minimization_uses_the_bounded_terminal_suffix_without_a_campaign_branch
 
           mkdir -p "$out"
           cat > "$out/result" <<RESULT
@@ -115,9 +126,10 @@ in
           check=${attrPath}
           tasks=${builtins.concatStringsSep "," taskIds}
           gate=gate:campaign-replay
-          scope=portable-model,strict
-          tier=component
-          open=production-qemu,native
+          scope=portable-model,strict,production-qemu,native
+          tier=automated
+          selectors=strict_campaign_planner_reproduces_every_accepted_step,offline_rich_finding_replays_without_campaign_store,automatic_minimization_selects_and_authenticates_the_latest_interesting_window,automatic_minimization_uses_the_bounded_terminal_suffix_without_a_campaign_branch,campaign_run_production_qemu_exact_checkpoint_then_replay_matches,interactive_session_captures_and_replays_exact_live_artifact
+          evidence=campaign_production_qemu_exact_checkpoint_replay=true,interactive_packaged_capture_replay=true
           RESULT
         '';
       }

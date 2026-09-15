@@ -451,6 +451,16 @@ fn hot_fork_ring_image_round_trips_queued_bytes_into_a_held_private_mapping() {
     assert_eq!(decoded.digest(), image.digest());
     assert_eq!(decoded.abi_version(), ABI_VERSION);
     assert_eq!(decoded.region_size(), allocation.layout().region_size);
+
+    let mut prior_abi = canonical.clone();
+    prior_abi[12..16].copy_from_slice(&(ABI_VERSION - 1).to_le_bytes());
+    assert!(matches!(
+        HotForkRingImage::from_canonical_bytes(&prior_abi, prior_abi.len()),
+        Err(HotForkRingImageError::InvalidCanonicalImage {
+            reason: "hot-fork-ring-image-abi"
+        })
+    ));
+
     assert!(matches!(
         HotForkRingImage::from_canonical_bytes(&canonical, canonical.len() - 1),
         Err(HotForkRingImageError::ImageTooLarge { .. })

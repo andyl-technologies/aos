@@ -113,7 +113,7 @@ The control client has concrete remote workflows for:
 
 Current restrictions include:
 
-- `fork`, `search`, and `fuzz` are local-only;
+- `search` and `fuzz` are local-only;
 - artifact `replay` refuses a daemon route because the client cannot validate
   producer build provenance remotely;
 - `serve --daemon ...` is invalid because a server cannot route itself to

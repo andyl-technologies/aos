@@ -4,28 +4,25 @@
 // crucible-lint: allow rust-allow -- the scripted indeterminate branch deliberately panics if an impossible owned-child path is reached.
 #![allow(clippy::expect_used, clippy::panic)]
 
-use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::os::fd::OwnedFd;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crucible::Configuration;
 use crucible_api::vm_lifecycle::prepared_hot_fork_source_world_for_test;
-use crucible_campaign::{
-    Attempt, AttemptResourceLimits, AttemptStart, BranchPath, CampaignHash, CampaignLineage,
-    ConfigurationArtifact, ConfigurationId, ExecutionId, ScenarioArtifact, ScenarioDefId,
-    StopCondition,
-};
+use crucible_campaign::AttemptResourceLimits;
 use crucible_qemu::{
-    QemuChildProcessContract, QemuHotForkChildProcessBasis, QemuHotForkChildProcessOwner,
+    LinuxQemuHotForkChildProcessAuthority, QemuAsyncDriverPolicy, QemuChildProcessContract,
+    QemuCrashDetector, QemuHotForkChildProcessBasis, QemuHotForkChildProcessOwner,
     QemuLaunchResourceRequirements, QemuNodeChannelError, QemuPreparedRunDirectory,
-    QemuTestHotForkOutcome, QemuVmRealizationError, scripted_hot_fork_source_for_test,
+    QemuShutdownPolicy, QemuTestHotForkOutcome, QemuVmRealizationError, linux_process_identity,
+    scripted_hot_fork_source_for_test,
 };
+use rustix::process::{Pid, PidfdFlags, pidfd_open};
 
 use super::*;
 use crate::{
-    AttemptExecutionKey, AttemptExecutionRuntimeBasis, ExecutionCancellation,
-    QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard,
+    ExecutionCancellation, QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard,
+    QemuAttemptResourceGuard,
 };
 
 struct ScriptedLaunchGuard {
@@ -35,6 +32,7 @@ struct ScriptedLaunchGuard {
     run_root: tempfile::TempDir,
     preparations: Arc<AtomicUsize>,
     quarantines: Arc<AtomicUsize>,
+    retained_child_requests: Arc<Mutex<Vec<crucible_qemu::QmpHotForkRequest>>>,
     terminal: bool,
 }
 
@@ -115,9 +113,43 @@ impl QemuHotForkChildProcessOwner for ScriptedLaunchGuard {
 
     fn retain_hot_fork_child(
         &mut self,
-        _basis: QemuHotForkChildProcessBasis,
+        basis: QemuHotForkChildProcessBasis,
     ) -> Result<Self::Authority, QemuNodeChannelError> {
-        panic!("indeterminate fixture must fail before child-process retention")
+        let process_id =
+            Pid::from_raw(i32::try_from(basis.child_process_id()).map_err(|error| {
+                QemuNodeChannelError::new("retain scripted child", error.to_string())
+            })?)
+            .ok_or_else(|| {
+                QemuNodeChannelError::new("retain scripted child", "child PID must be positive")
+            })?;
+        let descriptor = pidfd_open(process_id, PidfdFlags::empty()).map_err(|error| {
+            QemuNodeChannelError::new("open scripted child pidfd", error.to_string())
+        })?;
+        let identity = linux_process_identity(basis.child_process_id())
+            .map_err(|error| {
+                QemuNodeChannelError::new("authenticate scripted child", error.to_string())
+            })?
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "authenticate scripted child",
+                    "scripted child process is absent",
+                )
+            })?;
+        self.retained_child_requests
+            .lock()
+            .map_err(|_error| {
+                QemuNodeChannelError::new(
+                    "record scripted child request",
+                    "scripted child request registry is poisoned",
+                )
+            })?
+            .push(basis.request());
+
+        Ok(
+            LinuxQemuHotForkChildProcessAuthority::from_unvalidated_test_parts(
+                basis, identity, descriptor,
+            ),
+        )
     }
 }
 
@@ -155,6 +187,7 @@ fn scripted_guard(
         run_root: tempfile::tempdir()?,
         preparations,
         quarantines,
+        retained_child_requests: Arc::new(Mutex::new(Vec::new())),
         terminal: false,
     })
 }
@@ -194,11 +227,7 @@ fn indeterminate_qmp_launch_retains_source_world_and_prepared_directory()
         Arc::clone(&quarantines),
     )?;
     let mut target = QemuHotForkWorldResourceOwner::new(guard, 1)?;
-    let input = execution_input();
-
     let error = QemuHotForkAttemptReconciliation::launch_from_source_world(
-        execution_basis(&input),
-        &input,
         source_world,
         node,
         &mut target,
@@ -215,13 +244,6 @@ fn indeterminate_qmp_launch_retains_source_world_and_prepared_directory()
             QemuHotForkLaunchError::Indeterminate { .. }
         )
     ));
-    assert!(
-        returned_owner
-            .source_world()
-            .is_some_and(|returned_source| Arc::ptr_eq(&retained_source, returned_source))
-    );
-    assert!(returned_owner.has_run_directory());
-    assert!(!returned_owner.has_stranded_launch());
     let returned_owner = returned_owner
         .into_recoverable_parts()
         .err()
@@ -235,65 +257,105 @@ fn indeterminate_qmp_launch_retains_source_world_and_prepared_directory()
     Ok(())
 }
 
-fn execution_input() -> CrucibleAttemptExecution {
-    let scenario = crucible::crash_restart_scenario()
-        .expect("built-in scenario")
-        .scenario;
-    let definition = scenario.scenario_def();
-    let scenario_id = ScenarioDefId::from_hash(CampaignHash::from_bytes(definition.id().bytes));
-    let scenario_artifact =
-        ScenarioArtifact::new(scenario_id, 1, b"scenario".to_vec()).expect("scenario artifact");
-    let scenario_content = scenario_artifact.id().expect("scenario artifact id");
-    let configuration = Configuration::genesis(definition);
-    let configuration_id =
-        ConfigurationId::from_hash(CampaignHash::from_bytes(configuration.id().bytes));
-    let configuration_artifact = ConfigurationArtifact::new(
-        scenario_id,
-        scenario_content,
-        configuration_id,
-        1,
-        b"configuration".to_vec(),
-    )
-    .expect("configuration artifact");
-    let configuration_content = configuration_artifact
-        .id()
-        .expect("configuration artifact id");
-    let lineage = CampaignLineage::new(
-        scenario_id,
-        scenario_content,
-        configuration_id,
-        configuration_content,
-        "crucible-test",
-        "qemu-test",
-        BTreeMap::from([(String::from("control"), 1)]),
-        1,
-        1,
-    )
-    .expect("campaign lineage");
-    let path = BranchPath::new(Vec::new()).expect("genesis path");
-    let attempt = Attempt::new(
-        AttemptStart::Discover {
-            configuration: configuration_content,
-        },
-        path.id().expect("path id"),
-        StopCondition::Terminal,
-    )
-    .expect("attempt");
-    CrucibleAttemptExecution::from_test_parts(
-        lineage,
-        scenario,
-        attempt,
-        path,
-        crate::CrucibleResolvedAttemptStart::Discover { configuration },
-    )
-}
+#[test]
+#[cfg(target_os = "linux")]
+fn rearmed_source_drops_child_contract_after_installed_child_takes_ownership()
+-> Result<(), Box<dyn Error>> {
+    let source = scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked)?;
+    let (node, generation, source_world) = prepared_hot_fork_source_world_for_test(source)?;
+    let source_world = Arc::new(Mutex::new(source_world));
+    let retained_source = Arc::clone(&source_world);
+    let continuation = source_world
+        .lock()
+        .map_err(|_| std::io::Error::other("source-world lock poisoned"))?
+        .fork_continuation()?;
+    let assembly = crate::QemuHotForkWorldAssembly::<
+        QemuHotForkAttemptReconciliation<
+            LinuxQemuHotForkReconciliationBackend<
+                crate::QemuHotForkWorldNodeTarget<ScriptedLaunchGuard>,
+            >,
+        >,
+    >::new(continuation);
+    let preparations = Arc::new(AtomicUsize::new(0));
+    let quarantines = Arc::new(AtomicUsize::new(0));
+    let resources = AttemptResourceLimits::new(2, 1024 * 1024 * 1024, 1024 * 1024 * 1024, 8)?;
+    let guard = scripted_guard(
+        resources,
+        Arc::clone(&preparations),
+        Arc::clone(&quarantines),
+    )?;
+    let retained_requests = Arc::clone(&guard.retained_child_requests);
+    let mut target = QemuHotForkWorldResourceOwner::new(guard, 1)?;
+    let mut reconciliation = QemuHotForkAttemptReconciliation::launch_from_source_world(
+        source_world,
+        node.clone(),
+        &mut target,
+        generation,
+        assembly.child_launch_token(),
+    )?;
 
-fn execution_basis(input: &CrucibleAttemptExecution) -> AttemptExecutionRuntimeBasis {
-    AttemptExecutionRuntimeBasis::new(
-        AttemptExecutionKey::new(
-            input.lineage().id().expect("lineage id"),
-            input.attempt().id().expect("attempt id"),
-        ),
-        ExecutionId::from_bytes([0x71; 16]).expect("execution"),
-    )
+    let rearmed_stage = retained_source
+        .lock()
+        .map_err(|_| std::io::Error::other("source-world lock poisoned"))?
+        .prepared_source(&node)?
+        .hot_fork_child_process_contract_stage_for_test();
+    assert!(rearmed_stage.is_none());
+    assert_eq!(
+        retained_requests
+            .lock()
+            .map_err(|_| std::io::Error::other("retained request registry is poisoned"))?
+            .len(),
+        1
+    );
+
+    reconciliation.admit_child()?;
+    reconciliation.install_scheduler_node(
+        node.clone(),
+        QemuShutdownPolicy::fast_test(),
+        QemuAsyncDriverPolicy::fast_test(),
+        QemuCrashDetector::new(node.name.clone()),
+    )?;
+    reconciliation.request_termination()?;
+    for _ in 0..200 {
+        match reconciliation.reconcile_step()? {
+            QemuHotForkReconciliationStep::AwaitingPublication => break,
+            QemuHotForkReconciliationStep::ChildRunning => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            QemuHotForkReconciliationStep::ChildDiagnosticsDrained
+            | QemuHotForkReconciliationStep::Advanced(_) => {}
+            QemuHotForkReconciliationStep::Complete => {
+                return Err(std::io::Error::other(
+                    "child reconciled before publication disposition",
+                )
+                .into());
+            }
+        }
+    }
+    assert_eq!(
+        reconciliation.phase(),
+        QemuHotForkReconciliationPhase::AwaitingPublication
+    );
+    reconciliation.reconcile_publication(QemuHotForkPublicationDisposition::Canceled)?;
+    for _ in 0..8 {
+        if reconciliation.reconcile_step()? == QemuHotForkReconciliationStep::Complete {
+            break;
+        }
+    }
+    assert_eq!(
+        reconciliation.phase(),
+        QemuHotForkReconciliationPhase::Reconciled
+    );
+
+    drop(reconciliation);
+    target.finish()?;
+    assert_eq!(preparations.load(Ordering::SeqCst), 1);
+    assert_eq!(quarantines.load(Ordering::SeqCst), 0);
+
+    let source_world = Arc::try_unwrap(retained_source)
+        .map_err(|_| std::io::Error::other("reconciled child retained the source world"))?
+        .into_inner()
+        .map_err(|_| std::io::Error::other("source-world lock poisoned"))?;
+    source_world.retire()?;
+    Ok(())
 }

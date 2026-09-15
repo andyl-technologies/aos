@@ -346,13 +346,14 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
     topology
         .storage_policy_artifacts
         .sort_by(|left, right| left.id.cmp(&right.id));
-    let world = World::from_content_hash(ContentHash::from_bytes(b"ninep-coordinator-world"))
+    let world = World::from_nodes(Vec::new())
+        .unwrap_or_else(|error| panic!("empty test world should build: {error}"))
         .with_fault_topology(topology)
         .unwrap_or_else(|error| panic!("test 9p policy world should validate: {error}"));
     let target = ResolvedFaultTarget::NinePDevice {
         device: ContentHash::from_bytes(b"ninep-device"),
     };
-    let nodes = ProductionNodeSet::new();
+    let nodes = QemuNodeSet::new();
     let runtime = ProductionFaultRuntime::new(
         FaultSignalPlan::empty(),
         None,

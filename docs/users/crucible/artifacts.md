@@ -11,8 +11,8 @@ different portability and retention contracts. This guide separates them.
 | Canonical scenario | World, plan, properties, seed references, derived IDs | `run`, `verify`, `save`, `search` | Only when all referenced external objects are available. |
 | DAG store object | Scenario forms, schedules, checkpoints, imported signal/spatial objects and chunks | lifecycle, continuation, search | No; retain its reachable closure. |
 | Canonical trace | Ordered machine-readable execution/evidence records | CI, debugging, `replay --check` | Diagnostic evidence, not a continuation by itself. |
-| Checkpoint | Exact scheduler, VM, adapter, signal, property, and object-closure state | `resume`, `fork`, replay/debug | Addressed through the store or embedded artifact. |
-| Savepoint handle | Typed selector and proof naming a checkpoint | `resume`, `fork`, `debug`, `replay --to` | No; referenced store closure must remain available. |
+| Checkpoint | Exact scheduler, VM, adapter, signal, property, and object-closure state | `resume`, replay/debug | Addressed through the store or embedded artifact. |
+| Savepoint handle | Typed selector and proof naming a checkpoint | `resume`, `debug`, `replay --to` | No; referenced store closure must remain available. |
 | Reproduction artifact v3 | Authenticated inputs, schedule, live recipe, evidence scope, terminal checkpoint and reachable signal objects | `replay`, compare, bisect | Yes within its declared backend/build requirements. |
 | Findings ledger | Signed search/fuzz findings and identities | `triage`, replay/minimize | Findings carry or reference self-contained reproduction material. |
 | Triage report | Human/machine cluster, comparison, minimization output | operator/CI | Preserve alongside source ledgers and artifacts. |

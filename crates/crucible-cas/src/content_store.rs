@@ -4,10 +4,8 @@
 //! [`ContentId`] identifies canonical plaintext bytes independently of their
 //! directory, pack, compression, encryption, cache, or archival placement.
 //! [`ImmutableBlobBackend`] and [`MutableRefBackend`] are deliberately distinct:
-//! immutable stores may be tiered and mirrored, while one campaign namespace
-//! has one authoritative ref backend. Physical blob inventory and candidate
-//! removal require the separately held [`BlobStoreAdmin`] capability; complete
-//! ref-namespace inventory requires [`RefStoreAdmin`].
+//! immutable stores may be tiered and mirrored. Each namespace has one ref backend.
+//! Blob removal requires [`BlobStoreAdmin`]; ref inventory requires [`RefStoreAdmin`].
 //! S3 unfinished multipart uploads are reclaimed through the weaker,
 //! separately held [`S3MultipartCleanupAdmin`]; that capability cannot inspect
 //! or delete committed objects and is not a GC fence.
@@ -56,12 +54,13 @@ pub use encrypted_directory::{
 };
 pub use graph::{
     MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS, StoreGraph,
-    StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId, StoreGraphPhysicalAdmin,
-    StoreGraphPhysicalRetention, StoreGraphPhysicalVerification,
+    StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId, StoreGraphPackedRepackAdmin,
+    StoreGraphPhysicalAdmin, StoreGraphPhysicalRetention, StoreGraphPhysicalVerification,
     StoreGraphS3MultipartCleanupAdmin, StoreGraphVerificationError, StoreGraphVerificationLimit,
     StoreGraphVerificationLimits, StoreGraphVerificationLimitsError, StoreGraphVerificationReport,
     StoreNodeDescription, StoreNodeId, StoreNodeKind, StoreNodeMetrics,
-    StoreNodeMetricsDescription, StoreNodeSpec, StoreWriteBackFlushSummary,
+    StoreNodeMetricsDescription, StoreNodeSpec, StorePhysicalRepairDisposition,
+    StorePhysicalRepairReceipt, StoreTierPolicy, StoreWriteBackFlushSummary,
 };
 pub use memory::{MemoryBlobBackend, MemoryRefBackend};
 pub use namespace::{
@@ -69,8 +68,8 @@ pub use namespace::{
     StoreNamespaceOperation,
 };
 pub use packed::{
-    PackedBlobBackend, PackedRepackPlan, PackedRepackPlanId, PackedRepackReport,
-    PackedStorageAccounting,
+    PackedBlobBackend, PackedIncompleteCleanupReport, PackedRepackPlan, PackedRepackPlanId,
+    PackedRepackReport, PackedStorageAccounting,
 };
 pub use physical_quota::{
     StoreGraphPhysicalQuotaBinders, StorePhysicalQuotaBinder, StorePhysicalQuotaGuard,
@@ -82,11 +81,11 @@ pub use profile::{
 };
 pub use s3::{
     MAX_S3_COMMITTED_OBJECT_VISITS, MAX_S3_MULTIPART_LIST_ITEMS, S3BlobBackend,
-    S3MultipartCleanupAdmin, StoreGraphS3Clients, StoreS3BlobAdminClient, StoreS3Client,
-    StoreS3ConditionalDeleteOutcome, StoreS3ConditionalPutOutcome, StoreS3EndpointId,
-    StoreS3MultipartCleanupPage, StoreS3MultipartListCursor, StoreS3MultipartListPage,
-    StoreS3MultipartUpload, StoreS3MultipartUploadRecord, StoreS3ObjectDownload,
-    StoreS3UploadedPart,
+    S3BlobBackendConfig, S3MultipartCleanupAdmin, StoreGraphS3Clients, StoreS3BlobAdminClient,
+    StoreS3Client, StoreS3ConditionalDeleteOutcome, StoreS3ConditionalPutOutcome,
+    StoreS3EndpointId, StoreS3MultipartCleanupPage, StoreS3MultipartListCursor,
+    StoreS3MultipartListPage, StoreS3MultipartUpload, StoreS3MultipartUploadRecord,
+    StoreS3ObjectDownload, StoreS3UploadedPart,
 };
 pub use s3_ref::{
     MAX_S3_OBJECT_LIST_ITEMS, MAX_S3_REF_LIST_ITEMS, S3RefBackend, StoreS3ConditionalWriteOutcome,
@@ -983,8 +982,8 @@ pub enum GraphViolation {
     InvalidNamespaceBoundary,
     /// A graph declares profile validation below an unvalidated root.
     InvalidProfileBoundary,
-    /// A tiered node names an invalid write tier.
-    InvalidWriteTier,
+    /// A tiered node has no readable or writable child or an invalid child role.
+    InvalidTierPolicy,
     /// A child lacks a capability required by its parent layer.
     UnsupportedChild,
     /// A write-back node has invalid pending-transfer bounds.
@@ -1031,7 +1030,7 @@ impl fmt::Display for GraphViolation {
             Self::InvalidProfileBoundary => {
                 "object-profile validation must dominate the graph root"
             }
-            Self::InvalidWriteTier => "invalid write tier",
+            Self::InvalidTierPolicy => "invalid tier policy",
             Self::UnsupportedChild => "unsupported child capability",
             Self::InvalidWriteBackBounds => "invalid write-back bounds",
             Self::InvalidCompressedObjectLimit => "invalid compressed-object limit",
@@ -1442,7 +1441,7 @@ fn decode_digest(value: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut digest = [0_u8; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let high = hex_nibble(pair[0])?;
         let low = hex_nibble(pair[1])?;
         digest[index] = (high << 4) | low;

@@ -4,6 +4,13 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use std::collections::BTreeSet;
 use std::error::Error;
 
@@ -29,7 +36,7 @@ use crucible::{
     SearchBudget, SearchFailureOracle, SearchStrategy, Seed, SelectionDecision, TemporalGraph,
     VcpuId, WhiteBoxPolicy, World, WorldNode, app_random_branch_decisions, bake,
     lint_guidance_determinism_source, preemption_branch_decisions, reduce,
-    run_adaptive_strategy_selection, step, try_step,
+    run_adaptive_strategy_selection, try_step,
 };
 
 #[test]
@@ -109,7 +116,7 @@ fn gate_guidance_signals_are_fixed_point_readers_only_in_integrated_search()
         let child = try_step(&root, decision)?;
         let checkpoint = graph.materialize_checkpoint(&child)?;
         let event_log = guidance_event_log(index as u64);
-        graph.cache_snapshot_with_event_log_coverage(&child, checkpoint, &event_log)?;
+        graph.cache_snapshot(&child, checkpoint.with_coverage_from_event_log(&event_log))?;
         state.record_event_log_observation(&child, &event_log);
         children.push(child);
     }
@@ -399,7 +406,7 @@ fn gate_preemption_branching_reduces_commuting_single_vcpu_preemptions()
         } else {
             (decision_b, decision_a, config_a)
         };
-    let frontier = step(&root, frontier_decision.clone());
+    let frontier = accepted_step!(&root, frontier_decision.clone());
     graph.record_step(&root, frontier_decision.clone())?;
     let policy = FrontierReductionPolicy::none().with_partial_order(
         PartialOrderReductionPolicy::new()
@@ -452,14 +459,14 @@ fn gate_app_random_branching_is_lazy_typed_and_bounded() -> Result<(), Box<dyn E
     let observed_selection = selectable.sampled_selection(42)?;
     let observed = SelectionDecision::new(&observed_selection);
     let discovery = selectable.into_discovery()?;
-    let parent = step(
+    let parent = accepted_step!(
         &root,
         Decision::RngDraw(RngDecision {
             stream: stream.clone(),
             value: 42,
         }),
     );
-    let observed_frontier = step(&parent, Decision::Selection(observed.clone()));
+    let observed_frontier = accepted_step!(&parent, Decision::Selection(observed.clone()));
     graph.record_step(
         &root,
         Decision::RngDraw(RngDecision {
@@ -486,7 +493,7 @@ fn gate_app_random_branching_is_lazy_typed_and_bounded() -> Result<(), Box<dyn E
         app_random_branch_decisions(&root, &observed, &discovery, &base_config),
         Err(AppRandomBranchError::MissingParentDraw)
     ));
-    let mismatched_parent = step(
+    let mismatched_parent = accepted_step!(
         &root,
         Decision::RngDraw(RngDecision {
             stream: stream.clone(),
@@ -580,7 +587,7 @@ fn gate_app_random_branching_is_lazy_typed_and_bounded() -> Result<(), Box<dyn E
     )?;
     let capped_observed = SelectionDecision::new(&capped_selectable.sampled_selection(9)?);
     let capped_discovery = capped_selectable.into_discovery()?;
-    let capped_parent = step(
+    let capped_parent = accepted_step!(
         &capped,
         Decision::RngDraw(RngDecision {
             stream: capped_stream,

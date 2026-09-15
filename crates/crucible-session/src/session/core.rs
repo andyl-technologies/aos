@@ -67,6 +67,24 @@ pub fn drive_engine_quantum<L: QuantumLoop>(
     quantum_loop.drive_quantum(request)
 }
 
+/// Drives one bounded host-concurrent engine round through the L4 boundary.
+///
+/// The underlying loop must keep scheduler state speculative until all
+/// scheduler-fixed backend RUNs complete, then publish their outcomes in
+/// canonical order.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError`] when planning, backend execution, or canonical
+/// completion fails.
+pub fn drive_engine_concurrent_quantum<L: crucible::ConcurrentQuantumLoop>(
+    quantum_loop: &mut L,
+    request: QuantumRequest,
+    max_host_workers: usize,
+) -> Result<crucible::SchedulerConcurrentQuantumOutcome, SchedulerError> {
+    quantum_loop.drive_concurrent_quantum(request, max_host_workers)
+}
+
 /// Explicit run state for the Crucible engine.
 ///
 /// The closed state set is the control-plane contract from RFC-0010 §10:

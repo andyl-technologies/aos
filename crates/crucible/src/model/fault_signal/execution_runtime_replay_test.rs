@@ -205,7 +205,8 @@ fn complete_checkpoint_identity_and_aggregate_limit_cover_nested_state() {
     );
 
     let mut retired_version = checkpoint.clone();
-    retired_version.semantic_version = 2;
+    retired_version.semantic_version = 3;
+    retired_version.binding_runtime.semantic_version = 3;
     let retired_bytes = retired_version
         .canonical_bytes()
         .unwrap_or_else(|error| panic!("retired checkpoint fixture: {error}"));

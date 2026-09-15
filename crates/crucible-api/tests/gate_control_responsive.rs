@@ -10,11 +10,18 @@ use std::sync::{Arc, Mutex};
 use crucible::{
     BackendEffect, Checkpoint, CheckpointKind, Configuration,
     ControlOperationKind as SchedulerControlOperationKind, Decision, DeliveryOrderDecision,
-    EventClass, EventDiagnosticPayload, EventKey, EventLevel, GenesisCheckpoint, NodeId,
-    QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef, SchedulerError,
+    EventDiagnosticPayload, EventKey, EventLevel, GenesisCheckpoint, NodeId, QuantumLoop,
+    QuantumOutcome, QuantumRequest, ScenarioDef, SchedulerError, SchedulerEventLogClass,
     SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind, Seed,
-    SimDouble, SimDoubleConfig, SimulationBackend, TemporalGraph, VirtualTime, step,
+    SimDouble, SimDoubleConfig, SimulationBackend, TemporalGraph, VirtualTime, try_step,
 };
+
+fn accepted_step(configuration: &Configuration, decision: Decision) -> Configuration {
+    match try_step(configuration, decision) {
+        Ok(configuration) => configuration,
+        Err(error) => panic!("test configuration step should be accepted: {error}"),
+    }
+}
 use crucible_api::{
     CONTROL_RESPONSIVE_QUANTUM_BOUND, ControlAcknowledgementStatus,
     ControlOperationAcknowledgement, ControlOperationKind, ControlPlaneEventLog,
@@ -181,8 +188,8 @@ async fn gate_control_plane_event_log_stream_api_subscribes_without_mutation() {
             .await
             .unwrap_or_else(|error| panic!("API event-log stream should not lag: {error}"))
             .unwrap_or_else(|| panic!("API event-log stream should stay open while actor runs"));
-        saw_causal |= frame.entry.class() == EventClass::Causal;
-        saw_observational |= frame.entry.class() == EventClass::Observational;
+        saw_causal |= frame.entry.class() == SchedulerEventLogClass::Causal;
+        saw_observational |= frame.entry.class() == SchedulerEventLogClass::Observational;
         if saw_causal && saw_observational {
             break;
         }
@@ -332,7 +339,7 @@ impl QuantumLoop for SimDoubleQuantumLoop {
             SimulationBackend::step_to(&mut self.backend, VirtualTime { ticks: self.quanta })?;
         assert_eq!(observation.reached, VirtualTime { ticks: self.quanta });
         let decision = generated_decision(self.quanta);
-        let configuration = step(&request.configuration, decision.clone());
+        let configuration = accepted_step(&request.configuration, decision.clone());
         record_control_operations(&self.observed_control, &request.control);
         let event_log_entries = self.event_log_entries();
         Ok(QuantumOutcome {

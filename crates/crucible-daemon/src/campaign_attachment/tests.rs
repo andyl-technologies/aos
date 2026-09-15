@@ -89,17 +89,21 @@ fn fixture_with_explorer(
     )
     .expect("lineage");
     let policy = CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([7; 32]),
-        CampaignMode::Strict,
-        explorer,
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([7; 32]),
+            CampaignMode::Strict,
+            explorer,
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("policy");
     repository
@@ -110,17 +114,21 @@ fn fixture_with_explorer(
 
 fn policy_with_explorer(scenario: ScenarioDefId, explorer: ExplorerPolicy) -> CampaignPolicy {
     CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([9; 32]),
-        CampaignMode::Strict,
-        explorer,
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([9; 32]),
+            CampaignMode::Strict,
+            explorer,
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("policy")
 }

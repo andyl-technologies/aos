@@ -23,9 +23,7 @@ use std::sync::Arc;
 
 use rustix::fs::{Mode, OFlags, open};
 
-use super::admin::{
-    InventoryCounter, persistent_inventory_generation, physical_storage_identity,
-};
+use super::admin::{InventoryCounter, persistent_inventory_generation, physical_storage_identity};
 use super::directory::{
     DirectoryBlobBackend, DirectoryInventoryState, create_dir_all_durable, directory_receipt,
     inventory_directory_entry, is_lower_hex, path_name, read_directory_entries, require_directory,
@@ -59,34 +57,13 @@ impl CompressedDirectoryBlobBackend {
         root: impl Into<PathBuf>,
         maximum_logical_object_bytes: u64,
     ) -> Result<Self, StoreError> {
-        Self::new_with_mode(name, root, maximum_logical_object_bytes, false)
-    }
-
-    pub(crate) fn new_observational(
-        name: impl Into<String>,
-        root: impl Into<PathBuf>,
-        maximum_logical_object_bytes: u64,
-    ) -> Result<Self, StoreError> {
-        Self::new_with_mode(name, root, maximum_logical_object_bytes, true)
-    }
-
-    fn new_with_mode(
-        name: impl Into<String>,
-        root: impl Into<PathBuf>,
-        maximum_logical_object_bytes: u64,
-        observational: bool,
-    ) -> Result<Self, StoreError> {
         if maximum_logical_object_bytes == 0 {
             return Err(StoreError::InvalidComposition {
                 reason: "compressed directory requires a nonzero logical-object byte limit",
             });
         }
         Ok(Self {
-            directory: if observational {
-                DirectoryBlobBackend::new_observational(name, root)
-            } else {
-                DirectoryBlobBackend::new(name, root)
-            },
+            directory: DirectoryBlobBackend::new(name, root),
             maximum_logical_object_bytes,
         })
     }
@@ -302,17 +279,8 @@ impl ImmutableBlobBackend for CompressedDirectoryBlobBackend {
 
 impl BlobStoreAdmin for CompressedDirectoryBlobBackend {
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
-        let (lock, state) = if self.directory.observational() {
-            (
-                self.directory.acquire_existing_inventory_lock()?,
-                self.directory.load_existing_inventory_state()?,
-            )
-        } else {
-            (
-                self.directory.acquire_inventory_lock()?,
-                self.directory.load_or_create_inventory_state()?,
-            )
-        };
+        let lock = self.directory.acquire_inventory_lock()?;
+        let state = self.directory.load_or_create_inventory_state()?;
         Ok(Box::new(CompressedDirectoryInventoryFence {
             backend: self,
             _lock: lock,
@@ -599,10 +567,8 @@ impl BlobInventoryFence for CompressedDirectoryInventoryFence<'_> {
             self.state.instance,
             self.state.generation,
         )?;
-        let mut inventory = InventoryCounter::new(
-            physical_storage_identity(self.state.instance),
-            generation,
-        );
+        let mut inventory =
+            InventoryCounter::new(physical_storage_identity(self.state.instance), generation);
         visit_compressed_inventory(self.backend, visitor, &mut inventory)?;
         Ok(inventory.finish(self.backend.name().to_owned()))
     }

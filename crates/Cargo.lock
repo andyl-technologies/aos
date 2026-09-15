@@ -2256,6 +2256,7 @@ dependencies = [
  "bytes",
  "ciborium",
  "crucible",
+ "crucible-campaign",
  "crucible-device",
  "crucible-protocol",
  "crucible-qemu",
@@ -2403,8 +2404,6 @@ dependencies = [
 name = "crucible-harness"
 version = "0.1.0"
 dependencies = [
- "blake3",
- "libc",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -2438,7 +2437,6 @@ dependencies = [
  "blake3",
  "ciborium",
  "crucible",
- "crucible-campaign",
  "crucible-device",
  "crucible-linux-resource",
  "crucible-protocol",

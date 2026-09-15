@@ -310,20 +310,28 @@ impl MemoryMutationEvidenceV1 {
             return Err(MemoryMutationEvidenceError::Length);
         }
         let translations = bytes[MEMORY_MUTATION_EVIDENCE_HEADER_V1_BYTES..translations_end]
-            .chunks_exact(MEMORY_TRANSLATION_RECORD_V1_BYTES)
-            .map(MemoryTranslationRecordV1::decode)
+            .as_chunks::<MEMORY_TRANSLATION_RECORD_V1_BYTES>()
+            .0
+            .iter()
+            .map(|bytes| MemoryTranslationRecordV1::decode(bytes))
             .collect::<Result<Vec<_>, _>>()?;
         let fragments = bytes[translations_end..fragments_end]
-            .chunks_exact(MEMORY_MUTATION_FRAGMENT_V1_BYTES)
-            .map(MemoryMutationFragmentV1::decode)
+            .as_chunks::<MEMORY_MUTATION_FRAGMENT_V1_BYTES>()
+            .0
+            .iter()
+            .map(|bytes| MemoryMutationFragmentV1::decode(bytes))
             .collect::<Result<Vec<_>, _>>()?;
         let mappings = bytes[fragments_end..mappings_end]
-            .chunks_exact(MEMORY_MAPPING_RECORD_V1_BYTES)
-            .map(MemoryMappingRecordV1::decode)
+            .as_chunks::<MEMORY_MAPPING_RECORD_V1_BYTES>()
+            .0
+            .iter()
+            .map(|bytes| MemoryMappingRecordV1::decode(bytes))
             .collect::<Result<Vec<_>, _>>()?;
         let dirty_ranges = bytes[mappings_end..dirty_ranges_end]
-            .chunks_exact(MEMORY_DIRTY_RANGE_V1_BYTES)
-            .map(MemoryDirtyRangeV1::decode)
+            .as_chunks::<MEMORY_DIRTY_RANGE_V1_BYTES>()
+            .0
+            .iter()
+            .map(|bytes| MemoryDirtyRangeV1::decode(bytes))
             .collect::<Result<Vec<_>, _>>()?;
         let value = Self {
             address_space: MemoryMutationAddressSpace::decode(read_u16(bytes, 12))

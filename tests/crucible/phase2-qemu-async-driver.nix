@@ -250,10 +250,6 @@
         needle = "qemu_node_timeout_reports_crash_and_runs_shutdown";
       }
       {
-        label = "node QMP timeout crash test";
-        needle = "qemu_node_qmp_timeout_reports_crash_and_runs_shutdown";
-      }
-      {
         label = "QMP channel timeout classification";
         needle = "source.bounded_timeout()";
       }
@@ -332,16 +328,18 @@
         needle = "qmp_client_rejects_unbounded_stream_timeouts";
       }
       {
+        label = "QMP timeout channel classification test";
+        needle = "qmp_timeout_errors_classify_node_channel_timeouts";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/qmp.rs" qmpLib [
+      {
         label = "QMP event flood bound test";
-        needle = "qmp_client_bounds_async_event_floods";
+        needle = "command_response_rejects_excess_async_events";
       }
       {
         label = "QMP partial line bound test";
-        needle = "qmp_client_bounds_partial_line_progress";
-      }
-      {
-        label = "QMP timeout channel classification test";
-        needle = "qmp_timeout_errors_classify_node_channel_timeouts";
+        needle = "greeting_rejects_an_oversized_partial_line";
       }
     ]
     ++ forbiddenFor "crates/crucible-qemu/src/async_driver.rs" asyncDriver (

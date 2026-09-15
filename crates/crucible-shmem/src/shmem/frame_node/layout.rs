@@ -56,6 +56,19 @@ pub struct NodeSlot {
     pub(crate) logical_time_restore_target: AtomicU64,
     pub(crate) logical_time_restore_request: AtomicU32,
     pub(crate) logical_time_restore_ack: AtomicU32,
+    pub(crate) control_boundary_fault_command_frontier: AtomicU64,
+    pub(crate) control_boundary_capture_request: AtomicU32,
+    pub(crate) _pad3: [u8; 4],
+    pub(crate) timer_witness_generation: AtomicU64,
+    pub(crate) timer_witness_deadline_ns: AtomicU64,
+    pub(crate) timer_witness_deadline_icount: AtomicU64,
+    pub(crate) timer_witness_armed_raw_icount: AtomicU64,
+    pub(crate) timer_witness_fired_expire_ns: AtomicU64,
+    pub(crate) timer_witness_fired_virtual_ns: AtomicU64,
+    pub(crate) timer_witness_fired_raw_icount: AtomicU64,
+    pub(crate) timer_witness_completed: AtomicU32,
+    pub(crate) timer_witness_reserved: AtomicU32,
+    pub(crate) _pad4: [u8; 48],
 }
 
 impl Clone for NodeSlot {
@@ -105,6 +118,43 @@ impl Clone for NodeSlot {
             logical_time_restore_ack: AtomicU32::new(
                 self.logical_time_restore_ack.load(Ordering::Acquire),
             ),
+            control_boundary_fault_command_frontier: AtomicU64::new(
+                self.control_boundary_fault_command_frontier
+                    .load(Ordering::Acquire),
+            ),
+            control_boundary_capture_request: AtomicU32::new(
+                self.control_boundary_capture_request
+                    .load(Ordering::Acquire),
+            ),
+            _pad3: [0; 4],
+            timer_witness_generation: AtomicU64::new(
+                self.timer_witness_generation.load(Ordering::Acquire),
+            ),
+            timer_witness_deadline_ns: AtomicU64::new(
+                self.timer_witness_deadline_ns.load(Ordering::Acquire),
+            ),
+            timer_witness_deadline_icount: AtomicU64::new(
+                self.timer_witness_deadline_icount.load(Ordering::Acquire),
+            ),
+            timer_witness_armed_raw_icount: AtomicU64::new(
+                self.timer_witness_armed_raw_icount.load(Ordering::Acquire),
+            ),
+            timer_witness_fired_expire_ns: AtomicU64::new(
+                self.timer_witness_fired_expire_ns.load(Ordering::Acquire),
+            ),
+            timer_witness_fired_virtual_ns: AtomicU64::new(
+                self.timer_witness_fired_virtual_ns.load(Ordering::Acquire),
+            ),
+            timer_witness_fired_raw_icount: AtomicU64::new(
+                self.timer_witness_fired_raw_icount.load(Ordering::Acquire),
+            ),
+            timer_witness_completed: AtomicU32::new(
+                self.timer_witness_completed.load(Ordering::Acquire),
+            ),
+            timer_witness_reserved: AtomicU32::new(
+                self.timer_witness_reserved.load(Ordering::Acquire),
+            ),
+            _pad4: [0; 48],
         }
     }
 }
@@ -176,6 +226,43 @@ pub const NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET: usize =
 /// Byte offset of the plugin-published logical-time restore acknowledgement.
 pub const NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET: usize =
     core::mem::offset_of!(NodeSlot, logical_time_restore_ack);
+/// Byte offset of the host-bound fault-command producer frontier.
+pub const NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, control_boundary_fault_command_frontier);
+/// Byte offset of the fingerprint request generation bound to the control request.
+pub const NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, control_boundary_capture_request);
+/// Byte offset of the trailing reserved bytes.
+pub const NODE_SLOT_PAD3_OFFSET: usize = core::mem::offset_of!(NodeSlot, _pad3);
+/// Byte offset of the completed virtual-timer witness generation.
+pub const NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_generation);
+/// Byte offset of the armed virtual-timer expiry.
+pub const NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_deadline_ns);
+/// Byte offset of the armed logical wake icount.
+pub const NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_deadline_icount);
+/// Byte offset of the raw icount captured while arming the witness.
+pub const NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_armed_raw_icount);
+/// Byte offset of the expiry saved for the callback that ran.
+pub const NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_fired_expire_ns);
+/// Byte offset of virtual time at actual callback invocation.
+pub const NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_fired_virtual_ns);
+/// Byte offset of raw icount at actual callback invocation.
+pub const NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_fired_raw_icount);
+/// Byte offset of the actual-callback completion flag.
+pub const NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_completed);
+/// Byte offset of the witness reserved field.
+pub const NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_reserved);
+/// Byte offset of the remaining forward-compatible bytes.
+pub const NODE_SLOT_PAD4_OFFSET: usize = core::mem::offset_of!(NodeSlot, _pad4);
 /// Wire size of one [`NodeSlot`].
 pub const NODE_SLOT_SIZE: usize = core::mem::size_of::<NodeSlot>();
 /// Wire alignment of one [`NodeSlot`].
@@ -206,5 +293,18 @@ const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET == 104);
 const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET == 112);
 const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET == 120);
 const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET == 124);
-const _: () = assert!(NODE_SLOT_SIZE == 128);
+const _: () = assert!(NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET == 128);
+const _: () = assert!(NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET == 136);
+const _: () = assert!(NODE_SLOT_PAD3_OFFSET == 140);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET == 144);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET == 152);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET == 160);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET == 168);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET == 176);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET == 184);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET == 192);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET == 200);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET == 204);
+const _: () = assert!(NODE_SLOT_PAD4_OFFSET == 208);
+const _: () = assert!(NODE_SLOT_SIZE == 256);
 const _: () = assert!(NODE_SLOT_ALIGN == 128);

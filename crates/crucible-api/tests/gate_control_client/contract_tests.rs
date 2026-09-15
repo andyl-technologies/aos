@@ -2,563 +2,8 @@
 
 use super::*;
 
-#[tokio::test(flavor = "current_thread")]
-async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
-    let (in_process, _actor) = in_process_client_fixture();
-    let rpc_server = spawn_http2_hello_server().await;
-    let rpc = RpcControlClient::new(RpcEndpoint::http2(rpc_server.endpoint()))
-        .unwrap_or_else(|error| panic!("HTTP/2 RPC client should build: {error}"));
-
-    assert_control_client_trait(&in_process);
-    assert_control_client_trait(&rpc);
-    assert_eq!(in_process.transport(), ControlTransportKind::InProcess);
-    assert_eq!(rpc.transport(), ControlTransportKind::Http2Rpc);
-    assert_eq!(rpc.endpoint().protocol(), RpcTransportProtocol::Http2);
-    assert!(in_process.reaches_same_process_actor_without_serialization());
-
-    let shared_model = assert_shared_wire_model(&in_process, &rpc)
-        .unwrap_or_else(|error| panic!("client transports should share one wire model: {error}"));
-    assert_eq!(shared_model, ControlWireModel::current());
-
-    let request = HelloRequest::new("api-control-client-test", RPC_PROTOCOL_VERSION);
-    assert_eq!(
-        shared_model.encode_hello_request(&request),
-        encode_rpc_hello_request("api-control-client-test", RPC_PROTOCOL_VERSION)
-    );
-    let in_process_hello = in_process
-        .hello(request.clone())
-        .await
-        .unwrap_or_else(|error| panic!("in-process hello should negotiate: {error}"));
-    let rpc_hello = rpc
-        .hello(request)
-        .await
-        .unwrap_or_else(|error| panic!("RPC hello should negotiate: {error}"));
-
-    assert_eq!(in_process_hello.version, RPC_PROTOCOL_VERSION);
-    assert_eq!(rpc_hello.version, RPC_PROTOCOL_VERSION);
-    assert_eq!(in_process_hello.payload_kinds, RPC_OPEN_SET_PAYLOAD_KINDS);
-    assert_eq!(rpc_hello.payload_kinds, RPC_OPEN_SET_PAYLOAD_KINDS);
-    assert_eq!(
-        shared_model.encode_hello_response(&rpc_hello),
-        encode_rpc_hello_response(
-            &rpc_hello.server_name,
-            RPC_PROTOCOL_VERSION,
-            RPC_OPEN_SET_PAYLOAD_KINDS,
-        )
-    );
-    let scenarios = rpc
-        .list_scenarios()
-        .await
-        .unwrap_or_else(|error| panic!("RPC list scenarios should decode: {error}"));
-    assert_eq!(scenarios.scenarios.len(), 1);
-    assert_eq!(scenarios.scenarios[0].name, "api-control-client-scenario");
-    assert_command_rejection_taxonomy_is_closed();
-
-    let missing_scenario_error = rpc
-        .create_session(CreateSessionRequest::scenario_ref(
-            "missing-api-control-client-scenario",
-            Seed::from_u64(77),
-        ))
-        .await
-        .expect_err("RPC unknown scenario should decode as typed NOT_FOUND");
-    assert_eq!(
-        missing_scenario_error,
-        ControlClientError::Lifecycle {
-            source: LifecycleApiError::ScenarioNotFound {
-                name: String::from("missing-api-control-client-scenario"),
-            },
-        },
-    );
-
-    let created = rpc
-        .create_session(
-            CreateSessionRequest::scenario_ref("api-control-client-scenario", Seed::from_u64(77))
-                .with_start_paused(false),
-        )
-        .await
-        .unwrap_or_else(|error| panic!("RPC create session should decode: {error}"));
-    assert_eq!(created.state, LiveStateKind::Running);
-    assert_eq!(created.session.id.value, 1);
-    assert_eq!(created.session.epoch, 1);
-    assert_eq!(created.session.seed, Seed::from_u64(77));
-    assert_raw_send_error(
-        rpc_server.endpoint(),
-        raw_send_body(created.session, 901, "crucible.cmd.no-such-command"),
-        "unsupported",
-        "unsupported",
-    )
-    .await;
-    assert_raw_send_error(
-        rpc_server.endpoint(),
-        String::from(
-            "crucible.rpc/send-request\nsession-id=not-an-integer\nepoch=1\nseed=00\nexpected-epoch=none\ncommand-id=902\ncommand=crucible.cmd.continue\n",
-        ),
-        "invalid-argument",
-        "invalid-argument",
-    )
-    .await;
-
-    let sessions = rpc
-        .list_sessions()
-        .await
-        .unwrap_or_else(|error| panic!("RPC list sessions should decode: {error}"));
-    assert_eq!(sessions.sessions.len(), 1);
-    assert_eq!(sessions.sessions[0].session, created.session);
-    assert_eq!(sessions.sessions[0].state, LiveStateKind::Running);
-
-    let pre_attach_paused = rpc
-        .send_command(SendRequest::new(
-            created.session,
-            100,
-            SessionCommand::Pause,
-        ))
-        .await
-        .unwrap_or_else(|error| panic!("RPC pre-attach Pause should decode: {error}"));
-    assert_eq!(
-        pre_attach_paused.result.status,
-        CommandResultStatus::Accepted
-    );
-    assert_eq!(
-        pre_attach_paused.state_update.map(|update| update.state),
-        Some(LiveStateKind::Paused),
-    );
-    let paused_sessions = rpc
-        .list_sessions()
-        .await
-        .unwrap_or_else(|error| panic!("RPC paused list sessions should decode: {error}"));
-    assert_eq!(paused_sessions.sessions[0].state, LiveStateKind::Paused);
-    let control_replay_start = paused_sessions.sessions[0].event_log_len;
-    let reproduction = rpc
-        .get_reproduction(
-            GetReproductionRequest::new(created.session).with_expected_epoch(created.session.epoch),
-        )
-        .await
-        .unwrap_or_else(|error| panic!("RPC GetReproduction should decode: {error}"));
-    assert_eq!(reproduction.session, created.session);
-    assert_eq!(reproduction.commands.len(), 1);
-    assert_reproduction_pause_record(&reproduction.commands[0], control_replay_start);
-    rpc_server
-        .append_session_events(created.session, &event_pair(control_replay_start, 301))
-        .await;
-
-    let mut control = rpc
-        .control_attach(
-            AttachRequest::new(created.session)
-                .with_expected_epoch(created.session.epoch)
-                .with_cursor(EventLogCursor::new(control_replay_start)),
-        )
-        .await
-        .unwrap_or_else(|error| panic!("RPC Control attach should decode: {error}"));
-    let control_attached = control.attached().clone();
-    assert_eq!(control_attached.session, created.session);
-    assert_eq!(control_attached.state, LiveStateKind::Paused);
-    assert_eq!(
-        control_attached.event_log_len,
-        control_replay_start.saturating_add(2),
-    );
-    assert_eq!(
-        control_attached
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.event_count),
-        Some(control_replay_start.saturating_add(2)),
-    );
-    assert_eq!(
-        control_attached
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.reproduction.clone()),
-        Some(reproduction.commands.clone()),
-    );
-    assert_eq!(
-        control_attached.capabilities.commands.len(),
-        SessionCommandKind::ALL.len(),
-    );
-    let control_replay = recv_rpc_control_event(&mut control).await;
-    assert_eq!(
-        control_replay.cursor,
-        EventLogCursor::new(control_replay_start)
-    );
-    assert_eq!(control_replay.event.payload.kind, "crucible.event.rng_draw",);
-    assert!(!control_replay.event.observational);
-    let control_replay_observational = recv_rpc_control_event(&mut control).await;
-    assert_eq!(
-        control_replay_observational.cursor,
-        EventLogCursor::new(control_replay_start.saturating_add(1)),
-    );
-    assert!(control_replay_observational.event.observational);
-    let control_live_start = control_attached.event_log_len;
-    rpc_server
-        .append_session_events(created.session, &event_pair(control_live_start, 302))
-        .await;
-    let control_live = recv_rpc_control_event(&mut control).await;
-    assert_eq!(control_live.cursor, EventLogCursor::new(control_live_start));
-    assert_eq!(control_live.event.sequence, control_live_start);
-
-    let control_continued = rpc
-        .control_send(SendRequest::new(
-            created.session,
-            101,
-            SessionCommand::Continue,
-        ))
-        .await
-        .unwrap_or_else(|error| panic!("RPC Control send should decode: {error}"));
-    assert_eq!(control_continued.result.command_id, 101);
-    assert_eq!(
-        control_continued.result.status,
-        CommandResultStatus::Accepted
-    );
-    assert_eq!(
-        control_continued.state_update.map(|update| update.state),
-        Some(LiveStateKind::Running),
-    );
-    let control_running_update = recv_rpc_control_state_update(&mut control).await;
-    assert_eq!(control_running_update.update.session, created.session);
-    assert_eq!(control_running_update.update.state, LiveStateKind::Running);
-
-    let control_paused = rpc
-        .control_send(SendRequest::new(
-            created.session,
-            102,
-            SessionCommand::Pause,
-        ))
-        .await
-        .unwrap_or_else(|error| panic!("RPC Control Pause should decode: {error}"));
-    assert_eq!(control_paused.result.command_id, 102);
-    assert_eq!(control_paused.result.status, CommandResultStatus::Accepted);
-    assert_eq!(
-        control_paused.state_update.map(|update| update.state),
-        Some(LiveStateKind::Paused),
-    );
-    let control_paused_update = recv_rpc_control_state_update(&mut control).await;
-    assert_eq!(control_paused_update.update.session, created.session);
-    assert_eq!(control_paused_update.update.state, LiveStateKind::Paused);
-    assert!(
-        control_paused_update.sequence > control_running_update.sequence,
-        "Control state updates should be monotone",
-    );
-
-    let watch_replay_start = rpc
-        .list_sessions()
-        .await
-        .unwrap_or_else(|error| panic!("RPC list before Watch attach should decode: {error}"))
-        .sessions[0]
-        .event_log_len;
-    let mut watch = rpc
-        .watch_attach(
-            AttachRequest::new(created.session)
-                .with_expected_epoch(created.session.epoch)
-                .with_cursor(EventLogCursor::new(watch_replay_start)),
-        )
-        .await
-        .unwrap_or_else(|error| panic!("RPC Watch attach should decode: {error}"));
-    let watch_attached = watch.attached().clone();
-    assert_eq!(watch_attached.session, created.session);
-    assert_eq!(watch_attached.state, LiveStateKind::Paused);
-    assert_eq!(watch_attached.capabilities, control_attached.capabilities);
-    assert_eq!(watch_attached.event_log_len, watch_replay_start);
-    let quiet_watch = tokio::time::timeout(Duration::from_millis(10), watch.recv_event()).await;
-    assert!(
-        quiet_watch.is_err(),
-        "Watch cursor at tail should not replay"
-    );
-    rpc_server
-        .append_session_events(created.session, &event_pair(watch_replay_start, 303))
-        .await;
-    let watch_live = recv_rpc_watch_event(&mut watch).await;
-    assert_eq!(watch_live.cursor, EventLogCursor::new(watch_replay_start));
-    assert_eq!(watch_live.event.payload.kind, "crucible.event.rng_draw");
-    let watch_burst_start = watch_replay_start.saturating_add(2);
-    rpc_server
-        .append_session_events(created.session, &event_burst(watch_burst_start, 304, 10))
-        .await;
-
-    let send_continued = rpc
-        .send_command(SendRequest::new(
-            created.session,
-            103,
-            SessionCommand::Continue,
-        ))
-        .await
-        .unwrap_or_else(|error| panic!("RPC Send should decode: {error}"));
-    assert_eq!(send_continued.result.command_id, 103);
-    assert_eq!(send_continued.result.status, CommandResultStatus::Accepted);
-    assert_eq!(
-        send_continued.state_update.map(|update| update.state),
-        Some(LiveStateKind::Running),
-    );
-    let watch_running_update = recv_rpc_watch_state_update(&mut watch).await;
-    assert_eq!(watch_running_update.update.session, created.session);
-    assert_eq!(watch_running_update.update.state, LiveStateKind::Running);
-
-    let rejected_start = rpc
-        .send_command(SendRequest::new(
-            created.session,
-            104,
-            SessionCommand::Start,
-        ))
-        .await
-        .unwrap_or_else(|error| panic!("RPC Send rejection should decode: {error}"));
-    assert_eq!(
-        rejected_start.result.status,
-        CommandResultStatus::Rejected {
-            reason: CommandRejectionKind::InvalidState,
-        },
-    );
-    assert!(rejected_start.state_update.is_none());
-
-    let rejected_remove = rpc
-        .send_command(SendRequest::new(
-            created.session,
-            105,
-            SessionCommandKind::RemoveBreakpoint
-                .representative_command()
-                .unwrap_or_else(|| panic!("RemoveBreakpoint has a representative payload")),
-        ))
-        .await
-        .unwrap_or_else(|error| panic!("RPC Send RemoveBreakpoint should decode: {error}"));
-    assert_eq!(
-        rejected_remove.result.status,
-        CommandResultStatus::Rejected {
-            reason: CommandRejectionKind::NotFound,
-        },
-    );
-    assert!(rejected_remove.state_update.is_none());
-    assert_raw_send_rejection(
-        rpc_server.endpoint(),
-        raw_send_body(created.session, 106, "crucible.cmd.remove-breakpoint"),
-        "crucible.cmd.remove-breakpoint",
-        "not-found",
-    )
-    .await;
-
-    let stream_stopped = rpc
-        .send_command(SendRequest::new(created.session, 107, SessionCommand::Stop))
-        .await
-        .unwrap_or_else(|error| panic!("RPC Send Stop should decode: {error}"));
-    assert_eq!(stream_stopped.result.status, CommandResultStatus::Accepted);
-    assert_eq!(
-        stream_stopped.state_update.map(|update| update.state),
-        Some(LiveStateKind::Stopped),
-    );
-    let destroyed = rpc
-        .destroy_session(DestroySessionRequest::new(created.session))
-        .await
-        .unwrap_or_else(|error| panic!("RPC destroy after streaming Stop should decode: {error}"));
-    assert_eq!(destroyed.session, created.session);
-    assert!(!destroyed.stopped);
-    assert!(destroyed.already_absent);
-
-    let missing_reproduction_error = rpc
-        .get_reproduction(GetReproductionRequest::new(created.session))
-        .await
-        .expect_err("RPC GetReproduction on absent session should decode as typed NOT_FOUND");
-    assert_eq!(
-        missing_reproduction_error,
-        ControlClientError::Lifecycle {
-            source: LifecycleApiError::SessionNotFound {
-                session: created.session,
-            },
-        },
-    );
-    let missing_watch_error = match rpc.watch_attach(AttachRequest::new(created.session)).await {
-        Ok(_) => panic!("RPC Watch on absent session should reject"),
-        Err(error) => error,
-    };
-    assert_eq!(
-        missing_watch_error,
-        ControlClientError::Streaming {
-            source: StreamingApiError::SessionNotFound {
-                session: created.session,
-            },
-        },
-    );
-
-    let inline_scenario = generated_scenario(78);
-    let inline_created = rpc
-        .create_session(CreateSessionRequest::inline(
-            inline_scenario.clone(),
-            inline_scenario.seed(),
-        ))
-        .await
-        .unwrap_or_else(|error| panic!("RPC inline create session should decode: {error}"));
-    assert_eq!(inline_created.state, LiveStateKind::Paused);
-    assert_eq!(inline_created.session.id.value, 2);
-    assert_eq!(inline_created.session.epoch, 2);
-    assert_eq!(inline_created.session.seed, inline_scenario.seed());
-
-    let inline_sessions = rpc
-        .list_sessions()
-        .await
-        .unwrap_or_else(|error| panic!("RPC inline list sessions should decode: {error}"));
-    assert_eq!(inline_sessions.sessions.len(), 1);
-    assert_eq!(inline_sessions.sessions[0].session, inline_created.session);
-    assert_eq!(inline_sessions.sessions[0].state, LiveStateKind::Paused);
-
-    let mut resume_request = resume_session_request(79);
-    let replay_closure = ResumeReplayClosure::new(
-        &resume_request.scenario,
-        &resume_request.schedule,
-        &resume_request.checkpoint,
-        7,
-        b"rpc-replay-closure".to_vec(),
-    )
-    .expect("bounded RPC replay closure should build");
-    let observation_source = ResumeObservationSource::new(
-        &resume_request.scenario,
-        &resume_request.schedule,
-        &resume_request.checkpoint,
-        1,
-        b"rpc-observation-proof".to_vec(),
-        b"rpc-observation-evidence".to_vec(),
-    )
-    .expect("bounded RPC observation source should build");
-    resume_request = resume_request
-        .with_replay_closure(replay_closure)
-        .with_observation_source(observation_source);
-    let expected_resume_checkpoint = resume_request.checkpoint.id;
-    let expected_resume_scenario = resume_request.scenario.scenario_def();
-    let expected_resume_configuration = Configuration {
-        def: expected_resume_scenario,
-        schedule: resume_request.schedule.clone(),
-    }
-    .id();
-    let resumed = rpc
-        .resume_session(resume_request)
-        .await
-        .unwrap_or_else(|error| panic!("RPC resume session should decode: {error}"));
-    assert_eq!(resumed.state, LiveStateKind::Paused);
-    assert_eq!(resumed.checkpoint, expected_resume_checkpoint);
-    assert_eq!(resumed.configuration, expected_resume_configuration);
-    assert_eq!(resumed.session.id.value, 3);
-    assert_eq!(resumed.session.epoch, 3);
-    assert_eq!(resumed.session.seed, Seed::from_u64(79));
-    let resume_sessions = rpc
-        .list_sessions()
-        .await
-        .unwrap_or_else(|error| panic!("RPC resume list sessions should decode: {error}"));
-    assert!(
-        resume_sessions
-            .sessions
-            .iter()
-            .any(|summary| summary.session == resumed.session
-                && summary.state == LiveStateKind::Paused
-                && summary.frontier == VirtualTime { ticks: 1 })
-    );
-    let resumed_destroyed = rpc
-        .destroy_session(
-            DestroySessionRequest::new(resumed.session).with_expected_epoch(resumed.session.epoch),
-        )
-        .await
-        .unwrap_or_else(|error| panic!("RPC resumed destroy session should decode: {error}"));
-    assert!(resumed_destroyed.stopped);
-
-    let stale_epoch = inline_created.session.epoch.saturating_add(1);
-    let stale_watch_error = match rpc
-        .watch_attach(AttachRequest::new(inline_created.session).with_expected_epoch(stale_epoch))
-        .await
-    {
-        Ok(_) => panic!("RPC Watch attach stale epoch should be typed"),
-        Err(error) => error,
-    };
-    assert_eq!(
-        stale_watch_error,
-        crucible_api::ControlClientError::Streaming {
-            source: StreamingApiError::EpochMismatch {
-                expected: stale_epoch,
-                actual: inline_created.session.epoch,
-            },
-        },
-    );
-
-    let stale_send_error = rpc
-        .send_command(
-            SendRequest::new(inline_created.session, 200, SessionCommand::Continue)
-                .with_expected_epoch(stale_epoch),
-        )
-        .await
-        .expect_err("RPC Send stale epoch should be typed");
-    assert_eq!(
-        stale_send_error,
-        crucible_api::ControlClientError::Streaming {
-            source: StreamingApiError::EpochMismatch {
-                expected: stale_epoch,
-                actual: inline_created.session.epoch,
-            },
-        },
-    );
-
-    let stale_destroy_error = rpc
-        .destroy_session(
-            DestroySessionRequest::new(inline_created.session).with_expected_epoch(stale_epoch),
-        )
-        .await
-        .expect_err("RPC DestroySession stale epoch should be typed");
-    assert_eq!(
-        stale_destroy_error,
-        crucible_api::ControlClientError::Lifecycle {
-            source: LifecycleApiError::EpochMismatch {
-                session_id: inline_created.session.id,
-                expected: inline_created.session.epoch,
-                actual: stale_epoch,
-            },
-        },
-    );
-
-    let stale_reproduction_error = rpc
-        .get_reproduction(
-            GetReproductionRequest::new(inline_created.session).with_expected_epoch(stale_epoch),
-        )
-        .await
-        .expect_err("RPC GetReproduction stale epoch should be typed");
-    assert_eq!(
-        stale_reproduction_error,
-        crucible_api::ControlClientError::Lifecycle {
-            source: LifecycleApiError::EpochMismatch {
-                session_id: inline_created.session.id,
-                expected: inline_created.session.epoch,
-                actual: stale_epoch,
-            },
-        },
-    );
-
-    let inline_destroyed = rpc
-        .destroy_session(
-            DestroySessionRequest::new(inline_created.session)
-                .with_expected_epoch(inline_created.session.epoch),
-        )
-        .await
-        .unwrap_or_else(|error| panic!("RPC inline destroy session should decode: {error}"));
-    assert_eq!(inline_destroyed.session, inline_created.session);
-    assert!(inline_destroyed.stopped);
-    assert!(!inline_destroyed.already_absent);
-
-    let mismatch_error = rpc
-        .create_session(CreateSessionRequest::inline(
-            generated_scenario(108),
-            Seed::from_u64(109),
-        ))
-        .await
-        .expect_err("RPC inline seed mismatch should reject");
-    assert!(matches!(
-        mismatch_error,
-        ControlClientError::RpcStatus {
-            status: RpcStatusCode::InvalidArgument,
-            ref message,
-        } if message.contains("scenario seed mismatch")
-    ));
-    let sessions_after_rejected_inline = rpc
-        .list_sessions()
-        .await
-        .unwrap_or_else(|error| panic!("RPC list after rejected inline should decode: {error}"));
-    assert!(sessions_after_rejected_inline.sessions.is_empty());
-
-    assert!(rpc_server.saw_http2_request().await);
-    assert_eq!(
-        in_process.live_snapshot().read().event_log_len,
-        in_process.event_log().current_cursor().next_sequence
-    );
-}
+#[path = "contract_tests/transport.rs"]
+mod transport;
 
 #[tokio::test(flavor = "current_thread")]
 async fn in_process_lifecycle_control_stream_stop_cleans_registry() {
@@ -887,7 +332,7 @@ async fn production_http2_lifecycle_server_admits_concurrent_watch_and_query_cli
         panic!("HTTP/2 Stop should round-trip the terminal snapshot");
     };
     assert!(matches!(snapshot.state, EngineState::Stopped { .. }));
-    assert_eq!(snapshot.configuration.def, scenario);
+    assert_eq!(snapshot.configuration.def, scenario.scenario_def());
     let checkpoint = snapshot
         .terminal_savepoint
         .as_ref()
@@ -1205,7 +650,7 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
     );
 
     let scenario = generated_scenario(9013);
-    let config = Configuration::genesis(scenario.clone());
+    let config = Configuration::genesis(scenario.scenario_def());
     let snapshot_result_server = spawn_scripted_send_server(vec![scripted_send_response(
         axum::http::StatusCode::OK,
         format!(
@@ -1369,10 +814,6 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
 fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() {
     let session = SessionRef::new(SessionId::new(42), 7, Seed::from_u64(42));
     let seed_hex = session.seed.to_hex();
-    let inline_id = ContentHash { bytes: [0x11; 32] };
-    let inline_seed = Seed::from_u64(77);
-    let inline =
-        ScenarioDef::from_content_hash_seed_and_app_random_draw_cap(inline_id, inline_seed, 5);
     let reproduction = ReproductionCommandRecord {
         sequence: 1,
         payload: ReproductionCommandPayload {
@@ -1396,7 +837,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-request",
         &hello,
-        "crucible.rpc/hello-request\nversion=5.1.0+crucible-rpc-abi-v5\nclient=contract-client\n",
+        "crucible.rpc/hello-request\nversion=6.0.0+crucible-rpc-abi-v6\nclient=contract-client\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-request",
@@ -1415,22 +856,6 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     );
     assert_rpc_snapshot("create-session-ref-request", &create_ref, &create_ref);
 
-    let create_inline = format!(
-        "crucible.rpc/create-session-request\nsource=inline\nscenario-id={}\nscenario-seed={}\napp-random-draw-cap=5\nseed={seed_hex}\nstart-paused=true\n",
-        inline_id.to_hex(),
-        inline_seed.to_hex(),
-    );
-    assert_eq!(
-        parse_create_session_request(create_inline.as_bytes())
-            .unwrap_or_else(|error| panic!("inline request should parse: {error}")),
-        CreateSessionRequest::inline(inline, session.seed),
-    );
-    assert_rpc_snapshot(
-        "create-session-inline-request",
-        &create_inline,
-        &create_inline,
-    );
-
     let inline_form = resume_session_request(80).scenario;
     let inline_form_scenario = inline_form.scenario_def();
     let create_inline_form = format!(
@@ -1447,16 +872,26 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_eq!(
         parse_create_session_request(create_inline_form.as_bytes())
             .unwrap_or_else(|error| panic!("inline form request should parse: {error}")),
-        CreateSessionRequest::inline_form(inline_form, session.seed),
+        CreateSessionRequest::inline(inline_form.clone(), session.seed),
     );
     assert_rpc_snapshot(
-        "create-session-inline-form-request",
+        "create-session-inline-request",
         &create_inline_form,
         &create_inline_form,
+    );
+    let missing_inline_payload = format!(
+        "crucible.rpc/create-session-request\nsource=inline\nscenario-id={}\nscenario-seed={}\napp-random-draw-cap={}\nseed={seed_hex}\nstart-paused=true\n",
+        inline_form_scenario.id().to_hex(),
+        inline_form_scenario.seed().to_hex(),
+        inline_form_scenario.app_random_draw_cap(),
+    );
+    assert!(
+        parse_create_session_request(missing_inline_payload.as_bytes()).is_err(),
+        "inline create-session must reject a missing scenario payload"
     );
 
     let resume_request = resume_session_request(78);
-    let resume_wire = format!(
+    let resume_prefix = format!(
         "crucible.rpc/resume-session-request\nscenario-id={}\nscenario-seed={}\napp-random-draw-cap={}\nscenario-payload={}\nseed={}\nschedule={}\ncheckpoint={}\n",
         resume_request.scenario.id().to_hex(),
         resume_request.scenario.seed().to_hex(),
@@ -1466,6 +901,21 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
         hex_encode(&resume_request.schedule.to_compact_binary()),
         hex_encode(&resume_request.checkpoint.to_compact_binary()),
     );
+    assert!(
+        parse_resume_session_request(resume_prefix.as_bytes()).is_err(),
+        "source-free resume requests must fail closed"
+    );
+    let observation_source = &resume_request.observation_source;
+    let observation_wire = format!(
+        "campaign-observation-source-version={}\ncampaign-observation-source-identity={}\ncampaign-observation-source-proof-size={}\ncampaign-observation-source-proof={}\ncampaign-observation-source-evidence-size={}\ncampaign-observation-source-evidence={}\n",
+        observation_source.schema_version(),
+        observation_source.identity().to_hex(),
+        observation_source.proof().len(),
+        hex_encode(observation_source.proof()),
+        observation_source.evidence().len(),
+        hex_encode(observation_source.evidence()),
+    );
+    let resume_wire = format!("{resume_prefix}{observation_wire}");
     assert_eq!(
         parse_resume_session_request(resume_wire.as_bytes())
             .unwrap_or_else(|error| panic!("resume request should parse: {error}")),
@@ -1486,7 +936,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
         .clone()
         .with_replay_closure(replay_closure.clone());
     let resume_closure_wire = format!(
-        "{resume_wire}campaign-replay-closure-version={}\ncampaign-replay-closure-identity={}\ncampaign-replay-closure-size={}\ncampaign-replay-closure-payload={}\n",
+        "{resume_prefix}campaign-replay-closure-version={}\ncampaign-replay-closure-identity={}\ncampaign-replay-closure-size={}\ncampaign-replay-closure-payload={}\n{observation_wire}",
         replay_closure.schema_version(),
         replay_closure.identity().to_hex(),
         replay_closure.payload_len(),
@@ -1521,40 +971,17 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     let extra_field = format!("{resume_closure_wire}unexpected=field\n");
     assert!(parse_resume_session_request(extra_field.as_bytes()).is_err());
 
-    let observation_proof = b"rpc-observation-proof".to_vec();
-    let observation_evidence = b"rpc-observation-evidence".to_vec();
-    let observation_source = ResumeObservationSource::new(
-        &resume_request.scenario,
-        &resume_request.schedule,
-        &resume_request.checkpoint,
-        1,
-        observation_proof.clone(),
-        observation_evidence.clone(),
-    )
-    .expect("bounded snapshot observation source should build");
-    let resume_with_observation = resume_with_closure
-        .clone()
-        .with_observation_source(observation_source.clone());
-    let resume_observation_wire = format!(
-        "{resume_closure_wire}campaign-observation-source-version={}\ncampaign-observation-source-identity={}\ncampaign-observation-source-proof-size={}\ncampaign-observation-source-proof={}\ncampaign-observation-source-evidence-size={}\ncampaign-observation-source-evidence={}\n",
-        observation_source.schema_version(),
-        observation_source.identity().to_hex(),
-        observation_source.proof().len(),
-        hex_encode(&observation_proof),
-        observation_source.evidence().len(),
-        hex_encode(&observation_evidence),
-    );
     assert_eq!(
-        parse_resume_session_request(resume_observation_wire.as_bytes())
+        parse_resume_session_request(resume_closure_wire.as_bytes())
             .unwrap_or_else(|error| panic!("resume observation request should parse: {error}")),
-        resume_with_observation,
+        resume_with_closure,
     );
     assert_rpc_snapshot(
         "resume-session-observation-source-request",
-        &resume_observation_wire,
-        &resume_observation_wire,
+        &resume_closure_wire,
+        &resume_closure_wire,
     );
-    let wrong_observation_size = resume_observation_wire.replace(
+    let wrong_observation_size = resume_closure_wire.replace(
         &format!(
             "campaign-observation-source-proof-size={}\n",
             observation_source.proof().len()
@@ -1565,7 +992,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
         ),
     );
     assert!(parse_resume_session_request(wrong_observation_size.as_bytes()).is_err());
-    let wrong_observation_identity = resume_observation_wire.replace(
+    let wrong_observation_identity = resume_closure_wire.replace(
         &observation_source.identity().to_hex(),
         &ContentHash::default().to_hex(),
     );
@@ -1655,7 +1082,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-response",
         &hello_response,
-        "crucible.rpc/hello-response\nversion=5.1.0+crucible-rpc-abi-v5\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.event.*\n",
+        "crucible.rpc/hello-response\nversion=6.0.0+crucible-rpc-abi-v6\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.event.*\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-response",
@@ -1753,7 +1180,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
             }),
         }),
         &format!(
-            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=5.1.0+crucible-rpc-abi-v5\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
+            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=6.0.0+crucible-rpc-abi-v6\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
         ),
     );
     assert_rpc_snapshot(

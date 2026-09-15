@@ -241,7 +241,7 @@ impl SingleScheduler {
                 ),
             });
         }
-        let configuration = self.step_quantum(&decisions);
+        let configuration = self.step_quantum(&decisions)?;
         let at = SimInstant {
             nanos: self.frontier.ticks,
         };
@@ -276,7 +276,7 @@ impl SingleScheduler {
                 ),
             });
         }
-        let configuration = self.step_quantum(branch.decisions());
+        let configuration = self.step_quantum(branch.decisions())?;
         if configuration != *branch.selected() {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -331,7 +331,12 @@ impl SingleScheduler {
             });
         }
 
-        let configuration = step(parent, Decision::Selection(decision.clone()));
+        let configuration =
+            try_step(parent, Decision::Selection(decision.clone())).map_err(|source| {
+                SchedulerError::BoundaryViolation {
+                    message: format!("external selection violated the scenario model: {source}"),
+                }
+            })?;
         if configuration != *selected {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(

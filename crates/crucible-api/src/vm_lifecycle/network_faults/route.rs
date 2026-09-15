@@ -18,13 +18,13 @@ pub(super) use custody_and_payload::*;
 pub(super) use frame_policy::*;
 pub(super) use random_and_selection::*;
 
-impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
+impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
     for ProductionFaultNetworkInterceptor
 {
     fn intercept_network_outputs(
         &mut self,
         loop_impl: &mut SingleScheduler,
-        _backend: &mut ProductionNodeSet,
+        _backend: &mut QemuNodeSet,
         frontier: VirtualTime,
         pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
         outputs: &mut Vec<crucible::BackendNetworkOutput>,
@@ -47,7 +47,6 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
         let source_outputs = outputs.clone();
         let mut routed = Vec::new();
         let mut observation_batches = Vec::new();
-        let mut transition_records = Vec::new();
         let mut next_wakeup_nanos = None;
         let mut runtime_committed = false;
         let mut staged_effect_state = self.effect_state.clone();
@@ -227,7 +226,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                             next_wakeup_nanos =
                                 earliest_wakeup(next_wakeup_nanos, evaluation.next_wakeup_nanos);
                             let impulses = runtime.drain_host_impulses();
-                            let (transition_observations, records) = self
+                            let transition_observations = self
                                 .stage_availability_transition_drops(
                                     opportunity.coordinate(),
                                     &evaluation.actions,
@@ -239,7 +238,6 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                             let mut evaluation_observations = evaluation.observations;
                             evaluation_observations.extend(transition_observations);
                             observation_batches.push((sequence.journal, evaluation_observations));
-                            transition_records.extend(records);
                             let mut frame_actions = Vec::new();
                             staged_effect_state.boundary.apply_frame(
                                 opportunity.target(),
@@ -525,9 +523,6 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
         *pending_outputs = staged_pending;
         *outputs = routed;
         self.effect_state = staged_effect_state;
-        for record in transition_records {
-            self.transition_ledger.insert(record.action, record);
-        }
         Ok(appends)
     }
 }
@@ -993,36 +988,6 @@ fn apply_network_frame_actions_with_limits(
         typed_response,
         forwarding_recipients,
     })
-}
-
-#[cfg(test)]
-// crucible-lint: allow rust-allow -- the compatibility wrapper mirrors the complete production frame-action boundary.
-#[allow(clippy::too_many_arguments)]
-fn apply_network_frame_actions(
-    payload: &mut Vec<u8>,
-    effects: &mut crucible::ResolvedNetworkFrameEffects,
-    actions: &[ResolvedBindingAction],
-    opportunity: &FaultOpportunity,
-    scenario_seed: ContentHash,
-    topology: &crucible::model::WorldFaultTopology,
-    state: &mut NetworkEffectRuntimeState,
-    pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
-    base_rate_bps: Option<u64>,
-    repeated_phase_effect: Option<crucible::model::EffectKind>,
-) -> Result<NetworkFrameApplication, SchedulerError> {
-    apply_network_frame_actions_with_limits(
-        payload,
-        effects,
-        actions,
-        opportunity,
-        scenario_seed,
-        topology,
-        state,
-        pending_outputs,
-        base_rate_bps,
-        repeated_phase_effect,
-        FaultResourceLimits::default(),
-    )
 }
 
 #[cfg(test)]

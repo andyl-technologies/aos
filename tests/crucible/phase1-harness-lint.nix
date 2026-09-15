@@ -3,7 +3,24 @@
   lib,
   attrPath ? "checks.crucible.phase0.gates.harnessLint",
   dependencies ? [],
+  campaignComposition ? null,
 }: let
+  campaignMode =
+    if campaignComposition == null
+    then null
+    else campaignComposition.mode;
+  campaignSystem =
+    if campaignComposition == null
+    then null
+    else campaignComposition.system;
+  campaignToplevel =
+    if campaignSystem == null
+    then null
+    else campaignSystem.config.system.build.toplevel;
+  campaignRuntimeIdentity =
+    if campaignSystem == null
+    then null
+    else campaignSystem.config.aos.services.crucibleCampaign._runtimeIdentity;
   allPackages = import ../../pkgs/tools/crucible/_packages.nix;
   workspaceManifest = builtins.readFile ../../crates/Cargo.toml;
   clippyConfig = builtins.readFile ../../crates/clippy.toml;
@@ -339,6 +356,11 @@
     }
     {
       pattern = "SystemTime::now";
+      reason = "host wall-clock";
+      rule = "host-wall-clock";
+    }
+    {
+      pattern = "UNIX_EPOCH";
       reason = "host wall-clock";
       rule = "host-wall-clock";
     }
@@ -826,6 +848,7 @@
       relative
       == "src/main.rs"
       || relativeIsUnder relative "src/diagnostics"
+      || relativeIsUnder relative "src/host_boundary"
       || relativeIsUnder relative "src/output"
       || relativeIsUnder relative "src/progress"
     else if package == "crucible-daemon"
@@ -846,7 +869,6 @@
 
   boundaryPackageSourceFailures = package: sources: let
     nondeterministicSources = builtins.filter (source: scanContent source.label source.content != []) sources;
-    hasNondeterminism = nondeterministicSources != [];
     pathFailures =
       lib.concatMap (
         source:
@@ -862,19 +884,17 @@
       )
       nondeterministicSources;
     routeFailures =
-      lib.optionals hasNondeterminism
-      (lib.concatMap (
+      lib.concatMap (
           source:
             scanBoundaryRouteContent source.label source.content
         )
-        sources);
+        nondeterministicSources;
     stateFailures =
-      lib.optionals hasNondeterminism
-      (lib.concatMap (
+      lib.concatMap (
           source:
             scanStateInfluenceContent source.label source.content
         )
-        sources);
+        nondeterministicSources;
   in
     pathFailures ++ exportFailures ++ routeFailures ++ stateFailures;
 
@@ -1060,6 +1080,7 @@
     findings = scanContent "regression.rs" ''
       fn bad() {
         let _ = std::time::SystemTime::now();
+        let _ = std::time::UNIX_EPOCH.elapsed();
         let _ = rand::thread_rng();
         let _ = std::collections::HashMap::<u8, u8>::new();
         let _ = std::collections::hash_map::DefaultHasher::new();
@@ -1068,6 +1089,7 @@
     '';
     missing = missingFindingNeedles findings [
       "host wall-clock"
+      "UNIX_EPOCH"
       "thread/global RNG"
       "unordered map/set"
       "default/random hasher"
@@ -1340,8 +1362,8 @@
     lib.optionals (sameFileFindings == []) [
       "harness-lint confinement regression failed to reject same-file State ingress"
     ]
-    ++ lib.optionals (splitModuleFindings == []) [
-      "harness-lint confinement regression failed to reject split-module State ingress"
+    ++ lib.optionals (splitModuleFindings != []) [
+      "harness-lint confinement regression inferred cross-module data flow from unrelated identifiers"
     ]
     ++ lib.optionals (apiFindings == []) [
       "harness-lint confinement regression failed to reject nondeterminism outside boundary crates"
@@ -1452,7 +1474,7 @@
       }
       {
         label = "baseline count field";
-        needle = "crates/crucible-api/src/server.rs\tstringly error\tResult<_, String>\t\t32";
+        needle = "crates/crucible-api/src/server.rs\tstringly error\tResult<_, String>\t\t34";
       }
     ];
     phaseWiringFailures =
@@ -1524,9 +1546,13 @@ in
       version = "0";
       src = null;
 
-      buildDeps = [pkgs.coreutils pkgs.crucible] ++ dependencies;
+      buildDeps =
+        [pkgs.coreutils pkgs.crucible]
+        ++ dependencies
+        ++ lib.optionals (campaignComposition != null) [pkgs.nix campaignToplevel];
 
-      phases = [
+      phases =
+        [
         {
           name = "write-result";
           script = ''
@@ -1551,5 +1577,32 @@ in
             RESULT
           '';
         }
-      ];
+        ]
+        ++ lib.optional (campaignComposition != null) {
+          name = "bind-campaign-composition";
+          script = ''
+            set -eu
+            test ${lib.escapeShellArg campaignMode} = enabled \
+              -o ${lib.escapeShellArg campaignMode} = disabled
+            nix-store --query --requisites ${campaignToplevel} \
+              > "$out/campaign-system-closure"
+            grep -Fxq ${lib.escapeShellArg (toString campaignToplevel)} \
+              "$out/campaign-system-closure"
+            if test ${lib.escapeShellArg campaignMode} = enabled; then
+              grep -Fxq ${lib.escapeShellArg (toString pkgs.crucible)} \
+                "$out/campaign-system-closure"
+            elif grep -Fxq ${lib.escapeShellArg (toString pkgs.crucible)} \
+                "$out/campaign-system-closure"; then
+              echo "campaign-disabled system closure contains the Crucible suite" >&2
+              exit 1
+            fi
+            cat >> "$out/result" <<RESULT
+            campaign_mode=${campaignMode}
+            campaign_configuration_identity=${campaignRuntimeIdentity}
+            campaign_toplevel=${campaignToplevel}
+            executor_derivation=$out
+            campaign_closure_authenticated=true
+            RESULT
+          '';
+        };
     }

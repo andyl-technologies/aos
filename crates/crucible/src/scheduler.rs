@@ -17,26 +17,26 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use crate::device::NetworkLinkDirection;
 use crate::model::{DagStore, FaultObservation, FaultObservationKind, MemoryDagStore, Schedule};
-use crate::node_time::{NodeTimeMapping, NodeTimeProjection};
+use crate::node_time::NodeTimeMapping;
 use crate::trigger::{
     Action, ConditionEvaluationPass, ConditionEventLogPrefix, ConditionLeafOracle, EventFiring,
     EventFirings, EventGraph, EventGraphState, GuestMeasurementEvent, GuestMeasurementValue,
-    GuestSemanticMarkerDetail, HostAssertionReport, LogLevel, ObservableEvent,
-    ObservableEventPayload, OfflineAssertionCheckError, RecordedAssertionLog,
+    GuestSemanticMarkerDetail, LogLevel, ObservableEvent, ObservableEventPayload,
+    OfflineAssertionCheckError, RecordedAssertionLog,
 };
 use crate::{
     AssertionId, AssertionPhase, AssertionQuantifierKind, BackendError, BackendInput,
-    BackendNetworkOutput, BackendNetworkRoute, ChoiceTag, Configuration, ContentHash,
-    DebugRuntimeRepositionReport, DebugRuntimeRepositionRequest, Decision, DecisionRecorder,
-    DecisionRngState, DeliveryOrderDecision, EventId, EventKey, EventLogOffset, EventSequenceState,
-    FingerprintSample, GdbAttachInfo, GdbListen, Icount, LinkDef, LinkId, MIN_LINK_LATENCY,
-    MarkerId, NetworkLinkPendingFrame, NodeCounter, NodeId, NodeLifecycle, OverrideDecision,
-    PendingFrame, PreemptionDecision, PreemptionKind, RngStreamId, RngStreamPosition, ScenarioDef,
-    SchedulerNodeId, SchedulerState, SchedulingNodeKind, SchedulingPoint, SearchFrontierChoices,
-    SearchRuntimeFrontier, Seed, Shift, SimDuration, SimInstant, SimulationBackend,
-    TimeConversionError, TimerId, VcpuId, VirtualTime, World, WorldIoInstantiationError,
-    WorldIoLayoutPolicy, WorldLookaheadEdge, WorldStaticTopology, instantiate_world_io_sub_nodes,
-    step,
+    BackendNetworkOutput, BackendNetworkRoute, BackendRngEvidence, ChoiceTag, Configuration,
+    ContentHash, DebugRuntimeRepositionReport, DebugRuntimeRepositionRequest, Decision,
+    DecisionRecorder, DecisionRngState, DeliveryOrderDecision, EventId, EventKey, EventLogOffset,
+    EventSequenceState, FingerprintSample, GdbAttachInfo, GdbListen, Icount, LinkDef, LinkId,
+    MIN_LINK_LATENCY, MarkerId, NetworkLinkPendingFrame, NodeCounter, NodeId, NodeLifecycle,
+    OverrideDecision, PendingFrame, PreemptionDecision, PreemptionKind, RngStreamId,
+    RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulerState, SchedulingNodeKind,
+    SchedulingPoint, SearchFrontierChoices, SearchRuntimeFrontier, Seed, Shift, SimDuration,
+    SimInstant, SimulationBackend, TimeConversionError, TimerId, VcpuId, VirtualTime, World,
+    WorldIoInstantiationError, WorldIoLayoutPolicy, WorldLookaheadEdge, WorldStaticTopology,
+    instantiate_world_io_sub_nodes, try_step,
 };
 
 const EVENT_LOG_SEGMENT_BINARY_MAGIC: &[u8; 16] = b"CRUCIBLE-ELOGSEG";
@@ -105,6 +105,7 @@ const EVENT_LOG_CLASS_OBSERVATIONAL: u8 = 1;
 mod backend_lifecycle;
 mod branch_exploration;
 mod checkpoint;
+mod concurrent_prepare;
 mod control_state;
 mod event_codec;
 mod event_log;
@@ -117,6 +118,7 @@ mod single_scheduler_state;
 mod topology;
 
 pub use checkpoint::*;
+pub use concurrent_prepare::*;
 pub use control_state::*;
 pub(crate) use event_codec::*;
 pub(crate) use event_codec::{

@@ -1,13 +1,11 @@
 //! Offline campaign archive planning, transfer, and inspection.
 //!
-//! Planning reads preexisting owner state and returns a review-bound operation
-//! identity. Transfer requires that identity, emits the revalidated plan on
-//! stderr before copying, and writes the completion record on stdout. Physical
-//! bytes remain `null` when the composed
+//! A transfer emits the authenticated plan on stderr before copying and the
+//! completion record on stdout. Physical bytes remain `null` when the composed
 //! store does not expose per-object packed, compressed, or deduplicated size:
 //!
 //! ```text
-//! {"schema":"crucible.cli.campaign-archive-plan.v2","phase":"plan","operation":"0123...","classes":[{"class":"exact-ram","logical_bytes":4096,"logical_replication_obligation_bytes":8192,"physical_bytes":null,"sensitive":true}],"sensitive_classes":["exact-ram"]}
+//! {"schema":"crucible.cli.campaign-archive-plan.v1","phase":"pre-transfer","classes":[{"class":"exact-ram","logical_bytes":4096,"logical_replication_obligation_bytes":8192,"physical_bytes":null,"sensitive":true}],"sensitive_classes":["exact-ram"]}
 //! ```
 
 use std::collections::BTreeMap;
@@ -19,24 +17,19 @@ use crucible_campaign::{
     CampaignName, CampaignSnapshotId,
 };
 use crucible_daemon::campaign_store_composition::{
-    ContentId, DurabilityRequirement, ImmutableBlobBackend, ObjectKind, RefName, RetentionRole,
-    SensitivityClass,
+    ContentId, DurabilityRequirement, ImmutableBlobBackend, ObjectKind, RefName, SensitivityClass,
 };
 use crucible_daemon::{
     CampaignLocalServiceConfig, CampaignLocalServiceMode, CampaignLoopbackEndpointConfig,
-    CampaignLoopbackServerConfig, DirectoryExactPinMaterializationReader,
-    DirectoryExactPinMaterializationStore, EXACT_PIN_MATERIALIZATION_DIRECTORY,
-    ExactCheckpointStore, transfer_campaign_archive_durably,
+    CampaignLoopbackServerConfig, DirectoryExactPinMaterializationStore,
+    EXACT_PIN_MATERIALIZATION_DIRECTORY, ExactCheckpointStore, transfer_campaign_archive_durably,
 };
 use serde::Serialize;
 
-use super::super::cli_campaign_store::{
-    load_campaign_archive_planning_store, load_campaign_repository_store,
-    load_campaign_repository_store_and_graph,
-};
+use super::super::cli_campaign_store::{load_campaign_repository_store, load_campaign_store_graph};
 use super::*;
 
-const CAMPAIGN_ARCHIVE_PLAN_SCHEMA: &str = "crucible.cli.campaign-archive-plan.v2";
+const CAMPAIGN_ARCHIVE_PLAN_SCHEMA: &str = "crucible.cli.campaign-archive-plan.v1";
 const CAMPAIGN_ARCHIVE_TRANSFER_SCHEMA: &str = "crucible.cli.campaign-archive-transfer.v1";
 const CAMPAIGN_ARCHIVE_INSPECTION_SCHEMA: &str = "crucible.cli.campaign-archive-inspection.v1";
 const UNUSED_SOURCE_ENDPOINT: &str = "/tmp/crucible-campaign-archive-source.sock";
@@ -98,7 +91,6 @@ struct CampaignArchivePlanReport {
     source_campaign: String,
     source_snapshot: String,
     manifest: String,
-    operation: String,
     policy: &'static str,
     archive: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,25 +102,6 @@ struct CampaignArchivePlanReport {
     allow_deferred_write: bool,
     classes: Vec<ArchiveByteReport>,
     sensitive_classes: Vec<&'static str>,
-    exact_checkpoint_requirements: Vec<ExactCheckpointRequirementReport>,
-    omitted_acceleration: OmittedAccelerationReport,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct ExactCheckpointRequirementReport {
-    configuration: String,
-    pin_fact: String,
-    checkpoint: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct OmittedAccelerationReport {
-    objects: u64,
-    logical_bytes: u64,
-    classes: Vec<&'static str>,
-    exact_pin_catalog: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    warning: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -136,13 +109,15 @@ struct CampaignArchiveTransferCompletionReport {
     schema: &'static str,
     phase: &'static str,
     manifest: String,
-    operation: String,
     archive: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     campaign: Option<String>,
     copied_objects: u64,
     copied_logical_bytes: u64,
     existing_objects: u64,
+    minimum_required_durable_placements: u16,
+    minimum_observed_durable_placements: u16,
+    deferred_writes_allowed: bool,
     authenticated: bool,
 }
 
@@ -170,91 +145,75 @@ struct PreparedArchiveTransferBasis {
     durability: DurabilityRequirement,
 }
 
-struct PreparedArchiveReview {
-    basis: PreparedArchiveTransferBasis,
-    plan: CampaignArchivePlan,
-    operation: String,
-    report: CampaignArchivePlanReport,
-    source: crucible_daemon::PreparedCampaignArchivePlanner,
-    destination: crucible_daemon::PreparedCampaignArchivePlanner,
-}
-
 pub(super) fn run_campaign_archive(
     args: &CampaignArchiveArgs,
     format: OutputFormat,
 ) -> Result<String, CliError> {
     match &args.command {
-        CampaignArchiveCommand::Plan(plan) => run_archive_plan(plan, format),
         CampaignArchiveCommand::Transfer(transfer) => run_archive_transfer(transfer, format),
         CampaignArchiveCommand::Inspect(inspect) => run_archive_inspection(inspect, format),
     }
-}
-
-fn run_archive_plan(
-    args: &CampaignArchivePlanArgs,
-    format: OutputFormat,
-) -> Result<String, CliError> {
-    let review = prepare_archive_review(args)?;
-    render_plan_report(&review.report, format)
 }
 
 fn run_archive_transfer(
     args: &CampaignArchiveTransferArgs,
     format: OutputFormat,
 ) -> Result<String, CliError> {
-    let review = prepare_archive_review(&args.plan)?;
-    if args.reviewed_operation != review.operation {
-        return Err(usage_error(format!(
-            "reviewed archive operation does not match current plan: expected {}",
-            review.operation
-        )));
-    }
+    let basis = prepare_archive_transfer_basis(args)?;
+    validate_distinct_owner_roots(&args.source_state, &args.destination_state)?;
 
-    let source_owner = review.source.into_stopped_owner();
-    let destination_owner = review.destination.into_stopped_owner();
-    let source_store = load_campaign_repository_store(&args.source_store)?;
-    let (destination_store, destination_graph) =
-        load_campaign_repository_store_and_graph(&args.destination_store)?;
+    let source_graph = load_campaign_store_graph(&args.source_store)?;
+    let source_checkpoint_backend: Arc<dyn ImmutableBlobBackend> = source_graph;
+    let source_checkpoints =
+        ExactCheckpointStore::new(source_checkpoint_backend, args.maximum_checkpoint_bytes)
+            .map_err(|error| {
+                archive_error(format!("source checkpoint store is invalid: {error}"))
+            })?;
+    let destination_graph = load_campaign_store_graph(&args.destination_store)?;
     let destination_checkpoint_backend: Arc<dyn ImmutableBlobBackend> = destination_graph;
     let destination_checkpoints = ExactCheckpointStore::new(
         destination_checkpoint_backend,
         args.maximum_checkpoint_bytes,
     )
     .map_err(|error| archive_error(format!("destination checkpoint store is invalid: {error}")))?;
-    let mut source = source_owner
-        .upgrade_with_store(source_store)
-        .map_err(|error| archive_error(format!("source transfer owner upgrade failed: {error}")))?;
-    let mut destination = destination_owner
-        .upgrade_with_store(destination_store)
-        .map_err(|error| {
-            archive_error(format!(
-                "destination transfer owner upgrade failed: {error}"
-            ))
-        })?;
+
+    let mut source = prepare_owner(
+        &args.source_state,
+        &args.source_policy,
+        &args.source_store,
+        UNUSED_SOURCE_ENDPOINT,
+        CampaignLocalServiceMode::ReadWrite,
+    )?;
+    let mut destination = prepare_owner(
+        &args.destination_state,
+        &args.destination_policy,
+        &args.destination_store,
+        UNUSED_DESTINATION_ENDPOINT,
+        CampaignLocalServiceMode::ReadWrite,
+    )?;
+    let mut source_exact_pins = open_exact_pins(&args.source_state)?;
     let mut destination_exact_pins = open_exact_pins(&args.destination_state)?;
-
-    let actual_operation = destination
-        .archive_transfer_operation_id(
-            &review.plan,
-            &args.archive,
-            review
-                .basis
-                .destination_campaign
-                .as_ref()
-                .map(CampaignName::as_str),
-            review.basis.durability,
+    let plan = source
+        .plan_campaign_archive_with_exact_pins(
+            basis.source_campaign.clone(),
+            basis.snapshot,
+            basis.policy,
+            basis.retained_roots,
+            &source_checkpoints,
+            &mut source_exact_pins,
         )
-        .map_err(|error| archive_error(format!("archive operation revalidation failed: {error}")))?
-        .to_hex();
-    if actual_operation != args.reviewed_operation {
-        return Err(usage_error(format!(
-            "reviewed archive operation no longer matches destination identity: expected {actual_operation}"
-        )));
-    }
+        .map_err(|error| archive_error(format!("archive planning failed: {error}")))?;
+    let plan_report = plan_report(
+        &plan,
+        &basis.source_campaign,
+        &args.archive,
+        basis.destination_campaign.as_ref(),
+        basis.durability,
+    )?;
 
-    let mut validated_report = review.report;
-    validated_report.phase = "validated-transfer";
-    eprintln!("{}", render_plan_report(&validated_report, format)?);
+    // This disclosure is emitted before transfer journals or destination bytes
+    // are created, so an operator sees sensitive closure classes before copy.
+    eprintln!("{}", render_plan_report(&plan_report, format)?);
 
     let mut source_endpoint = source.archive_transfer_endpoint();
     let mut destination_endpoint = destination
@@ -265,104 +224,34 @@ fn run_archive_transfer(
     let transfer = transfer_campaign_archive_durably(
         &mut source_endpoint,
         &mut destination_endpoint,
-        &review.plan,
+        &plan,
         &args.archive,
-        review
-            .basis
+        basis
             .destination_campaign
             .as_ref()
             .map(CampaignName::as_str),
-        review.basis.durability,
+        basis.durability,
     )
     .map_err(|error| archive_error(format!("archive transfer failed: {error}")))?;
+    let transfer_report = transfer.transfer();
     let completion = CampaignArchiveTransferCompletionReport {
         schema: CAMPAIGN_ARCHIVE_TRANSFER_SCHEMA,
         phase: "complete",
-        manifest: review.plan.manifest_id().to_string(),
-        operation: review.operation,
+        manifest: plan.manifest_id().to_string(),
         archive: args.archive.clone(),
-        campaign: review
-            .basis
+        campaign: basis
             .destination_campaign
             .as_ref()
             .map(|campaign| campaign.as_str().to_owned()),
-        copied_objects: transfer.copied_objects,
-        copied_logical_bytes: transfer.copied_bytes,
-        existing_objects: transfer.existing_objects,
+        copied_objects: transfer_report.copied_objects,
+        copied_logical_bytes: transfer_report.copied_bytes,
+        existing_objects: transfer_report.existing_objects,
+        minimum_required_durable_placements: transfer.requirement().minimum_durable_placements(),
+        minimum_observed_durable_placements: transfer_report.minimum_observed_durable_placements,
+        deferred_writes_allowed: transfer.requirement().allows_deferred_write(),
         authenticated: true,
     };
     render_transfer_completion(&completion, format)
-}
-
-fn prepare_archive_review(
-    args: &CampaignArchivePlanArgs,
-) -> Result<PreparedArchiveReview, CliError> {
-    let basis = prepare_archive_transfer_basis(args)?;
-    validate_distinct_owner_roots(&args.source_state, &args.destination_state)?;
-
-    let (source_store, source_graph) = load_campaign_archive_planning_store(&args.source_store)?;
-    let source_checkpoint_backend: Arc<dyn ImmutableBlobBackend> = source_graph;
-    let source_checkpoints =
-        ExactCheckpointStore::new(source_checkpoint_backend, args.maximum_checkpoint_bytes)
-            .map_err(|error| {
-                archive_error(format!("source checkpoint store is invalid: {error}"))
-            })?;
-    let source = prepare_planning_owner(
-        &args.source_state,
-        &args.source_policy,
-        source_store,
-        UNUSED_SOURCE_ENDPOINT,
-    )?;
-    let mut source_exact_pins = open_existing_exact_pins(&args.source_state)?;
-    let exact_pin_catalog_present = source_exact_pins.is_present();
-    let plan = source
-        .plan_campaign_archive_with_exact_pins(
-            basis.source_campaign.clone(),
-            basis.snapshot,
-            basis.policy,
-            basis.retained_roots.clone(),
-            &source_checkpoints,
-            &mut source_exact_pins,
-        )
-        .map_err(|error| archive_error(format!("archive planning failed: {error}")))?;
-
-    let (destination_store, _destination_graph) =
-        load_campaign_archive_planning_store(&args.destination_store)?;
-    let destination = prepare_planning_owner(
-        &args.destination_state,
-        &args.destination_policy,
-        destination_store,
-        UNUSED_DESTINATION_ENDPOINT,
-    )?;
-    let destination_campaign = basis
-        .destination_campaign
-        .as_ref()
-        .map(CampaignName::as_str);
-    destination
-        .validate_archive_destination(&plan, &args.archive, destination_campaign)
-        .map_err(|error| archive_error(format!("archive destination review failed: {error}")))?;
-    let operation = destination
-        .archive_transfer_operation_id(&plan, &args.archive, destination_campaign, basis.durability)
-        .map_err(|error| archive_error(format!("archive operation review failed: {error}")))?
-        .to_hex();
-    let report = plan_report(
-        &plan,
-        &operation,
-        &basis.source_campaign,
-        &args.archive,
-        basis.destination_campaign.as_ref(),
-        basis.durability,
-        exact_pin_catalog_present,
-    )?;
-
-    Ok(PreparedArchiveReview {
-        basis,
-        plan,
-        operation,
-        report,
-        source,
-        destination,
-    })
 }
 
 fn run_archive_inspection(
@@ -370,12 +259,12 @@ fn run_archive_inspection(
     format: OutputFormat,
 ) -> Result<String, CliError> {
     validate_archive_name(&args.archive)?;
-    let (store, _graph) = load_campaign_archive_planning_store(&args.store)?;
-    let prepared = prepare_planning_owner(
+    let prepared = prepare_owner(
         &args.state,
         &args.policy,
-        store,
+        &args.store,
         UNUSED_DESTINATION_ENDPOINT,
+        CampaignLocalServiceMode::ReadOnly,
     )?;
     let inspection = prepared
         .inspect_campaign_archive_ref(&args.archive)
@@ -384,7 +273,7 @@ fn run_archive_inspection(
 }
 
 fn prepare_archive_transfer_basis(
-    args: &CampaignArchivePlanArgs,
+    args: &CampaignArchiveTransferArgs,
 ) -> Result<PreparedArchiveTransferBasis, CliError> {
     let source_campaign = CampaignName::new(args.source_campaign.clone())
         .map_err(|error| usage_error(format!("invalid source campaign name: {error}")))?;
@@ -437,12 +326,13 @@ fn prepare_archive_transfer_basis(
     })
 }
 
-fn prepare_planning_owner(
+fn prepare_owner(
     state: &Path,
     policy: &Path,
-    store: crucible_daemon::CampaignArchivePlanningStore,
+    store: &Path,
     endpoint_path: &str,
-) -> Result<crucible_daemon::PreparedCampaignArchivePlanner, CliError> {
+    mode: CampaignLocalServiceMode,
+) -> Result<crucible_daemon::PreparedCampaignLocalService, CliError> {
     let endpoint = CampaignLoopbackEndpointConfig::new(
         endpoint_path,
         rustix::process::geteuid().as_raw(),
@@ -454,17 +344,14 @@ fn prepare_planning_owner(
         endpoint,
         state,
         policy,
-        CampaignLocalServiceMode::ReadWrite,
+        mode,
         CampaignLoopbackServerConfig::default(),
     )
     .map_err(|error| archive_error(format!("invalid campaign owner profile: {error}")))?;
+    let repository_store = load_campaign_repository_store(store)?;
     config
-        .prepare_archive_planning_with_store(store)
-        .map_err(|error| {
-            archive_error(format!(
-                "campaign planning owner acquisition failed: {error}"
-            ))
-        })
+        .prepare_with_store(repository_store)
+        .map_err(|error| archive_error(format!("campaign owner acquisition failed: {error}")))
 }
 
 fn open_exact_pins(state: &Path) -> Result<DirectoryExactPinMaterializationStore, CliError> {
@@ -472,23 +359,12 @@ fn open_exact_pins(state: &Path) -> Result<DirectoryExactPinMaterializationStore
         .map_err(|error| archive_error(format!("exact-pin catalog open failed: {error}")))
 }
 
-fn open_existing_exact_pins(
-    state: &Path,
-) -> Result<DirectoryExactPinMaterializationReader, CliError> {
-    DirectoryExactPinMaterializationReader::open_optional_existing(
-        state.join(EXACT_PIN_MATERIALIZATION_DIRECTORY),
-    )
-    .map_err(|error| archive_error(format!("exact-pin catalog read failed: {error}")))
-}
-
 fn plan_report(
     plan: &CampaignArchivePlan,
-    operation: &str,
     source_campaign: &CampaignName,
     archive: &str,
     campaign: Option<&CampaignName>,
     durability: DurabilityRequirement,
-    exact_pin_catalog_present: bool,
 ) -> Result<CampaignArchivePlanReport, CliError> {
     let selected_bytes = plan
         .selected()
@@ -520,25 +396,12 @@ fn plan_report(
         .filter(|class| class.sensitive && class.logical_bytes != 0)
         .map(|class| class.class)
         .collect();
-    let exact_checkpoint_requirements = plan
-        .manifest()
-        .checkpoint_selections()
-        .iter()
-        .map(|selection| ExactCheckpointRequirementReport {
-            configuration: selection.configuration().to_string(),
-            pin_fact: selection.pin_fact().to_string(),
-            checkpoint: selection.checkpoint().to_string(),
-        })
-        .collect();
-    let omitted_acceleration =
-        omitted_acceleration_report(plan.omitted(), exact_pin_catalog_present)?;
     Ok(CampaignArchivePlanReport {
         schema: CAMPAIGN_ARCHIVE_PLAN_SCHEMA,
-        phase: "plan",
+        phase: "pre-transfer",
         source_campaign: source_campaign.as_str().to_owned(),
         source_snapshot: plan.manifest().source_snapshot().to_string(),
         manifest: plan.manifest_id().to_string(),
-        operation: operation.to_owned(),
         policy: policy_name(plan.manifest().policy()),
         archive: archive.to_owned(),
         campaign: campaign.map(|campaign| campaign.as_str().to_owned()),
@@ -549,55 +412,6 @@ fn plan_report(
         allow_deferred_write: durability.allows_deferred_write(),
         classes,
         sensitive_classes,
-        exact_checkpoint_requirements,
-        omitted_acceleration,
-    })
-}
-
-fn omitted_acceleration_report(
-    omitted: &[ArchiveObjectEntry],
-    exact_pin_catalog_present: bool,
-) -> Result<OmittedAccelerationReport, CliError> {
-    let mut objects = 0_u64;
-    let mut logical_bytes = 0_u64;
-    let mut exact_state = false;
-    let mut projection_cache = false;
-    for entry in omitted {
-        match entry.retention_role() {
-            RetentionRole::ExactState => exact_state = true,
-            RetentionRole::ProjectionCache => projection_cache = true,
-            RetentionRole::CampaignMetadata | RetentionRole::Evidence => continue,
-        }
-        objects = objects
-            .checked_add(1)
-            .ok_or_else(|| archive_error("omitted acceleration object count overflow"))?;
-        logical_bytes = logical_bytes
-            .checked_add(entry.logical_length())
-            .ok_or_else(|| archive_error("omitted acceleration byte count overflow"))?;
-    }
-    let mut classes = Vec::with_capacity(2);
-    if exact_state {
-        classes.push("exact-state");
-    }
-    if projection_cache {
-        classes.push("projection-cache");
-    }
-    Ok(OmittedAccelerationReport {
-        objects,
-        logical_bytes,
-        classes,
-        exact_pin_catalog: if exact_pin_catalog_present {
-            "authenticated"
-        } else {
-            "absent"
-        },
-        warning: if !exact_pin_catalog_present {
-            Some("exact-pin catalog is absent; materialized exact checkpoints are unavailable")
-        } else {
-            (objects != 0).then_some(
-                "omitted acceleration may require regeneration before resume or debugging",
-            )
-        },
     })
 }
 
@@ -742,7 +556,6 @@ fn render_plan_report(
                 format!("{:<32} {}", "source-campaign", report.source_campaign),
                 format!("{:<32} {}", "source-snapshot", report.source_snapshot),
                 format!("{:<32} {}", "manifest", report.manifest),
-                format!("{:<32} {}", "operation", report.operation),
                 format!("{:<32} {}", "policy", report.policy),
                 format!("{:<32} {}", "archive", report.archive),
                 format!(
@@ -759,23 +572,7 @@ fn render_plan_report(
                     "sensitive-classes",
                     report.sensitive_classes.join(",")
                 ),
-                format!(
-                    "{:<32} {}",
-                    "exact-checkpoint-requirements",
-                    report.exact_checkpoint_requirements.len()
-                ),
-                format!(
-                    "{:<32} objects={} logical-bytes={} classes={} exact-pin-catalog={}",
-                    "omitted-acceleration",
-                    report.omitted_acceleration.objects,
-                    report.omitted_acceleration.logical_bytes,
-                    report.omitted_acceleration.classes.join(","),
-                    report.omitted_acceleration.exact_pin_catalog,
-                ),
             ];
-            if let Some(warning) = report.omitted_acceleration.warning {
-                lines.push(format!("{:<32} {}", "warning", warning));
-            }
             lines.extend(report.classes.iter().map(render_class_table));
             Ok(lines.join("\n"))
         }
@@ -787,7 +584,6 @@ fn render_plan_report(
                 format!("| source campaign | `{}` |", report.source_campaign),
                 format!("| source snapshot | `{}` |", report.source_snapshot),
                 format!("| manifest | `{}` |", report.manifest),
-                format!("| operation | `{}` |", report.operation),
                 format!("| policy | `{}` |", report.policy),
                 format!("| archive | `{}` |", report.archive),
                 format!(
@@ -798,21 +594,7 @@ fn render_plan_report(
                     "| sensitive classes | {} |",
                     report.sensitive_classes.join(", ")
                 ),
-                format!(
-                    "| exact checkpoint requirements | {} |",
-                    report.exact_checkpoint_requirements.len()
-                ),
-                format!(
-                    "| omitted acceleration | objects={} / logical bytes={} / classes={} / exact pin catalog={} |",
-                    report.omitted_acceleration.objects,
-                    report.omitted_acceleration.logical_bytes,
-                    report.omitted_acceleration.classes.join(", "),
-                    report.omitted_acceleration.exact_pin_catalog,
-                ),
             ];
-            if let Some(warning) = report.omitted_acceleration.warning {
-                lines.push(format!("| warning | {} |", warning));
-            }
             lines.extend(report.classes.iter().map(render_class_markdown));
             Ok(lines.join("\n"))
         }
@@ -830,7 +612,6 @@ fn render_transfer_completion(
         OutputFormat::Table => Ok([
             format!("{:<24} {}", "phase", report.phase),
             format!("{:<24} {}", "manifest", report.manifest),
-            format!("{:<24} {}", "operation", report.operation),
             format!("{:<24} {}", "archive", report.archive),
             format!(
                 "{:<24} {}",
@@ -843,6 +624,18 @@ fn render_transfer_completion(
                 "copied-logical-bytes", report.copied_logical_bytes
             ),
             format!("{:<24} {}", "existing-objects", report.existing_objects),
+            format!(
+                "{:<40} {}",
+                "minimum-required-durable-placements", report.minimum_required_durable_placements
+            ),
+            format!(
+                "{:<40} {}",
+                "minimum-observed-durable-placements", report.minimum_observed_durable_placements
+            ),
+            format!(
+                "{:<40} {}",
+                "deferred-writes-allowed", report.deferred_writes_allowed
+            ),
             format!("{:<24} {}", "authenticated", report.authenticated),
         ]
         .join("\n")),
@@ -851,7 +644,6 @@ fn render_transfer_completion(
             String::from("|---|---|"),
             format!("| phase | `{}` |", report.phase),
             format!("| manifest | `{}` |", report.manifest),
-            format!("| operation | `{}` |", report.operation),
             format!("| archive | `{}` |", report.archive),
             format!(
                 "| campaign | {} |",
@@ -860,6 +652,18 @@ fn render_transfer_completion(
             format!("| copied objects | {} |", report.copied_objects),
             format!("| copied logical bytes | {} |", report.copied_logical_bytes),
             format!("| existing objects | {} |", report.existing_objects),
+            format!(
+                "| minimum required durable placements | {} |",
+                report.minimum_required_durable_placements
+            ),
+            format!(
+                "| minimum observed durable placements | {} |",
+                report.minimum_observed_durable_placements
+            ),
+            format!(
+                "| deferred writes allowed | {} |",
+                report.deferred_writes_allowed
+            ),
             format!("| authenticated | {} |", report.authenticated),
         ]
         .join("\n")),
@@ -980,24 +784,21 @@ mod tests {
         let snapshot_content =
             ContentId::for_bytes(ObjectKind::CampaignSnapshot, 3, b"archive-cli-snapshot");
         CampaignArchiveTransferArgs {
-            plan: CampaignArchivePlanArgs {
-                source_state: "/tmp/source-state".into(),
-                source_policy: "/tmp/source-policy".into(),
-                source_store: "/tmp/source-store".into(),
-                source_campaign: "source".to_owned(),
-                snapshot: format!("crucible.campaign.snapshot@{}", snapshot_content.encode()),
-                mode: CampaignArchiveMode::Metadata,
-                retained_roots: Vec::new(),
-                destination_state: "/tmp/destination-state".into(),
-                destination_policy: "/tmp/destination-policy".into(),
-                destination_store: "/tmp/destination-store".into(),
-                archive: "archive".to_owned(),
-                campaign: None,
-                minimum_durable_placements: 1,
-                allow_deferred_write: false,
-                maximum_checkpoint_bytes: 1024,
-            },
-            reviewed_operation: String::from("reviewed"),
+            source_state: "/tmp/source-state".into(),
+            source_policy: "/tmp/source-policy".into(),
+            source_store: "/tmp/source-store".into(),
+            source_campaign: "source".to_owned(),
+            snapshot: format!("crucible.campaign.snapshot@{}", snapshot_content.encode()),
+            mode: CampaignArchiveMode::Metadata,
+            retained_roots: Vec::new(),
+            destination_state: "/tmp/destination-state".into(),
+            destination_policy: "/tmp/destination-policy".into(),
+            destination_store: "/tmp/destination-store".into(),
+            archive: "archive".to_owned(),
+            campaign: None,
+            minimum_durable_placements: 1,
+            allow_deferred_write: false,
+            maximum_checkpoint_bytes: 1024,
         }
     }
 
@@ -1048,14 +849,13 @@ mod tests {
     }
 
     #[test]
-    fn plan_report_discloses_unknown_physical_bytes_and_sensitive_classes() {
+    fn pre_transfer_report_discloses_unknown_physical_bytes_and_sensitive_classes() {
         let report = CampaignArchivePlanReport {
             schema: CAMPAIGN_ARCHIVE_PLAN_SCHEMA,
-            phase: "plan",
+            phase: "pre-transfer",
             source_campaign: "source".to_owned(),
             source_snapshot: "snapshot".to_owned(),
             manifest: "manifest".to_owned(),
-            operation: "operation".to_owned(),
             policy: "executable",
             archive: "archive".to_owned(),
             campaign: Some("imported".to_owned()),
@@ -1073,22 +873,13 @@ mod tests {
                 sensitive: true,
             }],
             sensitive_classes: vec!["exact-ram"],
-            exact_checkpoint_requirements: Vec::new(),
-            omitted_acceleration: OmittedAccelerationReport {
-                objects: 1,
-                logical_bytes: 1024,
-                classes: vec!["projection-cache"],
-                exact_pin_catalog: "authenticated",
-                warning: Some(
-                    "omitted acceleration may require regeneration before resume or debugging",
-                ),
-            },
         };
         let rendered =
-            render_plan_report(&report, OutputFormat::Jsonl).expect("render plan report");
-        let value: serde_json::Value = serde_json::from_str(&rendered).expect("decode plan report");
+            render_plan_report(&report, OutputFormat::Jsonl).expect("render pre-transfer report");
+        let value: serde_json::Value =
+            serde_json::from_str(&rendered).expect("decode pre-transfer report");
 
-        assert_eq!(value["phase"], "plan");
+        assert_eq!(value["phase"], "pre-transfer");
         assert_eq!(value["classes"][0]["logical_bytes"], 4096);
         assert_eq!(
             value["classes"][0]["logical_replication_obligation_bytes"],
@@ -1096,5 +887,33 @@ mod tests {
         );
         assert!(value["classes"][0]["physical_bytes"].is_null());
         assert_eq!(value["sensitive_classes"][0], "exact-ram");
+    }
+
+    #[test]
+    fn completion_report_carries_the_authenticated_durability_receipt() {
+        let report = CampaignArchiveTransferCompletionReport {
+            schema: CAMPAIGN_ARCHIVE_TRANSFER_SCHEMA,
+            phase: "complete",
+            manifest: "manifest".to_owned(),
+            archive: "archive".to_owned(),
+            campaign: Some("imported".to_owned()),
+            copied_objects: 3,
+            copied_logical_bytes: 8_192,
+            existing_objects: 2,
+            minimum_required_durable_placements: 2,
+            minimum_observed_durable_placements: 3,
+            deferred_writes_allowed: false,
+            authenticated: true,
+        };
+
+        let rendered = render_transfer_completion(&report, OutputFormat::Jsonl)
+            .expect("render transfer completion");
+        let value: serde_json::Value =
+            serde_json::from_str(&rendered).expect("decode transfer completion");
+
+        assert_eq!(value["minimum_required_durable_placements"], 2);
+        assert_eq!(value["minimum_observed_durable_placements"], 3);
+        assert_eq!(value["deferred_writes_allowed"], false);
+        assert_eq!(value["authenticated"], true);
     }
 }

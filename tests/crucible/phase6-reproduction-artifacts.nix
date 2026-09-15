@@ -38,11 +38,11 @@
       }
       {
         label = "ADV-28 every finding artifact";
-        needle = "Every interesting finding (a property violation, a divergence, or a\n  retained corpus entry) MUST emit a self-contained reproduction artifact";
+        needle = "Every interesting finding (a property violation, a divergence, a\n  concrete execution timeout, or a retained corpus entry) MUST emit a\n  self-contained reproduction artifact";
       }
       {
         label = "ADV-29 discovery paths";
-        needle = "regardless of how\n  the finding was reached (interactive forking, state-space search, or\n  coverage-guided fuzzing)";
+        needle = "regardless of how\n  the finding was reached (campaign branching, state-space search, or\n  coverage-guided fuzzing)";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
@@ -63,8 +63,8 @@
         needle = "pub fn load_from_store";
       }
       {
-        label = "interactive fork hook";
-        needle = "FindingDiscoveryPath::InteractiveFork";
+        label = "campaign branch hook";
+        needle = "FindingDiscoveryPath::CampaignFork";
       }
       {
         label = "search failure hook";

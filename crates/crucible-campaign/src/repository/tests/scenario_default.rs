@@ -4,17 +4,21 @@ use super::*;
 
 fn policy_with_default_admission(base: &CampaignPolicy, admitted: bool) -> CampaignPolicy {
     CampaignPolicy::new(
-        base.scenario(),
-        base.campaign_seed(),
-        base.mode(),
-        base.explorer().clone(),
-        base.choice_policies().clone(),
-        base.objectives().clone(),
-        base.guidance().clone(),
-        base.stop_conditions().clone(),
-        base.fairness(),
-        base.retention(),
-        admitted,
+        CampaignPolicy::identity(
+            base.scenario(),
+            base.campaign_seed(),
+            base.mode(),
+            base.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            base.choice_policies().clone(),
+            base.objectives().clone(),
+            base.guidance().clone(),
+            base.stop_conditions().clone(),
+            base.fairness(),
+            base.retention(),
+            admitted,
+        ),
     )
     .expect("scenario-default policy")
 }
@@ -25,10 +29,12 @@ fn request_with_source(
     source: CandidateSource,
 ) -> BranchRequest {
     BranchRequest::new(
-        basis.branch_point(),
-        basis.parent(),
-        basis.opportunity(),
-        basis.domain(),
+        BranchRequest::identity(
+            basis.branch_point(),
+            basis.parent(),
+            basis.opportunity(),
+            basis.domain(),
+        ),
         source,
         BranchRequestCause::ScenarioDefault(policy),
         BranchBudget::new(1, 1).expect("single default budget"),
@@ -92,8 +98,14 @@ fn forge_branch_request_successor(
         .put_branch_request(request)
         .expect("put forged branch request");
     let request_id = BranchRequestId::from_content_id(request_content).expect("request id");
+    let summary = repository
+        .branch_acceptance_summary(parent.snapshot.roots().graph, request)
+        .expect("branch acceptance summary");
     let transition_content = repository
-        .put_fact(&CampaignFact::BranchRequestIssued(request_id))
+        .put_fact(&CampaignFact::BranchRequestAccepted {
+            request: request_id,
+            summary,
+        })
         .expect("put forged request fact");
 
     let mut roots = parent.snapshot.roots();
@@ -148,6 +160,7 @@ fn forge_branch_request_successor(
         parent.snapshot.active_policy(),
         roots,
         CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged branch-request successor");
     repository
@@ -256,8 +269,12 @@ fn scenario_default_request_uses_the_ordinary_snapshot_bound_service_path() {
     let admission = repository
         .load_attempt_admission(admitted.admission)
         .expect("load exact default admission");
-    assert_eq!(admission.schema_version(), 2);
-    assert_eq!(admitted.admission.content_id().schema_version(), 2);
+    assert_eq!(admission.schema_version(), 3);
+    assert_eq!(admitted.admission.content_id().schema_version(), 3);
+    assert_eq!(
+        admission.retention_policy(),
+        policy.id().expect("active policy ID")
+    );
     assert_eq!(
         admission.role(),
         AttemptAdmissionRole::ExecutionBasis {
@@ -302,17 +319,21 @@ fn cold_repository_rejects_invalid_scenario_default_provenance() {
         "scenario-default-wrong-policy",
     );
     let other_policy = CampaignPolicy::new(
-        base.scenario(),
-        CampaignSeed::from_bytes([0x55; 32]),
-        base.mode(),
-        base.explorer().clone(),
-        base.choice_policies().clone(),
-        base.objectives().clone(),
-        base.guidance().clone(),
-        base.stop_conditions().clone(),
-        base.fairness(),
-        base.retention(),
-        true,
+        CampaignPolicy::identity(
+            base.scenario(),
+            CampaignSeed::from_bytes([0x55; 32]),
+            base.mode(),
+            base.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            base.choice_policies().clone(),
+            base.objectives().clone(),
+            base.guidance().clone(),
+            base.stop_conditions().clone(),
+            base.fairness(),
+            base.retention(),
+            true,
+        ),
     )
     .expect("other policy");
     repository
@@ -361,8 +382,11 @@ fn cold_repository_rejects_invalid_scenario_default_provenance() {
         "scenario-default-branch-request-source-is-not-exact-default",
     );
 
-    let generator =
-        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("static generator");
+    let generator = CandidateGeneratorSpec::new(
+        crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::All,
+    )
+    .expect("static generator");
     let generator_id = repository
         .publish_generator(&generator)
         .expect("publish static generator");

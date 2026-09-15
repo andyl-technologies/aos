@@ -2,100 +2,30 @@
 
 use super::*;
 use crate::{
-    CampaignName, FindingCandidateBundle, FindingCandidateBundleId, FindingExactPins, FindingId,
-    FindingTarget,
+    CampaignName, ConfigurationId, FindingCandidateBundle, FindingCandidateBundleId,
+    FindingExactPins, FindingExactRetentionDisposition, FindingId, FindingTarget,
+    FindingTriageReplayStorageDescription, FindingTriageReplayStorageObject,
+    FindingTriageReplayStorageObjectRole, MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
+    ScenarioArtifactId, ScenarioDefId,
 };
 
-/// Opaque proof that one snapshot directly retains a finding candidate bundle.
-///
-/// Values can be obtained only through
-/// [`CampaignRepository::authenticate_current_finding_candidate_incorporation`],
-/// which authenticates the named campaign's current authoritative head and the
-/// finding's direct bundle reference before constructing the proof.
-///
-/// The proof records a point-in-time read. It does not pin the campaign head or
-/// any immutable object and does not authorize a later unfenced root release.
-/// A ledger owner must immediately reauthenticate the current head while
-/// holding the operational GC/ledger-generation fence that covers its release
-/// compare-and-swap.
-#[derive(Debug, PartialEq, Eq)]
-pub struct AuthenticatedFindingCandidateIncorporation {
-    campaign: CampaignName,
-    bundle: FindingCandidateBundleId,
-    snapshot: CampaignSnapshotId,
-    finding: FindingId,
-}
+const MAX_FINDING_EXACT_PIN_ROOT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_FINDING_EXACT_PIN_ROOT_BYTES_TOTAL: u64 = 64 * 1024 * 1024;
 
-impl AuthenticatedFindingCandidateIncorporation {
-    /// Returns the campaign whose authoritative head retains the finding.
-    #[must_use]
-    pub const fn campaign(&self) -> &CampaignName {
-        &self.campaign
-    }
+mod recovery;
+mod replay_evidence;
 
-    /// Returns the exact candidate bundle retained by the finding.
-    #[must_use]
-    pub const fn bundle(&self) -> FindingCandidateBundleId {
-        self.bundle
-    }
-
-    /// Returns the authenticated snapshot containing the finding closure.
-    #[must_use]
-    pub const fn snapshot(&self) -> CampaignSnapshotId {
-        self.snapshot
-    }
-
-    /// Returns the finding that directly retains the candidate bundle.
-    #[must_use]
-    pub const fn finding(&self) -> FindingId {
-        self.finding
-    }
-}
+pub(super) use recovery::FindingCandidateValidation;
+pub use recovery::{
+    AuthenticatedFindingCandidateIncorporation, AuthenticatedFindingExactCheckpoint,
+    FindingExactCheckpointAuthenticationError, FindingExactCheckpointAuthenticator,
+};
+use recovery::{
+    BoundFindingCandidateIncorporationAuthorization,
+    finding_candidate_incorporation_operation_digest,
+};
 
 impl CampaignRepository {
-    /// Publishes one transport-neutral native triage replay record.
-    ///
-    /// The referenced reproduction and every observed-signature dependency
-    /// must already be durable. Repeating the operation returns the same ID.
-    ///
-    /// # Errors
-    ///
-    /// Returns a store, codec, or integrity error when any referenced object
-    /// is absent, corrupt, or inconsistent with the observed signature.
-    pub fn publish_finding_triage_replay_evidence(
-        &self,
-        evidence: &FindingTriageReplayEvidence,
-    ) -> Result<FindingTriageReplayEvidenceId, CampaignRepositoryError> {
-        self.validate_finding_triage_replay_evidence(evidence)?;
-        let content = self.put_envelope(ObjectEnvelope::for_record(
-            crate::CampaignRecordKind::FindingTriageReplayEvidence,
-            crate::object::content_children(evidence.content_children())?,
-            evidence.canonical_bytes(),
-        )?)?;
-        if content != evidence.id()?.content_id() {
-            return Err(integrity(
-                "finding-triage-replay-evidence-publication-id-mismatch",
-            ));
-        }
-        self.verify_campaign_closure(content)?;
-        FindingTriageReplayEvidenceId::from_content_id(content).map_err(Into::into)
-    }
-
-    /// Loads and authenticates one native triage replay record.
-    ///
-    /// # Errors
-    ///
-    /// Returns a store, codec, or integrity error when the record or one of its
-    /// referenced objects is absent, corrupt, or inconsistent.
-    pub fn load_finding_triage_replay_evidence(
-        &self,
-        id: FindingTriageReplayEvidenceId,
-    ) -> Result<FindingTriageReplayEvidence, CampaignRepositoryError> {
-        let evidence = self.decode_finding_triage_replay_evidence(id.content_id())?;
-        self.validate_finding_triage_replay_evidence(&evidence)?;
-        Ok(evidence)
-    }
-
     /// Publishes one fully verified finding candidate handoff.
     ///
     /// The observation and both reproduction artifacts must already be durable.
@@ -112,7 +42,107 @@ impl CampaignRepository {
         &self,
         bundle: &FindingCandidateBundle,
     ) -> Result<FindingCandidateBundleId, CampaignRepositoryError> {
-        self.validate_finding_candidate_bundle(bundle)?;
+        self.publish_finding_candidate_bundle_inner(bundle, None)
+    }
+
+    /// Publishes one candidate after typed whole-inventory authentication.
+    ///
+    /// Complete V5 retention is a daemon attestation: the trusted executor
+    /// enumerates candidates while holding its operational inventory fences,
+    /// and this method authenticates every listed root before storing the
+    /// immutable attestation. Later cold loads validate the attested selection
+    /// and retained roots without requiring weak, unselected candidates to
+    /// survive normal garbage collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, limit, or integrity error when a dependency is
+    /// absent or the typed authority rejects any checkpoint or basis binding.
+    pub(crate) fn publish_finding_candidate_bundle_with_authenticator(
+        &self,
+        bundle: &FindingCandidateBundle,
+        authenticator: &dyn FindingExactCheckpointAuthenticator,
+    ) -> Result<FindingCandidateBundleId, CampaignRepositoryError> {
+        self.publish_finding_candidate_bundle_inner(bundle, Some(authenticator))
+    }
+
+    fn import_finding_exact_pin_closures(
+        &self,
+        pins: &FindingExactPins,
+        source: &dyn FindingExactCheckpointAuthenticator,
+    ) -> Result<(), CampaignRepositoryError> {
+        let mut pending = pins
+            .all()
+            .iter()
+            .map(|checkpoint| checkpoint.content_id())
+            .collect::<Vec<_>>();
+        let mut visited = BTreeSet::new();
+        let mut manifest_bytes = 0_u64;
+
+        while let Some(id) = pending.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            if visited.len() > MAX_CAMPAIGN_CLOSURE_OBJECTS {
+                return Err(integrity("finding-exact-pin-closure-object-limit"));
+            }
+            if id.kind() != ObjectKind::ExactManifest && !is_opaque_campaign_leaf(id.kind()) {
+                return Err(integrity("finding-exact-pin-closure-kind"));
+            }
+
+            if !self.blobs.contains(id)? {
+                let handle = source
+                    .read_finding_exact_checkpoint_object(id)
+                    .map_err(|_| integrity("finding-exact-pin-closure-import-failed"))?;
+                let receipt = self.blobs.put_if_absent(id, &handle)?;
+                if receipt.id != id {
+                    return Err(integrity("finding-exact-pin-closure-import-id-mismatch"));
+                }
+            }
+
+            let handle = self.blobs.read(id, None)?;
+            if is_opaque_campaign_leaf(id.kind()) {
+                handle.copy_to(&mut std::io::sink())?;
+                continue;
+            }
+
+            let length = handle.logical_length();
+            manifest_bytes = manifest_bytes
+                .checked_add(length)
+                .ok_or_else(|| integrity("finding-exact-pin-closure-byte-limit"))?;
+            if length > MAX_FINDING_EXACT_PIN_ROOT_BYTES
+                || manifest_bytes > MAX_FINDING_EXACT_PIN_ROOT_BYTES_TOTAL
+            {
+                return Err(integrity("finding-exact-pin-closure-byte-limit"));
+            }
+            let bytes = handle.read_all(MAX_FINDING_EXACT_PIN_ROOT_BYTES)?;
+            let envelope =
+                ContentEnvelope::from_canonical_bytes(&bytes).map_err(CampaignCodecError::from)?;
+            if envelope.content_id(ObjectKind::ExactManifest) != id {
+                return Err(integrity("finding-exact-pin-closure-envelope-id-mismatch"));
+            }
+            for child in envelope.children() {
+                pending.push(child.id());
+            }
+        }
+
+        Ok(())
+    }
+
+    fn publish_finding_candidate_bundle_inner(
+        &self,
+        bundle: &FindingCandidateBundle,
+        authenticator: Option<&dyn FindingExactCheckpointAuthenticator>,
+    ) -> Result<FindingCandidateBundleId, CampaignRepositoryError> {
+        self.validate_finding_candidate_bundle(
+            bundle,
+            FindingCandidateValidation::Publication(authenticator),
+        )?;
+        if bundle.exact_retention().disposition() == FindingExactRetentionDisposition::Complete
+            && let Some(authenticator) = authenticator
+        {
+            self.import_finding_exact_pin_closures(bundle.exact_pins(), authenticator)?;
+        }
         let content = self.put_envelope(ObjectEnvelope::for_record_versioned(
             crate::CampaignRecordKind::FindingCandidateBundle,
             bundle.schema_version(),
@@ -140,7 +170,7 @@ impl CampaignRepository {
         id: FindingCandidateBundleId,
     ) -> Result<FindingCandidateBundle, CampaignRepositoryError> {
         let bundle = self.decode_finding_candidate_bundle(id.content_id())?;
-        self.validate_finding_candidate_bundle(&bundle)?;
+        self.validate_finding_candidate_bundle(&bundle, FindingCandidateValidation::Load)?;
         Ok(bundle)
     }
 
@@ -162,12 +192,71 @@ impl CampaignRepository {
         expected_snapshot: CampaignSnapshotId,
         bundle: FindingCandidateBundleId,
     ) -> Result<FindingPublicationResult, CampaignRepositoryError> {
+        self.incorporate_finding_candidate_bundle_inner(name, expected_snapshot, bundle, None)
+    }
+
+    pub(in crate::repository) fn incorporate_checked_executor_finding_candidate_bundle(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        bundle: FindingCandidateBundleId,
+        observation: ObservationId,
+        completion_context_digest: CampaignHash,
+    ) -> Result<FindingPublicationResult, CampaignRepositoryError> {
+        let authorization = BoundFindingCandidateIncorporationAuthorization {
+            context_digest: completion_context_digest,
+            operation_digest: finding_candidate_incorporation_operation_digest(
+                name,
+                expected_snapshot,
+                bundle,
+                observation,
+                completion_context_digest,
+            ),
+        };
+        self.incorporate_finding_candidate_bundle_inner(
+            name,
+            expected_snapshot,
+            bundle,
+            Some(authorization),
+        )
+    }
+
+    fn incorporate_finding_candidate_bundle_inner(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        bundle: FindingCandidateBundleId,
+        authorization: Option<BoundFindingCandidateIncorporationAuthorization>,
+    ) -> Result<FindingPublicationResult, CampaignRepositoryError> {
         let bundle_id = bundle;
         let bundle = self.load_finding_candidate_bundle(bundle_id)?;
+        if let Some(authorization) = &authorization {
+            let expected_authorization = finding_candidate_incorporation_operation_digest(
+                name,
+                expected_snapshot,
+                bundle_id,
+                bundle.observation(),
+                authorization.context_digest,
+            );
+            if authorization.operation_digest != expected_authorization {
+                return Err(integrity(
+                    "finding-candidate-incorporation-authorization-mismatch",
+                ));
+            }
+        }
         let head = self.head(name)?;
+        self.validate_finding_candidate_incorporation_ancestry(&head, expected_snapshot, &bundle)?;
         if let Some(replayed) = self.replayed_finding_candidate(&head, &bundle)? {
             return Ok(replayed);
         }
+        if bundle.exact_retention().disposition() == FindingExactRetentionDisposition::Complete
+            && authorization.is_none()
+        {
+            return Err(integrity(
+                "complete-finding-exact-retention-requires-executor-attested-incorporation",
+            ));
+        }
+        self.require_policy_bound_finding_candidate(expected_snapshot, &bundle)?;
         if head.snapshot_id() != expected_snapshot {
             return Err(CampaignRepositoryError::Stale {
                 expected: expected_snapshot,
@@ -175,16 +264,86 @@ impl CampaignRepository {
             });
         }
 
-        self.publish_finding_with_candidate_bundle(
+        self.publish_finding_with_candidate_bundle(super::finding::FindingPublicationInput {
             name,
             expected_snapshot,
-            bundle.signature().clone(),
-            bundle.observation(),
-            bundle.reproduction(),
-            Some(bundle.minimized()),
-            bundle.exact_pins().clone(),
-            Some(bundle_id),
+            signature: bundle.signature().clone(),
+            observation: bundle.observation(),
+            reproduction: bundle.reproduction(),
+            minimized: Some(bundle.minimized()),
+            exact_pins: bundle.exact_pins().clone(),
+            candidate_bundle: bundle_id,
+        })
+    }
+
+    fn require_policy_bound_finding_candidate(
+        &self,
+        snapshot: CampaignSnapshotId,
+        bundle: &FindingCandidateBundle,
+    ) -> Result<(), CampaignRepositoryError> {
+        let observation = self.read_observation(bundle.observation().content_id())?;
+        let loaded = self.read_snapshot(snapshot.content_id())?;
+        let admission = self
+            .merkle
+            .get(
+                loaded.snapshot.roots().accounting,
+                attempt_execution_basis_key(observation.attempt()),
+            )?
+            .ok_or_else(|| integrity("finding-candidate-execution-basis-admission-is-missing"))?;
+        let _admission = self.read_attempt_admission(admission)?;
+        Ok(())
+    }
+
+    fn validate_finding_candidate_incorporation_ancestry(
+        &self,
+        head: &CampaignHead,
+        expected_snapshot: CampaignSnapshotId,
+        bundle: &FindingCandidateBundle,
+    ) -> Result<(), CampaignRepositoryError> {
+        let retention = bundle.exact_retention();
+        let expected = self.read_snapshot(expected_snapshot.content_id())?;
+        if expected.snapshot.lineage() != head.snapshot().lineage() {
+            return Err(integrity(
+                "finding-candidate-expected-snapshot-lineage-mismatch",
+            ));
+        }
+        self.require_snapshot_ancestor(
+            expected_snapshot,
+            head.snapshot_id(),
+            "finding-candidate-expected-snapshot-is-not-campaign-ancestor",
+        )?;
+
+        let source = self.read_snapshot(retention.snapshot().content_id())?;
+        if source.snapshot.lineage() != expected.snapshot.lineage() {
+            return Err(integrity(
+                "finding-exact-retention-source-snapshot-lineage-mismatch",
+            ));
+        }
+        self.require_snapshot_ancestor(
+            retention.snapshot(),
+            expected_snapshot,
+            "finding-exact-retention-source-snapshot-is-not-assignment-ancestor",
         )
+    }
+
+    fn require_snapshot_ancestor(
+        &self,
+        ancestor: CampaignSnapshotId,
+        descendant: CampaignSnapshotId,
+        failure: &'static str,
+    ) -> Result<(), CampaignRepositoryError> {
+        let mut cursor = descendant;
+        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
+            if cursor == ancestor {
+                return Ok(());
+            }
+            let loaded = self.read_snapshot(cursor.content_id())?;
+            let Some(parent) = loaded.snapshot.parent() else {
+                return Err(integrity(failure));
+            };
+            cursor = parent;
+        }
+        Err(integrity("finding-candidate-incorporation-ancestry-limit"))
     }
 
     /// Authenticates that a campaign's current head retains one candidate.
@@ -257,7 +416,38 @@ impl CampaignRepository {
     ) -> Result<FindingTriageReplayEvidence, CampaignRepositoryError> {
         let envelope =
             self.require_record_kind(id, crate::CampaignRecordKind::FindingTriageReplayEvidence)?;
-        let evidence = FindingTriageReplayEvidence::from_canonical_bytes(envelope.body())?;
+        let evidence = match envelope.schema_version() {
+            1 => FindingTriageReplayEvidence::from_canonical_bytes(envelope.body())?,
+            2 => {
+                let manifest =
+                    FindingTriageReplayEvidence::manifest_from_canonical_bytes(envelope.body())?;
+                let payload_bytes = manifest.payload_bytes()?;
+                let mut payload = Vec::new();
+                payload.try_reserve_exact(payload_bytes).map_err(|_| {
+                    CampaignCodecError::LimitExceeded {
+                        limit: "finding-triage-replay-payload-allocation",
+                    }
+                })?;
+                for descriptor in manifest.chunks().iter().copied() {
+                    let chunk = self.require_record_kind(
+                        descriptor.content(),
+                        crate::CampaignRecordKind::FindingTriageReplayEvidenceChunk,
+                    )?;
+                    let bytes =
+                        FindingTriageReplayEvidence::chunk_from_canonical_bytes(chunk.body())?;
+                    if bytes.len() != descriptor.logical_bytes() as usize {
+                        return Err(integrity(
+                            "finding-triage-replay-evidence-chunk-length-mismatch",
+                        ));
+                    }
+                    payload.extend_from_slice(&bytes);
+                }
+                manifest.into_evidence(payload)?
+            }
+            _ => {
+                return Err(integrity("finding-triage-replay-evidence-envelope-version"));
+            }
+        };
         if evidence.id()?.content_id() != id {
             return Err(integrity("finding-triage-replay-evidence-envelope-shape"));
         }
@@ -268,14 +458,25 @@ impl CampaignRepository {
         &self,
         evidence: &FindingTriageReplayEvidence,
     ) -> Result<(), CampaignRepositoryError> {
-        let reproduction = self.read_reproduction_artifact(evidence.reproduction().content_id())?;
-        if reproduction.finding_fingerprint() != evidence.observed_signature().fingerprint() {
+        self.validate_finding_triage_replay_dependencies(
+            evidence.reproduction(),
+            evidence.observed_signature(),
+        )
+    }
+
+    fn validate_finding_triage_replay_dependencies(
+        &self,
+        reproduction_id: crate::ReproductionArtifactId,
+        observed_signature: &crate::FindingSignature,
+    ) -> Result<(), CampaignRepositoryError> {
+        let reproduction = self.read_reproduction_artifact(reproduction_id.content_id())?;
+        if reproduction.finding_fingerprint() != observed_signature.fingerprint() {
             return Err(integrity(
                 "finding-triage-replay-evidence-fingerprint-mismatch",
             ));
         }
         if matches!(
-            evidence.observed_signature().target(),
+            observed_signature.target(),
             Some(FindingTarget::Configuration(configuration))
                 if configuration != reproduction.configuration_artifact()
         ) {
@@ -283,7 +484,13 @@ impl CampaignRepository {
                 "finding-triage-replay-evidence-configuration-mismatch",
             ));
         }
-        for (_, child) in evidence.content_children() {
+        let mut children = vec![reproduction_id.content_id()];
+        children.extend(
+            crate::finding_candidate::signature_children("observed-signature", observed_signature)
+                .into_iter()
+                .map(|(_, child)| child),
+        );
+        for child in children {
             let handle = self.blobs.read(child, None)?;
             handle.copy_to(&mut std::io::sink())?;
         }
@@ -293,6 +500,7 @@ impl CampaignRepository {
     pub(super) fn validate_finding_candidate_bundle(
         &self,
         bundle: &FindingCandidateBundle,
+        validation: FindingCandidateValidation<'_>,
     ) -> Result<(), CampaignRepositoryError> {
         let observation = self.read_observation(bundle.observation().content_id())?;
         self.validate_finding_candidate_basis(
@@ -308,14 +516,247 @@ impl CampaignRepository {
         bundle
             .signature_minimization()
             .validate_against(bundle.signature(), minimization)?;
+        self.validate_finding_exact_retention(bundle, &observation, &minimized, validation)?;
+        if matches!(validation, FindingCandidateValidation::Load) {
+            self.validate_finding_exact_pin_closures(bundle.exact_pins())?;
+        }
         self.validate_finding_candidate_triage_evidence(bundle, minimization)?;
         for (_, child) in bundle.signature_minimization().content_children() {
             let handle = self.blobs.read(child, None)?;
             handle.copy_to(&mut std::io::sink())?;
         }
+        let mut exact_pin_bytes = 0_u64;
         for pin in bundle.exact_pins().all() {
-            let handle = self.blobs.read(pin.content_id(), None)?;
+            let handle = if self.blobs.contains(pin.content_id())? {
+                self.blobs.read(pin.content_id(), None)?
+            } else if let FindingCandidateValidation::Publication(Some(authenticator)) = validation
+            {
+                authenticator
+                    .read_finding_exact_checkpoint_object(pin.content_id())
+                    .map_err(|_| integrity("finding-exact-pin-root-source-failed"))?
+            } else {
+                self.blobs.read(pin.content_id(), None)?
+            };
+            let length = handle.logical_length();
+            exact_pin_bytes = exact_pin_bytes
+                .checked_add(length)
+                .ok_or_else(|| integrity("finding-candidate-exact-pin-byte-count-overflow"))?;
+            if length > MAX_FINDING_EXACT_PIN_ROOT_BYTES
+                || exact_pin_bytes > MAX_FINDING_EXACT_PIN_ROOT_BYTES_TOTAL
+            {
+                return Err(integrity("finding-candidate-exact-pin-byte-limit"));
+            }
             handle.copy_to(&mut std::io::sink())?;
+        }
+        Ok(())
+    }
+
+    fn validate_finding_exact_pin_closures(
+        &self,
+        pins: &FindingExactPins,
+    ) -> Result<(), CampaignRepositoryError> {
+        let mut pending = pins
+            .all()
+            .iter()
+            .map(|checkpoint| checkpoint.content_id())
+            .collect::<Vec<_>>();
+        let mut visited = BTreeSet::new();
+        let mut manifest_bytes = 0_u64;
+
+        while let Some(id) = pending.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            if visited.len() > MAX_CAMPAIGN_CLOSURE_OBJECTS {
+                return Err(integrity("finding-exact-pin-closure-object-limit"));
+            }
+
+            let handle = self.blobs.read(id, None)?;
+            if is_opaque_campaign_leaf(id.kind()) {
+                handle.copy_to(&mut std::io::sink())?;
+                continue;
+            }
+            if id.kind() != ObjectKind::ExactManifest {
+                return Err(integrity("finding-exact-pin-closure-kind"));
+            }
+
+            let length = handle.logical_length();
+            manifest_bytes = manifest_bytes
+                .checked_add(length)
+                .ok_or_else(|| integrity("finding-exact-pin-closure-byte-limit"))?;
+            if length > MAX_FINDING_EXACT_PIN_ROOT_BYTES
+                || manifest_bytes > MAX_FINDING_EXACT_PIN_ROOT_BYTES_TOTAL
+            {
+                return Err(integrity("finding-exact-pin-closure-byte-limit"));
+            }
+            let bytes = handle.read_all(MAX_FINDING_EXACT_PIN_ROOT_BYTES)?;
+            let envelope =
+                ContentEnvelope::from_canonical_bytes(&bytes).map_err(CampaignCodecError::from)?;
+            if envelope.content_id(ObjectKind::ExactManifest) != id {
+                return Err(integrity("finding-exact-pin-closure-envelope-id-mismatch"));
+            }
+            for child in envelope.children() {
+                if child.id().kind() != ObjectKind::ExactManifest
+                    && !is_opaque_campaign_leaf(child.id().kind())
+                {
+                    return Err(integrity("finding-exact-pin-closure-kind"));
+                }
+                pending.push(child.id());
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_finding_exact_retention(
+        &self,
+        bundle: &FindingCandidateBundle,
+        observation: &Observation,
+        minimized: &ReproductionArtifact,
+        validation: FindingCandidateValidation<'_>,
+    ) -> Result<(), CampaignRepositoryError> {
+        let retention = bundle.exact_retention();
+        let source = self.read_snapshot(retention.snapshot().content_id())?;
+        let accounting = source.snapshot.roots().accounting;
+        if self
+            .merkle
+            .get(accounting, attempt_index_key(observation.attempt()))?
+            != Some(observation.attempt().content_id())
+        {
+            return Err(integrity(
+                "finding-exact-retention-attempt-is-not-in-source-snapshot",
+            ));
+        }
+        if self.merkle.get(
+            accounting,
+            attempt_execution_basis_key(observation.attempt()),
+        )? != Some(retention.admission().content_id())
+        {
+            return Err(integrity(
+                "finding-exact-retention-admission-is-not-selected-by-source-snapshot",
+            ));
+        }
+        let source_lineage = self.read_lineage(source.snapshot.lineage().content_id())?;
+        if source_lineage.scenario() != minimized.scenario() {
+            return Err(integrity(
+                "finding-exact-retention-source-snapshot-scenario-mismatch",
+            ));
+        }
+        let admission = self.read_attempt_admission(retention.admission().content_id())?;
+        let AttemptAdmissionRole::ExecutionBasis { .. } = admission.role() else {
+            return Err(integrity(
+                "finding-exact-retention-admission-is-not-execution-basis",
+            ));
+        };
+        if admission.attempt() != observation.attempt() {
+            return Err(integrity(
+                "finding-exact-retention-admission-attempt-mismatch",
+            ));
+        }
+        let policy_id = retention.policy();
+        if admission.retention_policy() != policy_id {
+            return Err(integrity(
+                "finding-exact-retention-policy-admission-mismatch",
+            ));
+        }
+        let policy = self.read_policy(policy_id.content_id())?;
+        if policy.scenario() != minimized.scenario() {
+            return Err(integrity(
+                "finding-exact-retention-policy-scenario-mismatch",
+            ));
+        }
+
+        let requested = policy.retention().exact_findings();
+        match retention.disposition() {
+            FindingExactRetentionDisposition::Disabled if requested => Err(integrity(
+                "finding-exact-retention-disabled-by-requesting-policy",
+            )),
+            FindingExactRetentionDisposition::Complete
+            | FindingExactRetentionDisposition::Incomplete(_)
+                if !requested =>
+            {
+                Err(integrity(
+                    "finding-exact-retention-enabled-by-disabled-policy",
+                ))
+            }
+            FindingExactRetentionDisposition::Complete => {
+                self.validate_authenticated_finding_exact_retention(bundle, observation, validation)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn validate_authenticated_finding_exact_retention(
+        &self,
+        bundle: &FindingCandidateBundle,
+        observation: &Observation,
+        validation: FindingCandidateValidation<'_>,
+    ) -> Result<(), CampaignRepositoryError> {
+        let evidence = bundle
+            .exact_retention_evidence()
+            .ok_or_else(|| integrity("finding-exact-retention-evidence-is-missing"))?;
+        let original = self.read_reproduction_artifact(bundle.reproduction().content_id())?;
+        let expected_measurement = match observation.stop() {
+            crate::StopOutcome::ObservationReached(proof) => Some(proof.boundary().start_events()),
+            _ => None,
+        };
+        if evidence.measurement_boundary_events() != expected_measurement {
+            return Err(integrity(
+                "finding-exact-retention-measurement-boundary-mismatch",
+            ));
+        }
+
+        let declared = evidence
+            .candidates()
+            .iter()
+            .map(|candidate| (candidate.checkpoint(), candidate.event_count()))
+            .collect::<BTreeMap<_, _>>();
+        if let FindingCandidateValidation::Publication(authenticator) = validation {
+            let authenticator = authenticator
+                .ok_or_else(|| integrity("finding-exact-checkpoint-authenticator-is-missing"))?;
+            let mut remaining = MAX_FINDING_EXACT_PIN_ROOT_BYTES_TOTAL;
+            for candidate in evidence.candidates() {
+                let metadata = authenticator
+                    .authenticate_finding_exact_checkpoint(
+                        candidate.checkpoint(),
+                        original.scenario(),
+                        original.scenario_artifact(),
+                        original.configuration(),
+                        remaining,
+                    )
+                    .map_err(|error| match error {
+                        FindingExactCheckpointAuthenticationError::LimitExceeded => {
+                            integrity("finding-exact-retention-metadata-byte-limit")
+                        }
+                        FindingExactCheckpointAuthenticationError::AuthenticationFailed => {
+                            integrity("finding-exact-retention-candidate-authentication-failed")
+                        }
+                    })?;
+                if metadata.scenario() != original.scenario()
+                    || metadata.configuration() != original.configuration()
+                    || metadata.event_count() != candidate.event_count()
+                {
+                    return Err(integrity(
+                        "finding-exact-retention-candidate-basis-mismatch",
+                    ));
+                }
+                remaining = remaining
+                    .checked_sub(metadata.metadata_bytes())
+                    .ok_or_else(|| integrity("finding-exact-retention-metadata-byte-limit"))?;
+            }
+        }
+        if declared.get(&evidence.captured_failure()) != Some(&evidence.failure_events()) {
+            return Err(integrity(
+                "finding-exact-retention-failure-boundary-mismatch",
+            ));
+        }
+        let selected = select_authenticated_finding_pins(
+            &declared,
+            evidence.failure_events(),
+            evidence.measurement_boundary_events(),
+        )?;
+        if &selected != evidence.selected() || &selected != bundle.exact_pins() {
+            return Err(integrity("finding-exact-retention-selection-mismatch"));
         }
         Ok(())
     }
@@ -429,6 +870,49 @@ impl CampaignRepository {
             .get(root, finding_candidate_occurrence_key(bundle))?
             == Some(bundle.content_id()))
     }
+}
+
+fn select_authenticated_finding_pins(
+    candidates: &BTreeMap<crate::ExactCheckpointId, u64>,
+    failure: u64,
+    measurement: Option<u64>,
+) -> Result<FindingExactPins, CampaignRepositoryError> {
+    let greatest = |boundary: u64, strict: bool| {
+        candidates
+            .iter()
+            .filter(|(_, events)| {
+                if strict {
+                    **events < boundary
+                } else {
+                    **events <= boundary
+                }
+            })
+            .max_by(|(left_root, left_events), (right_root, right_events)| {
+                left_events
+                    .cmp(right_events)
+                    .then_with(|| right_root.cmp(left_root))
+            })
+            .map(|(root, _)| *root)
+    };
+    let post = candidates
+        .iter()
+        .filter(|(_, events)| **events >= failure)
+        .min_by(|(left_root, left_events), (right_root, right_events)| {
+            left_events
+                .cmp(right_events)
+                .then_with(|| left_root.cmp(right_root))
+        })
+        .map(|(root, _)| *root);
+    FindingExactPins::new(
+        greatest(failure, true).into_iter().collect(),
+        measurement
+            .and_then(|boundary| greatest(boundary, false))
+            .into_iter()
+            .collect(),
+        post.into_iter().collect(),
+        BTreeSet::new(),
+    )
+    .map_err(Into::into)
 }
 
 fn exact_pins_contain(retained: &FindingExactPins, requested: &FindingExactPins) -> bool {

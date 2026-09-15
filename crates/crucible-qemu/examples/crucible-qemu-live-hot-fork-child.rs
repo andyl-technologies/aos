@@ -1,4 +1,5 @@
-//! Forks one real retained template into a child with private VMState.
+//! Forks one real retained template into children with private VMState, then
+//! proves repeated retained-source restoration and VMState saves.
 //!
 //! ```text
 //! crucible-qemu-live-hot-fork-child QEMU PLUGIN KERNEL FIRMWARE CGROUP_ROOT RUN_ROOT
@@ -60,6 +61,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("source_vmstate_unchanged=true");
     println!("children_forked={}", report.children_forked);
+    println!("retained_transactions={}", report.retained_transactions);
+    println!("restored_vmstate_saves={}", report.restored_vmstate_saves);
+    println!("source_suffix_icount={}", report.source_suffix_icount);
     println!("source_threads={}", report.source_threads);
     println!("source_descriptors={}", report.source_descriptors);
     println!("source_threads_leaked={}", report.source_threads_leaked);

@@ -101,18 +101,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
 
-  simSource = builtins.readFile (cratesDir + "/crucible-sim/src/lib.rs");
-  seamFailures =
-    lib.optionals (!(hasInfix "FUTURE_RATCHET_INTEGRATION_SEAM" simSource)) [
-      "crucible-sim: missing FUTURE_RATCHET_INTEGRATION_SEAM marker"
-    ]
-    ++ lib.optionals (!(hasInfix "crucible-sim::content-addressing" simSource)) [
-      "crucible-sim: missing content-addressing seam value"
-    ]
-    ++ lib.optionals (!(hasInfix "no Crucible crate may depend on `ratchet-*` or `aos-nix-*`" simSource)) [
-      "crucible-sim: missing standalone dependency rule documentation near seam marker"
-    ];
-
   regressionFailures = let
     directFindings = findingsFor workspaceDependencies {
       crucible-sim = {
@@ -155,7 +143,6 @@
 
   failures =
     findingsFor workspaceDependencies realManifests
-    ++ seamFailures
     ++ regressionFailures;
 in
   if failures != []

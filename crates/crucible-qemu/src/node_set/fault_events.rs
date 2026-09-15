@@ -3,25 +3,78 @@
 use super::*;
 
 impl QemuNodeSet {
-    /// Reports whether one named node owns an undrained fault occurrence.
-    ///
-    /// This is a non-consuming preflight used to reserve lifecycle publication
-    /// ownership before the corresponding event is authenticated and removed
-    /// from the public transport.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when the node is absent or its event transport
-    /// cannot be inspected.
-    pub fn fault_event_pending_by_name(&mut self, name: &str) -> Result<bool, BackendError> {
-        let backend = self
-            .nodes
-            .iter_mut()
-            .find_map(|(node, backend)| (node.name == name).then_some(backend))
+    pub(super) fn arm_concurrent_fault_event_staging(
+        &mut self,
+        runs: &[crucible::ConcurrentBackendRun],
+    ) -> Result<(), BackendError> {
+        let Some(budget) = self.fault_event_staging_budget else {
+            return Ok(());
+        };
+        let aggregate_current = self.staged_fault_event_count()?;
+        self.set_fault_event_staging_limit(
+            budget.maximum_event_records,
+            budget.configured_event_records,
+        )?;
+        if runs.is_empty() {
+            return Ok(());
+        }
+        let remaining = budget
+            .maximum_event_records
+            .checked_sub(aggregate_current)
             .ok_or_else(|| BackendError::Rejected {
-                message: format!("unknown QEMU node `{name}`"),
+                message: String::from(
+                    "QEMU aggregate fault-event allowance is smaller than staged ownership",
+                ),
             })?;
-        backend.fault_event_pending().map_err(BackendError::from)
+        let canonical_base = budget
+            .configured_event_records
+            .checked_sub(budget.maximum_event_records)
+            .and_then(|base| base.checked_add(aggregate_current))
+            .ok_or_else(|| BackendError::Rejected {
+                message: String::from("QEMU concurrent fault-event offset is not representable"),
+            })?;
+        let quotient = remaining / runs.len();
+        let remainder = remaining % runs.len();
+        let mut assigned = 0usize;
+        for (index, run) in runs.iter().enumerate() {
+            let backend = self
+                .nodes
+                .get_mut(&run.node)
+                .ok_or_else(|| BackendError::Rejected {
+                    message: format!(
+                        "QEMU node `{}` has no concurrent event-staging allowance",
+                        run.node.name
+                    ),
+                })?;
+            let allowance = quotient + usize::from(index < remainder);
+            let node_limit = backend
+                .staged_fault_event_count()
+                .checked_add(allowance)
+                .ok_or_else(|| BackendError::Rejected {
+                    message: String::from(
+                        "QEMU concurrent per-node event allowance is not representable",
+                    ),
+                })?;
+            let current_offset =
+                canonical_base
+                    .checked_add(assigned)
+                    .ok_or_else(|| BackendError::Rejected {
+                        message: String::from("QEMU concurrent event offset is not representable"),
+                    })?;
+            backend
+                .set_fault_event_staging_limit(
+                    node_limit,
+                    current_offset,
+                    budget.configured_event_records,
+                )
+                .map_err(BackendError::from)?;
+            assigned = assigned
+                .checked_add(allowance)
+                .ok_or_else(|| BackendError::Rejected {
+                    message: String::from("QEMU concurrent event allowance overflowed"),
+                })?;
+        }
+        Ok(())
     }
 
     /// Reports whether any node has an event awaiting runtime admission.

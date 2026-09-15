@@ -340,11 +340,9 @@ real-node executor flight remain open.
 Every attempt carries the ordered branch-edge path by which it was admitted. On
 canonical completion, the projector credits its observation to the expansion
 state at each branch point on that path. No in-memory MCTS stack is required.
-New schema-v2 paths carry exact `(BranchPointId, BranchEdgeId)` segments because
-an edge digest is deliberately non-invertible. Legacy schema-v1 edge-only paths
-remain identity-preserving historical inputs and are admissible only for a
-single-edge genesis request, whose authenticated request recovers the point.
-Nested admission and feedback require a fully scoped cumulative v2 path.
+Canonical paths carry exact `(BranchPointId, BranchEdgeId)` segments because
+an edge digest is deliberately non-invertible. Admission and feedback require
+a fully scoped cumulative path; older edge-only encodings fail closed.
 
 ```text
 root branch point B0
@@ -540,11 +538,9 @@ The acceptance transition creates no proposal, branch edge, attempt, executor
 reservation, or VM. A projector/planner later pulls one source continuation
 under current budget and backpressure. An imported successor is accepted only
 if replaying the transition over its parent produces the exact exploration-root
-delta, reproduces any recorded acceptance summary, and makes no unrelated root
-or policy change. Historical `BranchRequestIssued` facts remain readable. An
-idempotent replay of one recomputes its missing summary from the original
-parent graph, returns the original prior/new snapshot pair, and marks the
-summary as legacy-recomputed.
+delta, reproduces its recorded acceptance summary, and makes no unrelated root
+or policy change. The current repository accepts only `BranchRequestAccepted`
+facts carrying that summary; any other fact kind fails closed.
 
 The summary separates addressable source cardinality from the
 proposal-budget-visible window. It reports exact counts when the source owner
@@ -674,8 +670,8 @@ budget, create a graph child, or count as an admitted continuation value.
   observation and proposal successors and restart reconstruction MUST reproduce
   the same frontier state. The complete feedback-request index, including its
   branch-point slots, MUST remain bounded to 65,536 entries so every admitted
-  history remains projectable by one bounded observation transition. A legacy
-  campaign without the canonical frontier anchor MUST reject version-9 request
+  history remains projectable by one bounded observation transition. A campaign
+  root without the mandatory canonical frontier anchor MUST reject version-9 request
   admission rather than create a partial index over only its newer history.
 - **[LAZY-48]** Corpus-mutation implementation-version 10 MUST reconstruct its
   next value from the exact completed branch selection/corpus basis and the
@@ -734,12 +730,9 @@ nested path set under
 `observations.configuration-path-index[ConfigurationArtifactId]` in the source
 snapshot. Canonical observation incorporation adds the complete path under the
 exact child configuration; convergence retains all distinct path identities.
-Legacy edge-only paths remain admissible only for one-edge genesis requests.
 For atomic planner `Issue`, the pure planner ranks only the semantic
-branch-point/source continuation. The coordinator chooses the member with the
-lowest `BranchPathId` ordering key from the exact parent set. The
-chosen member must be a scoped version-2 path; a lowest legacy member fails
-closed without scanning an unbounded historical prefix. The coordinator
+branch-point/source continuation. The coordinator chooses the member with the lowest `BranchPathId` ordering key
+from the exact parent set. The chosen member must be a scoped current path. The coordinator
 appends the selected terminal segment and records that cumulative path in the
 derived attempt. This owner rule is independent of page boundaries and is
 recomputed identically for imported successors.

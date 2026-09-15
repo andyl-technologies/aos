@@ -216,7 +216,6 @@ fn delivery_order(decisions: &[Decision]) -> Vec<EventKey> {
             Decision::RngDraw(_)
             | Decision::Override(_)
             | Decision::Preemption(_)
-            | Decision::AppRandom(_)
             | Decision::Selection(_) => Vec::new(),
         })
         .collect()
@@ -274,13 +273,18 @@ fn backend_event(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    nanos: (VirtualTime {
+                        ticks: virtual_time,
+                    })
+                    .ticks,
+                },
+                node: consumer.clone(),
+                sequence,
             },
-            consumer.clone(),
             producer.clone(),
-            sequence,
         ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: consumer.node.clone(),
@@ -315,13 +319,18 @@ fn io_event_at_virtual_time(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    nanos: (VirtualTime {
+                        ticks: virtual_time,
+                    })
+                    .ticks,
+                },
+                node: consumer.clone(),
+                sequence,
             },
-            consumer.clone(),
             sub_node.clone(),
-            sequence,
         ),
         payload: ScheduledEventPayload::IoCompletion(IoCompletion {
             sub_node: sub_node.clone(),

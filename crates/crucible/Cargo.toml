@@ -18,6 +18,7 @@ blake3 = { workspace = true }
 ciborium = { workspace = true }
 crucible-sim = { path = "../crucible-sim" }
 crucible-campaign = { workspace = true }
+crucible-cas = { workspace = true }
 crucible-device = { path = "../crucible-device" }
 crucible-shmem = { path = "../crucible-shmem", optional = true }
 crucible-protocol = { path = "../crucible-protocol" }
@@ -29,13 +30,11 @@ toml = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-crucible-cas = { workspace = true }
 crucible-harness = { path = "../crucible-harness" }
 
 [[test]]
 name = "gate_layer0_determinism"
 path = "tests/gate_layer0_determinism.rs"
-required-features = ["test-double"]
 
 [[test]]
 name = "gate_replay_oracle"
@@ -43,24 +42,13 @@ path = "tests/gate_replay_oracle.rs"
 required-features = ["test-double"]
 
 [[test]]
-name = "gate_single_vm_fingerprint"
-path = "tests/gate_single_vm_fingerprint.rs"
-required-features = ["test-double"]
-
-[[test]]
 name = "gate_content_address"
 path = "tests/gate_content_address.rs"
-required-features = ["test-double"]
 
 [[test]]
 name = "gate_abi_conformance"
 path = "tests/gate_abi_conformance.rs"
 required-features = ["test-double"]
-
-[[test]]
-name = "native_event_collector_codec"
-path = "tests/native_event_collector_codec.rs"
-required-features = ["test-support"]
 
 [[test]]
 name = "gate_scheduler_liveness"

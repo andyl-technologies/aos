@@ -153,8 +153,8 @@
         needle = "pub fn with_coverage_from_event_log";
       }
       {
-        label = "graph cache derives coverage from event log";
-        needle = "pub fn cache_snapshot_with_event_log_coverage";
+        label = "graph cache accepts typed checkpoint feedback";
+        needle = "pub fn cache_snapshot(";
       }
       {
         label = "coverage-guided strategy";
@@ -225,8 +225,8 @@
         needle = "with_coverage_from_event_log";
       }
       {
-        label = "graph cache coverage path used";
-        needle = "cache_snapshot_with_event_log_coverage";
+        label = "typed coverage checkpoint cache path used";
+        needle = "checkpoint.with_coverage_from_event_log(&event_log)";
       }
       {
         label = "coverage-guided search used";

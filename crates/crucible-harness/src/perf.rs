@@ -67,8 +67,8 @@ pub mod sweeps;
 
 pub use admission::{
     DEVICE_WORK_OVERLAP, FINGERPRINT_DIGEST_OFFLOAD, HOST_WORKER_POOL, HostParallelismAdmission,
-    HostParallelismClass, SEGMENT_PARALLEL_REPLAY, TRANSLATION_PREFETCH,
-    canonical_host_parallelism_admissions, validate_host_parallelism_admissions,
+    HostParallelismClass, SEGMENT_PARALLEL_REPLAY, canonical_host_parallelism_admissions,
+    validate_host_parallelism_admissions,
 };
 pub use corpus::{canonical_bench_corpus, canonical_perf_baseline, canonical_perf_bench_input};
 pub use gate::{fork_cost_bytes, peak_rss_units, replay_cost_units, run_perf_bench_gate};

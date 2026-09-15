@@ -80,20 +80,11 @@ fn per_layer_gates_have_named_isolable_test_targets() -> Result<(), Box<dyn Erro
         }
 
         let content = fs::read_to_string(&test_path)?;
-        if target.placeholder {
-            if !content.contains("#[ignore") || !content.contains("panic!") {
-                failures.push(format!(
-                    "{}: placeholder gate target must be ignored and fail when explicitly run",
-                    display_repo_path(&test_path, &root)
-                ));
-            }
-        } else {
-            failures.extend(implemented_gate_test_failures(
-                target,
-                &content,
-                &display_repo_path(&test_path, &root),
-            ));
-        }
+        failures.extend(implemented_gate_test_failures(
+            target,
+            &content,
+            &display_repo_path(&test_path, &root),
+        ));
 
         // Every feature-gated integration target must declare each feature in
         // its `[[test]]` entry and pin an explicit path so default workspace
@@ -163,33 +154,18 @@ fn crate_structure_gate_targets_match_rfc_table() {
             ),
             (
                 "gate:layer0-determinism",
-                "crucible-sim",
-                "gate_layer0_determinism"
-            ),
-            (
-                "gate:layer0-determinism",
-                "crucible-assert",
-                "gate_layer0_determinism"
-            ),
-            (
-                "gate:layer0-determinism",
-                "crucible",
-                "gate_layer0_determinism"
-            ),
-            (
-                "gate:single-vm-fingerprint",
-                "crucible",
-                "gate_single_vm_fingerprint"
+                "crucible-qemu",
+                "deterministic_launch"
             ),
             (
                 "gate:single-vm-fingerprint",
                 "crucible-qemu",
-                "gate_single_vm_fingerprint"
+                "deterministic_launch"
             ),
             (
                 "gate:single-vm-fingerprint",
                 "crucible-qemu-plugin",
-                "gate_single_vm_fingerprint"
+                "gate_patch_microtests"
             ),
             (
                 "gate:single-vm-fingerprint",
@@ -312,8 +288,8 @@ fn crate_structure_gate_targets_match_rfc_table() {
             ),
             (
                 "gate:scheduler-liveness",
-                "crucible",
-                "gate_scheduler_liveness"
+                "crucible-qemu",
+                "deterministic_launch"
             ),
             (
                 "gate:control-responsive",
@@ -330,7 +306,7 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "crucible-daemon",
                 "gate_control_responsive"
             ),
-            ("gate:any-guest", "crucible-qemu", "gate_any_guest"),
+            ("gate:any-guest", "crucible-qemu", "deterministic_launch"),
             ("gate:qemu-inert", "crucible-qemu", "gate_qemu_inert"),
             ("gate:qemu-inert", "crucible-qemu-plugin", "gate_qemu_inert"),
             (
@@ -411,21 +387,18 @@ fn mapping_regression_failures() -> Vec<String> {
             package: "crucible",
             test_target: "gate_replay_oracle",
             required_features: &[],
-            placeholder: true,
         },
         GateTargetSpec {
             gate: "gate:harness-lint",
             package: "crucible-harness",
             test_target: "harness_lint",
             required_features: &[],
-            placeholder: false,
         },
         GateTargetSpec {
             gate: "gate:unknown",
             package: "crucible-harness",
             test_target: "unknown_gate",
             required_features: &[],
-            placeholder: true,
         },
     ];
 
@@ -481,7 +454,6 @@ fn mapping_regression_failures() -> Vec<String> {
         package: "crucible-daemon",
         test_target: "gate_campaign_component_contract",
         required_features: &[],
-        placeholder: false,
     };
     let runnable_component_gate = r#"
         #[test]
@@ -547,7 +519,6 @@ fn mapping_regression_failures() -> Vec<String> {
         package: "crucible",
         test_target: "gate_campaign_replay",
         required_features: &[],
-        placeholder: false,
     };
     let runnable_replay_gate = r#"
         #[test]
@@ -637,21 +608,12 @@ fn synthetic_mapping_failures(
             ));
         }
         if let Some(content) = file_contents.get(&(target.package, target.test_target)) {
-            if target.placeholder {
-                if !content.contains("#[ignore") || !content.contains("panic!") {
-                    failures.push(format!(
-                        "{}:{} placeholder gate target must be ignored and fail when explicitly run",
-                        target.package, target.test_target
-                    ));
-                }
-            } else {
-                failures.extend(implemented_gate_test_failures(
-                    target,
-                    content,
-                    &format!("{}:{}", target.package, target.test_target),
-                ));
-            }
-        } else if !target.placeholder {
+            failures.extend(implemented_gate_test_failures(
+                target,
+                content,
+                &format!("{}:{}", target.package, target.test_target),
+            ));
+        } else {
             failures.push(format!(
                 "{}:{} implemented gate target must not be ignored",
                 target.package, target.test_target
@@ -768,12 +730,9 @@ fn crucible_gate_target_requires_test_double(target: &GateTargetSpec) -> bool {
     target.package == "crucible"
         && matches!(
             target.gate,
-            "gate:layer0-determinism"
-                | "gate:single-vm-fingerprint"
+            "gate:single-vm-fingerprint"
                 | "gate:abi-conformance"
                 | "gate:replay-oracle"
-                | "gate:content-address"
-                | "gate:scheduler-liveness"
                 | "gate:e2e-determinism"
                 | "gate:fleet-equivalence"
         )

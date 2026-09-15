@@ -81,18 +81,20 @@ const REPLAY_ORACLE_MARKERS: &[&str] = &[
 ];
 
 const DECISION_RNG_MARKERS: &[&str] = &[
-    "decision_recorder_records_rng_draws_and_app_random_outcomes",
+    "decision_recorder_records_rng_draws",
     "decision_recorder_keeps_per_entity_streams_stable",
-    "decision_recorder_records_app_random_after_rng_draw",
-    "decision_recorder_records_app_random_guest_request_id",
-    "decision_recorder_rejects_invalid_app_random_widths",
+    "decision_recorder_does_not_perturb_streams_for_unrelated_world_edits",
+    "decision_recorder_domain_separates_same_name_node_and_link_streams",
+    "decision_recorder_admits_backend_rng_evidence_as_a_typed_selection",
+    "decision_recorder_applies_campaign_branch_only_at_the_exact_live_parent",
+    "typed_app_random_selection_counts_against_cap_after_resume",
+    "app_random_draw_cap_is_scenario_hash_material",
+    "app_random_draw_cap_round_trips_through_scenario_form_serialization",
     "decision_recorder_resumes_stream_positions_from_existing_schedule",
     "decision_recorder_derives_default_rr_preemption_without_recording_schedule",
     "decision_recorder_records_preemption_overrides_in_schedule",
     "decision_recorder_rejects_invalid_default_preemption_shape",
     "decision_recorder_derives_default_rr_preemption_without_overflow",
-    "decision_recorder_serves_app_random_override_without_rerolling_stream",
-    "decision_recorder_rejects_invalid_app_random_override_values",
     "assert_decision_rng_branch_coverage(",
     "assert_per_entity_rng_forking_coverage(",
 ];

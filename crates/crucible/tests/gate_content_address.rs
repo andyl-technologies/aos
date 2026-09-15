@@ -4,6 +4,13 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::fs;
@@ -11,18 +18,17 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible::{
-    AppRandomDecision, Checkpoint, CheckpointKind, CheckpointMeta, Configuration, ContentHash,
-    CowDeltaKind, CowDeltaRef, DagStore, DagStoreError, DagStoreReproductionArtifact, Decision,
-    DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta, DeviceRngState,
-    EngineError, EventKey, EventLogOffset, EventSequenceState, FrontierReductionPolicy,
-    FrontierReductionReason, Icount, IrqVector, LocalDagStore, MaterializationPolicy,
-    MaterializationTrigger, MaterializedState, MemoryDagStore, NetworkLinkRuntimeCursor,
-    NodeBlobRef, NodeId, PartialOrderReductionPolicy, PendingFrame, PreemptionDecision,
-    PreemptionKind, RngDecision, RngStreamId, RngStreamPosition, ScenarioDef, Schedule,
-    SchedulerNodeId, SchedulerState, SchedulingNodeKind, SearchFrontierChoices, State,
-    SymmetryClassId, SymmetryReductionClasses, TemporalGraph, TemporalGraphGcRoots,
-    TemporalGraphStoreError, TimerId, TimerRegistry, TimerState, VcpuId, VirtualTime,
-    VmSnapshotRef, World, bake, instantiate, reduce, step,
+    Checkpoint, CheckpointKind, CheckpointMeta, Configuration, ContentHash, CowDeltaKind,
+    CowDeltaRef, DagStore, DagStoreError, DagStoreReproductionArtifact, Decision, DecisionRngState,
+    DeliveryOrderDecision, DeviceId, DeviceOverlayDelta, DeviceRngState, EngineError, EventKey,
+    EventLogOffset, EventSequenceState, FrontierReductionPolicy, FrontierReductionReason, Icount,
+    IrqVector, LocalDagStore, MaterializationPolicy, MaterializationTrigger, MaterializedState,
+    MemoryDagStore, NetworkLinkRuntimeCursor, NodeBlobRef, NodeId, PartialOrderReductionPolicy,
+    PendingFrame, PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, RngStreamPosition,
+    ScenarioDef, Schedule, SchedulerNodeId, SchedulerState, SchedulingNodeKind,
+    SearchFrontierChoices, State, SymmetryClassId, SymmetryReductionClasses, TemporalGraph,
+    TemporalGraphGcRoots, TemporalGraphStoreError, TimerId, TimerRegistry, TimerState, VcpuId,
+    VirtualTime, VmSnapshotRef, World, bake, instantiate, reduce,
 };
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -46,15 +52,15 @@ fn gate_content_address_keeps_fixed_vectors_stable() {
             ),
             (
                 "schedule",
-                "5229d92c60462a0d25c12ccf3b8f7258ffe2ffd382c1d95d2ccea4050b3ab417"
+                "679050a0a10897e87b03f5134fedd95b4684f4f003d638ebbb6948256c3c25f7"
             ),
             (
                 "configuration",
-                "583a882853deee3f9180978a33253f9f06771e9ff15ee4f13bd54a13f6459a45",
+                "bb9706e92cf2518aa2bc6a9d9337a6aceec19945362c47ed547b814d243503ae",
             ),
             (
                 "state",
-                "c0f400af9d28d6bfaa5f7ed24cb6bb9f7ec6f58527a301c00e268fe7c769e6f6"
+                "9c05204b56cfec8b8e81867791c768a88569ca20864e06c91deb950d6a7ca047"
             ),
             (
                 "world-component",
@@ -121,14 +127,14 @@ fn gate_content_address_changes_on_single_byte_mutations() {
 
     let scenario = scenario("scenario=mutation\nnodes=a,b\nseed=11");
     let base = Configuration::genesis(scenario.clone());
-    let first = step(
+    let first = accepted_step!(
         &base,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::for_node("node-a/fault"),
             value: 1,
         }),
     );
-    let changed = step(
+    let changed = accepted_step!(
         &base,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::for_node("node-a/fault"),
@@ -185,7 +191,7 @@ fn gate_content_address_is_sensitive_to_schedule_order() {
 #[test]
 fn gate_content_address_excludes_materialization_cache_from_identity() {
     let scenario = scenario("scenario=cache\nnodes=a\nseed=17");
-    let configuration = step(
+    let configuration = accepted_step!(
         &Configuration::genesis(scenario.clone()),
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("disk-delay"),
@@ -214,7 +220,7 @@ fn gate_content_address_checkpoint_identity_matches_configuration_id() {
             def: scenario.clone(),
             schedule: generated_schedule(seed, 2),
         };
-        let configuration = step(&parent, generated_decision(seed, 99));
+        let configuration = accepted_step!(&parent, generated_decision(seed, 99));
         let schedule_delta = match configuration.schedule.suffix_from(parent.schedule.len()) {
             Ok(schedule) => schedule,
             Err(error) => panic!("generated parent must be a prefix: {error}"),
@@ -247,11 +253,12 @@ fn gate_content_address_checkpoint_identity_matches_configuration_id() {
         let materialized =
             checkpoint
                 .clone()
-                .with_materialized_state(Some(MaterializedState::from_content_hash(
-                    ContentHash::from_canonical_material(
-                        "crucible.test.content-address.materialized-state",
-                        &format!("seed={seed}"),
-                    ),
+                .with_materialized_state(Some(MaterializedState::from_components(
+                    BTreeMap::new(),
+                    BTreeMap::new(),
+                    SchedulerState::empty(),
+                    DecisionRngState::empty(),
+                    EventLogOffset::default(),
                 )));
         let covered =
             materialized
@@ -419,10 +426,15 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
 
 #[test]
 fn gate_content_address_cow_sharing_dedups_identical_fork_deltas() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.content-address.world",
-        "cow-sharing-root",
-    ));
+    let world = World::from_recorded_parts(
+        ContentHash::from_canonical_material(
+            "crucible.test.content-address.world",
+            "cow-sharing-root",
+        ),
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("recorded test world should build: {error}"));
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
     let mut graph = TemporalGraph::empty()
@@ -431,8 +443,8 @@ fn gate_content_address_cow_sharing_dedups_identical_fork_deltas() {
             bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}")),
         )
         .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
-    let first = step(&genesis, generated_decision(377, 0));
-    let second = step(&genesis, generated_decision(377, 1));
+    let first = accepted_step!(&genesis, generated_decision(377, 0));
+    let second = accepted_step!(&genesis, generated_decision(377, 1));
     let shared_vm_delta =
         ContentHash::from_canonical_material("crucible.test.cow-sharing.vm", "dirty-page=7");
     let shared_overlay_delta =
@@ -658,137 +670,6 @@ fn gate_content_address_local_dag_store_repairs_corrupt_object_path() {
 }
 
 #[test]
-fn gate_content_address_checkpoint_index_reads_v2_without_opaque_replay_artifact() {
-    let root = unique_temp_dir("checkpoint-index-v2");
-    let store = LocalDagStore::new(root.clone());
-    let checkpoint = ContentHash::from_bytes(b"checkpoint-v2");
-    let reproduction = store
-        .put(b"reproduction-v2")
-        .unwrap_or_else(|error| panic!("reproduction object should store: {error}"));
-
-    store
-        .write_checkpoint_closure_index(checkpoint, reproduction, VirtualTime { ticks: 7 })
-        .unwrap_or_else(|error| panic!("v2 checkpoint index should store: {error}"));
-    let index = store
-        .read_checkpoint_closure_index(checkpoint)
-        .unwrap_or_else(|error| panic!("v2 checkpoint index should remain readable: {error}"));
-
-    assert_eq!(index.checkpoint, checkpoint);
-    assert_eq!(index.opaque_replay_artifact, None);
-    assert_eq!(index.referenced_objects(), BTreeSet::from([reproduction]));
-
-    fs::remove_dir_all(&root)
-        .unwrap_or_else(|error| panic!("temporary DAG store root should remove: {error}"));
-}
-
-#[test]
-fn gate_content_address_checkpoint_index_retains_opaque_replay_artifact() {
-    let root = unique_temp_dir("checkpoint-index-v3");
-    let store = LocalDagStore::new(root.clone());
-    let checkpoint = ContentHash::from_bytes(b"checkpoint-v3");
-    let reproduction = store
-        .put(b"reproduction-v3")
-        .unwrap_or_else(|error| panic!("reproduction object should store: {error}"));
-    let replay_closure = store
-        .put(b"opaque-replay-closure")
-        .unwrap_or_else(|error| panic!("opaque replay object should store: {error}"));
-
-    store
-        .write_checkpoint_closure_index_with_opaque_replay_artifact(
-            checkpoint,
-            reproduction,
-            replay_closure,
-            VirtualTime { ticks: 11 },
-        )
-        .unwrap_or_else(|error| panic!("v3 checkpoint index should store: {error}"));
-    let index = store
-        .read_checkpoint_closure_index(checkpoint)
-        .unwrap_or_else(|error| panic!("v3 checkpoint index should be readable: {error}"));
-
-    assert_eq!(index.opaque_replay_artifact, Some(replay_closure));
-    assert_eq!(
-        index.referenced_objects(),
-        BTreeSet::from([reproduction, replay_closure])
-    );
-
-    fs::remove_dir_all(&root)
-        .unwrap_or_else(|error| panic!("temporary DAG store root should remove: {error}"));
-}
-
-#[test]
-fn gate_content_address_graph_gc_preserves_v3_checkpoint_index_objects() {
-    let root = unique_temp_dir("checkpoint-index-v3-gc");
-    let store = LocalDagStore::new(root.clone());
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.content-address.world",
-        "checkpoint-index-v3-gc",
-    ));
-    let scenario = world.scenario_def();
-    let genesis = Configuration::genesis(scenario.clone());
-    let live = step(&genesis, generated_decision(801, 0));
-    let abandoned = step(&genesis, generated_decision(802, 0));
-    let mut graph = TemporalGraph::empty()
-        .with_baked_genesis(
-            &scenario,
-            bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}")),
-        )
-        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
-    graph
-        .record_thin_checkpoint(&live)
-        .unwrap_or_else(|error| panic!("live checkpoint should record: {error}"));
-    graph
-        .record_thin_checkpoint(&abandoned)
-        .unwrap_or_else(|error| panic!("abandoned checkpoint should record: {error}"));
-    graph
-        .persist_checkpoint_closure(&store, &live)
-        .unwrap_or_else(|error| panic!("live closure should persist: {error}"));
-    graph
-        .persist_checkpoint_closure(&store, &abandoned)
-        .unwrap_or_else(|error| panic!("abandoned closure should persist: {error}"));
-
-    let reproduction = store
-        .put(b"portable-reproduction-artifact")
-        .unwrap_or_else(|error| panic!("portable reproduction should store: {error}"));
-    let replay_closure = store
-        .put(b"portable-opaque-replay-closure")
-        .unwrap_or_else(|error| panic!("portable replay closure should store: {error}"));
-    store
-        .write_checkpoint_closure_index_with_opaque_replay_artifact(
-            live.id(),
-            reproduction,
-            replay_closure,
-            VirtualTime { ticks: 801 },
-        )
-        .unwrap_or_else(|error| panic!("v3 checkpoint index should store: {error}"));
-
-    let report = graph
-        .garbage_collect_store(
-            &store,
-            &TemporalGraphGcRoots::new().with_live_tip(live.id()),
-        )
-        .unwrap_or_else(|error| panic!("graph store GC should complete: {error}"));
-    let index = store
-        .read_checkpoint_closure_index(live.id())
-        .unwrap_or_else(|error| panic!("v3 checkpoint index should survive graph GC: {error}"));
-
-    assert!(report.collected_checkpoints.contains(&abandoned.id()));
-    assert_eq!(
-        index.referenced_objects(),
-        BTreeSet::from([reproduction, replay_closure])
-    );
-    for retained in index.referenced_objects() {
-        assert!(
-            store
-                .exists(&retained)
-                .unwrap_or_else(|error| panic!("retained object lookup should succeed: {error}"))
-        );
-    }
-
-    fs::remove_dir_all(&root)
-        .unwrap_or_else(|error| panic!("temporary DAG store root should remove: {error}"));
-}
-
-#[test]
 fn gate_content_address_reproduction_artifact_is_store_key_closure() {
     let store = MemoryDagStore::new();
     let scenario_key = store
@@ -825,13 +706,18 @@ fn gate_content_address_reproduction_artifact_is_store_key_closure() {
 
 #[test]
 fn gate_content_address_temporal_graph_persists_checkpoint_closure_in_dag_store() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.content-address.world",
-        "dag-store-persist-root",
-    ));
+    let world = World::from_recorded_parts(
+        ContentHash::from_canonical_material(
+            "crucible.test.content-address.world",
+            "dag-store-persist-root",
+        ),
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("recorded test world should build: {error}"));
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let first = step(&genesis, generated_decision(610, 0));
+    let first = accepted_step!(&genesis, generated_decision(610, 0));
     let vm_delta =
         ContentHash::from_canonical_material("crucible.test.dag-store-persist.vm", "dirty-page=11");
     let overlay_delta =
@@ -906,14 +792,19 @@ fn gate_content_address_temporal_graph_persists_checkpoint_closure_in_dag_store(
 
 #[test]
 fn gate_content_address_gc_refcounts_abandoned_branch_unique_objects() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.content-address.world",
-        "gc-refcount-root",
-    ));
+    let world = World::from_recorded_parts(
+        ContentHash::from_canonical_material(
+            "crucible.test.content-address.world",
+            "gc-refcount-root",
+        ),
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("recorded test world should build: {error}"));
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let left = step(&genesis, generated_decision(620, 0));
-    let right = step(&genesis, generated_decision(621, 0));
+    let left = accepted_step!(&genesis, generated_decision(620, 0));
+    let right = accepted_step!(&genesis, generated_decision(621, 0));
     let shared_vm_delta =
         ContentHash::from_canonical_material("crucible.test.gc-refcount.vm", "shared-dirty-page");
     let left_overlay_delta =
@@ -1054,18 +945,23 @@ fn gate_content_address_gc_refcounts_abandoned_branch_unique_objects() {
 
 #[test]
 fn gate_content_address_gc_mark_sweep_roots_live_tips_pins_and_genesis() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.content-address.world",
-        "gc-mark-sweep-root",
-    ));
+    let world = World::from_recorded_parts(
+        ContentHash::from_canonical_material(
+            "crucible.test.content-address.world",
+            "gc-mark-sweep-root",
+        ),
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("recorded test world should build: {error}"));
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
     let first_decision = generated_decision(720, 0);
-    let first = step(&genesis, first_decision.clone());
+    let first = accepted_step!(&genesis, first_decision.clone());
     let second_decision = generated_decision(720, 1);
-    let second = step(&first, second_decision.clone());
+    let second = accepted_step!(&first, second_decision.clone());
     let abandoned_decision = generated_decision(721, 0);
-    let abandoned = step(&genesis, abandoned_decision.clone());
+    let abandoned = accepted_step!(&genesis, abandoned_decision.clone());
     let first_delta_ref = CowDeltaRef::new(
         CowDeltaKind::ScheduleDelta,
         Schedule::empty()
@@ -1141,13 +1037,18 @@ fn gate_content_address_gc_mark_sweep_roots_live_tips_pins_and_genesis() {
 
 #[test]
 fn gate_content_address_gc_missing_root_errors_without_deleting_store_objects() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.content-address.world",
-        "gc-missing-root",
-    ));
+    let world = World::from_recorded_parts(
+        ContentHash::from_canonical_material(
+            "crucible.test.content-address.world",
+            "gc-missing-root",
+        ),
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("recorded test world should build: {error}"));
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let first = step(&genesis, generated_decision(725, 0));
+    let first = accepted_step!(&genesis, generated_decision(725, 0));
     let missing = ContentHash::from_canonical_material(
         "crucible.test.content-address.gc",
         "missing-live-root",
@@ -1193,13 +1094,18 @@ fn gate_content_address_gc_missing_root_errors_without_deleting_store_objects() 
 
 #[test]
 fn gate_content_address_gc_collects_cache_not_identity() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.content-address.world",
-        "gc-cache-not-identity-root",
-    ));
+    let world = World::from_recorded_parts(
+        ContentHash::from_canonical_material(
+            "crucible.test.content-address.world",
+            "gc-cache-not-identity-root",
+        ),
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("recorded test world should build: {error}"));
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let first = step(&genesis, generated_decision(730, 0));
+    let first = accepted_step!(&genesis, generated_decision(730, 0));
     let mut graph = TemporalGraph::empty()
         .with_baked_genesis(
             &scenario,
@@ -1255,7 +1161,7 @@ fn gate_content_address_checkpoint_rejects_malformed_parent_edges() {
         def: scenario_def.clone(),
         schedule: generated_schedule(89, 2),
     };
-    let configuration = step(&parent, generated_decision(89, 99));
+    let configuration = accepted_step!(&parent, generated_decision(89, 99));
     let sibling_parent = Configuration {
         def: scenario_def.clone(),
         schedule: generated_schedule(89, 1).appended(generated_decision(90, 44)),
@@ -1341,10 +1247,15 @@ fn gate_content_address_rejects_corrupt_checkpoint_cache_topology() {
 
 #[test]
 fn gate_content_address_temporal_graph_records_step_closure_and_parent_chain() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.content-address.world",
-        "temporal-graph-root",
-    ));
+    let world = World::from_recorded_parts(
+        ContentHash::from_canonical_material(
+            "crucible.test.content-address.world",
+            "temporal-graph-root",
+        ),
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("recorded test world should build: {error}"));
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
     let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
@@ -1353,7 +1264,7 @@ fn gate_content_address_temporal_graph_records_step_closure_and_parent_chain() {
         .with_baked_genesis(&scenario, baked)
         .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
     let first_decision = generated_decision(233, 0);
-    let first_config = step(&genesis, first_decision.clone());
+    let first_config = accepted_step!(&genesis, first_decision.clone());
     let first_checkpoint = graph
         .record_step(&genesis, first_decision.clone())
         .unwrap_or_else(|error| panic!("first step should record: {error}"));
@@ -1361,7 +1272,7 @@ fn gate_content_address_temporal_graph_records_step_closure_and_parent_chain() {
         .record_step(&genesis, first_decision)
         .unwrap_or_else(|error| panic!("duplicate first step should dedup: {error}"));
     let second_decision = generated_decision(233, 1);
-    let second_config = step(&first_config, second_decision.clone());
+    let second_config = accepted_step!(&first_config, second_decision.clone());
     let second_checkpoint = graph
         .record_step(&first_config, second_decision)
         .unwrap_or_else(|error| panic!("second step should record: {error}"));
@@ -1395,10 +1306,15 @@ fn gate_content_address_temporal_graph_records_step_closure_and_parent_chain() {
 
 #[test]
 fn gate_content_address_temporal_graph_frontier_records_checkpoint_dag_children() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.content-address.world",
-        "temporal-graph-frontier",
-    ));
+    let world = World::from_recorded_parts(
+        ContentHash::from_canonical_material(
+            "crucible.test.content-address.world",
+            "temporal-graph-frontier",
+        ),
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("recorded test world should build: {error}"));
     let scenario = world.scenario_def();
     let frontier = Configuration::genesis(scenario.clone());
     let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
@@ -1437,10 +1353,15 @@ fn gate_content_address_temporal_graph_frontier_records_checkpoint_dag_children(
 
 #[test]
 fn gate_content_address_temporal_graph_symmetry_reduction_covers_relabelled_frontier() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.content-address.world",
-        "temporal-graph-symmetry-reduction",
-    ));
+    let world = World::from_recorded_parts(
+        ContentHash::from_canonical_material(
+            "crucible.test.content-address.world",
+            "temporal-graph-symmetry-reduction",
+        ),
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("recorded test world should build: {error}"));
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
     let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
@@ -1460,8 +1381,8 @@ fn gate_content_address_temporal_graph_symmetry_reduction_covers_relabelled_fron
     );
     let left_decision = preemption_decision("replica-a", 11);
     let right_decision = preemption_decision("replica-b", 11);
-    let left_config = step(&genesis, left_decision.clone());
-    let right_config = step(&genesis, right_decision.clone());
+    let left_config = accepted_step!(&genesis, left_decision.clone());
+    let right_config = accepted_step!(&genesis, right_decision.clone());
     let left_checkpoint = fat_checkpoint_with_coverage(
         &left_config,
         &genesis,
@@ -1515,10 +1436,15 @@ fn gate_content_address_temporal_graph_symmetry_reduction_covers_relabelled_fron
 
 #[test]
 fn gate_content_address_temporal_graph_symmetry_reduction_explores_without_proof() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.content-address.world",
-        "temporal-graph-symmetry-conservative",
-    ));
+    let world = World::from_recorded_parts(
+        ContentHash::from_canonical_material(
+            "crucible.test.content-address.world",
+            "temporal-graph-symmetry-conservative",
+        ),
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("recorded test world should build: {error}"));
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
     let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
@@ -1547,10 +1473,15 @@ fn gate_content_address_temporal_graph_symmetry_reduction_explores_without_proof
 
 #[test]
 fn gate_content_address_temporal_graph_symmetry_reduction_explores_when_state_differs() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.content-address.world",
-        "temporal-graph-symmetry-state-differs",
-    ));
+    let world = World::from_recorded_parts(
+        ContentHash::from_canonical_material(
+            "crucible.test.content-address.world",
+            "temporal-graph-symmetry-state-differs",
+        ),
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("recorded test world should build: {error}"));
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
     let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
@@ -1570,8 +1501,8 @@ fn gate_content_address_temporal_graph_symmetry_reduction_explores_when_state_di
     );
     let left_decision = preemption_decision("replica-a", 41);
     let right_decision = preemption_decision("replica-b", 41);
-    let left_config = step(&genesis, left_decision.clone());
-    let right_config = step(&genesis, right_decision.clone());
+    let left_config = accepted_step!(&genesis, left_decision.clone());
+    let right_config = accepted_step!(&genesis, right_decision.clone());
     let left_checkpoint = fat_checkpoint_with_coverage_and_event_log(
         &left_config,
         &genesis,
@@ -1628,10 +1559,15 @@ fn gate_content_address_temporal_graph_symmetry_reduction_explores_when_state_di
 
 #[test]
 fn gate_content_address_temporal_graph_partial_order_reduction_skips_noncanonical_interleaving() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.content-address.world",
-        "temporal-graph-partial-order-reduction",
-    ));
+    let world = World::from_recorded_parts(
+        ContentHash::from_canonical_material(
+            "crucible.test.content-address.world",
+            "temporal-graph-partial-order-reduction",
+        ),
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("recorded test world should build: {error}"));
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
     let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
@@ -1645,9 +1581,9 @@ fn gate_content_address_temporal_graph_partial_order_reduction_skips_noncanonica
     } else {
         (left, right)
     };
-    let frontier = step(&genesis, first.clone());
-    let covered = step(&frontier, second.clone());
-    let canonical_frontier = step(&genesis, second.clone());
+    let frontier = accepted_step!(&genesis, first.clone());
+    let covered = accepted_step!(&frontier, second.clone());
+    let canonical_frontier = accepted_step!(&genesis, second.clone());
     let representative = Configuration {
         def: scenario,
         schedule: Schedule::empty()
@@ -1690,10 +1626,15 @@ fn gate_content_address_temporal_graph_partial_order_reduction_skips_noncanonica
 
 #[test]
 fn gate_content_address_temporal_graph_partial_order_reduction_records_missing_representative() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.content-address.world",
-        "temporal-graph-partial-order-missing-representative",
-    ));
+    let world = World::from_recorded_parts(
+        ContentHash::from_canonical_material(
+            "crucible.test.content-address.world",
+            "temporal-graph-partial-order-missing-representative",
+        ),
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("recorded test world should build: {error}"));
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario);
     let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
@@ -1707,8 +1648,8 @@ fn gate_content_address_temporal_graph_partial_order_reduction_records_missing_r
     } else {
         (left, right)
     };
-    let frontier = step(&genesis, first.clone());
-    let covered = step(&frontier, second.clone());
+    let frontier = accepted_step!(&genesis, first.clone());
+    let covered = accepted_step!(&frontier, second.clone());
     let representative = Configuration {
         def: genesis.def.clone(),
         schedule: Schedule::empty()
@@ -1744,10 +1685,15 @@ fn gate_content_address_temporal_graph_partial_order_reduction_records_missing_r
 
 #[test]
 fn gate_content_address_temporal_graph_partial_order_reduction_explores_when_dependent() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.content-address.world",
-        "temporal-graph-partial-order-dependent",
-    ));
+    let world = World::from_recorded_parts(
+        ContentHash::from_canonical_material(
+            "crucible.test.content-address.world",
+            "temporal-graph-partial-order-dependent",
+        ),
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("recorded test world should build: {error}"));
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
     let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
@@ -1755,27 +1701,18 @@ fn gate_content_address_temporal_graph_partial_order_reduction_explores_when_dep
         .with_baked_genesis(&scenario, baked)
         .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
     let first = preemption_decision("node-a", 31);
-    let frontier = step(&genesis, first.clone());
+    let frontier = accepted_step!(&genesis, first.clone());
     let same_node = preemption_decision("node-a", 32);
-    let unknown = Decision::RngDraw(RngDecision {
+    let global_rng_draw = Decision::RngDraw(RngDecision {
         stream: RngStreamId::from_name("global"),
         value: 9,
     });
-    let same_stream_a = app_random_decision("node-a", "shared", 1);
-    let same_stream_b = app_random_decision("node-b", "shared", 2);
-    let different_stream_b = app_random_decision("node-b", "other", 2);
     let dependent_proofs = PartialOrderReductionPolicy::new()
         .with_independent_pair(&first, &same_node)
-        .with_independent_pair(&first, &unknown);
-    let same_stream_proof =
-        PartialOrderReductionPolicy::new().with_independent_pair(&same_stream_a, &same_stream_b);
-    let different_stream_proof = PartialOrderReductionPolicy::new()
-        .with_independent_pair(&same_stream_a, &different_stream_b);
+        .with_independent_pair(&first, &global_rng_draw);
 
     assert!(!same_node.is_independent_from(&first, &dependent_proofs));
-    assert!(!unknown.is_independent_from(&first, &dependent_proofs));
-    assert!(!same_stream_a.is_independent_from(&same_stream_b, &same_stream_proof));
-    assert!(same_stream_a.is_independent_from(&different_stream_b, &different_stream_proof));
+    assert!(!global_rng_draw.is_independent_from(&first, &dependent_proofs));
     graph
         .record_step(&genesis, first)
         .unwrap_or_else(|error| panic!("frontier should record: {error}"));
@@ -1783,29 +1720,34 @@ fn gate_content_address_temporal_graph_partial_order_reduction_explores_when_dep
     let report = graph
         .enumerate_frontier_reduced(
             &frontier,
-            vec![same_node.clone(), unknown.clone()],
+            vec![same_node.clone(), global_rng_draw.clone()],
             FrontierReductionPolicy::none().with_partial_order(dependent_proofs),
         )
         .unwrap_or_else(|error| panic!("reduced frontier should enumerate: {error}"));
 
     assert_eq!(report.explored.len(), 2);
     assert!(report.covered.is_empty());
-    assert!(graph.contains_configuration(&step(&frontier, same_node)));
-    assert!(graph.contains_configuration(&step(&frontier, unknown)));
+    assert!(graph.contains_configuration(&accepted_step!(&frontier, same_node)));
+    assert!(graph.contains_configuration(&accepted_step!(&frontier, global_rng_draw)));
 }
 
 #[test]
 fn gate_content_address_temporal_graph_user_operations_share_single_dag() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.content-address.world",
-        "temporal-graph-user-operations",
-    ));
+    let world = World::from_recorded_parts(
+        ContentHash::from_canonical_material(
+            "crucible.test.content-address.world",
+            "temporal-graph-user-operations",
+        ),
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("recorded test world should build: {error}"));
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
     let store = MemoryDagStore::new();
-    let saved = step(&genesis, generated_decision(810, 0));
+    let saved = accepted_step!(&genesis, generated_decision(810, 0));
     let fork_decision = generated_decision(811, 0);
-    let forked = step(&genesis, fork_decision.clone());
+    let forked = accepted_step!(&genesis, fork_decision.clone());
     let search_extra = generated_decision(814, 0);
     let search_only = generated_decision(812, 0);
     let mut baked =
@@ -1991,355 +1933,7 @@ fn assert_cache_topology_reason(
     }
 }
 
-fn unique_temp_dir(label: &str) -> PathBuf {
-    let index = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let root =
-        std::env::temp_dir().join(format!("crucible-{label}-{}-{index}", std::process::id()));
-    match fs::remove_dir_all(&root) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => panic!("temporary DAG store root should be clearable: {error}"),
-    }
-    root
-}
+#[path = "gate_content_address/support.rs"]
+mod support;
 
-fn checkpoint_with_search_frontier_choices(
-    mut checkpoint: Checkpoint,
-    decisions: Vec<Decision>,
-) -> Checkpoint {
-    let state = checkpoint
-        .state
-        .as_ref()
-        .expect("test checkpoint must be materialized");
-    let mut scheduler = state.scheduler.clone();
-    scheduler.search_frontier = SearchFrontierChoices::from_decisions(decisions);
-    checkpoint.state = Some(MaterializedState::from_components_with_event_log_segments(
-        state.vm_snapshots.clone(),
-        state.device_overlays.clone(),
-        scheduler,
-        state.decision_rng.clone(),
-        state.event_log,
-        state.event_log_segments.clone(),
-    ));
-    checkpoint
-}
-
-fn scenario(material: &str) -> ScenarioDef {
-    ScenarioDef::from_canonical_material("crucible.test.content-address.scenario", material)
-}
-
-fn event_key(virtual_time: u64, sequence: u64) -> EventKey {
-    EventKey::new(
-        VirtualTime {
-            ticks: virtual_time,
-        },
-        scheduler_node("consumer"),
-        scheduler_node("producer"),
-        sequence,
-    )
-}
-
-fn scheduler_node(name: &str) -> SchedulerNodeId {
-    SchedulerNodeId {
-        node: NodeId {
-            name: name.to_owned(),
-        },
-        kind: SchedulingNodeKind::Vm,
-    }
-}
-
-fn fixed_schedule() -> Schedule {
-    Schedule::empty()
-        .appended(Decision::DeliveryOrder(DeliveryOrderDecision {
-            at: VirtualTime { ticks: 1 },
-            order: vec![event_key(1, 2), event_key(1, 3)],
-        }))
-        .appended(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::for_link("link-a-b/drop"),
-            value: 1,
-        }))
-        .appended(Decision::AppRandom(AppRandomDecision {
-            node: NodeId {
-                name: String::from("node-a"),
-            },
-            stream: RngStreamId::for_node("guest/request"),
-            request_id: 12,
-            width: 32,
-            value: 0xabcd_1234,
-        }))
-}
-
-fn generated_schedule(seed: u64, decisions: u64) -> Schedule {
-    let mut schedule = Schedule::empty();
-    for index in 0..decisions {
-        schedule = schedule.appended(generated_decision(seed, index));
-    }
-    schedule
-}
-
-fn generated_decision(seed: u64, index: u64) -> Decision {
-    match (seed + index) % 3 {
-        0 => Decision::DeliveryOrder(DeliveryOrderDecision {
-            at: VirtualTime {
-                ticks: seed + index,
-            },
-            order: vec![event_key(seed + index, index)],
-        }),
-        1 => Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name(format!("stream-{seed}-{index}")),
-            value: u64::from(index.is_multiple_of(2)),
-        }),
-        _ => Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name(format!("stream-{seed}")),
-            value: seed ^ index,
-        }),
-    }
-}
-
-fn node_id(name: &str) -> NodeId {
-    NodeId {
-        name: String::from(name),
-    }
-}
-
-fn symmetry_class(name: &str) -> SymmetryClassId {
-    SymmetryClassId {
-        name: String::from(name),
-    }
-}
-
-fn node_blob(material: &str) -> NodeBlobRef {
-    NodeBlobRef::baked(ContentHash::from_canonical_material(
-        "crucible.test.content-address.node-blob",
-        material,
-    ))
-}
-
-fn preemption_decision(node: &str, retired: u64) -> Decision {
-    Decision::Preemption(PreemptionDecision {
-        node: node_id(node),
-        at: Icount { retired },
-        kind: PreemptionKind::InterruptAt {
-            target_vcpu: VcpuId { index: 0 },
-            irq: IrqVector { vector: 32 },
-        },
-    })
-}
-
-fn app_random_decision(node: &str, stream: &str, value: u64) -> Decision {
-    Decision::AppRandom(AppRandomDecision {
-        node: node_id(node),
-        stream: RngStreamId::for_node(stream),
-        request_id: value,
-        width: 64,
-        value,
-    })
-}
-
-fn fat_checkpoint_with_coverage(
-    configuration: &Configuration,
-    parent: &Configuration,
-    coverage: ContentHash,
-    node_blobs: BTreeMap<NodeId, NodeBlobRef>,
-) -> Checkpoint {
-    fat_checkpoint_with_coverage_and_event_log(
-        configuration,
-        parent,
-        coverage,
-        node_blobs,
-        EventLogOffset::default(),
-    )
-}
-
-fn fat_checkpoint_with_coverage_and_event_log(
-    configuration: &Configuration,
-    parent: &Configuration,
-    coverage: ContentHash,
-    node_blobs: BTreeMap<NodeId, NodeBlobRef>,
-    event_log: EventLogOffset,
-) -> Checkpoint {
-    let node_icounts = node_blobs
-        .keys()
-        .cloned()
-        .map(|node| (node, Icount { retired: 99 }))
-        .collect::<BTreeMap<_, _>>();
-    let state = MaterializedState::from_components(
-        materialized_snapshots_for_blobs(&node_blobs, &node_icounts),
-        BTreeMap::new(),
-        SchedulerState::empty(),
-        DecisionRngState::empty(),
-        event_log,
-    );
-    Checkpoint::from_recorded_configuration(
-        configuration,
-        Some(parent),
-        VirtualTime::default(),
-        node_icounts,
-        CheckpointKind::Fat,
-        node_blobs,
-    )
-    .unwrap_or_else(|error| panic!("fat checkpoint should be constructible: {error}"))
-    .with_materialized_state(Some(state))
-    .with_coverage_fingerprint(coverage)
-}
-
-fn materialized_snapshots_for_blobs(
-    node_blobs: &BTreeMap<NodeId, NodeBlobRef>,
-    node_icounts: &BTreeMap<NodeId, Icount>,
-) -> BTreeMap<NodeId, VmSnapshotRef> {
-    node_blobs
-        .iter()
-        .map(|(node, blob)| {
-            (
-                node.clone(),
-                VmSnapshotRef::new(
-                    blob.clone(),
-                    node_icounts.get(node).copied().unwrap_or_default(),
-                ),
-            )
-        })
-        .collect()
-}
-
-fn cow_fork_checkpoint(
-    configuration: &Configuration,
-    parent: &Configuration,
-    vm_delta: ContentHash,
-    overlay_delta: ContentHash,
-    log_prefix: ContentHash,
-    log_segment: ContentHash,
-) -> Checkpoint {
-    let node = NodeId {
-        name: String::from("node-a"),
-    };
-    let device = DeviceId {
-        name: String::from("disk-a"),
-    };
-    let parent_vm =
-        ContentHash::from_canonical_material("crucible.test.cow-sharing.vm", "parent-ready");
-    let resolved_vm =
-        ContentHash::from_canonical_material("crucible.test.cow-sharing.vm", "resolved-dirty");
-    let parent_overlay =
-        ContentHash::from_canonical_material("crucible.test.cow-sharing.overlay", "base");
-    let resolved_overlay =
-        ContentHash::from_canonical_material("crucible.test.cow-sharing.overlay", "resolved");
-    let icount = Icount { retired: 33 };
-    let node_blobs = BTreeMap::from([(
-        node.clone(),
-        NodeBlobRef::cow_delta(parent_vm, vm_delta, resolved_vm),
-    )]);
-    let node_icounts = BTreeMap::from([(node.clone(), icount)]);
-    let state = MaterializedState::from_components(
-        BTreeMap::from([(
-            node,
-            VmSnapshotRef::new(
-                NodeBlobRef::cow_delta(parent_vm, vm_delta, resolved_vm),
-                icount,
-            ),
-        )]),
-        BTreeMap::from([(
-            device,
-            DeviceOverlayDelta::new(
-                parent_overlay,
-                overlay_delta,
-                resolved_overlay,
-                DeviceRngState::empty(),
-            ),
-        )]),
-        SchedulerState::empty(),
-        DecisionRngState::empty(),
-        EventLogOffset::with_appended_segment(log_prefix, 96, 3, log_segment),
-    );
-
-    Checkpoint::from_recorded_configuration(
-        configuration,
-        Some(parent),
-        VirtualTime::default(),
-        node_icounts,
-        CheckpointKind::Fat,
-        node_blobs,
-    )
-    .unwrap_or_else(|error| panic!("CoW fork checkpoint should be recorded-shaped: {error}"))
-    .with_materialized_state(Some(state))
-}
-
-fn recorded_fat_checkpoint(configuration: &Configuration) -> Checkpoint {
-    let parent = if configuration.is_genesis() {
-        None
-    } else {
-        let schedule = configuration
-            .schedule
-            .prefix(configuration.schedule.len().saturating_sub(1))
-            .unwrap_or_else(|error| panic!("test schedule prefix should build: {error}"));
-        Some(Configuration {
-            def: configuration.def.clone(),
-            schedule,
-        })
-    };
-    Checkpoint::from_recorded_configuration(
-        configuration,
-        parent.as_ref(),
-        VirtualTime::default(),
-        BTreeMap::new(),
-        CheckpointKind::Fat,
-        BTreeMap::new(),
-    )
-    .unwrap_or_else(|error| panic!("test checkpoint should be recorded-shaped: {error}"))
-}
-
-fn append_schedule(prefix: &Schedule, delta: &Schedule) -> Schedule {
-    let mut schedule = prefix.clone();
-    for decision in delta.decisions() {
-        schedule = schedule.appended(decision.clone());
-    }
-    schedule
-}
-
-fn fixed_vectors(
-    scenario: &ScenarioDef,
-    schedule: &Schedule,
-    configuration: &Configuration,
-    state: &State,
-) -> [(&'static str, String); 7] {
-    [
-        ("scenario", hash_hex(scenario.id())),
-        ("schedule", hash_hex(schedule.content_hash())),
-        ("configuration", hash_hex(configuration.content_hash())),
-        ("state", hash_hex(state.id)),
-        (
-            "world-component",
-            hash_hex(ContentHash::from_canonical_material(
-                "crucible.test.content-address.world",
-                "nodes=[node-a,node-b]\nlinks=[a-b]\n",
-            )),
-        ),
-        (
-            "snapshot-blob",
-            hash_hex(ContentHash::from_canonical_material(
-                "crucible.test.content-address.snapshot",
-                "vm=node-a\npage=0000\nbytes=0011223344556677\n",
-            )),
-        ),
-        (
-            "event-log-segment",
-            hash_hex(ContentHash::from_canonical_material(
-                "crucible.test.content-address.log",
-                "0 delivery node-a->node-b icount=5\n1 fault link-drop fired=true\n",
-            )),
-        ),
-    ]
-}
-
-fn expected_vectors(vectors: [(&'static str, &'static str); 7]) -> [(&'static str, String); 7] {
-    vectors.map(|(name, hash)| (name, hash.to_owned()))
-}
-
-fn hash_hex(hash: ContentHash) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(hash.bytes.len() * 2);
-    for byte in hash.bytes {
-        output.push(char::from(HEX[usize::from(byte >> 4)]));
-        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    output
-}
+use support::*;

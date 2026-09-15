@@ -1,5 +1,7 @@
 //! Checkpoint-tagged VMState control over typed QMP commands.
 
+mod hot_fork_barriers;
+
 use std::io::Write;
 use std::os::fd::BorrowedFd;
 use std::os::unix::net::UnixStream;
@@ -8,32 +10,28 @@ use crucible::Checkpoint;
 use crucible_shmem::SetupRegionBackingIdentity;
 
 use super::{
-    QmpClient, QmpCommandComplete, QmpDescriptorName, QmpError, QmpHotForkAioHandlerInventory,
-    QmpHotForkAioInventory, QmpHotForkBhTimerBarrierState, QmpHotForkBlockBackendInventory,
-    QmpHotForkBlockBarrierState, QmpHotForkBlockSnapshotBinding, QmpHotForkBottomHalfInventory,
-    QmpHotForkChildProcessState, QmpHotForkChildRuntimeState, QmpHotForkMonitorInventory,
-    QmpHotForkMutexInventory, QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory,
-    QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkReadiness, QmpHotForkRequest,
-    QmpHotForkState, QmpHotForkTemplateState, QmpHotForkThreadInventory, QmpHotForkTimerInventory,
+    QmpCheckpointCapture, QmpCheckpointCaptureRequest, QmpCheckpointEpochState,
+    QmpCheckpointIdentity, QmpCheckpointRestore, QmpCheckpointRestoreRequest, QmpClient,
+    QmpCommandComplete, QmpDescriptorName, QmpError, QmpHotForkAsyncWorkerBarrierState,
+    QmpHotForkBlockBarrierState, QmpHotForkBlockSnapshotBinding, QmpHotForkChildProcessState,
+    QmpHotForkChildRuntimeState, QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory,
+    QmpHotForkRcuBarrierState, QmpHotForkRequest, QmpHotForkState, QmpHotForkTemplateState,
     QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 #[cfg(target_os = "linux")]
 use crate::QemuHotForkCommandError;
-use crate::{
-    QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
-};
+use crate::{QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuNodeChannelError};
 
 /// Checkpoint-tagged VMState control surface over a typed QMP client.
 ///
-/// This wrapper is intentionally narrower than
-/// [`crate::QemuQmpMachineControlChannel`]: callers must supply the checkpoint
-/// metadata they are saving or restoring, and restore requires an explicit
-/// [`QemuLoadvmCommandAuthorization`] token. It therefore exposes the low-level
-/// QMP VMState operations needed by a real realization executor without hiding
-/// replay-oracle admission behind the generic backend restore API.
+/// Callers must supply the checkpoint metadata they are saving or restoring,
+/// and restore requires an explicit crate-owned control path. The wrapper
+/// exposes only the low-level QMP VMState operations needed by a real
+/// realization executor without hiding replay-oracle admission behind the
+/// generic backend restore API.
 #[derive(Debug)]
 pub struct QemuQmpVmStateControlChannel<S> {
-    client: QmpClient<S>,
+    pub(super) client: QmpClient<S>,
     debug_guest_activation_stream: Option<UnixStream>,
 }
 
@@ -50,6 +48,14 @@ where
         }
     }
 
+    pub(crate) fn query_fingerprint_projection_manifest(
+        &mut self,
+    ) -> Result<super::QmpFingerprintProjectionManifest, QemuNodeChannelError> {
+        self.client
+            .query_fingerprint_projection_manifest()
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Returns a channel with the pre-established guest activation stream.
     #[must_use]
     pub fn with_debug_guest_activation_stream(mut self, stream: UnixStream) -> Self {
@@ -62,6 +68,110 @@ where
     pub fn with_predeclared_debug_guest_endpoint(mut self) -> Self {
         self.client = self.client.with_predeclared_debug_guest_endpoint();
         self
+    }
+
+    /// Imports one descriptor needed by an exact checkpoint command.
+    ///
+    /// Capture and restore consume their imported names in QEMU. The caller
+    /// retains ownership of `descriptor` and must install every name carried by
+    /// the typed request before issuing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when descriptor transfer or QMP
+    /// acknowledgement fails. An ambiguous transfer poisons the channel.
+    pub(crate) fn install_exact_checkpoint_descriptor(
+        &mut self,
+        name: &QmpDescriptorName,
+        descriptor: BorrowedFd<'_>,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .install_descriptor(name, descriptor)
+            .map(|_complete| ())
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Captures one exact direct or parent-relative checkpoint candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP capture or strict response
+    /// validation fails.
+    pub(crate) fn capture_exact_checkpoint(
+        &mut self,
+        request: &QmpCheckpointCaptureRequest,
+    ) -> Result<QmpCheckpointCapture, QemuNodeChannelError> {
+        self.client
+            .capture_checkpoint(request)
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Restores one authenticated direct-plus-delta exact checkpoint chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP restore or strict response
+    /// validation fails.
+    pub(crate) fn restore_exact_checkpoint(
+        &mut self,
+        request: &QmpCheckpointRestoreRequest,
+    ) -> Result<QmpCheckpointRestore, QemuNodeChannelError> {
+        self.client
+            .restore_checkpoint(request)
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Commits the exact active checkpoint candidate and advances its epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the identity or committed
+    /// postcondition differs from `identity`.
+    pub(crate) fn commit_exact_checkpoint(
+        &mut self,
+        identity: QmpCheckpointIdentity,
+    ) -> Result<QmpCheckpointEpochState, QemuNodeChannelError> {
+        self.client
+            .commit_checkpoint(identity)
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Aborts the exact active candidate while retaining committed authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU rejects the identity, still
+    /// reports an active candidate, or changes the expected committed parent.
+    pub(crate) fn abort_exact_checkpoint(
+        &mut self,
+        identity: QmpCheckpointIdentity,
+        expected_committed: Option<QmpCheckpointIdentity>,
+    ) -> Result<QmpCheckpointEpochState, QemuNodeChannelError> {
+        let state = self
+            .client
+            .abort_checkpoint(identity)
+            .map_err(QemuNodeChannelError::from)?;
+        if state.committed() != expected_committed {
+            return Err(QemuNodeChannelError::new(
+                "abort exact QEMU checkpoint candidate",
+                "QEMU changed committed parent authority while aborting the candidate",
+            ));
+        }
+        Ok(state)
+    }
+
+    /// Queries QEMU's committed checkpoint and candidate authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP exchange or strict epoch
+    /// validation fails.
+    pub(crate) fn query_exact_checkpoint_epoch(
+        &mut self,
+    ) -> Result<QmpCheckpointEpochState, QemuNodeChannelError> {
+        self.client
+            .query_checkpoint_epoch()
+            .map_err(QemuNodeChannelError::from)
     }
 
     /// Releases the guest activation stream after its exact QEMU process is reaped.
@@ -120,7 +230,7 @@ where
             .map_err(QemuNodeChannelError::from)
     }
 
-    /// Resumes guest execution after an exact checkpoint transaction.
+    /// Resumes a stopped guest and returns after QEMU acknowledges `cont`.
     ///
     /// # Errors
     ///
@@ -128,358 +238,10 @@ where
     /// running-state transition. The first scheduler-authorized node step is
     /// the execution proof because an idle restored simulator can park before
     /// servicing a follow-up QMP status query.
-    pub fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
+    pub fn resume_guest_acknowledged(&mut self) -> Result<(), QemuNodeChannelError> {
         self.client
             .cont_acknowledged()
             .map(|_complete| ())
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Queries QEMU's exact versioned hot-fork readiness proof bitmap.
-    ///
-    /// This operation is observational. It does not prepare a template or
-    /// infer readiness from ordinary paused state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
-    /// not satisfy the closed readiness schema.
-    pub fn query_hot_fork_readiness(
-        &mut self,
-    ) -> Result<QmpHotForkReadiness, QemuNodeChannelError> {
-        self.client
-            .query_hot_fork_readiness()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Queries QEMU's exact bounded active-thread registry.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
-    /// not satisfy the closed inventory schema and bounds.
-    pub fn query_hot_fork_thread_inventory(
-        &mut self,
-    ) -> Result<QmpHotForkThreadInventory, QemuNodeChannelError> {
-        self.client
-            .query_hot_fork_thread_inventory()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Queries QEMU's exact bounded observational RCU inventory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
-    /// not satisfy the closed RCU inventory schema and bounds.
-    pub fn query_hot_fork_rcu_inventory(
-        &mut self,
-    ) -> Result<QmpHotForkRcuInventory, QemuNodeChannelError> {
-        self.client
-            .query_hot_fork_rcu_inventory()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Queries QEMU's exact bounded observational AioContext inventory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
-    /// not satisfy the closed AIO inventory schema and bounds.
-    pub fn query_hot_fork_aio_inventory(
-        &mut self,
-    ) -> Result<QmpHotForkAioInventory, QemuNodeChannelError> {
-        self.client
-            .query_hot_fork_aio_inventory()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Queries QEMU's exact bounded allocated-AIO-handler inventory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
-    /// not satisfy the closed AIO-handler inventory schema and bounds.
-    pub fn query_hot_fork_aio_handler_inventory(
-        &mut self,
-    ) -> Result<QmpHotForkAioHandlerInventory, QemuNodeChannelError> {
-        self.client
-            .query_hot_fork_aio_handler_inventory()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Queries QEMU's exact bounded allocated-block-backend inventory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
-    /// not satisfy the closed block-backend inventory schema and bounds.
-    pub fn query_hot_fork_block_backend_inventory(
-        &mut self,
-    ) -> Result<QmpHotForkBlockBackendInventory, QemuNodeChannelError> {
-        self.client
-            .query_hot_fork_block_backend_inventory()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Queries QEMU's exact sealed Crucible plugin-resource inventory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
-    /// not satisfy the closed plugin-resource schema and relationships.
-    pub fn query_hot_fork_plugin_resource_inventory(
-        &mut self,
-    ) -> Result<QmpHotForkPluginResourceInventory, QemuNodeChannelError> {
-        self.client
-            .query_hot_fork_plugin_resource_inventory()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Queries QEMU's exact registered fork-child runtime state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
-    /// not satisfy the closed child-runtime schema and relationships.
-    pub fn query_hot_fork_child_runtime(
-        &mut self,
-    ) -> Result<QmpHotForkChildRuntimeState, QemuNodeChannelError> {
-        self.client
-            .query_hot_fork_child_runtime()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Holds the reversible plugin callback barrier without waiting for drain.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QEMU is not at the exact paused
-    /// boundary or the barrier exchange/postcondition fails.
-    pub fn hold_hot_fork_plugin_barrier(
-        &mut self,
-    ) -> Result<QmpHotForkPluginBarrierState, QemuNodeChannelError> {
-        self.client
-            .hold_hot_fork_plugin_barrier()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Queries the reversible plugin callback barrier without changing it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
-    /// not satisfy the closed barrier schema.
-    pub fn query_hot_fork_plugin_barrier(
-        &mut self,
-    ) -> Result<QmpHotForkPluginBarrierState, QemuNodeChannelError> {
-        self.client
-            .query_hot_fork_plugin_barrier()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Releases the reversible plugin callback barrier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or QEMU does not
-    /// report the required released postcondition.
-    pub fn release_hot_fork_plugin_barrier(
-        &mut self,
-    ) -> Result<QmpHotForkPluginBarrierState, QemuNodeChannelError> {
-        self.client
-            .release_hot_fork_plugin_barrier()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Holds the reversible RCU admission/drain barrier without waiting.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QEMU is not at the exact paused
-    /// boundary or the barrier exchange/postcondition fails.
-    pub fn hold_hot_fork_rcu_barrier(
-        &mut self,
-    ) -> Result<QmpHotForkRcuBarrierState, QemuNodeChannelError> {
-        self.client
-            .hold_hot_fork_rcu_barrier()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Queries the reversible RCU admission/drain barrier without changing it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
-    /// not satisfy the closed barrier schema.
-    pub fn query_hot_fork_rcu_barrier(
-        &mut self,
-    ) -> Result<QmpHotForkRcuBarrierState, QemuNodeChannelError> {
-        self.client
-            .query_hot_fork_rcu_barrier()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Releases the reversible RCU admission/drain barrier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or QEMU does not
-    /// report the required released postcondition.
-    pub fn release_hot_fork_rcu_barrier(
-        &mut self,
-    ) -> Result<QmpHotForkRcuBarrierState, QemuNodeChannelError> {
-        self.client
-            .release_hot_fork_rcu_barrier()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Holds the reversible bottom-half/timer source barrier without waiting.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QEMU is not at the exact paused
-    /// boundary or the barrier exchange/postcondition fails.
-    pub fn hold_hot_fork_bh_timer_barrier(
-        &mut self,
-    ) -> Result<QmpHotForkBhTimerBarrierState, QemuNodeChannelError> {
-        self.client
-            .hold_hot_fork_bh_timer_barrier()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Queries the reversible bottom-half/timer source barrier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
-    /// not satisfy the closed barrier schema.
-    pub fn query_hot_fork_bh_timer_barrier(
-        &mut self,
-    ) -> Result<QmpHotForkBhTimerBarrierState, QemuNodeChannelError> {
-        self.client
-            .query_hot_fork_bh_timer_barrier()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Releases the reversible bottom-half/timer source barrier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or QEMU does not
-    /// report the required released postcondition.
-    pub fn release_hot_fork_bh_timer_barrier(
-        &mut self,
-    ) -> Result<QmpHotForkBhTimerBarrierState, QemuNodeChannelError> {
-        self.client
-            .release_hot_fork_bh_timer_barrier()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Holds QEMU's native all-block drain section.
-    ///
-    /// This is a reversible I/O-quiescence prerequisite. It does not create or
-    /// authenticate an immutable external-snapshot root.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QEMU is not at the exact paused
-    /// boundary or the barrier exchange/postcondition fails.
-    pub fn hold_hot_fork_block_barrier(
-        &mut self,
-    ) -> Result<QmpHotForkBlockBarrierState, QemuNodeChannelError> {
-        self.client
-            .hold_hot_fork_block_barrier()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Queries QEMU's retained all-block drain section.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
-    /// not satisfy the closed barrier schema.
-    pub fn query_hot_fork_block_barrier(
-        &mut self,
-    ) -> Result<QmpHotForkBlockBarrierState, QemuNodeChannelError> {
-        self.client
-            .query_hot_fork_block_barrier()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Releases QEMU's retained all-block drain section.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or QEMU does not
-    /// report the required released postcondition.
-    pub fn release_hot_fork_block_barrier(
-        &mut self,
-    ) -> Result<QmpHotForkBlockBarrierState, QemuNodeChannelError> {
-        self.client
-            .release_hot_fork_block_barrier()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Starts or advances QEMU's retained hot-fork template transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails, a subsystem barrier
-    /// cannot be acquired or rolled back, or QEMU violates the closed
-    /// transaction schema.
-    pub fn prepare_hot_fork_template(
-        &mut self,
-        block_snapshot_bindings: &[QmpHotForkBlockSnapshotBinding],
-    ) -> Result<QmpHotForkTemplateState, QemuNodeChannelError> {
-        self.client
-            .prepare_hot_fork_template(block_snapshot_bindings)
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Acquires all retained template barriers before child-resource staging.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O, generation validation,
-    /// or bounded barrier acquisition fails.
-    pub fn prepare_hot_fork_template_barriers(
-        &mut self,
-        block_snapshot_bindings: &[QmpHotForkBlockSnapshotBinding],
-    ) -> Result<QmpHotForkTemplateState, QemuNodeChannelError> {
-        self.client
-            .prepare_hot_fork_template_barriers(block_snapshot_bindings)
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Queries QEMU's retained hot-fork template transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP I/O fails, coordinator
-    /// ownership was lost, or the response violates the closed schema.
-    pub fn query_hot_fork_template(
-        &mut self,
-    ) -> Result<QmpHotForkTemplateState, QemuNodeChannelError> {
-        self.client
-            .query_hot_fork_template()
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Aborts QEMU's retained hot-fork template transaction.
-    ///
-    /// A draining response requires another abort exchange while retaining the
-    /// stopped source; only `rollback_complete()` permits releasing ownership.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QEMU cannot roll back an acquired
-    /// barrier or the response violates the closed abort postcondition.
-    pub fn abort_hot_fork_template(
-        &mut self,
-    ) -> Result<QmpHotForkTemplateState, QemuNodeChannelError> {
-        self.client
-            .abort_hot_fork_template()
             .map_err(QemuNodeChannelError::from)
     }
 
@@ -1013,57 +775,21 @@ where
     /// # Errors
     ///
     /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
-    /// not satisfy the closed bottom-half inventory schema and bounds.
-    pub fn query_hot_fork_bottom_half_inventory(
-        &mut self,
-    ) -> Result<QmpHotForkBottomHalfInventory, QemuNodeChannelError> {
-        self.client
-            .query_hot_fork_bottom_half_inventory()
-            .map_err(QemuNodeChannelError::from)
-    }
-
     /// Queries QEMU's exact bounded observational mutex ownership inventory.
     ///
     /// # Errors
     ///
     /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
-    /// not satisfy the closed mutex inventory schema and bounds.
-    pub fn query_hot_fork_mutex_inventory(
-        &mut self,
-    ) -> Result<QmpHotForkMutexInventory, QemuNodeChannelError> {
-        self.client
-            .query_hot_fork_mutex_inventory()
-            .map_err(QemuNodeChannelError::from)
-    }
-
     /// Queries QEMU's exact bounded observational live-timer inventory.
     ///
     /// # Errors
     ///
     /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
-    /// not satisfy the closed timer inventory schema and bounds.
-    pub fn query_hot_fork_timer_inventory(
-        &mut self,
-    ) -> Result<QmpHotForkTimerInventory, QemuNodeChannelError> {
-        self.client
-            .query_hot_fork_timer_inventory()
-            .map_err(QemuNodeChannelError::from)
-    }
-
     /// Returns QEMU's bounded monitor/parser inventory.
     ///
     /// # Errors
     ///
     /// Returns [`QemuNodeChannelError`] when QMP transport or strict response
-    /// validation fails.
-    pub fn query_hot_fork_monitor_inventory(
-        &mut self,
-    ) -> Result<QmpHotForkMonitorInventory, QemuNodeChannelError> {
-        self.client
-            .query_hot_fork_monitor_inventory()
-            .map_err(QemuNodeChannelError::from)
-    }
-
     /// Confirms that stopped-state post-restore calibration preserved the pause.
     ///
     /// # Errors
@@ -1136,7 +862,7 @@ where
     ///
     /// Returns [`QemuNodeChannelError`] when QMP cannot save the checkpoint's
     /// VMState snapshot.
-    pub fn save_checkpoint_vmstate(
+    pub(crate) fn save_checkpoint_vmstate(
         &mut self,
         checkpoint: &Checkpoint,
     ) -> Result<QmpCommandComplete, QemuNodeChannelError> {
@@ -1144,45 +870,12 @@ where
         self.client.savevm(&tag).map_err(QemuNodeChannelError::from)
     }
 
-    /// Restores the QEMU VMState tagged by `checkpoint`.
-    ///
-    /// The authorization token must be issued by the exact snapshot policy for either
-    /// replay-oracle probing or admitted runtime realization.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP cannot load the checkpoint's
-    /// VMState snapshot.
-    pub fn restore_checkpoint_vmstate(
-        &mut self,
-        checkpoint: &Checkpoint,
-        authorization: QemuLoadvmCommandAuthorization,
-    ) -> Result<QmpCommandComplete, QemuNodeChannelError> {
-        if authorization.purpose() != crate::QemuLoadvmCommandPurpose::ReplayOracleProbe {
-            return Err(QemuNodeChannelError::new(
-                "qmp",
-                "public VMState restore only admits replay-oracle probes",
-            ));
-        }
-        self.restore_checkpoint_vmstate_authorized(checkpoint)
-    }
-
-    pub(crate) fn restore_checkpoint_vmstate_authorized(
-        &mut self,
-        checkpoint: &Checkpoint,
-    ) -> Result<QmpCommandComplete, QemuNodeChannelError> {
-        let tag = QmpSnapshotTag::from_checkpoint(checkpoint);
-        self.client
-            .loadvm_authorized(&tag)
-            .map_err(QemuNodeChannelError::from)
-    }
-
     /// Deletes the QEMU VMState artifact tagged by `checkpoint`.
     ///
     /// # Errors
     ///
     /// Returns [`QemuNodeChannelError`] when QMP cannot complete deletion.
-    pub fn delete_checkpoint_vmstate(
+    pub(crate) fn delete_checkpoint_vmstate(
         &mut self,
         checkpoint: &Checkpoint,
     ) -> Result<QmpCommandComplete, QemuNodeChannelError> {

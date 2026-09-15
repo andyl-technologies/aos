@@ -480,12 +480,6 @@ pub(super) fn scenario_serialization_error(reason: impl Into<String>) -> EngineE
     }
 }
 
-pub(super) fn canonical_world_nodes(nodes: &[WorldNode]) -> Vec<WorldNode> {
-    let mut nodes = nodes.to_vec();
-    nodes.sort_by(|left, right| left.id.cmp(&right.id));
-    nodes
-}
-
 pub(super) fn canonical_world_node_defs(nodes: &[WorldNodeDef]) -> Vec<WorldNodeDef> {
     let mut nodes = nodes.to_vec();
     nodes.sort_by(|left, right| left.id().cmp(right.id()));
@@ -519,9 +513,10 @@ pub(super) fn canonical_world_links(links: &[LinkDef]) -> Vec<LinkDef> {
 }
 
 pub(super) fn world_participants(world: &World) -> Vec<NodeId> {
-    canonical_world_nodes(&world.nodes)
-        .into_iter()
-        .map(|node| node.id)
+    world
+        .vm_nodes()
+        .iter()
+        .map(|node| node.id.clone())
         .collect()
 }
 
@@ -548,13 +543,13 @@ pub(super) fn world_scheduling_nodes(world: &World) -> Vec<SchedulerNodeId> {
 pub(super) fn world_rng_streams(world: &World) -> Vec<RngStreamId> {
     let mut streams = Vec::with_capacity(
         world
-            .nodes
+            .vm_nodes()
             .len()
             .saturating_add(world.links.len())
             .saturating_add(world.io_nodes().count()),
     );
-    for node in canonical_world_nodes(&world.nodes) {
-        streams.push(RngStreamId::for_node(node.id.name));
+    for node in world.vm_nodes() {
+        streams.push(RngStreamId::for_node(node.id.name.clone()));
     }
     for link in canonical_world_links(&world.links) {
         streams.push(RngStreamId::for_link(world_link_stream_name(&link)));
@@ -690,25 +685,27 @@ pub(super) fn add_family_link_pair(pairs: &mut BTreeSet<(u32, u32)>, left: u32, 
 
 pub(super) fn baked_node_blobs(world: &World) -> BTreeMap<NodeId, NodeBlobRef> {
     let world_identity = canonical_world_identity(world);
-    canonical_world_nodes(&world.nodes)
-        .into_iter()
+    world
+        .vm_nodes()
+        .iter()
         .map(|node| {
             let blob = ContentHash::from_canonical_material(
                 "crucible.model.node-baked-blob.v1",
                 &format!(
                     "world_id={}\n{}",
                     content_hash_hex(world_identity),
-                    world_node_material(&node)
+                    world_node_material(node)
                 ),
             );
-            (node.id, NodeBlobRef::baked(blob))
+            (node.id.clone(), NodeBlobRef::baked(blob))
         })
         .collect()
 }
 
 pub(super) fn baked_node_icounts(world: &World) -> BTreeMap<NodeId, Icount> {
-    canonical_world_nodes(&world.nodes)
-        .into_iter()
+    world
+        .vm_nodes()
+        .iter()
         .map(|node| {
             let icount = match node.ready_point {
                 ReadyPoint::FixedIcount { icount } => icount,
@@ -716,7 +713,7 @@ pub(super) fn baked_node_icounts(world: &World) -> BTreeMap<NodeId, Icount> {
                 | ReadyPoint::ConsoleMarker { .. }
                 | ReadyPoint::AgentSignal => Icount::default(),
             };
-            (node.id, icount)
+            (node.id.clone(), icount)
         })
         .collect()
 }

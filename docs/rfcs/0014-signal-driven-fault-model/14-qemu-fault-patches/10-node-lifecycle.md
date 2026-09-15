@@ -1,4 +1,4 @@
-# Patch 0056 — `crucible-node-lifecycle-faults`
+# Capability task 0056 — `crucible-node-lifecycle-faults`
 
 ## Purpose
 
@@ -9,7 +9,8 @@ explicit volatile/device-state policies.
 ## Capability and dependencies
 
 - Provides `qemu.node.lifecycle.v1` and `qemu.node.hang.v1` on both architectures.
-- Depends on 0047–0055, safe boundary, deterministic machine reset, VM process
+- Requires the capabilities specified by capability tasks 0047–0055, safe
+  boundary, deterministic machine reset, VM process
   supervision protocol, and device co-sim quiescence.
 
 ## Lifecycle states
@@ -183,7 +184,8 @@ cannot be implemented by blocking a host thread or deadlocking QEMU.
 Evidence includes old/new lifecycle state, QMP/run state, process generation,
 reset/power reason, every state-treatment policy and affected-state digest,
 terminal/pre-restart fingerprints, process exit status, deterministic
-realization identity, and ready-marker result. Patch 0067 serializes nonterminal lifecycle,
+realization identity, and ready-marker result. The VMState capability specified
+by capability task 0067 serializes nonterminal lifecycle,
 hang/recovery, ready-marker wait, retry count, and reset policy. A crashed
 process is reconstructed by the host from the same authenticated deterministic
 realization and verified state.
@@ -200,7 +202,8 @@ realization and verified state.
 4. Save/restore every nonterminal state; reproduce crashed restart from the
    same deterministic realization.
 5. Verify control remains responsive during hang and no host blocking models it.
-6. Revert patch and fail live gate; prove non-sim reset/power behavior unchanged.
+6. Run the live gate against pristine QEMU and require capability absence;
+   prove non-sim reset/power behavior is unchanged.
 
 ## Licensing checklist
 

@@ -3,12 +3,14 @@
   pkgs,
   lib,
   guestChoice ? false,
+  campaignMidpoint ? false,
 }: let
   source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
   controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
   cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;
   controllerArtifactContract = controllerArtifacts.passthru.cargoArtifactContract;
-  campaignFlightBuildCommand = "test --frozen --offline --release --no-run -j$NIX_BUILD_CORES -p crucible-cli --bin crucible --test campaign_store_process --test legacy_campaign_process";
+  campaignFlightFeatures = lib.optionalString campaignMidpoint " --features packaged-midpoint-flight";
+  campaignFlightBuildCommand = "test --frozen --offline --release --no-run -j$NIX_BUILD_CORES -p crucible-cli --test campaign_process --test campaign_store_process --bin crucible${campaignFlightFeatures}";
   campaignFlightArtifacts = pkgs.mkCargoArtifacts {
     pname = "crucible-packaged-campaign-flight-artifacts";
     version = "0";
@@ -48,16 +50,16 @@
 
     postInstall = ''
       artifacts="$NIX_BUILD_TOP/cargo-build-messages.jsonl"
-      test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "campaign_store_process" and .executable != null) | .executable' "$artifacts")
-      legacy_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "legacy_campaign_process" and .executable != null) | .executable' "$artifacts")
+      store_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "campaign_store_process" and .executable != null) | .executable' "$artifacts")
+      campaign_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "campaign_process" and .executable != null) | .executable' "$artifacts")
       unit_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "crucible" and .target.kind == ["bin"] and .profile.test == true and .executable != null) | .executable' "$artifacts")
-      test -f "$test_binary"
-      test -f "$legacy_test_binary"
+      test -f "$store_test_binary"
+      test -f "$campaign_test_binary"
       test -f "$unit_test_binary"
 
       mkdir -p "$out/bin"
-      cp "$test_binary" "$out/bin/campaign-process-flight"
-      cp "$legacy_test_binary" "$out/bin/legacy-campaign-process-flight"
+      cp "$store_test_binary" "$out/bin/campaign-store-process-flight"
+      cp "$campaign_test_binary" "$out/bin/campaign-process-flight"
       cp "$unit_test_binary" "$out/bin/crucible-unit-flight"
       cp target/release/crucible "$out/bin/crucible"
 
@@ -87,7 +89,7 @@
     maximum_slots = 1
     maximum_vcpus = 2
     maximum_resident_bytes = ${toString (
-      if guestChoice
+      if guestChoice || campaignMidpoint
       then 1073741824
       else 536870912
     )}
@@ -97,6 +99,7 @@
     worker_count = 1
     host_architecture = "x86_64"
     qemu_profile = "deterministic-tcg-v1"
+
     ${lib.optionalString guestChoice ''
       [guest_selectable_boundary_diagnostics]
       maximum_events = 256
@@ -108,12 +111,14 @@
     name =
       if guestChoice
       then "crucible-packaged-campaign-choice"
+      else if campaignMidpoint
+      then "crucible-campaign-midpoint-debug"
       else "crucible-packaged-campaign";
     memory = 2048;
     rootfsDeps =
       [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
       ++ (
-        if guestChoice
+        if guestChoice || campaignMidpoint
         then [choiceInitramfs]
         else []
       );
@@ -167,15 +172,29 @@
       export CRUCIBLE_DEBUG_GATEWAY=${gateway}/bin/crucible-debug-gateway
       for kernel in ${pkgs.linux}/boot/vmlinuz-*; do export CRUCIBLE_KERNEL="$kernel"; done
       export CRUCIBLE_ROOT_IMAGE=${flight}/root.raw
+      ${lib.optionalString campaignMidpoint "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
       export CRUCIBLE_RUN_STATE_ROOT=/tmp/run-state
       export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64
-      export CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES=1
       ${
         if guestChoice
         then ''
           export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img
+          if ! ${flight}/bin/campaign-store-process-flight --ignored --list \
+            > /tmp/guest-choice-flight-list.log 2>&1; then
+            cat /tmp/guest-choice-flight-list.log
+            exit 1
+          fi
+          cat /tmp/guest-choice-flight-list.log
+          guest_choice_listed=$(${pkgs.grep}/bin/grep -Fxc \
+            'packaged::guest_choice::public_guest_choices_survive_exact_checkpoint_and_daemon_restart: test' \
+            /tmp/guest-choice-flight-list.log || true)
+          if [ "$guest_choice_listed" -ne 1 ]; then
+            echo 'typed-choice checkpoint selector must be listed exactly once'
+            exit 1
+          fi
+
           if ! ${pkgs.coreutils}/bin/timeout -k 5 900 \
-            ${flight}/bin/campaign-process-flight --ignored --exact \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
             packaged::guest_choice::public_guest_choices_survive_exact_checkpoint_and_daemon_restart \
             --nocapture > /tmp/guest-choice-flight.log 2>&1; then
             cat /tmp/guest-choice-flight.log
@@ -205,86 +224,174 @@
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_discrete_and_integer=true' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_rendezvous_icount=100000000' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_negative_result=true' /tmp/guest-choice-flight.log
-          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_initial_qemu_fingerprint_mode=on-demand-v1' /tmp/guest-choice-flight.log
-          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_restarted_qemu_fingerprint_mode=on-demand-v1' /tmp/guest-choice-flight.log
+          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_initial_qemu_fingerprint_enabled=true' /tmp/guest-choice-flight.log
+          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_restarted_qemu_fingerprint_enabled=true' /tmp/guest-choice-flight.log
+          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_pending_choice_identity_preserved=true' /tmp/guest-choice-flight.log
+          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_pending_choice_answered_after_restart=true' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_boundary_diagnostics=true' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_resume_source_exact=true' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_post_resume_progress=true' /tmp/guest-choice-flight.log
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' \
+            /tmp/guest-choice-flight.log
+          printf '%s\n' \
+            'gate=gate:typed-choice-product-checkpoint' \
+            'proven=typed-guest-registration,fresh-qemu-restore'
           cat /tmp/guest-choice-flight.log
         ''
+        else if campaignMidpoint
+        then ''
+          midpoint_selector=public_campaign_debug_opens_authenticated_finding_at_fast_midpoint
+          midpoint_list=/tmp/campaign-midpoint-debug-list.log
+          midpoint_log=/tmp/campaign-midpoint-debug.log
+          if ! ${flight}/bin/campaign-store-process-flight --list > "$midpoint_list" 2>&1; then
+            cat "$midpoint_list"
+            exit 1
+          fi
+          cat "$midpoint_list"
+          midpoint_listed=$(${pkgs.grep}/bin/grep -Fxc \
+            "$midpoint_selector: test" "$midpoint_list" || true)
+          if [ "$midpoint_listed" -ne 1 ]; then
+            echo 'campaign midpoint selector must be listed exactly once and nonignored'
+            exit 1
+          fi
+
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
+            ${flight}/bin/campaign-store-process-flight --exact \
+            "$midpoint_selector" --nocapture > "$midpoint_log" 2>&1; then
+            cat "$midpoint_log"
+            exit 1
+          fi
+          cat "$midpoint_log"
+          ${pkgs.grep}/bin/grep -Fxq 'public_finding_midpoint_debug=true' "$midpoint_log"
+          ${pkgs.grep}/bin/grep -Fxq 'authenticated_exact_checkpoint=true' "$midpoint_log"
+          ${pkgs.grep}/bin/grep -Fxq 'authenticated_replay_violation_boundary=true' "$midpoint_log"
+          test "$(${pkgs.grep}/bin/grep -Ec '^authenticated_replay_causal_entries=[1-9][0-9]*$' "$midpoint_log" || true)" -eq 1
+          test "$(${pkgs.grep}/bin/grep -Ec '^minimization_original_replay=crucible\.campaign\.finding-triage-replay@finding-triage-replay\.[0-9]+\.[0-9a-f]{64}$' "$midpoint_log" || true)" -eq 1
+          test "$(${pkgs.grep}/bin/grep -Ec '^verification_original_replay=crucible\.campaign\.finding-triage-replay@finding-triage-replay\.[0-9]+\.[0-9a-f]{64}$' "$midpoint_log" || true)" -eq 1
+          test "$(${pkgs.grep}/bin/grep -Fxc 'authenticated_replay_selection_sequence=fast,q7' "$midpoint_log" || true)" -eq 1
+          test "$(${pkgs.grep}/bin/grep -Fxc 'authenticated_replay_marker=selected-fast-q7' "$midpoint_log" || true)" -eq 1
+          ${pkgs.grep}/bin/grep -Fxq 'fast_midpoint_restore=true' "$midpoint_log"
+          ${pkgs.grep}/bin/grep -Fxq 'read_only_rsp_safe_read=true' "$midpoint_log"
+          ${pkgs.grep}/bin/grep -Eq '^read_only_rsp_stop_class=[TSWX]$' "$midpoint_log"
+          ${pkgs.grep}/bin/grep -Eq '^authenticated_restore_bytes=[1-9][0-9]*$' "$midpoint_log"
+          ${pkgs.grep}/bin/grep -Eq '^authenticated_checkpoint_candidates=([2-9]|[1-9][0-9]+)$' "$midpoint_log"
+          ${pkgs.grep}/bin/grep -Fxq 'retry_session_identity_stable=true' "$midpoint_log"
+          ${pkgs.grep}/bin/grep -Fxq 'campaign_finding_immutable=true' "$midpoint_log"
+          ${pkgs.grep}/bin/grep -Fxq 'production_qemu=true' "$midpoint_log"
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' "$midpoint_log"
+          printf '%s\n' \
+            'gate=gate:campaign-midpoint-debug' \
+            'tasks=T-CAM-9.3'
+        ''
         else ''
+          if ! ${flight}/bin/campaign-process-flight --ignored --list \
+            > /tmp/campaign-process-flight-list.log 2>&1; then
+            cat /tmp/campaign-process-flight-list.log
+            exit 1
+          fi
+          cat /tmp/campaign-process-flight-list.log
+          production_replay_listed=$(${pkgs.grep}/bin/grep -Fxc \
+            'campaign_run_production_qemu_exact_checkpoint_then_replay_matches: test' \
+            /tmp/campaign-process-flight-list.log || true)
+          interactive_replay_listed=$(${pkgs.grep}/bin/grep -Fxc \
+            'interactive_session_captures_and_replays_exact_live_artifact: test' \
+            /tmp/campaign-process-flight-list.log || true)
+          if [ "$production_replay_listed" -ne 1 ] || [ "$interactive_replay_listed" -ne 1 ]; then
+            echo 'campaign replay selectors must each be listed exactly once'
+            exit 1
+          fi
+
           if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
-            ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
+            ${flight}/bin/campaign-process-flight --ignored --exact \
             public_default_run_executes_through_an_authenticated_campaign \
-            --nocapture > /tmp/legacy-default-run-flight.log 2>&1; then
-            cat /tmp/legacy-default-run-flight.log
+            --nocapture > /tmp/campaign-default-run-flight.log 2>&1; then
+            cat /tmp/campaign-default-run-flight.log
             exit 1
           fi
-          cat /tmp/legacy-default-run-flight.log
+          cat /tmp/campaign-default-run-flight.log
           ${pkgs.grep}/bin/grep -Fxq \
-            'legacy_default_run_campaign=true' \
-            /tmp/legacy-default-run-flight.log
+            'campaign_default_run=true' \
+            /tmp/campaign-default-run-flight.log
           if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
-            ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
-            campaign_virtual_time_save_feeds_native_resume_and_fork \
-            --nocapture > /tmp/legacy-native-save-flight.log 2>&1; then
-            cat /tmp/legacy-native-save-flight.log
+            ${flight}/bin/campaign-process-flight --ignored --exact \
+            campaign_virtual_time_save_feeds_native_resume \
+            --nocapture > /tmp/campaign-native-save-flight.log 2>&1; then
+            cat /tmp/campaign-native-save-flight.log
             exit 1
           fi
-          cat /tmp/legacy-native-save-flight.log
+          cat /tmp/campaign-native-save-flight.log
           ${pkgs.grep}/bin/grep -Fxq \
-            'legacy_campaign_native_save_resume_fork=true' \
-            /tmp/legacy-native-save-flight.log
+            'campaign_save_resume=true' \
+            /tmp/campaign-native-save-flight.log
           if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
-            ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
-            guarded_campaign_failure_artifact_replays_live_evidence \
-            --nocapture > /tmp/legacy-failure-replay-flight.log 2>&1; then
-            cat /tmp/legacy-failure-replay-flight.log
+            ${flight}/bin/campaign-process-flight --ignored --exact \
+            campaign_run_production_qemu_exact_checkpoint_then_replay_matches \
+            --nocapture > /tmp/campaign-failure-replay-flight.log 2>&1; then
+            cat /tmp/campaign-failure-replay-flight.log
             exit 1
           fi
-          cat /tmp/legacy-failure-replay-flight.log
+          cat /tmp/campaign-failure-replay-flight.log
           ${pkgs.grep}/bin/grep -Fxq \
-            'legacy_guarded_failure_replay=true' \
-            /tmp/legacy-failure-replay-flight.log
+            'campaign_production_qemu_exact_checkpoint_replay=true' \
+            /tmp/campaign-failure-replay-flight.log
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' \
+            /tmp/campaign-failure-replay-flight.log
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
+            ${flight}/bin/campaign-process-flight --ignored --exact \
+            interactive_session_captures_and_replays_exact_live_artifact \
+            --nocapture > /tmp/interactive-capture-replay-flight.log 2>&1; then
+            cat /tmp/interactive-capture-replay-flight.log
+            exit 1
+          fi
+          cat /tmp/interactive-capture-replay-flight.log
+          ${pkgs.grep}/bin/grep -Fxq \
+            'interactive_packaged_capture_replay=true' \
+            /tmp/interactive-capture-replay-flight.log
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' \
+            /tmp/interactive-capture-replay-flight.log
           if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
             ${flight}/bin/crucible-unit-flight --ignored --exact \
             cli_replay::tests::actual_session_run_artifact_replays_through_campaign_owner \
-            --nocapture > /tmp/legacy-actual-session-replay-flight.log 2>&1; then
-            cat /tmp/legacy-actual-session-replay-flight.log
+            --nocapture > /tmp/campaign-actual-session-replay-flight.log 2>&1; then
+            cat /tmp/campaign-actual-session-replay-flight.log
             exit 1
           fi
-          cat /tmp/legacy-actual-session-replay-flight.log
+          cat /tmp/campaign-actual-session-replay-flight.log
           ${pkgs.grep}/bin/grep -Fxq \
-            'legacy_actual_session_campaign_replay=true' \
-            /tmp/legacy-actual-session-replay-flight.log
+            'actual_session_campaign_replay=true' \
+            /tmp/campaign-actual-session-replay-flight.log
           if ! ${pkgs.coreutils}/bin/timeout -k 5 60 \
-            ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
+            ${flight}/bin/campaign-process-flight --ignored --exact \
             guarded_campaign_rejects_insufficient_capacity_before_guest_launch \
-            --nocapture > /tmp/legacy-capacity-refusal-flight.log 2>&1; then
-            cat /tmp/legacy-capacity-refusal-flight.log
+            --nocapture > /tmp/campaign-capacity-refusal-flight.log 2>&1; then
+            cat /tmp/campaign-capacity-refusal-flight.log
             exit 1
           fi
-          cat /tmp/legacy-capacity-refusal-flight.log
+          cat /tmp/campaign-capacity-refusal-flight.log
           ${pkgs.grep}/bin/grep -Fxq \
-            'legacy_guarded_prelaunch_capacity_refusal=true' \
-            /tmp/legacy-capacity-refusal-flight.log
+            'campaign_guarded_prelaunch_capacity_refusal=true' \
+            /tmp/campaign-capacity-refusal-flight.log
           ${pkgs.coreutils}/bin/timeout -k 5 300 \
-            ${flight}/bin/campaign-process-flight --ignored --exact \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
             packaged::public_packaged_executor_captures_genesis_and_restarts --nocapture
           ${pkgs.coreutils}/bin/timeout -k 5 300 \
-            ${flight}/bin/campaign-process-flight --ignored --exact \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
             packaged::public_packaged_executor_completes_initial_discovery --nocapture
           ${pkgs.coreutils}/bin/timeout -k 5 300 \
-            ${flight}/bin/campaign-process-flight --ignored --exact \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
             packaged::public_packaged_executor_completes_guest_quantum --nocapture
           ${pkgs.coreutils}/bin/timeout -k 5 300 \
-            ${flight}/bin/campaign-process-flight --ignored --exact \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
             packaged::public_packaged_executor_observes_exact_trigger_deadlines --nocapture
           ${pkgs.coreutils}/bin/timeout -k 5 300 \
-            ${flight}/bin/campaign-process-flight --ignored --exact \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
             packaged::public_packaged_executor_synchronizes_exact_time_across_vms --nocapture
           ${pkgs.coreutils}/bin/timeout -k 5 300 \
-            ${flight}/bin/campaign-process-flight --ignored --exact \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
             packaged::public_packaged_executor_observes_zero_and_early_logical_deadlines --nocapture
         ''
       }

@@ -52,7 +52,7 @@ impl HotCheckpointFallback {
 /// Candidate metadata considered for hot retention.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HotCheckpointCandidate {
-    pub(super) key: QemuHotForkTemplateKey,
+    pub(super) key: HotCheckpointPoolKey,
     pub(super) resources: HotCheckpointResourceProfile,
     pub(super) signals: HotCheckpointHotnessSignals,
     pub(super) fallback: HotCheckpointFallback,
@@ -62,7 +62,7 @@ impl HotCheckpointCandidate {
     /// Describes one exact source proposed for hot retention.
     #[must_use]
     pub const fn new(
-        key: QemuHotForkTemplateKey,
+        key: HotCheckpointPoolKey,
         resources: HotCheckpointResourceProfile,
         signals: HotCheckpointHotnessSignals,
         fallback: HotCheckpointFallback,
@@ -77,7 +77,7 @@ impl HotCheckpointCandidate {
 
     /// Returns the exact lineage/configuration key.
     #[must_use]
-    pub const fn template_key(self) -> QemuHotForkTemplateKey {
+    pub const fn template_key(self) -> HotCheckpointPoolKey {
         self.key
     }
 
@@ -107,14 +107,12 @@ pub enum HotCheckpointRetentionReason {
     WithinBudget,
     /// Lower-value sources were demoted to make room.
     ReplacedColderSources,
-    /// Operational signals or pin state were refreshed in place.
-    SignalsUpdated,
 }
 
 /// Current explainable state of one retained hot checkpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HotCheckpointStatus {
-    pub(super) slot: QemuHotForkTemplatePoolSlot,
+    pub(super) slot: HotCheckpointPoolSlot,
     pub(super) resources: HotCheckpointResourceProfile,
     pub(super) signals: HotCheckpointHotnessSignals,
     pub(super) fallback: HotCheckpointFallback,
@@ -124,7 +122,7 @@ pub struct HotCheckpointStatus {
 impl HotCheckpointStatus {
     /// Returns the stable source-pool coordinate.
     #[must_use]
-    pub const fn slot(self) -> QemuHotForkTemplatePoolSlot {
+    pub const fn slot(self) -> HotCheckpointPoolSlot {
         self.slot
     }
 
@@ -182,7 +180,7 @@ impl HotCheckpointPlannedDemotion {
 
     /// Returns the exact pool coordinate to retire while idle.
     #[must_use]
-    pub const fn slot(self) -> QemuHotForkTemplatePoolSlot {
+    pub const fn slot(self) -> HotCheckpointPoolSlot {
         self.status.slot
     }
 

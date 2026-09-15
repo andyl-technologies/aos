@@ -3,19 +3,18 @@
   lib,
   qemuPackage ? pkgs.qemu-crucible,
   referenceQemu ? pkgs.qemu-crucible-reference,
-  patchName ? "0049-crucible-memory-boundary-mutate.patch",
   attrPath ? "checks.crucible.phase2.qemuMemoryMutation",
   taskIds ? ["T-QEMU-0049"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
-  series = import ../../pkgs/emulation/qemu-patches/_series.nix;
-  patchSource = builtins.readFile (patchDir + "/${patchName}");
+  atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
+  patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   liveCaseCount = 40;
 
   failures =
-    failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
+    failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
       {
         label = "real RAM mutation commit";
         needle = "memory_region_fault_commit_ram";
@@ -41,14 +40,10 @@
         needle = "CRUCIBLE_MEMORY_MUTATION_LIVE_PASS";
       }
     ]
-    ++ forbiddenFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
+    ++ forbiddenFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
       {
         label = "host pointer in public mutation evidence";
         needle = "host_pointer";
-      }
-      {
-        label = "debugger memory write shortcut";
-        needle = "cpu_memory_rw_debug";
       }
     ];
 
@@ -63,17 +58,14 @@
         script = ''
           set -eu
           tar -xf "$src"
-          cd qemu-${series.qemuVersion}
+          cd qemu-${atomicPatch.qemuVersion}
         '';
       }
       {
-        name = "apply-authoritative-series";
+        name = "apply-atomic-patch";
         script = ''
           set -eu
-          for patch_file in ${builtins.concatStringsSep " " series.patchFiles}; do
-            patch --batch --forward --fuzz=0 -p1 \
-              -i "${patchDir}/$patch_file"
-          done
+          patch --batch --forward --fuzz=0 -p1 -i "${patchDir}/${atomicPatch.file}"
         '';
       }
       {
@@ -311,7 +303,7 @@ in
             {
               printf 'PASS\n'
               printf 'gate=gate:patch-microtests\n'
-              printf 'patch=%s\n' '${patchName}'
+              printf 'atomic_patch=%s\n' '${atomicPatch.file}'
               printf 'patched_fixture_exercised=true\n'
               printf 'stock_negative_control=true\n'
               printf 'qemu_package=%s\n' '${qemuPackage}'

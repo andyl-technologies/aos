@@ -2,21 +2,12 @@
 
 use super::*;
 
-pub(in crate::vm_lifecycle::quantum_loop) struct PreparedLifecycleFaultCoordinators {
-    pub(in crate::vm_lifecycle::quantum_loop) block: Option<Box<ProductionBlockFaultCoordinator>>,
-    pub(in crate::vm_lifecycle::quantum_loop) ninep:
-        Option<Box<storage_faults::ProductionNinepFaultCoordinator>>,
-}
-
 pub(in crate::vm_lifecycle::quantum_loop) struct PreparedLifecycleGenerationOwnership {
     pub(in crate::vm_lifecycle::quantum_loop) generation: u64,
     pub(in crate::vm_lifecycle::quantum_loop) run_directory: PathBuf,
-    pub(in crate::vm_lifecycle::quantum_loop) artifact_paths: [PathBuf; 2],
-    pub(in crate::vm_lifecycle::quantum_loop) launch: ProductionLiveNodeStepGateConfig,
+    pub(in crate::vm_lifecycle::quantum_loop) artifact_paths: [PathBuf; 1],
+    pub(in crate::vm_lifecycle::quantum_loop) launch: QemuLiveNodeStepGateConfig,
     pub(in crate::vm_lifecycle::quantum_loop) debug_backend_path: Option<PathBuf>,
-    pub(in crate::vm_lifecycle::quantum_loop) crash_detector: String,
-    pub(in crate::vm_lifecycle::quantum_loop) fault_coordinators:
-        PreparedLifecycleFaultCoordinators,
 }
 
 pub(in crate::vm_lifecycle::quantum_loop) struct PreparedLifecycleTerminalOwnership {
@@ -39,9 +30,9 @@ pub(in crate::vm_lifecycle::quantum_loop) fn select_preowned_terminal_generation
 }
 
 fn bind_successor_app_random(
-    launch: ProductionLiveNodeStepGateConfig,
-    app_random: Option<ProductionAppRandomConfig>,
-) -> ProductionLiveNodeStepGateConfig {
+    launch: QemuLiveNodeStepGateConfig,
+    app_random: Option<QemuLaunchAppRandomConfig>,
+) -> QemuLiveNodeStepGateConfig {
     app_random.map_or(launch.clone(), |config| launch.with_app_random(config))
 }
 
@@ -52,8 +43,6 @@ impl ProductionVmLifecycleLoop {
         current_generation: u64,
         next_generation: u64,
         scheduler_checkpoint: &SingleSchedulerCheckpoint,
-        resource_current: usize,
-        limits: FaultResourceLimits,
     ) -> Result<PreparedLifecycleTerminalOwnership, SchedulerError> {
         let node = &intent.node;
         let index = self.node_indexes.get(node).copied().ok_or_else(|| {
@@ -88,9 +77,6 @@ impl ProductionVmLifecycleLoop {
             current_generation,
             current_directory.clone(),
             launch.clone(),
-            resource_current,
-            limits,
-            false,
         )?;
         let remaining_branches = self
             .branch
@@ -125,9 +111,6 @@ impl ProductionVmLifecycleLoop {
                         next_generation,
                         run_directory,
                         successor_launch,
-                        resource_current,
-                        limits,
-                        true,
                     )
                 })
                 .transpose()?;
@@ -137,25 +120,15 @@ impl ProductionVmLifecycleLoop {
         })
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "restart ownership binds the authenticated node, generation, launch identity, resource coordinate, and coordinator policy"
-    )]
     fn prepare_lifecycle_generation_ownership(
         &self,
         node: &NodeId,
         index: usize,
         generation: u64,
         run_directory: PathBuf,
-        launch: ProductionLiveNodeStepGateConfig,
-        current: usize,
-        limits: FaultResourceLimits,
-        prepare_coordinators: bool,
+        launch: QemuLiveNodeStepGateConfig,
     ) -> Result<PreparedLifecycleGenerationOwnership, SchedulerError> {
-        let artifact_paths = [
-            run_directory.join(PRODUCTION_ROOT_OVERLAY_FILE_NAME),
-            run_directory.join(PRODUCTION_VMSTATE_FILE_NAME),
-        ];
+        let artifact_paths = [run_directory.join(DEFAULT_ROOT_OVERLAY_FILE_NAME)];
         let mut launch = launch
             .with_run_directory(&run_directory)
             .with_process_generation(generation);
@@ -184,68 +157,27 @@ impl ProductionVmLifecycleLoop {
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: String::from("selected lifecycle debugger lost its configuration"),
                 })?;
-            let gdbstub = ProductionGdbstubChannelConfig::new(backend_listen, operator_listen)
-                .map_err(|error| SchedulerError::BoundaryViolation {
+            let gdbstub = QemuGdbstubChannelConfig::new(backend_listen, operator_listen).map_err(
+                |error| SchedulerError::BoundaryViolation {
                     message: format!(
                         "configure replacement QEMU gdbstub for `{}`: {error}",
                         node.name
                     ),
-                })?;
+                },
+            )?;
             launch = launch.with_gdbstub(gdbstub);
         }
         let debug_backend_path = self
             .debug_backend_paths
             .contains_key(node)
             .then(|| private_backend_gdbstub_path(&run_directory));
-        let crash_detector = try_lifecycle_crash_detector(&node.name, generation, current, limits)?;
-        let fault_coordinators = if prepare_coordinators {
-            self.prepare_lifecycle_fault_coordinators(node)
-        } else {
-            PreparedLifecycleFaultCoordinators {
-                block: None,
-                ninep: None,
-            }
-        };
         Ok(PreparedLifecycleGenerationOwnership {
             generation,
             run_directory,
             artifact_paths,
             launch,
             debug_backend_path,
-            crash_detector,
-            fault_coordinators,
         })
-    }
-
-    fn prepare_lifecycle_fault_coordinators(
-        &self,
-        node: &NodeId,
-    ) -> PreparedLifecycleFaultCoordinators {
-        let block = self.block_bindings.get(node).map(|binding| {
-            Box::new(ProductionBlockFaultCoordinator::new(
-                Arc::clone(&self.fault_runtime),
-                Arc::clone(&self.fault_evaluation_cursor),
-                Arc::clone(&self.storage_fault_observations),
-                Arc::clone(&self.block_devices),
-                self.source.world().clone(),
-                binding.target.clone(),
-                self.source.plan().fault_signals(),
-                self.scenario.id(),
-                self.icount_shift,
-            ))
-        });
-        let ninep = self.ninep_bindings.get(node).map(|binding| {
-            Box::new(storage_faults::ProductionNinepFaultCoordinator::new(
-                Arc::clone(&self.fault_runtime),
-                Arc::clone(&self.fault_evaluation_cursor),
-                Arc::clone(&self.storage_fault_observations),
-                self.source.world().clone(),
-                binding.target.clone(),
-                self.source.plan().fault_signals().resource_limits(),
-                self.icount_shift,
-            ))
-        });
-        PreparedLifecycleFaultCoordinators { block, ninep }
     }
 }
 
@@ -294,10 +226,10 @@ mod tests {
             (String::from("node-a/requests"), 3),
             (String::from("node-a/workload"), 5),
         ]);
-        let app_random = ProductionAppRandomConfig::new(11, 32, "node-a")
-            .with_continuation(8, positions.clone());
-        let launch =
-            ProductionLiveNodeStepGateConfig::new("qemu", "plugin", "kernel", "firmware", "run");
+        let app_random =
+            QemuLaunchAppRandomConfig::from_seed(crucible::Seed::from_u64(11), 32, "node-a")
+                .with_continuation(8, positions.clone());
+        let launch = QemuLiveNodeStepGateConfig::new("qemu", "plugin", "kernel", "firmware", "run");
 
         let rebound = bind_successor_app_random(launch, Some(app_random));
         let rebound = rebound

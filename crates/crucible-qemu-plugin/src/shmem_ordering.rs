@@ -77,6 +77,14 @@ impl PluginShmemOrdering {
         slot.publish_reached_icount(reached_icount, shift_bits)
     }
 
+    /// Publishes the validated native timer callback record before its logical wake.
+    pub fn publish_virtual_timer_witness(
+        slot: &NodeSlot,
+        witness: crucible_shmem::VirtualTimerFireWitness,
+    ) {
+        slot.publish_virtual_timer_witness(witness);
+    }
+
     /// Publishes the plugin's idle state and prepares a futex wait decision.
     ///
     /// The underlying slot method release-stores the idle state before returning

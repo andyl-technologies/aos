@@ -16,25 +16,15 @@
 //! a second cooperating daemon, while [`ExactPinRetentionFence`] excludes
 //! mutation in the owning process during GC plan/apply inventory.
 
-use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crucible::{Configuration, World};
-use crucible_api::authenticate_portable_exact_checkpoint_resume_basis;
 use crucible_api::lifecycle::LifecycleApiError;
 use crucible_campaign::{
     CampaignCodecError, CampaignFactId, CampaignHash, CampaignName, CampaignRepository,
-    CampaignRepositoryError, CampaignSnapshotId, ConfigurationId, ExactCheckpointId,
-    FindingExactPins, PinRetention,
-};
-use crucible_qemu::{
-    QemuExactSnapshotPolicy, QemuFailedLaunchChildSource, QemuGuardedNodeRealizationLauncher,
-    QemuGuardedThinNodeRealizationLauncher, QemuNodeRealizationExecutor, QemuReplayOracleCheck,
-    QemuVmRealizationError, QemuVmRealizationExecutor, QemuVmRealizationStore,
-    check_qemu_snapshot_replay_oracle_bound,
+    CampaignRepositoryError, CampaignSnapshotId, ConfigurationId, ExactCheckpointId, PinRetention,
 };
 use rustix::fs::{FlockOperation, flock};
 use thiserror::Error;
@@ -42,19 +32,12 @@ use thiserror::Error;
 use crate::crucible_artifact::decode_crucible_configuration_artifact_from_repository;
 use crate::{
     CrucibleArtifactError, ExactCheckpointStore, ExactCheckpointStoreError,
-    LoadedAttemptCheckpoint, LoadedExactCheckpoint, QemuAttemptProcessResourceGuard,
-    QemuGuardedReplayOracleSession, decode_crucible_scenario_artifact,
+    LoadedProductionExactCheckpoint, decode_crucible_scenario_artifact,
+    exact_checkpoint_restore::acquire_production_exact_checkpoint_replay_oracle_promotion,
 };
 
-/// Registered schema for one durable exact-pin materialization selection.
-pub const EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA: &str =
-    "crucible.executor.exact-pin-materialization-selection";
-/// Canonical schema version for exact-pin materialization selections.
-pub const EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA_VERSION: u32 = 1;
 /// Maximum durable selection records in one single-host owner journal.
 pub const MAX_EXACT_PIN_MATERIALIZATION_SELECTIONS: u64 = 64_000_000;
-/// Maximum authenticated exact checkpoints considered for one finding.
-pub const MAX_FINDING_EXACT_PIN_CANDIDATES: usize = 4_096;
 /// Canonical sibling directory of the packaged assignment ledger.
 pub const EXACT_PIN_MATERIALIZATION_DIRECTORY: &str = "exact-pin-materializations";
 
@@ -74,6 +57,21 @@ pub struct ExactPinMaterializationSelection {
     configuration: ConfigurationId,
     pin_fact: CampaignFactId,
     checkpoint: ExactCheckpointId,
+}
+
+/// One-shot authority to durably install an authenticated exact-pin selection.
+pub struct PreparedExactPinMaterializationSelection<'a> {
+    selection: ExactPinMaterializationSelection,
+    claim: crate::exact_checkpoint_store::LiveReplayPromotionClaim<'a>,
+}
+
+impl std::fmt::Debug for PreparedExactPinMaterializationSelection<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedExactPinMaterializationSelection")
+            .field("selection", &self.selection)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ExactPinMaterializationSelection {
@@ -118,16 +116,16 @@ impl ExactPinMaterializationSelection {
     /// the exact declared pin, replay artifacts cannot be decoded through their
     /// authenticated selections, the checkpoint is not a production closure,
     /// or its complete resume basis is invalid or lacks matching replay proof.
-    pub fn prepare_at_snapshot(
+    pub(crate) fn prepare_at_snapshot<'a>(
         repository: &CampaignRepository,
-        checkpoints: &ExactCheckpointStore,
+        checkpoints: &'a ExactCheckpointStore,
         campaign: &CampaignName,
         snapshot: CampaignSnapshotId,
         configuration: ConfigurationId,
         pin_fact: CampaignFactId,
         checkpoint: ExactCheckpointId,
-    ) -> Result<Self, ExactPinRetentionError> {
-        authenticate_archive_checkpoint(
+    ) -> Result<PreparedExactPinMaterializationSelection<'a>, ExactPinRetentionError> {
+        let claim = authenticate_archive_checkpoint(
             repository,
             checkpoints,
             snapshot,
@@ -135,11 +133,14 @@ impl ExactPinMaterializationSelection {
             pin_fact,
             checkpoint,
         )?;
-        Ok(Self {
-            campaign: campaign.clone(),
-            configuration,
-            pin_fact,
-            checkpoint,
+        Ok(PreparedExactPinMaterializationSelection {
+            selection: Self {
+                campaign: campaign.clone(),
+                configuration,
+                pin_fact,
+                checkpoint,
+            },
+            claim,
         })
     }
 
@@ -156,11 +157,11 @@ impl ExactPinMaterializationSelection {
     /// Returns [`ExactPinRetentionError`] if the current semantic pin is
     /// absent or changed, the checkpoint materializes another configuration,
     /// or campaign/checkpoint authentication fails.
-    pub fn authenticate_current(
+    pub(crate) fn authenticate_current(
         &self,
         repository: &CampaignRepository,
         checkpoints: &ExactCheckpointStore,
-    ) -> Result<LoadedAttemptCheckpoint, ExactPinRetentionError> {
+    ) -> Result<LoadedProductionExactCheckpoint, ExactPinRetentionError> {
         let current = current_exact_pin_fact(repository, &self.campaign, self.configuration)?;
         if current != self.pin_fact {
             return Err(ExactPinRetentionError::StaleSelection {
@@ -177,7 +178,7 @@ impl ExactPinMaterializationSelection {
         campaign: &CampaignName,
         configuration: ConfigurationId,
         checkpoint: ExactCheckpointId,
-    ) -> Result<(Self, LoadedAttemptCheckpoint), ExactPinRetentionError> {
+    ) -> Result<(Self, LoadedProductionExactCheckpoint), ExactPinRetentionError> {
         let pin_fact = current_exact_pin_fact(repository, campaign, configuration)?;
         let loaded = load_checkpoint_for_configuration(checkpoints, checkpoint, configuration)?;
         Ok((
@@ -216,14 +217,14 @@ impl ExactPinMaterializationSelection {
     }
 }
 
-pub(crate) fn authenticate_archive_checkpoint(
+pub(crate) fn authenticate_archive_checkpoint<'a>(
     repository: &CampaignRepository,
-    checkpoints: &ExactCheckpointStore,
+    checkpoints: &'a ExactCheckpointStore,
     snapshot: CampaignSnapshotId,
     configuration: ConfigurationId,
     pin_fact: CampaignFactId,
     checkpoint: ExactCheckpointId,
-) -> Result<(), ExactPinRetentionError> {
+) -> Result<crate::exact_checkpoint_store::LiveReplayPromotionClaim<'a>, ExactPinRetentionError> {
     let mut pin = None;
     repository.visit_pin_retention_roots_at(snapshot, &mut |record| {
         if record.request().change.configuration() == configuration {
@@ -242,9 +243,7 @@ pub(crate) fn authenticate_archive_checkpoint(
     }
 
     let loaded = load_checkpoint_for_configuration(checkpoints, checkpoint, configuration)?;
-    let production = loaded
-        .as_production()
-        .ok_or(ExactPinRetentionError::CheckpointNotProduction { checkpoint })?;
+    let production = &loaded;
 
     let scenario_artifact = repository.load_scenario_artifact(pin.scenario_artifact())?;
     let scenario = decode_crucible_scenario_artifact(&scenario_artifact)?;
@@ -266,143 +265,17 @@ pub(crate) fn authenticate_archive_checkpoint(
     if production.scenario() != scenario.scenario_def().id() {
         return Err(ExactPinRetentionError::CheckpointScenarioMismatch { checkpoint });
     }
-    let basis = authenticate_portable_exact_checkpoint_resume_basis(&scenario, production)?;
-    if !basis.replay_oracle_ready() {
-        return Err(ExactPinRetentionError::CheckpointReplayOracleNotReady { checkpoint });
-    }
-    Ok(())
-}
-
-/// Canonical event boundaries used to retain the nearest finding checkpoints.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FindingExactPinBoundaries {
-    failure_events: u64,
-    measurement_boundary_events: Option<u64>,
-}
-
-impl FindingExactPinBoundaries {
-    /// Builds ordered failure and successful-measurement boundaries.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ExactPinRetentionError::InvalidFindingBoundaries`] when the
-    /// successful measurement boundary follows the causal failure boundary.
-    pub fn new(
-        failure_events: u64,
-        measurement_boundary_events: Option<u64>,
-    ) -> Result<Self, ExactPinRetentionError> {
-        if measurement_boundary_events.is_some_and(|events| events > failure_events) {
-            return Err(ExactPinRetentionError::InvalidFindingBoundaries);
-        }
-        Ok(Self {
-            failure_events,
-            measurement_boundary_events,
-        })
-    }
-
-    /// Returns the first causal failure event index.
-    #[must_use]
-    pub const fn failure_events(self) -> u64 {
-        self.failure_events
-    }
-
-    /// Returns the last successful measurement boundary, when recorded.
-    #[must_use]
-    pub const fn measurement_boundary_events(self) -> Option<u64> {
-        self.measurement_boundary_events
-    }
-}
-
-/// Selects the nearest authenticated exact checkpoints for one finding.
-///
-/// Every candidate must be a complete scheduler-bearing checkpoint for the
-/// exact finding configuration. Selection is deterministic: the pre-failure
-/// and measurement roles choose the greatest eligible event count, the
-/// post-failure role chooses the least, and exact-count ties choose the
-/// content-address-least checkpoint.
-///
-/// # Errors
-///
-/// Returns [`ExactPinRetentionError`] when candidate count exceeds 4,096, a
-/// candidate is missing, corrupt, belongs to another configuration, lacks the
-/// scheduler continuation needed for event ordering, or the result cannot fit
-/// the campaign finding bound.
-pub fn select_finding_exact_pins(
-    checkpoints: &ExactCheckpointStore,
-    configuration: ConfigurationId,
-    boundaries: FindingExactPinBoundaries,
-    candidates: &BTreeSet<ExactCheckpointId>,
-) -> Result<FindingExactPins, ExactPinRetentionError> {
-    if candidates.len() > MAX_FINDING_EXACT_PIN_CANDIDATES {
-        return Err(ExactPinRetentionError::FindingCandidateLimit);
-    }
-
-    let mut pre_failure = None;
-    let mut measurement_boundary = None;
-    let mut post_failure = None;
-    for candidate in candidates {
-        let loaded = require_single_node_checkpoint(
-            load_checkpoint_for_configuration(checkpoints, *candidate, configuration)?,
-            "select-finding-exact-pins",
-        )?;
-        let scheduler =
-            loaded
-                .scheduler()
-                .ok_or(ExactPinRetentionError::CheckpointHasNoScheduler {
-                    checkpoint: *candidate,
-                })?;
-        let events = scheduler.event_log_offset().events;
-
-        if events < boundaries.failure_events {
-            select_greatest(&mut pre_failure, events, *candidate);
-        }
-        if let Some(boundary) = boundaries.measurement_boundary_events
-            && events <= boundary
-        {
-            select_greatest(&mut measurement_boundary, events, *candidate);
-        }
-        if events >= boundaries.failure_events {
-            select_least(&mut post_failure, events, *candidate);
-        }
-    }
-
-    FindingExactPins::new(
-        pre_failure
-            .map(|(_, checkpoint)| BTreeSet::from([checkpoint]))
-            .unwrap_or_default(),
-        measurement_boundary
-            .map(|(_, checkpoint)| BTreeSet::from([checkpoint]))
-            .unwrap_or_default(),
-        post_failure
-            .map(|(_, checkpoint)| BTreeSet::from([checkpoint]))
-            .unwrap_or_default(),
-        BTreeSet::new(),
+    let raw = production
+        .promotion_source()
+        .ok_or(ExactPinRetentionError::CheckpointReplayOracleNotReady { checkpoint })?;
+    acquire_production_exact_checkpoint_replay_oracle_promotion(
+        checkpoints,
+        raw,
+        checkpoint,
+        &scenario,
+        &crate::ExecutionCancellation::default(),
     )
-    .map_err(Into::into)
-}
-
-fn select_greatest(
-    selected: &mut Option<(u64, ExactCheckpointId)>,
-    events: u64,
-    checkpoint: ExactCheckpointId,
-) {
-    if selected.is_none_or(|(current_events, current_checkpoint)| {
-        events > current_events || (events == current_events && checkpoint < current_checkpoint)
-    }) {
-        *selected = Some((events, checkpoint));
-    }
-}
-
-fn select_least(
-    selected: &mut Option<(u64, ExactCheckpointId)>,
-    events: u64,
-    checkpoint: ExactCheckpointId,
-) {
-    if selected.is_none_or(|(current_events, current_checkpoint)| {
-        events < current_events || (events == current_events && checkpoint < current_checkpoint)
-    }) {
-        *selected = Some((events, checkpoint));
-    }
+    .map_err(|_| ExactPinRetentionError::CheckpointReplayOracleNotReady { checkpoint })
 }
 
 fn current_exact_pin_fact(
@@ -428,7 +301,7 @@ fn load_checkpoint_for_configuration(
     checkpoints: &ExactCheckpointStore,
     checkpoint: ExactCheckpointId,
     configuration: ConfigurationId,
-) -> Result<LoadedAttemptCheckpoint, ExactPinRetentionError> {
+) -> Result<LoadedProductionExactCheckpoint, ExactPinRetentionError> {
     let loaded = checkpoints.load_attempt_checkpoint(checkpoint)?;
     let checkpoint_configuration =
         ConfigurationId::from_hash(CampaignHash::from_bytes(loaded.configuration().bytes));
@@ -439,15 +312,6 @@ fn load_checkpoint_for_configuration(
         });
     }
     Ok(loaded)
-}
-
-fn require_single_node_checkpoint(
-    loaded: LoadedAttemptCheckpoint,
-    operation: &'static str,
-) -> Result<LoadedExactCheckpoint, ExactPinRetentionError> {
-    loaded
-        .into_single_node()
-        .ok_or(ExactPinRetentionError::ProductionOperationUnsupported { operation })
 }
 
 /// Result of one idempotent exact-pin materialization selection.
@@ -505,168 +369,12 @@ pub struct DirectoryExactPinMaterializationStore {
     writer_lock: File,
 }
 
-/// Existing-state read authority over one stable exact-pin selection inventory.
-///
-/// This owner acquires the same lifetime lock as the writable store, but opens
-/// only preexisting paths and exposes only [`ExactPinRetentionAdmin`]. It is
-/// intended for offline planning that must not create or repair journal state.
-pub struct DirectoryExactPinMaterializationReader {
-    state: DirectoryExactPinReaderState,
-}
-
-enum DirectoryExactPinReaderState {
-    Authenticated { root: PathBuf, lock: File },
-    Absent,
-}
-
-impl Drop for DirectoryExactPinMaterializationReader {
-    fn drop(&mut self) {
-        if let DirectoryExactPinReaderState::Authenticated { lock, .. } = &self.state {
-            let _ = flock(lock, FlockOperation::Unlock);
-        }
-    }
-}
-
 impl Drop for DirectoryExactPinMaterializationStore {
     fn drop(&mut self) {
         // A fork can retain this open-file description until exec closes it.
         // Release ownership with the journal owner so an inherited or
         // duplicated descriptor cannot extend the writer lease.
         let _ = flock(&self.writer_lock, FlockOperation::Unlock);
-    }
-}
-
-/// Durable result of replacing one selected raw checkpoint with an oracle match.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ExactPinReplayPromotion {
-    source: ExactCheckpointId,
-    promoted: ExactCheckpointId,
-    disposition: ExactPinSelectionDisposition,
-}
-
-impl ExactPinReplayPromotion {
-    /// Returns the exact checkpoint root compared by the replay oracle.
-    #[must_use]
-    pub const fn source(self) -> ExactCheckpointId {
-        self.source
-    }
-
-    /// Returns the new root containing matching replay-oracle evidence.
-    #[must_use]
-    pub const fn promoted(self) -> ExactCheckpointId {
-        self.promoted
-    }
-
-    /// Returns how the durable operational selection was updated.
-    #[must_use]
-    pub const fn disposition(self) -> ExactPinSelectionDisposition {
-        self.disposition
-    }
-}
-
-/// Exact semantic and campaign target for one retained replay-oracle check.
-#[derive(Clone, Copy)]
-pub struct ExactPinReplayTarget<'a> {
-    world: &'a World,
-    configuration: &'a Configuration,
-    campaign: &'a CampaignName,
-    configuration_id: ConfigurationId,
-}
-
-impl<'a> ExactPinReplayTarget<'a> {
-    /// Binds one modeled configuration to its exact campaign pin key.
-    #[must_use]
-    pub const fn new(
-        world: &'a World,
-        configuration: &'a Configuration,
-        campaign: &'a CampaignName,
-        configuration_id: ConfigurationId,
-    ) -> Self {
-        Self {
-            world,
-            configuration,
-            campaign,
-            configuration_id,
-        }
-    }
-}
-
-/// Executes fat/thin validation and promotes the selected exact root.
-pub struct ExactPinReplayValidator<'a, S, E> {
-    store: &'a mut S,
-    executor: &'a mut E,
-    policy: QemuExactSnapshotPolicy,
-}
-
-impl<'a, S, E> ExactPinReplayValidator<'a, S, E> {
-    /// Creates a validator using production exact-snapshot policy.
-    #[must_use]
-    pub fn new(store: &'a mut S, executor: &'a mut E) -> Self {
-        Self {
-            store,
-            executor,
-            policy: QemuExactSnapshotPolicy::production(),
-        }
-    }
-}
-
-impl<S, E> ExactPinReplayValidator<'_, S, E>
-where
-    S: QemuVmRealizationStore,
-    E: QemuVmRealizationExecutor,
-{
-    /// Validates and durably promotes the checkpoint selected for `target`.
-    ///
-    /// The selection fence is held only for the bounded initial lookup. The
-    /// immutable checkpoint is authenticated, the fat and thin realizations
-    /// are compared without holding operational journal authority, and the
-    /// selection owner reauthenticates the source before publishing and
-    /// replacing its root.
-    ///
-    /// The caller owns attempt resource enforcement and mandatory executor
-    /// cleanup around this operation. In production, `executor` is therefore
-    /// an attempt-scoped guarded QEMU session rather than a raw process adapter.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ExactPinRetentionError`] when selection or checkpoint
-    /// authentication fails, either realization path fails, fat/thin state
-    /// differs, publication fails, or durable selection replacement fails.
-    pub fn validate_and_promote(
-        &mut self,
-        repository: &CampaignRepository,
-        checkpoints: &ExactCheckpointStore,
-        selections: &mut DirectoryExactPinMaterializationStore,
-        target: ExactPinReplayTarget<'_>,
-    ) -> Result<ExactPinReplayPromotion, ExactPinRetentionError> {
-        let selected = {
-            let mut fence = selections.acquire_exact_pin_retention_fence()?;
-            fence
-                .selection(target.campaign, target.configuration_id)?
-                .ok_or_else(|| ExactPinRetentionError::MissingSelection {
-                    campaign: target.campaign.clone(),
-                    configuration: target.configuration_id,
-                })?
-        };
-        let loaded = require_single_node_checkpoint(
-            selected.authenticate_current(repository, checkpoints)?,
-            "validate-and-promote-replay",
-        )?;
-        let check = check_qemu_snapshot_replay_oracle_bound(
-            target.world,
-            target.configuration,
-            loaded.snapshot(),
-            self.store,
-            self.executor,
-            self.policy,
-        )?;
-        selections.promote_replay_oracle_match(
-            repository,
-            checkpoints,
-            target.campaign,
-            target.configuration_id,
-            check,
-        )
     }
 }
 
@@ -732,21 +440,28 @@ impl DirectoryExactPinMaterializationStore {
         &mut self,
         selection: ExactPinMaterializationSelection,
     ) -> Result<ExactPinSelectionDisposition, ExactPinRetentionError> {
+        self.select_inner(&selection)
+    }
+
+    fn select_inner(
+        &mut self,
+        selection: &ExactPinMaterializationSelection,
+    ) -> Result<ExactPinSelectionDisposition, ExactPinRetentionError> {
         let path = self.selection_path(&selection.campaign, selection.configuration);
         if let Some(existing) = read_selection(&path, &selection.campaign, selection.configuration)?
         {
-            if existing == selection {
+            if existing == *selection {
                 sync_record_parent(&path)?;
                 return Ok(ExactPinSelectionDisposition::Existing);
             }
-            replace_record(&path, &encode_selection(&selection))?;
+            replace_record(&path, &encode_selection(selection))?;
             return Ok(ExactPinSelectionDisposition::Replaced);
         }
 
         if self.selection_records >= MAX_EXACT_PIN_MATERIALIZATION_SELECTIONS {
             return Err(ExactPinRetentionError::SelectionLimit);
         }
-        if let Err(source) = replace_record(&path, &encode_selection(&selection)) {
+        if let Err(source) = replace_record(&path, &encode_selection(selection)) {
             self.selection_records = count_selection_records(&self.root.join(RECORDS_DIRECTORY))?;
             return Err(source);
         }
@@ -769,19 +484,33 @@ impl DirectoryExactPinMaterializationStore {
     /// Returns [`ExactPinRetentionError::SelectionConflict`] for a different
     /// existing record, or the same persistence and bounds failures as
     /// [`Self::select`].
-    pub fn select_import_if_absent(
+    pub(crate) fn select_import_if_absent(
         &mut self,
-        selection: ExactPinMaterializationSelection,
+        prepared: PreparedExactPinMaterializationSelection<'_>,
+    ) -> Result<ExactPinSelectionDisposition, ExactPinRetentionError> {
+        let PreparedExactPinMaterializationSelection { selection, claim } = prepared;
+        let disposition = self.select_import_if_absent_inner(&selection)?;
+        claim
+            .commit()
+            .map_err(|_| ExactPinRetentionError::CheckpointReplayOracleNotReady {
+                checkpoint: selection.checkpoint,
+            })?;
+        Ok(disposition)
+    }
+
+    fn select_import_if_absent_inner(
+        &mut self,
+        selection: &ExactPinMaterializationSelection,
     ) -> Result<ExactPinSelectionDisposition, ExactPinRetentionError> {
         let path = self.selection_path(&selection.campaign, selection.configuration);
         if let Some(existing) = read_selection(&path, &selection.campaign, selection.configuration)?
         {
-            if existing == selection {
+            if existing == *selection {
                 sync_record_parent(&path)?;
                 return Ok(ExactPinSelectionDisposition::Existing);
             }
             return Err(ExactPinRetentionError::SelectionConflict {
-                campaign: selection.campaign,
+                campaign: selection.campaign.clone(),
                 configuration: selection.configuration,
             });
         }
@@ -789,7 +518,7 @@ impl DirectoryExactPinMaterializationStore {
         if self.selection_records >= MAX_EXACT_PIN_MATERIALIZATION_SELECTIONS {
             return Err(ExactPinRetentionError::SelectionLimit);
         }
-        if let Err(source) = replace_record(&path, &encode_selection(&selection)) {
+        if let Err(source) = replace_record(&path, &encode_selection(selection)) {
             self.selection_records = count_selection_records(&self.root.join(RECORDS_DIRECTORY))?;
             return Err(source);
         }
@@ -798,130 +527,6 @@ impl DirectoryExactPinMaterializationStore {
             .checked_add(1)
             .ok_or(ExactPinRetentionError::SelectionLimit)?;
         Ok(ExactPinSelectionDisposition::Stored)
-    }
-
-    /// Runs guarded fat/thin validation, reaps QEMU, and promotes the selection.
-    ///
-    /// The exact target launcher and independent thin-path launcher share one
-    /// attempt-owned resource guard but cannot substitute for one another. The
-    /// session is explicitly finished before the first immutable promotion
-    /// write. A realization or cleanup failure therefore leaves the raw
-    /// selection unchanged and either attests reap or transfers the guard to
-    /// quarantine.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ExactPinRetentionError`] when selection authentication,
-    /// fat/thin realization, cleanup, replay comparison, immutable publication,
-    /// or durable selection replacement fails.
-    pub fn validate_and_promote_replay_guarded<S, L, G>(
-        &mut self,
-        repository: &CampaignRepository,
-        checkpoints: &ExactCheckpointStore,
-        target: ExactPinReplayTarget<'_>,
-        realization_store: &mut S,
-        executor: &mut QemuNodeRealizationExecutor<L>,
-        guard: G,
-    ) -> Result<ExactPinReplayPromotion, ExactPinRetentionError>
-    where
-        S: QemuVmRealizationStore,
-        L: QemuGuardedNodeRealizationLauncher
-            + QemuGuardedThinNodeRealizationLauncher
-            + QemuFailedLaunchChildSource,
-        G: QemuAttemptProcessResourceGuard,
-    {
-        let selected = {
-            let mut fence = self.acquire_exact_pin_retention_fence()?;
-            fence
-                .selection(target.campaign, target.configuration_id)?
-                .ok_or_else(|| ExactPinRetentionError::MissingSelection {
-                    campaign: target.campaign.clone(),
-                    configuration: target.configuration_id,
-                })?
-        };
-        let loaded = require_single_node_checkpoint(
-            selected.authenticate_current(repository, checkpoints)?,
-            "validate-and-promote-replay-guarded",
-        )?;
-        let mut session = QemuGuardedReplayOracleSession::new(executor, guard);
-        let comparison = check_qemu_snapshot_replay_oracle_bound(
-            target.world,
-            target.configuration,
-            loaded.snapshot(),
-            realization_store,
-            &mut session,
-            QemuExactSnapshotPolicy::production(),
-        );
-        let cleanup = session.finish();
-        let check = match (comparison, cleanup) {
-            (_, Err(cleanup)) => return Err(cleanup.into()),
-            (Err(comparison), Ok(())) => return Err(comparison.into()),
-            (Ok(check), Ok(())) => check,
-        };
-
-        self.promote_replay_oracle_match(
-            repository,
-            checkpoints,
-            target.campaign,
-            target.configuration_id,
-            check,
-        )
-    }
-
-    /// Publishes a replay-validated replacement for the current exact selection.
-    ///
-    /// The bound oracle result is applied before any write. The replacement
-    /// reuses the source root's authenticated VMState child, publishes new
-    /// metadata and root through the ordinary children-before-root protocol,
-    /// then durably replaces the operational selection. A semantic pin change
-    /// observed after publication rejects selection; the unreachable immutable
-    /// promotion remains ordinary GC input.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ExactPinRetentionError`] when no selection exists, the source
-    /// selection is stale, the oracle result belongs to another snapshot or is
-    /// not a match, publication fails, or the replacement selection cannot be
-    /// durably stored.
-    pub fn promote_replay_oracle_match(
-        &mut self,
-        repository: &CampaignRepository,
-        checkpoints: &ExactCheckpointStore,
-        campaign: &CampaignName,
-        configuration: ConfigurationId,
-        check: QemuReplayOracleCheck,
-    ) -> Result<ExactPinReplayPromotion, ExactPinRetentionError> {
-        let source = {
-            let mut fence = self.acquire_exact_pin_retention_fence()?;
-            fence.selection(campaign, configuration)?.ok_or_else(|| {
-                ExactPinRetentionError::MissingSelection {
-                    campaign: campaign.clone(),
-                    configuration,
-                }
-            })?
-        };
-        let loaded = require_single_node_checkpoint(
-            source.authenticate_current(repository, checkpoints)?,
-            "promote-replay-oracle-match",
-        )?;
-        let capture = loaded.promote_replay_oracle_match(check)?;
-        let prepared = checkpoints.prepare_capture(capture)?;
-        let publication = checkpoints.publish(&prepared)?;
-        let promoted = publication.root();
-        let replacement = ExactPinMaterializationSelection::prepare(
-            repository,
-            checkpoints,
-            campaign,
-            configuration,
-            promoted,
-        )?;
-        let disposition = self.select(replacement)?;
-
-        Ok(ExactPinReplayPromotion {
-            source: source.checkpoint(),
-            promoted,
-            disposition,
-        })
     }
 
     /// Removes one operational selection without mutating campaign semantics.
@@ -958,106 +563,6 @@ impl DirectoryExactPinMaterializationStore {
     }
 }
 
-impl DirectoryExactPinMaterializationReader {
-    /// Opens a preexisting journal without creating or synchronizing any path.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ExactPinRetentionError`] when the root, records directory, or
-    /// writer lock is absent or malformed, the lock is already owned, or the
-    /// bounded record namespace is invalid.
-    pub fn open_existing(root: impl Into<PathBuf>) -> Result<Self, ExactPinRetentionError> {
-        let root = root.into();
-        require_directory(&root, "selection-root-is-not-directory")?;
-        require_directory(
-            &root.join(RECORDS_DIRECTORY),
-            "selection-records-is-not-directory",
-        )?;
-
-        let lock_path = root.join(WRITER_LOCK);
-        let descriptor = rustix::fs::open(
-            &lock_path,
-            rustix::fs::OFlags::RDONLY
-                | rustix::fs::OFlags::CLOEXEC
-                | rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::NONBLOCK,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|source| {
-            io_error(
-                "open-existing-selection-writer-lock",
-                &lock_path,
-                std::io::Error::from_raw_os_error(source.raw_os_error()),
-            )
-        })?;
-        let lock = File::from(descriptor);
-        if !lock
-            .metadata()
-            .map_err(|source| io_error("stat-existing-selection-writer-lock", &lock_path, source))?
-            .is_file()
-        {
-            return Err(corrupt("selection-writer-lock-is-not-file"));
-        }
-        flock(&lock, FlockOperation::NonBlockingLockExclusive).map_err(|source| {
-            io_error(
-                "lock-existing-selection-writer",
-                &lock_path,
-                std::io::Error::from_raw_os_error(source.raw_os_error()),
-            )
-        })?;
-        count_selection_records(&root.join(RECORDS_DIRECTORY))?;
-
-        Ok(Self {
-            state: DirectoryExactPinReaderState::Authenticated { root, lock },
-        })
-    }
-
-    /// Opens an authenticated catalog or represents an absent optional catalog.
-    ///
-    /// Only a missing root is treated as an empty catalog. A present root that
-    /// is inaccessible, malformed, concurrently owned, or contains invalid
-    /// records fails closed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ExactPinRetentionError`] when a present catalog cannot be
-    /// authenticated without creating, repairing, or synchronizing any path.
-    pub fn open_optional_existing(
-        root: impl Into<PathBuf>,
-    ) -> Result<Self, ExactPinRetentionError> {
-        let root = root.into();
-        match fs::symlink_metadata(&root) {
-            Ok(_) => Self::open_existing(root),
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(Self {
-                state: DirectoryExactPinReaderState::Absent,
-            }),
-            Err(source) => Err(io_error("stat-optional-selection-directory", &root, source)),
-        }
-    }
-
-    /// Reports whether an existing catalog was authenticated.
-    #[must_use]
-    pub const fn is_present(&self) -> bool {
-        matches!(
-            &self.state,
-            DirectoryExactPinReaderState::Authenticated { .. }
-        )
-    }
-
-    fn selection_path(
-        &self,
-        campaign: &CampaignName,
-        configuration: ConfigurationId,
-    ) -> Option<PathBuf> {
-        match &self.state {
-            DirectoryExactPinReaderState::Authenticated { root, .. } => {
-                Some(selection_path(root, campaign, configuration))
-            }
-            DirectoryExactPinReaderState::Absent => None,
-        }
-    }
-}
-
 impl ExactPinRetentionAdmin for DirectoryExactPinMaterializationStore {
     fn acquire_exact_pin_retention_fence(
         &mut self,
@@ -1066,20 +571,8 @@ impl ExactPinRetentionAdmin for DirectoryExactPinMaterializationStore {
     }
 }
 
-impl ExactPinRetentionAdmin for DirectoryExactPinMaterializationReader {
-    fn acquire_exact_pin_retention_fence(
-        &mut self,
-    ) -> Result<Box<dyn ExactPinRetentionFence + '_>, ExactPinRetentionError> {
-        Ok(Box::new(DirectoryExactPinReaderFence { reader: self }))
-    }
-}
-
 struct DirectoryExactPinRetentionFence<'a> {
     store: &'a DirectoryExactPinMaterializationStore,
-}
-
-struct DirectoryExactPinReaderFence<'a> {
-    reader: &'a DirectoryExactPinMaterializationReader,
 }
 
 impl ExactPinRetentionFence for DirectoryExactPinRetentionFence<'_> {
@@ -1093,28 +586,9 @@ impl ExactPinRetentionFence for DirectoryExactPinRetentionFence<'_> {
     }
 }
 
-impl ExactPinRetentionFence for DirectoryExactPinReaderFence<'_> {
-    fn selection(
-        &mut self,
-        campaign: &CampaignName,
-        configuration: ConfigurationId,
-    ) -> Result<Option<ExactPinMaterializationSelection>, ExactPinRetentionError> {
-        let Some(path) = self.reader.selection_path(campaign, configuration) else {
-            return Ok(None);
-        };
-        read_selection(&path, campaign, configuration)
-    }
-}
-
 /// Failure to authenticate, persist, or inventory exact-pin materialization.
 #[derive(Debug, Error)]
 pub enum ExactPinRetentionError {
-    /// Finding measurement and failure event boundaries are inconsistent.
-    #[error("finding measurement boundary follows its failure boundary")]
-    InvalidFindingBoundaries,
-    /// Too many exact checkpoints were offered to one finding selection pass.
-    #[error("finding exact-checkpoint candidate limit exceeded")]
-    FindingCandidateLimit,
     /// The current semantic projection does not contain the requested exact pin.
     #[error("campaign {campaign:?} configuration {configuration} is not currently exact-pinned")]
     PinNotExact {
@@ -1139,14 +613,6 @@ pub enum ExactPinRetentionError {
         /// Current projected fact authenticated from the imported snapshot.
         actual: CampaignFactId,
     },
-    /// No operational checkpoint is selected for this exact pin.
-    #[error("campaign {campaign:?} configuration {configuration} has no selected exact checkpoint")]
-    MissingSelection {
-        /// Exact campaign whose selection was requested.
-        campaign: CampaignName,
-        /// Exact modeled configuration whose selection was requested.
-        configuration: ConfigurationId,
-    },
     /// The checkpoint materializes a different modeled configuration.
     #[error("exact checkpoint configuration mismatch: expected {expected}, got {actual}")]
     CheckpointConfigurationMismatch {
@@ -1154,12 +620,6 @@ pub enum ExactPinRetentionError {
         expected: ConfigurationId,
         /// Configuration authenticated from checkpoint metadata.
         actual: ConfigurationId,
-    },
-    /// The imported checkpoint uses a compatibility representation without a World resume basis.
-    #[error("exact checkpoint {checkpoint} is not a production resume closure")]
-    CheckpointNotProduction {
-        /// Imported exact-checkpoint root.
-        checkpoint: ExactCheckpointId,
     },
     /// The imported checkpoint names another execution-model scenario.
     #[error("exact checkpoint {checkpoint} does not match the pinned scenario")]
@@ -1172,20 +632,6 @@ pub enum ExactPinRetentionError {
     CheckpointReplayOracleNotReady {
         /// Imported exact-checkpoint root.
         checkpoint: ExactCheckpointId,
-    },
-    /// A legacy exact root lacks the scheduler position required for selection.
-    #[error("exact checkpoint {checkpoint} has no scheduler continuation")]
-    CheckpointHasNoScheduler {
-        /// Exact root that cannot be ordered at an event boundary.
-        checkpoint: ExactCheckpointId,
-    },
-    /// A compatibility-only operation received a production multi-node root.
-    #[error(
-        "production exact checkpoints do not support `{operation}` through the compatibility path"
-    )]
-    ProductionOperationUnsupported {
-        /// Stable compatibility-only operation name.
-        operation: &'static str,
     },
     /// A durable materialization selection names an earlier exact-pin fact.
     #[error("exact-pin materialization selection is stale: recorded {recorded}, current {current}")]
@@ -1224,9 +670,6 @@ pub enum ExactPinRetentionError {
     /// Exact-checkpoint root or metadata authentication failed.
     #[error(transparent)]
     Checkpoint(#[from] ExactCheckpointStoreError),
-    /// Replay-oracle evidence was absent, mismatched, or bound elsewhere.
-    #[error(transparent)]
-    ReplayOracle(#[from] QemuVmRealizationError),
     /// A typed campaign identity in a durable record was malformed.
     #[error(transparent)]
     Codec(#[from] CampaignCodecError),
@@ -1465,15 +908,6 @@ fn create_directory_durable(
     sync_directory(path, operation)?;
     if let Some(parent) = path.parent() {
         sync_directory(parent, operation)?;
-    }
-    Ok(())
-}
-
-fn require_directory(path: &Path, reason: &'static str) -> Result<(), ExactPinRetentionError> {
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|source| io_error("stat-existing-selection-directory", path, source))?;
-    if !metadata.file_type().is_dir() {
-        return Err(corrupt(reason));
     }
     Ok(())
 }

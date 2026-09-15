@@ -243,7 +243,7 @@ impl StackNode {
     /// All distinct endpoint URLs in the stack, in first-seen depth-first
     /// order.
     pub fn endpoints(&self) -> Vec<String> {
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = std::collections::BTreeSet::new();
         self.flatten()
             .into_iter()
             .filter(|url| seen.insert(url.clone()))
@@ -321,7 +321,7 @@ pub fn parse_cache_stack_str(text: &str) -> Result<StackNode> {
 /// into the indexer's committed-cache list. The order matches what a
 /// stack-aware `try` fall-through client would consult.
 pub fn to_priority_caches(stack: &StackNode, base_priority: u32) -> Vec<(String, u32)> {
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = std::collections::BTreeSet::new();
     let mut out = Vec::new();
     for (offset, url) in stack.flatten().into_iter().enumerate() {
         if !seen.insert(url.clone()) {

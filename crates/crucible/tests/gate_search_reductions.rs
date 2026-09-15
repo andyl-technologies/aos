@@ -4,6 +4,13 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use std::collections::BTreeMap;
 use std::error::Error;
 
@@ -14,16 +21,13 @@ use crucible::{
     MaterializedState, NodeBlobRef, NodeId, PartialOrderReductionPolicy, PreemptionDecision,
     PreemptionKind, RngDecision, RngStreamId, Schedule, SchedulerState, SearchBudget,
     SearchFrontierChoices, SearchStrategy, SymmetryClassId, SymmetryReductionClasses,
-    TemporalGraph, VcpuId, VirtualTime, VmSnapshotRef, World, bake, step,
+    TemporalGraph, VcpuId, VirtualTime, VmSnapshotRef, World, bake,
 };
 
 #[test]
 fn gate_search_reductions_partial_order_records_canonical_representative_on_demand()
 -> Result<(), Box<dyn Error>> {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.search-reductions.world",
-        "partial-order-on-demand",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
@@ -34,9 +38,9 @@ fn gate_search_reductions_partial_order_records_canonical_representative_on_dema
     } else {
         (left, right)
     };
-    let noncanonical_frontier = step(&genesis, first.clone());
-    let canonical_frontier = step(&genesis, second.clone());
-    let covered = step(&noncanonical_frontier, second.clone());
+    let noncanonical_frontier = accepted_step!(&genesis, first.clone());
+    let canonical_frontier = accepted_step!(&genesis, second.clone());
+    let covered = accepted_step!(&noncanonical_frontier, second.clone());
     let representative = Configuration {
         def: scenario,
         schedule: Schedule::empty()
@@ -80,10 +84,7 @@ fn gate_search_reductions_partial_order_records_canonical_representative_on_dema
 
 #[test]
 fn gate_search_reductions_symmetry_uses_graph_level_representative() -> Result<(), Box<dyn Error>> {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.search-reductions.world",
-        "symmetry-graph-level",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
@@ -100,8 +101,8 @@ fn gate_search_reductions_symmetry_uses_graph_level_representative() -> Result<(
     );
     let representative_decision = preemption_decision("replica-a", 11);
     let covered_decision = preemption_decision("replica-b", 11);
-    let representative = step(&genesis, representative_decision);
-    let covered = step(&genesis, covered_decision.clone());
+    let representative = accepted_step!(&genesis, representative_decision);
+    let covered = accepted_step!(&genesis, covered_decision.clone());
     let representative_checkpoint = fat_checkpoint_with_coverage(
         &representative,
         &genesis,
@@ -141,10 +142,7 @@ fn gate_search_reductions_reduced_strategy_schedules_covered_representative()
 -> Result<(), Box<dyn Error>> {
     let covered_decision = rng_decision("symmetry-covered", 1);
     let representative_decision = rng_decision("symmetry-representative", 0);
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.search-reductions.world",
-        "strategy-schedules-covered-representative",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
     let baked = bake_with_search_frontier_decisions(&world, vec![covered_decision.clone()])?;
@@ -160,8 +158,8 @@ fn gate_search_reductions_reduced_strategy_schedules_covered_representative()
         "crucible.test.search-reductions.coverage",
         "strategy-symmetry-class",
     );
-    let representative = step(&genesis, representative_decision);
-    let covered = step(&genesis, covered_decision);
+    let representative = accepted_step!(&genesis, representative_decision);
+    let covered = accepted_step!(&genesis, covered_decision);
     let representative_checkpoint = fat_checkpoint_with_coverage(
         &representative,
         &genesis,

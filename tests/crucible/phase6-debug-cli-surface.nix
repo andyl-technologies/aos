@@ -49,10 +49,6 @@
         label = "no symbol server wording";
         needle = "no symbol server";
       }
-      {
-        label = "raw gdb step fallback";
-        needle = "gdb single-step disabled until green";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
@@ -80,10 +76,6 @@
         needle = "pub struct DebugMultiVcpuPolicy";
       }
       {
-        label = "gdbstub step policy";
-        needle = "pub struct DebugGdbstubStepPolicy";
-      }
-      {
         label = "read mutate policy";
         needle = "pub struct DebugReadMutationBoundaryPolicy";
       }
@@ -102,10 +94,6 @@
       {
         label = "coherent multi-vcpu constructor";
         needle = "coherent_round_robin_threads";
-      }
-      {
-        label = "raw gdb single-step fallback";
-        needle = "disabled_raw_single_step_until_green";
       }
       {
         label = "read mutate constructor";
@@ -130,10 +118,6 @@
         needle = "DebugMultiVcpuPolicy";
       }
       {
-        label = "gdbstub policy export";
-        needle = "DebugGdbstubStepPolicy";
-      }
-      {
         label = "read mutate policy export";
         needle = "DebugReadMutationBoundaryPolicy";
       }
@@ -151,7 +135,7 @@
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
       {
         label = "debug executes live QEMU admission";
-        needle = "run_local_qemu_debug_workflow(&backend, &plan)";
+        needle = "run_local_qemu_debug_workflow(&backend, plan)";
       }
       {
         label = "coordinate flag group";
@@ -269,7 +253,7 @@
       }
       {
         label = "contract negative test";
-        needle = "debug_cli_surface_contract_rejects_symbol_server_or_raw_gdb_step";
+        needle = "debug_cli_surface_contract_rejects_symbol_server";
       }
       {
         label = "no symbol server assertion";
@@ -278,10 +262,6 @@
       {
         label = "multi vcpu assertion";
         needle = "proves_multi_vcpu_coherence";
-      }
-      {
-        label = "gdbstub fallback assertion";
-        needle = "proves_s14_fallback";
       }
       {
         label = "read mutate assertion";

@@ -279,7 +279,7 @@ manifest is a tiny ref that points at:
     coverage_map_root  : ContentHash   // root of the accumulated coverage map (§35.3.2)
     findings_root      : ContentHash   // root of the findings ledger (artifacts §35.3.3)
     genesis_pin        : ContentHash   // the baked genesis checkpoint pin (07 §3, PERF-11)
-    provenance         : ProvenanceTriple  // (crucible_ver, qemu_build+series, abi_vers) §35.5/§35.6
+    provenance         : ProvenanceTriple  // (crucible_ver, qemu_build+atomic_patch, abi_vers) §35.5/§35.6
   advanced by COMPARE-AND-SWAP on the head (§35.5); a lost CAS loses only
   bookkeeping — the nodes it would have named are independently re-discoverable.
 ```
@@ -651,7 +651,7 @@ off the hot path (advanced at run boundaries, not per node).
 ### 35.6.1 A campaign is keyed to the provenance triple
 
 A campaign is keyed to the **provenance triple** of [PKG-36]/[PKG-38]: the
-Crucible software version, the QEMU build identity + applied series hash, and the
+Crucible software version, the QEMU build identity + applied atomic-patch hash, and the
 three ABI versions (shmem, guest↔host channel, RPC). This triple is recorded in
 the manifest (§35.3.1) and in every reproduction artifact ([PKG-38], [HARN-28]).
 
@@ -676,7 +676,7 @@ provenance per entry).
 ```
 
 - **[DCE-26]** A campaign MUST be keyed to the **provenance triple** of [PKG-36]
-  (Crucible version, QEMU build identity + series hash, the three ABI versions),
+  (Crucible version, QEMU build identity + atomic-patch hash, the three ABI versions),
   recorded in the manifest (§35.3.1) and in every artifact ([PKG-38]). Seeding
   ([DCE-11]) MUST **refuse cross-provenance corpus reuse**: a corpus entry produced
   under one provenance triple MUST NOT be seeded into a campaign with a different

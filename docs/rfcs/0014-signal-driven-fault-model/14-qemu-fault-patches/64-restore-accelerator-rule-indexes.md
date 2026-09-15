@@ -1,6 +1,6 @@
-# Patch 0113: restore accelerator rule indexes
+# Capability task 0113: restore accelerator rule indexes
 
-Patch `0113-crucible-restore-accelerator-rule-indexes.patch` reconstructs the
+The atomic patch `crucible-qemu-11.1.1.patch` reconstructs the
 accelerator's private persistent-rule indexes during fresh-process VMState
 restore.
 
@@ -24,7 +24,7 @@ The production live hardware gate installs half-capacity thermal/power policy,
 captures the armed state, destroys QEMU and its plugin, restores into a fresh
 process, and requires exact service evidence for all three guest jobs.
 
-## Compatibility
+## State identity
 
 No rule is serialized twice, and no VMState or shared-memory bytes change. The
 new indexes are derived ownership over the already-versioned node-rule ledger,

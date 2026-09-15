@@ -13,59 +13,11 @@ pub(super) struct PlannerIssueProjection {
     pub deduplicated: u64,
 }
 
-#[derive(Clone, Copy)]
-enum IssueProjectionMode {
-    Preflight,
-    Publish,
-    Validate {
-        target_exploration: ContentId,
-        target_accounting: ContentId,
-    },
-}
-
-impl IssueProjectionMode {
-    const fn publishes(self) -> bool {
-        matches!(self, Self::Publish)
-    }
-
-    const fn validates_import(self) -> bool {
-        matches!(self, Self::Validate { .. })
-    }
-}
-
-struct IssueGeneratorValidation {
-    validated: BTreeSet<(
-        CandidateGeneratorSpecId,
-        ChoiceDomainId,
-        Option<ProbabilityModelId>,
-    )>,
-    remaining: usize,
-}
-
-struct PlannerIssueAttemptBasis<'a> {
-    snapshot: &'a LoadedSnapshot,
-    lineage: &'a CampaignLineage,
-    request: &'a BranchRequest,
-    opportunity: &'a ChoiceOpportunity,
-    domain: &'a ChoiceDomain,
-    parent_path: &'a BranchPath,
-}
-
-#[derive(Clone, Copy)]
-struct PlannerIssueProposalBasis<'a> {
-    request: &'a BranchRequest,
-    domain: &'a ChoiceDomain,
-    feedback_projection: Option<&'a crate::BranchPuctProjection>,
-}
-
-impl IssueGeneratorValidation {
-    fn new() -> Self {
-        Self {
-            validated: BTreeSet::new(),
-            remaining: MAX_ISSUE_GENERATOR_VALIDATION_OBJECTS,
-        }
-    }
-}
+mod validation;
+use validation::{
+    IssueGeneratorValidation, IssueProjectionMode, PlannerIssueAttemptBasis,
+    PlannerIssueProposalBasis,
+};
 
 impl CampaignRepository {
     pub(super) fn planner_search_candidate(
@@ -80,10 +32,7 @@ impl CampaignRepository {
         let parent_path = self.planner_issue_parent_path(snapshot, &lineage, &request)?;
         let edge =
             Selection::campaign_edge_id(offer.branch_point(), domain.semantic_id(), offer.value());
-        let mut segments = parent_path
-            .segments()
-            .ok_or_else(|| integrity("planner-search-parent-path-is-legacy"))?
-            .to_vec();
+        let mut segments = parent_path.segments().to_vec();
         segments.push(crate::BranchPathSegment::new(offer.branch_point(), edge));
         let path = BranchPath::new(segments)?;
         let depth = u64::try_from(path.edges().len()).map_err(|_| {
@@ -159,24 +108,22 @@ impl CampaignRepository {
             }
             _ => return Err(integrity("planner-budget-attempt-index-mismatch")),
         };
-        let budget = crate::PlannerCandidateBudget::new(
+        let work = request_budget_work
+            .ok_or_else(|| integrity("planner-candidate-request-budget-is-missing"))?;
+        let remaining = self.remaining_request_attempts_before(
+            snapshot,
+            offer.request(),
+            offer.ordinal(),
+            request.budget().maximum_attempts(),
+            work,
+        )?;
+        Ok(crate::PlannerCandidateBudget::new(
             offer,
             ledger.remaining_proposals(),
             ledger.remaining_attempts(),
             new_attempt,
-        )?;
-        if let Some(work) = request_budget_work {
-            let remaining = self.remaining_request_attempts_before(
-                snapshot,
-                offer.request(),
-                offer.ordinal(),
-                request.budget().maximum_attempts(),
-                work,
-            )?;
-            Ok(budget.with_request_attempts(remaining))
-        } else {
-            Ok(budget)
-        }
+            remaining,
+        )?)
     }
 
     pub(super) fn preflight_planner_issue(
@@ -504,25 +451,7 @@ impl CampaignRepository {
         for (proposal, proposal_id) in proposals.iter().zip(proposal_ids.iter().copied()) {
             let attempt = self.derive_planner_issue_attempt(&attempt_basis, proposal, mode)?;
             let attempt_id = attempt.id()?;
-            let expected = self.expected_planner_issue_admission(
-                prior_accounting,
-                &accounting_upserts,
-                &prepared_admissions,
-                &selected_request,
-                proposal_id,
-                attempt_id,
-                request_attempts,
-                next_ordinal,
-            )?;
-            let admission_content = match mode {
-                IssueProjectionMode::Publish => {
-                    let content = self.put_attempt_admission(&expected)?;
-                    if content != expected.id()?.content_id() {
-                        return Err(integrity("planner-issue-admission-publication-mismatch"));
-                    }
-                    content
-                }
-                IssueProjectionMode::Preflight => expected.id()?.content_id(),
+            let stored_admission = match mode {
                 IssueProjectionMode::Validate {
                     target_accounting, ..
                 } => {
@@ -536,7 +465,37 @@ impl CampaignRepository {
                             ),
                         )?
                         .ok_or_else(|| integrity("planner-issue-admission-is-missing"))?;
-                    if self.decode_attempt_admission(content)? != expected {
+                    Some((content, self.decode_attempt_admission(content)?))
+                }
+                IssueProjectionMode::Preflight | IssueProjectionMode::Publish => None,
+            };
+            let expected = self.expected_planner_issue_admission(
+                prior_accounting,
+                &accounting_upserts,
+                &prepared_admissions,
+                &selected_request,
+                proposal_id,
+                attempt_id,
+                request_attempts,
+                next_ordinal,
+                proposal.policy(),
+            )?;
+            let admission_content = match mode {
+                IssueProjectionMode::Publish => {
+                    let content = self.put_attempt_admission(&expected)?;
+                    if content != expected.id()?.content_id() {
+                        return Err(integrity("planner-issue-admission-publication-mismatch"));
+                    }
+                    content
+                }
+                IssueProjectionMode::Preflight => expected.id()?.content_id(),
+                IssueProjectionMode::Validate {
+                    target_accounting: _,
+                    target_exploration: _,
+                } => {
+                    let (content, admission) = stored_admission
+                        .ok_or_else(|| integrity("planner-issue-stored-admission-is-missing"))?;
+                    if admission != expected {
                         return Err(integrity("planner-issue-admission-owner-mismatch"));
                     }
                     content
@@ -772,10 +731,12 @@ impl CampaignRepository {
                 .get(&stage.selector().model())
                 .ok_or_else(|| integrity("SMC request model is not planned"))?;
             let expected = BranchRequest::new(
-                basis.opportunity().branch_point_id(basis.configuration()),
-                basis.parent(),
-                basis.opportunity().id()?,
-                basis.domain().id()?,
+                BranchRequest::identity(
+                    basis.opportunity().branch_point_id(basis.configuration()),
+                    basis.parent(),
+                    basis.opportunity().id()?,
+                    basis.domain().id()?,
+                ),
                 CandidateSource::statistical_smc(
                     basis.generation(),
                     basis.particle().id(),
@@ -938,6 +899,7 @@ impl CampaignRepository {
         attempt: AttemptId,
         request_attempts: u64,
         next_ordinal: Option<AdmissionOrdinal>,
+        retention_policy: CampaignPolicyId,
     ) -> Result<AttemptAdmission, CampaignRepositoryError> {
         if self
             .overlay_get(
@@ -960,14 +922,12 @@ impl CampaignRepository {
                 }
                 let admission_ordinal =
                     next_ordinal.ok_or_else(|| integrity("admission-ordinal-overflow"))?;
-                Ok(AttemptAdmission::new(
-                    attempt,
-                    AttemptAdmissionRole::ExecutionBasis {
-                        proposal: Some(proposal),
-                        cause: request.cause(),
-                        admission_ordinal,
-                    },
-                ))
+                let role = AttemptAdmissionRole::ExecutionBasis {
+                    proposal: Some(proposal),
+                    cause: request.cause(),
+                    admission_ordinal,
+                };
+                Ok(AttemptAdmission::new(attempt, role, retention_policy))
             }
             (Some(indexed_attempt), Some(indexed_basis))
                 if indexed_attempt == attempt.content_id() =>
@@ -981,10 +941,8 @@ impl CampaignRepository {
                 {
                     return Err(integrity("attempt-execution-basis-index-mismatch"));
                 }
-                Ok(AttemptAdmission::new(
-                    attempt,
-                    AttemptAdmissionRole::AdditionalCause { proposal },
-                ))
+                let role = AttemptAdmissionRole::AdditionalCause { proposal };
+                Ok(AttemptAdmission::new(attempt, role, retention_policy))
             }
             _ => Err(integrity("attempt-admission-index-shape")),
         }
@@ -1005,11 +963,7 @@ impl CampaignRepository {
         let crate::SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
             return Err(integrity("planner-issue-selection-is-not-campaign-branch"));
         };
-        let mut segments = basis
-            .parent_path
-            .segments()
-            .ok_or_else(|| integrity("planner-issue-parent-path-is-legacy"))?
-            .to_vec();
+        let mut segments = basis.parent_path.segments().to_vec();
         segments.push(crate::BranchPathSegment::new(proposal.branch_point(), edge));
         let path = BranchPath::new(segments)?;
         self.validate_attempt_path_owner(
@@ -1072,9 +1026,6 @@ impl CampaignRepository {
             return Err(integrity("planner-issue-parent-path-index-key-mismatch"));
         }
         let path = self.read_branch_path(*content)?;
-        if path.segments().is_none() {
-            return Err(integrity("planner-issue-parent-path-is-legacy"));
-        }
         Ok(path)
     }
 

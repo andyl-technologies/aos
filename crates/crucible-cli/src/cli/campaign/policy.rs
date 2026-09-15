@@ -390,21 +390,25 @@ impl AuthoredCampaignPolicy {
             self.retention.exact_user_pins,
         );
         let policy = CampaignPolicy::new(
-            scenario,
-            campaign_seed,
-            match self.mode {
-                AuthoredCampaignMode::Strict => CampaignMode::Strict,
-                AuthoredCampaignMode::Streaming => CampaignMode::Streaming,
-                AuthoredCampaignMode::Statistical => CampaignMode::Statistical,
-            },
-            explorer,
-            choices,
-            objectives,
-            guidance,
-            stop_conditions,
-            fairness,
-            retention,
-            self.admit_scenario_defaults,
+            CampaignPolicy::identity(
+                scenario,
+                campaign_seed,
+                match self.mode {
+                    AuthoredCampaignMode::Strict => CampaignMode::Strict,
+                    AuthoredCampaignMode::Streaming => CampaignMode::Streaming,
+                    AuthoredCampaignMode::Statistical => CampaignMode::Statistical,
+                },
+                explorer,
+            ),
+            CampaignPolicy::rules(
+                choices,
+                objectives,
+                guidance,
+                stop_conditions,
+                fairness,
+                retention,
+                self.admit_scenario_defaults,
+            ),
         )
         .map_err(|error| usage_error(format!("invalid authored campaign policy: {error}")))?;
         let policy = match self.intervention_learning {

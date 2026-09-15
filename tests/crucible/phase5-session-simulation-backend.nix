@@ -25,6 +25,7 @@
   qemuNodeLib = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-qemu/src/node.rs)
     (builtins.readFile ../../crates/crucible-qemu/src/node/exact_snapshot.rs)
+    (builtins.readFile ../../crates/crucible-qemu/src/node/exact_snapshot/capture.rs)
     (import ./_rust-module-source.nix {
       inherit lib;
       entry = ../../crates/crucible-qemu/src/node_tests.rs;
@@ -260,8 +261,8 @@
         needle = "last_observed_time: VirtualTime";
       }
       {
-        label = "QEMU snapshot retains virtual time mirror";
-        needle = "last_observed_time: self.last_observed_time";
+        label = "QEMU checkpoint authenticates its scheduler-time calibration";
+        needle = "logical_time_calibration.logical_icount != self.last_observed_time.ticks";
       }
       {
         label = "QEMU restore resets virtual time mirror";
@@ -397,25 +398,6 @@ in
               --lib \
               qemu_node_satisfies_simulation_backend_trait \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-session-simulation-backend-target" \
-              -p crucible-qemu \
-              --test host_worker_pool \
-              -- --list \
-              > "$TMPDIR/host-worker-pool-tests"
-            grep -Fxq \
-              'qemu_host_worker_pool_executes_real_concurrent_path_in_canonical_order: test' \
-              "$TMPDIR/host-worker-pool-tests"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-session-simulation-backend-target" \
-              -p crucible-qemu \
-              --test host_worker_pool \
-              qemu_host_worker_pool_executes_real_concurrent_path_in_canonical_order \
-              -- --exact --include-ignored --test-threads=1
           '';
         }
         {

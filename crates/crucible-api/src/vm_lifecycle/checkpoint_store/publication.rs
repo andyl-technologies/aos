@@ -47,11 +47,6 @@ impl PreparedExactCheckpointPublication {
         }
     }
 
-    /// Returns whether the closure was already visible before this transaction.
-    pub(in crate::vm_lifecycle) fn was_already_published(&self) -> bool {
-        matches!(self, Self::Existing { .. })
-    }
-
     /// Makes the prepared manifest visible and synchronizes its parent.
     ///
     /// # Errors

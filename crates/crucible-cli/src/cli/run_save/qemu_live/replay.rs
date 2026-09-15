@@ -12,7 +12,7 @@ pub(crate) struct LiveQemuReplayResources {
         Option<crucible_api::BoundedSchedulerPreemptionEvidence>,
 }
 
-/// Re-executes a v3 artifact through a fresh packaged-QEMU lifecycle session.
+/// Re-executes an artifact through a fresh packaged-QEMU lifecycle session.
 ///
 /// # Errors
 ///
@@ -71,13 +71,17 @@ pub(crate) fn run_live_qemu_artifact_replay(
             .map(|ticks| ticks.to_string()),
         max_virtual_time_ticks: contract.max_virtual_time_ticks,
         max_quanta: contract.max_quanta,
-        execution_mode: RunExecutionMode::ToCompletion,
+        execution_mode: contract.execution_mode,
         save_policy: RunSavePolicy::Never,
         watch_streams_live_status: false,
         startup_commands,
         initial_control_commands,
-        accepted_interactive_commands: Vec::new(),
-        observer_profile: VERIFY_BASELINE_PROFILE,
+        accepted_interactive_commands: if contract.execution_mode == RunExecutionMode::Interactive {
+            run_interactive_session_command_set()
+        } else {
+            Vec::new()
+        },
+        host_profile: VERIFY_BASELINE_PROFILE,
         collect_execution_fingerprints: true,
         bounded_ack_quanta: RUN_INTERACTIVE_ACK_QUANTA_BOUND,
         outcome_exit_codes: vec![
@@ -103,12 +107,31 @@ pub(crate) fn run_live_qemu_artifact_replay(
     if let Some(evidence) = resources.bounded_scheduler_preemption {
         config = config.with_bounded_scheduler_preemption(evidence);
     }
-    let execution_owner = expected_live_qemu_execution_owner(
-        contract,
-        schedule,
-        resources.campaign_closure.is_some(),
-    );
-    let mut branch_evidence = None;
+    if contract.execution_mode == RunExecutionMode::Interactive {
+        if resources.campaign_closure.is_some() {
+            return Err(artifact_error(
+                "interactive session replay cannot carry a campaign replay closure",
+            ));
+        }
+        if !matches!(contract.branch, LiveQemuReplayBranch::None) {
+            return Err(artifact_error(
+                "interactive session replay cannot carry a campaign branch recipe",
+            ));
+        }
+        if let Some(trace) = resources.effect_trace {
+            config = config.with_fault_replay(trace);
+        }
+        let report = run_interactive_control_artifact_replay(
+            backend,
+            campaign_deployment,
+            &scenario,
+            schedule,
+            contract,
+            config,
+        )?;
+        return Ok((run_plan, report));
+    }
+    validate_live_qemu_campaign_owner(contract, schedule, resources.campaign_closure.is_some())?;
     match &contract.branch {
         LiveQemuReplayBranch::None => {}
         LiveQemuReplayBranch::Resume {
@@ -116,22 +139,7 @@ pub(crate) fn run_live_qemu_artifact_replay(
             frontier_ticks,
         } => {
             let base = replay_branch_base(&scenario_def, schedule, *base_decisions)?;
-            if execution_owner == RunExecutionOwner::Campaign {
-                validate_campaign_replay_branch_base(&base, *frontier_ticks)?;
-            } else {
-                branch_evidence = Some(replay_branch_evidence(
-                    &scenario,
-                    base.clone(),
-                    *frontier_ticks,
-                )?);
-                config = config.with_branch_prefix_overrides(
-                    base,
-                    VirtualTime {
-                        ticks: *frontier_ticks,
-                    },
-                    Vec::new(),
-                );
-            }
+            validate_campaign_replay_branch_base(&base, *frontier_ticks)?;
         }
         LiveQemuReplayBranch::Reseed {
             base_decisions,
@@ -139,11 +147,6 @@ pub(crate) fn run_live_qemu_artifact_replay(
             seed,
         } => {
             let base = replay_branch_base(&scenario_def, schedule, *base_decisions)?;
-            branch_evidence = Some(replay_branch_evidence(
-                &scenario,
-                base.clone(),
-                *frontier_ticks,
-            )?);
             config = config.with_branch_reseed(
                 base,
                 VirtualTime {
@@ -159,11 +162,6 @@ pub(crate) fn run_live_qemu_artifact_replay(
             decision_end,
         } => {
             let base = replay_branch_base(&scenario_def, schedule, *base_decisions)?;
-            branch_evidence = Some(replay_branch_evidence(
-                &scenario,
-                base.clone(),
-                *frontier_ticks,
-            )?);
             let start = usize::try_from(*decision_start).map_err(|_| {
                 artifact_error("live-QEMU replay override start cannot be represented")
             })?;
@@ -201,97 +199,267 @@ pub(crate) fn run_live_qemu_artifact_replay(
         config = config.with_branch_network_choices(network_choices);
     }
     if contract.coverage {
-        config = config.with_coverage(production_api::ProductionPluginSwitch::On);
+        config = crucible_daemon::with_production_qemu_coverage(config, true);
     }
     if let Some(trace) = resources.effect_trace {
         config = config.with_fault_replay(trace);
     }
-    let report = if matches!(execution_owner, RunExecutionOwner::Campaign) {
-        let replay_closure = campaign_owner_replay_closure(
-            &contract.producer,
-            schedule,
-            resources.campaign_closure,
-        )?;
-        crate::cli_verify_serve::run_local_qemu_campaign_replay(
-            backend,
-            &run_plan,
-            config,
-            schedule.clone(),
-            replay_closure,
-        )?
-    } else {
-        if resources.campaign_closure.is_some() {
-            return Err(artifact_error(
-                "session-owned replay cannot consume a campaign replay closure",
-            ));
-        }
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let control_plane =
-            production_qemu_control_plane(config, &scenario).with_thin_replay_resume();
-        let client = InProcessLifecycleClient::new(control_plane);
-        if contract.producer == "fork" {
-            let evidence = branch_evidence.ok_or_else(|| {
-                artifact_error("live-QEMU fork replay contract requires branch evidence")
-            })?;
-            let resume_plan = ResumeInvocationPlan {
-                savepoint: ResumeSavepointRef::CheckpointHash(evidence.checkpoint.id),
-                store_root: PathBuf::new(),
-                terminal_condition,
-                max_virtual_time: contract
-                    .max_virtual_time_ticks
-                    .map(|ticks| ticks.to_string()),
-                max_virtual_time_ticks: contract.max_virtual_time_ticks,
-                execution_mode: RunExecutionMode::ToCompletion,
-                watch_streams_live_status: false,
-                startup_commands: vec![SessionCommandKind::Fork, SessionCommandKind::Continue],
-                initial_control_commands: vec![SessionCommandKind::Query],
-                accepted_interactive_commands: Vec::new(),
-            };
-            runtime
-                .block_on(
-                    run_remote_control_client_resume_from_evidence_with_driver_async(
-                        &client,
-                        &resume_plan,
-                        evidence,
-                        ResumeInteractiveCommandDriver::Preparsed(&[]),
-                        replay_has_exact_branch_choices(&contract.network_choice_indices),
-                    ),
-                )?
-                .run
-        } else {
-            runtime.block_on(run_control_client_workflow_with_interactive_driver(
-                &client,
-                &run_plan,
-                InteractiveCommandDriver::Preparsed(&[]),
-                false,
-                replay_has_exact_branch_choices(&contract.network_choice_indices),
-            ))?
-        }
-    };
+    let replay_closure =
+        campaign_owner_replay_closure(&contract.producer, resources.campaign_closure)?;
+    let report = crate::cli_verify_serve::run_local_qemu_campaign_replay(
+        backend,
+        &run_plan,
+        config,
+        schedule.clone(),
+        replay_closure,
+    )?;
     Ok((run_plan, report))
 }
 
-pub(crate) fn expected_live_qemu_execution_owner(
+fn run_interactive_control_artifact_replay(
+    _backend: &ResolvedLocalBackend,
+    campaign_deployment: Option<&Path>,
+    scenario: &crucible::ScenarioDefForm,
+    terminal_schedule: &crucible::Schedule,
+    contract: &LiveQemuReplayContract,
+    config: crucible_api::ProductionVmLifecycleConfig,
+) -> Result<RunWorkflowReport, CliError> {
+    let captured_scenario =
+        crucible::ScenarioDefForm::from_compact_binary(&contract.initial_scenario)
+            .map_err(|error| artifact_error(format!("decode initial scenario: {error}")))?;
+    if &captured_scenario != scenario {
+        return Err(artifact_error(
+            "interactive replay initial scenario does not match the authenticated model scenario",
+        ));
+    }
+    let initial_schedule = crucible::Schedule::from_compact_binary(&contract.initial_schedule)
+        .map_err(|error| artifact_error(format!("decode initial configuration: {error}")))?;
+    if !initial_schedule.is_empty() {
+        return Err(artifact_error(
+            "fresh interactive replay requires a genesis initial schedule",
+        ));
+    }
+    let initial_configuration = crucible::Configuration {
+        def: captured_scenario.scenario_def(),
+        schedule: initial_schedule,
+    };
+    if format_content_hash_ref(initial_configuration.id()) != contract.initial_configuration {
+        return Err(artifact_error(
+            "interactive replay initial configuration identity does not match its schedule",
+        ));
+    }
+    let final_schedule = crucible::Schedule::from_compact_binary(&contract.final_schedule)
+        .map_err(|error| artifact_error(format!("decode final configuration: {error}")))?;
+    if &final_schedule != terminal_schedule {
+        return Err(artifact_error(
+            "interactive replay final schedule does not match the authenticated model schedule",
+        ));
+    }
+    let final_configuration = crucible::Configuration {
+        def: captured_scenario.scenario_def(),
+        schedule: final_schedule,
+    };
+    if format_content_hash_ref(final_configuration.id()) != contract.terminal_configuration {
+        return Err(artifact_error(
+            "interactive replay final configuration identity does not match its schedule",
+        ));
+    }
+    if contract.terminal_outcome != "stopped" {
+        return Err(artifact_error(
+            "interactive replay requires an operator-stopped final snapshot",
+        ));
+    }
+    let terminal_savepoint = contract
+        .terminal_savepoint
+        .as_deref()
+        .map(crucible::Checkpoint::from_compact_binary)
+        .transpose()
+        .map_err(|error| artifact_error(format!("decode terminal savepoint: {error}")))?;
+    if let Some(checkpoint) = &terminal_savepoint
+        && (checkpoint.configuration != final_configuration.id()
+            || checkpoint.scenario_ref != captured_scenario.id()
+            || checkpoint.virtual_time.ticks != contract.final_frontier_ticks)
+    {
+        return Err(artifact_error(
+            "interactive replay terminal savepoint does not match the final snapshot identity",
+        ));
+    }
+    let event_log_len = usize::try_from(contract.final_event_log_len)
+        .map_err(|_| artifact_error("final event-log length cannot be represented"))?;
+    let final_snapshot = crucible_session::EngineSnapshot {
+        state: crucible_session::EngineState::Stopped {
+            outcome: crucible_session::Outcome::Stopped,
+        },
+        configuration: final_configuration,
+        terminal_savepoint,
+        frontier: crucible::VirtualTime {
+            ticks: contract.final_frontier_ticks,
+        },
+        event_log_len,
+        quanta: contract.final_quanta,
+    };
+    let control_log = contract
+        .reproduction_commands
+        .iter()
+        .cloned()
+        .map(crucible_session::SessionControlLogEntry::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| artifact_error(error.to_string()))?;
+    let replay_artifact = crucible_session::SessionControlReplayArtifact {
+        initial_configuration: initial_configuration.clone(),
+        final_snapshot: final_snapshot.clone(),
+        control_log,
+    };
+
+    let deployment = load_guarded_campaign_deployment(campaign_deployment)?;
+    let resources = crate::cli_verify_serve::campaign_run::guarded_run_resources(
+        deployment.resources,
+        Some(contract.final_quanta),
+    )?;
+    let quantum_loop = crucible_daemon::build_guarded_interactive_qemu_session(
+        &initial_configuration.def,
+        &captured_scenario,
+        config,
+        deployment.host,
+        resources,
+    )
+    .map_err(|error| backend_error(format!("build guarded interactive replay session: {error}")))?;
+    let checkpoint = crucible::Checkpoint::from_recorded_configuration(
+        &initial_configuration,
+        None,
+        crucible::VirtualTime::default(),
+        std::collections::BTreeMap::new(),
+        crucible::CheckpointKind::Fat,
+        std::collections::BTreeMap::new(),
+    )
+    .map_err(|error| artifact_error(format!("build interactive replay genesis: {error}")))?;
+    let graph = crucible::TemporalGraph::empty()
+        .with_baked_genesis(
+            &initial_configuration.def,
+            crucible::GenesisCheckpoint { checkpoint },
+        )
+        .map_err(|error| artifact_error(format!("build interactive replay graph: {error}")))?;
+    let engine = crucible_session::Engine::new(initial_configuration, graph, quantum_loop);
+    let (sender, receiver) = tokio::sync::mpsc::channel(64);
+    let actor = crucible_session::SessionActor::new(engine, receiver)
+        .with_control_replay_artifact(&replay_artifact)
+        .map_err(|error| backend_error(format!("replay interactive control artifact: {error}")))?;
+
+    let event_log = actor.event_log();
+    let mut stream = event_log.subscribe(crucible_session::EventLogCursor::default());
+    let mut streamed_event_frames = Vec::with_capacity(event_log_len);
+    for _ in 0..event_log_len {
+        let frame = stream
+            .try_recv()
+            .map_err(|error| backend_error(format!("read replayed event log: {error}")))?
+            .ok_or_else(|| backend_error("replayed event log ended before its final snapshot"))?;
+        let frame = crucible_api::StreamingEventFrame::from(frame);
+        streamed_event_frames.push(canonical_streaming_event_frame_bytes(&frame));
+    }
+    let reproduction_commands = actor
+        .reproduction_log()
+        .snapshot()
+        .into_iter()
+        .map(crucible_api::ReproductionCommandRecord::from)
+        .collect::<Vec<_>>();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let execution_fingerprints = runtime.block_on(async move {
+        let actor_task = tokio::spawn(async move { actor.run().await });
+        let mut fingerprints = Vec::with_capacity(captured_scenario.world().vm_nodes().len());
+        for node in captured_scenario.world().vm_nodes() {
+            let (reply, receiver) = crucible_session::CommandReply::channel();
+            sender
+                .send(crucible_session::SessionCommand::Query {
+                    kind: crucible_session::QueryKind::ExecutionFingerprint {
+                        node: node.id.clone(),
+                    },
+                    reply,
+                })
+                .await
+                .map_err(|_| backend_error("replay actor closed before fingerprint sampling"))?;
+            let result = receiver
+                .await
+                .map_err(|_| backend_error("replay fingerprint reply channel closed"))?
+                .map_err(|error| backend_error(format!("sample replay fingerprint: {error}")))?;
+            let crucible_session::QueryResult::ExecutionFingerprint(sample) = result else {
+                return Err(backend_error(
+                    "replay fingerprint query returned an unexpected payload",
+                ));
+            };
+            fingerprints.push(sample);
+        }
+
+        let (reply, receiver) = crucible_session::CommandReply::channel();
+        sender
+            .send(crucible_session::SessionCommand::acknowledged(
+                crucible_session::SessionCommand::Stop,
+                reply,
+            ))
+            .await
+            .map_err(|_| backend_error("replay actor closed before terminal shutdown"))?;
+        receiver
+            .await
+            .map_err(|_| backend_error("replay shutdown reply channel closed"))?
+            .map_err(|error| backend_error(format!("shutdown replay actor: {error}")))?;
+        actor_task
+            .await
+            .map_err(|error| backend_error(format!("join replay actor: {error}")))?
+            .map_err(|error| backend_error(format!("replay actor failed: {error}")))?;
+        Ok::<_, CliError>(fingerprints)
+    })?;
+
+    Ok(RunWorkflowReport {
+        status: BackendCommandStatus::Passed,
+        execution_owner: RunExecutionOwner::Session,
+        campaign_replay_closure: None,
+        created_state: String::from("loaded"),
+        final_state: String::from("stopped"),
+        outcome: Some(OutcomeKind::Stopped),
+        terminal_savepoint: final_snapshot
+            .terminal_savepoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.id),
+        terminal_configuration: Some(final_snapshot.configuration.clone()),
+        final_snapshot: Some(final_snapshot.clone()),
+        final_frontier_ticks: final_snapshot.frontier.ticks,
+        final_quanta: final_snapshot.quanta,
+        budget_timed_out: false,
+        state_updates: vec![String::from("stopped")],
+        streamed_events: Vec::new(),
+        streamed_event_frames,
+        coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&[]),
+        execution_fingerprints,
+        resolved_effect_trace: None,
+        acknowledged_commands: Vec::new(),
+        reproduction_commands,
+        watch_statuses: Vec::new(),
+    })
+}
+
+pub(crate) fn validate_live_qemu_campaign_owner(
     contract: &LiveQemuReplayContract,
     schedule: &crucible::Schedule,
     has_campaign_closure: bool,
-) -> RunExecutionOwner {
-    if contract.producer == "campaign-run"
-        || contract.producer == "campaign-search"
-        || (contract.producer == "run" && legacy_run_campaign_replay_eligible(contract, schedule))
-        || (contract.producer == "fork"
-            && has_campaign_closure
-            && legacy_fork_campaign_replay_eligible(contract, schedule))
-    {
-        RunExecutionOwner::Campaign
-    } else {
-        RunExecutionOwner::Session
+) -> Result<(), CliError> {
+    if contract.producer == "campaign-run" || contract.producer == "campaign-search" {
+        if !matches!(contract.branch, LiveQemuReplayBranch::None)
+            && (!has_campaign_closure || !campaign_branch_replay_eligible(contract, schedule))
+        {
+            return Err(artifact_error(
+                "campaign-owned branch replay contract has an unsupported execution shape",
+            ));
+        }
+        return Ok(());
     }
+    Err(artifact_error(format!(
+        "live-QEMU replay contract has unsupported producer `{}`",
+        contract.producer
+    )))
 }
 
-fn legacy_fork_campaign_replay_eligible(
+fn campaign_branch_replay_eligible(
     contract: &LiveQemuReplayContract,
     // crucible-lint: allow host-nondeterminism-state -- replay routing reads authenticated artifact evidence without modifying semantic state.
     schedule: &crucible::Schedule,
@@ -326,50 +494,13 @@ fn legacy_fork_campaign_replay_eligible(
     ) && (contract.terminal_condition != "virtual-time"
         || contract.max_virtual_time_ticks.is_some());
 
-    replay_control_commands(&contract.startup_controls) == ["fork", "continue"]
+    replay_control_commands(&contract.startup_controls) == ["start", "continue"]
         && replay_control_commands(&contract.initial_controls) == ["query"]
         && contract.controls.is_empty()
         && supported_terminal
         && !contract.coverage
         && contract.fingerprint_scope == LiveQemuFingerprintScope::TerminalAllNodes
         && matches!(contract.branch, LiveQemuReplayBranch::Resume { .. })
-        && supported_schedule
-}
-
-fn legacy_run_campaign_replay_eligible(
-    contract: &LiveQemuReplayContract,
-    schedule: &crucible::Schedule,
-) -> bool {
-    let standard_startup =
-        replay_control_commands(&contract.startup_controls) == ["start", "continue"];
-    let standard_initial = replay_control_commands(&contract.initial_controls) == ["query"];
-    let unattended_controls = contract.controls.iter().all(|control| {
-        matches!(
-            control.command.as_str(),
-            "query" | "continue" | "step-quantum" | "stop"
-        )
-    });
-    let supported_terminal = matches!(
-        contract.terminal_condition.as_str(),
-        "quiescence" | "virtual-time" | "stopped"
-    ) && (contract.terminal_condition != "virtual-time"
-        || contract.max_virtual_time_ticks.is_some());
-    let supported_schedule = schedule.decisions().iter().all(|decision| {
-        matches!(
-            decision,
-            crucible::Decision::DeliveryOrder(_)
-                | crucible::Decision::RngDraw(_)
-                | crucible::Decision::Preemption(_)
-        )
-    });
-
-    standard_startup
-        && standard_initial
-        && unattended_controls
-        && supported_terminal
-        && !contract.coverage
-        && contract.fingerprint_scope == LiveQemuFingerprintScope::FullExecution
-        && matches!(contract.branch, LiveQemuReplayBranch::None)
         && supported_schedule
 }
 
@@ -385,74 +516,32 @@ fn replay_control_commands(controls: &[LiveQemuReplayControl]) -> Vec<&str> {
 /// # Errors
 ///
 /// Returns [`CliError`] when the producer requires a missing closure, carries a
-/// closure under session-owned semantics, or cannot synthesize the legacy
-/// selection-free run closure.
+/// closure under session-owned semantics.
 pub(crate) fn campaign_owner_replay_closure(
     producer: &str,
-    schedule: &crucible::Schedule,
     embedded: Option<crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure>,
 ) -> Result<crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure, CliError> {
     match (producer, embedded) {
-        ("campaign-run" | "campaign-search" | "fork", Some(closure)) => Ok(closure),
+        ("campaign-run" | "campaign-search", Some(closure)) => Ok(closure),
         ("campaign-run", None) => Err(artifact_error(
             "campaign-run replay requires its authenticated choice closure",
         )),
         ("campaign-search", None) => Err(artifact_error(
             "campaign-owned search replay requires its authenticated choice closure",
         )),
-        ("fork", None) => Err(artifact_error(
-            "campaign-owned fork replay requires its authenticated choice closure",
-        )),
-        ("run", None) => {
-            crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty_for_selection_free_schedule(schedule)
-                .map_err(|error| artifact_error(format!("build legacy run replay closure: {error}")))
-        }
-        ("run", Some(_)) => Err(artifact_error(
-            "legacy run replay cannot carry a campaign replay closure",
-        )),
         (_, _) => Err(artifact_error(
-            "only campaign-owned and eligible legacy run artifacts use campaign replay",
+            "only campaign-owned artifacts use campaign replay",
         )),
     }
 }
 
 fn validate_campaign_replay_branch_base(
-    // crucible-lint: allow host-nondeterminism-state -- validation authenticates the retained fork base without exposing it to a session owner.
     configuration: &crucible::Configuration,
     frontier_ticks: u64,
 ) -> Result<(), CliError> {
     let frontier = validate_resume_handle_frontier(&configuration.schedule, frontier_ticks)?;
     checkpoint_for_resume_configuration(configuration, frontier)?;
     Ok(())
-}
-
-fn replay_has_exact_branch_choices(network_indices: &[u64]) -> bool {
-    !network_indices.is_empty()
-}
-
-fn replay_branch_evidence(
-    scenario_form: &crucible::ScenarioDefForm,
-    configuration: crucible::Configuration,
-    frontier_ticks: u64,
-) -> Result<ResumeHandleEvidence, CliError> {
-    let frontier = validate_resume_handle_frontier(&configuration.schedule, frontier_ticks)?;
-    let checkpoint = checkpoint_for_resume_configuration(&configuration, frontier)?;
-    let replay_closure = authenticated_replay_closure(
-        scenario_form,
-        &configuration.schedule,
-        None,
-        "session-owned replay branch",
-    )?;
-    Ok(ResumeHandleEvidence {
-        scenario_form: scenario_form.clone(),
-        scenario: scenario_form.scenario_def(),
-        schedule: configuration.schedule.clone(),
-        configuration,
-        checkpoint,
-        replay_closure,
-        source_observation_proof: None,
-        source_observation_evidence: None,
-    })
 }
 
 fn replay_branch_base(
@@ -498,15 +587,35 @@ fn replay_indexed_network_choices(
 mod tests {
     use super::*;
 
-    fn legacy_run_contract() -> LiveQemuReplayContract {
+    fn assert_campaign_owner(
+        contract: &LiveQemuReplayContract,
+        schedule: &Schedule,
+        has_campaign_closure: bool,
+    ) {
+        validate_live_qemu_campaign_owner(contract, schedule, has_campaign_closure)
+            .unwrap_or_else(|error| panic!("current replay contract should be accepted: {error}"));
+    }
+
+    fn campaign_run_contract() -> LiveQemuReplayContract {
+        let scenario = crucible::happy_path_scenario()
+            .unwrap_or_else(|error| panic!("build campaign replay scenario: {error}"))
+            .scenario;
         LiveQemuReplayContract {
-            producer: String::from("run"),
+            producer: String::from("campaign-run"),
+            execution_owner: RunExecutionOwner::Campaign,
+            execution_mode: RunExecutionMode::ToCompletion,
+            initial_configuration: String::from("blake3:initial"),
+            initial_scenario: scenario.to_compact_binary(),
+            initial_schedule: Schedule::empty().to_compact_binary(),
             terminal_condition: String::from("quiescence"),
             terminal_status: String::from("failed"),
             terminal_outcome: String::from("failed"),
             terminal_configuration: String::from("blake3:terminal"),
             final_frontier_ticks: 1,
             final_quanta: 1,
+            final_event_log_len: 0,
+            final_schedule: Schedule::empty().to_compact_binary(),
+            terminal_savepoint: None,
             budget_timed_out: false,
             max_virtual_time_ticks: None,
             max_quanta: None,
@@ -531,68 +640,40 @@ mod tests {
                 command: String::from("query"),
             }],
             controls: Vec::new(),
+            reproduction_commands: Vec::new(),
         }
     }
 
-    fn unchanged_fork_contract() -> LiveQemuReplayContract {
-        let mut contract = legacy_run_contract();
-        contract.producer = String::from("fork");
+    fn campaign_resume_contract() -> LiveQemuReplayContract {
+        let mut contract = campaign_run_contract();
         contract.fingerprint_scope = LiveQemuFingerprintScope::TerminalAllNodes;
         contract.branch = LiveQemuReplayBranch::Resume {
             base_decisions: 1,
             frontier_ticks: 1,
         };
-        contract.startup_controls[0].command = String::from("fork");
         contract
     }
 
     #[test]
-    fn replay_requires_an_exact_network_choice_stream_when_branching() {
-        assert!(!replay_has_exact_branch_choices(&[]));
-        assert!(replay_has_exact_branch_choices(&[5]));
-    }
-
-    #[test]
-    fn campaign_and_supported_legacy_run_artifacts_route_to_the_campaign_owner() {
+    fn campaign_artifacts_route_to_the_campaign_owner() {
         let supported = Schedule::from_decisions([crucible::Decision::DeliveryOrder(
             crucible::DeliveryOrderDecision {
                 at: VirtualTime { ticks: 1 },
                 order: Vec::new(),
             },
         )]);
-        let legacy_run = legacy_run_contract();
-        let mut campaign_run = legacy_run.clone();
-        campaign_run.producer = String::from("campaign-run");
-        assert_eq!(
-            expected_live_qemu_execution_owner(&campaign_run, &supported, true),
-            RunExecutionOwner::Campaign
-        );
-        assert_eq!(
-            expected_live_qemu_execution_owner(&legacy_run, &supported, false),
-            RunExecutionOwner::Campaign,
-        );
-        let mut search = legacy_run.clone();
+        let campaign_run = campaign_run_contract();
+        assert_campaign_owner(&campaign_run, &supported, true);
+        assert_campaign_owner(&campaign_run, &supported, false);
+        let mut search = campaign_run.clone();
         search.producer = String::from("campaign-search");
-        assert_eq!(
-            expected_live_qemu_execution_owner(&search, &supported, true),
-            RunExecutionOwner::Campaign,
-        );
-        let synthesized = match campaign_owner_replay_closure("run", &supported, None) {
-            Ok(closure) => closure,
-            Err(error) => panic!("supported legacy run should synthesize a closure: {error}"),
-        };
-        let encoded = match synthesized.to_canonical_bytes() {
-            Ok(encoded) => encoded,
-            Err(error) => panic!("empty legacy replay closure should encode: {error}"),
-        };
-        assert_eq!(encoded, b"CCRC\0\0\0\x01\0\0\0\0");
-        for producer in ["verify", "search", "fuzz", "fork"] {
-            let mut contract = legacy_run.clone();
+        assert_campaign_owner(&search, &supported, true);
+        for producer in ["verify", "search", "fuzz", "run"] {
+            let mut contract = campaign_run.clone();
             contract.producer = producer.to_string();
-            assert_eq!(
-                expected_live_qemu_execution_owner(&contract, &supported, false),
-                RunExecutionOwner::Session,
-                "legacy producer {producer} must retain session replay semantics",
+            assert!(
+                validate_live_qemu_campaign_owner(&contract, &supported, false).is_err(),
+                "retired session producer {producer} must fail closed",
             );
         }
     }
@@ -600,7 +681,7 @@ mod tests {
     #[test]
     fn campaign_owned_replay_requires_its_embedded_closure() {
         for producer in ["campaign-run", "campaign-search"] {
-            let error = match campaign_owner_replay_closure(producer, &Schedule::empty(), None) {
+            let error = match campaign_owner_replay_closure(producer, None) {
                 Ok(_) => panic!("campaign-owned replay without its closure must fail closed"),
                 Err(error) => error,
             };
@@ -614,35 +695,28 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_fork_artifacts_route_by_authenticated_campaign_closure() {
+    fn campaign_resume_artifacts_route_by_authenticated_campaign_closure() {
         let schedule = Schedule::from_decisions([crucible::Decision::DeliveryOrder(
             crucible::DeliveryOrderDecision {
                 at: VirtualTime { ticks: 1 },
                 order: Vec::new(),
             },
         )]);
-        let contract = unchanged_fork_contract();
+        let contract = campaign_resume_contract();
 
-        assert_eq!(
-            expected_live_qemu_execution_owner(&contract, &schedule, true),
-            RunExecutionOwner::Campaign,
-        );
-        assert_eq!(
-            expected_live_qemu_execution_owner(&contract, &schedule, false),
-            RunExecutionOwner::Session,
-        );
+        assert_campaign_owner(&contract, &schedule, true);
+        assert!(validate_live_qemu_campaign_owner(&contract, &schedule, false).is_err());
 
-        let closure = match crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule) {
+        let closure = match crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0") {
             Ok(closure) => closure,
-            Err(error) => panic!("selection-free fork closure failed: {error}"),
+            Err(error) => panic!("selection-free resume closure failed: {error}"),
         };
-        let accepted = match campaign_owner_replay_closure("fork", &schedule, Some(closure.clone()))
-        {
+        let accepted = match campaign_owner_replay_closure("campaign-run", Some(closure.clone())) {
             Ok(closure) => closure,
-            Err(error) => panic!("campaign-owned fork closure failed: {error}"),
+            Err(error) => panic!("campaign-owned resume closure failed: {error}"),
         };
         assert_eq!(accepted, closure);
-        assert!(campaign_owner_replay_closure("fork", &schedule, None).is_err());
+        assert!(campaign_owner_replay_closure("campaign-run", None).is_err());
 
         let mut reseeded = contract.clone();
         reseeded.branch = LiveQemuReplayBranch::Reseed {
@@ -650,90 +724,30 @@ mod tests {
             frontier_ticks: 1,
             seed: 7,
         };
-        assert_eq!(
-            expected_live_qemu_execution_owner(&reseeded, &schedule, true),
-            RunExecutionOwner::Session,
+        assert!(
+            validate_live_qemu_campaign_owner(&reseeded, &schedule, true).is_err(),
+            "campaign-owned reseeded branch must fail instead of falling back",
         );
 
         let mut property = contract;
         property.terminal_condition = String::from("property");
-        assert_eq!(
-            expected_live_qemu_execution_owner(&property, &schedule, true),
-            RunExecutionOwner::Session,
+        assert!(
+            validate_live_qemu_campaign_owner(&property, &schedule, true).is_err(),
+            "campaign-owned property branch must fail instead of falling back",
         );
     }
 
     #[test]
-    fn legacy_run_override_replay_retains_the_compatible_session_owner() {
-        let contract = legacy_run_contract();
-        let unsupported =
-            Schedule::from_decisions([crucible::Decision::Override(crucible::OverrideDecision {
-                point: crucible::SchedulingPoint {
-                    key: String::from("legacy-run/choice"),
-                },
-                choice: crucible::ChoiceTag {
-                    name: String::from("alternate"),
-                },
-            })]);
-
-        assert_eq!(
-            expected_live_qemu_execution_owner(&contract, &unsupported, false),
-            RunExecutionOwner::Session,
-            "an uncovered legacy override cannot enter fresh campaign replay",
-        );
-    }
-
-    #[test]
-    fn legacy_run_session_control_and_property_contracts_retain_the_session_owner() {
+    fn campaign_owned_contracts_do_not_fall_back_to_the_session_owner() {
         let schedule = Schedule::empty();
+        let mut contract = campaign_run_contract();
+        contract.terminal_condition = String::from("property");
 
-        let mut property = legacy_run_contract();
-        property.terminal_condition = String::from("property");
-        assert_eq!(
-            expected_live_qemu_execution_owner(&property, &schedule, false),
-            RunExecutionOwner::Session,
-        );
-
-        let mut interactive = legacy_run_contract();
-        interactive.startup_controls.pop();
-        interactive.controls.push(LiveQemuReplayControl {
-            sequence: 0,
-            command: String::from("pause"),
-        });
-        assert_eq!(
-            expected_live_qemu_execution_owner(&interactive, &schedule, false),
-            RunExecutionOwner::Session,
-        );
-
-        let mut coverage = legacy_run_contract();
-        coverage.coverage = true;
-        assert_eq!(
-            expected_live_qemu_execution_owner(&coverage, &schedule, false),
-            RunExecutionOwner::Session,
-        );
+        assert_campaign_owner(&contract, &schedule, false);
     }
 
     #[test]
-    fn fork_replay_reconstructs_resumable_branch_evidence() -> Result<(), Box<dyn Error>> {
-        let scenario = crucible::happy_path_scenario()?.scenario;
-        let schedule = Schedule::from_decisions((1..=2).map(|ticks| {
-            crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
-                at: VirtualTime { ticks },
-                order: Vec::new(),
-            })
-        }));
-        let base = replay_branch_base(&scenario.scenario_def(), &schedule, 1)?;
-        let evidence = replay_branch_evidence(&scenario, base, 1)?;
-
-        assert_eq!(evidence.schedule.len(), 1);
-        assert_eq!(evidence.checkpoint.virtual_time.ticks, 1);
-        assert_eq!(evidence.configuration.id(), evidence.checkpoint.id);
-        assert_eq!(evidence.scenario_form.id(), scenario.id());
-        Ok(())
-    }
-
-    #[test]
-    fn fork_replay_rejects_frontier_beyond_retained_prefix() -> Result<(), Box<dyn Error>> {
+    fn branch_replay_rejects_frontier_beyond_retained_prefix() -> Result<(), Box<dyn Error>> {
         let scenario = crucible::happy_path_scenario()?.scenario;
         let schedule = Schedule::from_decisions([crucible::Decision::DeliveryOrder(
             crucible::DeliveryOrderDecision {
@@ -743,21 +757,11 @@ mod tests {
         )]);
         let base = replay_branch_base(&scenario.scenario_def(), &schedule, 1)?;
         let campaign_error = match validate_campaign_replay_branch_base(&base, 2) {
-            Ok(()) => panic!("campaign fork accepted an unrecorded branch frontier"),
+            Ok(()) => panic!("campaign branch accepted an unrecorded frontier"),
             Err(error) => error,
         };
-        let session_error = match replay_branch_evidence(&scenario, base, 2) {
-            Ok(_) => panic!("unrecorded branch frontier must fail closed"),
-            Err(error) => error,
-        };
-
         assert!(
             campaign_error
-                .to_string()
-                .contains("exceeded the latest recorded")
-        );
-        assert!(
-            session_error
                 .to_string()
                 .contains("exceeded the latest recorded")
         );

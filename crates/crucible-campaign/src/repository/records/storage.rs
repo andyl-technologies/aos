@@ -467,10 +467,6 @@ impl CampaignRepository {
                 }
                 let first_bundle = self.load_finding_candidate_bundle(first)?;
                 if first_bundle.signature() != finding.signature()
-                    || finding.schema_version() == 3
-                        && (first_bundle.observation() != finding.observation()
-                            || first_bundle.reproduction() != finding.reproduction()
-                            || Some(first_bundle.minimized()) != finding.minimized())
                     || !first_bundle
                         .exact_pins()
                         .all()
@@ -516,13 +512,11 @@ impl CampaignRepository {
             {
                 return Err(integrity("finding-minimized-reproduction-basis-mismatch"));
             }
-            if minimized.schema_version() >= 2 {
-                let minimization = minimized
-                    .minimization()
-                    .ok_or_else(|| integrity("finding-minimized-reproduction-has-no-trace"))?;
-                if minimization.original() != finding.reproduction() {
-                    return Err(integrity("finding-minimization-original-mismatch"));
-                }
+            let minimization = minimized
+                .minimization()
+                .ok_or_else(|| integrity("finding-minimized-reproduction-has-no-trace"))?;
+            if minimization.original() != finding.reproduction() {
+                return Err(integrity("finding-minimization-original-mismatch"));
             }
         }
         for pin in finding.exact_pins() {
@@ -642,8 +636,7 @@ impl CampaignRepository {
             | CampaignFact::SavepointContinuationSelected(_) => {
                 self.validate_command_fact_references(fact)?
             }
-            CampaignFact::BranchRequestIssued(id)
-            | CampaignFact::BranchRequestAccepted { request: id, .. } => {
+            CampaignFact::BranchRequestAccepted { request: id, .. } => {
                 self.read_branch_request(id.content_id())?;
             }
             CampaignFact::PlannerAdvanced(id) => {
@@ -658,7 +651,7 @@ impl CampaignRepository {
             CampaignFact::AttemptClosed { attempt, .. } => {
                 self.require_record_kind(attempt.content_id(), crate::CampaignRecordKind::Attempt)?;
             }
-            CampaignFact::ObservationPublished(id) | CampaignFact::ObservationCredited(id) => {
+            CampaignFact::ObservationCredited(id) => {
                 self.require_record_kind(id.content_id(), crate::CampaignRecordKind::Observation)?;
             }
             CampaignFact::FindingPublished(id) => {

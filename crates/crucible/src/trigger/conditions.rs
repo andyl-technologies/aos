@@ -1436,7 +1436,7 @@ pub enum ObservedOrderingFact {
         sequence: u64,
         /// Virtual time of the event-log entry.
         at: VirtualTime,
-        /// Ordered legacy event keys recorded by the delivery decision.
+        /// Ordered event keys recorded by the delivery decision.
         order: Vec<EventKey>,
     },
 }
@@ -1482,20 +1482,10 @@ pub struct LintedHostAssertionOracle<O> {
 }
 
 impl<O> LintedHostAssertionOracle<O> {
-    fn new(oracle: O, lint: HostAssertionHarnessLint) -> Self {
-        Self { oracle, lint }
-    }
-
     /// Returns the wrapped oracle.
     #[must_use]
     pub fn oracle(&self) -> &O {
         &self.oracle
-    }
-
-    /// Returns the wrapped oracle mutably.
-    #[must_use]
-    pub fn oracle_mut(&mut self) -> &mut O {
-        &mut self.oracle
     }
 
     /// Consumes this wrapper and returns the wrapped oracle.
@@ -1516,7 +1506,10 @@ pub(crate) fn unchecked_host_assertion_oracle_for_test<O>(oracle: O) -> LintedHo
 where
     O: HostAssertionPredicate,
 {
-    LintedHostAssertionOracle::new(oracle, HostAssertionHarnessLint { source_len: 0 })
+    LintedHostAssertionOracle {
+        oracle,
+        lint: HostAssertionHarnessLint { source_len: 0 },
+    }
 }
 
 mod host_assertion_oracle_sealed {

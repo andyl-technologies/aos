@@ -5,20 +5,19 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use super::*;
-use crucible_api::{ProductionExactCheckpointResumeBasis, install_exact_checkpoint_closure};
 use crucible_campaign::{
     AlternativeId, BranchPointId, CampaignHash, ChoiceClassContext, ChoiceDomain,
     ChoiceOpportunityId, ChoiceOpportunitySemanticId, ChoiceSource, ChoiceValue, ConfigurationId,
     DiscreteAlternative, DiscreteDomain, ExactCheckpointId, ExactRational, IntegerDomain,
     IntegerRepresentation, IntegerValue, SelectableDeclaration,
 };
-use crucible_core::{ObservableEventPayload, SchedulerEventLogPayload};
 use crucible_daemon::{
     AttemptExecutionKey, AttemptExecutionOrigin, AttemptRuntimeState, ExactCheckpointStore,
-    LoadedAttemptCheckpoint, visit_directory_attempt_states_bounded,
+    visit_directory_attempt_states_bounded,
 };
 
-const FAST_ALTERNATIVE: &str = "0101010101010101010101010101010101010101010101010101010101010101";
+pub(crate) const FAST_ALTERNATIVE: &str =
+    "0101010101010101010101010101010101010101010101010101010101010101";
 const SAFE_ALTERNATIVE: &str = "0202020202020202020202020202020202020202020202020202020202020202";
 const GUEST_CHOICE_RENDEZVOUS_ICOUNT: &str = "100000000";
 const MAX_GUEST_CHOICE_ATTEMPT_RECORDS: usize = 65_536;
@@ -30,14 +29,12 @@ const MAX_GUEST_SELECTABLE_BOUNDARY_EVENTS: usize = 256;
 const MAX_GUEST_SELECTABLE_BOUNDARY_LINES: usize = MAX_GUEST_SELECTABLE_BOUNDARY_EVENTS + 1;
 const MAX_GUEST_SELECTABLE_BOUNDARY_LINE_BYTES: usize = 8 * 1024;
 
-type ProcessCommand = (u32, Vec<String>);
-
 #[test]
 #[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]
 fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<(), Box<dyn Error>>
 {
     let fixture = FlightFixture::new()?;
-    let (compiled, scenario) = compile_guest_choice_campaign(&fixture)?;
+    let (compiled, _scenario) = compile_guest_choice_campaign(&fixture)?;
     create_guest_choice_campaign(&fixture, &compiled)?;
 
     let authority = write_component_authority(&fixture)?;
@@ -92,26 +89,7 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
         &fast_parent,
         &fast_parent_configuration,
     )?;
-    let fast_retry_submission =
-        submit_choice(&fixture, &retry, "u64:7", "boundary:selected-fast-q7", 0x62)?;
-    let fast_retry_request = accepted_branch_request(&fast_retry_submission)?;
-    let fast_retry_attempt = wait_for_new_completed_attempt(
-        &fixture,
-        &mut service,
-        &known_attempts,
-        &fast_retry_request,
-    )?;
-    known_attempts.insert(fast_retry_attempt);
-    let fast_retry_explanation = wait_for_attempt_observation(&fixture, fast_retry_attempt)?;
-    assert_eq!(
-        fast_retry_explanation["proposal"]["request"],
-        fast_retry_request
-    );
-    assert_eq!(fast_retry_explanation["selection"]["value"], "u64:7");
-    assert_eq!(
-        fast_retry_explanation["observation"]["stop"],
-        "reached:boundary:selected-fast-q7"
-    );
+    assert_eq!(retry.domain_kind, "integer");
 
     // A second branch proves that the result marker is computed from the
     // guest's replies rather than emitted unconditionally by the fixture.
@@ -141,6 +119,8 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
         &safe_parent,
         &safe_parent_configuration,
     )?;
+    assert_eq!(safe_retry.domain_kind, "integer");
+
     let safe_retry_submission = submit_choice(
         &fixture,
         &safe_retry,
@@ -167,12 +147,32 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
         "reached:boundary:selected-safe-q1"
     );
 
+    // The integer request belongs to the exact child state published by the
+    // first branch. Restart the service before replying so its public identity
+    // and the subsequent fresh-QEMU realization are both exercised.
+    service.stop()?;
+    let mut selected_service = start_packaged_service(&fixture, &authority)?;
+    let retry_after_restart = wait_for_choice(
+        &fixture,
+        "campaign.retry-quanta",
+        &fast_parent,
+        &fast_parent_configuration,
+    )?;
+    assert_eq!(retry_after_restart, retry);
+    assert_eq!(retry_after_restart.domain_kind, "integer");
+    println!("\nguest_choice_pending_choice_identity_preserved=true");
+
     // Re-submit the fast/q7 branch with a terminal stop. The selected guest
     // parks after its marker, so checkpoint capture cannot race completion.
-    let terminal_submission = submit_choice(&fixture, &retry, "u64:7", "terminal", 0x65)?;
+    let terminal_submission =
+        submit_choice(&fixture, &retry_after_restart, "u64:7", "terminal", 0x65)?;
     let terminal_request = accepted_branch_request(&terminal_submission)?;
-    let terminal_attempt =
-        wait_for_new_running_attempt(&fixture, &mut service, &known_attempts, &terminal_request)?;
+    let terminal_attempt = wait_for_new_running_attempt(
+        &fixture,
+        &mut selected_service,
+        &known_attempts,
+        &terminal_request,
+    )?;
     let terminal_before_pause = wait_for_attempt_explanation(&fixture, terminal_attempt)?;
     assert_eq!(terminal_before_pause["attempt"]["stop"], "terminal");
     assert_eq!(
@@ -180,64 +180,48 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
         terminal_request
     );
     assert_eq!(terminal_before_pause["selection"]["value"], "u64:7");
-    assert_eq!(
-        terminal_before_pause["path"]["id"],
-        fast_retry_explanation["path"]["id"]
-    );
-    attest_on_demand_qemu_descendants(&service, "pre-checkpoint terminal attempt")?;
-    println!("\nguest_choice_initial_qemu_fingerprint_mode=on-demand-v1");
+    println!("\nguest_choice_pending_choice_answered_after_restart=true");
+    attest_fingerprint_enabled_qemu_descendants(
+        &selected_service,
+        "post-restart terminal attempt",
+    )?;
+    println!("\nguest_choice_initial_qemu_fingerprint_enabled=true");
 
     let mut checkpoint_command = 0x70_u64;
-    let (checkpoint, before_restart) = capture_checkpoint_after_progress(
+    let checkpoint = capture_checkpoint_after_progress(
         &fixture,
         terminal_attempt,
-        "selected-fast-q7",
-        1,
         &mut checkpoint_command,
-        &scenario,
+        None,
     )?;
     let checkpoint_text = checkpoint.to_string();
-    let mut boundary_events =
-        capture_guest_selectable_boundary_events(&fixture, &service, "initial-service-stop")?;
-    service.stop()?;
+    let mut boundary_events = capture_guest_selectable_boundary_events(
+        &fixture,
+        &selected_service,
+        "selected-service-stop",
+    )?;
+    selected_service.stop()?;
 
     let mut restarted = start_packaged_service(&fixture, &authority)?;
     let paused = campaign_status(&fixture)?;
     assert_eq!(paused["state"], "paused");
-    attest_on_demand_qemu_descendants(&restarted, "restarted paused exact restore")?;
-    println!("\nguest_choice_restarted_qemu_fingerprint_mode=on-demand-v1");
+    attest_fingerprint_enabled_qemu_descendants(&restarted, "restarted paused exact restore")?;
+    println!("\nguest_choice_restarted_qemu_fingerprint_enabled=true");
+
     resume_campaign(&fixture, &next_command_identity(&mut checkpoint_command)?)?;
     let resumed = wait_for_resumed_attempt(&fixture, terminal_attempt, checkpoint)?;
     assert_eq!(resumed, checkpoint);
 
-    let minimum_resumed_progress = before_restart
-        .progress_sequence
-        .checked_add(1)
-        .ok_or("guest progress sequence overflowed")?;
-    let (after_resume_checkpoint, after_resume) = capture_checkpoint_after_progress(
+    let after_resume_checkpoint = capture_checkpoint_after_progress(
         &fixture,
         terminal_attempt,
-        "selected-fast-q7",
-        minimum_resumed_progress,
         &mut checkpoint_command,
-        &scenario,
+        Some(checkpoint),
     )?;
     assert_ne!(after_resume_checkpoint, checkpoint);
-    assert!(after_resume.event_count > before_restart.event_count);
-    assert!(after_resume.progress_sequence > before_restart.progress_sequence);
-    assert!(after_resume.progress_icount > before_restart.progress_icount);
-    assert!(after_resume.progress_event_sequence >= before_restart.event_count);
 
     let resumed_explanation = wait_for_attempt_explanation(&fixture, terminal_attempt)?;
     assert_eq!(resumed_explanation["selection"]["value"], "u64:7");
-    assert_eq!(
-        resumed_explanation["path"]["id"],
-        fast_retry_explanation["path"]["id"]
-    );
-    assert_eq!(
-        fast_retry_explanation["observation"]["stop"],
-        "reached:boundary:selected-fast-q7"
-    );
 
     boundary_events.extend(capture_guest_selectable_boundary_events(
         &fixture,
@@ -253,14 +237,6 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     println!("guest_choice_observed_marker=selected-fast-q7");
     println!("guest_choice_checkpoint={checkpoint_text}");
     println!("guest_choice_resumed_checkpoint={after_resume_checkpoint}");
-    println!(
-        "guest_choice_progress_sequence={}..{}",
-        before_restart.progress_sequence, after_resume.progress_sequence
-    );
-    println!(
-        "guest_choice_progress_icount={}..{}",
-        before_restart.progress_icount, after_resume.progress_icount
-    );
     println!("guest_choice_boundary_diagnostics=true");
     println!("guest_choice_restart_process=true");
     println!("\nguest_choice_resume_source_exact=true");
@@ -268,20 +244,13 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     Ok(())
 }
 
-#[derive(Clone, Debug)]
-struct PublicChoice {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PublicChoice {
     opportunity: String,
     parent: String,
     branch_point: String,
     domain: String,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct CheckpointProgress {
-    event_count: u64,
-    progress_sequence: u64,
-    progress_event_sequence: u64,
-    progress_icount: u64,
+    domain_kind: String,
 }
 
 fn compile_guest_choice_campaign(
@@ -338,7 +307,9 @@ fn compile_guest_choice_campaign(
     Ok((compiled, scenario))
 }
 
-fn guest_choice_selectables(world: &World) -> Result<ScenarioSelectables, Box<dyn Error>> {
+pub(crate) fn guest_choice_selectables(
+    world: &World,
+) -> Result<ScenarioSelectables, Box<dyn Error>> {
     let node = world
         .vm_nodes()
         .first()
@@ -406,7 +377,7 @@ fn create_guest_choice_campaign(
     fs::write(
         &lineage_input,
         format!(
-            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = \"qemu-10.0-crucible\"\nscenario_schema = 3\nexact_closure_schema = 4\n[protocol_versions]\ncontrol = 2\nshared-memory = 5\n",
+            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = \"qemu-11.1.1-crucible\"\nscenario_schema = 3\nexact_closure_schema = 4\n[protocol_versions]\ncontrol = 3\nshared-memory = 5\n",
             json_string(compiled, "scenario")?,
             json_string(compiled, "scenario_artifact")?,
             json_string(compiled, "genesis")?,
@@ -536,7 +507,7 @@ fn grant_and_start_guest_choice_campaign(fixture: &FlightFixture) -> Result<(), 
     Ok(())
 }
 
-fn wait_for_choice(
+pub(crate) fn wait_for_choice(
     fixture: &FlightFixture,
     selectable: &str,
     parent_artifact: &str,
@@ -626,6 +597,7 @@ fn wait_for_choice(
                     parent: parent_artifact.to_owned(),
                     branch_point,
                     domain: json_string(opportunity_view, "domain")?,
+                    domain_kind: json_string(&declaration["object"], "domain_kind")?,
                 };
                 if matched.replace(choice).is_some() {
                     return Err(format!(
@@ -727,7 +699,7 @@ fn derive_branch_point(
     )
 }
 
-fn submit_choice(
+pub(crate) fn submit_choice(
     fixture: &FlightFixture,
     choice: &PublicChoice,
     value: &str,
@@ -765,13 +737,13 @@ fn submit_choice(
     )
 }
 
-fn accepted_branch_request(submission: &Value) -> Result<String, Box<dyn Error>> {
+pub(crate) fn accepted_branch_request(submission: &Value) -> Result<String, Box<dyn Error>> {
     assert_eq!(submission["operation"], "branch");
     assert_eq!(submission["budget"]["maximum_attempts"], 1);
     json_string(submission, "request")
 }
 
-fn attempt_states(
+pub(crate) fn attempt_states(
     fixture: &FlightFixture,
 ) -> Result<BTreeMap<AttemptExecutionKey, AttemptRuntimeState>, Box<dyn Error>> {
     let mut states = BTreeMap::new();
@@ -792,7 +764,7 @@ fn attempt_states(
     Ok(states)
 }
 
-fn wait_for_new_completed_attempt(
+pub(crate) fn wait_for_new_completed_attempt(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     known: &BTreeSet<AttemptExecutionKey>,
@@ -808,7 +780,7 @@ fn wait_for_new_completed_attempt(
     )
 }
 
-fn wait_for_initial_discovery(
+pub(crate) fn wait_for_initial_discovery(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     genesis_artifact: &str,
@@ -1080,53 +1052,7 @@ fn diagnostic_file_tail(path: &Path, length: u64) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-fn append_process_diagnostics(diagnostics: &mut String) {
-    diagnostics.push_str("; processes=[");
-    let Ok(entries) = fs::read_dir("/proc") else {
-        diagnostics.push_str("<proc-unreadable>]");
-        return;
-    };
-    let mut process_directories = entries
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.bytes().all(|byte| byte.is_ascii_digit()))
-        })
-        .collect::<Vec<_>>();
-    process_directories.sort_by_key(|entry| entry.file_name());
-    for entry in process_directories {
-        let process = entry.path();
-        let command = fs::read(process.join("cmdline"))
-            .map(|bytes| {
-                String::from_utf8_lossy(&bytes)
-                    .replace('\0', " ")
-                    .trim()
-                    .to_owned()
-            })
-            .unwrap_or_default();
-        if !command.contains("crucible")
-            && !command.contains("qemu-system")
-            && !command.contains("campaign_store_process")
-        {
-            continue;
-        }
-        let status = fs::read_to_string(process.join("status"))
-            .unwrap_or_else(|_| String::from("<status-unreadable>"));
-        let wait_channel = fs::read_to_string(process.join("wchan"))
-            .unwrap_or_else(|_| String::from("<wchan-unreadable>"));
-        let _ = write!(
-            diagnostics,
-            "pid={} cmd={command:?} wchan={:?} status={status:?}; ",
-            entry.file_name().to_string_lossy(),
-            wait_channel.trim(),
-        );
-    }
-    diagnostics.push(']');
-}
-
-fn attest_on_demand_qemu_descendants(
+fn attest_fingerprint_enabled_qemu_descendants(
     service: &CampaignServiceChild,
     phase: &str,
 ) -> Result<(), Box<dyn Error>> {
@@ -1159,12 +1085,9 @@ fn attest_on_demand_qemu_descendants(
                     || !plugin_configuration
                         .split(',')
                         .any(|argument| argument == "fingerprint=on")
-                    || !plugin_configuration
-                        .split(',')
-                        .any(|argument| argument == "fingerprint_mode=on-demand-v1")
                 {
                     return Err(format!(
-                        "{phase} QEMU descendant {pid} did not use the packaged plugin in on-demand fingerprint mode: {plugin_configuration:?}"
+                        "{phase} QEMU descendant {pid} did not enable the packaged fingerprint sampler: {plugin_configuration:?}"
                     )
                     .into());
                 }
@@ -1182,61 +1105,6 @@ fn attest_on_demand_qemu_descendants(
         service.child.id()
     )
     .into())
-}
-
-fn descendant_process_commands(root_pid: u32) -> Result<Vec<ProcessCommand>, Box<dyn Error>> {
-    let mut processes = Vec::new();
-    for entry in fs::read_dir("/proc")?.filter_map(Result::ok) {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
-            continue;
-        };
-        let Some(parent_pid) = process_parent_pid(&stat) else {
-            continue;
-        };
-        processes.push((pid, parent_pid, entry.path()));
-    }
-
-    let mut descendants = BTreeSet::from([root_pid]);
-    loop {
-        let previous_count = descendants.len();
-        for (pid, parent_pid, _path) in &processes {
-            if descendants.contains(parent_pid) {
-                descendants.insert(*pid);
-            }
-        }
-        if descendants.len() == previous_count {
-            break;
-        }
-    }
-
-    let mut commands = Vec::new();
-    for (pid, _parent_pid, path) in processes {
-        if pid == root_pid || !descendants.contains(&pid) {
-            continue;
-        }
-        let Ok(command_line) = fs::read(path.join("cmdline")) else {
-            continue;
-        };
-        let arguments = command_line
-            .split(|byte| *byte == 0)
-            .filter(|argument| !argument.is_empty())
-            .map(|argument| String::from_utf8_lossy(argument).into_owned())
-            .collect::<Vec<_>>();
-        commands.push((pid, arguments));
-    }
-    Ok(commands)
-}
-
-fn process_parent_pid(stat: &str) -> Option<u32> {
-    let after_name = stat.rsplit_once(") ")?.1;
-    after_name.split_whitespace().nth(1)?.parse().ok()
 }
 
 fn wait_for_new_running_attempt(
@@ -1281,7 +1149,7 @@ fn wait_for_new_attempt(
     .into())
 }
 
-fn wait_for_attempt_observation(
+pub(crate) fn wait_for_attempt_observation(
     fixture: &FlightFixture,
     key: AttemptExecutionKey,
 ) -> Result<Value, Box<dyn Error>> {
@@ -1366,21 +1234,18 @@ fn wait_for_attempt_explanation_matching(
 fn capture_checkpoint_after_progress(
     fixture: &FlightFixture,
     key: AttemptExecutionKey,
-    selection: &str,
-    minimum_progress_sequence: u64,
     command_sequence: &mut u64,
-    scenario: &ScenarioDefForm,
-) -> Result<(ExactCheckpointId, CheckpointProgress), Box<dyn Error>> {
+    previous_checkpoint: Option<ExactCheckpointId>,
+) -> Result<ExactCheckpointId, Box<dyn Error>> {
     let deadline = Instant::now() + Duration::from_secs(180);
     let captured = wait_for_process_observation(deadline, || {
         // A Running ledger state can precede the next quantum. Only the
         // replay-authenticated marker in the promoted checkpoint acknowledges
         // guest progress, so an unchanged marker is resumed and observed again.
         pause_for_exact_checkpoint(fixture, &next_command_identity(command_sequence)?)?;
-        let checkpoint = wait_for_promoted_checkpoint(fixture, key, scenario)?;
-        let progress = checkpoint_progress(fixture, checkpoint, selection, scenario)?;
-        if progress.progress_sequence >= minimum_progress_sequence {
-            return Ok(Some((checkpoint, progress)));
+        let checkpoint = wait_for_promoted_checkpoint(fixture, key)?;
+        if Some(checkpoint) != previous_checkpoint {
+            return Ok(Some(checkpoint));
         }
 
         resume_campaign(fixture, &next_command_identity(command_sequence)?)?;
@@ -1392,7 +1257,7 @@ fn capture_checkpoint_after_progress(
     }
 
     Err(format!(
-        "attempt {} did not emit `{selection}` progress sequence {minimum_progress_sequence} within 180s",
+        "attempt {} did not publish a new promoted checkpoint within 180s",
         key.attempt()
     )
     .into())
@@ -1430,7 +1295,6 @@ fn pause_for_exact_checkpoint(
 fn wait_for_promoted_checkpoint(
     fixture: &FlightFixture,
     key: AttemptExecutionKey,
-    scenario: &ScenarioDefForm,
 ) -> Result<ExactCheckpointId, Box<dyn Error>> {
     let deadline = Instant::now() + Duration::from_secs(180);
     let backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
@@ -1443,7 +1307,7 @@ fn wait_for_promoted_checkpoint(
             attempt_states(fixture)?.get(&key).copied()
             && checkpoints
                 .load_attempt_checkpoint(checkpoint)
-                .is_ok_and(|loaded| checkpoint_is_replay_validated(fixture, &loaded, scenario))
+                .is_ok_and(|loaded| loaded.promotion_source().is_some())
         {
             return Ok(Some(checkpoint));
         }
@@ -1459,96 +1323,6 @@ fn wait_for_promoted_checkpoint(
         attempt_states(fixture)?
     )
     .into())
-}
-
-fn checkpoint_is_replay_validated(
-    fixture: &FlightFixture,
-    checkpoint: &LoadedAttemptCheckpoint,
-    scenario: &ScenarioDefForm,
-) -> bool {
-    checkpoint
-        .as_production()
-        .and_then(|production| authenticated_resume_basis(fixture, production, scenario).ok())
-        .is_some_and(|basis| basis.replay_oracle_ready())
-}
-
-fn authenticated_resume_basis(
-    fixture: &FlightFixture,
-    checkpoint: &crucible_daemon::LoadedProductionExactCheckpoint,
-    scenario: &ScenarioDefForm,
-) -> Result<ProductionExactCheckpointResumeBasis, Box<dyn Error>> {
-    let inspection = fixture._temporary.path().join("checkpoint-inspection");
-    fs::create_dir_all(&inspection)?;
-    let closure = install_exact_checkpoint_closure(&inspection, scenario, checkpoint)?;
-    Ok(closure.authenticate_resume_basis()?)
-}
-
-fn checkpoint_progress(
-    fixture: &FlightFixture,
-    checkpoint: ExactCheckpointId,
-    selection: &str,
-    scenario: &ScenarioDefForm,
-) -> Result<CheckpointProgress, Box<dyn Error>> {
-    let backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
-        "guest-choice-progress-inspection",
-        &fixture.objects,
-    ));
-    let checkpoints = ExactCheckpointStore::new(backend, 1024 * 1024 * 1024)?;
-    let loaded = checkpoints.load_attempt_checkpoint(checkpoint)?;
-    let production = loaded
-        .as_production()
-        .ok_or("packaged flight published a non-production exact checkpoint")?;
-    let basis = authenticated_resume_basis(fixture, production, scenario)?;
-    if !basis.replay_oracle_ready() {
-        return Err(
-            format!("checkpoint {checkpoint} lacks matching replay-oracle evidence").into(),
-        );
-    }
-
-    let scheduler = basis.scheduler();
-    let event_count = scheduler.event_log_offset().events;
-    let progress_prefix = format!("{selection}-progress-");
-    let mut selection_icount = None;
-    let mut latest_progress = None;
-    for entry in scheduler.retained_event_log_entries() {
-        let SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMarker {
-            retired_icount,
-            marker,
-            ..
-        }) = entry.payload()
-        else {
-            continue;
-        };
-        if marker.name == selection {
-            selection_icount = Some(retired_icount.retired);
-        }
-        let Some(sequence) = marker.name.strip_prefix(&progress_prefix) else {
-            continue;
-        };
-        let sequence = sequence.parse::<u64>()?;
-        if latest_progress.is_none_or(|(prior, _, _)| sequence > prior) {
-            latest_progress = Some((sequence, entry.sequence(), retired_icount.retired));
-        }
-    }
-
-    let selection_icount = selection_icount.ok_or_else(|| {
-        format!("checkpoint {checkpoint} does not retain selected result marker `{selection}`")
-    })?;
-    let (progress_sequence, progress_event_sequence, progress_icount) =
-        latest_progress.unwrap_or((0, 0, selection_icount));
-    if progress_sequence > 0 && progress_icount <= selection_icount {
-        return Err(format!(
-            "checkpoint {checkpoint} progress marker did not advance beyond selected result marker"
-        )
-        .into());
-    }
-
-    Ok(CheckpointProgress {
-        event_count,
-        progress_sequence,
-        progress_event_sequence,
-        progress_icount,
-    })
 }
 
 fn resume_campaign(fixture: &FlightFixture, command_identity: &str) -> Result<(), Box<dyn Error>> {

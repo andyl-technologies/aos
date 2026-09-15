@@ -67,8 +67,8 @@
         needle = "fn minimization_candidate_key";
       }
       {
-        label = "shortest-first candidate generator";
-        needle = "fn collect_minimization_candidates_for_len";
+        label = "deterministic minimization candidate generator";
+        needle = "pub(super) fn minimization_candidates(";
       }
       {
         label = "schedule constructor";

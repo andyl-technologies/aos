@@ -8,11 +8,11 @@ use std::error::Error;
 
 use crucible::{
     ChoiceTag, Configuration, ContentHash, DebugAttachRequest, DebugReadOnlyInspectionKind,
-    DebugReadOnlyInspectionRequest, Decision, EngineError, EventClass, Icount, NodeId,
-    NodeTemplate, OverrideDecision, ReadyPoint, RngDecision, RngStreamId,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    SchedulingPoint, TemporalGraph, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
-    bake, compare_event_log_determinism, event_log_causal_projection, try_step,
+    DebugReadOnlyInspectionRequest, Decision, EngineError, Icount, NodeId, NodeTemplate,
+    OverrideDecision, ReadyPoint, RngDecision, RngStreamId, SchedulerEvaluationBoundaryKind,
+    SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulingPoint,
+    TemporalGraph, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode, bake,
+    compare_event_log_determinism, event_log_causal_projection, try_step,
 };
 
 #[test]
@@ -100,8 +100,10 @@ fn debug_read_only_inspection_preserves_causal_log_and_virtual_time() -> Result<
         report
             .observational_entries
             .iter()
-            .all(|entry| entry.class() == EventClass::Observational
-                && entry.event_payload().kind() == "diagnostic")
+            .all(
+                |entry| entry.class() == SchedulerEventLogClass::Observational
+                    && entry.event_payload().kind() == "diagnostic"
+            )
     );
     assert!(
         report

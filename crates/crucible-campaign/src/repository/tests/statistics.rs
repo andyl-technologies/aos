@@ -297,19 +297,23 @@ fn statistical_policy_with_seed(
     retention: RetentionPolicy,
 ) -> CampaignPolicy {
     CampaignPolicy::new(
-        base.scenario(),
-        campaign_seed,
-        CampaignMode::Statistical,
-        ExplorerPolicy::Exhaustive {
-            maximum_cardinality: 16,
-        },
-        base.choice_policies().clone(),
-        base.objectives().clone(),
-        base.guidance().clone(),
-        base.stop_conditions().clone(),
-        base.fairness(),
-        retention,
-        base.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base.scenario(),
+            campaign_seed,
+            CampaignMode::Statistical,
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality: 16,
+            },
+        ),
+        CampaignPolicy::rules(
+            base.choice_policies().clone(),
+            base.objectives().clone(),
+            base.guidance().clone(),
+            base.stop_conditions().clone(),
+            base.fairness(),
+            retention,
+            base.admits_scenario_defaults(),
+        ),
     )
     .expect("statistical policy")
     .with_statistical_sampling_design(design)
@@ -406,7 +410,9 @@ fn publish_observation_for_attempt_with(
         )
         .expect("publish statistical child");
     let measurements = repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
+        .publish_measurement_set(
+            &MeasurementSet::test_evaluation(b"empty", BTreeSet::new()).expect("measurements"),
+        )
         .expect("publish measurements");
     let properties = repository
         .publish_property_verdict_set(
@@ -420,13 +426,15 @@ fn publish_observation_for_attempt_with(
         .expect("publish coverage");
     let observation = Observation::new(
         attempt.id().expect("statistical attempt ID"),
-        child,
-        child_content,
-        path.id().expect("statistical path ID"),
-        stop,
-        measurements,
-        properties,
-        coverage,
+        Observation::outcome(
+            child,
+            child_content,
+            path.id().expect("statistical path ID"),
+            stop,
+            measurements,
+            properties,
+            coverage,
+        ),
         discovered_choices,
     )
     .expect("statistical observation");
@@ -525,6 +533,7 @@ fn statistical_policy_identity_is_immutable_for_live_and_cold_activation() {
         changed_id,
         roots,
         CampaignFactId::from_content_id(control_content).expect("control fact ID"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged statistical policy successor");
     let forged_content = repository
@@ -539,7 +548,7 @@ fn statistical_policy_identity_is_immutable_for_live_and_cold_activation() {
 }
 
 #[test]
-fn statistical_design_requires_static_exhaustive_policy_and_legacy_reports_fail_closed() {
+fn statistical_design_requires_static_exhaustive_policy_and_unconfigured_reports_fail_closed() {
     let (repository, lineage, base) = fixture();
     let design = one_draw_design(&repository, &lineage);
     for explorer in [
@@ -553,17 +562,21 @@ fn statistical_design_requires_static_exhaustive_policy_and_legacy_reports_fail_
         },
     ] {
         let adaptive = CampaignPolicy::new(
-            base.scenario(),
-            base.campaign_seed(),
-            CampaignMode::Statistical,
-            explorer,
-            base.choice_policies().clone(),
-            base.objectives().clone(),
-            base.guidance().clone(),
-            base.stop_conditions().clone(),
-            base.fairness(),
-            base.retention(),
-            base.admits_scenario_defaults(),
+            CampaignPolicy::identity(
+                base.scenario(),
+                base.campaign_seed(),
+                CampaignMode::Statistical,
+                explorer,
+            ),
+            CampaignPolicy::rules(
+                base.choice_policies().clone(),
+                base.objectives().clone(),
+                base.guidance().clone(),
+                base.stop_conditions().clone(),
+                base.fairness(),
+                base.retention(),
+                base.admits_scenario_defaults(),
+            ),
         )
         .expect("adaptive statistical policy without a sampling design");
         assert!(matches!(
@@ -574,34 +587,40 @@ fn statistical_design_requires_static_exhaustive_policy_and_legacy_reports_fail_
         ));
     }
 
-    let legacy = CampaignPolicy::new(
-        base.scenario(),
-        base.campaign_seed(),
-        CampaignMode::Statistical,
-        ExplorerPolicy::Exhaustive {
-            maximum_cardinality: 16,
-        },
-        base.choice_policies().clone(),
-        base.objectives().clone(),
-        base.guidance().clone(),
-        base.stop_conditions().clone(),
-        base.fairness(),
-        base.retention(),
-        base.admits_scenario_defaults(),
+    let unconfigured = CampaignPolicy::new(
+        CampaignPolicy::identity(
+            base.scenario(),
+            base.campaign_seed(),
+            CampaignMode::Statistical,
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality: 16,
+            },
+        ),
+        CampaignPolicy::rules(
+            base.choice_policies().clone(),
+            base.objectives().clone(),
+            base.guidance().clone(),
+            base.stop_conditions().clone(),
+            base.fairness(),
+            base.retention(),
+            base.admits_scenario_defaults(),
+        ),
     )
-    .expect("legacy statistical policy");
-    assert!(legacy.statistical_sampling_design().is_none());
+    .expect("unconfigured statistical policy");
+    assert!(unconfigured.statistical_sampling_design().is_none());
     let genesis = repository
         .create(
-            "legacy-statistical-report",
+            "unconfigured-statistical-report",
             &lineage,
-            &legacy,
+            &unconfigured,
             &BTreeMap::new(),
         )
-        .expect("create legacy statistical campaign");
+        .expect("create unconfigured statistical campaign");
     assert!(matches!(
-        repository
-            .project_statistical_estimate("legacy-statistical-report", genesis.snapshot_id(),),
+        repository.project_statistical_estimate(
+            "unconfigured-statistical-report",
+            genesis.snapshot_id(),
+        ),
         Err(CampaignRepositoryError::Integrity {
             reason: "statistical-report-policy-lacks-design"
         })
@@ -806,7 +825,7 @@ fn two_edge_statistical_flight_reports_the_full_unequal_probability_product() {
     let leaf_proposal = repository
         .load_proposal(issued_proposals[0])
         .expect("load leaf statistical proposal");
-    let root_segments = root_path.segments().expect("root path segments");
+    let root_segments = root_path.segments();
     let (leaf_path, leaf_attempt) = statistical_attempt(
         repository.as_ref(),
         &leaf_request,
@@ -896,16 +915,18 @@ fn two_edge_statistical_flight_reports_the_full_unequal_probability_product() {
     assert!(observation.produced_selections().is_empty());
     let corrupted_observation = Observation::new(
         observation.attempt(),
-        ConfigurationId::from_hash(CampaignHash::derive(
-            "test.corrupted-statistical-observation-child",
-            b"child",
-        )),
-        observation.child_content(),
-        observation.path(),
-        observation.stop().clone(),
-        observation.measurements(),
-        observation.properties(),
-        observation.coverage(),
+        Observation::outcome(
+            ConfigurationId::from_hash(CampaignHash::derive(
+                "test.corrupted-statistical-observation-child",
+                b"child",
+            )),
+            observation.child_content(),
+            observation.path(),
+            observation.stop().clone(),
+            observation.measurements(),
+            observation.properties(),
+            observation.coverage(),
+        ),
         observation.discovered_choices().clone(),
     )
     .expect("structurally valid corrupted observation");
@@ -1394,10 +1415,12 @@ fn duplicate_draws_reuse_one_observation_without_losing_sampling_multiplicity() 
         CampaignHash::derive("test.statistical-intervention", b"duplicate-draw"),
     ));
     let operator_request = BranchRequest::new(
-        first_request.branch_point(),
-        first_request.parent(),
-        first_request.opportunity(),
-        first_request.domain(),
+        BranchRequest::identity(
+            first_request.branch_point(),
+            first_request.parent(),
+            first_request.opportunity(),
+            first_request.domain(),
+        ),
         CandidateSource::finite(BTreeSet::from([
             ChoiceValue::Boolean(false),
             ChoiceValue::Boolean(true),
@@ -1433,6 +1456,7 @@ fn duplicate_draws_reuse_one_observation_without_losing_sampling_multiplicity() 
             cause: operator_cause,
             admission_ordinal,
         },
+        policy.id().expect("statistical policy ID"),
     );
     let intervention_content = repository
         .put_attempt_admission(&intervention_basis)
@@ -1456,6 +1480,7 @@ fn duplicate_draws_reuse_one_observation_without_losing_sampling_multiplicity() 
         loaded.snapshot.active_policy(),
         forged_roots,
         loaded.snapshot.transition().expect("head transition"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged intervention snapshot");
     let forged_loaded = LoadedSnapshot {
@@ -1475,77 +1500,4 @@ fn duplicate_draws_reuse_one_observation_without_losing_sampling_multiplicity() 
     );
 }
 
-#[test]
-fn ordinary_and_self_normalized_event_estimates_keep_distinct_denominators() {
-    let observation_in =
-        ObservationId::from_content_id(content_id(ObjectKind::Observation, 1, "event-in"))
-            .expect("event-in observation ID");
-    let observation_out =
-        ObservationId::from_content_id(content_id(ObjectKind::Observation, 1, "event-out"))
-            .expect("event-out observation ID");
-    let endpoint = |coordinate, observation, weight| {
-        crate::StatisticalEndpointEstimate::new(
-            coordinate,
-            ProposalId::from_content_id(content_id(
-                ObjectKind::CampaignFact,
-                1,
-                &format!("proposal-{coordinate}"),
-            ))
-            .expect("proposal ID"),
-            AttemptId::from_content_id(content_id(
-                ObjectKind::CampaignFact,
-                1,
-                &format!("attempt-{coordinate}"),
-            ))
-            .expect("attempt ID"),
-            observation,
-            BranchPathId::from_content_id(content_id(
-                ObjectKind::CampaignFact,
-                2,
-                &format!("path-{coordinate}"),
-            ))
-            .expect("path ID"),
-            weight,
-            crate::StatisticalRational::new(1, 1).expect("proposal probability"),
-            weight,
-        )
-    };
-    let report = crate::StatisticalEstimateReport::new(
-        CampaignSnapshotId::from_content_id(content_id(
-            ObjectKind::CampaignSnapshot,
-            2,
-            "snapshot",
-        ))
-        .expect("snapshot ID"),
-        CampaignPolicyId::from_content_id(content_id(ObjectKind::Policy, 3, "policy"))
-            .expect("policy ID"),
-        vec![
-            endpoint(
-                0,
-                observation_in,
-                crate::StatisticalRational::new(2, 1).expect("weight two"),
-            ),
-            endpoint(
-                1,
-                observation_out,
-                crate::StatisticalRational::new(1, 1).expect("weight one"),
-            ),
-        ],
-        crate::StatisticalWeightDiagnostics::new(
-            crate::StatisticalRational::new(2, 3).expect("concentration"),
-            crate::StatisticalRational::new(9, 5).expect("ESS"),
-        ),
-    );
-    let event = BTreeSet::from([observation_in]);
-
-    assert_eq!(
-        report.estimate_event(&event).expect("ordinary estimate"),
-        crate::StatisticalRational::new(1, 1).expect("ordinary expected")
-    );
-    assert_eq!(
-        report
-            .estimate_event_self_normalized(&event)
-            .expect("self-normalized estimate"),
-        crate::StatisticalRational::new(2, 3).expect("self-normalized expected")
-    );
-}
+mod estimators;

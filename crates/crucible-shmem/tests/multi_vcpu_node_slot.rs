@@ -20,7 +20,7 @@ const GENERATED_HEADER: &str = include_str!("../include/crucible_shmem_abi.h");
 
 #[test]
 fn multi_vcpu_count_does_not_change_region_shape_or_abi_version() {
-    assert_eq!(ABI_VERSION, 21);
+    assert_eq!(ABI_VERSION, 24);
 
     let region_layout = layout(RegionConfig::new(2, 8, 4));
     assert_eq!(region_layout.node_count, MAX_NODES as u32);
@@ -115,13 +115,13 @@ fn generated_c_header_keeps_node_slot_node_scoped() {
         GENERATED_HEADER
             .contains("typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_node_slot")
     );
-    assert!(GENERATED_HEADER.contains("CRUCIBLE_SHMEM_NODE_SLOT_SIZE 128u"));
+    assert!(GENERATED_HEADER.contains("CRUCIBLE_SHMEM_NODE_SLOT_SIZE 256u"));
     assert!(GENERATED_HEADER.contains("CRUCIBLE_SHMEM_NODE_SLOT_CURRENT_ICOUNT_OFFSET 0u"));
     assert!(GENERATED_HEADER.contains("CRUCIBLE_SHMEM_NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET 16u"));
     assert!(GENERATED_HEADER.contains("CRUCIBLE_SHMEM_NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET 24u"));
     assert!(GENERATED_HEADER.contains("CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET 38u"));
     assert!(GENERATED_HEADER.contains("CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET 44u"));
-    assert_eq!(NODE_SLOT_SIZE, 128);
+    assert_eq!(NODE_SLOT_SIZE, 256);
     assert_eq!(NODE_SLOT_CURRENT_ICOUNT_OFFSET, 0);
     assert_eq!(NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET, 16);
     assert_eq!(NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, 24);

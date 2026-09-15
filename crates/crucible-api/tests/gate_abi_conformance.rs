@@ -21,42 +21,45 @@ fn rpc_abi_conformance_runs_named_checks() {
 }
 
 #[test]
-fn rpc_protocol_version_is_explicit_and_rejects_major_mismatch() {
+fn rpc_protocol_version_is_exact_and_rejects_all_drift() {
     assert_abi_version_field();
 }
 
 fn assert_abi_version_field() {
-    assert_eq!(RPC_PROTOCOL_MAJOR, 5);
-    assert_eq!(RPC_PROTOCOL_MINOR, 1);
+    assert_eq!(RPC_PROTOCOL_MAJOR, 6);
+    assert_eq!(RPC_PROTOCOL_MINOR, 0);
     assert_eq!(RPC_PROTOCOL_PATCH, 0);
-    assert_eq!(RPC_PROTOCOL_BUILD, "crucible-rpc-abi-v5");
+    assert_eq!(RPC_PROTOCOL_BUILD, "crucible-rpc-abi-v6");
     assert_eq!(RPC_PROTOCOL_VERSION, GOLDEN_VECTOR_RPC_PROTOCOL_VERSION);
     assert!(GOLDEN_VECTOR_RPC_REGENERATION_RULE.contains("RPC_PROTOCOL_VERSION"));
 
-    let compatible_minor = ProtocolVersion {
-        major: RPC_PROTOCOL_MAJOR,
-        minor: RPC_PROTOCOL_MINOR + 1,
-        patch: RPC_PROTOCOL_PATCH,
-        build: RPC_PROTOCOL_BUILD,
-    };
-    assert_eq!(
-        negotiate_rpc_protocol(compatible_minor),
-        Ok(RPC_PROTOCOL_VERSION)
-    );
-
-    let incompatible_major = ProtocolVersion {
-        major: RPC_PROTOCOL_MAJOR + 1,
-        minor: RPC_PROTOCOL_MINOR,
-        patch: RPC_PROTOCOL_PATCH,
-        build: RPC_PROTOCOL_BUILD,
-    };
-    assert_eq!(
-        negotiate_rpc_protocol(incompatible_major),
-        Err(RpcAbiError::MajorVersionMismatch {
-            expected: RPC_PROTOCOL_MAJOR,
-            actual: RPC_PROTOCOL_MAJOR + 1,
-        })
-    );
+    let drifted_versions = [
+        ProtocolVersion {
+            major: RPC_PROTOCOL_MAJOR + 1,
+            ..RPC_PROTOCOL_VERSION
+        },
+        ProtocolVersion {
+            minor: RPC_PROTOCOL_MINOR + 1,
+            ..RPC_PROTOCOL_VERSION
+        },
+        ProtocolVersion {
+            patch: RPC_PROTOCOL_PATCH + 1,
+            ..RPC_PROTOCOL_VERSION
+        },
+        ProtocolVersion {
+            build: "crucible-rpc-abi-v6-drifted",
+            ..RPC_PROTOCOL_VERSION
+        },
+    ];
+    for drifted in drifted_versions {
+        assert_eq!(
+            negotiate_rpc_protocol(drifted),
+            Err(RpcAbiError::ExactVersionMismatch {
+                expected: RPC_PROTOCOL_VERSION,
+                actual: drifted,
+            })
+        );
+    }
 }
 
 #[test]
@@ -183,19 +186,19 @@ fn rpc_golden_vectors_freeze_literal_wire_bytes() {
 fn assert_structure_aware_fuzz_corpus() {
     assert_vector_bytes(
         "hello-request",
-        b"crucible.rpc/hello-request\nversion=5.1.0+crucible-rpc-abi-v5\nclient=crucible-api-golden-client\n",
+        b"crucible.rpc/hello-request\nversion=6.0.0+crucible-rpc-abi-v6\nclient=crucible-api-golden-client\n",
     );
     assert_vector_bytes(
         "hello-response",
-        b"crucible.rpc/hello-response\nversion=5.1.0+crucible-rpc-abi-v5\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.event.*\n",
+        b"crucible.rpc/hello-response\nversion=6.0.0+crucible-rpc-abi-v6\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.event.*\n",
     );
     assert_vector_bytes(
         "attached",
-        b"crucible.rpc/attached\nversion=5.1.0+crucible-rpc-abi-v5\nsession-id=42\nsession-epoch=7\nmode=control\n",
+        b"crucible.rpc/attached\nversion=6.0.0+crucible-rpc-abi-v6\nsession-id=42\nsession-epoch=7\nmode=control\n",
     );
     assert_vector_bytes(
         "attached-with-reproduction",
-        b"crucible.rpc/attached-with-reproduction\nversion=5.1.0+crucible-rpc-abi-v5\nsession-id=42\nsession-epoch=7\nmode=control\nreproduction-sequence=1\nreproduction-command-kind=crucible.cmd.pause\nreproduction-command-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nreproduction-scheduler-control=none\n",
+        b"crucible.rpc/attached-with-reproduction\nversion=6.0.0+crucible-rpc-abi-v6\nsession-id=42\nsession-epoch=7\nmode=control\nreproduction-sequence=1\nreproduction-command-kind=crucible.cmd.pause\nreproduction-command-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nreproduction-scheduler-control=none\n",
     );
     assert_vector_bytes(
         "get-reproduction-request",

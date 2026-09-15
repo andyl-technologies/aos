@@ -307,7 +307,7 @@ Inspect a retained run in this order:
 5. application evidence and guest-visible result;
 6. checkpoint dependency closure and final fingerprint.
 
-The [reproduction guide](reproduction.md) explains save, resume, fork, and both
+The [reproduction guide](reproduction.md) explains save, resume, and both
 replay modes. The [exploration guide](exploration.md) explains bounded search
 and finding minimization. Use the [exhaustive reference](reference.md) for every
 accepted source, operator, mapping, target, phase, effect, and nested field.

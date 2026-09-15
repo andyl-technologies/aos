@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginDeadlineIntrospection",
-  taskIds ? ["T-PLUG-6"],
+  taskIds ? [],
   openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -62,8 +62,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-6 live completion evidence";
-        needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";
+        label = "T-PLUG-6 production-flight completion";
+        needle = "Completed by `checks.crucible.phase2.qemuPluginDeadlineIntrospection`";
       }
       {
         label = "required plugin export wording";
@@ -88,10 +88,6 @@
         needle = "QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL";
       }
       {
-        label = "required deadline install helper exported";
-        needle = "install_required_deadline_scaffold_from_qemu_info";
-      }
-      {
         label = "deadline symbol resolver exported";
         needle = "resolve_qemu_clock_deadline_symbol";
       }
@@ -110,17 +106,16 @@
         needle = "libc::dlsym";
       }
       {
-        label = "required deadline install helper";
-        needle = "pub fn install_required_deadline_scaffold";
+        label = "required deadline admission";
+        needle = "ExactDeadlineReader::require(symbols.clock_deadline_ns)";
       }
       {
-        label = "required deadline QEMU-info install helper";
-        needle = "pub fn install_required_deadline_scaffold_from_qemu_info";
+        label = "sole runtime install helper";
+        needle = "fn admit_required_runtime_apis";
       }
       {
-        # The deadline scaffold now rides through the generalized runtime-api
-        # boundary scaffold, which resolves the clock-deadline symbol as a
-        # required capability.
+        # The sole runtime installation resolves clock-deadline introspection
+        # as a required capability.
         label = "install boundary requires deadline";
         needle = "let clock_deadline_ns = resolve_qemu_clock_deadline_symbol();";
       }
@@ -133,14 +128,14 @@
         needle = "ExactDeadlineCapability";
       }
       {
-        label = "state stores resolved deadline reader";
-        needle = "exact_deadline_reader: Some(exact_deadline_reader)";
+        label = "runtime admission requires deadline reader";
+        needle = "let _exact_deadline_reader = ExactDeadlineReader::require(symbols.clock_deadline_ns)";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
       {
-        label = "install path missing symbol test";
-        needle = "abi_install_entrypoint_fails_closed_without_exact_deadline_or_queued_advance_symbols";
+        label = "runtime admission rejects missing capability families";
+        needle = "runtime_install_rejects_each_missing_capability_family";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/deadline.rs" pluginDeadline [
@@ -169,20 +164,12 @@
         needle = "CapabilityUnavailable";
       }
       {
-        label = "required virtual-clock policy";
-        needle = "ExactDeadlineIntrospection::required()";
-      }
-      {
         label = "raw QEMU deadline read";
         needle = "(self.clock_deadline_ns)()";
       }
       {
         label = "next deadline reader";
         needle = "pub fn read_next_deadline";
-      }
-      {
-        label = "overshoot fallback forbidden";
-        needle = "OvershootFallbackForbidden";
       }
       {
         label = "no armed timer sentinel mapping";

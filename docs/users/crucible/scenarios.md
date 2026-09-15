@@ -116,8 +116,8 @@ builtin:partition-recovery.scn
 builtin:crash-restart.scn
 ```
 
-`fault-campaign.fam`, `fault-campaign`, and `builtin:fault-campaign` identify
-the built-in scenario family where a command accepts a family.
+`fault-campaign.fam` identifies the built-in scenario family where a command
+accepts a family. Other spellings are rejected.
 
 ## Packaged guest assets
 

@@ -9,6 +9,7 @@ use crate::{
     PuctPolicy, RetentionPolicy, StopOutcome,
 };
 use crucible_cas::content_store::{ContentId, ObjectKind};
+use std::collections::BTreeSet;
 
 trait TestContentId: Sized {
     fn from_test_content(value: ContentId) -> Result<Self, CampaignCodecError>;
@@ -33,8 +34,14 @@ test_content_id!(
     crate::ObservationId,
 );
 
-fn typed_content<T: TestContentId>(kind: ObjectKind, _schema: &str, label: &str) -> T {
-    T::from_test_content(ContentId::for_bytes(kind, 1, label.as_bytes())).expect("typed content ID")
+fn typed_content<T: TestContentId>(kind: ObjectKind, schema: &str, label: &str) -> T {
+    let version = if schema == "crucible.campaign.branch-path" {
+        2
+    } else {
+        1
+    };
+    T::from_test_content(ContentId::for_bytes(kind, version, label.as_bytes()))
+        .expect("typed content ID")
 }
 
 fn policy(objectives: &[(&str, ObjectiveGoal, u64)]) -> CampaignPolicy {
@@ -48,20 +55,24 @@ fn policy(objectives: &[(&str, ObjectiveGoal, u64)]) -> CampaignPolicy {
         })
         .collect();
     CampaignPolicy::new(
-        crate::ScenarioDefId::from_hash(crate::CampaignHash::derive("test", b"scenario")),
-        CampaignSeed::from_bytes([0x5a; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            puct: PuctPolicy::new(1_000_000, 0, 0),
-            widening: None,
-        },
-        BTreeMap::new(),
-        objectives,
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness"),
-        RetentionPolicy::new(true, 64, true, true),
-        false,
+        CampaignPolicy::identity(
+            crate::ScenarioDefId::from_hash(crate::CampaignHash::derive("test", b"scenario")),
+            CampaignSeed::from_bytes([0x5a; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                puct: PuctPolicy::new(1_000_000, 0, 0),
+                widening: None,
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            objectives,
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 64, true, true),
+            false,
+        ),
     )
     .expect("policy")
 }
@@ -74,7 +85,8 @@ fn observation_basis_with_stop(
     label: &str,
     stop: StopOutcome,
 ) -> (Observation, PropertyVerdictSet) {
-    let measurements = MeasurementSet::new(BTreeMap::new()).expect("measurements");
+    let measurements =
+        MeasurementSet::test_evaluation(b"empty", BTreeSet::new()).expect("measurements");
     let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
     let coverage = CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage");
     let observation = Observation::new(
@@ -83,24 +95,26 @@ fn observation_basis_with_stop(
             "crucible.campaign.attempt",
             &format!("attempt-{label}"),
         ),
-        ConfigurationId::from_hash(crate::CampaignHash::derive(
-            "configuration",
-            label.as_bytes(),
-        )),
-        typed_content(
-            ObjectKind::Configuration,
-            "crucible.campaign.configuration-artifact",
-            &format!("configuration-{label}"),
+        Observation::outcome(
+            ConfigurationId::from_hash(crate::CampaignHash::derive(
+                "configuration",
+                label.as_bytes(),
+            )),
+            typed_content(
+                ObjectKind::Configuration,
+                "crucible.campaign.configuration-artifact",
+                &format!("configuration-{label}"),
+            ),
+            typed_content(
+                ObjectKind::CampaignFact,
+                "crucible.campaign.branch-path",
+                &format!("path-{label}"),
+            ),
+            stop,
+            measurements.id().expect("measurement ID"),
+            properties.id().expect("property ID"),
+            coverage.id().expect("coverage ID"),
         ),
-        typed_content(
-            ObjectKind::CampaignFact,
-            "crucible.campaign.branch-path",
-            &format!("path-{label}"),
-        ),
-        stop,
-        measurements.id().expect("measurement ID"),
-        properties.id().expect("property ID"),
-        coverage.id().expect("coverage ID"),
         BTreeSet::new(),
     )
     .expect("observation");
@@ -305,7 +319,8 @@ fn missing_measurements_and_property_failures_are_explicit_filters() {
         ("recovery.latency", ObjectiveGoal::Minimize, 1_000_000),
         ("recovery.loss", ObjectiveGoal::Minimize, 1_000_000),
     ]);
-    let measurements = MeasurementSet::new(BTreeMap::new()).expect("measurements");
+    let measurements =
+        MeasurementSet::test_evaluation(b"empty", BTreeSet::new()).expect("measurements");
     let properties = PropertyVerdictSet::new(BTreeMap::from([(
         "safety".to_owned(),
         crate::PropertyEvidence::new(PropertyVerdict::Failed, BTreeSet::new()).expect("property"),
@@ -318,21 +333,23 @@ fn missing_measurements_and_property_failures_are_explicit_filters() {
             "crucible.campaign.attempt",
             "filtered",
         ),
-        ConfigurationId::from_hash(crate::CampaignHash::derive("configuration", b"filtered")),
-        typed_content(
-            ObjectKind::Configuration,
-            "crucible.campaign.configuration-artifact",
-            "filtered",
+        Observation::outcome(
+            ConfigurationId::from_hash(crate::CampaignHash::derive("configuration", b"filtered")),
+            typed_content(
+                ObjectKind::Configuration,
+                "crucible.campaign.configuration-artifact",
+                "filtered",
+            ),
+            typed_content(
+                ObjectKind::CampaignFact,
+                "crucible.campaign.branch-path",
+                "filtered",
+            ),
+            StopOutcome::TerminalSuccess,
+            measurements.id().expect("measurement ID"),
+            properties.id().expect("property ID"),
+            coverage.id().expect("coverage ID"),
         ),
-        typed_content(
-            ObjectKind::CampaignFact,
-            "crucible.campaign.branch-path",
-            "filtered",
-        ),
-        StopOutcome::TerminalSuccess,
-        measurements.id().expect("measurement ID"),
-        properties.id().expect("property ID"),
-        coverage.id().expect("coverage ID"),
         BTreeSet::new(),
     )
     .expect("observation");

@@ -19,19 +19,20 @@ use thiserror::Error;
 use crate::CampaignViewId;
 use crate::{
     ActiveAttemptPolicy, AdmissionOrdinal, Attempt, AttemptAdmission, AttemptAdmissionId,
-    AttemptAdmissionRole, AttemptId, AttemptStart, AttemptStartMode, BranchPath, BranchPathId,
-    BranchRequest, BranchRequestCause, BranchRequestId, CampaignCodecError, CampaignControlAction,
-    CampaignDerivation, CampaignFact, CampaignFactId, CampaignHash, CampaignLineage,
-    CampaignLineageId, CampaignMode, CampaignPlanningView, CampaignPolicy, CampaignPolicyId,
-    CampaignSnapshot, CampaignSnapshotId, CampaignState, CampaignStoreError,
-    CandidateGeneratorAlgorithm, CandidateGeneratorSpec, CandidateGeneratorSpecId, CandidateSource,
-    CanonicalBeamPlanner, CanonicalFrontierPlanner, CanonicalPuctPlanner, CanonicalSearchPlanner,
-    ChoiceDomain, ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity,
-    ChoiceOpportunityId, ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId,
-    ContinuationProjection, ControlRequest, CoverageProjection, CoverageProjectionId, DaemonEpoch,
-    DebuggerAuthorityKey, DebuggerSubmission, DiscoveryRequest, ExecutorCompatibilityProfile,
-    ExecutorRejection, ExpansionCredit, ExpansionState, ExpansionStateId, Finding,
-    FindingCandidateBundle, FindingCandidateBundleId, FindingCandidateOccurrenceSet, FindingId,
+    AttemptAdmissionRole, AttemptId, AttemptRetentionPolicyBasis, AttemptStart, AttemptStartMode,
+    BranchPath, BranchPathId, BranchRequest, BranchRequestCause, BranchRequestId,
+    CampaignCodecError, CampaignControlAction, CampaignDerivation, CampaignFact, CampaignFactId,
+    CampaignHash, CampaignLineage, CampaignLineageId, CampaignMode, CampaignPlanningView,
+    CampaignPolicy, CampaignPolicyId, CampaignSnapshot, CampaignSnapshotId, CampaignState,
+    CampaignStoreError, CandidateGeneratorAlgorithm, CandidateGeneratorSpec,
+    CandidateGeneratorSpecId, CandidateSource, CanonicalBeamPlanner, CanonicalFrontierPlanner,
+    CanonicalPuctPlanner, CanonicalSearchPlanner, ChoiceDomain, ChoiceDomainId, ChoiceGroup,
+    ChoiceGroupId, ChoiceOpportunity, ChoiceOpportunityId, ConfigurationArtifact,
+    ConfigurationArtifactId, ConfigurationId, ContinuationProjection, ControlRequest,
+    CoverageProjection, CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey,
+    DebuggerSubmission, DiscoveryRequest, ExecutorCompatibilityProfile, ExecutorRejection,
+    ExpansionCredit, ExpansionState, ExpansionStateId, Finding, FindingCandidateBundle,
+    FindingCandidateBundleId, FindingCandidateOccurrenceSet, FindingId,
     FindingMinimizationEvidence, FindingOccurrenceSet, FindingTriageReplayEvidence,
     FindingTriageReplayEvidenceId, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
     GetAttemptExecutionResponse, MeasurementSet, MeasurementSetId, MerkleMap, MerkleMapLookupProof,
@@ -56,7 +57,6 @@ const MAX_SNAPSHOT_ANCESTRY: usize = 1_000_001;
 /// Maximum unique object-position work charged to one authenticated closure.
 pub const MAX_CAMPAIGN_CLOSURE_OBJECTS: usize = 64_000_000;
 const MAX_ISSUE_GENERATOR_VALIDATION_OBJECTS: usize = 1_000_000;
-const PLANNER_SCAN_STORAGE_PAGE_ITEMS: usize = 10_000;
 /// Maximum source positions served by one coordinator planner page.
 pub const MAX_PLANNER_SCAN_PAGE_ITEMS: u32 = 10_000;
 const MAX_VALIDATED_HEADS: usize = 1_024;
@@ -228,8 +228,6 @@ pub struct BranchRequestResult {
     pub snapshot: CampaignSnapshot,
     /// Transition fact that binds the request and summary into `snapshot`.
     pub acceptance_fact: CampaignFact,
-    /// Whether the original transition durably recorded the summary.
-    pub summary_recorded: bool,
     /// Whether this call observed a previously committed request.
     pub replayed: bool,
 }
@@ -357,7 +355,7 @@ impl ChoiceDiscovery {
     ///
     /// Returns [`CampaignCodecError`] when the opportunity does not bind the
     /// exact declaration and domain.
-    pub fn from_shared(
+    fn from_shared(
         declaration: Arc<SelectableDeclaration>,
         domain: Arc<ChoiceDomain>,
         opportunity: ChoiceOpportunity,
@@ -480,6 +478,55 @@ impl ObservationCandidate {
         discovered_choices: Vec<ChoiceDiscovery>,
         observation: Observation,
     ) -> Result<Self, CampaignCodecError> {
+        Self::new_structural(
+            child,
+            measurements,
+            properties,
+            coverage,
+            discovered_choices,
+            observation,
+            false,
+        )
+    }
+
+    /// Reconstructs a candidate whose observation already names produced selections.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error under the same structural bounds as [`Self::new`], or
+    /// when the recorded selection bodies do not exactly match the observation.
+    pub fn from_recorded_parts(
+        child: ConfigurationArtifact,
+        measurements: MeasurementSet,
+        properties: PropertyVerdictSet,
+        coverage: CoverageProjection,
+        discovered_choices: Vec<ChoiceDiscovery>,
+        produced_selections: Vec<Selection>,
+        observation: Observation,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_structural(
+            child,
+            measurements,
+            properties,
+            coverage,
+            discovered_choices,
+            observation,
+            true,
+        )?
+        .attach_produced_selections(produced_selections, false)
+    }
+
+    // crucible-lint: allow rust-allow -- each authenticated observation component remains explicit at this structural boundary.
+    #[allow(clippy::too_many_arguments)]
+    fn new_structural(
+        child: ConfigurationArtifact,
+        measurements: MeasurementSet,
+        properties: PropertyVerdictSet,
+        coverage: CoverageProjection,
+        discovered_choices: Vec<ChoiceDiscovery>,
+        observation: Observation,
+        allow_recorded_selection_ids: bool,
+    ) -> Result<Self, CampaignCodecError> {
         if discovered_choices.len() > MAX_OBSERVATION_CHOICE_DISCOVERIES {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "observation candidate has too many discovered choices",
@@ -551,7 +598,7 @@ impl ObservationCandidate {
                 reason: "observation candidate choice bodies differ from observation IDs",
             });
         }
-        if !observation.produced_selections().is_empty() {
+        if !allow_recorded_selection_ids && !observation.produced_selections().is_empty() {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "observation candidate must carry produced selection bodies",
             });
@@ -577,8 +624,16 @@ impl ObservationCandidate {
     /// discovered opportunity and domain, for invalid provenance, or for
     /// choice material beyond the observation count or aggregate-byte bound.
     pub fn with_produced_selections(
+        self,
+        selections: Vec<Selection>,
+    ) -> Result<Self, CampaignCodecError> {
+        self.attach_produced_selections(selections, true)
+    }
+
+    fn attach_produced_selections(
         mut self,
         selections: Vec<Selection>,
+        attach_to_observation: bool,
     ) -> Result<Self, CampaignCodecError> {
         if !self.produced_selections.is_empty() {
             return Err(CampaignCodecError::InvalidValue {
@@ -638,7 +693,13 @@ impl ObservationCandidate {
                 });
             }
         }
-        self.observation = self.observation.with_produced_selections(selection_ids)?;
+        if attach_to_observation {
+            self.observation = self.observation.with_produced_selections(selection_ids)?;
+        } else if self.observation.produced_selections() != &selection_ids {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "produced selection bodies differ from observation IDs",
+            });
+        }
         self.produced_selections = selections;
         Ok(self)
     }
@@ -696,496 +757,9 @@ pub struct ResolvedSelection {
     domain: Arc<ChoiceDomain>,
 }
 
-/// Narrow immutable-record capability supplied to a local campaign executor.
-///
-/// This facade deliberately exposes no campaign head, mutable-ref, owner
-/// projection, or coordinator transaction methods. It can authenticate the
-/// records needed to execute one attempt and publish a content-addressed
-/// observation candidate for later coordinator admission.
-#[derive(Clone)]
-pub struct CampaignExecutorStore {
-    repository: Arc<CampaignRepository>,
-}
+mod executor;
 
-impl CampaignExecutorStore {
-    /// Creates a narrow executor capability over one campaign repository.
-    #[must_use]
-    pub const fn new(repository: Arc<CampaignRepository>) -> Self {
-        Self { repository }
-    }
-
-    /// Reauthenticates an operational execution scope during durable recovery.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a savepoint owner fact or its immutable attempt
-    /// closure is unavailable, corrupt, or inconsistent with the supplied key.
-    pub fn validate_execution_scope(
-        &self,
-        lineage: CampaignLineageId,
-        attempt: AttemptId,
-        start_mode: AttemptStartMode,
-    ) -> Result<(), CampaignRepositoryError> {
-        self.repository
-            .validate_executor_execution_scope(lineage, attempt, start_mode)
-    }
-
-    /// Loads and authenticates one campaign compatibility lineage.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the lineage is missing, corrupt, or inconsistent.
-    pub fn load_lineage(
-        &self,
-        id: CampaignLineageId,
-    ) -> Result<CampaignLineage, CampaignRepositoryError> {
-        self.repository.load_lineage(id)
-    }
-
-    /// Loads and authenticates one execution-model scenario artifact.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the artifact is missing, corrupt, or inconsistent.
-    pub fn load_scenario_artifact(
-        &self,
-        id: ScenarioArtifactId,
-    ) -> Result<ScenarioArtifact, CampaignRepositoryError> {
-        self.repository.load_scenario_artifact(id)
-    }
-
-    /// Loads and authenticates one semantic attempt closure.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the attempt or one of its references is missing,
-    /// corrupt, or inconsistent.
-    pub fn load_attempt(&self, id: AttemptId) -> Result<Attempt, CampaignRepositoryError> {
-        self.repository.load_attempt(id)
-    }
-
-    /// Loads one attempt and its complete authenticated continuation ancestry.
-    ///
-    /// Entries are returned newest first and share one bounded validation
-    /// cache, preserving linear work for long selected-savepoint histories.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when any attempt or referenced object is unavailable,
-    /// malformed, or semantically inconsistent.
-    pub fn load_attempt_origin_chain(
-        &self,
-        id: AttemptId,
-    ) -> Result<Vec<Attempt>, CampaignRepositoryError> {
-        self.repository.load_attempt_origin_chain(id)
-    }
-
-    /// Loads and authenticates one modeled observation closure.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the observation or one of its referenced records
-    /// is missing, corrupt, or inconsistent.
-    pub fn load_observation(
-        &self,
-        id: ObservationId,
-    ) -> Result<Observation, CampaignRepositoryError> {
-        self.repository.load_observation(id)
-    }
-
-    /// Loads and authenticates one semantic branch path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the path is missing, corrupt, or inconsistent.
-    pub fn load_branch_path(
-        &self,
-        id: BranchPathId,
-    ) -> Result<BranchPath, CampaignRepositoryError> {
-        self.repository.load_branch_path(id)
-    }
-
-    /// Loads and authenticates one exact configuration artifact.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the artifact is missing, corrupt, or inconsistent.
-    pub fn load_configuration_artifact(
-        &self,
-        id: ConfigurationArtifactId,
-    ) -> Result<ConfigurationArtifact, CampaignRepositoryError> {
-        self.repository.load_configuration_artifact(id)
-    }
-
-    /// Resolves one selection with its authenticated opportunity and domain.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when any exact selection reference is missing, corrupt,
-    /// or semantically inconsistent.
-    pub fn resolve_selection(
-        &self,
-        id: SelectionId,
-    ) -> Result<ResolvedSelection, CampaignRepositoryError> {
-        self.repository.resolve_selection(id)
-    }
-
-    /// Resolves a bounded batch of selections with shared authenticated dependencies.
-    ///
-    /// Repeated opportunities, declarations, and domains are decoded once. The
-    /// aggregate unique canonical record envelopes are bounded independently of
-    /// the number and ordering of selections.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the batch exceeds its record or byte bound, or
-    /// when any exact selection reference is missing, corrupt, or inconsistent.
-    pub fn resolve_selections(
-        &self,
-        ids: &[SelectionId],
-    ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
-        self.repository.resolve_selections(ids)
-    }
-
-    /// Resolves a bounded batch within a caller-supplied canonical byte limit.
-    ///
-    /// The limit covers every unique selection, opportunity, declaration, and
-    /// domain body decoded by the batch. It lets an executor reserve for the
-    /// decoded representation before repository resolution allocates it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignRepositoryError::SelectionResolutionBudgetExceeded`]
-    /// when the unique canonical closure exceeds `maximum_canonical_bytes`, or
-    /// the ordinary resolution error for missing, corrupt, or inconsistent
-    /// records.
-    pub fn resolve_selections_with_canonical_byte_limit(
-        &self,
-        ids: &[SelectionId],
-        maximum_canonical_bytes: usize,
-    ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
-        self.repository
-            .resolve_selections_with_canonical_byte_limit(ids, maximum_canonical_bytes)
-    }
-
-    /// Publishes a validated immutable observation candidate without advancing a campaign.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error before writing when the bundle or any already-published
-    /// dependency is missing, corrupt, oversized, or inconsistent. A storage
-    /// failure after publication starts may leave unreachable immutable data.
-    pub fn publish_observation_candidate(
-        &self,
-        candidate: &ObservationCandidate,
-    ) -> Result<ObservationId, CampaignRepositoryError> {
-        self.repository.publish_observation_candidate(candidate)
-    }
-
-    /// Publishes one executor-authenticated opaque evidence leaf.
-    ///
-    /// The caller supplies the exact content identity derived from independently
-    /// verified bytes. Only trace leaves are accepted, keeping this capability
-    /// narrower than arbitrary immutable-store access.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `expected` is not a trace identity, the bytes do
-    /// not derive that identity, or durable placement returns another identity.
-    pub fn publish_executor_trace_leaf(
-        &self,
-        expected: ContentId,
-        payload_schema: u32,
-        bytes: &[u8],
-    ) -> Result<ContentId, CampaignRepositoryError> {
-        if expected.kind() != ObjectKind::Trace
-            || ContentId::for_bytes(ObjectKind::Trace, payload_schema, bytes) != expected
-        {
-            return Err(integrity("executor-trace-leaf-identity-mismatch"));
-        }
-        let receipt = self
-            .repository
-            .blobs
-            .put_if_absent(expected, &BlobHandle::from_bytes(bytes.to_vec()))?;
-        if receipt.id != expected {
-            return Err(integrity("executor-trace-leaf-publication-mismatch"));
-        }
-        Ok(expected)
-    }
-
-    /// Reads one authenticated raw evidence leaf owned by a measurement set.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the measurement set does not name the leaf, the
-    /// leaf is not trace content, its declared size exceeds `max_bytes`, or the
-    /// backend cannot complete an authenticated read.
-    pub fn read_measurement_evidence_leaf(
-        &self,
-        measurements: MeasurementSetId,
-        evidence: ContentId,
-        max_bytes: u64,
-    ) -> Result<Vec<u8>, CampaignRepositoryError> {
-        let retained = self.repository.load_measurement_set(measurements)?;
-        let evaluation = retained
-            .evaluation()
-            .ok_or_else(|| integrity("measurement-set-has-no-verified-evaluation"))?;
-        if evidence.kind() != ObjectKind::Trace || !evaluation.evidence().contains(&evidence) {
-            return Err(integrity("measurement-evidence-leaf-is-not-owned"));
-        }
-
-        self.repository
-            .blobs
-            .read(evidence, None)?
-            .read_all(max_bytes)
-            .map_err(Into::into)
-    }
-
-    /// Loads and authenticates one bounded executor evidence leaf.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `expected` is not a trace identity, the object is
-    /// absent or corrupt, or its logical length exceeds `maximum_bytes`.
-    pub fn load_executor_trace_leaf(
-        &self,
-        expected: ContentId,
-        maximum_bytes: u64,
-    ) -> Result<Vec<u8>, CampaignRepositoryError> {
-        if expected.kind() != ObjectKind::Trace {
-            return Err(integrity("executor-trace-leaf-kind-mismatch"));
-        }
-        let bytes = self
-            .repository
-            .blobs
-            .read(expected, None)?
-            .read_all(maximum_bytes)?;
-        if !expected.authenticates(&bytes) {
-            return Err(integrity("executor-trace-leaf-content-mismatch"));
-        }
-        Ok(bytes)
-    }
-
-    /// Publishes one executor-verified replay choice domain.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the exact record cannot be stored and authenticated.
-    pub fn publish_executor_choice_domain(
-        &self,
-        domain: &ChoiceDomain,
-    ) -> Result<ChoiceDomainId, CampaignRepositoryError> {
-        self.repository.publish_choice_domain(domain)
-    }
-
-    /// Publishes one executor-verified replay selectable declaration.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the exact record cannot be stored and authenticated.
-    pub fn publish_executor_selectable(
-        &self,
-        selectable: &SelectableDeclaration,
-    ) -> Result<SelectableId, CampaignRepositoryError> {
-        self.repository.publish_selectable(selectable)
-    }
-
-    /// Publishes one executor-verified replay choice opportunity.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a dependency is absent or the exact record cannot
-    /// be stored and authenticated.
-    pub fn publish_executor_choice_opportunity(
-        &self,
-        opportunity: &ChoiceOpportunity,
-    ) -> Result<ChoiceOpportunityId, CampaignRepositoryError> {
-        self.repository.publish_choice_opportunity(opportunity)
-    }
-
-    /// Publishes one executor-verified replay selection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when its opportunity is absent or its exact value is invalid.
-    pub fn publish_executor_selection(
-        &self,
-        selection: &Selection,
-    ) -> Result<SelectionId, CampaignRepositoryError> {
-        self.repository.publish_selection(selection)
-    }
-
-    /// Publishes one executor-verified replay measurement set.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a transitive evidence dependency is absent or the
-    /// exact record cannot be stored and authenticated.
-    pub fn publish_executor_measurement_set(
-        &self,
-        value: &MeasurementSet,
-    ) -> Result<MeasurementSetId, CampaignRepositoryError> {
-        self.repository.publish_measurement_set(value)
-    }
-
-    /// Publishes one executor-verified replay property-verdict set.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a transitive evidence dependency is absent or the
-    /// exact record cannot be stored and authenticated.
-    pub fn publish_executor_property_verdict_set(
-        &self,
-        value: &PropertyVerdictSet,
-    ) -> Result<PropertyVerdictSetId, CampaignRepositoryError> {
-        self.repository.publish_property_verdict_set(value)
-    }
-
-    /// Publishes one executor-verified replay coverage projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a transitive evidence dependency is absent or the
-    /// exact record cannot be stored and authenticated.
-    pub fn publish_executor_coverage_projection(
-        &self,
-        value: &CoverageProjection,
-    ) -> Result<CoverageProjectionId, CampaignRepositoryError> {
-        self.repository.publish_coverage_projection(value)
-    }
-
-    /// Validates an observation candidate without writing any bundle member.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the bundle or an already-published dependency is
-    /// missing, corrupt, oversized, or inconsistent.
-    pub fn validate_observation_candidate(
-        &self,
-        candidate: &ObservationCandidate,
-    ) -> Result<(), CampaignRepositoryError> {
-        self.repository.validate_observation_candidate(candidate)
-    }
-
-    /// Validates a candidate whose exact trace bytes are owned by its caller.
-    ///
-    /// Owned leaves count as closure anchors during the no-write preflight only
-    /// after their kind, schema, content hash, uniqueness, and direct candidate
-    /// reference are checked. The executor must independently authenticate the
-    /// trace codec and semantics before invoking this capability.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when an owned leaf is duplicated, is not an exact
-    /// candidate trace dependency, disagrees with its bytes, or when the
-    /// remaining bundle and already-published dependencies are invalid.
-    pub fn validate_observation_candidate_with_owned_trace_leaf_bytes(
-        &self,
-        candidate: &ObservationCandidate,
-        owned_trace_leaves: &[(ContentId, u32, &[u8])],
-    ) -> Result<(), CampaignRepositoryError> {
-        let candidate_trace_dependencies = candidate
-            .measurements()
-            .content_children()
-            .into_iter()
-            .map(|(_, content)| content)
-            .filter(|content| content.kind() == ObjectKind::Trace)
-            .collect::<BTreeSet<_>>();
-        let mut owned = BTreeSet::new();
-        for (expected, payload_schema, bytes) in owned_trace_leaves {
-            if expected.kind() != ObjectKind::Trace
-                || ContentId::for_bytes(ObjectKind::Trace, *payload_schema, bytes) != *expected
-                || !candidate_trace_dependencies.contains(expected)
-            {
-                return Err(integrity("executor-owned-trace-leaf-mismatch"));
-            }
-            if !owned.insert(*expected) {
-                return Err(integrity("executor-owned-trace-leaf-duplicate"));
-            }
-        }
-        self.repository
-            .validate_observation_candidate_with_owned_evidence(candidate, &owned)
-    }
-
-    /// Publishes one executor-derived configuration artifact.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the scenario dependency is unavailable or the
-    /// exact configuration cannot be durably stored and authenticated.
-    pub fn publish_executor_configuration(
-        &self,
-        artifact: &ConfigurationArtifact,
-    ) -> Result<ConfigurationArtifactId, CampaignRepositoryError> {
-        self.repository.publish_configuration_artifact(
-            artifact.scenario(),
-            artifact.scenario_artifact(),
-            artifact.configuration(),
-            artifact.payload_schema(),
-            artifact.payload().to_vec(),
-        )
-    }
-
-    /// Publishes one executor-verified original or minimized reproduction.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the prepared reproduction or any dependency is
-    /// missing, corrupt, inconsistent, or unavailable for durable storage.
-    pub fn publish_executor_reproduction(
-        &self,
-        artifact: &ReproductionArtifact,
-    ) -> Result<ReproductionArtifactId, CampaignRepositoryError> {
-        match artifact.minimization() {
-            Some(minimization) => self.repository.publish_minimized_reproduction_artifact(
-                artifact.scenario(),
-                artifact.scenario_artifact(),
-                artifact.configuration(),
-                artifact.configuration_artifact(),
-                artifact.finding_fingerprint(),
-                artifact.payload_schema(),
-                artifact.payload().to_vec(),
-                minimization.clone(),
-            ),
-            None => self.repository.publish_reproduction_artifact(
-                artifact.scenario(),
-                artifact.scenario_artifact(),
-                artifact.configuration(),
-                artifact.configuration_artifact(),
-                artifact.finding_fingerprint(),
-                artifact.payload_schema(),
-                artifact.payload().to_vec(),
-            ),
-        }
-    }
-
-    /// Publishes one executor-prepared finding-candidate root.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when any exact descendant is unavailable or the bundle
-    /// fails repository authentication.
-    pub fn publish_executor_finding_candidate(
-        &self,
-        bundle: &FindingCandidateBundle,
-    ) -> Result<FindingCandidateBundleId, CampaignRepositoryError> {
-        self.repository.publish_finding_candidate_bundle(bundle)
-    }
-
-    /// Publishes one executor-prepared native finding replay record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the reproduction or observed-signature closure is
-    /// unavailable or inconsistent.
-    pub fn publish_executor_finding_triage_replay_evidence(
-        &self,
-        evidence: &FindingTriageReplayEvidence,
-    ) -> Result<FindingTriageReplayEvidenceId, CampaignRepositoryError> {
-        self.repository
-            .publish_finding_triage_replay_evidence(evidence)
-    }
-}
+pub use executor::CampaignExecutorStore;
 
 impl ResolvedSelection {
     /// Returns the authenticated recorded selection.
@@ -1420,12 +994,14 @@ mod supervisor;
 mod transactions;
 mod transfer;
 
-pub use budget::CampaignBudgetProjection;
-
 use attempt_closure::non_modeled_attempt_key;
+pub use budget::CampaignBudgetProjection;
 use finding::finding_occurrence_key;
 pub(crate) use finding::{finding_candidate_occurrence_key, finding_signature_key};
-pub use finding_candidate::AuthenticatedFindingCandidateIncorporation;
+pub use finding_candidate::{
+    AuthenticatedFindingCandidateIncorporation, AuthenticatedFindingExactCheckpoint,
+    FindingExactCheckpointAuthenticationError, FindingExactCheckpointAuthenticator,
+};
 
 pub use attempt_closure::NonModeledAttemptResult;
 pub use executor_driver::{

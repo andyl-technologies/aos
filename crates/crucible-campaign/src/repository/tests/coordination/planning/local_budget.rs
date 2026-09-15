@@ -25,10 +25,12 @@ fn edge(
 
 fn capped_request(request: &BranchRequest, values: BTreeSet<ChoiceValue>) -> BranchRequest {
     BranchRequest::new(
-        request.branch_point(),
-        request.parent(),
-        request.opportunity(),
-        request.domain(),
+        BranchRequest::identity(
+            request.branch_point(),
+            request.parent(),
+            request.opportunity(),
+            request.domain(),
+        ),
         CandidateSource::finite(values).expect("source"),
         request.cause(),
         BranchBudget::new(2, 1).expect("one new attempt"),
@@ -139,7 +141,6 @@ fn assert_local_projection(
         .expect("inputs");
     let input = &inputs[&position(capped)];
     let budget = input.budget.as_ref().expect("request budget");
-    assert_eq!(budget.remaining_request_attempts(), Some(0));
     assert!(!budget.request_can_issue());
     let snapshot = repository
         .read_snapshot(request.expected_snapshot().content_id())
@@ -157,53 +158,15 @@ fn assert_local_projection(
             .expect("indexed request allowance"),
         0
     );
-    let ledger = repository.parent_budget_ledger(&snapshot).expect("ledger");
-    let legacy = crate::CampaignBudgetLedger::from_accounted_totals(
-        ledger.granted_proposals(),
-        ledger.granted_attempts(),
-        ledger.spent_proposals(),
-        ledger.spent_attempts(),
-    );
-    let legacy_snapshot = snapshot
-        .snapshot
-        .clone()
-        .with_budget_ledger(repository.put_budget_ledger(legacy).expect("legacy ledger"));
-    let snapshot = LoadedSnapshot {
-        envelope: ObjectEnvelope::for_snapshot(&legacy_snapshot)
-            .expect("legacy projection envelope"),
-        snapshot: legacy_snapshot,
-    };
-    let mut work = 1;
-    assert_eq!(
-        repository
-            .remaining_request_attempts_before(
-                &snapshot,
-                capped.id().expect("request id"),
-                2,
-                1,
-                &mut work
-            )
-            .expect("one prior proposal"),
-        0
-    );
-    assert_eq!(work, 0);
-    assert!(matches!(
-        repository.remaining_request_attempts_before(
-            &snapshot,
-            capped.id().expect("request id"),
-            2,
-            1,
-            &mut work
-        ),
-        Err(CampaignRepositoryError::Codec(
-            CampaignCodecError::LimitExceeded {
-                limit: "planner-request-budget-prior-proposals"
-            }
-        ))
-    ));
-
     let before = blobs.object_count().expect("before");
-    let forged = budget.clone().with_request_attempts(1);
+    let forged = crate::PlannerCandidateBudget::new(
+        &input.offer.clone().expect("offer"),
+        budget.remaining_proposals(),
+        budget.remaining_attempts(),
+        budget.requires_new_attempt(),
+        1,
+    )
+    .expect("forged request budget");
     let objects = request
         .input_bundle()
         .object_ids()
@@ -317,60 +280,6 @@ fn request_attempt_caps_do_not_block_other_frontiers_or_later_convergence() {
                 )
                 .expect("dependency");
 
-            if limit == 8 {
-                let mut capabilities = engine.capabilities().clone();
-                capabilities.remove(crate::CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY);
-                let legacy_engine = PlannerEngine::new(
-                    "crucible-canonical-frontier",
-                    if puct { 4 } else { 3 },
-                    1,
-                    capabilities,
-                )
-                .expect("aggregate-only engine");
-                let legacy_artifact = PolicyArtifact::new(
-                    legacy_engine.id().expect("engine id"),
-                    1,
-                    artifact.dependency_lock(),
-                    BTreeSet::new(),
-                    BTreeMap::new(),
-                )
-                .expect("legacy artifact");
-                let mut legacy_state = if puct {
-                    crate::CanonicalPuctPlanner::initial_state_for_engine(&legacy_engine)
-                        .expect("state")
-                } else {
-                    CanonicalFrontierPlanner::initial_state_for_engine(&legacy_engine)
-                        .expect("state")
-                };
-                let (legacy_request, legacy_output) = complete_scan(
-                    &mut repository,
-                    &legacy_engine,
-                    &legacy_artifact,
-                    &mut legacy_state,
-                    puct,
-                    limit,
-                );
-                assert!(
-                    matches!(legacy_output.proposal().disposition(), PlannerProposalDisposition::Issue { selected, .. } if *selected == position(&capped))
-                );
-                let before = blobs.object_count().expect("before legacy rejection");
-                assert!(matches!(
-                    repository.accept_planner_step(
-                        CAMPAIGN,
-                        legacy_request.expected_snapshot(),
-                        legacy_output.proposal(),
-                        legacy_output.proposal().usage_claim()
-                    ),
-                    Err(CampaignRepositoryError::Integrity {
-                        reason: "branch-request-attempt-budget-exhausted"
-                    })
-                ));
-                assert_eq!(
-                    blobs.object_count().expect("after legacy rejection"),
-                    before
-                );
-            }
-
             let (request, output) =
                 complete_scan(&mut repository, &engine, &artifact, &mut state, puct, limit);
             if limit == 8 {
@@ -432,10 +341,12 @@ fn request_attempt_caps_do_not_block_other_frontiers_or_later_convergence() {
             // A new cause can establish the next candidate's execution basis.
             // Reusing it must remain legal even though this request spent its cap.
             let convergent = BranchRequest::new(
-                capped.branch_point(),
-                capped.parent(),
-                capped.opportunity(),
-                capped.domain(),
+                BranchRequest::identity(
+                    capped.branch_point(),
+                    capped.parent(),
+                    capped.opportunity(),
+                    capped.domain(),
+                ),
                 CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(true)]))
                     .expect("convergent source"),
                 BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(

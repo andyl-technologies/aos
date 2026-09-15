@@ -1,7 +1,6 @@
 //! Generator expansion, feedback, and owner-bound validation regressions.
 
 use super::*;
-
 #[test]
 fn branch_request_staleness_and_campaign_scope_fail_before_ref_advance() {
     let (repository, lineage, policy) = fixture();
@@ -17,7 +16,7 @@ fn branch_request_staleness_and_campaign_scope_fail_before_ref_advance() {
     );
     let stale = CampaignSnapshotId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignSnapshot,
-        2,
+        3,
         b"stale-request",
     ))
     .expect("stale id");
@@ -79,7 +78,7 @@ fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
         "generator-opportunity",
     );
     let integer = CandidateGeneratorSpec::new(
-        1,
+        crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
         CandidateGeneratorAlgorithm::ProgressiveInteger {
             initial_strata: 2,
             feedback_interval: 1,
@@ -90,10 +89,12 @@ fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
         .publish_generator(&integer)
         .expect("publish integer generator");
     let incompatible = BranchRequest::new(
-        finite.branch_point(),
-        finite.parent(),
-        finite.opportunity(),
-        finite.domain(),
+        BranchRequest::identity(
+            finite.branch_point(),
+            finite.parent(),
+            finite.opportunity(),
+            finite.domain(),
+        ),
         CandidateSource::generated(integer_id),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -111,7 +112,7 @@ fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
     ));
 
     let mixture = CandidateGeneratorSpec::new(
-        1,
+        crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
         CandidateGeneratorAlgorithm::OrderedMixture {
             components: vec![WeightedGenerator::new(integer_id, 1).expect("component")],
         },
@@ -121,10 +122,12 @@ fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
         .publish_generator(&mixture)
         .expect("publish mixture");
     let incompatible_mixture = BranchRequest::new(
-        finite.branch_point(),
-        finite.parent(),
-        finite.opportunity(),
-        finite.domain(),
+        BranchRequest::identity(
+            finite.branch_point(),
+            finite.parent(),
+            finite.opportunity(),
+            finite.domain(),
+        ),
         CandidateSource::generated(mixture_id),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -174,10 +177,12 @@ fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
         })
     ));
     let valid = BranchRequest::new(
-        finite.branch_point(),
-        finite.parent(),
-        finite.opportunity(),
-        finite.domain(),
+        BranchRequest::identity(
+            finite.branch_point(),
+            finite.parent(),
+            finite.opportunity(),
+            finite.domain(),
+        ),
         CandidateSource::generated(all_id),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -321,57 +326,12 @@ fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
         Some(&ContinuationState::Exhausted)
     );
 
-    let legacy_all = CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All)
-        .expect("legacy all generator");
-    let legacy_all_id = repository
-        .publish_generator(&legacy_all)
-        .expect("publish legacy all generator");
-    let legacy_request = BranchRequest::new(
-        valid.branch_point(),
-        valid.parent(),
-        valid.opportunity(),
-        valid.domain(),
-        CandidateSource::generated(legacy_all_id),
-        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
-            "test",
-            b"legacy-generator",
-        ))),
-        BranchBudget::new(2, 2).expect("budget"),
-        StopCondition::NextChoice,
-    )
-    .expect("legacy generated request");
-    let legacy_issued = repository
-        .submit_known_branch_request("generators", second_admitted.new_snapshot, &legacy_request)
-        .expect("accept legacy generated request as suspended work");
-    assert_eq!(
-        repository
-            .initial_continuation_state(&legacy_request)
-            .expect("legacy continuation"),
-        ContinuationState::Open
-    );
     assert!(matches!(
-        repository.project_finite_expansion(
-            legacy_issued.new_snapshot,
-            legacy_request.branch_point(),
-            None,
-            10,
-        ),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "generated-expansion-projector-is-not-implemented"
+        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "candidate-generator implementation version does not match its algorithm"
         })
     ));
-    repository
-        .validated_heads
-        .lock()
-        .expect("validation cache")
-        .clear();
-    assert_eq!(
-        repository
-            .head("generators")
-            .expect("rebuild generated history")
-            .snapshot_id(),
-        legacy_issued.new_snapshot
-    );
 }
 
 #[test]
@@ -529,10 +489,12 @@ fn exhaustive_all_requests_bind_policy_cardinality_and_replay_exactly() {
         )
         .expect("discover exhaustive choice");
     let exhaustive = BranchRequest::new(
-        finite.branch_point(),
-        finite.parent(),
-        finite.opportunity(),
-        finite.domain(),
+        BranchRequest::identity(
+            finite.branch_point(),
+            finite.parent(),
+            finite.opportunity(),
+            finite.domain(),
+        ),
         CandidateSource::generated(all_id),
         BranchRequestCause::ExhaustivePolicy(policy.id().expect("policy id")),
         BranchBudget::new(2, 2).expect("exact exhaustive budget"),
@@ -540,10 +502,12 @@ fn exhaustive_all_requests_bind_policy_cardinality_and_replay_exactly() {
     )
     .expect("exhaustive request");
     let partial = BranchRequest::new(
-        finite.branch_point(),
-        finite.parent(),
-        finite.opportunity(),
-        finite.domain(),
+        BranchRequest::identity(
+            finite.branch_point(),
+            finite.parent(),
+            finite.opportunity(),
+            finite.domain(),
+        ),
         CandidateSource::generated(all_id),
         BranchRequestCause::ExhaustivePolicy(policy.id().expect("policy id")),
         BranchBudget::new(1, 1).expect("partial budget"),
@@ -647,10 +611,12 @@ fn exhaustive_all_requests_bind_policy_cardinality_and_replay_exactly() {
         )
         .expect("discover too-wide choice");
     let too_wide = BranchRequest::new(
-        narrow_finite.branch_point(),
-        narrow_finite.parent(),
-        narrow_finite.opportunity(),
-        narrow_finite.domain(),
+        BranchRequest::identity(
+            narrow_finite.branch_point(),
+            narrow_finite.parent(),
+            narrow_finite.opportunity(),
+            narrow_finite.domain(),
+        ),
         CandidateSource::generated(all_id),
         BranchRequestCause::ExhaustivePolicy(narrow_policy.id().expect("narrow policy id")),
         BranchBudget::new(2, 2).expect("complete domain budget"),
@@ -744,10 +710,12 @@ fn generated_all_discrete_uses_stable_alternative_order() {
         .publish_generator(&generator)
         .expect("publish generator");
     let request = BranchRequest::new(
-        opportunity.branch_point_id(lineage.genesis()),
-        lineage.genesis_content(),
-        opportunity.id().expect("opportunity id"),
-        domain.id().expect("domain id"),
+        BranchRequest::identity(
+            opportunity.branch_point_id(lineage.genesis()),
+            lineage.genesis_content(),
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
         CandidateSource::generated(generator_id),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -864,7 +832,7 @@ fn weighted_categorical_generator_is_exact_keyed_and_restart_stable() {
             .iter()
             .map(|alternative| labels[alternative])
             .collect::<Vec<_>>(),
-        vec!["beta", "delta", "gamma", "alpha"]
+        vec!["delta", "beta", "alpha", "gamma"]
     );
     assert_eq!(candidates.iter().copied().collect::<BTreeSet<_>>().len(), 4);
     assert_eq!(
@@ -902,12 +870,16 @@ fn weighted_categorical_generator_is_exact_keyed_and_restart_stable() {
         ChoiceValue::Discrete(candidates[1]),
         1,
     );
-    assert!(matches!(
-        repository.issue_proposal("generated-weighted", issued.new_snapshot, &wrong),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "proposal-value-does-not-match-source-order"
-        })
-    ));
+    let wrong_result = repository.issue_proposal("generated-weighted", issued.new_snapshot, &wrong);
+    assert!(
+        matches!(
+            &wrong_result,
+            Err(CampaignRepositoryError::Integrity {
+                reason: "proposal-value-does-not-match-source-order"
+            })
+        ),
+        "unexpected wrong weighted proposal result: {wrong_result:?}"
+    );
     let first = finite_proposal(
         &request,
         &policy,
@@ -1086,37 +1058,17 @@ fn weighted_categorical_generator_bounds_and_versions_fail_closed() {
         })
     ));
 
-    let legacy = CandidateGeneratorSpec::new(
-        crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::WeightedCategorical {
-            weights: BTreeMap::from([(alternative, 1)]),
-        },
-    )
-    .expect("legacy weighted generator");
-    let legacy_id = repository
-        .publish_generator(&legacy)
-        .expect("publish legacy weighted generator");
-    let (_, request) = generated_discrete_request(
-        &repository,
-        &lineage,
-        domain.clone(),
-        alternative,
-        legacy_id,
-        "weighted-legacy",
-        1,
-    );
-    assert_eq!(
-        repository
-            .static_candidate_count(&request, &domain)
-            .expect("legacy candidate count"),
-        None
-    );
-    assert_eq!(
-        repository
-            .initial_continuation_state(&request)
-            .expect("legacy continuation"),
-        ContinuationState::Open
-    );
+    assert!(matches!(
+        CandidateGeneratorSpec::new(
+            crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+            CandidateGeneratorAlgorithm::WeightedCategorical {
+                weights: BTreeMap::from([(alternative, 1)]),
+            },
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "candidate-generator implementation version does not match its algorithm"
+        })
+    ));
 }
 
 #[test]
@@ -1212,7 +1164,7 @@ fn ordered_mixture_generator_schedules_deduplicates_and_restarts_exactly() {
             .iter()
             .map(|alternative| labels[alternative])
             .collect::<Vec<_>>(),
-        vec!["beta", "alpha", "gamma", "delta"]
+        vec!["alpha", "beta", "gamma", "delta"]
     );
     assert_eq!(candidates.iter().copied().collect::<BTreeSet<_>>().len(), 4);
     assert_eq!(
@@ -1245,12 +1197,16 @@ fn ordered_mixture_generator_schedules_deduplicates_and_restarts_exactly() {
         ChoiceValue::Discrete(candidates[1]),
         1,
     );
-    assert!(matches!(
-        repository.issue_proposal("generated-mixture", issued.new_snapshot, &wrong),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "proposal-value-does-not-match-source-order"
-        })
-    ));
+    let wrong_result = repository.issue_proposal("generated-mixture", issued.new_snapshot, &wrong);
+    assert!(
+        matches!(
+            &wrong_result,
+            Err(CampaignRepositoryError::Integrity {
+                reason: "proposal-value-does-not-match-source-order"
+            })
+        ),
+        "unexpected wrong mixture proposal result: {wrong_result:?}"
+    );
     let first_proposal = finite_proposal(
         &request,
         &policy,
@@ -1308,37 +1264,17 @@ fn ordered_mixture_generator_schedules_deduplicates_and_restarts_exactly() {
         Some(4)
     );
 
-    let legacy = CandidateGeneratorSpec::new(
-        crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::OrderedMixture {
-            components: vec![WeightedGenerator::new(first_id, 1).expect("legacy component")],
-        },
-    )
-    .expect("legacy mixture");
-    let legacy_id = repository
-        .publish_generator(&legacy)
-        .expect("publish legacy mixture");
-    let (_, legacy_request) = generated_discrete_request(
-        &repository,
-        &lineage,
-        domain.clone(),
-        ids["alpha"],
-        legacy_id,
-        "mixture-legacy",
-        2,
-    );
-    assert_eq!(
-        repository
-            .static_candidate_count(&legacy_request, &domain)
-            .expect("legacy candidate count"),
-        None
-    );
-    assert_eq!(
-        repository
-            .initial_continuation_state(&legacy_request)
-            .expect("legacy continuation"),
-        ContinuationState::Open
-    );
+    assert!(matches!(
+        CandidateGeneratorSpec::new(
+            crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+            CandidateGeneratorAlgorithm::OrderedMixture {
+                components: vec![WeightedGenerator::new(first_id, 1).expect("component")],
+            },
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "candidate-generator implementation version does not match its algorithm"
+        })
+    ));
 }
 
 #[test]
@@ -1552,44 +1488,12 @@ fn ordered_mixture_generator_enforces_output_work_and_depth_bounds() {
         })
     ));
 
-    let suspended_child =
-        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("suspended child");
-    let suspended_child_id = repository
-        .publish_generator(&suspended_child)
-        .expect("publish suspended child");
-    let suspended = CandidateGeneratorSpec::new(
-        crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::OrderedMixture {
-            components: vec![
-                WeightedGenerator::new(suspended_child_id, 1).expect("suspended component"),
-            ],
-        },
-    )
-    .expect("suspended mixture");
-    let suspended_id = repository
-        .publish_generator(&suspended)
-        .expect("publish suspended mixture");
-    let (_, suspended_request) = generated_discrete_request(
-        &repository,
-        &lineage,
-        domain.clone(),
-        default,
-        suspended_id,
-        "mixture-suspended-child",
-        1,
-    );
-    assert_eq!(
-        repository
-            .static_candidate_count(&suspended_request, &domain)
-            .expect("suspended candidate count"),
-        None
-    );
-    assert_eq!(
-        repository
-            .initial_continuation_state(&suspended_request)
-            .expect("suspended continuation"),
-        ContinuationState::Open
-    );
+    assert!(matches!(
+        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "candidate-generator implementation version does not match its algorithm"
+        })
+    ));
 }
 
 #[test]
@@ -1720,10 +1624,12 @@ fn progressive_integer_generator_refines_only_after_exact_feedback() {
 
     let request_id = request.id().expect("request id");
     let second_request = BranchRequest::new(
-        request.branch_point(),
-        request.parent(),
-        request.opportunity(),
-        request.domain(),
+        BranchRequest::identity(
+            request.branch_point(),
+            request.parent(),
+            request.opportunity(),
+            request.domain(),
+        ),
         CandidateSource::generated(generator_id),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -2337,21 +2243,25 @@ fn measurement_progressive_integer_prioritizes_verified_objective_discontinuity(
     let (repository, lineage, base_policy, blobs) = counted_fixture();
     let objective_name = "latency";
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        base_policy.mode(),
-        base_policy.explorer().clone(),
-        base_policy.choice_policies().clone(),
-        BTreeMap::from([(
-            objective_name.to_owned(),
-            Objective::new(objective_name, ObjectiveGoal::Minimize, 1_000_000)
-                .expect("measurement-progressive objective"),
-        )]),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            base_policy.mode(),
+            base_policy.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            BTreeMap::from([(
+                objective_name.to_owned(),
+                Objective::new(objective_name, ObjectiveGoal::Minimize, 1_000_000)
+                    .expect("measurement-progressive objective"),
+            )]),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("measurement-progressive policy")
     .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
@@ -2520,21 +2430,25 @@ fn coverage_progressive_integer_prioritizes_verified_novelty_discontinuity() {
     let (repository, lineage, base_policy, blobs) = counted_fixture();
     let objective_name = "latency";
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        base_policy.mode(),
-        base_policy.explorer().clone(),
-        base_policy.choice_policies().clone(),
-        BTreeMap::from([(
-            objective_name.to_owned(),
-            Objective::new(objective_name, ObjectiveGoal::Minimize, 1_000_000)
-                .expect("coverage-progressive objective"),
-        )]),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            base_policy.mode(),
+            base_policy.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            BTreeMap::from([(
+                objective_name.to_owned(),
+                Objective::new(objective_name, ObjectiveGoal::Minimize, 1_000_000)
+                    .expect("coverage-progressive objective"),
+            )]),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("coverage-progressive policy");
     let campaign = "generated-coverage-progressive";
@@ -2711,20 +2625,25 @@ fn finding_progressive_integer_prioritizes_verified_reward_discontinuity() {
     let (repository, lineage, base_policy, blobs) = counted_fixture();
     let finding_signal = FindingKind::Divergence.guidance_signal().to_owned();
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        base_policy.mode(),
-        base_policy.explorer().clone(),
-        base_policy.choice_policies().clone(),
-        base_policy.objectives().clone(),
-        BTreeMap::from([(
-            finding_signal.clone(),
-            GuidanceWeight::new(finding_signal, 1_000_000).expect("finding-progressive guidance"),
-        )]),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            base_policy.mode(),
+            base_policy.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            base_policy.objectives().clone(),
+            BTreeMap::from([(
+                finding_signal.clone(),
+                GuidanceWeight::new(finding_signal, 1_000_000)
+                    .expect("finding-progressive guidance"),
+            )]),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("finding-progressive policy")
     .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
@@ -2851,14 +2770,12 @@ fn finding_progressive_integer_prioritizes_verified_reward_discontinuity() {
         )
         .expect("finding-progressive signature");
         current = repository
-            .publish_finding(
+            .publish_incomplete_test_finding(
                 campaign,
                 current,
                 signature,
                 observed.observation,
                 reproduction,
-                None,
-                BTreeSet::new(),
             )
             .expect("publish finding-progressive finding")
             .new_snapshot;

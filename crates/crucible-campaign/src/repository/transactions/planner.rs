@@ -666,7 +666,6 @@ impl CampaignRepository {
                         &snapshot,
                         &puct_projections[&position.branch_point()],
                         &offer,
-                        crate::PlannerCandidateGuidance::current_schema_version(),
                         &mut candidate_cache,
                     )?;
                     push_retained_planner_input(
@@ -1093,96 +1092,6 @@ impl CampaignRepository {
         }
         Ok(())
     }
-
-    pub(in crate::repository) fn planner_scan_page(
-        &self,
-        view: &CampaignPlanningView,
-        after: Option<PlanningScanPosition>,
-        limit: u32,
-    ) -> Result<PlanningScanPage, CampaignRepositoryError> {
-        let limit_usize =
-            usize::try_from(limit).map_err(|_| integrity("planner-scan-page-limit-is-invalid"))?;
-        if limit == 0 || limit > MAX_PLANNER_SCAN_PAGE_ITEMS {
-            return Err(integrity("planner-scan-page-limit-is-invalid"));
-        }
-        if let Some(after) = after {
-            let source_content = after.source().content_id();
-            if self.merkle.get(
-                view.exploration(),
-                map_key_content("exploration.branch-request", source_content),
-            )? != Some(source_content)
-                || self.read_branch_request(source_content)?.branch_point() != after.branch_point()
-            {
-                return Err(integrity("planner-scan-page-after-is-not-authoritative"));
-            }
-        }
-
-        let retained_limit = limit_usize
-            .checked_add(1)
-            .ok_or_else(|| integrity("planner-scan-page-limit-is-invalid"))?;
-        let retained = if let Some(indexed) =
-            self.indexed_planner_scan_positions(view.exploration(), after, retained_limit)?
-        {
-            indexed
-        } else {
-            self.legacy_planner_scan_positions(view, after, retained_limit)?
-        };
-        let mut retained = retained;
-        let complete = retained.len() <= limit_usize;
-        if !complete {
-            retained.pop_last();
-        }
-        let input_bytes = retained.values().try_fold(0_u64, |total, bytes| {
-            total
-                .checked_add(*bytes)
-                .ok_or_else(|| integrity("planner-scan-page-input-byte-overflow"))
-        })?;
-        PlanningScanPage::new(
-            after,
-            limit,
-            retained.into_keys().collect(),
-            complete,
-            input_bytes,
-        )
-        .map_err(Into::into)
-    }
-
-    pub(in crate::repository) fn legacy_planner_scan_positions(
-        &self,
-        view: &CampaignPlanningView,
-        after: Option<PlanningScanPosition>,
-        retained_limit: usize,
-    ) -> Result<BTreeMap<PlanningScanPosition, u64>, CampaignRepositoryError> {
-        let mut retained = BTreeMap::<PlanningScanPosition, u64>::new();
-        let mut storage_after = None;
-        loop {
-            let page = self.merkle.scan(
-                view.exploration(),
-                storage_after,
-                PLANNER_SCAN_STORAGE_PAGE_ITEMS,
-            )?;
-            for (key, value) in page.entries() {
-                if *key != map_key_content("exploration.branch-request", *value) {
-                    continue;
-                }
-                let request = self.read_branch_request(*value)?;
-                let position = PlanningScanPosition::new(request.branch_point(), request.id()?);
-                if after.is_some_and(|after| position <= after) {
-                    continue;
-                }
-                let input_bytes = u64::try_from(request.canonical_bytes().len())
-                    .map_err(|_| integrity("planner-scan-page-input-byte-overflow"))?;
-                retained.insert(position, input_bytes);
-                if retained.len() > retained_limit {
-                    retained.pop_last();
-                }
-            }
-            let Some(next) = page.next_after() else {
-                break;
-            };
-            storage_after = Some(next);
-        }
-
-        Ok(retained)
-    }
 }
+
+mod scan;

@@ -8,9 +8,6 @@
 
 use super::*;
 
-const DISCOVERY_ACCOUNTING_PAGE_ITEMS: usize = 128;
-const MAX_DISCOVERY_ACCOUNTING_PAGES: usize = 512;
-
 impl CampaignRepository {
     /// Admits one explicit, idempotent discovery of a campaign-owned configuration.
     ///
@@ -48,7 +45,6 @@ impl CampaignRepository {
                     return self.find_discovery_result(current_content, request, true);
                 }
                 CampaignFact::ControlRequested(_)
-                | CampaignFact::BranchRequestIssued(_)
                 | CampaignFact::BranchRequestAccepted { .. }
                 | CampaignFact::PinCommandAccepted(_)
                 | CampaignFact::DiscoveryRequested(_)
@@ -231,11 +227,7 @@ impl CampaignRepository {
             .merkle
             .get(roots.exploration, frontier_index_anchor_key())?
             .ok_or_else(|| integrity("initial-discovery-frontier-index-missing"))?;
-        let has_budget = if parent.snapshot.budget_ledger().is_some() {
-            self.project_campaign_budget(parent)?.remaining_attempts() > 0
-        } else {
-            self.initial_discovery_has_budget(roots.accounting)?
-        };
+        let has_budget = self.project_campaign_budget(parent)?.remaining_attempts() > 0;
         if !self.merkle.scan(frontier, None, 1)?.entries().is_empty() || !has_budget {
             return Ok(None);
         }
@@ -255,6 +247,7 @@ impl CampaignRepository {
                 cause: BranchRequestCause::ExhaustivePolicy(parent.snapshot.active_policy()),
                 admission_ordinal: AdmissionOrdinal::new(1),
             },
+            parent.snapshot.active_policy(),
         );
         Ok(Some((path, attempt, admission)))
     }
@@ -342,41 +335,9 @@ impl CampaignRepository {
                 cause: BranchRequestCause::Operator(request.command),
                 admission_ordinal: AdmissionOrdinal::new(1),
             },
+            parent.snapshot.active_policy(),
         );
         Ok((path, attempt, admission))
-    }
-
-    fn initial_discovery_has_budget(
-        &self,
-        accounting: ContentId,
-    ) -> Result<bool, CampaignRepositoryError> {
-        let mut after = None;
-        for _ in 0..MAX_DISCOVERY_ACCOUNTING_PAGES {
-            let page = self
-                .merkle
-                .scan(accounting, after, DISCOVERY_ACCOUNTING_PAGE_ITEMS)?;
-            for (key, content) in page.entries() {
-                let envelope = self.read_envelope(*content)?;
-                if envelope.record_kind() != crate::CampaignRecordKind::Fact {
-                    continue;
-                }
-                let CampaignFact::ControlRequested(request) = self.read_fact(*content)? else {
-                    continue;
-                };
-                // Grants also have deduplicated auxiliary fact entries. Only
-                // the authenticated command key represents an additive grant.
-                if *key == map_key_hash("accounting.command", request.command.as_hash())
-                    && matches!(request.action, CampaignControlAction::GrantBudget(grant) if grant.attempts() > 0)
-                {
-                    return Ok(true);
-                }
-            }
-            let Some(next) = page.next_after() else {
-                return Ok(false);
-            };
-            after = Some(next);
-        }
-        Err(integrity("initial-discovery-accounting-scan-limit"))
     }
 
     pub(super) fn validate_initial_discovery_successor(
@@ -420,7 +381,7 @@ impl CampaignRepository {
         {
             return Err(integrity("discovery-request-changed-lineage-or-policy"));
         }
-        let (_, _, admission) = self.discovery_request_basis(parent, request)?;
+        let (_, attempt, expected_admission) = self.discovery_request_basis(parent, request)?;
         self.ensure_budget_available(parent, 0, 1)?;
 
         let prior = parent.snapshot.roots();
@@ -439,6 +400,14 @@ impl CampaignRepository {
         let command_key = map_key_hash("accounting.command", request.command.as_hash());
         if self.merkle.get(prior.accounting, command_key)?.is_some() {
             return Err(integrity("discovery-request-reused-command"));
+        }
+        let admission_content = self
+            .merkle
+            .get(next.accounting, attempt_execution_basis_key(attempt.id()?))?
+            .ok_or_else(|| integrity("discovery-request-admission-is-missing"))?;
+        let admission = self.read_attempt_admission(admission_content)?;
+        if admission != expected_admission {
+            return Err(integrity("discovery-request-admission-owner-mismatch"));
         }
         let mut upserts = attempt_admission_upserts(admission.id()?.content_id(), admission)?;
         upserts.insert(command_key, transition_content);

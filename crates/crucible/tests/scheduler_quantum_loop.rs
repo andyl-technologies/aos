@@ -4,13 +4,20 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use crucible::{
     BackendInput, Configuration, ControlOperation, ControlOperationKind, Decision, EventKey,
     ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest,
     ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
     SchedulerLivenessReport, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
     SchedulerScenarioNode, SchedulerTerminal, SchedulingNodeKind, Shift, SimDuration, SimInstant,
-    SingleScheduler, VirtualTime, check_scheduler_liveness, step,
+    SingleScheduler, VirtualTime, check_scheduler_liveness,
 };
 
 #[test]
@@ -228,7 +235,7 @@ fn pure_sequence_scenario() -> SchedulerLivenessScenario {
 fn apply_decisions(configuration: &Configuration, decisions: &[Decision]) -> Configuration {
     let mut next = configuration.clone();
     for decision in decisions {
-        next = step(&next, decision.clone());
+        next = accepted_step!(&next, decision.clone());
     }
     next
 }
@@ -241,7 +248,6 @@ fn delivery_order(decisions: &[Decision]) -> Vec<EventKey> {
             Decision::RngDraw(_)
             | Decision::Override(_)
             | Decision::Preemption(_)
-            | Decision::AppRandom(_)
             | Decision::Selection(_) => Vec::new(),
         })
         .collect()
@@ -292,13 +298,18 @@ fn backend_event(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    nanos: (VirtualTime {
+                        ticks: virtual_time,
+                    })
+                    .ticks,
+                },
+                node: consumer.clone(),
+                sequence,
             },
-            consumer.clone(),
             producer.clone(),
-            sequence,
         ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: consumer.node.clone(),

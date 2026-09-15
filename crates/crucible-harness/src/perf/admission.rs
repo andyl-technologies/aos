@@ -16,16 +16,13 @@ pub const HOST_WORKER_POOL: &str = "scheduler-host-worker-pool";
 pub const FINGERPRINT_DIGEST_OFFLOAD: &str = "fingerprint-digest-offload";
 /// Stable identifier for device-side host-work overlap.
 pub const DEVICE_WORK_OVERLAP: &str = "device-host-work-overlap";
-/// Stable identifier for translation-prefetch experimentation.
-pub const TRANSLATION_PREFETCH: &str = "translation-prefetch";
 /// Stable identifier for segment-parallel replay.
 pub const SEGMENT_PARALLEL_REPLAY: &str = "segment-parallel-replay";
 
-const REQUIRED_MECHANISMS: [&str; 5] = [
+const REQUIRED_MECHANISMS: [&str; 4] = [
     HOST_WORKER_POOL,
     FINGERPRINT_DIGEST_OFFLOAD,
     DEVICE_WORK_OVERLAP,
-    TRANSLATION_PREFETCH,
     SEGMENT_PARALLEL_REPLAY,
 ];
 const PROVING_GATES: [&str; 6] = [
@@ -98,12 +95,6 @@ pub fn canonical_host_parallelism_admissions() -> Vec<HostParallelismAdmission> 
             HostParallelismClass::CommitPinnedToVirtualTime,
             "device completion icount is fixed before host work is dispatched",
             ["gate:e2e-determinism", "gate:perf-bench"],
-        ),
-        HostParallelismAdmission::new(
-            TRANSLATION_PREFETCH,
-            HostParallelismClass::OutsideObservableBoundary,
-            "prefetched translation may be consumed only after fingerprint-neutrality proof",
-            ["gate:single-vm-fingerprint", "gate:perf-bench"],
         ),
         HostParallelismAdmission::new(
             SEGMENT_PARALLEL_REPLAY,

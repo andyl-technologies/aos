@@ -129,6 +129,7 @@ pub struct QemuHotForkSchedulerNodeContinuation {
     ring: QemuHotForkPrivateRingStageProof,
     endpoint_stage: QemuHotForkPluginEndpointStageProof,
     host_io_binding: crucible::model::ContentHash,
+    checkpoint_cancellation: OwnedFd,
 }
 
 impl std::fmt::Debug for QemuHotForkSchedulerNodeContinuation {
@@ -159,6 +160,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             host_io_runtime,
             console_spool,
             node_state,
+            checkpoint_cancellation,
         } = continuation;
         let channels = QemuNodeChannels {
             plugin_control: Box::new(endpoint),
@@ -177,6 +179,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             ring,
             endpoint_stage,
             host_io_binding,
+            checkpoint_cancellation,
         }
     }
 
@@ -273,6 +276,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             ring,
             endpoint_stage,
             host_io_binding,
+            checkpoint_cancellation,
         } = self;
         let console_observation = console_spool.map(|spool| QemuConsoleObservation { node, spool });
         let authority = QemuHotForkInstalledNodeAuthority {
@@ -285,6 +289,7 @@ impl QemuHotForkSchedulerNodeContinuation {
         Ok(QemuNode {
             child: QemuNodeProcessControl::External(process),
             channels,
+            checkpoint_cancellation: Some(checkpoint_cancellation),
             hot_fork_private_ring_stage: None,
             hot_fork_child_diagnostic_stage: None,
             hot_fork_child_qmp_stage: None,

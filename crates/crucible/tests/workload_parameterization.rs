@@ -421,9 +421,11 @@ fn world_node(
     }
 }
 
-fn only_node(nodes: &[WorldNode]) -> &WorldNode {
+fn only_node<'a>(nodes: crucible::WorldVmNodes<'a>) -> &'a WorldNode {
     assert_eq!(nodes.len(), 1);
-    &nodes[0]
+    nodes
+        .first()
+        .unwrap_or_else(|| panic!("one VM node expected"))
 }
 
 fn blob(material: &str) -> ContentAddressedBlobRef {

@@ -61,7 +61,9 @@ pub use campaign_service::{
     CampaignClientError, CampaignContinuationStatus, CampaignEstimateLabel,
     CampaignEstimateSummary, CampaignExecutionBasisCounts, CampaignFindingObject,
     CampaignFindingObjectKind, CampaignFindingOccurrence, CampaignFindingOccurrenceObject,
-    CampaignFindingOccurrenceObjectKind, CampaignFindingOccurrenceService, CampaignGraphEntry,
+    CampaignFindingOccurrenceObjectKind, CampaignFindingOccurrenceService,
+    CampaignFindingTriageReplayProofs, CampaignFindingTriageReplayRole,
+    CampaignFindingTriageReplaySegment, CampaignFindingTriageReplaySelection, CampaignGraphEntry,
     CampaignListEntry, CampaignName, CampaignOperationalEvidence, CampaignOperationalStatus,
     CampaignOperationalStatusProvider, CampaignOutcomeCounts, CampaignPlannerEvidence,
     CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignReportEndpoint, CampaignReportSummary,
@@ -72,7 +74,8 @@ pub use campaign_service::{
     ExplainCampaignAttemptResponse, GetCampaignChoiceObjectRequest,
     GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
     GetCampaignFindingObjectResponse, GetCampaignFindingOccurrenceObjectRequest,
-    GetCampaignFindingOccurrenceObjectResponse, GetCampaignFrontierObjectRequest,
+    GetCampaignFindingOccurrenceObjectResponse, GetCampaignFindingTriageReplaySegmentRequest,
+    GetCampaignFindingTriageReplaySegmentResponse, GetCampaignFrontierObjectRequest,
     GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
     GetCampaignGraphObjectResponse, GetCampaignPlannerRankingsRequest,
     GetCampaignPlannerRankingsResponse, GetCampaignRequest, GetCampaignResponse,
@@ -103,18 +106,17 @@ pub use choice::{
 };
 pub use codec::CampaignCodecError;
 pub use execution::{
-    AssignmentId, AttemptExecutionScope, AttemptResourceLimits, AttemptStartMode,
-    CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
-    CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
-    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, DaemonEpoch,
-    ExecutionId, ExecutionRetentionIntent, ExecutorClient, ExecutorClientError,
-    ExecutorCompatibilityProfile, ExecutorControlService, ExecutorRejection, ExecutorResumeService,
-    ExecutorService, ExecutorStatusService, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse, MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
-    ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
-    ResumeAttemptExecutionResponse, SubmitAttemptDisposition, SubmitAttemptRequest,
-    SubmitAttemptResponse, attempt_execution_basis_digest,
-    attempt_execution_basis_digest_for_start_mode,
+    AssignmentId, AttemptExecutionScope, AttemptResourceLimits, AttemptRetentionPolicyBasis,
+    AttemptRetentionPolicyDisposition, AttemptStartMode, CancelAttemptExecutionDisposition,
+    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
+    CheckpointAttemptExecutionDisposition, CheckpointAttemptExecutionRequest,
+    CheckpointAttemptExecutionResponse, DaemonEpoch, ExecutionId, ExecutionRetentionIntent,
+    ExecutorClient, ExecutorClientError, ExecutorCompatibilityProfile, ExecutorControlService,
+    ExecutorRejection, ExecutorResumeService, ExecutorService, ExecutorStatusService,
+    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
+    MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES, ResumeAttemptExecutionDisposition,
+    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, SubmitAttemptDisposition,
+    SubmitAttemptRequest, SubmitAttemptResponse, attempt_execution_basis_digest_for_start_mode,
 };
 pub use executor_capability::{
     DescribeExecutorRequest, ExecutorCapabilityService, ExecutorCapabilitySet,
@@ -125,17 +127,17 @@ pub use exploration::{
     Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptContinuationInput, AttemptStart,
     BranchAcceptanceCount, BranchAcceptanceRange, BranchAcceptanceSummary, BranchBudget,
     BranchEdgeVisitStatistics, BranchPath, BranchPathSegment, BranchPuctProjection, BranchRequest,
-    BranchRequestCause, CandidateSource, ContinuationProjection, ContinuationState,
-    ExpansionCredit, ExpansionState, ExpansionStatistics, FeedbackWait, FiniteCandidateSource,
-    GUIDANCE_MICROS_PER_UNIT, GuidanceEvidence, MAX_BRANCH_EDGE_VISIT_PROJECTION_BYTES,
-    MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS, MAX_BRANCH_FINDING_OCCURRENCE_VISITS,
-    MAX_BRANCH_FINDING_PROJECTION_BYTES, MAX_BRANCH_FINDING_ROOT_ENTRIES,
-    MAX_BRANCH_NOVELTY_IDENTITIES, MAX_BRANCH_NOVELTY_IDENTITY_VISITS,
-    MAX_BRANCH_NOVELTY_OBSERVATIONS, MAX_BRANCH_NOVELTY_PROJECTION_BYTES,
-    MAX_BRANCH_NOVELTY_ROOT_ENTRIES, MAX_BRANCH_OBJECTIVE_EVALUATIONS,
-    MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES, MAX_BRANCH_PRIOR_NORMALIZATION_VISITS,
-    MAX_PLANNER_GUIDANCE_DOMAIN_BYTES, ObservationCondition, PlannerBeamBarrier,
-    PlannerBeamCandidate, PlannerBeamClosureSummary, PlannerBeamCohortState,
+    BranchRequestCause, BranchRequestIdentity, CandidateSource, ContinuationProjection,
+    ContinuationState, ExpansionCredit, ExpansionState, ExpansionStatistics, FeedbackWait,
+    FiniteCandidateSource, GUIDANCE_MICROS_PER_UNIT, GuidanceEvidence,
+    MAX_BRANCH_EDGE_VISIT_PROJECTION_BYTES, MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS,
+    MAX_BRANCH_FINDING_OCCURRENCE_VISITS, MAX_BRANCH_FINDING_PROJECTION_BYTES,
+    MAX_BRANCH_FINDING_ROOT_ENTRIES, MAX_BRANCH_NOVELTY_IDENTITIES,
+    MAX_BRANCH_NOVELTY_IDENTITY_VISITS, MAX_BRANCH_NOVELTY_OBSERVATIONS,
+    MAX_BRANCH_NOVELTY_PROJECTION_BYTES, MAX_BRANCH_NOVELTY_ROOT_ENTRIES,
+    MAX_BRANCH_OBJECTIVE_EVALUATIONS, MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES,
+    MAX_BRANCH_PRIOR_NORMALIZATION_VISITS, MAX_PLANNER_GUIDANCE_DOMAIN_BYTES, ObservationCondition,
+    PlannerBeamBarrier, PlannerBeamCandidate, PlannerBeamClosureSummary, PlannerBeamCohortState,
     PlannerCandidateBudget, PlannerCandidateGuidance, PlannerDisposition,
     PlannerProposalDisposition, PlannerStep, PlannerStepProposal, PlanningAccounting,
     PlanningScanCursor, PlanningScanPage, PlanningScanPosition, PlanningUsage,
@@ -145,17 +147,23 @@ pub use exploration::{
 pub use finding::{
     Finding, FindingCandidateOccurrenceSet, FindingExactPins, FindingKind,
     FindingMinimizationAttempt, FindingMinimizationEvidence, FindingOccurrenceSet,
-    FindingSignature, FindingTarget, GUIDANCE_SIGNAL_FINDING_DIVERGENCE,
+    FindingRecordBasis, FindingSignature, FindingTarget, GUIDANCE_SIGNAL_FINDING_DIVERGENCE,
     GUIDANCE_SIGNAL_FINDING_PROPERTY_VIOLATION, GUIDANCE_SIGNAL_FINDING_TIMEOUT,
     MAX_FINDING_CAUSAL_EVIDENCE, MAX_FINDING_EXACT_PINS, MAX_FINDING_MINIMIZATION_ATTEMPTS,
-    MAX_FINDING_MINIMIZATION_POLICY_BYTES, MAX_FINDING_OCCURRENCES, ReproductionArtifact,
+    MAX_FINDING_MINIMIZATION_POLICY_BYTES, MAX_FINDING_OCCURRENCES,
+    MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES, ReproductionArtifact, ReproductionArtifactBasis,
 };
 pub use finding_candidate::{
-    FindingCandidateBundle, FindingReplaySignature, FindingReplayTargetKind,
-    FindingSignatureMinimizationEvidence, FindingTriageEvidenceSet,
+    FindingCandidateBundle, FindingCandidateCore, FindingExactRetention,
+    FindingExactRetentionCandidate, FindingExactRetentionDisposition,
+    FindingExactRetentionEvidence, FindingExactRetentionIncomplete, FindingReplaySignature,
+    FindingReplayTargetKind, FindingSignatureMinimizationEvidence, FindingTriageEvidenceSet,
+    MAX_FINDING_EXACT_RETENTION_CANDIDATES,
 };
 pub use finding_triage_evidence::{
-    FindingTriageReplayEvidence, MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES,
+    FindingTriageReplayEvidence, FindingTriageReplayStorageDescription,
+    FindingTriageReplayStorageObject, FindingTriageReplayStorageObjectRole,
+    MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES, MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
 };
 pub use identity::{
     AlternativeId, AttemptAdmissionId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId,
@@ -197,8 +205,8 @@ pub use objective::{
     SurvivorSelectionBundle, evaluate_objectives, rank_survivors,
 };
 pub use observation::{
-    AssertionViolationWitness, CoverageProjection, MeasurementEvaluationPayload, MeasurementSeries,
-    MeasurementSet, MetricValue, Observation, ObservationEventLogProof, ObservationQuantumBoundary,
+    AssertionViolationWitness, CoverageProjection, MeasurementEvaluationPayload, MeasurementSet,
+    Observation, ObservationEventLogProof, ObservationOutcome, ObservationQuantumBoundary,
     ObservationStopProof, ObservationStopSatisfaction, PropertyEvidence, PropertyVerdict,
     PropertyVerdictSet, StopOutcome,
 };
@@ -222,8 +230,9 @@ pub use policy::{
     CORPUS_MUTATION_GENERATOR_MAX_DISTANCE, CORPUS_MUTATION_GENERATOR_MAX_INPUT_BYTES,
     CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS, CORPUS_MUTATION_GENERATOR_MAX_WORK_ITEMS,
     COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, CampaignMode, CampaignPolicy,
-    CampaignSeed, CandidateGeneratorAlgorithm, CandidateGeneratorSpec, ChoicePolicy, ExactRational,
-    ExplorerPolicy, FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+    CampaignPolicyIdentity, CampaignPolicyRules, CampaignSeed, CandidateGeneratorAlgorithm,
+    CandidateGeneratorSpec, ChoicePolicy, ExactRational, ExplorerPolicy,
+    FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
     FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, FairnessPolicy, GuidanceWeight,
     InterventionLearningPolicy, LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
     LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, LOG_INTEGER_GENERATOR_MAX_CANDIDATES,
@@ -249,26 +258,28 @@ pub use policy::{
 pub use repository::CampaignValidationCheckpointMetrics;
 pub use repository::{
     AttemptAdmissionResult, AttemptQueue, AttemptQueueCursor, AttemptQueueError,
-    AttemptReservation, AuthenticatedFindingCandidateIncorporation, BranchRequestResult,
-    CampaignBudgetProjection, CampaignCommandResult, CampaignCompletionResult,
-    CampaignDerivationResult, CampaignDiscoveryResult, CampaignExecutorCancelOutcome,
-    CampaignExecutorCheckpointOutcome, CampaignExecutorDriver, CampaignExecutorDriverConfigError,
-    CampaignExecutorDriverError, CampaignExecutorStepOutcome, CampaignExecutorStore, CampaignHead,
-    CampaignHeadPage, CampaignLifecycle, CampaignPinRetentionRecord, CampaignPinRetentionSummary,
+    AttemptReservation, AuthenticatedFindingCandidateIncorporation,
+    AuthenticatedFindingExactCheckpoint, BranchRequestResult, CampaignBudgetProjection,
+    CampaignCommandResult, CampaignCompletionResult, CampaignDerivationResult,
+    CampaignDiscoveryResult, CampaignExecutorCancelOutcome, CampaignExecutorCheckpointOutcome,
+    CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignExecutorDriverError,
+    CampaignExecutorStepOutcome, CampaignExecutorStore, CampaignHead, CampaignHeadPage,
+    CampaignLifecycle, CampaignPinRetentionRecord, CampaignPinRetentionSummary,
     CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPlannerDriverError,
     CampaignPlannerStepOutcome, CampaignRepository, CampaignRepositoryError,
     CampaignRepositoryGcExclusionGuard, CampaignSupervisor, CampaignSupervisorConfigError,
     CampaignSupervisorError, CampaignSupervisorStepOutcome, ChoiceDiscovery, ChoiceDiscoveryResult,
-    ClaimableAttemptPage, FindingPublicationResult, MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS,
-    MAX_CAMPAIGN_CLOSURE_OBJECTS, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
-    MAX_OBJECTIVE_EVALUATION_SCAN_PAGE_ITEMS, MAX_OBSERVATION_CHOICE_DISCOVERIES,
-    MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, MAX_PLANNER_SCAN_PAGE_ITEMS,
-    MAX_SAVEPOINT_CAPTURE_SCAN_PAGE_ITEMS, NonModeledAttemptResult, ObjectiveEvaluationCursor,
-    ObjectiveEvaluationInput, ObjectiveEvaluationPublicationResult, ObjectiveEvaluationScanPage,
-    ObservationCandidate, ObservationDisposition, ObservationResult, PendingSavepointCapture,
-    PendingSavepointCapturePage, PlannerStepResult, ProposalResult, ResolvedSelection,
-    SavepointCaptureCursor, SavepointCaptureResolutionResult, SavepointCaptureResult,
-    SavepointContinuationResult, SavepointContinuationSource, WorkerSlotId,
+    ClaimableAttemptPage, FindingExactCheckpointAuthenticationError,
+    FindingExactCheckpointAuthenticator, FindingPublicationResult,
+    MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_CLOSURE_OBJECTS,
+    MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS, MAX_OBJECTIVE_EVALUATION_SCAN_PAGE_ITEMS,
+    MAX_OBSERVATION_CHOICE_DISCOVERIES, MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
+    MAX_PLANNER_SCAN_PAGE_ITEMS, MAX_SAVEPOINT_CAPTURE_SCAN_PAGE_ITEMS, NonModeledAttemptResult,
+    ObjectiveEvaluationCursor, ObjectiveEvaluationInput, ObjectiveEvaluationPublicationResult,
+    ObjectiveEvaluationScanPage, ObservationCandidate, ObservationDisposition, ObservationResult,
+    PendingSavepointCapture, PendingSavepointCapturePage, PlannerStepResult, ProposalResult,
+    ResolvedSelection, SavepointCaptureCursor, SavepointCaptureResolutionResult,
+    SavepointCaptureResult, SavepointContinuationResult, SavepointContinuationSource, WorkerSlotId,
 };
 pub use statistics::{
     FiniteStatisticalEvidence, MAX_STATISTICAL_EVIDENCE_BYTES, MAX_STATISTICAL_EVIDENCE_ITEMS,
@@ -281,6 +292,26 @@ pub use statistics::{
     StatisticalWeightDiagnostics, verify_finite_statistical_evidence,
     verify_sequential_monte_carlo_evidence,
 };
+
+#[cfg(test)]
+fn test_budget_ledger_id() -> CampaignBudgetLedgerId {
+    let root = match MerkleMap::empty_content_id() {
+        Ok(root) => root,
+        Err(error) => panic!("canonical empty Merkle root: {error}"),
+    };
+    let ledger = match CampaignBudgetLedger::empty(root) {
+        Ok(ledger) => ledger,
+        Err(error) => panic!("canonical empty budget ledger: {error}"),
+    };
+    let envelope = match ObjectEnvelope::for_budget_ledger(&ledger) {
+        Ok(envelope) => envelope,
+        Err(error) => panic!("canonical budget-ledger envelope: {error}"),
+    };
+    match CampaignBudgetLedgerId::from_content_id(envelope.content_id()) {
+        Ok(identity) => identity,
+        Err(error) => panic!("typed budget-ledger identity: {error}"),
+    }
+}
 
 #[cfg(test)]
 mod extended_stop_tests;

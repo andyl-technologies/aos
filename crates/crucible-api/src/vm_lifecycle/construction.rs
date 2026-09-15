@@ -6,60 +6,9 @@
 //! early-return cleanup and the final ownership transfer auditable.
 
 use super::*;
-
-fn configured_branches(
-    config: &ProductionVmLifecycleConfig,
-) -> impl Iterator<Item = &ProductionVmBranchConfig> {
-    config
-        .branch
-        .iter()
-        .chain(config.continuation_branches.iter())
-}
-
-fn first_configured_branch(
-    config: &ProductionVmLifecycleConfig,
-) -> Option<&ProductionVmBranchConfig> {
-    configured_branches(config).next()
-}
-
-pub(super) fn validate_configured_branch_sequence(
-    scenario: &ScenarioDef,
-    branches: &[ProductionVmBranchConfig],
-) -> Result<(), LifecycleApiError> {
-    if branches
-        .iter()
-        .any(|branch| branch.base.def.id() != scenario.id())
-    {
-        return Err(loop_factory_error(
-            "production branch sequence names a different scenario",
-        ));
-    }
-    for pair in branches.windows(2) {
-        let [previous, next] = pair else {
-            continue;
-        };
-        if next.frontier < previous.frontier {
-            return Err(loop_factory_error(
-                "production branch sequence moves backward in virtual time",
-            ));
-        }
-        let previous_prefix = next
-            .base
-            .schedule
-            .prefix(previous.base.schedule.len())
-            .map_err(|_| {
-                loop_factory_error(
-                    "production branch sequence moves backward in configuration history",
-                )
-            })?;
-        if previous_prefix != previous.base.schedule {
-            return Err(loop_factory_error(
-                "production branch sequence has divergent configuration history",
-            ));
-        }
-    }
-    Ok(())
-}
+mod branch_sequence;
+pub(super) use branch_sequence::validate_configured_branch_sequence;
+use branch_sequence::{configured_branches, first_configured_branch};
 
 pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     scenario: &ScenarioDef,
@@ -88,15 +37,6 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     {
         return Err(loop_factory_error(
             "raw production branch configuration cannot coexist with typed signal-fault replay",
-        ));
-    }
-    if config.logical_replay_boundary.is_some()
-        && (first_configured_branch(config).is_some()
-            || config.signal_fault_replay.is_some()
-            || restore_checkpoint.is_some())
-    {
-        return Err(loop_factory_error(
-            "logical replay boundary cannot coexist with branch replay, signal-fault replay, or exact-checkpoint restore",
         ));
     }
     if let Some(replay) = &config.signal_fault_replay
@@ -199,6 +139,8 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     }
     if config.run_ceiling_icount == 0
         || config.quantum_budget == 0
+        || config.maximum_host_workers == 0
+        || config.maximum_host_workers > quantum_loop::MAX_PRODUCTION_QEMU_HOST_WORKERS
         || config.rendezvous_interval_icount == Some(0)
     {
         return Err(loop_factory_error(
@@ -244,7 +186,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         .processes
         .try_reserve_exact(nodes.len())
         .map_err(|()| loop_factory_error("reserve initial QEMU process ownership"))?;
-    let mut backends = ProductionNodeSet::new();
+    let mut backends = QemuNodeSet::new();
     let mut launch_configs = BTreeMap::new();
     let mut block_bindings = BTreeMap::new();
     let mut ninep_bindings = BTreeMap::new();
@@ -256,6 +198,9 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     let mut immutable_root_images = BTreeMap::new();
     let mut debug_backend_paths = BTreeMap::new();
     let mut initial_ticks = None;
+    let mut repository_restore = restore_checkpoint
+        .as_mut()
+        .and_then(|checkpoint| checkpoint.repository_restore.take());
     let scenario_seed = scenario.seed().bytes();
     let mut launch_seed_bytes = [0_u8; 8];
     launch_seed_bytes.copy_from_slice(&scenario_seed[..8]);
@@ -267,9 +212,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 vm.arch
             ))
         })?;
-        if config.validate_guest_asset_references {
-            validate_guest_asset_references(vm, guest_assets)?;
-        }
+        validate_guest_asset_references(vm, guest_assets)?;
         let immutable_root_image = hash_file(&guest_assets.root_image).map_err(|error| {
             loop_factory_error(format!(
                 "hash immutable root image for production node `{}` from {}: {error}",
@@ -305,21 +248,60 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             )));
         }
         if let Some(target) = restore_target {
-            let fault_identity = restore_checkpoint
+            let fault_checkpoint = restore_checkpoint
                 .as_ref()
                 .and_then(|checkpoint| checkpoint.fault_checkpoint.as_ref())
-                .map(ProductionFaultRuntimeCheckpoint::id)
                 .ok_or_else(|| {
                     loop_factory_error("exact checkpoint target lost its fault continuation")
                 })?;
-            validate_exact_checkpoint_target(&vm.id, target, fault_identity)?;
-            if let Some(expected) = target.immutable_backing
-                && expected != immutable_root_image
-            {
+            let fault_identity = fault_checkpoint.id();
+            let fault_manifest_identity = exact_checkpoint_fault_object_identity(
+                fault_checkpoint,
+                source.plan().fault_signals().resource_limits(),
+            )?;
+            let snapshot_identity = exact_checkpoint_snapshot_object_identity(
+                &target.snapshot,
+                source.plan().fault_signals().resource_limits(),
+            )?;
+            validate_exact_checkpoint_target(
+                &vm.id,
+                target,
+                fault_manifest_identity,
+                snapshot_identity,
+            )?;
+            if let Some(exact_ram) = target.native_exact_ram() {
+                let checkpoint_set = restore_checkpoint.as_ref().ok_or_else(|| {
+                    loop_factory_error("exact RAM restore lost its authenticated checkpoint set")
+                })?;
+                let expected =
+                    exact_ram_checkpoint_qmp_identity(ExactRamCheckpointQmpIdentityBasis {
+                        configuration: &target.configuration,
+                        immutable_backing: target.immutable_backing,
+                        node: &vm.id,
+                        counter: target.counter,
+                        scheduler_time: target.scheduler_time,
+                        checkpoint: target.snapshot.checkpoint(),
+                        fault_identity,
+                        scheduler: &checkpoint_set.scheduler,
+                    })
+                    .map_err(|error| {
+                        loop_factory_error(format!(
+                            "derive v9 exact restore identity for `{}`: {error}",
+                            vm.id.name
+                        ))
+                    })?;
+                if QmpCheckpointIdentity::from(exact_ram.identity) != expected {
+                    return Err(loop_factory_error(format!(
+                        "v9 exact checkpoint identity for `{}` differs from its authenticated restore basis",
+                        vm.id.name
+                    )));
+                }
+            }
+            if target.immutable_backing != immutable_root_image {
                 return Err(loop_factory_error(format!(
                     "production exact checkpoint for `{}` names immutable backing {} but the selected root image hashes to {}",
                     vm.id.name,
-                    expected.to_hex(),
+                    target.immutable_backing.to_hex(),
                     immutable_root_image.to_hex()
                 )));
             }
@@ -355,7 +337,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             .copied()
             .unwrap_or(1);
         let qemu_executable = production_qemu_executable(&config.executable, vm.arch);
-        let mut launch = ProductionLiveNodeStepGateConfig::new_with_root_image(
+        let mut launch = QemuLiveNodeStepGateConfig::new_with_root_image(
             &qemu_executable,
             &config.plugin,
             &guest_assets.kernel,
@@ -370,11 +352,9 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         .with_whitebox(whitebox)
         .with_coverage(config.coverage)
         .with_fingerprint(crucible_qemu::QemuLaunchPluginSwitch::On)
-        .with_fingerprint_mode(crucible_qemu::QemuFingerprintSamplingMode::OnDemand)
         .with_queue_capacity(PRODUCTION_QUEUE_CAPACITY)
         .with_completion_timeout(config.completion_timeout)
         .with_console_capture()
-        .with_second_run_scheduler_preemption(false)
         .with_process_generation(generation)
         .with_fault_resource_limits(source.plan().fault_signals().resource_limits());
         if let Some(capabilities) = source
@@ -564,7 +544,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             let backend_path = private_backend_gdbstub_path(&node_directory);
             let backend_listen = live_unix_gdbstub_endpoint(&backend_path)?;
             let gdbstub =
-                ProductionGdbstubChannelConfig::new(backend_listen, debug.operator_listen.clone())
+                QemuGdbstubChannelConfig::new(backend_listen, debug.operator_listen.clone())
                     .map_err(|error| {
                         loop_factory_error(format!("configure QEMU gdbstub: {error}"))
                     })?;
@@ -579,21 +559,27 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         node_service_states.insert(vm.id.clone(), service_state);
         let crash_detector = format!("lifecycle-{}-generation-{generation}", vm.id.name);
         let preparation = match restore_target {
-            Some(target) => ProductionVmNodePreparationKind::Exact {
-                root: target.manifest_identity,
-                root_overlay: ProductionVmNodeCheckpointArtifact {
-                    artifact: &target.overlay_artifact,
-                    role: "root overlay",
-                },
-                vmstate: ProductionVmNodeCheckpointArtifact {
-                    artifact: &target.vmstate_artifact,
-                    role: "VMState",
-                },
-            },
+            Some(_) => ProductionVmNodePreparationKind::Exact,
             None => ProductionVmNodePreparationKind::Fresh {
                 qemu_executable: &qemu_executable,
                 root_image: &guest_assets.root_image,
             },
+        };
+        let exact_admission = if restore_target.is_some() {
+            let snapshot = restore_target
+                .ok_or_else(|| loop_factory_error("exact restore target disappeared"))?
+                .snapshot
+                .clone();
+            let authority = repository_restore.as_mut().ok_or_else(|| {
+                loop_factory_error("exact restore has no repository target authority")
+            })?;
+            Some(authority.take_node_admission(
+                &vm.id,
+                snapshot,
+                restored_node_paused(service_state)?,
+            )?)
+        } else {
+            None
         };
         let launched = if let Some(adoption) = hot_fork_adoption {
             if restore_target.is_some()
@@ -621,8 +607,8 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 Some(process),
             ))
         } else {
-            match (restore_target, service_state) {
-                (Some(target), ProductionNodeServiceState::Running) => {
+            match (exact_admission, service_state) {
+                (Some(admission), ProductionNodeServiceState::Running) => {
                     launch_production_node_generation(
                         node_launcher.as_mut(),
                         ProductionVmNodeLaunchBasis::new(
@@ -633,14 +619,11 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                         ),
                         &crash_detector,
                         preparation,
-                        ProductionVmNodeLaunchKind::Exact {
-                            snapshot: &target.snapshot,
-                            paused: false,
-                        },
+                        ProductionVmNodeLaunchKind::Exact(Box::new(admission)),
                     )
                     .map(|launch| (launch, None))
                 }
-                (Some(target), ProductionNodeServiceState::PoweredOff) => {
+                (Some(admission), ProductionNodeServiceState::PoweredOff) => {
                     launch_production_node_generation(
                         node_launcher.as_mut(),
                         ProductionVmNodeLaunchBasis::new(
@@ -651,10 +634,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                         ),
                         &crash_detector,
                         preparation,
-                        ProductionVmNodeLaunchKind::Exact {
-                            snapshot: &target.snapshot,
-                            paused: true,
-                        },
+                        ProductionVmNodeLaunchKind::Exact(Box::new(admission)),
                     )
                     .map(|launch| (launch, None))
                 }
@@ -903,19 +883,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 loop_factory_error(format!("restore exact scheduler continuation: {error}"))
             })?;
     } else {
-        if let Some(frontier) = config
-            .logical_replay_boundary
-            .as_ref()
-            .map(|boundary| boundary.frontier)
-        {
-            // This CLI-session replay owns the runtime-only attempt cap until
-            // the authenticated logical boundary is reached and disarmed.
-            scheduler
-                .set_attempt_stop_frontier(Some(frontier))
-                .map_err(|error| {
-                    loop_factory_error(format!("cap QEMU logical replay frontier: {error}"))
-                })?;
-        } else if let Some(frontier) = first_configured_branch(config)
+        if let Some(frontier) = first_configured_branch(config)
             .map(|branch| branch.frontier)
             .or_else(|| {
                 config
@@ -1220,6 +1188,28 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         .map_or_else(BTreeMap::new, |checkpoint| {
             checkpoint.failed_host_io.clone()
         });
+    let mut exact_ram_parents = BTreeMap::new();
+    if let Some(checkpoint) = &restore_checkpoint {
+        let targets = checkpoint
+            .targets
+            .iter()
+            .filter_map(|(node, target)| {
+                target
+                    .native_exact_ram()
+                    .cloned()
+                    .map(|exact_ram| (node.clone(), exact_ram))
+            })
+            .collect::<BTreeMap<_, _>>();
+        if !targets.is_empty() {
+            exact_ram_parents.insert(
+                checkpoint.configuration.id(),
+                ProductionExactRamPublishedParent {
+                    closure: checkpoint.identity,
+                    targets,
+                },
+            );
+        }
+    }
     let mut lifecycle = ProductionVmLifecycleLoop {
         inner,
         trigger_graph,
@@ -1241,7 +1231,6 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         initial_lifecycle_observations_pending: restore_checkpoint
             .as_ref()
             .is_none_or(|checkpoint| checkpoint.initial_lifecycle_observations_pending),
-        logical_replay_boundary: config.logical_replay_boundary.clone(),
         branch: active_branch,
         continuation_branches,
         signal_fault_branches,
@@ -1255,7 +1244,6 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         fault_runtime,
         fault_replay_installed,
         fault_search_overrides_installed,
-        fault_evaluation_cursor,
         icount_shift: first.icount_shift,
         node_indexes,
         node_run_directories,
@@ -1272,6 +1260,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         source: source.clone(),
         config: config.clone(),
         checkpoint_targets,
+        exact_ram_parents,
         recorded_controls: restore_checkpoint
             .as_ref()
             .map_or_else(Vec::new, |checkpoint| checkpoint.recorded_controls.clone()),

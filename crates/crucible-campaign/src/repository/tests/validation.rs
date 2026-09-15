@@ -27,20 +27,25 @@ fn survivor_decision_publication_is_failure_atomic_and_replayable() {
     let (repository, lineage, base, blobs) = counted_fixture();
     let objective_name = "latency";
     let policy = CampaignPolicy::new(
-        base.scenario(),
-        base.campaign_seed(),
-        base.mode(),
-        base.explorer().clone(),
-        base.choice_policies().clone(),
-        BTreeMap::from([(
-            objective_name.to_owned(),
-            Objective::new(objective_name, ObjectiveGoal::Minimize, 1_000_000).expect("objective"),
-        )]),
-        base.guidance().clone(),
-        base.stop_conditions().clone(),
-        base.fairness(),
-        base.retention(),
-        base.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base.scenario(),
+            base.campaign_seed(),
+            base.mode(),
+            base.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            base.choice_policies().clone(),
+            BTreeMap::from([(
+                objective_name.to_owned(),
+                Objective::new(objective_name, ObjectiveGoal::Minimize, 1_000_000)
+                    .expect("objective"),
+            )]),
+            base.guidance().clone(),
+            base.stop_conditions().clone(),
+            base.fairness(),
+            base.retention(),
+            base.admits_scenario_defaults(),
+        ),
     )
     .expect("objective policy");
     repository.publish_policy(&policy).expect("publish policy");
@@ -130,20 +135,25 @@ fn objective_evaluation_publication_is_snapshot_owned_replayable_and_failure_ato
     let (repository, lineage, base, blobs) = counted_fixture();
     let objective_name = "latency";
     let policy = CampaignPolicy::new(
-        base.scenario(),
-        base.campaign_seed(),
-        base.mode(),
-        base.explorer().clone(),
-        base.choice_policies().clone(),
-        BTreeMap::from([(
-            objective_name.to_owned(),
-            Objective::new(objective_name, ObjectiveGoal::Minimize, 1_000_000).expect("objective"),
-        )]),
-        base.guidance().clone(),
-        base.stop_conditions().clone(),
-        base.fairness(),
-        base.retention(),
-        base.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base.scenario(),
+            base.campaign_seed(),
+            base.mode(),
+            base.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            base.choice_policies().clone(),
+            BTreeMap::from([(
+                objective_name.to_owned(),
+                Objective::new(objective_name, ObjectiveGoal::Minimize, 1_000_000)
+                    .expect("objective"),
+            )]),
+            base.guidance().clone(),
+            base.stop_conditions().clone(),
+            base.fairness(),
+            base.retention(),
+            base.admits_scenario_defaults(),
+        ),
     )
     .expect("objective policy");
     repository.publish_policy(&policy).expect("publish policy");
@@ -221,6 +231,7 @@ fn objective_evaluation_publication_is_snapshot_owned_replayable_and_failure_ato
         published_snapshot.snapshot.active_policy(),
         forged_roots,
         transition,
+        published_snapshot.snapshot.budget_ledger(),
     )
     .expect("forged objective successor");
     let forged_content = repository
@@ -290,17 +301,21 @@ fn objective_evaluation_publication_is_snapshot_owned_replayable_and_failure_ato
 fn objective_scan_cursor_tracks_a_late_lower_ordinal_observation() {
     let (repository, lineage, base_policy) = fixture();
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        CampaignMode::Streaming,
-        base_policy.explorer().clone(),
-        base_policy.choice_policies().clone(),
-        base_policy.objectives().clone(),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            CampaignMode::Streaming,
+            base_policy.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            base_policy.objectives().clone(),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("streaming policy");
     let name = "objective-scan-late-observation";
@@ -450,20 +465,24 @@ fn objective_scan_cursor_tracks_a_late_lower_ordinal_observation() {
 fn objective_scan_work_is_linear_as_completed_history_grows() {
     let (repository, lineage, base_policy) = fixture();
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        base_policy.mode(),
-        ExplorerPolicy::Beam {
-            width: 1,
-            novelty_reserve: 0,
-        },
-        base_policy.choice_policies().clone(),
-        base_policy.objectives().clone(),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            base_policy.mode(),
+            ExplorerPolicy::Beam {
+                width: 1,
+                novelty_reserve: 0,
+            },
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            base_policy.objectives().clone(),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("Beam objective scan policy");
     let name = "objective-scan-linear-growth";
@@ -484,10 +503,12 @@ fn objective_scan_work_is_linear_as_completed_history_grows() {
             &label,
         );
         let request = BranchRequest::new(
-            request.branch_point(),
-            request.parent(),
-            request.opportunity(),
-            request.domain(),
+            BranchRequest::identity(
+                request.branch_point(),
+                request.parent(),
+                request.opportunity(),
+                request.domain(),
+            ),
             CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(false)]))
                 .expect("single Beam candidate"),
             request.cause(),
@@ -737,10 +758,12 @@ fn generated_integer_request(
         .publish_choice_opportunity(&opportunity)
         .expect("publish opportunity");
     let request = BranchRequest::new(
-        opportunity.branch_point_id(lineage.genesis()),
-        lineage.genesis_content(),
-        opportunity.id().expect("opportunity id"),
-        domain.id().expect("domain id"),
+        BranchRequest::identity(
+            opportunity.branch_point_id(lineage.genesis()),
+            lineage.genesis_content(),
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
         CandidateSource::generated(generator),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -796,10 +819,12 @@ fn generated_discrete_request(
         .publish_choice_opportunity(&opportunity)
         .expect("publish opportunity");
     let request = BranchRequest::new(
-        opportunity.branch_point_id(lineage.genesis()),
-        lineage.genesis_content(),
-        opportunity.id().expect("opportunity id"),
-        domain.id().expect("domain id"),
+        BranchRequest::identity(
+            opportunity.branch_point_id(lineage.genesis()),
+            lineage.genesis_content(),
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
         CandidateSource::generated(generator),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -854,7 +879,9 @@ fn generated_observation_with_coverage(
         )
         .expect("publish progressive child");
     let measurements = repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
+        .publish_measurement_set(
+            &MeasurementSet::test_evaluation(b"empty", BTreeSet::new()).expect("measurements"),
+        )
         .expect("publish measurements");
     let properties = repository
         .publish_property_verdict_set(
@@ -868,13 +895,15 @@ fn generated_observation_with_coverage(
         .expect("publish coverage");
     Observation::new(
         admission.attempt,
-        child,
-        child_content,
-        path.id().expect("path id"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements,
-        properties,
-        coverage,
+        Observation::outcome(
+            child,
+            child_content,
+            path.id().expect("path id"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurements,
+            properties,
+            coverage,
+        ),
         BTreeSet::from([opportunity]),
     )
     .expect("progressive observation")
@@ -941,6 +970,7 @@ fn cold_ancestry_rejects_a_forged_branch_acceptance_summary() {
         accepted_snapshot.snapshot.active_policy(),
         accepted_snapshot.snapshot.roots(),
         CampaignFactId::from_content_id(forged_fact).expect("forged fact ID"),
+        accepted_snapshot.snapshot.budget_ledger(),
     )
     .expect("forge acceptance successor");
     let forged_content = repository
@@ -992,8 +1022,14 @@ fn ancestry_rejects_branch_request_with_an_unrelated_root_change() {
         .put_branch_request(&request)
         .expect("put request");
     let request_id = BranchRequestId::from_content_id(request_content).expect("request id");
+    let summary = repository
+        .branch_acceptance_summary(parent.snapshot.roots().graph, &request)
+        .expect("branch acceptance summary");
     let transition_content = repository
-        .put_fact(&CampaignFact::BranchRequestIssued(request_id))
+        .put_fact(&CampaignFact::BranchRequestAccepted {
+            request: request_id,
+            summary,
+        })
         .expect("put transition");
     let mut roots = parent.snapshot.roots();
     roots.exploration = repository
@@ -1060,6 +1096,7 @@ fn ancestry_rejects_branch_request_with_an_unrelated_root_change() {
         parent.snapshot.active_policy(),
         roots,
         CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged snapshot");
     let forged_content = repository
@@ -1106,8 +1143,14 @@ fn ancestry_rejects_a_forged_initial_frontier_projection() {
         .put_branch_request(&request)
         .expect("put request");
     let request_id = BranchRequestId::from_content_id(request_content).expect("request id");
+    let summary = repository
+        .branch_acceptance_summary(parent.snapshot.roots().graph, &request)
+        .expect("branch acceptance summary");
     let transition_content = repository
-        .put_fact(&CampaignFact::BranchRequestIssued(request_id))
+        .put_fact(&CampaignFact::BranchRequestAccepted {
+            request: request_id,
+            summary,
+        })
         .expect("put transition");
 
     let mut roots = parent.snapshot.roots();
@@ -1162,6 +1205,7 @@ fn ancestry_rejects_a_forged_initial_frontier_projection() {
         parent.snapshot.active_policy(),
         roots,
         CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged snapshot");
     let forged_content = repository
@@ -1224,6 +1268,7 @@ fn imported_ancestry_rejects_cross_type_mutation_command_reuse() {
         head.snapshot().active_policy(),
         roots,
         CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged snapshot");
     let forged_content = repository
@@ -1489,7 +1534,7 @@ fn pin_rejects_stale_or_nonauthoritative_configuration_before_writes() {
         command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"stale-pin")),
         expected_snapshot: CampaignSnapshotId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignSnapshot,
-            2,
+            3,
             b"stale-pin-snapshot",
         ))
         .expect("stale snapshot id"),
@@ -1536,6 +1581,7 @@ fn imported_pin_transition_requires_the_exact_pin_projection() {
         source.snapshot().active_policy(),
         roots,
         transition,
+        crate::test_budget_ledger_id(),
     )
     .expect("forged snapshot");
     let forged_content = repository
@@ -1567,7 +1613,7 @@ fn stale_and_invalid_transitions_do_not_advance_head() {
         "stale",
         CampaignSnapshotId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignSnapshot,
-            2,
+            3,
             b"stale",
         ))
         .expect("stale snapshot id"),
@@ -1602,8 +1648,11 @@ fn stale_and_invalid_transitions_do_not_advance_head() {
 #[test]
 fn nonempty_policy_round_trips_and_missing_generator_fails_before_ref_publication() {
     let (repository, lineage, _) = fixture();
-    let generator =
-        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("generator");
+    let generator = CandidateGeneratorSpec::new(
+        crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::All,
+    )
+    .expect("generator");
     let generator_id = generator.id().expect("generator id");
     let policy = policy_with_generator(lineage.scenario(), generator_id);
     let generators = BTreeMap::from([(generator_id, generator)]);
@@ -1653,7 +1702,7 @@ fn closure_walker_rejects_missing_generator_grandchildren() {
     ))
     .expect("missing child");
     let mixture = CandidateGeneratorSpec::new(
-        1,
+        crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
         CandidateGeneratorAlgorithm::OrderedMixture {
             components: vec![WeightedGenerator::new(missing, 1).expect("weighted child")],
         },
@@ -1695,7 +1744,7 @@ fn generator_publication_rejects_missing_children_before_writing() {
     ))
     .expect("missing child");
     let generator = CandidateGeneratorSpec::new(
-        1,
+        crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
         CandidateGeneratorAlgorithm::OrderedMixture {
             components: vec![WeightedGenerator::new(missing, 1).expect("weighted child")],
         },
@@ -1717,8 +1766,11 @@ fn generator_publication_rejects_missing_children_before_writing() {
 #[test]
 fn creation_rejects_unrelated_generators_before_publication() {
     let (repository, lineage, policy, blobs) = counted_fixture();
-    let unrelated =
-        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("generator");
+    let unrelated = CandidateGeneratorSpec::new(
+        crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::All,
+    )
+    .expect("generator");
     let unrelated_id = unrelated.id().expect("generator id");
     let objects_before = blobs.object_count().expect("objects before rejection");
 
@@ -1767,7 +1819,7 @@ fn head_rejects_a_snapshot_with_missing_parent_and_transition() {
         .expect("create");
     let missing_parent = CampaignSnapshotId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignSnapshot,
-        2,
+        3,
         b"missing-parent",
     ))
     .expect("parent id");
@@ -1783,6 +1835,7 @@ fn head_rejects_a_snapshot_with_missing_parent_and_transition() {
         created.snapshot().active_policy(),
         created.snapshot().roots(),
         missing_transition,
+        crate::test_budget_ledger_id(),
     )
     .expect("damaged snapshot");
     let damaged_content = repository.put_snapshot(&damaged).expect("put damaged");
@@ -1831,6 +1884,7 @@ fn head_rejects_forged_control_successors_and_noncontrol_transitions() {
         created.snapshot().active_policy(),
         changed_roots,
         CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged snapshot");
     let forged_content = repository
@@ -1860,6 +1914,7 @@ fn head_rejects_forged_control_successors_and_noncontrol_transitions() {
         created.snapshot().active_policy(),
         created.snapshot().roots(),
         CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged snapshot");
     let forged_content = repository
@@ -1904,6 +1959,7 @@ fn imported_derivation_rejects_changed_semantic_roots() {
         source.snapshot().active_policy(),
         roots,
         CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged derivation");
     let forged_content = repository
@@ -1933,8 +1989,11 @@ fn imported_derivation_enforces_the_bounded_generator_closure() {
     let source = repository
         .create("bounded-derive-source", &lineage, &policy, &BTreeMap::new())
         .expect("create source");
-    let mut generator =
-        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("base generator");
+    let mut generator = CandidateGeneratorSpec::new(
+        crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::All,
+    )
+    .expect("base generator");
     let mut generator_id = CandidateGeneratorSpecId::from_content_id(
         repository
             .put_generator(&generator)
@@ -1943,7 +2002,7 @@ fn imported_derivation_enforces_the_bounded_generator_closure() {
     .expect("base generator id");
     for _ in 0..crate::MAX_CREATE_CAMPAIGN_GENERATORS {
         generator = CandidateGeneratorSpec::new(
-            1,
+            crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
             CandidateGeneratorAlgorithm::OrderedMixture {
                 components: vec![
                     WeightedGenerator::new(generator_id, 1).expect("weighted generator"),
@@ -1984,6 +2043,7 @@ fn imported_derivation_enforces_the_bounded_generator_closure() {
         oversized_policy_id,
         roots,
         CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged derivation");
     let forged_content = repository
@@ -2033,6 +2093,11 @@ fn head_rejects_genesis_without_canonical_configuration_membership() {
             accounting: empty,
             coordination: empty,
         },
+        repository
+            .put_budget_ledger(
+                crate::CampaignBudgetLedger::empty(empty).expect("empty budget ledger"),
+            )
+            .expect("publish budget ledger"),
     )
     .expect("malformed genesis");
     let content = repository.put_snapshot(&malformed).expect("snapshot");
@@ -2164,123 +2229,4 @@ fn every_reachable_merkle_root_uses_the_owner_validator() {
     ));
 }
 
-#[test]
-fn planner_invocations_bind_artifact_and_state_to_one_engine() {
-    let (repository, _, policy) = fixture();
-    let engine_a = PlannerEngine::new("engine-a", 1, 1, BTreeSet::new()).expect("engine A");
-    let engine_b = PlannerEngine::new("engine-b", 1, 1, BTreeSet::new()).expect("engine B");
-    for engine in [&engine_a, &engine_b] {
-        repository
-            .put_envelope(
-                ObjectEnvelope::for_record(
-                    crate::CampaignRecordKind::PlannerEngine,
-                    BTreeSet::new(),
-                    crate::codec::encode(engine),
-                )
-                .expect("engine envelope"),
-            )
-            .expect("put engine");
-    }
-
-    let dependency_bytes = b"planner dependency".to_vec();
-    let dependency = ContentId::for_bytes(ObjectKind::Trace, 1, &dependency_bytes);
-    repository
-        .blobs
-        .put_if_absent(dependency, &BlobHandle::from_bytes(dependency_bytes))
-        .expect("put dependency");
-    let artifact = PolicyArtifact::new(
-        engine_a.id().expect("engine A id"),
-        1,
-        dependency,
-        BTreeSet::new(),
-        BTreeMap::new(),
-    )
-    .expect("artifact");
-    repository
-        .put_envelope(
-            ObjectEnvelope::for_record(
-                crate::CampaignRecordKind::PolicyArtifact,
-                crate::object::content_children(artifact.content_children())
-                    .expect("artifact children"),
-                crate::codec::encode(&artifact),
-            )
-            .expect("artifact envelope"),
-        )
-        .expect("put artifact");
-    let state = PlannerState::new(
-        engine_b.id().expect("engine B id"),
-        "test-state",
-        1,
-        Vec::new(),
-    )
-    .expect("state");
-    repository
-        .put_envelope(
-            ObjectEnvelope::for_record(
-                crate::CampaignRecordKind::PlannerState,
-                crate::object::content_children([("engine", state.engine().content_id())])
-                    .expect("state children"),
-                crate::codec::encode(&state),
-            )
-            .expect("state envelope"),
-        )
-        .expect("put state");
-    repository.put_policy(&policy).expect("put policy");
-
-    let empty = repository.merkle.empty().expect("empty root").content_id();
-    let view =
-        CampaignPlanningView::new(empty, empty, empty, empty, empty, empty, empty).expect("view");
-    repository
-        .put_envelope(
-            ObjectEnvelope::for_record(
-                crate::CampaignRecordKind::PlanningView,
-                crate::object::content_children(view.content_children()).expect("view children"),
-                view.canonical_bytes(),
-            )
-            .expect("view envelope"),
-        )
-        .expect("put view");
-    let invocation = PlannerInvocation::new(
-        engine_a.id().expect("engine A id"),
-        artifact.id().expect("artifact id"),
-        policy.id().expect("policy id"),
-        state.id().expect("state id"),
-        view.id().expect("view id"),
-        PlanningScanPage::new(None, 1, Vec::new(), true, 0).expect("scan page"),
-        PlanningBudget::new(1, 1, 1, 1, 1).expect("budget"),
-    )
-    .expect("invocation");
-    let invocation_content = repository
-        .put_envelope(
-            ObjectEnvelope::for_record(
-                crate::CampaignRecordKind::PlannerInvocation,
-                crate::object::content_children(invocation.content_children())
-                    .expect("invocation children"),
-                crate::codec::encode(&invocation),
-            )
-            .expect("invocation envelope"),
-        )
-        .expect("put invocation");
-    assert!(matches!(
-        repository.verify_campaign_closure(invocation_content),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "planner-invocation-engine-mismatch"
-        })
-    ));
-}
-
-#[test]
-fn unowned_fact_reference_families_fail_closed() {
-    let (repository, lineage, _) = fixture();
-    let lineage_content = repository.put_lineage(&lineage).expect("lineage");
-    let asserted_branch_request = crate::BranchRequestId::from_content_id(lineage_content)
-        .expect("same broad-kind asserted ID");
-    let fact = CampaignFact::BranchRequestIssued(asserted_branch_request);
-    let fact_content = repository.put_fact(&fact).expect("put fact");
-    assert!(matches!(
-        repository.verify_campaign_closure(fact_content),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "campaign-child-record-kind-mismatch"
-        })
-    ));
-}
+mod planner_binding;

@@ -1,20 +1,6 @@
-//! Fail-closed cleanup for rejected warm QEMU realizations.
+//! Fail-closed cleanup for rejected restored QEMU realizations.
 
-use super::{QemuNode, QemuNodeChild, QemuNodeFactoryError, QemuWarmRestoreLaunchError};
-
-pub(super) fn reap_failed_warm_restore_child(
-    mut child: QemuNodeChild,
-    primary: QemuWarmRestoreLaunchError,
-) -> QemuWarmRestoreLaunchError {
-    match child.force_kill_and_reap_failed_realization() {
-        Ok(()) => primary,
-        Err(cleanup) => QemuWarmRestoreLaunchError::FailedCleanup {
-            primary: Box::new(primary),
-            cleanup,
-            unreaped_child: Some(Box::new(child)),
-        },
-    }
-}
+use super::{QemuNode, QemuNodeChild, QemuNodeFactoryError};
 
 pub(super) fn reap_failed_restore_child(
     mut child: QemuNodeChild,

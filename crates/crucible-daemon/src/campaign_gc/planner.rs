@@ -35,63 +35,89 @@ use super::{
 
 /// One named physical blob leaf and its separate inventory authority.
 #[derive(Clone, Copy)]
-pub struct CampaignGcPhysicalStore<'a> {
-    backend: &'a str,
-    admin: &'a dyn BlobStoreAdmin,
-    graph: Option<StoreGraphPhysicalAdmin<'a>>,
+pub(super) struct CampaignGcPhysicalStore<'a> {
+    graph: StoreGraphPhysicalAdmin<'a>,
 }
 
 impl<'a> CampaignGcPhysicalStore<'a> {
-    /// Binds a physical backend name to its administrative capability.
-    ///
-    /// The name must equal the backend identity returned by its fenced
-    /// inventory. Construction does not acquire the fence.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignGcPlanError::InvalidBackendId`] if `backend` violates
-    /// the canonical v1 identifier grammar.
-    pub fn new(
-        backend: &'a str,
-        admin: &'a dyn BlobStoreAdmin,
-    ) -> Result<Self, CampaignGcPlanError> {
-        validate_backend_id(backend)?;
-        Ok(Self {
-            backend,
-            admin,
-            graph: None,
-        })
-    }
-
     /// Binds one physical leaf borrowed from a separately held graph admin.
     ///
     /// # Errors
     ///
     /// Returns [`CampaignGcPlanError::InvalidBackendId`] if the admitted graph
     /// node ID violates the canonical GC backend identifier grammar.
-    pub fn from_graph_leaf(
+    pub(super) fn from_graph_leaf(
         physical: StoreGraphPhysicalAdmin<'a>,
     ) -> Result<Self, CampaignGcPlanError> {
         validate_backend_id(physical.node().as_str())?;
-        Ok(Self {
-            backend: physical.node().as_str(),
-            admin: physical.admin(),
-            graph: Some(physical),
-        })
+        Ok(Self { graph: physical })
     }
 
     /// Returns the physical backend identifier.
     #[must_use]
-    pub const fn backend(self) -> &'a str {
+    pub(super) fn backend(self) -> &'a str {
+        self.graph.node().as_str()
+    }
+
+    pub(super) const fn admin(self) -> &'a dyn BlobStoreAdmin {
+        self.graph.admin()
+    }
+
+    pub(super) const fn graph(self) -> StoreGraphPhysicalAdmin<'a> {
+        self.graph
+    }
+}
+
+pub(super) trait CampaignGcInventoryTarget<'a>: Copy {
+    fn backend(self) -> &'a str;
+
+    fn admin(self) -> &'a dyn BlobStoreAdmin;
+}
+
+impl<'a> CampaignGcInventoryTarget<'a> for CampaignGcPhysicalStore<'a> {
+    fn backend(self) -> &'a str {
+        self.backend()
+    }
+
+    fn admin(self) -> &'a dyn BlobStoreAdmin {
+        self.admin()
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(super) struct CampaignGcRawPhysicalStore<'a> {
+    backend: &'a str,
+    admin: &'a dyn BlobStoreAdmin,
+}
+
+#[cfg(test)]
+impl<'a> CampaignGcRawPhysicalStore<'a> {
+    pub(super) fn new(
+        backend: &'a str,
+        admin: &'a dyn BlobStoreAdmin,
+    ) -> Result<Self, CampaignGcPlanError> {
+        validate_backend_id(backend)?;
+        Ok(Self { backend, admin })
+    }
+
+    pub(super) const fn backend(self) -> &'a str {
         self.backend
     }
 
     pub(super) const fn admin(self) -> &'a dyn BlobStoreAdmin {
         self.admin
     }
+}
 
-    pub(super) const fn graph(self) -> Option<StoreGraphPhysicalAdmin<'a>> {
-        self.graph
+#[cfg(test)]
+impl<'a> CampaignGcInventoryTarget<'a> for CampaignGcRawPhysicalStore<'a> {
+    fn backend(self) -> &'a str {
+        self.backend()
+    }
+
+    fn admin(self) -> &'a dyn BlobStoreAdmin {
+        self.admin()
     }
 }
 
@@ -210,10 +236,13 @@ where
         repository,
         refs,
         ledger,
-        write_back,
-        CampaignGcRetentionSources::without_hot_checkpoints(exact_pins),
+        CampaignGcPlanningRoots {
+            write_back,
+            retention: CampaignGcRetentionSources::without_hot_checkpoints(exact_pins),
+        },
         CampaignHash::from_bytes(store_graph.configuration_id().as_bytes()),
         &physical,
+        plan_policy_aware_physical,
     )
 }
 
@@ -252,10 +281,13 @@ where
         repository,
         refs,
         ledger,
-        write_back,
-        CampaignGcRetentionSources::with_transfers(exact_pins, transfers),
+        CampaignGcPlanningRoots {
+            write_back,
+            retention: CampaignGcRetentionSources::with_transfers(exact_pins, transfers),
+        },
         CampaignHash::from_bytes(store_graph.configuration_id().as_bytes()),
         &physical,
+        plan_policy_aware_physical,
     )
 }
 
@@ -294,10 +326,13 @@ where
         repository,
         refs,
         ledger,
-        write_back,
-        roots.into_sources(),
+        CampaignGcPlanningRoots {
+            write_back,
+            retention: roots.into_sources(),
+        },
         CampaignHash::from_bytes(store_graph.configuration_id().as_bytes()),
         &physical,
+        plan_policy_aware_physical,
     )
 }
 
@@ -309,7 +344,7 @@ pub(crate) fn plan_single_host_campaign_gc_with_physical<L>(
     write_back: Option<&dyn WriteBackRetentionAdmin>,
     exact_pins: Option<&mut dyn ExactPinRetentionAdmin>,
     store_graph: CampaignHash,
-    physical: &[CampaignGcPhysicalStore<'_>],
+    physical: &[CampaignGcRawPhysicalStore<'_>],
 ) -> Result<CampaignGcPreparedPlan, CampaignGcPlanningError<L::Error>>
 where
     L: AssignmentRetentionAdmin,
@@ -319,10 +354,13 @@ where
         repository,
         refs,
         ledger,
-        write_back,
-        CampaignGcRetentionSources::without_hot_checkpoints(exact_pins),
+        CampaignGcPlanningRoots {
+            write_back,
+            retention: CampaignGcRetentionSources::without_hot_checkpoints(exact_pins),
+        },
         store_graph,
         physical,
+        plan_unreachable_physical,
     )
 }
 
@@ -334,7 +372,7 @@ pub(crate) fn plan_single_host_campaign_gc_with_physical_and_hot_checkpoints<L>(
     write_back: Option<&dyn WriteBackRetentionAdmin>,
     root_sources: CampaignGcHotCheckpointRoots<'_>,
     store_graph: CampaignHash,
-    physical: &[CampaignGcPhysicalStore<'_>],
+    physical: &[CampaignGcRawPhysicalStore<'_>],
 ) -> Result<CampaignGcPreparedPlan, CampaignGcPlanningError<L::Error>>
 where
     L: AssignmentRetentionAdmin,
@@ -344,27 +382,44 @@ where
         repository,
         refs,
         ledger,
-        write_back,
-        root_sources.into_sources(),
+        CampaignGcPlanningRoots {
+            write_back,
+            retention: root_sources.into_sources(),
+        },
         store_graph,
         physical,
+        plan_unreachable_physical,
     )
 }
 
-pub(super) fn plan_single_host_campaign_gc_with_physical_and_root_sources<L>(
+struct CampaignGcPlanningRoots<'write_back, 'retention> {
+    write_back: Option<&'write_back dyn WriteBackRetentionAdmin>,
+    retention: CampaignGcRetentionSources<'retention>,
+}
+
+fn plan_single_host_campaign_gc_with_physical_and_root_sources<'a, L, P, F>(
     repository: &CampaignRepository,
     refs: &dyn RefStoreAdmin,
     ledger: &mut L,
-    write_back: Option<&dyn WriteBackRetentionAdmin>,
-    root_sources: CampaignGcRetentionSources<'_>,
+    roots: CampaignGcPlanningRoots<'_, '_>,
     store_graph: CampaignHash,
-    physical: &[CampaignGcPhysicalStore<'_>],
+    physical: &[P],
+    plan_physical: F,
 ) -> Result<CampaignGcPreparedPlan, CampaignGcPlanningError<L::Error>>
 where
     L: AssignmentRetentionAdmin,
     L::Error: StdError + Send + Sync + 'static,
+    P: CampaignGcInventoryTarget<'a>,
+    F: FnOnce(
+        &[P],
+        &BTreeSet<crucible_cas::content_store::ContentId>,
+    ) -> Result<PlannedPhysical, CampaignGcPlanningError<L::Error>>,
 {
     validate_physical_inputs(physical).map_err(CampaignGcPlanningError::Plan)?;
+    let CampaignGcPlanningRoots {
+        write_back,
+        retention: root_sources,
+    } = roots;
     let exact_pins = root_sources.exact_pins;
 
     let mut roots = RootAccumulator::default();
@@ -392,41 +447,16 @@ where
     let reachable_objects = u64::try_from(reachable.len())
         .map_err(|_| CampaignGcPlanningError::Manifest(CampaignGcManifestError::EntryLimit))?;
 
-    let graph_aware = physical.iter().all(|target| target.graph().is_some());
-    if !graph_aware && physical.iter().any(|target| target.graph().is_some()) {
-        return Err(CampaignGcPlanningError::Plan(
-            CampaignGcPlanError::InvalidPhysicalInventoryCount,
-        ));
-    }
-    let planned = if graph_aware {
-        plan_policy_aware_physical(physical, &reachable)?
-    } else {
-        plan_unreachable_physical(physical, &reachable)?
-    };
-    let candidate_manifest = if graph_aware {
-        CampaignGcCandidateManifest::new_policy_aware(planned.candidates)?
-    } else {
-        CampaignGcCandidateManifest::new(planned.candidates)?
-    };
-    let plan = if graph_aware {
-        CampaignGcPlan::new_policy_aware(
-            store_graph,
-            root_manifest.id(),
-            ref_summary,
-            ledger_summary,
-            candidate_manifest.summary(),
-            planned.physical_basis,
-        )?
-    } else {
-        CampaignGcPlan::new(
-            store_graph,
-            root_manifest.id(),
-            ref_summary,
-            ledger_summary,
-            candidate_manifest.summary(),
-            planned.physical_basis,
-        )?
-    };
+    let planned = plan_physical(physical, &reachable)?;
+    let candidate_manifest = CampaignGcCandidateManifest::new(planned.candidates)?;
+    let plan = CampaignGcPlan::new(
+        store_graph,
+        root_manifest.id(),
+        ref_summary,
+        ledger_summary,
+        candidate_manifest.summary(),
+        planned.physical_basis,
+    )?;
     Ok(CampaignGcPreparedPlan {
         plan,
         roots: root_manifest,
@@ -444,8 +474,9 @@ struct PlannedPhysical {
     reachable_cache_candidates: u64,
 }
 
+#[cfg(test)]
 fn plan_unreachable_physical<E>(
-    physical: &[CampaignGcPhysicalStore<'_>],
+    physical: &[CampaignGcRawPhysicalStore<'_>],
     reachable: &BTreeSet<crucible_cas::content_store::ContentId>,
 ) -> Result<PlannedPhysical, CampaignGcPlanningError<E>>
 where
@@ -454,9 +485,9 @@ where
     let mut candidates = Vec::new();
     let mut physical_basis = Vec::with_capacity(physical.len());
     for target in physical {
-        let mut fence = target.admin.acquire_inventory_fence().map_err(|source| {
+        let mut fence = target.admin().acquire_inventory_fence().map_err(|source| {
             CampaignGcPlanningError::Blob {
-                backend: target.backend.to_owned(),
+                backend: target.backend().to_owned(),
                 source,
             }
         })?;
@@ -468,7 +499,7 @@ where
                     }
                     candidates.push(
                         CampaignGcCandidate::new(
-                            target.backend,
+                            target.backend(),
                             record.id(),
                             record.logical_length(),
                         )
@@ -480,12 +511,12 @@ where
                 Ok(())
             })
             .map_err(|source| CampaignGcPlanningError::Blob {
-                backend: target.backend.to_owned(),
+                backend: target.backend().to_owned(),
                 source,
             })?;
-        if summary.backend() != target.backend {
+        if summary.backend() != target.backend() {
             return Err(CampaignGcPlanningError::BackendIdentityMismatch {
-                expected: target.backend.to_owned(),
+                expected: target.backend().to_owned(),
                 actual: summary.backend().to_owned(),
             });
         }
@@ -520,13 +551,11 @@ where
     let mut aliases = BTreeMap::<PhysicalStorageIdentity, usize>::new();
 
     for (target_index, target) in physical.iter().enumerate() {
-        let graph = target.graph().ok_or(CampaignGcPlanningError::Plan(
-            CampaignGcPlanError::InvalidPhysicalInventoryCount,
-        ))?;
+        let graph = target.graph();
         let mut reachable_records = Vec::new();
-        let mut fence = target.admin.acquire_inventory_fence().map_err(|source| {
+        let mut fence = target.admin().acquire_inventory_fence().map_err(|source| {
             CampaignGcPlanningError::Blob {
-                backend: target.backend.to_owned(),
+                backend: target.backend().to_owned(),
                 source,
             }
         })?;
@@ -545,7 +574,7 @@ where
                     }
                     candidates.push(
                         CampaignGcCandidate::new(
-                            target.backend,
+                            target.backend(),
                             record.id(),
                             record.logical_length(),
                         )
@@ -557,12 +586,12 @@ where
                 Ok(())
             })
             .map_err(|source| CampaignGcPlanningError::Blob {
-                backend: target.backend.to_owned(),
+                backend: target.backend().to_owned(),
                 source,
             })?;
-        if summary.backend() != target.backend {
+        if summary.backend() != target.backend() {
             return Err(CampaignGcPlanningError::BackendIdentityMismatch {
-                expected: target.backend.to_owned(),
+                expected: target.backend().to_owned(),
                 actual: summary.backend().to_owned(),
             });
         }
@@ -610,8 +639,8 @@ where
             .entry(placement.record.logical_length())
             .and_modify(|current_index| {
                 let current = &observed[*current_index];
-                let current_key = (current.identity, physical[current.target].backend);
-                let replacement_key = (placement.identity, physical[placement.target].backend);
+                let current_key = (current.identity, physical[current.target].backend());
+                let replacement_key = (placement.identity, physical[placement.target].backend());
                 if replacement_key < current_key {
                     *current_index = placement_index;
                 }
@@ -641,7 +670,7 @@ where
             continue;
         };
         let source_target = physical[source.target];
-        if authenticated_sources.insert((source_target.backend.to_owned(), source.record.id())) {
+        if authenticated_sources.insert((source_target.backend().to_owned(), source.record.id())) {
             authenticate_required_copy(source_target, source.record, &summaries[source.target])?;
         }
         if candidates.len() >= MAX_CAMPAIGN_GC_MANIFEST_ENTRIES {
@@ -650,10 +679,10 @@ where
             ));
         }
         candidates.push(CampaignGcCandidate::new_reachable_read_through_cache(
-            physical[cache.target].backend,
+            physical[cache.target].backend(),
             cache.record.id(),
             cache.record.logical_length(),
-            source_target.backend,
+            source_target.backend(),
         )?);
         cache_candidates =
             cache_candidates
@@ -665,7 +694,7 @@ where
 
     let physical_basis = summaries
         .iter()
-        .map(CampaignGcBlobInventoryBasis::from_policy_aware_summary)
+        .map(CampaignGcBlobInventoryBasis::from_summary)
         .collect::<Result<Vec<_>, _>>()?;
     let unreachable_candidates = candidates
         .iter()
@@ -688,18 +717,16 @@ where
     E: StdError + 'static,
 {
     validate_required_copy_inventory(target, record, expected)?;
-    let graph = target.graph().ok_or(CampaignGcPlanningError::Plan(
-        CampaignGcPlanError::InvalidPhysicalInventoryCount,
-    ))?;
+    let graph = target.graph();
     let handle = graph
         .read(record.id())
         .map_err(|source| CampaignGcPlanningError::Blob {
-            backend: target.backend.to_owned(),
+            backend: target.backend().to_owned(),
             source,
         })?;
     if handle.logical_length() != record.logical_length() {
         return Err(CampaignGcPlanningError::Blob {
-            backend: target.backend.to_owned(),
+            backend: target.backend().to_owned(),
             source: StoreError::InvalidComposition {
                 reason: "campaign GC required-copy logical length changed",
             },
@@ -708,7 +735,7 @@ where
     handle
         .copy_to(&mut io::sink())
         .map_err(|source| CampaignGcPlanningError::Blob {
-            backend: target.backend.to_owned(),
+            backend: target.backend().to_owned(),
             source,
         })?;
     validate_required_copy_inventory(target, record, expected)
@@ -971,15 +998,16 @@ where
     Ok(())
 }
 
-fn validate_physical_inputs(
-    physical: &[CampaignGcPhysicalStore<'_>],
-) -> Result<(), CampaignGcPlanError> {
+fn validate_physical_inputs<'a, P>(physical: &[P]) -> Result<(), CampaignGcPlanError>
+where
+    P: CampaignGcInventoryTarget<'a>,
+{
     if physical.is_empty() || physical.len() > MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES {
         return Err(CampaignGcPlanError::InvalidPhysicalInventoryCount);
     }
     if physical
         .windows(2)
-        .any(|pair| pair[0].backend >= pair[1].backend)
+        .any(|pair| pair[0].backend() >= pair[1].backend())
     {
         return Err(CampaignGcPlanError::InvalidPhysicalInventoryCount);
     }

@@ -124,7 +124,7 @@ command set; none invents control semantics ([API-2]).
 
     // ── session lifecycle (unary) ───────────────────────────────────────────
     CreateSession(…)               -> SessionRef             // 20 §4: instantiate(genesis)
-    ResumeSession(…)               -> SessionRef             // 20 §4: instantiate(checkpoint)
+    ResumeSession(…)               -> SessionRef             // authenticate observation, then resume
     ListSessions(…)                -> ListSessionsResponse
     DestroySession(…)              -> DestroySessionResponse  // 20 §4: stop + drop
     GetReproduction(…)             -> GetReproductionResponse // recorded command stream (20 §8)
@@ -145,7 +145,7 @@ command set; none invents control semantics ([API-2]).
   ListScenarios     (none; read scenario registry)           names + descriptions; no session
   CreateSession     new actor; Command::Start (20 §4.1)      from scenario ref OR inline def;
                                                              seed; start_paused → Paused(Instan.)
-  ResumeSession     new actor at checkpoint (20 §4.1)        self-contained scenario/schedule/checkpoint closure
+  ResumeSession     new actor after source replay (20 §4.1)  authenticated portable observation source
   ListSessions      read registry + each mirror (SESS-23)    current state may be stale; attach for live
   DestroySession    Command::Stop then drop the actor        epoch-guarded (§21.5)
   GetReproduction   read control log (20 §8)                 recorded command stream (§21.5.2)
@@ -179,10 +179,12 @@ command set; none invents control semantics ([API-2]).
   breakpoints and faults before the first `Continue`). It MUST instantiate the
   genesis configuration `(def, [])` via the session's single `instantiate`
   ([SESS-11]) and return a `SessionRef` (id + epoch + seed, §21.5).
-  `ResumeSession` MUST accept a self-contained scenario form payload, schedule,
-  and fat checkpoint closure, reject seed, scenario-payload, or closure
-  mismatches, instantiate the recorded non-genesis configuration through the same
-  session lifecycle, and return a normal `SessionRef`. *Gate:*
+  `ResumeSession` MUST accept a scenario form, schedule, checkpoint, and
+  content-bound portable observation proof and evidence. The campaign owner MUST
+  authenticate and reproduce that observation before it publishes a resumed
+  session, and MUST reject seed, scenario, checkpoint, or evidence mismatches.
+  Exact-checkpoint resume without portable observation evidence enters through
+  the campaign-owned exact-resume operation rather than this unary route. *Gate:*
   `gate:control-responsive`, `gate:replay-oracle`. *Spec:* §21.2; cross-ref 20
   §4.1, 06.
 
@@ -260,7 +262,7 @@ the event-log payload of [§19.2.2].
   MUST NOT define a parallel event vocabulary ([OBS-35]). An event delivered over
   `Control`/`Watch` MUST carry the log entry's `kind`, `at` (virtual-time + per-node
   icount), `source`, typed attributes, `level`, and an `observational` flag derived
-  from the entry's `EventClass` ([OBS-13], §21.4). *Gate:* `gate:abi-conformance`,
+  from the entry's `SchedulerEventLogClass` ([OBS-13], §21.4). *Gate:* `gate:abi-conformance`,
   `gate:e2e-determinism`. *Spec:* §21.3; cross-ref 19 §19.2, §19.7.
 
 - **[API-13]** Adding a new `kind` (command, breakpoint, fault, or event payload)
@@ -327,7 +329,7 @@ the whole log itself.
   same `from_seq` MUST receive a byte-identical causal subsequence ([OBS-21],
   [OBS-23]) under the canonical payload encoding. **Observational entries MUST also
   flow** over the stream ([OBS-15], [OBS-31]) and MUST carry the `observational`
-  flag (derived from `EventClass`, [OBS-13]) so a client can include them in an
+  flag (derived from `SchedulerEventLogClass`, [OBS-13]) so a client can include them in an
   interactive view and exclude them from any determinism comparison it performs.
   *Gate:* `gate:e2e-determinism`, `gate:abi-conformance`. *Spec:* §21.4; cross-ref
   19 §19.3, §19.5.
@@ -470,11 +472,11 @@ the in-process double, gated by `gate:abi-conformance`
 
 - **[API-25]** The protocol MUST carry an **explicit protocol version**
   (major.minor.patch + build identifier) returned by `Hello` and in `Attached`.
-  A wire-incompatible change MUST bump the major version; a backward-compatible
-  addition (a new RPC, a new open-set `kind`, a new optional field) MUST NOT bump
-  the major version ([G-8], [API-13]). A client and server MUST be able to detect
-  a major-version mismatch from `Hello` and refuse to proceed with a typed error
-  rather than mis-decoding. *Gate:* `gate:abi-conformance`. *Spec:* §21.6.
+  A wire-incompatible change MUST bump the major version; additive changes use
+  the minor version and compatible fixes use the patch version. A deployed build
+  admits only its exact major.minor.patch and build identifier. Client and server
+  detect any mismatch through `Hello` and refuse it with a typed error rather
+  than mis-decoding. *Gate:* `gate:abi-conformance`. *Spec:* §21.6.
 
 - **[API-26]** The control-plane RPC MUST be covered by **golden vectors**: a
   frozen, content-addressed corpus of serialized requests, responses, events, and
@@ -636,16 +638,16 @@ ran in-process against the double or over the wire against QEMU.
   RPC execution remains T-API-3; streaming equivalence remains T-API-4.
 - [x] **T-API-3** Implement the discovery/lifecycle unary RPCs — `Hello`
   (version + open-set capabilities), `ListScenarios`, `CreateSession` (scenario ref
-  or inline def + seed + start-paused), `ResumeSession` (self-contained scenario
-  payload and checkpoint closure), `ListSessions`, `DestroySession`
+  or inline def + seed + start-paused), `ResumeSession` (content-bound portable
+  observation source), `ListSessions`, `DestroySession`
   (epoch-guarded, idempotent) — each mapped to its session op (§21.2.1). —
   satisfies [API-5], [API-6], [API-7], [API-8]; spec §21.2, §21.2.1.
   Completed by `checks.crucible.phase5.apiLifecycleUnary`:
   `crucible-api::lifecycle` implements side-effect-free `Hello` and
   `ListScenarios`, scenario-ref and inline `CreateSession` backed by a live
   `SessionActor` and `SessionCommand::Start`, lock-free mirror-backed
-  `ListSessions`, self-contained scenario-payload/checkpoint-closure
-  `ResumeSession`, and epoch-guarded/idempotent `DestroySession` via
+  `ListSessions`, campaign-authenticated portable-observation `ResumeSession`,
+  and epoch-guarded/idempotent `DestroySession` via
   `SessionCommand::Stop`. The shared `ControlClient` trait exposes those unary
   methods, with
   `InProcessLifecycleClient` driving the actor registry directly and
@@ -761,8 +763,8 @@ ran in-process against the double or over the wire against QEMU.
   missing sessions without closing live streams; rejected `Send` commands remain
   side-effect-free and subsequent commands on the stream still run.
 - [x] **T-API-11** Implement explicit protocol versioning (major.minor.patch +
-  build) in Hello/Attached, major-bump on wire-incompatible change, detect+refuse
-  on major mismatch. — satisfies [API-25]; spec §21.6.
+  build) in Hello/Attached, major-bump on wire-incompatible change, and exact
+  version refusal for every mismatch. — satisfies [API-25]; spec §21.6.
 - [x] **T-API-12** Freeze golden vectors for the RPC ABI (requests, responses,
   events, payload kinds) wired into `gate:abi-conformance` as the RPC third of the
   boundary-ABI suite; regenerate-in-the-same-change discipline. — satisfies

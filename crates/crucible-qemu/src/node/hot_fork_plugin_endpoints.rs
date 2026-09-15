@@ -758,7 +758,7 @@ fn create_plugin_endpoint_pair(
     })
 }
 
-fn create_nonblocking_eventfd() -> io::Result<OwnedFd> {
+pub(crate) fn create_nonblocking_eventfd() -> io::Result<OwnedFd> {
     let descriptor =
         // SAFETY: `eventfd` has no pointer arguments and returns one new fd.
         unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
@@ -796,7 +796,7 @@ pub(super) fn socket_cookie(descriptor: RawFd) -> io::Result<u64> {
     Ok(cookie)
 }
 
-pub(super) fn eventfd_id(descriptor: RawFd) -> io::Result<u64> {
+pub(crate) fn eventfd_id(descriptor: RawFd) -> io::Result<u64> {
     let path = format!("/proc/self/fdinfo/{descriptor}");
     let mut bytes = Vec::new();
     File::open(path)?

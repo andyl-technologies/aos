@@ -98,10 +98,7 @@ pub(super) fn search_schedule_decision_event_time(
         Decision::Preemption(preemption) => VirtualTime {
             ticks: preemption.at.retired,
         },
-        Decision::RngDraw(_)
-        | Decision::Override(_)
-        | Decision::AppRandom(_)
-        | Decision::Selection(_) => VirtualTime {
+        Decision::RngDraw(_) | Decision::Override(_) | Decision::Selection(_) => VirtualTime {
             ticks: fallback_sequence,
         },
     }
@@ -407,33 +404,6 @@ pub(super) fn decision_event_payload(decision: &Decision) -> EventPayload {
                 EventAttributeValue::String(preemption_kind_label(&preemption.kind).to_owned()),
             );
             EventPayload::new("preemption", attributes)
-        }
-        Decision::AppRandom(random) => {
-            attributes.insert(
-                String::from("node"),
-                EventAttributeValue::Node(random.node.clone()),
-            );
-            attributes.insert(
-                String::from("stream_domain"),
-                EventAttributeValue::String(random.stream.domain.clone()),
-            );
-            attributes.insert(
-                String::from("stream_name"),
-                EventAttributeValue::String(random.stream.name.clone()),
-            );
-            attributes.insert(
-                String::from("request_id"),
-                EventAttributeValue::U64(random.request_id),
-            );
-            attributes.insert(
-                String::from("width"),
-                EventAttributeValue::U64(u64::from(random.width)),
-            );
-            attributes.insert(
-                String::from("value"),
-                EventAttributeValue::U64(random.value),
-            );
-            EventPayload::new("app_random", attributes)
         }
         Decision::Selection(selection) => {
             attributes.insert(
@@ -1003,7 +973,6 @@ pub(super) fn decision_icount(at: VirtualTime, decision: &Decision) -> EventLogI
             node: Some(preemption.node.clone()),
             icount: preemption.at,
         },
-        Decision::AppRandom(random) => node_boundary_icount(at, &random.node),
         Decision::DeliveryOrder(_)
         | Decision::RngDraw(_)
         | Decision::Override(_)
@@ -1130,9 +1099,6 @@ pub(super) fn decision_source(decision: &Decision) -> EventSource {
     match decision {
         Decision::Preemption(preemption) => EventSource::Node {
             node: preemption.node.clone(),
-        },
-        Decision::AppRandom(random) => EventSource::Guest {
-            node: random.node.clone(),
         },
         Decision::DeliveryOrder(_)
         | Decision::RngDraw(_)
@@ -2265,10 +2231,7 @@ pub(super) fn scheduler_decision_event_log_time(
                 })
             }
         }
-        Decision::RngDraw(_)
-        | Decision::Override(_)
-        | Decision::AppRandom(_)
-        | Decision::Selection(_) => Ok(VirtualTime {
+        Decision::RngDraw(_) | Decision::Override(_) | Decision::Selection(_) => Ok(VirtualTime {
             ticks: fallback.nanos,
         }),
     }
@@ -2329,18 +2292,6 @@ pub(super) fn scheduler_decision_material(decision: &Decision) -> String {
                     lines.push(format!("irq={}", irq.vector));
                 }
             }
-        }
-        Decision::AppRandom(random) => {
-            lines.push(String::from("decision=app-random"));
-            lines.push(format!("node_len={}", random.node.name.len()));
-            lines.push(format!("node={}", random.node.name));
-            lines.push(format!("stream_domain_len={}", random.stream.domain.len()));
-            lines.push(format!("stream_domain={}", random.stream.domain));
-            lines.push(format!("stream_name_len={}", random.stream.name.len()));
-            lines.push(format!("stream_name={}", random.stream.name));
-            lines.push(format!("request_id={}", random.request_id));
-            lines.push(format!("width={}", random.width));
-            lines.push(format!("value={}", random.value));
         }
         Decision::Selection(selection) => {
             lines.push(String::from("decision=campaign-selection"));

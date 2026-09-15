@@ -1,7 +1,7 @@
 # 26 — Packaging and AOS integration
 
 This file specifies how Crucible **builds, ships, and is tested inside AOS**. It
-is the bridge between the design (the determinism contract, the patch series, the
+is the bridge between the design (the determinism contract, the atomic patch, the
 crate workspace) and the concrete, hermetic, from-source AOS build system whose
 principles are stated in the repository `CLAUDE.md`. Everything Crucible needs to
 run — the engine and CLI Rust crates, the patched QEMU, the in-VM plugin, the
@@ -14,7 +14,7 @@ serves is **[G-7]** (hermetic, from-source build inside AOS) and the invariant
 is active). The non-goal it most carefully respects is **[NG-7]** (no dependency
 on RFC-0007 `ratchet`).
 
-Cross-references: the patch series this file applies and gates is
+Cross-references: the atomic patch this file applies and gates is
 [`11-qemu-patches.md`](11-qemu-patches.md); the plugin it co-packages is
 [`12-qemu-plugin.md`](12-qemu-plugin.md); the host-side QEMU integration is
 [`10-qemu-integration.md`](10-qemu-integration.md); the discovery contract the CLI
@@ -81,9 +81,9 @@ crates at `crates/`.
 
 ```text
   pkgs/emulation/qemu.nix                 production QEMU (unchanged, sim-off)
-  pkgs/emulation/qemu-crucible.nix        patched QEMU (same source + series)
+  pkgs/emulation/qemu.nix                 production and patched QEMU variants
   pkgs/emulation/crucible-qemu-plugin.nix in-VM plugin cdylib (12)
-  pkgs/emulation/qemu-crucible-patches/   the crucible-*.patch series (11)
+  pkgs/emulation/qemu-patches/            the atomic integration patch (11)
   pkgs/kernel/linux-crucible.nix          stock fixture guest kernel (no determinism shaping)
   pkgs/tools/crucible/crucible.nix        the crucible-* Rust workspace + CLI
   pkgs/tools/crucible/fixtures/           root-image fixtures (test guests)
@@ -107,39 +107,38 @@ crates at `crates/`.
 
 ## 26.3 The patched QEMU package (`qemu-crucible`)
 
-The patched QEMU is the production QEMU package's source plus the `crucible-*`
-series ([`11-qemu-patches.md`](11-qemu-patches.md)). The whole point is that the
+The patched QEMU is the production QEMU package's source plus the atomic
+integration patch ([`11-qemu-patches.md`](11-qemu-patches.md)). The whole point is that the
 *same source* yields a binary that is upstream-identical with sim mode off
 ([INV-7]) and Crucible-capable with sim mode on.
 
 - **[PKG-8]** `qemu-crucible` MUST build the **same pinned upstream QEMU source**
-  as the AOS production QEMU package, applying the ordered `crucible-*` patch
-  series ([PATCH-7]) at unpack time, and MUST configure the build to compile the
-  sim accelerator and shmem device files the series adds (e.g.
+  as the AOS production QEMU package, applying
+  `crucible-qemu-11.1.1.patch` ([PATCH-7]) at unpack
+  time, and MUST configure the build to compile the sim accelerator and shmem device files the patch adds (e.g.
   `accel/tcg/tcg-accel-ops-sim.c`, `block/crucible-shmem.c`). It MUST NOT fork
-  QEMU's source tarball; the only delta from production QEMU is the applied series.
+  QEMU's source tarball; the only delta from production QEMU is the atomic patch.
   *Gate:* `gate:patch-microtests`. *Spec:* §26.3; satisfies [G-7], [PATCH-7].
 
-- **[PKG-9]** The pinned QEMU version MUST be **≥ 10.0** ([PATCH-40]) — the
-  version providing the plugin time-control API the design rests on. The exact
+- **[PKG-9]** The pinned QEMU version MUST be **11.1.1** ([PATCH-40]), the
+  source baseline providing the plugin time-control API the design rests on. The exact
   pinned tag and source hash MUST be recorded inline in the package and in
   [`31-decision-register.md`](31-decision-register.md). The production QEMU package
-  ([`pkgs/emulation/qemu.nix`](../../../pkgs/emulation/qemu.nix), currently 10.0.0)
+  ([`pkgs/emulation/qemu.nix`](../../../pkgs/emulation/qemu.nix), currently 11.1.1)
   MUST be advanced to the same pin (or a compatible one) so production and patched
   QEMU share a single source, satisfying the "same source" half of [INV-7].
   *Gate:* `gate:qemu-inert`. *Spec:* §26.3; satisfies [G-7], [PATCH-40].
 
-- **[PKG-10]** The series MUST be applied as a set of committed
-  `crucible-*.patch` files under `pkgs/emulation/qemu-crucible-patches/`, applied
-  in a stable, significant order ([PATCH-7]: sim-accel first). The package's
-  unpack phase MUST apply them with the AOS-built `patch` tool, in order, failing
-  the build loudly on any reject. The committed patch set MUST match the catalog
-  in [`11-qemu-patches.md`](11-qemu-patches.md) §11.3 exactly: a patch present in
-  the package but absent from the catalog, or vice versa, MUST fail the packaging
-  conformance check ([PATCH-10]). *Gate:* `gate:patch-microtests`. *Spec:* §26.3;
+- **[PKG-10]** The sole committed patch MUST be
+  `pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch`.
+  The package's unpack phase MUST apply it with the AOS-built `patch` tool and
+  fail loudly on any reject. Its identity and capability inventory MUST match
+  [`11-qemu-patches.md`](11-qemu-patches.md) §11.3; any additional shipped patch
+  or unmapped capability MUST fail packaging conformance ([PATCH-10]).
+  *Gate:* `gate:patch-microtests`. *Spec:* §26.3;
   satisfies [G-7], [PATCH-10].
 
-- **[PKG-11]** Diagnostic-only patches (`crucible-tcg-exec-diag`,
+- **[PKG-11]** Diagnostic-only capabilities (`crucible-tcg-exec-diag`,
   `crucible-virtserial-socket`; [PATCH-36]) MUST NOT be applied in the shipped
   `qemu-crucible` package. They MAY be applied in a separate developer-only
   package variant (`qemu-crucible-dev`) and even there MUST be inert by default
@@ -171,25 +170,24 @@ be behaviorally identical to production QEMU when sim mode is off.
 
 - **[PKG-14]** The `qemu-crucible` package's checks MUST include
   `gate:patch-microtests` ([`24-determinism-harness-testing.md`](24-determinism-harness-testing.md)
-  §1.2): for the pinned QEMU, (1) the series applies cleanly in order, (2) the
-  patched tree builds, and (3) every per-patch micro-test ([PATCH-4], [PATCH-8],
-  [PATCH-38]) passes — each demonstrating its entropy elimination/capability in
-  sim mode *and* its inertness out of sim mode ([PATCH-5]). A change to the series,
+  §1.2): for the pinned QEMU, (1) the atomic patch applies cleanly, (2) the
+  patched tree builds, and (3) every component microtest ([PATCH-4], [PATCH-8],
+  [PATCH-38]) passes. The suite demonstrates every capability in sim mode and
+  uses one pristine-QEMU attribution negative for the patch ([PATCH-5]). A change to the patch,
   the pin, or the generated shmem header ([SHM-4]) MUST re-run this gate. *Gate:*
   `gate:patch-microtests`, `gate:qemu-inert`. *Spec:* §26.3.1; satisfies [G-7],
   [INV-7], [PATCH-8], [PATCH-38].
 
-### 26.3.2 The rebasable series and the regeneration pipeline
+### 26.3.2 The atomic patch and regeneration pipeline
 
-- **[PKG-15]** The committed `crucible-*.patch` files MUST be reproducible by the
-  regeneration pipeline ([PATCH-37]): a Crucible build target that produces the
-  patch bytes from the tracked single-purpose development branch against the
-  pinned tag, deterministically (stable author/date/ordering). CI MUST regenerate
-  and **fail on drift** between the committed files and the regenerated ones.
+- **[PKG-15]** The committed atomic patch MUST be reproducible by the
+  regeneration pipeline ([PATCH-37]): a Crucible build target produces its bytes
+  from the DCO-signed integration commit against the pinned tag. CI MUST
+  regenerate it and **fail on drift** from the committed file.
   *Gate:* `gate:patch-microtests`. *Spec:* §26.3.2; satisfies [G-7], [PATCH-37].
 
 - **[PKG-16]** A bump of the pinned QEMU version is a **re-gated packaging event**
-  ([PATCH-39]): the series is rebased onto the new tag, `gate:patch-microtests` and
+  ([PATCH-39]): the atomic patch is rebased onto the new tag, `gate:patch-microtests` and
   `gate:qemu-inert` are re-run, and the new QEMU build identity is re-pinned into
   the reproduction-artifact provenance ([PKG-23]). The pin MUST NOT advance without
   both gates green. *Gate:* `gate:qemu-inert`, `gate:patch-microtests`,
@@ -215,7 +213,7 @@ is the *only* thing that activates sim mode ([PATCH-1]).
   metadata and keep the Apache host, GPL-side QEMU/plugin, and aggregate bundle
   distinguishable. Every distributed patched-QEMU binary MUST have an equally
   accessible, identity-matched complete corresponding-source artifact containing
-  the exact source, patches, integration and generated build inputs, build
+  the exact source, atomic patch, integration and generated build inputs, build
   scripts, and notices. Release construction MUST fail when it is absent.
   *Gate:* `gate:license-boundary`. *Spec:* §26.4, 37 §37.4; satisfies
   [BOUND-3], [BOUND-10], [BOUND-11].
@@ -276,7 +274,7 @@ agent to the plugin; the RPC binds the CLI/clients to the daemon.
 - **[PKG-22]** The `qemu-crucible` build MUST emit a **sim-capability marker** —
   a small, queryable artifact (a metadata file in the package output and/or an
   exported symbol/`fw_cfg`-style identifier) recording: the pinned QEMU tag, the
-  applied series identity (a hash of the ordered `crucible-*.patch` set), and the
+  atomic patch identity, and the
   shmem-ABI version it was built against. Discovery ([CLI-13]) and `gate:qemu-inert`
   read this marker to confirm a binary is the patched build and that its
   shmem-ABI matches the plugin's. *Gate:* `gate:abi-conformance`, `gate:qemu-inert`.
@@ -285,7 +283,7 @@ agent to the plugin; the RPC binds the CLI/clients to the daemon.
 - **[PKG-23]** The shmem ABI is generated from one source of truth ([SHM-4]); the
   package build MUST treat the **generated shmem header** as a build input shared
   by `qemu-crucible` (C side) and `crucible-qemu-plugin` (Rust side), so the two
-  cannot drift. A regeneration of that header MUST re-run the patch series build
+  cannot drift. A regeneration of that header MUST re-run the atomic patch build
   ([PATCH-38]) and `gate:abi-conformance`'s golden-vector comparison. Intentional
   ABI changes require a version bump ([PKG-21]) + regenerated golden vectors in the
   same change ([`24-determinism-harness-testing.md`](24-determinism-harness-testing.md)
@@ -352,7 +350,7 @@ boot-stable guest.
   entropy-seed** host-side — a fixed, content-addressed byte blob handed to the
   guest as bootloader/`setup_data` RNG seed (which a stock kernel that trusts
   bootloader entropy consumes as its CRNG seed) — *unless* the
-  deterministic QEMU entropy patches ([PATCH-16], `crucible-det-getrandom`, plus a
+  deterministic QEMU entropy mechanisms ([PATCH-16], `crucible-det-getrandom`, plus a
   `-cpu` model advertising no `RDRAND`/`RDSEED`) already make the guest's CRNG seed
   a pure function of the run seed, in which case a separate fixed blob is
   unnecessary. The package MUST state which mechanism is in force; the chosen
@@ -430,10 +428,10 @@ are wired as AOS nix checks, following the existing `nix-checks`-driven CI model
   *Gate:* `gate:e2e-determinism`. *Spec:* §26.8; satisfies [G-1], [G-9].
 
 - **[PKG-31]** The packaging conformance check MUST assert the
-  catalog↔package correspondence of [PATCH-10]: the set of `crucible-*.patch` files
-  in the package equals the catalog inventory in
-  [`11-qemu-patches.md`](11-qemu-patches.md) §11.3, the dev-only patches are not in
-  the shipped package ([PKG-11]), and every patch maps to a stated requirement
+  catalog↔package correspondence of [PATCH-10]: the package contains the sole
+  atomic patch named by [`11-qemu-patches.md`](11-qemu-patches.md) §11.3,
+  dev-only capabilities are absent from the shipped package ([PKG-11]), and every
+  capability maps to a stated requirement
   ([PATCH-6]). *Gate:* `gate:patch-microtests`. *Spec:* §26.8; satisfies [INV-7],
   [PATCH-10].
 
@@ -506,7 +504,7 @@ cheap and the present ships standalone.
 
 - **[PKG-36]** The Crucible release MUST version **three things independently and
   explicitly**: (1) the **Crucible software version** (the `crucible-*` workspace
-  semver), (2) the **pinned QEMU tag + applied series identity** ([PKG-22]), and
+  semver), (2) the **pinned QEMU tag + atomic-patch identity** ([PKG-22]), and
   (3) the **three ABI versions** ([PKG-21]: shmem, guest↔host channel, RPC). A
   release manifest in the package output MUST record all three so a downstream
   consumer (and a reproduction artifact) can pin exactly what produced a run.
@@ -523,7 +521,7 @@ cheap and the present ships standalone.
 
 - **[PKG-38]** A reproduction artifact ([`23-cli.md`](23-cli.md) §4, [CLI-15])
   MUST record the full provenance triple of [PKG-36] — Crucible version, QEMU
-  build identity + series hash, and the three ABI versions — so `crucible replay`
+  build identity + atomic-patch hash, and the three ABI versions — so `crucible replay`
   ([`23-cli.md`](23-cli.md) §12) can refuse to replay against a mismatched build
   rather than silently produce a different run. *Gate:* `gate:e2e-determinism`.
   *Spec:* §26.10; satisfies [G-6], [G-8], [INV-10].
@@ -550,9 +548,9 @@ carries findings across an incompatible build.
 
 - **[PKG-44]** A campaign MUST be **keyed to the provenance triple** of
   [PKG-36]/[PKG-38] — the Crucible software version, the QEMU build identity +
-  applied patch-series hash, and the three ABI versions ([PKG-21]). Seeding a new
+  atomic-patch hash, and the three ABI versions ([PKG-21]). Seeding a new
   campaign (or a CI run) from a prior corpus MUST **refuse cross-provenance reuse**:
-  a QEMU bump, a patch-series change, or any ABI bump ([PKG-16], [PKG-23]) starts a
+  a QEMU bump, an atomic-patch change, or any ABI bump ([PKG-16], [PKG-23]) starts a
   **fresh campaign lineage** rather than mixing findings produced by a different
   build (which could no longer reproduce, [PKG-38]). The refusal MUST be loud and
   recorded as a fresh-lineage baseline event ([PERF-28],
@@ -581,15 +579,15 @@ carries findings across an incompatible build.
     builder style, inline pins/vendor hashes, dependency classification, package
     attr names, production-vs-patched QEMU separation, and absence of nixpkgs or
     `hostTools` in the Crucible package files.
-- [x] **T-PKG-2** Package `qemu-crucible`: same pinned (≥ 10.0) QEMU source as
-  production QEMU + ordered `crucible-*.patch` series applied at unpack, sim accel
+- [x] **T-PKG-2** Package `qemu-crucible`: same pinned 11.1.1 QEMU source as
+  production QEMU + the atomic integration patch applied at unpack, sim accel
   / shmem device files compiled in, completeness preserved; build `qemu-crucible`
   and `crucible-qemu-plugin` from the same pinned QEMU source, co-located as a
   matched pair with a sim-capability marker. — satisfies [PKG-5], [PKG-7], [PKG-8],
   [PKG-9], [PKG-10], [PKG-12]; spec §26.2, §26.3.
   - Completed by `checks.crucible.phase7.crucibleQemuPackage`: production
-    `pkgs.qemu` now keeps `applyCruciblePatches = false` by default,
-    `pkgs.qemu-crucible` explicitly opts into the ordered patch series and plugin
+    `pkgs.qemu` now keeps `applyCruciblePatch = false` by default,
+    `pkgs.qemu-crucible` explicitly opts into the atomic patch and plugin
     support from the same QEMU pin, `pkgs.qemu-crucible-reference` stays unpatched
     for inertness comparison, and the plugin package consumes the matched
     `qemu-crucible` header and sim-capability marker.
@@ -598,35 +596,34 @@ carries findings across an incompatible build.
   — satisfies [PKG-13]; spec §26.3.1, routes [INV-7].
   - Completed by `checks.crucible.phase2.gates.qemuInert`; the AOS package set now
     exposes `qemu-crucible-reference` from the same pinned source with
-    `applyCruciblePatches = false` for the comparison.
+    `applyCruciblePatch = false` for the comparison.
 - [x] **T-PKG-4** Wire `gate:patch-microtests` as a package check: apply-clean +
-  build + every per-patch micro-test (sim-on effect + sim-off inertness), re-run on
-  series/pin/header change. — satisfies [PKG-14]; spec §26.3.1.
+  build + every component microtest, with sim-on evidence and a pristine-QEMU
+  attribution, re-run on patch/pin/header change. — satisfies [PKG-14]; spec §26.3.1.
   - Completed by `checks.crucible.phase2.gates.patchMicrotests` and verified by
     `checks.crucible.phase7.crucibleGateCiWiring`: the AOS package
     check collector exposes `qemu-crucible.checks.patch-microtests` as
     `checks.integration.qemu-crucible-patch-microtests`, and that integration
     check imports `phase2-patch-microtests.nix` with `qemuPackage = self` so
-    clean apply, prefix provenance, patched build, and live drop-one semantic
-    probes run against the package output on series/pin/header drift. All 41
-    patches have exactly one accepted attribution method, while composition and
-    structural fallback counts are enforced at zero.
+    clean apply, atomic-patch provenance, patched build, component probes, and
+    the live pristine-QEMU attribution run against the package output on
+    patch/pin/header drift.
 - [x] **T-PKG-5** Implement the patch regeneration/drift pipeline (reproducible
-  patch bytes from the tracked branch) and the QEMU-version-bump re-gate. —
+  atomic-patch bytes from the DCO-signed integration commit) and the QEMU-version-bump re-gate. —
   satisfies [PKG-15], [PKG-16]; spec §26.3.2.
   - Completed by `checks.crucible.phase2.qemuPatchRegeneration` and the
-    `gate:patch-microtests` aggregate: `pkgs/emulation/qemu-patches/_series.nix`
-    is the package-consumed manifest for the QEMU pin, source hash, ordered patch
-    inventory, tracked branch bundle, deterministic branch metadata, and patch
-    files. `pkgs/emulation/qemu.nix` applies that manifest order directly, derives
+    `gate:patch-microtests` aggregate: the QEMU integration manifest
+    is the package-consumed manifest for the QEMU pin, source hash, atomic patch,
+    retained atomic bundle, and deterministic integration commit metadata.
+    `pkgs/emulation/qemu.nix` applies that patch directly and derives
     a build identity from the QEMU pin, qemu.nix hash, configure flags,
-    patch-series hash, and patch-branch bundle/material, and installs
+    atomic-patch and atomic-bundle hashes, and installs
     `share/aos/crucible/qemu-build-identity.env` from that manifest, while the
-    regeneration gate verifies the bundle base/head and per-patch commit/tree
-    list, byte-compares regenerated patch output to the committed series, and
+    regeneration gate verifies the bundle base/head and integration commit/tree,
+    byte-compares regenerated output to the committed patch, and
     proves that changed QEMU build material would re-gate rather than replay under
     the old reproduction-artifact identity.
-- [x] **T-PKG-6** Keep dev-only diagnostic patches out of the shipped package
+- [x] **T-PKG-6** Keep dev-only diagnostic capabilities out of the shipped package
   (optional `qemu-crucible-dev` variant, inert-by-default). — satisfies [PKG-11];
   spec §26.3.
   - Completed by `checks.crucible.phase1.qemuDiagnosticPatchesDevOnly` and
@@ -684,7 +681,7 @@ carries findings across an incompatible build.
     package gate verifies that `qemu-crucible`, `crucible-qemu-plugin`, and
     `crucible` stamp the shmem ABI, guest-host channel ABI, and RPC ABI from
     their Rust source constants; QEMU's sim-capability marker records the QEMU
-    tag/build identity, patch-series material, shmem ABI label, generated-header
+    tag/build identity, atomic-patch material, shmem ABI label, generated-header
     install path, and generated-header hash; the plugin C probe compiles against
     the same generated `crucible_shmem_abi.h` installed by QEMU; and CLI
     discovery rejects QEMU/plugin shmem ABI disagreement loudly. The gate also
@@ -780,13 +777,13 @@ carries findings across an incompatible build.
   correspondence, dev-only exclusion, requirement mapping). — satisfies [PKG-31];
   spec §26.8.
   - Completed by `checks.crucible.phase7.cruciblePackagingConformance`: the
-    phase7 package check imports `pkgs/emulation/qemu-patches/_series.nix`,
-    compares the shipped `pkgs/emulation/qemu-patches/*.patch` set to
-    `series.patchFiles`, parses the §11.3 catalog rows, verifies every shipped
-    manifest `catalogName` has a catalog row, verifies the documented
-    catalog-only capability rows are mapped to their carrier patches, rejects
-    dev-only diagnostic patches in the shipped directory/manifest/package wiring,
-    and requires every manifest patch and catalog-only capability to carry a
+    phase7 package check imports the atomic QEMU integration descriptor,
+    requires the sole shipped `pkgs/emulation/qemu-patches/*.patch` file to equal
+    `manifest.file`, parses the §11.3 catalog rows, verifies the descriptor's
+    `catalogName` has a catalog row, verifies the documented
+    catalog-only capability rows are mapped to the atomic patch, rejects
+    dev-only diagnostic capabilities in the shipped directory/manifest/package wiring,
+    and requires the manifest patch and every catalog-only capability to carry a
     stated requirement token whose class/enforcement metadata matches the catalog
     row. It consumes the direct `phase2-patch-microtests.nix` aggregate for
     `checks.crucible.phase2.gates.patchMicrotests`, keeping the catalog audit
@@ -814,14 +811,14 @@ carries findings across an incompatible build.
     `gate:e2e-determinism`) while preserving the current no-RFC-0007 dependency
     rule.
 - [x] **T-PKG-19** Produce the release manifest versioning the three things
-  (Crucible version, QEMU tag + series hash, three ABI versions) and ensure
+  (Crucible version, QEMU tag + atomic-patch hash, three ABI versions) and ensure
   per-package reproducibility (pinned hashes, vendored deps, no embedded
   timestamps). — satisfies [PKG-36], [PKG-37]; spec §26.10.
   - Completed by `checks.crucible.phase7.crucibleReleaseManifest`: the
     `crucible` package now installs `release-manifest.env` and
     `release-manifest.json` recording the Crucible workspace semver, the pinned
     filtered Crucible source store identity, QEMU version/source hash/build
-    identity/patch-series hash, and the shmem, guest-host channel, and RPC ABI
+    identity/atomic-patch hash, and the shmem, guest-host channel, and RPC ABI
     versions. The gate compares those values to Rust constants and QEMU passthru
     metadata, verifies the installed manifest files, verifies pinned
     `fetchCargoDeps` and QEMU source/patch hashes, confirms the source filter
@@ -832,11 +829,11 @@ carries findings across an incompatible build.
   so `crucible replay` refuses a mismatched build. — satisfies [PKG-38]; spec
   §26.10, coordinates with [`23-cli.md`](23-cli.md) §4, §12.
   - Completed by `checks.crucible.phase7.reproductionProvenanceTriple`: the
-    canonical reproduction artifact schema is now `crucible.reproduction-artifact.v2`
+    canonical reproduction artifact schema is `crucible.reproduction-artifact.v4`
     and its pinned identity records the Crucible software version, QEMU build
-    identity, QEMU patch-series hash, shmem ABI version, guest-host protocol
+    identity, QEMU atomic-patch hash, shmem ABI version, guest-host protocol
     version, RPC ABI version/build tag, and plugin ABI. `crucible replay`
-    decodes that full identity, derives the local QEMU patch-series and shmem ABI
+    decodes that full identity, derives the local QEMU atomic-patch identity and shmem ABI
     from the discovered AOS QEMU/plugin markers, derives the guest-host and RPC
     ABI versions from Rust source constants, and rejects any identity mismatch
     before replay. Remote-daemon replay and mock failure artifact emission refuse
@@ -867,14 +864,14 @@ carries findings across an incompatible build.
     Campaign provenance lineage and cross-provenance corpus refusal remain
     covered by T-PKG-22.
 - [x] **T-PKG-22** Key campaigns to the provenance triple and refuse cross-provenance
-  corpus reuse (a QEMU/patch-series/ABI bump starts a fresh campaign lineage,
+  corpus reuse (a QEMU/atomic-patch/ABI bump starts a fresh campaign lineage,
   recorded as a baseline event), loudly rather than silently merging. — satisfies
   [PKG-44]; spec §26.11; cross-ref [PERF-28].
   - Completed by `checks.crucible.phase7.crucibleCampaignProvenance`:
     `crucible-harness` now exposes `campaign_provenance_key` and
     `evaluate_campaign_corpus_reuse` over the same pinned build identity carried
     by reproduction artifacts. A prior corpus with the same provenance key seeds
-    the existing lineage; a QEMU patch-series or ABI mismatch returns
+    the existing lineage; a QEMU atomic-patch or ABI mismatch returns
     `RefuseCrossProvenanceReuse` with a
     `crucible.campaign.fresh-lineage-baseline.v1` fresh-lineage baseline event
     and the loud `cross-provenance-corpus-reuse-refused` reason. The guard also
@@ -887,7 +884,7 @@ carries findings across an incompatible build.
   gate:replay-oracle / gate:e2e-determinism), keeping Crucible standalone (no
   RFC-0007 dependency). — satisfies [PKG-45]; spec §26.9, §26.11.
   - Completed by `checks.crucible.phase7.crucibleCasFleetRatchetSeam`: the
-    `crucible-cas` module docs and constants now name `SharedDagStore` and
+    `crucible-cas` module docs name `SharedDagStore` and
     `InvalidationQuery::evaluate` as the same future ratchet seam behind
     `DagStore::put`/`DagStore::get`/`DagStore::has`. The check preserves the
     merge bar (`gate:content-address`, `gate:replay-oracle`,

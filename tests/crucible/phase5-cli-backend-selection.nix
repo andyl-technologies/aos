@@ -151,10 +151,6 @@
         needle = "fn run_live_qemu_backend_probe";
       }
       {
-        label = "API-owned live plugin gate";
-        needle = "production_api::run_production_plugin_install_gate";
-      }
-      {
         label = "double resolved backend";
         needle = "ResolvedLocalBackend::Double";
       }

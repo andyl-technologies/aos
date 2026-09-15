@@ -2,24 +2,22 @@
 //!
 //! This adapter is the daemon-side owner of the API lifecycle's linear QEMU
 //! generations. It admits and pins fresh generation directories, runs image
-//! tools under the attempt contract, streams repository checkpoints, reflinks
-//! local replacements from retained prior-generation descriptors, and lends
+//! tools under the attempt contract, streams repository checkpoints, and lends
 //! the sealed process contract only after preparation. Any unreaped QEMU or
-//! helper child is transferred into the aggregate guard before an error
-//! returns.
+//! helper child is transferred into the aggregate guard before an error returns.
 
 use std::collections::BTreeMap;
+#[cfg(target_os = "linux")]
 use std::sync::{Arc, Mutex};
 
 use crucible_api::{
-    LifecycleApiError, ProductionVmNodeGeneration, ProductionVmNodeLaunch,
-    ProductionVmNodeLaunchKind, ProductionVmNodeLaunchRequest, ProductionVmNodeLauncher,
-    ProductionVmNodeLease, ProductionVmNodePreparationKind,
+    LifecycleApiError, ProductionVmExactNodeRestoreAdmission, ProductionVmNodeGeneration,
+    ProductionVmNodeLaunch, ProductionVmNodeLaunchRequest, ProductionVmNodeLauncher,
+    ProductionVmNodeLease,
 };
 use crucible_qemu::{
-    QemuGuardedExactNodeLaunch, QemuGuardedFreshNodeLaunch, QemuLiveNodeIdentity, QemuNode,
-    QemuPreparedRunDirectory, QemuVmStateBinding, launch_qemu_live_node_exact_snapshot_guarded,
-    launch_qemu_live_node_exact_snapshot_paused_guarded, launch_qemu_live_node_guarded,
+    QemuLiveNodeIdentity, QemuNode, QemuPreparedRunDirectory, QemuProductionFreshLaunchAdmission,
+    launch_qemu_production_fresh_node,
 };
 
 use crate::{
@@ -28,7 +26,7 @@ use crate::{
 
 /// Guarded production lifecycle launcher for one admitted QEMU attempt.
 #[must_use = "finish the lifecycle launcher or transfer its aggregate owner to quarantine"]
-pub struct QemuAttemptProductionVmNodeLauncher<G>
+pub(crate) struct QemuAttemptProductionVmNodeLauncher<G>
 where
     G: QemuAttemptProcessResourceGuard,
 {
@@ -41,71 +39,65 @@ where
     G: QemuAttemptProcessResourceGuard,
 {
     /// Wraps one attempt-wide resource owner as a lifecycle generation launcher.
-    pub fn new(owner: QemuAttemptGenerationResourceOwner<G>) -> Self {
+    pub(crate) fn new(owner: QemuAttemptGenerationResourceOwner<G>) -> Self {
         Self {
             owner,
             run_directories: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
-    fn launch_exact(
+    #[cfg(target_os = "linux")]
+    fn launch_exact_generation(
         &mut self,
         request: ProductionVmNodeLaunchRequest<'_>,
-        exact: ExactLifecycleLaunch<'_>,
+        admission: ProductionVmExactNodeRestoreAdmission,
         lease: QemuAttemptGenerationLease,
         run_directories: &mut BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
         if let Err(error) = self.owner.check_operational_boundary() {
             return Err(abort_unspawned_generation(lease, error));
         }
-        let mut run_directory = match self
+        let run_directory = match self
             .owner
             .prepare_generation_run_directory(request.launch().resource_requirements())
         {
             Ok(run_directory) => run_directory,
             Err(error) => return Err(abort_unspawned_generation(lease, error)),
         };
-        let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(exact.root.bytes);
-
-        let materialization = (|| {
-            let mut destination = run_directory
-                .begin_exact_root_overlay_materialization(binding, exact.root_overlay.length())
-                .map_err(|error| {
-                    launcher_error("begin exact root-overlay materialization", error)
-                })?;
-            exact.root_overlay.stream_into(&mut destination)?;
-            destination.finish().map_err(|error| {
-                launcher_error("finish exact root-overlay materialization", error)
-            })?;
-
-            self.owner.check_operational_boundary()?;
-            let mut destination = run_directory
-                .begin_exact_vmstate_materialization(binding, exact.vmstate.length())
-                .map_err(|error| launcher_error("begin exact VMState materialization", error))?;
-            exact.vmstate.stream_into(&mut destination)?;
-            destination
-                .finish()
-                .map_err(|error| launcher_error("finish exact VMState materialization", error))?;
-            self.owner.check_operational_boundary()
-        })();
-        if let Err(error) = materialization {
-            return Err(abort_unspawned_generation(lease, error));
-        }
-
-        self.launch_prepared_exact(
-            request,
-            ExactLaunchTarget {
-                snapshot: exact.snapshot,
-                paused: exact.paused,
-            },
-            lease,
-            run_directory,
-            binding,
-            run_directories,
-        )
+        let process_contract = match self.owner.child_process_contract() {
+            Ok(contract) => contract,
+            Err(error) => return Err(abort_unspawned_generation(lease, error)),
+        };
+        let atomic = match admission.into_atomic_restore(request, run_directory, process_contract) {
+            Ok(atomic) => atomic,
+            Err(error) => return Err(abort_unspawned_generation(lease, error)),
+        };
+        let (node, run_directory) = match atomic.launch() {
+            Ok(launched) => launched,
+            Err(mut error) => {
+                let message = launch_error_chain(&error);
+                if let Some(child) = error.take_unreaped_child() {
+                    self.owner.retain_failed_launch_child(child);
+                    drop(lease);
+                    self.owner.quarantine();
+                    return Err(launcher_message(format!(
+                        "atomic exact restore for `{}` failed and transferred an unreaped child to quarantine: {message}",
+                        request.node_name(),
+                    )));
+                }
+                return Err(abort_unspawned_generation(
+                    lease,
+                    launcher_message(format!(
+                        "atomic exact restore for `{}` failed after synchronous cleanup: {message}",
+                        request.node_name(),
+                    )),
+                ));
+            }
+        };
+        self.record_launched_generation(request, lease, run_directory, node, run_directories)
     }
 
-    fn launch_fresh(
+    fn launch_fresh_generation(
         &mut self,
         request: ProductionVmNodeLaunchRequest<'_>,
         qemu_executable: &std::path::Path,
@@ -181,10 +173,13 @@ where
                 Ok(contract) => contract,
                 Err(error) => return Err(abort_unspawned_generation(lease, error)),
             };
-            launch_qemu_live_node_guarded(
+            QemuProductionFreshLaunchAdmission::admit(
                 &launch,
-                QemuGuardedFreshNodeLaunch::new(&run_directory, process_contract, identity),
+                &run_directory,
+                process_contract,
+                identity,
             )
+            .and_then(|admission| launch_qemu_production_fresh_node(&launch, admission))
         };
         let node = match launched {
             Ok(node) => node,
@@ -209,124 +204,6 @@ where
             }
         };
 
-        self.record_launched_generation(request, lease, run_directory, node, run_directories)
-    }
-
-    fn launch_replacement(
-        &mut self,
-        request: ProductionVmNodeLaunchRequest<'_>,
-        exact: ExactLaunchTarget<'_>,
-        source_run_directory: &std::path::Path,
-        lease: QemuAttemptGenerationLease,
-        run_directories: &mut BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>,
-    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
-        let source_identity = run_directories.iter().find_map(|(identity, directory)| {
-            (identity.node() == request.node()
-                && directory.path() == source_run_directory
-                && identity.generation().checked_add(1) == Some(request.generation()))
-            .then(|| identity.clone())
-        });
-        let Some(source_identity) = source_identity else {
-            return Err(abort_unspawned_generation(
-                lease,
-                launcher_message(format!(
-                    "replacement source {} is not the retained prior generation for `{}` generation {}",
-                    source_run_directory.display(),
-                    request.node_name(),
-                    request.generation(),
-                )),
-            ));
-        };
-        if let Err(error) = self.owner.check_operational_boundary() {
-            return Err(abort_unspawned_generation(lease, error));
-        }
-        let mut destination = match self
-            .owner
-            .prepare_generation_run_directory(request.launch().resource_requirements())
-        {
-            Ok(run_directory) => run_directory,
-            Err(error) => return Err(abort_unspawned_generation(lease, error)),
-        };
-        let binding = QemuVmStateBinding::from_replacement_snapshot_digest(
-            exact.snapshot.checkpoint().id.bytes,
-        );
-        let Some(source) = run_directories.get(&source_identity) else {
-            return Err(abort_unspawned_generation(
-                lease,
-                launcher_message("replacement source generation disappeared before cloning"),
-            ));
-        };
-        if let Err(error) = destination.clone_replacement_artifacts_from(source, binding) {
-            return Err(abort_unspawned_generation(
-                lease,
-                launcher_error("clone pinned replacement artifacts", error),
-            ));
-        }
-        if let Err(error) = self.owner.check_operational_boundary() {
-            return Err(abort_unspawned_generation(lease, error));
-        }
-
-        self.launch_prepared_exact(request, exact, lease, destination, binding, run_directories)
-    }
-
-    fn launch_prepared_exact(
-        &mut self,
-        request: ProductionVmNodeLaunchRequest<'_>,
-        exact: ExactLaunchTarget<'_>,
-        lease: QemuAttemptGenerationLease,
-        run_directory: QemuPreparedRunDirectory,
-        binding: QemuVmStateBinding,
-        run_directories: &mut BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>,
-    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
-        let launch = request
-            .launch()
-            .clone()
-            .with_run_directory(run_directory.path());
-        let identity = QemuLiveNodeIdentity::new(
-            request.node_name(),
-            request.router_name(),
-            request.crash_detector(),
-        );
-        let launched = {
-            let process_contract = match self.owner.child_process_contract() {
-                Ok(contract) => contract,
-                Err(error) => return Err(abort_unspawned_generation(lease, error)),
-            };
-            let guarded = QemuGuardedExactNodeLaunch::new(
-                &run_directory,
-                process_contract,
-                binding,
-                identity,
-                exact.snapshot,
-            );
-            if exact.paused {
-                launch_qemu_live_node_exact_snapshot_paused_guarded(&launch, guarded)
-            } else {
-                launch_qemu_live_node_exact_snapshot_guarded(&launch, guarded)
-            }
-        };
-        let node = match launched {
-            Ok(node) => node,
-            Err(mut error) => {
-                let message = launch_error_chain(&error);
-                if let Some(child) = error.take_unreaped_child() {
-                    self.owner.retain_failed_launch_child(child);
-                    drop(lease);
-                    self.owner.quarantine();
-                    return Err(launcher_message(format!(
-                        "launch guarded exact QEMU node `{}` failed and transferred an unreaped child to quarantine: {message}",
-                        request.node_name()
-                    )));
-                }
-                return Err(abort_unspawned_generation(
-                    lease,
-                    launcher_message(format!(
-                        "launch guarded exact QEMU node `{}` failed after synchronous cleanup: {message}",
-                        request.node_name()
-                    )),
-                ));
-            }
-        };
         self.record_launched_generation(request, lease, run_directory, node, run_directories)
     }
 
@@ -364,9 +241,11 @@ where
         self.owner.check_operational_boundary()
     }
 
-    fn launch(
+    fn launch_fresh(
         &mut self,
         request: ProductionVmNodeLaunchRequest<'_>,
+        qemu_executable: &std::path::Path,
+        root_image: &std::path::Path,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
         let identity =
             ProductionVmNodeGeneration::new(request.node().clone(), request.generation())?;
@@ -388,57 +267,51 @@ where
             ));
         }
 
-        match (request.preparation(), request.kind()) {
-            (
-                ProductionVmNodePreparationKind::Fresh {
-                    qemu_executable,
-                    root_image,
-                },
-                ProductionVmNodeLaunchKind::Fresh,
-            ) => self.launch_fresh(
-                request,
-                qemu_executable,
-                root_image,
+        self.launch_fresh_generation(
+            request,
+            qemu_executable,
+            root_image,
+            lease,
+            &mut run_directories,
+        )
+    }
+
+    fn launch_restored(
+        &mut self,
+        request: ProductionVmNodeLaunchRequest<'_>,
+        admission: ProductionVmExactNodeRestoreAdmission,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        let identity =
+            ProductionVmNodeGeneration::new(request.node().clone(), request.generation())?;
+        let lease = self.owner.register_generation(identity.clone())?;
+        let run_directories = Arc::clone(&self.run_directories);
+        let mut run_directories = match run_directories.lock() {
+            Ok(run_directories) => run_directories,
+            Err(_) => {
+                return Err(abort_unspawned_generation(
+                    lease,
+                    launcher_message("QEMU generation run-directory registry is poisoned"),
+                ));
+            }
+        };
+        if run_directories.contains_key(&identity) {
+            return Err(abort_unspawned_generation(
                 lease,
-                &mut run_directories,
-            ),
-            (
-                ProductionVmNodePreparationKind::Exact {
-                    root,
-                    root_overlay,
-                    vmstate,
-                },
-                ProductionVmNodeLaunchKind::Exact { snapshot, paused },
-            ) => self.launch_exact(
-                request,
-                ExactLifecycleLaunch {
-                    root,
-                    root_overlay,
-                    vmstate,
-                    snapshot,
-                    paused,
-                },
+                launcher_message("QEMU generation already retains a run-directory authority"),
+            ));
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            self.launch_exact_generation(request, admission, lease, &mut run_directories)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (admission, run_directories);
+            Err(abort_unspawned_generation(
                 lease,
-                &mut run_directories,
-            ),
-            (
-                ProductionVmNodePreparationKind::Replacement {
-                    source_run_directory,
-                },
-                ProductionVmNodeLaunchKind::Exact { snapshot, paused },
-            ) => self.launch_replacement(
-                request,
-                ExactLaunchTarget { snapshot, paused },
-                source_run_directory,
-                lease,
-                &mut run_directories,
-            ),
-            _ => Err(abort_unspawned_generation(
-                lease,
-                launcher_message(
-                    "guarded attempt launcher currently requires exact-checkpoint preparation",
-                ),
-            )),
+                launcher_message("exact restore requires descriptor-backed v9 state on Linux"),
+            ))
         }
     }
 
@@ -480,21 +353,6 @@ impl ProductionVmNodeLease for QemuLifecycleGenerationLease {
     }
 }
 
-#[derive(Clone, Copy)]
-struct ExactLifecycleLaunch<'a> {
-    root: crucible::ContentHash,
-    root_overlay: crucible_api::ProductionVmNodeCheckpointArtifact<'a>,
-    vmstate: crucible_api::ProductionVmNodeCheckpointArtifact<'a>,
-    snapshot: &'a crucible_qemu::QemuVmSnapshot,
-    paused: bool,
-}
-
-#[derive(Clone, Copy)]
-struct ExactLaunchTarget<'a> {
-    snapshot: &'a crucible_qemu::QemuVmSnapshot,
-    paused: bool,
-}
-
 fn abort_unspawned_generation(
     lease: QemuAttemptGenerationLease,
     primary: LifecycleApiError,
@@ -505,13 +363,6 @@ fn abort_unspawned_generation(
             "{primary}; aborting the no-process generation also failed: {abort}"
         )),
     }
-}
-
-fn launcher_error(
-    operation: &'static str,
-    error: impl std::error::Error + 'static,
-) -> LifecycleApiError {
-    launcher_message(format!("{operation}: {}", launch_error_chain(&error)))
 }
 
 fn launcher_message(message: impl Into<String>) -> LifecycleApiError {
@@ -544,6 +395,13 @@ fn launch_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
 mod tests {
     use super::*;
 
+    fn rendered_launch_error(
+        operation: &'static str,
+        error: impl std::error::Error + 'static,
+    ) -> String {
+        launcher_message(format!("{operation}: {}", launch_error_chain(&error))).to_string()
+    }
+
     #[test]
     fn launch_failure_preserves_rejected_asset_detail() {
         let error = crucible_qemu::QemuLiveNodeStepGateError::LaunchCommand {
@@ -552,7 +410,7 @@ mod tests {
                 path: "/tmp/root.raw".to_owned(),
             },
         };
-        let message = launcher_error("launch fresh node", error).to_string();
+        let message = rendered_launch_error("launch fresh node", error);
         assert!(message.contains("build QEMU launch command failed"));
         assert!(message.contains("root_image must be an AOS store path, got `/tmp/root.raw`"));
     }

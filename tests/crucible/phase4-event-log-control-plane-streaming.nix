@@ -117,11 +117,11 @@
       }
       {
         label = "causal stream assertion";
-        needle = "EventClass::Causal";
+        needle = "SchedulerEventLogClass::Causal";
       }
       {
         label = "observational stream assertion";
-        needle = "EventClass::Observational";
+        needle = "SchedulerEventLogClass::Observational";
       }
       {
         label = "command-source correlation assertion";

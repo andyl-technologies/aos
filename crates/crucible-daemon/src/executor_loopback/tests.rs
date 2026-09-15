@@ -337,7 +337,7 @@ fn direct_and_loopback_resume_requests_are_identical() {
     let (description, report) = capability_fixture();
     let assignment = request(0x1c);
     let checkpoint = ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.2.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.4.{}",
         encode_hex(&[0x64; 32]),
     ))
     .expect("checkpoint");
@@ -1212,6 +1212,7 @@ fn request(assignment_byte: u8) -> SubmitAttemptRequest {
         .expect("attempt"),
         AttemptResourceLimits::new(1, 1024, 2048, 32).expect("resources"),
         ExecutionRetentionIntent::RetainOnFailure,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("request")
 }

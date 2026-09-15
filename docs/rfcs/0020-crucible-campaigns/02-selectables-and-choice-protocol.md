@@ -226,16 +226,11 @@ semantic branch edge. A valid debugger selection override uses a debugger-
 caused branch request; an arbitrary register or memory write remains a non-
 canonical debug session and is not encoded as a `SelectionOrigin`.
 
-Schedule V2 adds one canonical selection-decision envelope. Existing
-fault-firing, RNG-draw, override, preemption, and application-random decision
-variants remain readable and are not silently reclassified as selections;
-producer-by-producer normalization remains implementation work. New campaign
-configuration payloads write Schedule V2 and reject nested Schedule V1 at the
-executor boundary. The general execution-model reader retains selection-free
-Schedule V1 for older reproduction artifacts and scheduler continuations, but
-rejects a selection tag under V1. Checkpoint V4 carries the expanded decision
-grammar while selection-free Checkpoint V3 remains readable. Domain-specific
-applied-effect evidence remains in the event log and adapter checkpoint state.
+The current schedule codec records fault firing, RNG draws, overrides,
+preemption, and typed selections in one canonical grammar. Runtime admission
+accepts only that grammar and current Checkpoint V4; older encodings fail
+closed. Domain-specific applied-effect evidence remains in the event log and
+adapter checkpoint state.
 Campaign execution resolves no more than 4,096 selection decisions in one
 configuration and permits at most 256 MiB of conservative aggregate
 schedule-prefix byte work across campaign-branch provenance checks. The latter
@@ -538,12 +533,7 @@ completed counter is `len:u16 | bytes | count:u64`. The pending body is one
 complete canonical `SelectionRequestV1`, including its zero-filled reply
 reservation. The process-neutral guest virtual address is the exact reservation
 target restored by VMState; native pointers and QEMU-private objects never enter
-the descriptor. Selection-free version-1 and version-2 plans remain readable.
-A version-1 plan carrying a pending request fails closed because it cannot
-identify the reply target. A version-2 plan carrying a pending request also
-fails closed because its icount field was populated with the rebound stop
-boundary despite being specified as the trap coordinate; the decoder never
-guesses the missing trap by subtracting one. The encoded total and
+the descriptor. The current decoder admits only version 3. The encoded total and
 per-collection counts are exact, absent optional header fields are zero, every
 continuation identifier is declared, every completed/pending identifier is
 registered, required frozen declarations are present, request counts respect
@@ -573,10 +563,8 @@ The two nested lengths exactly partition the descriptor body, each nested body
 must pass its independent canonical decoder, and no trailing or alternate
 encoding is accepted. The app-random body remains at most 4 MiB, the selectable
 body remains at most 32 MiB, and the complete composite is at most 36 MiB plus
-the 28-byte header. Negotiated v2 continues to mean the raw `CRUCABP1` third
-descriptor and does not accept this composite encoding.
-Selection-free version-1 composites remain readable for checkpoint/tooling
-compatibility; new writes always use version 2.
+the 28-byte header. Current execution requires control protocol version 3 and
+setup-plan version 2; earlier encodings are rejected.
 
 Guest libraries expose typed helpers:
 
@@ -599,7 +587,7 @@ instance `routing/boot`. A fresh-process restore at the first pending request
 selects `fast` and `7`; the guest proves that those typed values reached product
 logic by emitting the application frame `crucible-selected-fast-q7` through its
 ordinary virtio-net device. The certifying gate persists the plan using the same
-version-3 canonical body embedded by production checkpoint manifest version 5;
+version-3 canonical body embedded by production checkpoint manifest version 9;
 the gate-local sidecar is evidence plumbing, not a second plan format.
 
 - **[SEL-16]** Guest choice handling MUST be side-effect-free except for the
@@ -635,10 +623,10 @@ Application-controlled randomness is represented as an integer selectable with
 an explicit distribution. A convenience guest `random` API may construct such a
 domain, but raw byte width is not the exploration model.
 
-For campaign-enabled execution this section supersedes RFC-0010's live-schedule
-use of `Decision::AppRandom`. That variant remains a readable legacy schedule
-form and the plugin-to-host transport conjecture; it is not the canonical live
-campaign decision admitted by the scheduler.
+The QEMU plugin emits typed `BackendRngEvidence` because it does not hold
+scenario or seed authority. The host validates that evidence against the
+scenario-seeded stream, then records the canonical `RngDraw` and typed
+`Selection` decisions.
 
 ```text
 random_u16(stream="backoff", instance=epoch)
@@ -680,7 +668,7 @@ The engine adapter constructs and applies this typed contract, and the executor
 resolves the declaration, domain, and opportunity and verifies the exact
 low-bit mapping before accepting a model-sampled configuration. Other
 probability models remain fail-closed. At a live scheduler boundary the
-doorbell's untrusted legacy `AppRandom` transport record is accepted only when
+doorbell's untrusted `BackendRngEvidence` record is accepted only when
 the scenario-seeded raw draw reproduces its served value. The canonical
 schedule then records `RngDraw` followed by the typed `Selection`, and the
 quantum outcome carries the exact declaration, domain, and opportunity as one
@@ -690,7 +678,7 @@ version 6 registers the causal `campaign_selection` kind with the single
 selection bytes.
 
 Standardized model-sample selections consume the same scenario-hashed
-app-random draw cap as retained legacy `AppRandom` decisions. A campaign branch
+app-random draw cap as current typed selection decisions. A campaign branch
 replaces the model sample at the exact parent after its `RngDraw`, emits a
 `SelectionOrigin::CampaignBranch`, and remains chargeable because the parent
 draw uses the reserved, strictly length-framed app-random stream namespace.
@@ -721,12 +709,6 @@ Indices are considered in ascending order from zero. The producer omits the
 observed value and duplicate sampled values, so the result contains at most the
 configured number of alternatives and remains deterministic even for narrow
 domains.
-Retained legacy entries remain readable and replayable only; campaign expansion
-rejects them by requiring the typed selection/discovery basis. Operators that
-need to explore such an artifact must re-execute its prefix through the live
-producer to retain the canonical typed discovery. The broader migration policy
-for other legacy explorable decisions remains required by T-CAM-2.3.
-
 ## 02.10 Admission limits
 
 The scenario declares ceilings for:

@@ -7,10 +7,9 @@
   qemu-crucible,
 }: let
   qemu = qemu-crucible.passthru;
-  series = qemu.series;
-  version = series.qemuVersion;
-  patchCopyCommand = file: "cp ${./qemu-patches + "/${file}"} \"$source_root/patches/${file}\"";
-  patchCopyCommands = builtins.concatStringsSep "\n" (map patchCopyCommand series.patchFiles);
+  atomicPatch = qemu.atomicPatch;
+  version = atomicPatch.qemuVersion;
+  atomicPatchPath = ./qemu-patches + "/${atomicPatch.file}";
   crucibleSource = import ../tools/crucible/_source.nix {inherit lib;};
   repoRoot = ../..;
   characterizationGoldens = "${toString repoRoot}/tests/fixtures/system-characterization-goldens";
@@ -48,8 +47,8 @@ in
     inherit version;
 
     src = fetchurl {
-      urls = [series.qemuSourceUrl];
-      hash = series.qemuSourceHash;
+      urls = [atomicPatch.qemuSourceUrl];
+      hash = atomicPatch.qemuSourceHash;
     };
 
     runtimeDeps = [];
@@ -72,13 +71,13 @@ in
 
           cp "$src" "$source_root/upstream/qemu-${version}.tar.xz"
           cp -R ${aosBuildSource} "$source_root/build/aos"
-          cp ${./qemu-patches/_series.nix} "$source_root/patches/_series.nix"
-          cp ${series.patchBranchBundle} "$source_root/patches/crucible-qemu-${version}.bundle"
+          cp ${./qemu-patches/_atomic-patch.nix} "$source_root/patches/_atomic-patch.nix"
+          cp ${atomicPatch.bundle} "$source_root/patches/crucible-qemu-${version}.bundle"
           cp ${qemu.shmemGeneratedHeader} "$source_root/interfaces/crucible_shmem_abi.h"
           cp -R ${crucibleSource} "$source_root/plugin/workspace"
           cp -R ${crucibleCargoDeps} "$source_root/plugin/cargo-vendor"
           chmod -R u+w "$source_root/plugin"
-          ${patchCopyCommands}
+          cp ${atomicPatchPath} "$source_root/patches/${atomicPatch.file}"
 
           tar -xOf "$src" "qemu-${version}/COPYING" > "$source_root/licenses/QEMU-COPYING.txt"
           tar -xOf "$src" "qemu-${version}/LICENSE" > "$source_root/licenses/QEMU-LICENSE.txt"
@@ -93,20 +92,25 @@ in
           qemu_package=qemu-crucible
           qemu_version=${version}
           qemu_source_file=upstream/qemu-${version}.tar.xz
-          qemu_source_hash=${series.qemuSourceHash}
+          qemu_source_hash=${atomicPatch.qemuSourceHash}
           aos_build_source_root=build/aos
           aos_build_entrypoint=build/aos/default.nix
           qemu_build_expression=build/aos/pkgs/emulation/qemu.nix
-          qemu_patch_count=${toString (builtins.length series.patchFiles)}
-          qemu_patch_series_hash=${qemu.patchSeriesHash}
-          qemu_patch_branch_ref=${series.patchBranchRef}
+          qemu_atomic_patch_hash=${qemu.atomicPatchHash}
+          qemu_atomic_patch_file=patches/${atomicPatch.file}
+          qemu_patch_branch_ref=${atomicPatch.branchRef}
           qemu_patch_branch_bundle=patches/crucible-qemu-${version}.bundle
           qemu_patch_branch_bundle_hash=${qemu.patchBranchBundleHash}
-          qemu_patch_branch_base_commit=${series.patchBranchBaseCommit}
-          qemu_patch_branch_head_commit=${series.patchBranchHeadCommit}
+          qemu_patch_branch_base_commit=${atomicPatch.baseCommit}
+          qemu_patch_branch_head_commit=${atomicPatch.commit}
           qemu_build_id=${qemu.qemuBuildIdentity}
           qemu_nix_hash=${qemu.qemuNixHash}
           qemu_configure_flags_hash=${qemu.qemuConfigureFlagsHash}
+          qemu_samba_smbd_version=${qemu.sambaSmbdVersion}
+          qemu_samba_smbd_source_hash_algo=${qemu.sambaSmbdSourceHashAlgo}
+          qemu_samba_smbd_source_hash=${qemu.sambaSmbdSourceHash}
+          qemu_samba_smbd_recipe_hash=${qemu.sambaSmbdRecipeHash}
+          qemu_samba_smbd_executable=${qemu.sambaSmbdExecutable}
           shmem_abi=${qemu.shmemAbi}
           shmem_header_file=interfaces/crucible_shmem_abi.h
           shmem_header_hash=${qemu.shmemHeaderHash}
@@ -130,8 +134,8 @@ in
           cat > "$source_root/README" <<'README'
           This directory is the complete corresponding-source companion for the
           qemu-crucible binary identified by SOURCE-MANIFEST.env. It contains
-          the exact pinned upstream tarball, the ordered patch manifest and
-          patch files, the deterministic Git patch-branch bundle, the generated
+          the exact pinned upstream tarball, atomic patch descriptor and
+          artifact, the deterministic Git patch bundle, the generated
           process-boundary header, and a filtered AOS source tree in its original
           relative layout containing the Nix entrypoint and transitive local
           imports that control the build. It also contains the exact filtered
@@ -140,11 +144,11 @@ in
           crucible-qemu-plugin. The upstream COPYING file states the applicable
           QEMU combined-work terms, QEMU-LICENSE.txt defines the per-file
           default, and AOS-QEMU-PATCHES.md inventories every file created by the
-          patch series. The plugin workspace carries its own SPDX declarations.
+          atomic patch. The plugin workspace carries its own SPDX declarations.
 
           Reconstruct the patched tree by unpacking upstream/qemu-*.tar.xz and
-          applying the files named by patches/_series.nix in order with patch
-          -p1. The Git bundle records the same deterministic linear patch stack.
+          applying the file named by patches/_atomic-patch.nix with patch -p1.
+          The Git bundle records the same deterministic atomic commit.
 
           To rebuild the plugin offline, configure Cargo to replace crates-io
           with plugin/cargo-vendor, enter plugin/workspace/crates, and build
@@ -160,8 +164,8 @@ in
           Cargo license metadata, and license files.
           README
 
-          test "$(find "$source_root/patches" -name '[0-9][0-9][0-9][0-9]-*.patch' | wc -l)" \
-            -eq ${toString (builtins.length series.patchFiles)}
+          test -s "$source_root/patches/${atomicPatch.file}"
+          test -s "$source_root/patches/_atomic-patch.nix"
           test -s "$source_root/licenses/QEMU-COPYING.txt"
           test -s "$source_root/licenses/QEMU-LICENSE.txt"
           test -s "$source_root/licenses/Apache-2.0.txt"
@@ -189,9 +193,9 @@ in
           package=qemu-crucible-source
           qemu_package=qemu-crucible
           qemu_build_id=${qemu.qemuBuildIdentity}
-          qemu_source_hash=${series.qemuSourceHash}
+          qemu_source_hash=${atomicPatch.qemuSourceHash}
           aos_build_entrypoint=build/aos/default.nix
-          qemu_patch_series_hash=${qemu.patchSeriesHash}
+          qemu_atomic_patch_hash=${qemu.atomicPatchHash}
           qemu_patch_branch_bundle_hash=${qemu.patchBranchBundleHash}
           shmem_header_hash=${qemu.shmemHeaderHash}
           plugin_cargo_deps_hash=${cargoDepsHash}
@@ -207,10 +211,15 @@ in
     passthru = {
       qemuPackage = qemu-crucible;
       qemuBuildIdentity = qemu.qemuBuildIdentity;
-      qemuSourceHash = series.qemuSourceHash;
-      patchSeriesHash = qemu.patchSeriesHash;
+      qemuSourceHash = atomicPatch.qemuSourceHash;
+      atomicPatchHash = qemu.atomicPatchHash;
       patchBranchBundleHash = qemu.patchBranchBundleHash;
       shmemHeaderHash = qemu.shmemHeaderHash;
+      sambaSmbdVersion = qemu.sambaSmbdVersion;
+      sambaSmbdSourceHashAlgo = qemu.sambaSmbdSourceHashAlgo;
+      sambaSmbdSourceHash = qemu.sambaSmbdSourceHash;
+      sambaSmbdRecipeHash = qemu.sambaSmbdRecipeHash;
+      sambaSmbdExecutable = qemu.sambaSmbdExecutable;
       inherit cargoDepsHash;
     };
 

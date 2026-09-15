@@ -378,7 +378,6 @@ impl CampaignRepository {
                     summary: acceptance_summary,
                     snapshot: next,
                     acceptance_fact: fact,
-                    summary_recorded: true,
                     replayed: false,
                 })
             }

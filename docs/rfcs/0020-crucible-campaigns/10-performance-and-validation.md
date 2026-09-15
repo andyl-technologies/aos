@@ -222,11 +222,12 @@ never campaign truth, and may be discarded at any time.
 | `gate:campaign-store-composition` | Every supported route/tier/layer order preserves logical IDs, durability, errors, crash recovery, GC roots, and packing invariants |
 | `gate:campaign-continuity-v2` | Pause/restart/restore retains graph, frontier, knowledge, pins, and accounting |
 | `gate:campaign-statistics` | `P`/`Q` support and weight rules; biased campaigns cannot emit probability claims |
+| `gate:campaign-operational-continuity` | Coordinator/executor restart, exact pause, directory/compressed archive transfer, offline maintenance, and authenticated finding-to-midpoint debug all retain exact evidence |
 | `gate:license-boundary` | Existing process/license closure including all new QEMU patches |
 | `gate:abi-conformance` | Versioned socket/shmem/guest choice/measurement/fork protocols |
 | `gate:campaign-operator-acceptance` | Independent operator completes the public lifecycle and finding handoff with reviewed evidence |
 | `gate:campaign-destructive-recovery` | Documented process, host, storage, credential, pressure, and partial-fork failures preserve authenticated state |
-| `gate:campaign-dogfood` | A realistic long-running campaign sustains scale, steering, handoff, hibernation, and clean resource accounting |
+| `gate:campaign-dogfood` | A realistic long-running campaign sustains scale, steering, handoff, exact pause, archive transfer, and clean resource accounting |
 
 ## 10.8 Equivalence matrix
 

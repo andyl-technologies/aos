@@ -174,11 +174,9 @@ in
                           bs=512 count=1 seek=8 conv=notrunc 2>/dev/null
                       done
                     ) &
-                    # Let the modeled permanent-failure signal settle before
-                    # the guest blocks at the retained choice boundary. Under
-                    # deterministic icount this is guest virtual time, not a
-                    # host-side readiness delay.
-                    sleep 35
+                    # Leave the routed queue and volatile cache live while the
+                    # guest stops at the exact pre-fault choice boundary.
+                    sleep 2
                     selection=$(crucible-guest selectable choose-u64 \
                       1 hot-fork.retry-quanta continuation/one 1 9 2)
                     test "$selection" = u64=7
@@ -204,7 +202,9 @@ in
               done
               ;;
             *" crucible.workload=bench "*)
-              mount -t 9p -o trans=virtio,version=9p2000.L,msize=8192 crucible /mnt
+              mount -t 9p \
+                -o trans=virtio,version=9p2000.L,msize=8192,cache=none \
+                crucible /mnt
               ninep_content=$(cat /mnt/probe.txt)
               test "$ninep_content" = CRUCIBLE-9P-OK
 
@@ -212,6 +212,16 @@ in
                 io-probe-complete \
                 'The I/O probe read its 9p sub-node' \
                 1
+              while :; do
+                if ! cat /mnt/probe.txt > /dev/null 2>&1; then
+                  crucible-guest sometimes \
+                    io-probe-fault-observed \
+                    'The I/O probe observed its injected 9p read error' \
+                    1
+                  break
+                fi
+                sleep 1
+              done
               while :; do
                 sleep 3600
               done
@@ -239,6 +249,22 @@ in
                 hot-fork-continuation-complete \
                 'The selected continuation completed' \
                 1
+              while :; do
+                sleep 3600
+              done
+              ;;
+            *" crucible.workload=hot-fork-scaling "*)
+              crucible-guest selectable register-u64 \
+                1 hot-fork.retry-quanta 1 9 2 3 quanta
+              crucible-guest setup-complete
+              crucible-guest measurement-begin hot-fork-window instance-1
+              crucible-guest semantic-marker hot-fork-window-begin instance-1
+              for sequence in 1 2 3 4; do
+                selection=$(crucible-guest selectable choose-u64 \
+                  "$sequence" hot-fork.retry-quanta \
+                  "scaling/$sequence" 1 9 2)
+                test "$selection" = u64=7
+              done
               while :; do
                 sleep 3600
               done

@@ -4,21 +4,26 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use std::collections::BTreeMap;
 use std::error::Error;
 
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, EngineError, Icount,
     NodeBlobRef, NodeId, NodeTemplate, ReadyPoint, RngDecision, RngStreamId, TemporalGraph,
-    VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, instantiate, step,
+    VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, instantiate,
 };
 use crucible_harness::divergence::{
     DecisionTraceEntry, DivergenceMemoryRegion, DivergenceRegister, DivergenceSide,
     DivergenceStateDump,
 };
-use crucible_harness::fingerprint::{
-    FingerprintSample, FingerprintSampleTrigger, FingerprintStream,
-};
+use crucible_harness::fingerprint::{FingerprintSample, FingerprintStream};
 use crucible_harness::replay_oracle::{
     ReplayOracleCheckpointKind, ReplayOracleDivergenceInputs, ReplayOracleMaterializedCase,
     ReplayOracleSamplingConfig, ReplayOracleSearchBisectionError,
@@ -35,10 +40,10 @@ fn gate_fork_replay_oracle_validates_base_and_materialized_branch() -> Result<()
     let genesis = Configuration::genesis(scenario.clone());
     let baked = bake(&world)?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
-    let base = step(&genesis, rng_decision("fork/base", 41));
+    let base = accepted_step!(&genesis, rng_decision("fork/base", 41));
     let base_checkpoint = graph.materialize_checkpoint(&base)?;
     let fork_decision = rng_decision("fork/branch", 42);
-    let expected_branch = step(&base, fork_decision.clone());
+    let expected_branch = accepted_step!(&base, fork_decision.clone());
 
     let fork = graph.fork(&base, [fork_decision])?;
 
@@ -77,9 +82,9 @@ fn gate_fork_replay_oracle_rejects_corrupt_base_before_branching() -> Result<(),
     let world = fork_world();
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let base = step(&genesis, rng_decision("fork/corrupt-base", 51));
+    let base = accepted_step!(&genesis, rng_decision("fork/corrupt-base", 51));
     let fork_decision = rng_decision("fork/corrupt-base-branch", 52);
-    let branch = step(&base, fork_decision.clone());
+    let branch = accepted_step!(&base, fork_decision.clone());
     let baked = bake(&world)?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let corrupt_base = corrupt_loadable_checkpoint(&fork_node(), &genesis, &base)?;
@@ -119,7 +124,7 @@ fn gate_fork_replay_oracle_rejects_corrupt_branch_cache_and_localizes() -> Resul
     let world = fork_world();
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let base = step(&genesis, rng_decision("fork/corrupt-branch-base", 61));
+    let base = accepted_step!(&genesis, rng_decision("fork/corrupt-branch-base", 61));
     let baked = bake(&world)?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let fork = graph.fork(&base, [rng_decision("fork/corrupt-branch", 62)])?;
@@ -372,7 +377,6 @@ fn fork_sample(seq: u64, icount: u64, rolling_fingerprint: &[u8]) -> Fingerprint
         seq,
         node: String::from("fork-a"),
         icount,
-        trigger: FingerprintSampleTrigger::Periodic,
         rolling_fingerprint: rolling_fingerprint.to_vec(),
     }
 }

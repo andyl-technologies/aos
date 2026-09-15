@@ -28,6 +28,8 @@
 #
 #   mkCrucibleFleetCheck {
 #     name;                 # fleet check attr name, e.g. "crucible-e2e-determinism"
+#     checkPath ? ...;      # result identity when the canonical check lives
+#                           #   outside checks.fleet and is aliased there.
 #     runPhaseScript;       # bash executed with the whole closure on-hand; the
 #                           #   built CLI is $CRUCIBLE/bin/crucible and the closure
 #                           #   members are exported as env vars (see below).
@@ -66,6 +68,7 @@
   cruciblePlugin = pkgs.crucible-qemu-plugin;
   linuxCrucible = pkgs.linux-crucible;
   crucibleFixtures = pkgs.crucible-fixtures;
+  e2eNativeRunner = ./_e2e-determinism-native-runner.sh;
 
   qemuBinary = "${qemuCrucible}/bin/qemu-system-x86_64";
   pluginLibrary = "${cruciblePlugin}/lib/libcrucible_qemu_plugin.so";
@@ -75,6 +78,7 @@
   mkCrucibleFleetCheck = {
     name,
     runPhaseScript,
+    checkPath ? "checks.fleet.${name}",
     extraClosure ? [],
     gateResults ? [],
     resultLines ? [],
@@ -100,8 +104,11 @@
       # closure; the kernel and fixtures are added explicitly.
       buildDeps =
         [
+          pkgs.bash
           pkgs.coreutils
           pkgs.grep
+          pkgs.sed
+          pkgs.util-linux
           crucible
           qemuCrucible
           cruciblePlugin
@@ -128,6 +135,7 @@
             export CRUCIBLE_KERNEL_CMDLINE="${linuxCrucible.passthru.crucibleFixtureKernelCmdline} init=/init"
             export LINUX_CRUCIBLE="${linuxCrucible}"
             export CRUCIBLE_FIXTURES="${crucibleFixtures}"
+            export CRUCIBLE_E2E_NATIVE_RUNNER="${e2eNativeRunner}"
 
             FLEET_WORKDIR="$TMPDIR/crucible-fleet-workdir"
             CRUCIBLE_SCRATCH="$FLEET_WORKDIR"
@@ -145,6 +153,7 @@
             test -e "$CRUCIBLE_ROOT_IMAGE"
             test -e "$LINUX_CRUCIBLE"
             test -e "$CRUCIBLE_FIXTURES"
+            test -f "$CRUCIBLE_E2E_NATIVE_RUNNER"
 
             ${gateAssertions}
 
@@ -154,7 +163,7 @@
             mkdir -p "$out"
             cat > "$out/result" <<RESULT
             PASS
-            check=checks.fleet.${name}
+            check=${checkPath}
             fleet_check_surface=checks.fleet.${name}
             vm_runner=tcg-only
             tcg_only=true

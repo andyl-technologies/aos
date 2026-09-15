@@ -69,10 +69,6 @@
         needle = "pub fn new_with_event_log_segment_store";
       }
       {
-        label = "scheduler offset resume constructor";
-        needle = "pub fn new_with_event_log_offset_and_segment_store";
-      }
-      {
         label = "append stores canonical segment bytes";
         needle = "self.segment_store.put_segment(&segment_bytes)?";
       }

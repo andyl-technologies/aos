@@ -204,11 +204,12 @@ impl LinuxQemuAttemptProcessFactory {
     /// cgroup creation poisons the allocator and deliberately retains or leaks
     /// cleanup authority fail-closed; another QEMU process cannot launch from
     /// this allocator until daemon restart.
-    pub fn begin(
+    pub(crate) fn begin(
         &mut self,
         maximum_vcpus: u32,
         maximum_resident_bytes: u64,
         maximum_writable_bytes: u64,
+        exact_checkpoint_root: Option<crucible::ContentHash>,
     ) -> Result<LinuxQemuAttemptProcessOwner, QemuVmRealizationError> {
         if self.poisoned {
             return Err(QemuVmRealizationError::ExecutorUnavailable {
@@ -249,6 +250,7 @@ impl LinuxQemuAttemptProcessFactory {
             maximum_writable_bytes,
             self.config.child_user_id,
             self.config.child_group_id,
+            exact_checkpoint_root,
         ) {
             Ok(owner) => owner,
             Err(error) => {

@@ -3,6 +3,20 @@
 use super::*;
 
 impl CampaignRepository {
+    /// Builds an in-memory repository with a fixed immutable-object byte limit.
+    ///
+    /// The repository is suitable for bounded fixtures and process-local
+    /// workflows whose state does not need to survive a restart.
+    #[must_use]
+    pub fn in_memory(namespace: impl Into<String>, max_bytes: u64) -> Self {
+        Self::new(
+            Arc::new(crucible_cas::content_store::MemoryBlobBackend::new(
+                namespace, max_bytes,
+            )),
+            Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
+        )
+    }
+
     /// Builds a repository over independently composable blob and ref backends.
     #[must_use]
     pub fn new(blobs: Arc<dyn ImmutableBlobBackend>, refs: Arc<dyn MutableRefBackend>) -> Self {
@@ -239,7 +253,7 @@ impl CampaignRepository {
     ///
     /// Returns an error for an invalid name or semantic basis, missing imported
     /// input, an existing ref, failed publication, or failed ref creation.
-    pub fn create_from_stored(
+    pub(crate) fn create_from_stored(
         &self,
         name: &str,
         lineage: &CampaignLineage,
@@ -528,6 +542,9 @@ impl CampaignRepository {
             planner_scan_index_anchor_key(),
             empty,
         )?;
+        let ledger = self.put_budget_ledger(crate::CampaignBudgetLedger::empty(
+            MerkleMap::empty_content_id()?,
+        )?)?;
         let snapshot = CampaignSnapshot::genesis(
             CampaignLineageId::from_content_id(lineage_content)?,
             CampaignPolicyId::from_content_id(policy_content)?,
@@ -542,13 +559,8 @@ impl CampaignRepository {
                 accounting: empty,
                 coordination: empty,
             },
-        )?
-        .with_budget_ledger(
-            self.put_budget_ledger(
-                crate::CampaignBudgetLedger::empty()
-                    .with_request_spending(MerkleMap::empty_content_id()?)?,
-            )?,
-        );
+            ledger,
+        )?;
         let content_id = self.put_snapshot(&snapshot)?;
         self.validate_complete_head(content_id)?;
         match self

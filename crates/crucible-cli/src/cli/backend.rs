@@ -44,7 +44,7 @@ impl BackendSelectionPlan {
                     qemu,
                     plugin,
                     qemu_build_id,
-                    qemu_patch_series_hash,
+                    qemu_atomic_patch_hash,
                     plugin_abi,
                     shmem_abi_version,
                     qemu_source,
@@ -56,7 +56,7 @@ impl BackendSelectionPlan {
                 !qemu.as_os_str().is_empty()
                     && !plugin.as_os_str().is_empty()
                     && is_content_address(qemu_build_id)
-                    && !qemu_patch_series_hash.is_empty()
+                    && !qemu_atomic_patch_hash.is_empty()
                     && plugin_abi == &required_plugin_abi
                     && shmem_abi_version == &crucible::SHMEM_ABI_VERSION.to_string()
                     && qemu_source.is_hermetic()
@@ -129,7 +129,7 @@ pub(super) enum ResolvedLocalBackend {
         qemu: PathBuf,
         plugin: PathBuf,
         qemu_build_id: String,
-        qemu_patch_series_hash: String,
+        qemu_atomic_patch_hash: String,
         plugin_abi: String,
         shmem_abi_version: String,
         qemu_source: QemuDiscoverySource,
@@ -161,7 +161,7 @@ pub(super) struct QemuDiscoveryCandidate {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct QemuArtifactIdentity {
     pub(super) qemu_build_id: String,
-    pub(super) qemu_patch_series_hash: String,
+    pub(super) qemu_atomic_patch_hash: String,
     pub(super) plugin_abi: String,
     pub(super) shmem_abi_version: String,
 }
@@ -170,7 +170,7 @@ pub(super) struct QemuArtifactIdentity {
 pub(super) struct QemuBuildMarker {
     pub(super) raw_build_id: String,
     pub(super) artifact_build_id: String,
-    pub(super) qemu_patch_series_hash: String,
+    pub(super) qemu_atomic_patch_hash: String,
     pub(super) shmem_abi_version: String,
     pub(super) shmem_abi: String,
     pub(super) shmem_header_hash: String,
@@ -410,7 +410,7 @@ pub(super) fn discover_qemu_artifacts(
         qemu: qemu.path,
         plugin: plugin.path,
         qemu_build_id: identity.qemu_build_id,
-        qemu_patch_series_hash: identity.qemu_patch_series_hash,
+        qemu_atomic_patch_hash: identity.qemu_atomic_patch_hash,
         plugin_abi: identity.plugin_abi,
         shmem_abi_version: identity.shmem_abi_version,
         qemu_source: qemu.source,
@@ -528,7 +528,7 @@ pub(super) fn validate_qemu_artifacts(
     }
     Ok(QemuArtifactIdentity {
         qemu_build_id: qemu_marker.artifact_build_id,
-        qemu_patch_series_hash: qemu_marker.qemu_patch_series_hash,
+        qemu_atomic_patch_hash: qemu_marker.qemu_atomic_patch_hash,
         plugin_abi: plugin_marker.plugin_abi,
         shmem_abi_version: plugin_marker.shmem_abi_version,
     })
@@ -918,11 +918,11 @@ pub(super) fn read_qemu_build_marker(qemu: &Path) -> Result<QemuBuildMarker, Cli
             qemu_discovery_order_help()
         )));
     }
-    let patches_applied =
-        required_metadata_field(&fields, "qemu_crucible_patches_applied", &marker)?;
-    if patches_applied != "true" {
+    let atomic_patch_applied =
+        required_metadata_field(&fields, "qemu_crucible_atomic_patch_applied", &marker)?;
+    if atomic_patch_applied != "true" {
         return Err(qemu_backend_config_error(format!(
-            "QEMU `{}` is not the patched Crucible build (qemu_crucible_patches_applied={patches_applied}); {}",
+            "QEMU `{}` is not the patched Crucible build (qemu_crucible_atomic_patch_applied={atomic_patch_applied}); {}",
             qemu.display(),
             qemu_discovery_order_help()
         )));
@@ -936,8 +936,8 @@ pub(super) fn read_qemu_build_marker(qemu: &Path) -> Result<QemuBuildMarker, Cli
         )));
     }
     let raw_build_id = required_metadata_field(&fields, "qemu_build_id", &marker)?;
-    let qemu_patch_series_hash =
-        required_metadata_field(&fields, "qemu_patch_series_hash", &marker)?;
+    let qemu_atomic_patch_hash =
+        required_metadata_field(&fields, "qemu_atomic_patch_hash", &marker)?;
     if raw_build_id.is_empty() {
         return Err(qemu_backend_config_error(format!(
             "QEMU marker `{}` has an empty qemu_build_id; {}",
@@ -949,14 +949,14 @@ pub(super) fn read_qemu_build_marker(qemu: &Path) -> Result<QemuBuildMarker, Cli
     let shmem_abi = required_metadata_field(&fields, "qemu_shmem_abi", &marker)?;
     let shmem_header = required_metadata_field(&fields, "qemu_shmem_header", &marker)?;
     let shmem_header_hash = required_metadata_field(&fields, "qemu_shmem_header_hash", &marker)?;
-    if qemu_patch_series_hash.is_empty()
+    if qemu_atomic_patch_hash.is_empty()
         || shmem_abi_version.is_empty()
         || shmem_abi.is_empty()
         || shmem_header.is_empty()
         || shmem_header_hash.is_empty()
     {
         return Err(qemu_backend_config_error(format!(
-            "QEMU marker `{}` must contain non-empty qemu_patch_series_hash, qemu_shmem_abi_version, qemu_shmem_abi, qemu_shmem_header, and qemu_shmem_header_hash; {}",
+            "QEMU marker `{}` must contain non-empty qemu_atomic_patch_hash, qemu_shmem_abi_version, qemu_shmem_abi, qemu_shmem_header, and qemu_shmem_header_hash; {}",
             marker.display(),
             qemu_discovery_order_help()
         )));
@@ -980,7 +980,7 @@ pub(super) fn read_qemu_build_marker(qemu: &Path) -> Result<QemuBuildMarker, Cli
     Ok(QemuBuildMarker {
         raw_build_id,
         artifact_build_id,
-        qemu_patch_series_hash,
+        qemu_atomic_patch_hash,
         shmem_abi_version,
         shmem_abi,
         shmem_header_hash,
@@ -1110,7 +1110,6 @@ pub(super) fn subcommand_uses_backend_selection(command: &Commands) -> bool {
             | Commands::Verify(_)
             | Commands::Save(_)
             | Commands::Resume(_)
-            | Commands::Fork(_)
             | Commands::Replay(_)
             | Commands::Search(_)
             | Commands::Fuzz(_)
@@ -1208,16 +1207,8 @@ impl BackendCommandRunner for NullBackendCommandRunner {
                     ergonomics_plan,
                     save_plan,
                 ),
-                ResolvedLocalBackend::Qemu { .. } if guarded_campaign_save_eligible(save_plan) => {
-                    run_local_qemu_campaign_save_workflow(
-                        backend,
-                        thin_plan,
-                        backend_plan,
-                        ergonomics_plan,
-                        save_plan,
-                    )
-                }
-                ResolvedLocalBackend::Qemu { .. } => run_local_qemu_save_workflow(
+                ResolvedLocalBackend::Qemu { .. } => run_local_qemu_campaign_save_workflow(
+                    backend,
                     thin_plan,
                     backend_plan,
                     ergonomics_plan,
@@ -1237,13 +1228,23 @@ impl BackendCommandRunner for NullBackendCommandRunner {
                     run_local_double_workflow(thin_plan, backend_plan, ergonomics_plan, run_plan)
                 }
                 ResolvedLocalBackend::Qemu { .. } => {
-                    crate::cli_verify_serve::run_local_qemu_campaign_workflow(
-                        backend,
-                        thin_plan,
-                        backend_plan,
-                        ergonomics_plan,
-                        run_plan,
-                    )
+                    if run_plan.execution_mode == RunExecutionMode::Interactive {
+                        crate::cli_verify_serve::run_local_qemu_interactive_workflow(
+                            backend,
+                            thin_plan,
+                            backend_plan,
+                            ergonomics_plan,
+                            run_plan,
+                        )
+                    } else {
+                        crate::cli_verify_serve::run_local_qemu_campaign_workflow(
+                            backend,
+                            thin_plan,
+                            backend_plan,
+                            ergonomics_plan,
+                            run_plan,
+                        )
+                    }
                 }
             }?
         } else {

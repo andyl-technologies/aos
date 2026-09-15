@@ -16,6 +16,7 @@ pub(super) const MAX_NODE_CONTINUATION_BYTES: u64 = HARD_FAT_CHECKPOINT_BYTES;
 pub(super) const MAX_NODE_CONTINUATION_RING_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 impl QemuNetworkTransportCheckpoint {
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn empty() -> Self {
         Self {
             inbound: SpscRingSnapshot { frames: Vec::new() },

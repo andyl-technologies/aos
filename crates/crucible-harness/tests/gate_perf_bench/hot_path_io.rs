@@ -20,6 +20,7 @@ struct HotPathOwner {
 struct QemuPatchOwner {
     relative: &'static str,
     identity_markers: &'static [&'static str],
+    hot_path_sources: &'static [&'static str],
 }
 
 // This scoped inventory is deliberately explicit: moving, removing, or
@@ -42,7 +43,7 @@ const HOT_PATH_OWNERS: &[HotPathOwner] = &[
     ),
     owner(
         "crucible-qemu/src/supervision/host_io_runtime/control.rs",
-        &["fn signal_wake(&self)"],
+        &["fn signal_wake("],
         &["wake.write_all(&1_u64.to_ne_bytes())"],
     ),
     owner(
@@ -53,16 +54,7 @@ const HOT_PATH_OWNERS: &[HotPathOwner] = &[
             ".process_one_shmem_request(",
             ".advance_to_shmem(",
         ],
-        &[],
-    ),
-    owner(
-        "crucible-qemu/src/supervision/network_io_servicer.rs",
-        &[
-            "pub struct QemuLiveNetworkIoServicer",
-            "pub fn service(&mut self)",
-            "pub fn service_with_before_reply(",
-        ],
-        &[],
+        &["wake.write_all(&1_u64.to_ne_bytes())"],
     ),
     owner(
         "crucible-qemu/src/supervision/ninep_io_servicer.rs",
@@ -100,11 +92,6 @@ const HOT_PATH_OWNERS: &[HotPathOwner] = &[
         "crucible-qemu/src/mapped_quantum/preemption.rs",
         &["pub fn publish_preemption_command"],
         &[],
-    ),
-    owner(
-        "crucible-qemu/src/live_plugin_quantum_gate/scheduler.rs",
-        &["pub(super) fn drive_scenario", "pub(super) fn run_quantum"],
-        &[".signal_plugin_wake()"],
     ),
     owner(
         "crucible-shmem/src/shmem/frame_node/runtime.rs",
@@ -218,42 +205,35 @@ const FUTURE_HOT_PATH_OWNERS: &[HotPathOwner] = &[owner(
     &[],
 )];
 
-// These patch artifacts are the QEMU C-side callback, device, wake, and
-// scheduler-loop seams reached by the enumerated Rust owners. The scan examines
+// The atomic patch owns every QEMU C-side callback, device, wake, and
+// scheduler-loop seam reached by the enumerated Rust owners. The scan examines
 // added patch lines for control APIs so unrelated upstream context is ignored.
-const QEMU_PATCH_OWNERS: &[QemuPatchOwner] = &[
-    patch_owner(
-        "pkgs/emulation/qemu-patches/0013-crucible-plugin-wake-fd.patch",
-        &["qemu_plugin_wake_fd_read", "qemu_plugin_register_wake_fd"],
-    ),
-    patch_owner(
-        "pkgs/emulation/qemu-patches/0015-crucible-blk-shmem.patch",
-        &["crucible_shmem_submit_and_wait", "crucible_blk_poll_cb"],
-    ),
-    patch_owner(
-        "pkgs/emulation/qemu-patches/0019-crucible-9p-shmem.patch",
-        &["virtio_9p_forward_crucible", "virtio_9p_poll_crucible"],
-    ),
-    patch_owner(
-        "pkgs/emulation/qemu-patches/0020-crucible-net-tx-callback.patch",
-        &["crucible_net_tx_submit", "qemu_plugin_register_net_tx_cb"],
-    ),
-    patch_owner(
-        "pkgs/emulation/qemu-patches/0025-crucible-sim-idle-callbacks.patch",
-        &[
-            "rr_crucible_sim_all_vcpus_halted",
-            "qemu_plugin_maybe_fire_vcpu_idle_cb",
-        ],
-    ),
-    patch_owner(
-        "pkgs/emulation/qemu-patches/0039-crucible-blk-device-completion-advance.patch",
-        &["crucible_blk_wait_cb", "qemu_plugin_register_blk_wait_cb"],
-    ),
-    patch_owner(
-        "pkgs/emulation/qemu-patches/0044-crucible-time-advance-enqueue-kick.patch",
-        &["qemu_plugin_advance_time_ns", "qemu_cpu_kick(first_cpu)"],
-    ),
-];
+const QEMU_PATCH_OWNERS: &[QemuPatchOwner] = &[patch_owner(
+    "pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch",
+    &[
+        "qemu_plugin_wake_fd_read",
+        "qemu_plugin_register_wake_fd",
+        "crucible_shmem_submit_and_wait",
+        "crucible_blk_poll_cb",
+        "virtio_9p_forward_crucible",
+        "virtio_9p_poll_crucible",
+        "crucible_net_tx_submit",
+        "qemu_plugin_register_net_tx_cb",
+        "rr_crucible_sim_all_vcpus_halted",
+        "qemu_plugin_maybe_fire_vcpu_idle_cb",
+        "crucible_blk_wait_cb",
+        "qemu_plugin_register_blk_wait_cb",
+        "qemu_plugin_advance_time_ns",
+        "qemu_cpu_kick(first_cpu)",
+    ],
+    &[
+        "accel/tcg/tcg-accel-ops-rr.c",
+        "block/crucible-shmem.c",
+        "hw/9pfs/virtio-9p-device.c",
+        "net/net.c",
+        "plugins/api-system.c",
+    ],
+)];
 
 const fn owner(
     relative: &'static str,
@@ -285,10 +265,12 @@ const fn scoped_owner(
 const fn patch_owner(
     relative: &'static str,
     identity_markers: &'static [&'static str],
+    hot_path_sources: &'static [&'static str],
 ) -> QemuPatchOwner {
     QemuPatchOwner {
         relative,
         identity_markers,
+        hot_path_sources,
     }
 }
 
@@ -394,7 +376,7 @@ fn advance_and_delivery_owners_have_no_socket_or_control_io() -> Result<(), Box<
     );
     assert_eq!(
         inventoried_paths.len(),
-        30,
+        28,
         "the scoped concrete Rust hot-path owner inventory must remain explicit"
     );
 
@@ -422,7 +404,7 @@ fn qemu_patch_hot_path_seams_have_no_added_control_io() -> Result<(), Box<dyn Er
                 path.display()
             );
         }
-        let added = added_patch_lines(&source);
+        let added = added_patch_files(&source, owner.hot_path_sources);
         failures.extend(
             forbidden_patch_control_uses(&added)
                 .into_iter()
@@ -431,8 +413,8 @@ fn qemu_patch_hot_path_seams_have_no_added_control_io() -> Result<(), Box<dyn Er
     }
     assert_eq!(
         paths.len(),
-        7,
-        "the targeted QEMU patch inventory must remain explicit"
+        1,
+        "the atomic QEMU patch owner must remain explicit"
     );
     assert!(
         failures.is_empty(),
@@ -510,6 +492,22 @@ fn added_patch_lines(source: &str) -> String {
     source
         .lines()
         .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn added_patch_files(source: &str, paths: &[&str]) -> String {
+    source
+        .split("diff --git ")
+        .filter(|file_diff| {
+            paths.iter().any(|path| {
+                file_diff
+                    .lines()
+                    .next()
+                    .is_some_and(|header| header == format!("a/{path} b/{path}"))
+            })
+        })
+        .map(added_patch_lines)
         .collect::<Vec<_>>()
         .join("\n")
 }

@@ -4,23 +4,30 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use crucible::{
     AssertionDef, AssertionId, AssertionQuantifierKind, Checkpoint, CheckpointKind, Configuration,
-    ContentHash, Decision, EventClass, EventLog, Icount, MaterializationPolicy,
-    MaterializationTrigger, MemPlace, MemoryCmp, MemoryWidth, NodeId, NodeTemplate,
-    ObservableEvent, OfflineAssertionChecker, Predicate, Properties, Property, ReadyPoint,
-    ResolvedMemPlace, RngDecision, RngStreamId, SchedulerEvaluationBoundaryKind,
+    ContentHash, Decision, EventLog, Icount, MaterializationPolicy, MaterializationTrigger,
+    MemPlace, MemoryCmp, MemoryWidth, NodeId, NodeTemplate, ObservableEvent,
+    OfflineAssertionChecker, Predicate, Properties, Property, ReadyPoint, ResolvedMemPlace,
+    RngDecision, RngStreamId, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
     SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerLivenessScenario, Shift, SimInstant,
     SingleScheduler, TemporalGraph, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
     assertion_proximity_fingerprint_from_event_log, bake, compare_event_log_determinism,
-    event_log_assertion_proximity_projection, event_log_causal_projection, step,
+    event_log_assertion_proximity_projection, event_log_causal_projection,
 };
 
 #[test]
 fn assertion_proximity_entries_are_observational_and_projected() {
     let entry = proximity_entry(0, 2, "counter-reaches-ten", 3);
 
-    assert_eq!(entry.class(), EventClass::Observational);
+    assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
     assert_eq!(entry.event_payload().kind(), "assertion_proximity");
     assert_eq!(
         entry.event_payload().string("id"),
@@ -229,13 +236,21 @@ fn scheduler_appends_report_proximities_to_unified_event_log() {
     .expect("append-only scheduler should build");
 
     let append = scheduler
-        .append_assertion_proximity_events(&report)
+        .append_observable_events(report.proximities().iter().map(|proximity| {
+            ObservableEvent::assertion_proximity(
+                proximity.at,
+                proximity.assertion.clone(),
+                proximity.quantifier,
+                proximity.distance,
+                None,
+            )
+        }))
         .expect("scheduler should append assertion proximity events");
     let entries = append.entries;
 
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].event_payload().kind(), "assertion_proximity");
-    assert_eq!(entries[0].class(), EventClass::Observational);
+    assert_eq!(entries[0].class(), SchedulerEventLogClass::Observational);
     assert_eq!(
         entries[0].event_payload().string("id"),
         Some("counter-reaches-ten")
@@ -263,13 +278,10 @@ fn scheduler_appends_report_proximities_to_unified_event_log() {
 
 #[test]
 fn graph_cache_snapshot_stamps_checkpoint_assertion_proximity_from_event_log_projection() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.event-log-assertion-proximity.world",
-        "graph-cache-stamping",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario);
-    let child = step(
+    let child = accepted_step!(
         &genesis,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("proximity-graph-cache-stamping"),
@@ -296,7 +308,10 @@ fn graph_cache_snapshot_stamps_checkpoint_assertion_proximity_from_event_log_pro
         .expect("baked genesis should seed graph");
 
     graph
-        .cache_snapshot_with_event_log_assertion_proximity(&child, checkpoint, &proximity_log)
+        .cache_snapshot(
+            &child,
+            checkpoint.with_assertion_proximity_from_event_log(&proximity_log),
+        )
         .expect("assertion-proximity-stamped snapshot should cache");
     assert_eq!(
         graph

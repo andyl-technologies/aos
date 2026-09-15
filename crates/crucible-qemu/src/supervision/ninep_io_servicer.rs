@@ -28,8 +28,8 @@ use crucible_device::{
 };
 use crucible_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
-    NodeSlotSnapshot, RegionHeaderSnapshot, SLOT_9P_IO, STATUS_IDLE, STATUS_RUNNING,
-    SetupRegionMapError, mmap_setup_region,
+    RegionHeaderSnapshot, SLOT_9P_IO, STATUS_IDLE, STATUS_RUNNING, SetupRegionMapError,
+    mmap_setup_region,
 };
 use thiserror::Error;
 
@@ -960,9 +960,9 @@ impl QemuLive9pIoServicer {
         *frames_delivered += delivered;
 
         // Publish the next device-completion deadline to the guest node slot so a
-        // time-owning plugin whose guest is blocked on 9p I/O can idle-jump to it
-        // (0039 Part A). Zero when nothing is in flight, which retracts any stale
-        // deadline.
+        // time-owning plugin whose guest is blocked on 9p I/O can idle-jump to it.
+        // The atomic capability uses zero when nothing is in flight, retracting
+        // any stale deadline.
         let next_completion_icount = device.core().next_exact_local_event();
         node_slot.store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
 
@@ -995,20 +995,6 @@ impl QemuLive9pIoServicer {
     #[must_use]
     pub fn next_completion_icount(&self) -> Option<u64> {
         self.device.core().next_exact_local_event()
-    }
-
-    /// Reads the guest VM node slot's published state from the servicer's mapping.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuLive9pIoServicerError::RegionAccess`] when the guest node
-    /// slot cannot be borrowed from the mapped region.
-    pub fn vm_node_snapshot(&self) -> Result<NodeSlotSnapshot, QemuLive9pIoServicerError> {
-        Ok(self
-            .region
-            .node_slot(self.vm_slot)
-            .map_err(|source| QemuLive9pIoServicerError::RegionAccess { source })?
-            .snapshot())
     }
 }
 
@@ -1123,8 +1109,6 @@ impl NinepIoDiagnostics {
     ///
     /// `current_icount`, `device_io_active`, and `idle_wake_icount` are the guest
     /// slot's published state at the poll; `serviced` is the servicing outcome.
-    // crucible-lint: allow rust-allow -- consumed by the stage-2 live 9p harness (mirrors block_node_gate's diagnostics.record); retained beside the sink it records into, and exercised by this module's unit tests.
-    #[allow(dead_code)]
     pub(crate) fn record(
         &self,
         current_icount: u64,

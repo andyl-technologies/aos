@@ -106,7 +106,7 @@ pub enum FaultTargetManifestKind {
     Clock = 4,
     /// Realized accelerator devices, queues, jobs, memory, and fault support.
     Accelerator = 5,
-    /// Complete QEMU build, patch-series, shared-memory, and VMState identity.
+    /// Complete QEMU build, atomic-patch, shared-memory, and VMState identity.
     System = 6,
 }
 
@@ -138,7 +138,7 @@ pub struct FaultSystemCapabilityManifestV1 {
     /// Immutable emulator package build identity.
     pub emulator_build_id: [u8; 32],
     /// SHA-256 identity of the ordered carried emulator patch bytes.
-    pub emulator_patch_series_hash: [u8; 32],
+    pub emulator_atomic_patch_hash: [u8; 32],
     /// SHA-256 identity of the generated shared-memory ABI header.
     pub shmem_header_hash: [u8; 32],
 }
@@ -156,7 +156,7 @@ impl FaultSystemCapabilityManifestV1 {
             || [
                 self.vmstate_sections_sha256,
                 self.emulator_build_id,
-                self.emulator_patch_series_hash,
+                self.emulator_atomic_patch_hash,
                 self.shmem_header_hash,
             ]
             .contains(&[0; 32])
@@ -172,7 +172,7 @@ impl FaultSystemCapabilityManifestV1 {
         output[24..28].copy_from_slice(&self.vmstate_section_count.to_le_bytes());
         output[32..64].copy_from_slice(&self.vmstate_sections_sha256);
         output[64..96].copy_from_slice(&self.emulator_build_id);
-        output[96..128].copy_from_slice(&self.emulator_patch_series_hash);
+        output[96..128].copy_from_slice(&self.emulator_atomic_patch_hash);
         output[128..160].copy_from_slice(&self.shmem_header_hash);
         Ok(output)
     }
@@ -198,7 +198,7 @@ impl FaultSystemCapabilityManifestV1 {
             vmstate_section_count: u32_at(bytes, 24)?,
             vmstate_sections_sha256: array_32(bytes, 32)?,
             emulator_build_id: array_32(bytes, 64)?,
-            emulator_patch_series_hash: array_32(bytes, 96)?,
+            emulator_atomic_patch_hash: array_32(bytes, 96)?,
             shmem_header_hash: array_32(bytes, 128)?,
         };
         manifest.encode()?;

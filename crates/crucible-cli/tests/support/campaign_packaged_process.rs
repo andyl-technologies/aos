@@ -15,7 +15,7 @@ use crucible_session::engine::{
 const PROCESS_OBSERVATION_INTERVAL: Duration = Duration::from_millis(100);
 
 #[path = "campaign_packaged_process/guest_choice.rs"]
-mod guest_choice;
+pub(super) mod guest_choice;
 
 #[test]
 #[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]
@@ -187,7 +187,7 @@ fn packaged_campaign_flight(mode: PackagedFlight) -> Result<(), Box<dyn Error>> 
     fs::write(
         &lineage_input,
         format!(
-            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = \"qemu-10.0-crucible\"\nscenario_schema = 3\nexact_closure_schema = 4\n[protocol_versions]\ncontrol = 2\nshared-memory = 5\n",
+            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = \"qemu-11.1.1-crucible\"\nscenario_schema = 3\nexact_closure_schema = 4\n[protocol_versions]\ncontrol = 3\nshared-memory = 5\n",
             json_string(&compiled, "scenario")?,
             json_string(&compiled, "scenario_artifact")?,
             json_string(&compiled, "genesis")?,
@@ -256,11 +256,12 @@ exact_user_pins = true
     fs::set_permissions(&authority, fs::Permissions::from_mode(0o600))?;
     let deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
     let executor_socket = root.join("executor.sock");
-    for _ in 0..if mode == PackagedFlight::Restart {
+    let iterations = if mode == PackagedFlight::Restart {
         2
     } else {
         1
-    } {
+    };
+    for _ in 0..iterations {
         let mut invocation = fixture.service_command(None);
         invocation
             .arg("--qemu")
@@ -283,13 +284,16 @@ exact_user_pins = true
         let head = campaign_status(&fixture)?;
         assert_eq!(head["state"], original["state"]);
         assert_eq!(head["snapshot"], original["snapshot"]);
-        if mode != PackagedFlight::Restart
-            && let Err(error) = execute_initial_discovery(
+        let flight_result = if mode == PackagedFlight::Restart {
+            Ok(())
+        } else {
+            execute_initial_discovery(
                 &fixture,
                 &head,
                 &json_string(&compiled, "genesis_artifact")?,
             )
-        {
+        };
+        if let Err(error) = flight_result {
             let shutdown = packaged.stop();
             return Err(format!("{error}; service shutdown: {shutdown:?}").into());
         }
@@ -316,43 +320,7 @@ fn execute_initial_discovery(
     head: &Value,
     genesis: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let path = crucible_campaign::BranchPath::new(Vec::new())?;
-    let attempt = crucible_campaign::Attempt::new(
-        crucible_campaign::AttemptStart::Discover {
-            configuration: crucible_campaign::ConfigurationArtifactId::parse(genesis)?,
-        },
-        path.id()?,
-        crucible_campaign::StopCondition::NextChoice,
-    )?
-    .id()?
-    .to_string();
-    let before = snapshot_at(fixture, &json_string(head, "snapshot")?)?;
-    run_json(
-        connected_campaign(fixture)
-            .args([
-                "budget",
-                CAMPAIGN,
-                "--expected",
-                &json_string(head, "snapshot")?,
-                "--command",
-            ])
-            .arg("51".repeat(32))
-            .args(["add", "1", "--proposals", "1"]),
-        "grant initial discovery budget",
-    )?;
-    let budgeted = campaign_status(fixture)?;
-    run_json(
-        connected_campaign(fixture)
-            .args([
-                "start",
-                CAMPAIGN,
-                "--expected",
-                &json_string(&budgeted, "snapshot")?,
-                "--command",
-            ])
-            .arg("52".repeat(32)),
-        "start initial discovery",
-    )?;
+    let (attempt, before) = begin_initial_discovery(fixture, head, genesis)?;
 
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut last_head = None;
@@ -421,6 +389,52 @@ fn execute_initial_discovery(
         "explain stalled initial discovery",
     );
     Err(format!("running packaged campaign produced no initial discovery observation within 30s: {head}; snapshot={snapshot}; attempt={explanation:?}").into())
+}
+
+fn begin_initial_discovery(
+    fixture: &FlightFixture,
+    head: &Value,
+    genesis: &str,
+) -> Result<(String, Value), Box<dyn Error>> {
+    let path = crucible_campaign::BranchPath::new(Vec::new())?;
+    let attempt = crucible_campaign::Attempt::new(
+        crucible_campaign::AttemptStart::Discover {
+            configuration: crucible_campaign::ConfigurationArtifactId::parse(genesis)?,
+        },
+        path.id()?,
+        crucible_campaign::StopCondition::NextChoice,
+    )?
+    .id()?
+    .to_string();
+    let before = snapshot_at(fixture, &json_string(head, "snapshot")?)?;
+    run_json(
+        connected_campaign(fixture)
+            .args([
+                "budget",
+                CAMPAIGN,
+                "--expected",
+                &json_string(head, "snapshot")?,
+                "--command",
+            ])
+            .arg("51".repeat(32))
+            .args(["add", "1", "--proposals", "1"]),
+        "grant initial discovery budget",
+    )?;
+    let budgeted = campaign_status(fixture)?;
+    run_json(
+        connected_campaign(fixture)
+            .args([
+                "start",
+                CAMPAIGN,
+                "--expected",
+                &json_string(&budgeted, "snapshot")?,
+                "--command",
+            ])
+            .arg("52".repeat(32)),
+        "start initial discovery",
+    )?;
+
+    Ok((attempt, before))
 }
 
 /// Paces process observations while leaving readiness to authenticated state.

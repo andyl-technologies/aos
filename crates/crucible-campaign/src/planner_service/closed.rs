@@ -7,8 +7,7 @@
 //! those bounded inputs in canonical order, carries the best offer in portable
 //! state across pages, and issues only after reaching EOF.
 //!
-//! Current portable state also carries exact statistical proposal evidence.
-//! Legacy engines retain their exact v1 and v2 state representations.
+//! Portable state carries exact statistical proposal evidence.
 //!
 //! ```text
 //! canonical-frontier-planner@3: v3 | input_view? | best? | budget_blocked
@@ -81,87 +80,25 @@ impl CanonicalFrontierPlanner {
     /// Returns [`CampaignCodecError`] if the closed descriptor unexpectedly
     /// violates the canonical planner-engine grammar.
     pub fn descriptor() -> Result<PlannerEngine, CampaignCodecError> {
-        Self::descriptor_for_budget(true, true)
+        PlannerEngine::new(
+            ENGINE_NAME,
+            ENGINE_IMPLEMENTATION_VERSION,
+            ENGINE_PROTOCOL_VERSION,
+            BTreeSet::from([
+                CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
+                CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
+                CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
+            ]),
+        )
     }
 
     /// Returns whether this implementation can replay the exact engine descriptor.
-    ///
-    /// Legacy version-1 inputs retain their original offer and selection semantics.
     ///
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] if a closed descriptor cannot be constructed.
     pub fn supports_descriptor(engine: &PlannerEngine) -> Result<bool, CampaignCodecError> {
-        Ok(engine == &Self::descriptor()?
-            || engine == &Self::previous_finite_statistical_descriptor()?
-            || engine == &Self::previous_statistical_descriptor()?
-            || engine == &Self::legacy_request_budget_descriptor()?
-            || engine == &Self::descriptor_for_budget(true, false)?
-            || engine == &Self::descriptor_for_budget(false, false)?)
-    }
-
-    fn previous_finite_statistical_descriptor() -> Result<PlannerEngine, CampaignCodecError> {
-        PlannerEngine::new(
-            ENGINE_NAME,
-            7,
-            ENGINE_PROTOCOL_VERSION,
-            BTreeSet::from([
-                CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
-                CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
-                CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
-            ]),
-        )
-    }
-
-    fn previous_statistical_descriptor() -> Result<PlannerEngine, CampaignCodecError> {
-        PlannerEngine::new(
-            ENGINE_NAME,
-            6,
-            ENGINE_PROTOCOL_VERSION,
-            BTreeSet::from([
-                CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
-                CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
-                CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
-            ]),
-        )
-    }
-
-    fn legacy_request_budget_descriptor() -> Result<PlannerEngine, CampaignCodecError> {
-        PlannerEngine::new(
-            ENGINE_NAME,
-            5,
-            ENGINE_PROTOCOL_VERSION,
-            BTreeSet::from([
-                CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
-                CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
-                CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
-            ]),
-        )
-    }
-
-    fn descriptor_for_budget(
-        budget_aware: bool,
-        request_budget: bool,
-    ) -> Result<PlannerEngine, CampaignCodecError> {
-        let mut capabilities = BTreeSet::from([CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned()]);
-        if budget_aware {
-            capabilities.insert(CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned());
-        }
-        if request_budget {
-            capabilities.insert(CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned());
-        }
-        PlannerEngine::new(
-            ENGINE_NAME,
-            if request_budget {
-                ENGINE_IMPLEMENTATION_VERSION
-            } else if budget_aware {
-                3
-            } else {
-                1
-            },
-            ENGINE_PROTOCOL_VERSION,
-            capabilities,
-        )
+        Ok(engine == &Self::descriptor()?)
     }
 
     /// Builds an empty portable state for this exact engine descriptor.
@@ -177,9 +114,12 @@ impl CanonicalFrontierPlanner {
     pub(crate) fn initial_state_for_engine(
         engine: &PlannerEngine,
     ) -> Result<PlannerState, CampaignCodecError> {
-        let mut state = CanonicalFrontierPlannerState::empty();
-        state.schema_version = canonical_frontier_state_schema(engine);
-        Self::encode_state(engine.id()?, &state)
+        if !Self::supports_descriptor(engine)? {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported canonical frontier planner engine",
+            });
+        }
+        Self::encode_state(engine.id()?, &CanonicalFrontierPlannerState::empty())
     }
 
     /// Builds the exact repository basis for the packaged built-in planner.
@@ -238,7 +178,7 @@ impl CanonicalFrontierPlanner {
         request: &PlannerRequest,
     ) -> Result<CanonicalFrontierPlannerState, CampaignCodecError> {
         let state = request.planner_state();
-        let expected_format = canonical_frontier_state_schema(request.engine());
+        let expected_format = STATE_FORMAT_VERSION;
         if state.state_format() != STATE_FORMAT || state.state_format_version() != expected_format {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "canonical frontier planner state format mismatch",
@@ -389,7 +329,7 @@ impl PurePlannerEngine for CanonicalFrontierPlanner {
         let next_state = Self::encode_state(
             expected_engine_id,
             &CanonicalFrontierPlannerState {
-                schema_version: canonical_frontier_state_schema(request.engine()),
+                schema_version: STATE_SCHEMA_VERSION,
                 input_view: Some(view),
                 best: next_best.clone(),
                 budget_blocked,
@@ -425,14 +365,6 @@ impl PurePlannerEngine for CanonicalFrontierPlanner {
             explanation,
             disposition,
         )?))
-    }
-}
-
-fn canonical_frontier_state_schema(engine: &PlannerEngine) -> u32 {
-    match engine.implementation_version() {
-        ENGINE_IMPLEMENTATION_VERSION | 6 | 7 => STATE_FORMAT_VERSION,
-        3 | 5 => 2,
-        _ => 1,
     }
 }
 
@@ -484,10 +416,12 @@ fn canonical_finite_statistical_request(
         distribution.proposal_masses().clone(),
     )?;
     let branch_request = BranchRequest::new(
-        branch_point,
-        basis.parent(),
-        draw.opportunity(),
-        draw.domain(),
+        BranchRequest::identity(
+            branch_point,
+            basis.parent(),
+            draw.opportunity(),
+            draw.domain(),
+        ),
         source,
         crate::BranchRequestCause::Planner(invocation),
         crate::BranchBudget::new(1, 1)?,
@@ -550,10 +484,12 @@ fn canonical_smc_request(
         distribution.proposal_masses().clone(),
     )?;
     let branch_request = BranchRequest::new(
-        branch_point,
-        basis.parent(),
-        opportunity.id()?,
-        domain.id()?,
+        BranchRequest::identity(
+            branch_point,
+            basis.parent(),
+            opportunity.id()?,
+            domain.id()?,
+        ),
         source,
         crate::BranchRequestCause::Planner(invocation),
         crate::BranchBudget::new(1, 1)?,
@@ -589,14 +525,12 @@ impl Canonical for CanonicalFrontierPlannerState {
         encoder.option(self.best.as_ref(), |encoder, candidate| {
             candidate.encode_for_schema(encoder, self.schema_version)
         });
-        if self.schema_version >= 2 {
-            self.budget_blocked.encode(encoder);
-        }
+        self.budget_blocked.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
-        if !matches!(schema_version, 1..=STATE_SCHEMA_VERSION) {
+        if schema_version != STATE_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported canonical frontier planner state version",
             });
@@ -606,7 +540,7 @@ impl Canonical for CanonicalFrontierPlannerState {
             input_view: Option::decode(decoder)?,
             best: decoder
                 .option(|decoder| CarriedCandidate::decode_for_schema(decoder, schema_version))?,
-            budget_blocked: schema_version >= 2 && bool::decode(decoder)?,
+            budget_blocked: bool::decode(decoder)?,
         })
     }
 }
@@ -757,48 +691,26 @@ impl CanonicalPuctPlanner {
     /// Returns [`CampaignCodecError`] if the closed descriptor unexpectedly
     /// violates the planner-engine grammar.
     pub fn descriptor() -> Result<PlannerEngine, CampaignCodecError> {
-        Self::descriptor_for_budget(true, true)
+        PlannerEngine::new(
+            ENGINE_NAME,
+            PUCT_ENGINE_IMPLEMENTATION_VERSION,
+            ENGINE_PROTOCOL_VERSION,
+            BTreeSet::from([
+                CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
+                CANONICAL_FRONTIER_PUCT_CAPABILITY.to_owned(),
+                CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
+                CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
+            ]),
+        )
     }
 
     /// Returns whether this implementation can replay the exact engine descriptor.
-    ///
-    /// Legacy version-2 inputs retain their original offer and ranking semantics.
     ///
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] if a closed descriptor cannot be constructed.
     pub fn supports_descriptor(engine: &PlannerEngine) -> Result<bool, CampaignCodecError> {
-        Ok(engine == &Self::descriptor()?
-            || engine == &Self::descriptor_for_budget(true, false)?
-            || engine == &Self::descriptor_for_budget(false, false)?)
-    }
-
-    fn descriptor_for_budget(
-        budget_aware: bool,
-        request_budget: bool,
-    ) -> Result<PlannerEngine, CampaignCodecError> {
-        let mut capabilities = BTreeSet::from([
-            CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
-            CANONICAL_FRONTIER_PUCT_CAPABILITY.to_owned(),
-        ]);
-        if budget_aware {
-            capabilities.insert(CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned());
-        }
-        if request_budget {
-            capabilities.insert(CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned());
-        }
-        PlannerEngine::new(
-            ENGINE_NAME,
-            if request_budget {
-                PUCT_ENGINE_IMPLEMENTATION_VERSION
-            } else if budget_aware {
-                4
-            } else {
-                2
-            },
-            ENGINE_PROTOCOL_VERSION,
-            capabilities,
-        )
+        Ok(engine == &Self::descriptor()?)
     }
 
     /// Builds the empty portable state for this exact engine.
@@ -814,14 +726,12 @@ impl CanonicalPuctPlanner {
     pub(crate) fn initial_state_for_engine(
         engine: &PlannerEngine,
     ) -> Result<PlannerState, CampaignCodecError> {
-        let mut state = CanonicalPuctPlannerState::empty();
-        if !engine
-            .capabilities()
-            .contains(CANONICAL_FRONTIER_BUDGET_CAPABILITY)
-        {
-            state.schema_version = 1;
+        if !Self::supports_descriptor(engine)? {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported canonical PUCT planner engine",
+            });
         }
-        Self::encode_state(engine.id()?, &state)
+        Self::encode_state(engine.id()?, &CanonicalPuctPlannerState::empty())
     }
 
     /// Builds the exact repository basis for the packaged PUCT planner.
@@ -866,11 +776,7 @@ impl CanonicalPuctPlanner {
         PlannerState::new(
             engine,
             PUCT_STATE_FORMAT,
-            if state.schema_version >= 2 {
-                PUCT_STATE_FORMAT_VERSION
-            } else {
-                1
-            },
+            PUCT_STATE_FORMAT_VERSION,
             codec::encode(state),
         )
     }
@@ -879,15 +785,7 @@ impl CanonicalPuctPlanner {
         request: &PlannerRequest,
     ) -> Result<CanonicalPuctPlannerState, CampaignCodecError> {
         let state = request.planner_state();
-        let expected_format = if request
-            .engine()
-            .capabilities()
-            .contains(CANONICAL_FRONTIER_BUDGET_CAPABILITY)
-        {
-            PUCT_STATE_FORMAT_VERSION
-        } else {
-            1
-        };
+        let expected_format = PUCT_STATE_FORMAT_VERSION;
         if state.state_format() != PUCT_STATE_FORMAT
             || state.state_format_version() != expected_format
         {
@@ -896,17 +794,7 @@ impl CanonicalPuctPlanner {
             });
         }
         let decoded: CanonicalPuctPlannerState = codec::decode(state.bytes())?;
-        let budget_aware = request
-            .engine()
-            .capabilities()
-            .contains(CANONICAL_FRONTIER_BUDGET_CAPABILITY);
-        if decoded.schema_version
-            != if budget_aware {
-                PUCT_STATE_SCHEMA_VERSION
-            } else {
-                1
-            }
-        {
+        if decoded.schema_version != PUCT_STATE_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "canonical PUCT state schema disagrees with its engine",
             });
@@ -1174,14 +1062,12 @@ impl Canonical for CanonicalPuctPlannerState {
         self.input_view.encode(encoder);
         self.policy.encode(encoder);
         self.best.encode(encoder);
-        if self.schema_version >= 2 {
-            self.budget_blocked.encode(encoder);
-        }
+        self.budget_blocked.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
-        if !matches!(schema_version, 1 | PUCT_STATE_SCHEMA_VERSION) {
+        if schema_version != PUCT_STATE_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported canonical PUCT planner state version",
             });
@@ -1199,7 +1085,7 @@ impl Canonical for CanonicalPuctPlannerState {
             input_view,
             policy,
             best,
-            budget_blocked: schema_version >= 2 && bool::decode(decoder)?,
+            budget_blocked: bool::decode(decoder)?,
         })
     }
 }

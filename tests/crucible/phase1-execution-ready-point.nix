@@ -9,7 +9,7 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
-  qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
+  bakedGenesis = builtins.readFile ../../crates/crucible-daemon/src/qemu_baked_genesis.rs;
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
@@ -44,7 +44,7 @@
       }
       {
         label = "canonical world node ordering";
-        needle = "fn canonical_world_nodes(nodes: &[WorldNode]) -> Vec<WorldNode>";
+        needle = "fn canonical_world_node_defs(nodes: &[WorldNodeDef]) -> Vec<WorldNodeDef>";
       }
       {
         label = "shared ready point validator";
@@ -133,18 +133,14 @@
         needle = "ReadyPoint::AgentSignal";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/realization.rs" qemuRealization [
+    ++ failuresFor "crates/crucible-daemon/src/qemu_baked_genesis.rs" bakedGenesis [
       {
-        label = "QEMU bake validates world ready points";
-        needle = ".validate_ready_point_policies()";
+        label = "production baked capture consumes a validated scenario form";
+        needle = "source: &ScenarioDefForm,";
       }
       {
-        label = "QEMU ready point policy error";
-        needle = "ReadyPointPolicy";
-      }
-      {
-        label = "QEMU agent signal opt-in regression";
-        needle = "qemu_bake_rejects_agent_signal_without_white_box_opt_in";
+        label = "production baked capture enters the authenticated fresh lifecycle";
+        needle = "capture_fresh_genesis_checkpoint_candidate(factory, source, context)?;";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -210,15 +206,6 @@ in
               --lib \
               ready_point \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-execution-ready-point-target" \
-              --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
-              --lib \
-              qemu_bake_rejects_agent_signal_without_white_box_opt_in \
-              -- --test-threads=1
           '';
         }
         {
@@ -235,7 +222,7 @@ in
             spatial_graph_task=ready-point-policy-set-white-box-opt-in
             white_box_agent_signal=requires-opt-in
             bake_ready_point_determinism=content-identical-per-policy
-            qemu_bake_ready_point_validation=rejects-invalid-agent-signal-before-executor
+            baked_capture_ready_point_validation=validated-scenario-form-before-lifecycle
             RESULT
           '';
         }

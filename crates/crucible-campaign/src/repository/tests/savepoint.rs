@@ -371,16 +371,22 @@ fn capture_scope_rejects_changed_fact_basis_and_wrong_fact_kind() {
         b"wrong configuration",
     ))
     .expect("configuration ID");
-    let mismatched = SubmitAttemptRequest::new_savepoint_capture(
+    let mismatched = SubmitAttemptRequest::new(
         AssignmentId::from_bytes([0xb1; 16]).expect("assignment"),
         DaemonEpoch::from_bytes([0xb2; 16]).expect("daemon epoch"),
         lineage.id().expect("lineage ID"),
         accepted.attempt,
         resources(),
         ExecutionRetentionIntent::RetainAlways,
-        accepted.request,
-        wrong_configuration,
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_savepoint_capture(
+            assignment,
+            accepted.request,
+            wrong_configuration,
+        )
+    })
     .expect("mismatched scoped assignment");
     assert!(matches!(
         repository.validate_executor_execution_scope_with_profile(&mismatched, &profile),
@@ -394,16 +400,22 @@ fn capture_scope_rejects_changed_fact_basis_and_wrong_fact_kind() {
             BudgetGrant::new(1, 1).expect("budget grant"),
         ))
         .expect("publish wrong fact kind");
-    let forged = SubmitAttemptRequest::new_savepoint_capture(
+    let forged = SubmitAttemptRequest::new(
         AssignmentId::from_bytes([0xb3; 16]).expect("assignment"),
         DaemonEpoch::from_bytes([0xb2; 16]).expect("daemon epoch"),
         lineage.id().expect("lineage ID"),
         accepted.attempt,
         resources(),
         ExecutionRetentionIntent::RetainAlways,
-        CampaignFactId::from_content_id(wrong_fact).expect("fact ID"),
-        accepted.configuration,
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_savepoint_capture(
+            assignment,
+            CampaignFactId::from_content_id(wrong_fact).expect("fact ID"),
+            accepted.configuration,
+        )
+    })
     .expect("wrong-fact scoped assignment");
     assert!(matches!(
         repository.validate_executor_execution_scope_with_profile(&forged, &profile),
@@ -435,16 +447,22 @@ fn capture_scope_rejects_changed_fact_basis_and_wrong_fact_kind() {
     let orphan_content = repository
         .put_fact(&CampaignFact::SavepointCaptureRequested(orphan))
         .expect("publish orphan capture fact");
-    let orphan_assignment = SubmitAttemptRequest::new_savepoint_capture(
+    let orphan_assignment = SubmitAttemptRequest::new(
         AssignmentId::from_bytes([0xb7; 16]).expect("assignment"),
         DaemonEpoch::from_bytes([0xb8; 16]).expect("daemon epoch"),
         lineage.id().expect("lineage ID"),
         accepted.attempt,
         resources(),
         ExecutionRetentionIntent::RetainAlways,
-        CampaignFactId::from_content_id(orphan_content).expect("orphan fact ID"),
-        accepted.configuration,
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_savepoint_capture(
+            assignment,
+            CampaignFactId::from_content_id(orphan_content).expect("orphan fact ID"),
+            accepted.configuration,
+        )
+    })
     .expect("orphan scoped assignment");
     assert!(matches!(
         repository.validate_executor_execution_scope_with_profile(&orphan_assignment, &profile),
@@ -710,47 +728,6 @@ fn ordinary_attempt_and_scoped_capture_coexist_and_resolution_survives_restart()
             .is_empty()
     );
 
-    let discard = SavepointCaptureResolution {
-        command: CampaignCommandId::from_hash(CampaignHash::derive(
-            "test",
-            b"discard-coexisting-capture",
-        )),
-        expected_snapshot: resolved.new_snapshot,
-        request: accepted.request,
-        outcome: SavepointCaptureOutcome::Discarded,
-    };
-    assert!(matches!(
-        repository.resolve_savepoint_capture("savepoint-coexist", &discard, &assignment, &status,),
-        Err(CampaignRepositoryError::InvalidRequest {
-            reason: "savepoint-capture-discard-is-not-yet-supported"
-        })
-    ));
-    assert_eq!(
-        repository
-            .head("savepoint-coexist")
-            .expect("discard rejection leaves head unchanged")
-            .snapshot_id(),
-        resolved.new_snapshot
-    );
-
-    let discarded = repository
-        .install_historical_savepoint_capture_resolution(
-            "savepoint-coexist",
-            &discard,
-            &assignment,
-            &status,
-        )
-        .expect("install formerly supported discard history");
-    assert_eq!(discarded.outcome, SavepointCaptureOutcome::Discarded);
-    assert_eq!(
-        repository
-            .savepoint_capture_resolution_at(discarded.new_snapshot, accepted.request)
-            .expect("historical capture disposition")
-            .expect("historical capture is resolved")
-            .outcome,
-        SavepointCaptureOutcome::Discarded
-    );
-
     let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
     assert!(
         restarted
@@ -761,14 +738,9 @@ fn ordinary_attempt_and_scoped_capture_coexist_and_resolution_survives_restart()
     );
     let ready_replay = restarted
         .resolve_savepoint_capture("savepoint-coexist", &resolution, &assignment, &status)
-        .expect("ready resolution replay after discard");
+        .expect("ready resolution replay after restart");
     assert_eq!(ready_replay.new_snapshot, resolved.new_snapshot);
     assert!(ready_replay.replayed);
-    let discard_replay = restarted
-        .resolve_savepoint_capture("savepoint-coexist", &discard, &assignment, &status)
-        .expect("historical discard command replay after restart");
-    assert_eq!(discard_replay.new_snapshot, discarded.new_snapshot);
-    assert!(discard_replay.replayed);
 }
 
 #[test]
@@ -983,32 +955,6 @@ fn selected_continuation_identity_deduplicates_distinct_capture_causes() {
         .expect("exact first command replay");
     assert_eq!(replay.new_snapshot, first.new_snapshot);
     assert!(replay.replayed);
-
-    let discard = SavepointCaptureResolution {
-        command: CampaignCommandId::from_hash(CampaignHash::derive(
-            "test",
-            b"discard-first-selected-source",
-        )),
-        expected_snapshot: second.new_snapshot,
-        request: first_capture.request,
-        outcome: SavepointCaptureOutcome::Discarded,
-    };
-    let discarded = repository
-        .install_historical_savepoint_capture_resolution(
-            CAMPAIGN,
-            &discard,
-            &first_assignment,
-            &first_status,
-        )
-        .expect("historical selected-source discard");
-
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
-    let selected = restarted
-        .savepoint_continuation_source_at(discarded.new_snapshot, second.continuation)
-        .expect("cold selected source")
-        .expect("selected source exists");
-    assert_eq!(selected.selection(), first.selection);
-    assert_eq!(selected.provenance(), &first_selection);
 }
 
 #[test]
@@ -2028,16 +1974,22 @@ fn scoped_assignment(
     assignment: [u8; 16],
     epoch: [u8; 16],
 ) -> SubmitAttemptRequest {
-    SubmitAttemptRequest::new_savepoint_capture(
+    SubmitAttemptRequest::new(
         AssignmentId::from_bytes(assignment).expect("assignment"),
         DaemonEpoch::from_bytes(epoch).expect("daemon epoch"),
         lineage.id().expect("lineage ID"),
         accepted.attempt,
         resources(),
         ExecutionRetentionIntent::RetainAlways,
-        accepted.request,
-        accepted.configuration,
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_savepoint_capture(
+            assignment,
+            accepted.request,
+            accepted.configuration,
+        )
+    })
     .expect("scoped capture assignment")
 }
 
@@ -2048,7 +2000,7 @@ fn resources() -> AttemptResourceLimits {
 fn exact_checkpoint(label: &str) -> ExactCheckpointId {
     ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        2,
+        4,
         label.as_bytes(),
     ))
     .expect("exact checkpoint")

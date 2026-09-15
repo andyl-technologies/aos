@@ -53,7 +53,7 @@ pub trait QuantumLoop {
     ///
     /// The global frontier is expressed on the shared virtual timeline and is
     /// not generally interchangeable with a node-local retired-instruction
-    /// counter. Pure and legacy loops inherit the frontier default; schedulers
+    /// counter. Pure loops inherit the frontier default; schedulers
     /// with an explicit RUN plan override this with the selected node's exact
     /// post-RUN counter.
     ///
@@ -70,7 +70,7 @@ pub trait QuantumLoop {
 
     /// Converts a scheduler event time into one node's backend counter.
     ///
-    /// Pure and legacy loops use the shared virtual time directly. Schedulers
+    /// Pure loops use the shared virtual time directly. Schedulers
     /// that admit a VM at a nonzero ready-point counter override this conversion
     /// so backend effects retain the node's physical counter coordinate.
     ///
@@ -91,7 +91,7 @@ pub trait QuantumLoop {
     ///
     /// Live adapters use this projection to retain frames produced beyond the
     /// conservative frontier until their source-local emission coordinate is
-    /// globally committed. Pure and legacy loops use the raw instruction count
+    /// globally committed. Pure loops use the raw instruction count
     /// as their virtual-time coordinate.
     ///
     /// # Errors
@@ -128,7 +128,7 @@ pub trait QuantumLoop {
 
     /// Projects a scheduler-resolved event into host-observed trigger input.
     ///
-    /// Pure and legacy loops do not expose resolved events as observations.
+    /// Pure loops do not expose resolved events as observations.
     /// Production schedulers override this hook for scheduler-owned events,
     /// such as deterministic World I/O completions, that cannot originate in
     /// the live backend's observation queue.
@@ -499,15 +499,15 @@ pub trait QuantumLoop {
     /// self-contained records for choices discovered while normalizing them,
     /// the updated frontier configuration, and their unified event-log append.
     /// Live application randomness is returned as a seeded RNG draw followed
-    /// by a typed selection rather than the backend's legacy transport record.
+    /// by a typed selection rather than the backend's transport record.
     ///
     /// # Errors
     ///
     /// Returns [`SchedulerError`] when this loop cannot admit backend decisions
     /// or when the values differ from the scenario-seeded decision source.
-    fn append_backend_causal_decisions(
+    fn append_backend_rng_evidence(
         &mut self,
-        _decisions: Vec<Decision>,
+        _evidence: Vec<BackendRngEvidence>,
     ) -> Result<
         (
             Vec<Decision>,
@@ -687,37 +687,6 @@ pub struct QuantumOutcome {
     pub event_log_offset: EventLogOffset,
     /// Scheduler-owned quiescence evidence at this quantum boundary, when available.
     pub scheduler_quiescence: Option<SchedulerQuiescence>,
-}
-
-/// Output produced by one bounded host-concurrent scheduler round.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SchedulerConcurrentQuantumOutcome {
-    /// RUN set selected from the same scheduler boundary before host dispatch.
-    pub run_set: SchedulerConcurrentRunSet,
-    /// Serialized scheduler completions for the dispatched RUN set.
-    pub outcomes: Vec<QuantumOutcome>,
-}
-
-/// Deterministic set of RUNs eligible for host-level concurrent dispatch.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SchedulerConcurrentRunSet {
-    /// Caller-supplied maximum host workers for this round.
-    pub max_host_workers: usize,
-    /// RUN candidates selected in deterministic scheduler completion order.
-    pub candidates: Vec<SchedulerConcurrentRunCandidate>,
-}
-
-/// One node RUN selected for bounded host-level concurrent dispatch.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SchedulerConcurrentRunCandidate {
-    /// Scheduler node selected by PICK for this concurrent round.
-    pub node: SchedulerNodeId,
-    /// Node-local virtual time before RUN.
-    pub current_time: SimInstant,
-    /// Conservative lookahead-bounded virtual time for this RUN.
-    pub target_time: SimInstant,
-    /// Icount ceiling published before host dispatch.
-    pub max_advance_icount: u64,
 }
 
 /// Per-node retired-instruction stamp attached to an event-log time.
@@ -992,12 +961,6 @@ pub struct SchedulerEventLogEntry {
     pub(super) provenance: SchedulerEventLogEntryProvenance,
 }
 
-/// Compatibility name for entries in the unified event log.
-pub type LogEntry = SchedulerEventLogEntry;
-
-/// Compatibility name for the causal-vs-observational event class.
-pub type EventClass = SchedulerEventLogClass;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(super) struct SchedulerEventLogEntryProvenance;
 
@@ -1225,6 +1188,7 @@ impl SchedulerEventLogEntry {
     }
 
     /// Builds an observable condition entry as if appended by scheduler EMIT.
+    #[cfg(any(debug_assertions, feature = "test-support"))]
     #[must_use]
     pub(crate) fn observable(
         sequence: u64,
@@ -1398,7 +1362,7 @@ impl SchedulerEventLogEntry {
         self
     }
 
-    #[cfg(any(debug_assertions, feature = "test-support"))]
+    #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub(crate) fn with_payload_for_test(
         sequence: u64,
         at: VirtualTime,
@@ -1490,7 +1454,7 @@ pub struct EventLog {
     pub(super) offset: EventLogOffset,
     pub(super) bytes: u64,
     pub(super) events: u64,
-    pub(super) condition_entries: Vec<LogEntry>,
+    pub(super) condition_entries: Vec<SchedulerEventLogEntry>,
     pub(super) condition_base_events: u64,
     pub(super) condition_prefix: ConditionEventLogPrefix,
 }
@@ -1603,7 +1567,7 @@ impl EventLog {
     /// condition prefix overflow or become invalid.
     pub fn append_entries(
         &mut self,
-        entries: Vec<LogEntry>,
+        entries: Vec<SchedulerEventLogEntry>,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         if entries.is_empty() {
             return Ok(SchedulerEventLogAppend {

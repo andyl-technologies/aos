@@ -1430,11 +1430,12 @@ fn control_replay_artifact_rejects_final_snapshot_mismatch() {
     let mut artifact = interactive.control_replay_artifact(initial);
     artifact.final_snapshot.event_log_len += 1;
 
-    let error = match Engine::<ControlSensitiveLoop>::replay_control_replay_artifact(
-        &artifact,
+    let mut replay_engine = Engine::new(
+        artifact.initial_configuration.clone(),
         graph_with_baked_genesis(&scenario),
         ControlSensitiveLoop::default(),
-    ) {
+    );
+    let error = match replay_engine.replay_control_replay_artifact(&artifact) {
         Ok(snapshot) => {
             panic!("final-snapshot-mismatched artifact should reject, got {snapshot:?}")
         }
@@ -1448,6 +1449,100 @@ fn control_replay_artifact_rejects_final_snapshot_mismatch() {
     assert_eq!(expected.quanta, actual.quanta);
     assert_eq!(expected.frontier, actual.frontier);
     assert_eq!(expected.configuration.id(), actual.configuration.id());
+}
+
+#[test]
+fn control_replay_reconstructs_every_step_mode_without_partial_dispatch() {
+    let scenario = generated_scenario(4_603);
+    let initial = Configuration::genesis(scenario.clone());
+    let graph = graph_with_baked_genesis(&scenario);
+
+    for mode in StepMode::ALL {
+        let mut producer = Engine::new(initial.clone(), graph.clone(), StubLoop);
+        if let Err(error) = producer.apply_command(SessionCommand::Start) {
+            panic!("{mode:?} replay producer should instantiate: {error}");
+        }
+        if let Err(error) = producer.apply_command(SessionCommand::Step { mode }) {
+            panic!("{mode:?} replay producer should accept the step: {error}");
+        }
+        let artifact = producer.control_replay_artifact(initial.clone());
+
+        let mut replay = Engine::new(initial.clone(), graph.clone(), StubLoop);
+        let snapshot = replay
+            .replay_control_replay_artifact(&artifact)
+            .unwrap_or_else(|error| panic!("{mode:?} control record should replay: {error}"));
+
+        assert_eq!(snapshot, artifact.final_snapshot);
+        assert_eq!(replay.boundary_control_log(), artifact.control_log);
+    }
+}
+
+#[tokio::test]
+async fn actor_control_replay_publishes_exact_logs_and_stays_terminal_observable() {
+    let scenario = generated_scenario(4_604);
+    let initial = Configuration::genesis(scenario.clone());
+    let mut producer = Engine::new(
+        initial.clone(),
+        graph_with_baked_genesis(&scenario),
+        ControlSensitiveLoop::default(),
+    );
+    if let Err(error) = producer.apply_command(SessionCommand::Start) {
+        panic!("interactive replay producer should instantiate: {error}");
+    }
+    if let Err(error) = producer.apply_command(SessionCommand::Continue) {
+        panic!("interactive replay producer should run: {error}");
+    }
+    if let Err(error) = producer.step_quantum() {
+        panic!("interactive replay producer should establish a boundary: {error}");
+    }
+    if let Err(error) = producer.apply_command(SessionCommand::Stop) {
+        panic!("interactive replay producer should stop: {error}");
+    }
+    let artifact = producer.control_replay_artifact(initial.clone());
+
+    let replay_engine = Engine::new(
+        initial,
+        graph_with_baked_genesis(&scenario),
+        ControlSensitiveLoop::default(),
+    );
+    let (sender, receiver) = mpsc::channel(4);
+    let actor = SessionActor::new(replay_engine, receiver)
+        .with_control_replay_artifact(&artifact)
+        .unwrap_or_else(|error| panic!("actor-owned replay should succeed: {error}"));
+    assert_eq!(
+        actor.event_log().len(),
+        u64::try_from(artifact.final_snapshot.event_log_len).unwrap_or(u64::MAX)
+    );
+    assert_eq!(actor.reproduction_log().snapshot(), artifact.control_log);
+
+    let actor_task = tokio::spawn(actor.run());
+    let (query_reply, query_receiver) = CommandReply::channel();
+    sender
+        .send(SessionCommand::Query {
+            kind: QueryKind::Snapshot,
+            reply: query_reply,
+        })
+        .await
+        .unwrap_or_else(|error| panic!("terminal snapshot query should enqueue: {error}"));
+    let QueryResult::Snapshot(snapshot) = receive_reply(query_receiver).await else {
+        panic!("terminal snapshot query returned an unexpected payload");
+    };
+    assert_eq!(*snapshot, artifact.final_snapshot);
+
+    let (stop_reply, stop_receiver) = CommandReply::channel();
+    sender
+        .send(SessionCommand::acknowledged(
+            SessionCommand::Stop,
+            stop_reply,
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("terminal shutdown should enqueue: {error}"));
+    receive_reply(stop_receiver).await;
+    let report = actor_task
+        .await
+        .unwrap_or_else(|error| panic!("terminal replay actor should join: {error}"))
+        .unwrap_or_else(|error| panic!("terminal replay actor should exit cleanly: {error}"));
+    assert_eq!(report.final_snapshot, artifact.final_snapshot);
 }
 
 #[tokio::test]

@@ -7,8 +7,8 @@ use crucible_campaign::{
     AssignmentId, AttemptId, AttemptResourceLimits, AttemptStartMode, CampaignHash,
     CampaignLineageId, ConfigurationArtifact, ConfigurationId, DaemonEpoch,
     ExecutionRetentionIntent, ExecutorRejection, ExecutorService, ExecutorStatusService,
-    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, ObservationId, ScenarioArtifact,
-    ScenarioDefId, SubmitAttemptDisposition, SubmitAttemptRequest,
+    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, ScenarioArtifact, ScenarioDefId,
+    SubmitAttemptDisposition, SubmitAttemptRequest,
 };
 
 use super::*;
@@ -25,6 +25,7 @@ fn execution_quantum_budget_is_shared_and_refuses_the_exact_exhausted_boundary()
         ExecutionRetentionIntent::RetainOnFailure,
         ExecutionCancellation::default(),
         ExecutionCheckpointRequest::default(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     );
     let replay_context = context.for_origin_replay();
 
@@ -62,6 +63,7 @@ fn execution_quantum_budget_refuses_saturated_accounting_without_wrapping() {
         ExecutionRetentionIntent::RetainOnFailure,
         ExecutionCancellation::default(),
         ExecutionCheckpointRequest::default(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     );
     context
         .execution_quanta
@@ -115,34 +117,6 @@ fn capture_start_validation_requires_the_exact_discovery_artifact() {
             .expect("ordinary execution validation"),
         None
     );
-}
-
-#[test]
-fn staged_publication_reconciles_and_releases_capacity() {
-    let epoch = DaemonEpoch::from_bytes([0x31; 16]).expect("epoch");
-    let mut supervisor = supervisor(epoch);
-    let request = request(epoch, 0x41);
-    supervisor
-        .submit_attempt(&request)
-        .expect("accept assignment");
-    let queued = supervisor.next_queued().expect("queued attempt");
-    let observation = observation(0x51);
-
-    assert_eq!(
-        supervisor
-            .stage_observation_publication(&queued, observation)
-            .expect("stage publication root"),
-        ObservationPublicationOutcome::Staged
-    );
-    assert_eq!(supervisor.active_count(), 1);
-    assert_eq!(
-        supervisor
-            .stage_and_reconcile_completion(&queued, observation)
-            .expect("complete publication"),
-        CompletionOutcome::Completed
-    );
-    assert_eq!(supervisor.active_count(), 0);
-    assert_eq!(supervisor.queued_count(), 0);
 }
 
 #[test]
@@ -313,6 +287,7 @@ fn terminal_worker_failure_is_durable_without_requeue() {
         request.attempt(),
         request.resources(),
         request.retention(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("restart assignment");
     assert_eq!(
@@ -357,17 +332,9 @@ fn request(epoch: DaemonEpoch, byte: u8) -> SubmitAttemptRequest {
         .expect("attempt"),
         AttemptResourceLimits::new(1, 1024, 2048, 32).expect("resources"),
         ExecutionRetentionIntent::RetainOnFailure,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("request")
-}
-
-fn observation(byte: u8) -> ObservationId {
-    ObservationId::parse(&typed_id(
-        "crucible.campaign.observation",
-        "observation",
-        byte,
-    ))
-    .expect("observation")
 }
 
 fn configuration_artifact(byte: u8) -> ConfigurationArtifact {

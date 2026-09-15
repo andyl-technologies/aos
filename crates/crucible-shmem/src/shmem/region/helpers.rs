@@ -303,6 +303,16 @@ pub(super) fn write_node_slot_bytes(bytes: &mut [u8], snapshot: NodeSlotSnapshot
         NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET,
         snapshot.control_boundary_ack,
     );
+    write_u64_at(
+        bytes,
+        NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET,
+        snapshot.control_boundary_fault_command_frontier,
+    );
+    write_u32_at(
+        bytes,
+        NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET,
+        snapshot.control_boundary_capture_request,
+    );
 }
 
 pub(super) fn write_ring_header_bytes(bytes: &mut [u8], ring_header: &RingHeader) {

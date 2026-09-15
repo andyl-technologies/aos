@@ -51,7 +51,7 @@ fn gate_findings_emit_same_artifact_for_interactive_and_search_paths() -> Result
     assert_eq!(search_failure.configuration, branch.id());
     assert_eq!(
         interactive.discovery_path,
-        FindingDiscoveryPath::InteractiveFork
+        FindingDiscoveryPath::CampaignFork
     );
     assert_eq!(
         search.discovery_path,
@@ -73,7 +73,7 @@ fn gate_findings_emit_same_artifact_for_interactive_and_search_paths() -> Result
     let wrong_scenario = scenario_form(&single_node_world("wrong-scenario")?)?;
     assert!(matches!(
         FindingReproductionArtifact::capture(
-            FindingDiscoveryPath::InteractiveFork,
+            FindingDiscoveryPath::CampaignFork,
             fingerprint,
             &wrong_scenario,
             &branch,

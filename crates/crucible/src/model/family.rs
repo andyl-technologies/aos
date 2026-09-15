@@ -156,20 +156,6 @@ impl NodeTemplate {
         self
     }
 
-    /// Delivers a scalar workload parameter through black-box scenario config.
-    ///
-    /// The parameter is encoded as a stable `key=value` token in the guest
-    /// command line, which is already part of the content-addressed world and
-    /// scenario identity.
-    #[must_use]
-    pub fn guest_workload_scalar_parameter(
-        mut self,
-        parameter: &GuestWorkloadScalarParameter,
-    ) -> Self {
-        self.cmdline = parameter.selected_cmdline(&self.cmdline);
-        self
-    }
-
     /// Delivers a structured workload config tree through immutable scenario config.
     ///
     /// The tree reference is encoded as `wcfg=...` in the guest command line. A
@@ -293,18 +279,7 @@ pub(super) enum PendingScenarioNode {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum PendingScenarioLink {
-    Default {
-        left: NodeId,
-        right: NodeId,
-    },
-    Transport {
-        left: NodeId,
-        right: NodeId,
-        latency: SimDuration,
-        jitter: SimDuration,
-        loss: LinkLossProbability,
-        bandwidth_bps: Option<u64>,
-    },
+    Default { left: NodeId, right: NodeId },
     Concrete(LinkDef),
 }
 
@@ -363,35 +338,6 @@ impl ScenarioBuilder {
             left: NodeId { name: left.into() },
             right: NodeId { name: right.into() },
         });
-        self
-    }
-
-    /// Adds a logical world link with explicit transport characteristics.
-    #[must_use]
-    pub fn link_with_transport(
-        mut self,
-        left: impl Into<String>,
-        right: impl Into<String>,
-        latency: SimDuration,
-        jitter: SimDuration,
-        loss: LinkLossProbability,
-        bandwidth_bps: Option<u64>,
-    ) -> Self {
-        self.links.push(PendingScenarioLink::Transport {
-            left: NodeId { name: left.into() },
-            right: NodeId { name: right.into() },
-            latency,
-            jitter,
-            loss,
-            bandwidth_bps,
-        });
-        self
-    }
-
-    /// Adds an already-constructed logical world link.
-    #[must_use]
-    pub fn link_def(mut self, link: LinkDef) -> Self {
-        self.links.push(PendingScenarioLink::Concrete(link));
         self
     }
 
@@ -475,21 +421,6 @@ impl ScenarioBuilder {
                 PendingScenarioLink::Default { left, right } => {
                     LinkDef::new(left.clone(), right.clone())
                 }
-                PendingScenarioLink::Transport {
-                    left,
-                    right,
-                    latency,
-                    jitter,
-                    loss,
-                    bandwidth_bps,
-                } => LinkDef::with_transport(
-                    left.clone(),
-                    right.clone(),
-                    *latency,
-                    *jitter,
-                    *loss,
-                    *bandwidth_bps,
-                ),
                 PendingScenarioLink::Concrete(link) => Ok(link.clone()),
             })
             .collect()
@@ -1096,16 +1027,6 @@ impl ReproductionArtifact {
         Ok(artifact)
     }
 
-    /// Captures an artifact from an executable pinned configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError`] if replaying the pinned configuration's scenario
-    /// and schedule cannot derive a reduced state.
-    pub fn from_pinned_configuration(pinned: &PinnedConfiguration) -> Result<Self, EngineError> {
-        Self::capture(pinned.scenario_form(), &pinned.configuration().schedule)
-    }
-
     /// Rebuilds an artifact from already-recorded self-contained parts.
     #[must_use]
     pub fn from_recorded_parts(scenario: ScenarioDefForm, schedule: Schedule) -> Self {
@@ -1125,29 +1046,14 @@ impl ReproductionArtifact {
     /// Returns [`EngineError::ScenarioSerialization`] for malformed artifact,
     /// scenario, or schedule bytes.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let outer_v7 = bytes.starts_with(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V7);
-        let outer_v6 = bytes.starts_with(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V6);
-        let mut reader = if outer_v7 {
-            ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V7)?
-        } else if outer_v6 {
-            ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V6)?
-        } else {
-            ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V5)?
-        };
+        let mut reader = ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V7)?;
         let scenario_bytes = reader.read_binary_blob_bounded(
             "reproduction-artifact.scenario",
             MAX_REPRODUCTION_SCENARIO_BLOB_BYTES,
         )?;
         let schedule_bytes = reader.read_binary_blob("reproduction-artifact.schedule")?;
         reader.finish()?;
-        let scenario_version_matches = if outer_v7 {
-            scenario_bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V7)
-        } else if outer_v6 {
-            scenario_bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V6)
-        } else {
-            scenario_bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V5)
-        };
-        if !scenario_version_matches {
+        if !scenario_bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V7) {
             return Err(scenario_serialization_error(
                 "reproduction-artifact scenario version does not match its outer version",
             ));

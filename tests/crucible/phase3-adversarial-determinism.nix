@@ -34,12 +34,12 @@
         needle = "phase3  gate:adversarial-determinism       (modeled hostile-condition matrix)";
       }
       {
-        label = "production fleet component boundary";
-        needle = "complemented by the live-QEMU production fleet run";
+        label = "production native profile boundary";
+        needle = "execute against the native QEMU backend in T-HARN-23";
       }
       {
-        label = "modeled gate does not claim native HARN-11 completion";
-        needle = "does not claim that the native executor satisfies [HARN-11]";
+        label = "modeled gate remains a diagnostic layer";
+        needle = "remains the fast diagnostic layer for isolating scheduler drift";
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/adversarial.rs" adversarial [
@@ -197,7 +197,7 @@
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
       {
         label = "adversarial target implemented";
-        needle = "gate: \"gate:adversarial-determinism\",\n        package: \"crucible\",\n        test_target: \"gate_adversarial_determinism\",\n        required_features: &[],\n        placeholder: false,";
+        needle = "gate: \"gate:adversarial-determinism\",\n        package: \"crucible\",\n        test_target: \"gate_adversarial_determinism\",\n        required_features: &[],";
       }
     ]
     ++ failuresFor "crates/crucible-harness/tests/gate_catalog.rs" gateCatalogTest [
@@ -209,11 +209,7 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "adversarial target mapping implemented";
-        needle = "gate = \"gate:adversarial-determinism\";\n      package = \"crucible\";\n      testTarget = \"gate_adversarial_determinism\";\n      requiredFeatures = [];\n      placeholder = false;";
-      }
-      {
-        label = "placeholder count updated";
-        needle = "placeholder_targets=0";
+        needle = "gate = \"gate:adversarial-determinism\";\n      package = \"crucible\";\n      testTarget = \"gate_adversarial_determinism\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

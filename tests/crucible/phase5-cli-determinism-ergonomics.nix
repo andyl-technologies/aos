@@ -209,7 +209,7 @@
       }
       {
         label = "canonical log entry model";
-        needle = "struct CanonicalLogEntry";
+        needle = "struct CanonicalSchedulerEventLogEntry";
       }
       {
         label = "rendered canonical log model";

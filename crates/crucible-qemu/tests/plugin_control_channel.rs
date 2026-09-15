@@ -65,11 +65,11 @@ fn running_host_lifecycle_stream(
     let mut host = ControlLifecycleStream::connected_unix_stream(stream)?;
 
     peer.write_all(&control_encode_plugin_msg(&PluginMsg::Hello {
-        proto_version: 2,
+        proto_version: 3,
         abi_version: 1,
     }))?;
     host.host_accept_handshake(HostHandshakeConfig {
-        proto_version: 2,
+        proto_version: 3,
         abi_version: 1,
         slot_index: 0,
         node_count: 1,

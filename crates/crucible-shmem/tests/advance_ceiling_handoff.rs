@@ -36,7 +36,7 @@ use std::{
 
 #[test]
 fn node_slot_layout_matches_wire_contract() {
-    assert_eq!(NODE_SLOT_SIZE, 128);
+    assert_eq!(NODE_SLOT_SIZE, 256);
     assert_eq!(NODE_SLOT_ALIGN, 128);
     assert_eq!(NODE_SLOT_CURRENT_ICOUNT_OFFSET, 0);
     assert_eq!(NODE_SLOT_CURRENT_NS_OFFSET, 8);
@@ -361,7 +361,7 @@ fn control_boundary_request_release_acknowledges_publication() {
     let before = slot.snapshot();
 
     let request = slot
-        .request_control_boundary()
+        .request_control_boundary(0, None)
         .unwrap_or_else(|error| panic!("control boundary request should publish: {error}"));
 
     let requested = slot.snapshot();
@@ -387,7 +387,7 @@ fn control_boundary_request_release_acknowledges_publication() {
     slot.mark_running();
     let running_before = slot.snapshot();
     let running_request = slot
-        .request_control_boundary()
+        .request_control_boundary(0, None)
         .unwrap_or_else(|error| panic!("running control boundary should publish: {error}"));
     slot.publish_control_boundary(0, 0, 0)
         .unwrap_or_else(|error| panic!("running control boundary should publish: {error}"));
@@ -398,7 +398,7 @@ fn control_boundary_request_release_acknowledges_publication() {
         .unwrap_or_else(|error| panic!("fenced ceiling should publish: {error}"));
     slot.mark_running();
     let fenced_request = slot
-        .request_control_boundary()
+        .request_control_boundary(0, None)
         .unwrap_or_else(|error| panic!("fenced control boundary should publish: {error}"));
     slot.publish_control_boundary(0, 0, 0)
         .unwrap_or_else(|error| panic!("fenced control boundary should publish: {error}"));

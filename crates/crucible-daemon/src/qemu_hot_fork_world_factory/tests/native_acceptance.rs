@@ -4,6 +4,7 @@
 #![allow(clippy::expect_used)]
 
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,13 +12,15 @@ use std::time::Duration;
 use crucible::model::DagStore;
 use crucible::{
     AssertionId, AssertionPhase, Configuration, LocalDagStore, ObservableEventPayload,
-    QuantumRequest, SchedulerEventLogPayload,
+    QuantumRequest, SchedulerEventLogPayload, SchedulingNodeKind,
 };
+use crucible_api::ProductionVmLifecycleConfig;
 use crucible_api::vm_lifecycle::{
     ProductionVmHotForkIoNodeKind, ProductionVmHotForkNodeServiceState,
     ProductionVmHotForkSourceWorld,
 };
-use crucible_api::{ProductionRootImageFormat, ProductionVmLifecycleConfig};
+use crucible_qemu::QemuRootImageFormat;
+use rustix::time::{ClockId, clock_gettime};
 
 use super::*;
 use crate::{
@@ -29,6 +32,8 @@ use crate::{
 mod equivalence;
 #[path = "native_acceptance/failures.rs"]
 mod failures;
+#[path = "native_acceptance/resource_isolation.rs"]
+mod resource_isolation;
 #[path = "native_acceptance/scenario.rs"]
 mod scenario;
 
@@ -95,6 +100,7 @@ fn production_factory_forks_complete_live_world_atomically() {
     let mut observed_http = false;
     let mut observed_block = false;
     let mut observed_ninep = false;
+    let mut observed_ninep_fault = false;
     let mut source_quantum = 0;
     let mut source_frontier = 0;
 
@@ -126,6 +132,13 @@ fn production_factory_forks_complete_live_world_atomically() {
             quantum,
             outcome.frontier.ticks,
         );
+        record_milestone(
+            "source-ninep-fault-observed",
+            &mut observed_ninep_fault,
+            satisfied(&outcome.event_log_entries, "io-probe-fault-observed"),
+            quantum,
+            outcome.frontier.ticks,
+        );
         configuration = outcome.configuration;
         source_quantum = quantum;
         source_frontier = outcome.frontier.ticks;
@@ -136,8 +149,8 @@ fn production_factory_forks_complete_live_world_atomically() {
         let failed = evidence
             .nodes
             .iter()
-            .any(|node| node.node.name == "io-probe" && node.service_state == "permanently_failed");
-        if observed_http && observed_block && observed_ninep && failed {
+            .any(|node| node.node.name == "nginx" && node.service_state == "permanently_failed");
+        if observed_http && observed_block && observed_ninep && observed_ninep_fault && failed {
             eprintln!(
                 "atomic-world phase=source-ready quantum={quantum} frontier={}",
                 outcome.frontier.ticks
@@ -148,6 +161,10 @@ fn production_factory_forks_complete_live_world_atomically() {
     assert!(observed_http, "source produced HTTP traffic evidence");
     assert!(observed_block, "source completed the block read");
     assert!(observed_ninep, "source completed the 9p read");
+    assert!(
+        observed_ninep_fault,
+        "source observed the injected 9p error"
+    );
 
     let source_world = source_lifecycle
         .prepare_hot_fork_source_world()
@@ -182,8 +199,14 @@ fn production_factory_forks_complete_live_world_atomically() {
     }));
     assert!(continuation.io_nodes().iter().any(|node| {
         node.kind() == ProductionVmHotForkIoNodeKind::NineP
-            && node.owner_service_state() == ProductionVmHotForkNodeServiceState::PermanentlyFailed
+            && node.owner_service_state() == ProductionVmHotForkNodeServiceState::Running
     }));
+    let running_nodes = continuation
+        .nodes()
+        .iter()
+        .filter(|node| node.service_state() == ProductionVmHotForkNodeServiceState::Running)
+        .map(|node| node.node().clone())
+        .collect::<Vec<_>>();
 
     let input = execution_input_for_scenario_configuration(source, configuration.clone());
     let context = execution_context(&input, 0x71);
@@ -199,7 +222,8 @@ fn production_factory_forks_complete_live_world_atomically() {
         crucible_qemu::QemuShutdownPolicy::fast_test(),
         crucible_qemu::QemuAsyncDriverPolicy::fast_test(),
     );
-    assert!(factory.sources().available());
+    assert!(factory.sources.available());
+    let fork_started = operational_monotonic_nanoseconds();
     let mut lifecycle = match factory
         .try_start(&input, &context)
         .expect("atomically fork the complete world")
@@ -207,10 +231,27 @@ fn production_factory_forks_complete_live_world_atomically() {
         QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
         QemuHotForkWorldLifecycleStart::Declined => panic!("prepared source was declined"),
     };
-    assert!(!factory.sources().available());
+    assert!(!factory.sources.available());
     let materialization = lifecycle
         .start_materialization()
         .expect("inspect target start");
+    let child_ready_millis = operational_elapsed_milliseconds(fork_started);
+    let child_processes = cgroup_processes(&paths.cgroup_root.join("target"));
+    assert_eq!(child_processes.len(), 2, "two live target QEMU processes");
+    let child_private_dirty_kib = child_processes
+        .iter()
+        .map(|process| process_status_kib(*process, "smaps_rollup", "Private_Dirty:"))
+        .sum::<u64>();
+    let child_private_clean_kib = child_processes
+        .iter()
+        .map(|process| process_status_kib(*process, "smaps_rollup", "Private_Clean:"))
+        .sum::<u64>();
+    let child_private_rss_kib = child_private_dirty_kib.saturating_add(child_private_clean_kib);
+    let child_rss_anon_kib = child_processes
+        .iter()
+        .map(|process| process_status_kib(*process, "status", "RssAnon:"))
+        .sum::<u64>();
+    let child_allocated_bytes = allocated_tree_bytes(&paths.storage_root.join("target"));
     assert_eq!(
         materialization.restored_configuration(),
         Some(&configuration)
@@ -221,6 +262,16 @@ fn production_factory_forks_complete_live_world_atomically() {
         start_frontier.ticks,
         start_events.len()
     );
+    let fingerprints_before_mutation = running_nodes
+        .iter()
+        .map(|node| {
+            (
+                node.clone(),
+                QemuFreshAttemptLifecycleOwner::sample_fingerprint(&mut lifecycle, node.clone())
+                    .expect("sample running child before isolated mutation"),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
 
     let mut child_configuration = configuration.clone();
     let mut resumed = None;
@@ -232,27 +283,68 @@ fn production_factory_forks_complete_live_world_atomically() {
             })
             .expect("drive adopted child world");
         child_configuration = outcome.configuration;
-        if outcome.advanced_node.is_some() {
+        if outcome
+            .advanced_node
+            .as_ref()
+            .is_some_and(|node| node.kind == SchedulingNodeKind::Vm)
+        {
             resumed = Some((offset, outcome.frontier.ticks, outcome.advanced_node));
             break;
         }
     }
     let (offset, child_frontier, advanced_node) =
         resumed.expect("adopted child world must resume backend progress");
+    let advanced_node = advanced_node.expect("resumed quantum omitted its advanced child");
+    assert!(
+        running_nodes.contains(&advanced_node.node),
+        "scheduler advanced a VM outside the two running siblings"
+    );
     eprintln!(
         "atomic-world phase=child-resumed offset={offset} frontier={child_frontier} node={advanced_node:?}"
     );
+    for node in &running_nodes {
+        let after =
+            QemuFreshAttemptLifecycleOwner::sample_fingerprint(&mut lifecycle, node.clone())
+                .expect("sample running child after isolated mutation");
+        let before = fingerprints_before_mutation
+            .get(node)
+            .expect("running child omitted its baseline fingerprint");
+        if node == &advanced_node.node {
+            assert_ne!(&after, before, "advanced child fingerprint did not change");
+        } else {
+            assert_eq!(&after, before, "non-advanced running sibling changed");
+        }
+    }
+    resource_isolation::assert_live_children_are_physically_private(
+        &paths.cgroup_root.join("target"),
+        &paths.storage_root.join("target"),
+    )
+    .expect("authenticate live child resource isolation");
 
     println!("atomic_world_started=true");
+    println!("child_ready_millis={child_ready_millis}");
+    println!("child_processes={}", child_processes.len());
+    println!("child_private_dirty_kib={child_private_dirty_kib}");
+    println!("child_private_rss_kib={child_private_rss_kib}");
+    println!("child_rss_anon_kib={child_rss_anon_kib}");
+    println!("child_allocated_bytes={child_allocated_bytes}");
     println!("source_running_nodes=2");
     println!("source_permanently_failed_nodes=1");
     println!("block_continuation=present");
-    println!("ninep_failed_owner_continuation=present");
+    println!("ninep_running_owner_continuation=present");
+    println!("native_device_isolation=network,9p");
+    println!("native_resource_isolation=memfd,eventfd,writable-qcow2-root,serial");
+    println!("native_temp_files_isolated=true");
+    println!("ambient_outputs_rejected=pidfile,export-socket");
+    println!("native_running_sibling_mutation_isolated=true");
+    println!(
+        "native_isolation_scopes=network-device,native-9p-device,writable-qcow2-root,serial,pidfile,export-socket,temp-files,native-running-sibling-mutation"
+    );
 
     QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle).expect("shutdown child world");
     reconcile_native_world(&mut lifecycle);
     assert!(factory.recover(lifecycle).is_ok());
-    assert!(factory.sources().available());
+    assert!(factory.sources.available());
     eprintln!("atomic-world phase=cleanup-complete source_reusable=true");
 }
 
@@ -268,7 +360,7 @@ fn lifecycle_config(
         &paths.root_image,
         run_state_root,
     )
-    .with_root_image_format(ProductionRootImageFormat::Raw)
+    .with_root_image_format(QemuRootImageFormat::Raw)
     .with_kernel_cmdline_prefix("console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init")
     .with_world_artifacts(artifacts)
     .with_run_ceiling_icount(50_000_000_000)
@@ -304,6 +396,7 @@ fn prepare_native_source(
     let mut observed_http = false;
     let mut observed_block = false;
     let mut observed_ninep = false;
+    let mut observed_ninep_fault = false;
     let mut failed = false;
 
     for quantum in 0..MAX_SOURCE_QUANTA {
@@ -316,14 +409,15 @@ fn prepare_native_source(
         observed_http |= satisfied(&outcome.event_log_entries, "curl-receives-http-200");
         observed_block |= satisfied(&outcome.event_log_entries, "curl-block-read-complete");
         observed_ninep |= satisfied(&outcome.event_log_entries, "io-probe-complete");
+        observed_ninep_fault |= satisfied(&outcome.event_log_entries, "io-probe-fault-observed");
         configuration = outcome.configuration;
         failed = lifecycle
             .fault_evidence_snapshot()
             .expect("inspect source service state")
             .nodes
             .iter()
-            .any(|node| node.node.name == "io-probe" && node.service_state == "permanently_failed");
-        if observed_http && observed_block && observed_ninep && failed {
+            .any(|node| node.node.name == "nginx" && node.service_state == "permanently_failed");
+        if observed_http && observed_block && observed_ninep && observed_ninep_fault && failed {
             eprintln!(
                 "atomic-world phase=failure-source-ready lane={lane} quantum={quantum} frontier={}",
                 outcome.frontier.ticks
@@ -331,7 +425,7 @@ fn prepare_native_source(
             break;
         }
     }
-    assert!(observed_http && observed_block && observed_ninep && failed);
+    assert!(observed_http && observed_block && observed_ninep && observed_ninep_fault && failed);
     let world = lifecycle
         .prepare_hot_fork_source_world()
         .expect("prepare complete production source world");
@@ -373,6 +467,75 @@ fn required_number(name: &str) -> u32 {
         .unwrap_or_else(|_| panic!("{name} must be set"))
         .parse()
         .unwrap_or_else(|_| panic!("{name} must be an unsigned integer"))
+}
+
+fn cgroup_processes(root: &std::path::Path) -> Vec<u32> {
+    let mut processes: Vec<u32> = Vec::new();
+    let entries = fs::read_dir(root)
+        .unwrap_or_else(|error| panic!("read native target cgroup {}: {error}", root.display()));
+    let process_list = fs::read_to_string(root.join("cgroup.procs"))
+        .unwrap_or_else(|error| panic!("read native target processes {}: {error}", root.display()));
+    processes.extend(process_list.lines().map(|process| {
+        process
+            .parse::<u32>()
+            .unwrap_or_else(|_| panic!("invalid process ID"))
+    }));
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|error| panic!("read cgroup entry: {error}"));
+        if entry
+            .file_type()
+            .unwrap_or_else(|error| panic!("read cgroup entry type: {error}"))
+            .is_dir()
+        {
+            processes.extend(cgroup_processes(&entry.path()));
+        }
+    }
+    processes.sort_unstable();
+    processes.dedup();
+    processes
+}
+
+// Host time is emitted only as operational gate evidence and never enters a
+// scenario, decision, fingerprint, checkpoint, or other deterministic state.
+fn operational_monotonic_nanoseconds() -> u64 {
+    let now = clock_gettime(ClockId::Monotonic);
+    let seconds = u64::try_from(now.tv_sec).expect("monotonic seconds fit u64");
+    let nanoseconds = u64::try_from(now.tv_nsec).expect("monotonic nanoseconds fit u64");
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|total| total.checked_add(nanoseconds))
+        .expect("monotonic clock fits u64 nanoseconds")
+}
+
+fn operational_elapsed_milliseconds(start: u64) -> u64 {
+    operational_monotonic_nanoseconds().saturating_sub(start) / 1_000_000
+}
+
+fn process_status_kib(process: u32, file: &str, field: &str) -> u64 {
+    let contents = fs::read_to_string(format!("/proc/{process}/{file}"))
+        .unwrap_or_else(|error| panic!("read process {process} {file}: {error}"));
+    contents
+        .lines()
+        .find_map(|line| line.strip_prefix(field))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| panic!("process {process} {file} lacks numeric field {field}"))
+}
+
+fn allocated_tree_bytes(root: &std::path::Path) -> u64 {
+    let metadata = fs::symlink_metadata(root)
+        .unwrap_or_else(|error| panic!("inspect native storage {}: {error}", root.display()));
+    let mut allocated = metadata.blocks().saturating_mul(512);
+    if !metadata.is_dir() {
+        return allocated;
+    }
+    for entry in fs::read_dir(root)
+        .unwrap_or_else(|error| panic!("read native storage {}: {error}", root.display()))
+    {
+        let entry = entry.unwrap_or_else(|error| panic!("read native storage entry: {error}"));
+        allocated = allocated.saturating_add(allocated_tree_bytes(&entry.path()));
+    }
+    allocated
 }
 
 fn satisfied(entries: &[crucible::SchedulerEventLogEntry], assertion: &str) -> bool {

@@ -4,14 +4,13 @@
 //! This driver drains one accepted unevaluated observation per bounded runtime
 //! step before allowing the planner or executor supervisor to advance. Crucible
 //! measurement payload v2 is replayed from its authenticated raw evidence leaf;
-//! legacy payloads publish explicit missing-measurement rejections through the
-//! generic evaluator so they cannot enter a Beam survivor set silently.
+//! every other payload schema fails closed before objective evaluation.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crucible_campaign::{
-    CampaignRepository, CampaignRepositoryError, ObjectiveEvaluationCursor,
+    CampaignRepository, CampaignRepositoryError, MeasurementSet, ObjectiveEvaluationCursor,
     ObjectiveEvaluationInput, evaluate_objectives,
 };
 
@@ -117,18 +116,9 @@ fn evaluate_input(
     repository: &CampaignRepository,
     input: &ObjectiveEvaluationInput,
 ) -> Result<crucible_campaign::ObjectiveEvaluation, ObjectiveEvaluationDriverError> {
-    let Some(retained) = input.measurements().evaluation() else {
-        return evaluate_objectives(
-            input.policy(),
-            input.observation(),
-            input.properties(),
-            BTreeMap::new(),
-        )
-        .map_err(ObjectiveEvaluationDriverError::Campaign);
-    };
-    if input.policy().objectives().is_empty()
-        || retained.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
-    {
+    let retained = input.measurements().evaluation();
+    require_current_measurement_payload(input.measurements())?;
+    if input.policy().objectives().is_empty() {
         return evaluate_objectives(
             input.policy(),
             input.observation(),
@@ -173,6 +163,19 @@ fn evaluate_input(
     .map_err(Into::into)
 }
 
+fn require_current_measurement_payload(
+    measurements: &MeasurementSet,
+) -> Result<(), CrucibleMeasurementError> {
+    let actual = measurements.evaluation().payload_schema();
+    if actual != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
+        return Err(CrucibleMeasurementError::UnsupportedPayloadSchema {
+            actual,
+            expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
+        });
+    }
+    Ok(())
+}
+
 /// Failure while preparing one exact objective evaluation.
 #[derive(Debug, thiserror::Error)]
 pub enum ObjectiveEvaluationDriverError {
@@ -208,4 +211,33 @@ pub enum ObjectivePublishingCampaignDriverError<E> {
     /// The wrapped campaign driver failed.
     #[error("campaign supervisor failed")]
     Inner(#[source] E),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use crucible_campaign::CampaignHash;
+
+    use super::*;
+
+    #[test]
+    fn objective_driver_rejects_noncurrent_measurement_payload_before_evaluation() {
+        let measurements = MeasurementSet::from_evaluation(
+            CampaignHash::derive("crucible.test.measurement-definitions", b"noncurrent"),
+            1,
+            CampaignHash::derive("crucible.test.measurement-evaluation", b"noncurrent"),
+            vec![1],
+            BTreeSet::new(),
+        )
+        .unwrap_or_else(|error| panic!("build structurally valid noncurrent payload: {error}"));
+
+        assert!(matches!(
+            require_current_measurement_payload(&measurements),
+            Err(CrucibleMeasurementError::UnsupportedPayloadSchema {
+                actual: 1,
+                expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
+            })
+        ));
+    }
 }

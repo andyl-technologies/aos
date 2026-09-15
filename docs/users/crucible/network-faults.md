@@ -9,9 +9,7 @@ required.
 ## Start with an unfaulted route
 
 Before adding bindings, prove that both guests exchange traffic through a
-`LinkDef`. The production example
-[`crucible-qemu-live-world-network.rs`](../../../crates/crucible-api/examples/crucible-qemu-live-world-network.rs)
-does this and verifies both scheduler delivery and a guest acknowledgement.
+`LinkDef` and verify both scheduler delivery and a guest acknowledgement.
 
 A logical world link supplies baseline one-way latency, subtractive jitter,
 loss probability, and optional bandwidth. Its loss choices are keyed to the
@@ -214,9 +212,9 @@ target or use an admitted fault-domain selector. At each opportunity the
 network adapter composes all active contributors using the effect family's
 closed rules and records both the contributors and final result.
 
-The shared-cause production example powers down a forwarder while the same
-event crashes a VM and loses volatile storage cache:
-[`crucible-qemu-signal-shared-cause.rs`](../../../crates/crucible-api/examples/crucible-qemu-signal-shared-cause.rs).
+A shared-cause plan can power down a forwarder while the same event crashes a
+VM and loses volatile storage cache. Bind every effect to the same authenticated
+signal coordinate and assert each resulting transition separately.
 
 ## What to assert
 

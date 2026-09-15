@@ -142,13 +142,20 @@ impl CampaignRepository {
             .snapshot
             .parent()
             .ok_or_else(|| integrity("discovery-result-has-no-parent"))?;
-        let (_, attempt, admission) = self
+        let (_, attempt, _) = self
             .discovery_request_basis(&self.read_snapshot(prior_snapshot.content_id())?, request)?;
+        let admission_content = self
+            .merkle
+            .get(
+                loaded.snapshot.roots().accounting,
+                attempt_execution_basis_key(attempt.id()?),
+            )?
+            .ok_or_else(|| integrity("discovery-result-admission-is-missing"))?;
         Ok(CampaignDiscoveryResult {
             prior_snapshot,
             new_snapshot: CampaignSnapshotId::from_content_id(result_content)?,
             attempt: attempt.id()?,
-            admission: admission.id()?,
+            admission: AttemptAdmissionId::from_content_id(admission_content)?,
             replayed,
         })
     }
@@ -280,8 +287,7 @@ impl CampaignRepository {
             CampaignFact::BranchRequestAccepted {
                 request: accepted,
                 summary,
-            } if accepted == request => Some(summary),
-            CampaignFact::BranchRequestIssued(accepted) if accepted == request => None,
+            } if accepted == request => summary,
             _ => return Err(integrity("branch-request-result-index-type-mismatch")),
         };
         let prior_snapshot = loaded
@@ -292,7 +298,7 @@ impl CampaignRepository {
         let prior = self.read_snapshot(prior_snapshot.content_id())?;
         let summary =
             self.branch_acceptance_summary(prior.snapshot.roots().graph, &request_record)?;
-        if recorded_summary.is_some_and(|recorded| recorded != summary) {
+        if recorded_summary != summary {
             return Err(integrity("branch-request-acceptance-summary-mismatch"));
         }
         Ok(Some(BranchRequestResult {
@@ -302,7 +308,6 @@ impl CampaignRepository {
             summary,
             snapshot: loaded.snapshot,
             acceptance_fact,
-            summary_recorded: recorded_summary.is_some(),
             replayed: true,
         }))
     }
@@ -406,9 +411,7 @@ impl CampaignRepository {
         else {
             return Ok(None);
         };
-        if fact != CampaignFact::ObservationPublished(observation)
-            && fact != CampaignFact::ObservationCredited(observation)
-        {
+        if fact != CampaignFact::ObservationCredited(observation) {
             return Err(integrity("observation-result-index-type-mismatch"));
         }
         let record = self.read_observation(observation.content_id())?;
@@ -591,9 +594,6 @@ impl CampaignRepository {
             CampaignFact::SavepointContinuationSelected(selection) => {
                 mutation_result_hash_key("savepoint-continuation", selection.command.as_hash())
             }
-            CampaignFact::BranchRequestIssued(request) => {
-                mutation_result_content_key("branch-request", request.content_id())
-            }
             CampaignFact::BranchRequestAccepted { request, .. } => {
                 mutation_result_content_key("branch-request", request.content_id())
             }
@@ -616,8 +616,7 @@ impl CampaignRepository {
                 let step = self.read_planner_step(step.content_id())?;
                 mutation_result_content_key("planner", step.invocation().content_id())
             }
-            CampaignFact::ObservationPublished(observation)
-            | CampaignFact::ObservationCredited(observation) => {
+            CampaignFact::ObservationCredited(observation) => {
                 mutation_result_content_key("observation", observation.content_id())
             }
             CampaignFact::ObjectiveEvaluationPublished(evaluation) => {

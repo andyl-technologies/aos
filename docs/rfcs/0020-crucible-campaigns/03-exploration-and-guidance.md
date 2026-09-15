@@ -945,9 +945,7 @@ the scheduler has reached both its exact parent and time. Parent/time equality
 alone is insufficient: a candidate branch additionally requires the exact
 finite override to have been consumed by the signal runtime, while the
 unmodified sentinel requires a matching runtime search frontier with the same
-choice ID, candidate-set digest, and candidate count. Arbitrary raw override
-admission remains a separate, narrower legacy API and cannot be used to inject
-campaign selections.
+choice ID, candidate-set digest, and candidate count.
 
 Pending promoted branches are not exact-checkpoint-ready. The campaign runner
 finishes deterministic start materialization before it can honor a checkpoint
@@ -1029,9 +1027,9 @@ authenticated parent configuration, selected opportunity, and domain by value.
 Canonical frontier implementation version 8 validates that basis and emits a
 schema-v8 `BranchRequest` with `CandidateSource::StatisticalSmc` (candidate-source
 tag 6); the stage-zero finite flight continues to use schema-v7 branch requests
-and `CandidateSource::StatisticalFinite` (tag 5). Older planner-request and
-branch-request schemas remain readable only under their original meanings and
-cannot carry an SMC transition basis.
+and `CandidateSource::StatisticalFinite` (tag 5). Planner-request schema v2 and
+branch-request schemas v2-v7 remain current operation-specific encodings for
+non-SMC work; none can carry an SMC transition basis.
 
 A complete SMC report leaves the final population unresampled, preserves slot
 multiplicity, and multiplies every prefinal resampling normalization factor into

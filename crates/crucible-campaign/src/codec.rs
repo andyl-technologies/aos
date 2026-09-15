@@ -227,10 +227,16 @@ pub(crate) fn encode<T: Canonical>(value: &T) -> Vec<u8> {
 }
 
 pub(crate) fn decode<T: Canonical>(bytes: &[u8]) -> Result<T, CampaignCodecError> {
-    if bytes.len() > MAX_CANONICAL_BYTES {
-        return Err(CampaignCodecError::LimitExceeded {
-            limit: "canonical-byte-count",
-        });
+    decode_bounded(bytes, MAX_CANONICAL_BYTES, "canonical-byte-count")
+}
+
+pub(crate) fn decode_bounded<T: Canonical>(
+    bytes: &[u8],
+    maximum: usize,
+    limit: &'static str,
+) -> Result<T, CampaignCodecError> {
+    if bytes.len() > maximum {
+        return Err(CampaignCodecError::LimitExceeded { limit });
     }
     let mut decoder = Decoder::new(bytes);
     let value = T::decode(&mut decoder)?;

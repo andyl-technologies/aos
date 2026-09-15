@@ -1,4 +1,4 @@
-# Patch 0108: preserve deterministic virtio-net continuation
+# Capability task 0108 — Preserve deterministic virtio-net continuation
 
 ## Capability
 
@@ -8,7 +8,7 @@ VMState restore therefore produces the same frame bytes, producer sequence,
 emit coordinate, link decisions, and delivery coordinate as uninterrupted
 execution.
 
-## Failure closed by this patch
+## Failure closed by this capability
 
 Upstream virtio PCI may route a queue notification through ioeventfd and a host
 main-loop notifier. The ordinary virtio-net kick handler then schedules a
@@ -75,6 +75,6 @@ requires the entire bounded outcome sequence to match byte for byte. The gate
 also requires positive packet and link-decision evidence after the checkpoint;
 an unrelated or inert equal quantum cannot pass.
 
-Patch regeneration verifies that this isolated DCO-signed QEMU commit applies
-at the recorded stack position and that the corresponding-source bundle and
-manifest identities match the complete series.
+Atomic-patch regeneration verifies the DCO-signed commit and exact source tree,
+and requires the corresponding-source bundle and manifest identities to match
+the shipped integration.

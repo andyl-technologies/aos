@@ -4,13 +4,20 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, EventDiagnosticPayload,
     EventLevel, EventLogCoverageObservation, EventSource, Icount, MarkerId, MaterializationPolicy,
     MaterializationTrigger, MemoryDagStore, NodeId, ObservableEvent, RngDecision, RngStreamId,
     SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
     TemporalGraph, VirtualTime, World, bake, compare_event_log_determinism,
-    coverage_fingerprint_from_event_log, event_log_coverage_projection, step,
+    coverage_fingerprint_from_event_log, event_log_coverage_projection,
 };
 
 fn node(name: &str) -> NodeId {
@@ -146,7 +153,10 @@ fn coverage_entries_project_as_observational_coverage_payloads() {
         block_entry.event_payload().string("block"),
         Some("0x5000+0x30")
     );
-    assert_eq!(block_entry.class(), crucible::EventClass::Observational);
+    assert_eq!(
+        block_entry.class(),
+        crucible::SchedulerEventLogClass::Observational
+    );
 
     assert_eq!(named_entry.event_payload().kind(), "coverage");
     assert_eq!(named_entry.event_payload().string("kind"), Some("named"));
@@ -155,7 +165,10 @@ fn coverage_entries_project_as_observational_coverage_payloads() {
         named_entry.event_payload().icount("retired_icount"),
         Some(icount(22))
     );
-    assert_eq!(named_entry.class(), crucible::EventClass::Observational);
+    assert_eq!(
+        named_entry.class(),
+        crucible::SchedulerEventLogClass::Observational
+    );
 }
 
 #[test]
@@ -183,13 +196,10 @@ fn coverage_fingerprint_is_checkpoint_feedback_from_log_projection() {
 
 #[test]
 fn graph_cache_snapshot_stamps_checkpoint_coverage_from_event_log_projection() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.event-log-coverage.world",
-        "graph-cache-stamping",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario);
-    let child = step(
+    let child = accepted_step!(
         &genesis,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("graph-cache-stamping"),
@@ -222,7 +232,10 @@ fn graph_cache_snapshot_stamps_checkpoint_coverage_from_event_log_projection() {
         .expect("baked genesis should seed graph");
 
     graph
-        .cache_snapshot_with_event_log_coverage(&child, checkpoint, &coverage_log)
+        .cache_snapshot(
+            &child,
+            checkpoint.with_coverage_from_event_log(&coverage_log),
+        )
         .expect("coverage-stamped snapshot should cache");
     assert_eq!(
         graph
@@ -254,13 +267,10 @@ fn graph_cache_snapshot_stamps_checkpoint_coverage_from_event_log_projection() {
 
 #[test]
 fn delayed_checkpoint_closure_preserves_cached_coverage_fingerprint() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.event-log-coverage.world",
-        "delayed-closure-stamping",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario);
-    let child = step(
+    let child = accepted_step!(
         &genesis,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("delayed-closure-stamping"),
@@ -284,7 +294,10 @@ fn delayed_checkpoint_closure_preserves_cached_coverage_fingerprint() {
     let mut graph = TemporalGraph::empty();
 
     graph
-        .cache_snapshot_with_event_log_coverage(&child, checkpoint, &coverage_log)
+        .cache_snapshot(
+            &child,
+            checkpoint.with_coverage_from_event_log(&coverage_log),
+        )
         .expect("coverage-stamped snapshot should cache before baked genesis");
     assert!(graph.checkpoint_node(child.id()).is_none());
 

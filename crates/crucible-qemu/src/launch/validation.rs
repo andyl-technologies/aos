@@ -6,12 +6,14 @@ use super::{
     DEFAULT_ACCEL, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, InputPolicy,
     MAX_ICOUNT_SHIFT, MAX_RR_SWITCH_QUANTUM, MachineResetMode, QEMU_CONSOLE_CHARDEV_ID,
     QEMU_CONSOLE_SOCKET_FILE_NAME, QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
-    QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME, entropy::GUEST_ENTROPY_RNG_ID,
+    QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME, QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+    QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION, QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+    QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION, entropy::GUEST_ENTROPY_RNG_ID,
 };
 
 mod values;
 
-use values::{comma_value, unique_comma_value_any, unique_option_value};
+use values::{comma_value, unique_option_value};
 pub(super) use values::{option_values, unique_comma_value, validate_fixed_text};
 
 /// A deterministic launch-profile validation error.
@@ -213,6 +215,23 @@ pub enum QemuPreSpawnLaunchValidationError {
         /// Option missing a value.
         option: &'static str,
     },
+    /// The fixed diagnostic trace options were not supplied together.
+    #[error("QEMU diagnostics require both fixed `-D` and `-trace` options")]
+    IncompleteDiagnosticTrace,
+    /// A diagnostic trace option differed from one fixed contract.
+    #[error("QEMU diagnostic `{option}` value `{value}` is invalid")]
+    InvalidDiagnosticTrace {
+        /// Rejected option name.
+        option: &'static str,
+        /// Rejected option value.
+        value: String,
+    },
+    /// Runtime trace CPU masks cannot represent the configured vCPU count.
+    #[error("QEMU runtime-determinism trace supports at most 64 vCPUs, got {actual}")]
+    RuntimeDeterminismTraceCpuCount {
+        /// Rejected vCPU count.
+        actual: u16,
+    },
     /// KVM or another hardware-acceleration shortcut was selected.
     #[error("QEMU launch must not enable KVM or hardware acceleration via `{argument}`")]
     KvmOrHardwareAcceleration {
@@ -339,6 +358,7 @@ pub fn validate_pre_spawn_qemu_launch_args(
     args: &[String],
 ) -> Result<QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError> {
     super::control_channels::validate_optional_pre_spawn_qmp_control_endpoint(args)?;
+    validate_optional_diagnostic_trace(args)?;
     reject_kvm_and_host_sources(args)?;
     let accelerator = unique_option_value(args, "-accel")?.to_owned();
     validate_pre_spawn_accelerator(&accelerator)?;
@@ -354,6 +374,23 @@ pub fn validate_pre_spawn_qemu_launch_args(
     let rr_switch_quantum = validate_pre_spawn_rr_switch_quantum(icount)?;
 
     let smp_vcpus = validate_pre_spawn_smp(unique_option_value(args, "-smp")?)?;
+    if smp_vcpus > 64
+        && args.windows(4).any(|window| {
+            window
+                == [
+                    "-D",
+                    QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+                    "-trace",
+                    QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION,
+                ]
+        })
+    {
+        return Err(
+            QemuPreSpawnLaunchValidationError::RuntimeDeterminismTraceCpuCount {
+                actual: smp_vcpus,
+            },
+        );
+    }
     let cpu_model = unique_option_value(args, "-cpu")?.to_owned();
     validate_pre_spawn_cpu(&cpu_model)?;
 
@@ -364,6 +401,67 @@ pub fn validate_pre_spawn_qemu_launch_args(
         smp_vcpus,
         cpu_model,
     })
+}
+
+pub(in crate::launch) fn validate_optional_diagnostic_trace(
+    args: &[String],
+) -> Result<(), QemuPreSpawnLaunchValidationError> {
+    for (option, alias, attached, attached_alias) in [
+        ("-D", "--D", "-D=", "--D="),
+        ("-trace", "--trace", "-trace=", "--trace="),
+    ] {
+        if let Some(argument) = args.iter().find(|argument| {
+            argument.as_str() == alias
+                || argument.starts_with(attached)
+                || argument.starts_with(attached_alias)
+        }) {
+            return Err(QemuPreSpawnLaunchValidationError::InvalidDiagnosticTrace {
+                option,
+                value: argument.to_owned(),
+            });
+        }
+    }
+    let log_files = option_values(args, "-D")?;
+    let trace_selections = option_values(args, "-trace")?;
+    if log_files.len() > 1 {
+        return Err(QemuPreSpawnLaunchValidationError::DuplicateOption { option: "-D" });
+    }
+    if trace_selections.len() > 1 {
+        return Err(QemuPreSpawnLaunchValidationError::DuplicateOption { option: "-trace" });
+    }
+    if log_files.is_empty() && trace_selections.is_empty() {
+        return Ok(());
+    }
+    let (Some(log_file), Some(selection)) = (log_files.first(), trace_selections.first()) else {
+        return Err(QemuPreSpawnLaunchValidationError::IncompleteDiagnosticTrace);
+    };
+    let control = (
+        QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+        QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION,
+    );
+    let runtime = (
+        QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+        QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION,
+    );
+    if ![control, runtime].contains(&(*log_file, *selection)) {
+        return Err(QemuPreSpawnLaunchValidationError::InvalidDiagnosticTrace {
+            option: "-D/-trace",
+            value: format!("{log_file} {selection}"),
+        });
+    }
+    let canonical_block = ["-D", *log_file, "-trace", *selection];
+    if !args.windows(canonical_block.len()).any(|window| {
+        window
+            .iter()
+            .map(String::as_str)
+            .eq(canonical_block.iter().copied())
+    }) {
+        return Err(QemuPreSpawnLaunchValidationError::InvalidDiagnosticTrace {
+            option: "-D/-trace",
+            value: "options must form one adjacent ordered block".to_owned(),
+        });
+    }
+    Ok(())
 }
 
 pub(super) fn canonical_cpu_model(cpu_model: &str) -> Result<String, LaunchProfileError> {
@@ -509,13 +607,7 @@ fn validate_required_icount_value(
 fn validate_pre_spawn_rr_switch_quantum(
     icount: &str,
 ) -> Result<u64, QemuPreSpawnLaunchValidationError> {
-    let Some(value) = unique_comma_value_any(
-        icount,
-        "-icount",
-        &["rr_switch_quantum", "crucible-rr-quantum-icount"],
-        "rr_switch_quantum",
-    )?
-    else {
+    let Some(value) = unique_comma_value(icount, "-icount", "rr_switch_quantum")? else {
         return Err(QemuPreSpawnLaunchValidationError::RrSwitchQuantumUnpinned);
     };
     let Ok(quantum) = value.parse::<u64>() else {

@@ -503,10 +503,8 @@ pub(in crate::repository) fn permuted_integer_candidate(
     let envelope_mask = u64::try_from(u128::from(cardinality).next_power_of_two() - 1)
         .map_err(|_| integrity("permuted-generator-cardinality-limit"))?;
     let mut offset = ordinal - 1;
-    for (round, chunk) in key.as_bytes().chunks_exact(8).enumerate() {
-        let mut bytes = [0_u8; 8];
-        bytes.copy_from_slice(chunk);
-        let word = u64::from_be_bytes(bytes);
+    for (round, chunk) in key.as_bytes().as_chunks::<8>().0.iter().enumerate() {
+        let word = u64::from_be_bytes(*chunk);
         let candidate = if round % 2 == 0 {
             offset ^ (word & envelope_mask)
         } else {
@@ -557,10 +555,8 @@ pub(in crate::repository) fn modeled_uniform_integer_candidate(
             .map_err(|_| integrity("modeled-uniform-integer-cardinality-limit"))?
     };
     let mut offset = ordinal - 1;
-    for (round, chunk) in key.as_bytes().chunks_exact(8).enumerate() {
-        let mut bytes = [0_u8; 8];
-        bytes.copy_from_slice(chunk);
-        let word = u64::from_be_bytes(bytes);
+    for (round, chunk) in key.as_bytes().as_chunks::<8>().0.iter().enumerate() {
+        let word = u64::from_be_bytes(*chunk);
         offset = if round % 2 == 0 {
             offset ^ (word & envelope_mask)
         } else {

@@ -2,6 +2,9 @@
 
 use super::*;
 
+use crate::cli_store_maintenance::{run_store_cleanup, run_store_credentials};
+use crate::cli_store_transform::run_campaign_store_transform;
+
 use std::path::{Component, Path};
 
 use crucible_daemon::campaign_store_composition::{
@@ -10,10 +13,9 @@ use crucible_daemon::campaign_store_composition::{
 use crucible_daemon::{
     CampaignGcApplyStatus, CampaignGcCandidateManifest, CampaignGcCandidateReason,
     CampaignGcJournalCreateDisposition, CampaignGcJournalPhase, CampaignGcPlan,
-    CampaignGcPlanVersion, CampaignLocalServiceConfig, CampaignLocalServiceMode,
-    CampaignLoopbackEndpointConfig, CampaignLoopbackServerConfig, DirectoryAssignmentLedger,
-    DirectoryCampaignGcJournal, DirectoryExactPinMaterializationStore,
-    EXACT_PIN_MATERIALIZATION_DIRECTORY,
+    CampaignLocalServiceConfig, CampaignLocalServiceMode, CampaignLoopbackEndpointConfig,
+    CampaignLoopbackServerConfig, DirectoryAssignmentLedger, DirectoryCampaignGcJournal,
+    DirectoryExactPinMaterializationStore, EXACT_PIN_MATERIALIZATION_DIRECTORY,
 };
 use serde::Serialize;
 
@@ -23,6 +25,7 @@ use crate::cli_campaign_store::{
 };
 
 const CAMPAIGN_GC_REPORT_SCHEMA: &str = "crucible.cli.campaign-store-gc.v2";
+const CAMPAIGN_GC_PLAN_VERSION: &str = "v2";
 const STORE_STATUS_REPORT_SCHEMA: &str = "crucible.cli.store-status.v1";
 const STORE_ENSURE_REPORT_SCHEMA: &str = "crucible.cli.store-ensure.v1";
 const STORE_VERIFY_REPORT_SCHEMA: &str = "crucible.cli.store-verify.v1";
@@ -56,6 +59,16 @@ pub(super) fn run_store_invocation(cli: &Cli, args: &StoreArgs) -> Result<(), Cl
         StoreCommand::Ensure(ensure) => run_store_ensure(ensure, cli.output_format())?,
         StoreCommand::Verify(verify) => run_store_verify(verify, cli.output_format())?,
         StoreCommand::Gc(gc) => run_campaign_store_gc(gc, cli.output_format())?,
+        StoreCommand::Transform(transform) => {
+            run_campaign_store_transform(transform, cli.output_format())?
+        }
+        StoreCommand::Credentials(credentials) => {
+            run_store_credentials(credentials, cli.output_format())?
+        }
+        StoreCommand::Cleanup(cleanup) => run_store_cleanup(cleanup, cli.output_format())?,
+        StoreCommand::Repair(repair) => {
+            crate::cli_store_maintenance::run_store_repair(repair, cli.output_format())?
+        }
     };
     println!("{rendered}");
     Ok(())
@@ -307,7 +320,7 @@ pub(super) fn run_campaign_store_gc(
             CampaignStoreGcReport {
                 schema: CAMPAIGN_GC_REPORT_SCHEMA,
                 operation: "plan",
-                plan_version: plan_version(planned.plan()),
+                plan_version: CAMPAIGN_GC_PLAN_VERSION,
                 plan: plan_id.to_hex(),
                 journal: journal.root().display().to_string(),
                 journal_disposition: match disposition {
@@ -338,7 +351,7 @@ pub(super) fn run_campaign_store_gc(
             })?;
             let roots = journal.roots().len();
             let physical = physical_report(journal.plan());
-            let plan_version = plan_version(journal.plan());
+            let plan_version = CAMPAIGN_GC_PLAN_VERSION;
             let required_copies = cache_required_copy_report(journal.plan(), journal.candidates())?;
             let result = authority
                 .apply(&mut journal, &mut ledger, Some(&mut exact_pins))
@@ -370,13 +383,6 @@ pub(super) fn run_campaign_store_gc(
     render_campaign_store_gc(&report, format)
 }
 
-const fn plan_version(plan: &CampaignGcPlan) -> &'static str {
-    match plan.version() {
-        CampaignGcPlanVersion::V1 => "v1",
-        CampaignGcPlanVersion::V2 => "v2",
-    }
-}
-
 fn cache_required_copy_report(
     plan: &CampaignGcPlan,
     candidates: &CampaignGcCandidateManifest,
@@ -397,9 +403,7 @@ fn cache_required_copy_report(
                 .iter()
                 .find(|basis| basis.backend() == required_backend)
                 .ok_or_else(|| maintenance_error("campaign GC required-copy basis is absent"))?;
-            let identity = basis.storage_identity().ok_or_else(|| {
-                maintenance_error("campaign GC required-copy physical identity is absent")
-            })?;
+            let identity = basis.storage_identity();
             Ok(CampaignStoreGcRequiredCopyReport {
                 candidate_backend: candidate.backend().to_owned(),
                 content: candidate.id().to_string(),
@@ -984,6 +988,10 @@ mod tests {
         assert!(store.find_subcommand("status").is_some());
         assert!(store.find_subcommand("ensure").is_some());
         assert!(store.find_subcommand("verify").is_some());
+        assert!(store.find_subcommand("transform").is_some());
+        assert!(store.find_subcommand("credentials").is_some());
+        assert!(store.find_subcommand("cleanup").is_some());
+        assert!(store.find_subcommand("repair").is_some());
         assert!(gc.find_subcommand("plan").is_some());
         assert!(gc.find_subcommand("apply").is_some());
     }
@@ -1035,7 +1043,7 @@ campaign = "*"
                 &store,
                 format!(
                     r#"schema = "crucible.campaign-repository-store"
-version = 1
+version = 2
 root = "primary"
 admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
 ref_directory = {refs:?}

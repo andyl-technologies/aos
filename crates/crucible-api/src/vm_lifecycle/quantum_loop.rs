@@ -1,21 +1,31 @@
 //! `QuantumLoop` delegation for the production VM lifecycle.
 
 use super::checkpoint_store::{
-    PersistExactCheckpointError, prepare_exact_checkpoint_set_with_boundary,
-    stage_checkpoint_artifact_chunks_with_boundary,
+    PersistExactCheckpointError, hash_exact_checkpoint_open_file_sha256_with_boundary,
+    prepare_exact_checkpoint_set_with_boundary,
+    stage_open_checkpoint_artifact_chunks_with_boundary,
     stage_sparse_checkpoint_artifact_chunks_with_boundary,
 };
 use super::*;
 
+mod attempt_boundary;
 mod checkpoint_capture;
 mod debug_policy;
+mod host_concurrent;
 mod lifecycle;
+mod signal_fault_campaign;
+use attempt_boundary::{attempt_boundary_scheduler_error, combine_attempt_quantum_boundary};
 pub(super) use checkpoint_capture::ExactCheckpointPublicationState;
 use checkpoint_capture::{
-    ExactCheckpointTransactionError, PendingExactCapture, PreparedExactCheckpointTarget,
-    prepare_exact_checkpoint_targets,
+    ExactCaptureDisposition, ExactCheckpointTransactionError, PendingExactCapture,
+    PendingExactCheckpointCandidate, PreparedExactCheckpointTarget,
+    combine_exact_checkpoint_transaction, prepare_exact_checkpoint_targets,
+    retained_exact_ram_parent_for_committed,
 };
+use crucible::BackendRngEvidence;
 use debug_policy::trusted_debug_listener;
+use host_concurrent::merge_host_concurrent_outcomes;
+pub(super) const MAX_PRODUCTION_QEMU_HOST_WORKERS: usize = 64;
 pub(in crate::vm_lifecycle) use lifecycle::map_journal_limit;
 pub(super) use lifecycle::{
     DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
@@ -24,331 +34,9 @@ pub(super) use lifecycle::{
 #[cfg(test)]
 pub(super) use lifecycle::{HARD_RUN_STATE_JSON_BYTES, validate_recovered_lifecycle_journal};
 use lifecycle::{
-    PreparedLifecycleFaultCoordinators, PreparedLifecyclePrecommit, PreparedLifecycleTerminal,
-    PreparedTerminalReplacement, release_restored_generation_after_scheduler_publication,
-    select_preowned_terminal_generation,
+    PreparedLifecyclePrecommit, PreparedLifecycleTerminal, PreparedTerminalReplacement,
+    release_restored_generation_after_scheduler_publication, select_preowned_terminal_generation,
 };
-
-#[cfg(test)]
-const CHECKPOINT_BOUNDARY_CHUNK_BYTES: usize = 1024 * 1024;
-
-#[cfg(test)]
-fn checkpoint_artifact_from_stopped_file(
-    source: &Path,
-    role: &str,
-) -> Result<ProductionCheckpointArtifact, SchedulerError> {
-    checkpoint_artifact_from_stopped_file_with_boundary(source, role, &mut || Ok(()))
-}
-
-#[cfg(test)]
-fn checkpoint_artifact_from_stopped_file_with_boundary(
-    source: &Path,
-    role: &str,
-    boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
-) -> Result<ProductionCheckpointArtifact, SchedulerError> {
-    boundary()?;
-    let mut file = File::open(source).map_err(|error| SchedulerError::BoundaryViolation {
-        message: format!(
-            "open stopped exact-checkpoint {role} {}: {error}",
-            source.display()
-        ),
-    })?;
-    let mut buffer = vec![0_u8; CHECKPOINT_BOUNDARY_CHUNK_BYTES];
-    let mut hasher = blake3::Hasher::new();
-    loop {
-        boundary()?;
-        let read = std::io::Read::read(&mut file, &mut buffer).map_err(|error| {
-            SchedulerError::BoundaryViolation {
-                message: format!(
-                    "hash stopped exact-checkpoint {role} {}: {error}",
-                    source.display()
-                ),
-            }
-        })?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    boundary()?;
-    let identity = ContentHash {
-        bytes: *hasher.finalize().as_bytes(),
-    };
-    let length = fs::metadata(source).map_err(|error| SchedulerError::BoundaryViolation {
-        message: format!(
-            "inspect stopped exact-checkpoint {role} {}: {error}",
-            source.display()
-        ),
-    })?;
-    let length = length.len();
-    Ok(ProductionCheckpointArtifact {
-        source: ProductionCheckpointArtifactSource::File(source.to_path_buf()),
-        identity,
-        length,
-        chunks: Vec::new(),
-        sparse: false,
-        extents: Vec::new(),
-    })
-}
-
-fn combine_exact_checkpoint_transaction(
-    operation: Result<ContentHash, ExactCheckpointTransactionError>,
-    cleanup: Result<(), SchedulerError>,
-    captures: Vec<PendingExactCapture>,
-) -> Result<ContentHash, ExactCheckpointTransactionError> {
-    match (operation, cleanup) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(identity), Err(source)) => Err(ExactCheckpointTransactionError::Indeterminate {
-            identity: Some(identity),
-            captures,
-            source,
-        }),
-        (Err(ExactCheckpointTransactionError::Unpublished(error)), Err(cleanup)) => {
-            Err(ExactCheckpointTransactionError::Indeterminate {
-                identity: None,
-                captures,
-                source: SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "exact checkpoint failed before publication ({error}); releasing paused QEMU nodes also failed ({cleanup})"
-                    ),
-                },
-            })
-        }
-        (
-            Err(ExactCheckpointTransactionError::Indeterminate {
-                identity,
-                captures: prior_captures,
-                source,
-            }),
-            Err(cleanup),
-        ) => {
-            let captures = if captures.is_empty() {
-                prior_captures
-            } else {
-                captures
-            };
-            Err(ExactCheckpointTransactionError::Indeterminate {
-                identity,
-                captures,
-                source: SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "exact checkpoint publication was indeterminate ({source}); releasing paused QEMU nodes also failed ({cleanup})"
-                    ),
-                },
-            })
-        }
-    }
-}
-
-fn combine_attempt_quantum_boundary<T>(
-    operation: Result<T, SchedulerError>,
-    boundary: Result<(), LifecycleApiError>,
-) -> Result<T, SchedulerError> {
-    match (operation, boundary) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(_), Err(boundary)) => Err(attempt_boundary_scheduler_error(
-            "check production attempt after scheduler quantum",
-            boundary,
-        )),
-        (Err(error), Err(boundary)) => Err(attempt_boundary_scheduler_error(
-            &format!(
-                "production scheduler quantum failed ({error}); post-quantum attempt boundary"
-            ),
-            boundary,
-        )),
-    }
-}
-
-fn attempt_boundary_scheduler_error(context: &str, error: LifecycleApiError) -> SchedulerError {
-    match error {
-        LifecycleApiError::AttemptOperational { class, message } => {
-            SchedulerError::OperationalBoundary {
-                class,
-                message: format!("{context} failed: {message}"),
-            }
-        }
-        error => SchedulerError::BoundaryViolation {
-            message: format!("{context} failed: {error}"),
-        },
-    }
-}
-
-impl ProductionVmLifecycleLoop {
-    /// Enables exact live signal-fault campaign promotion from this boundary.
-    ///
-    /// Callers activate promotion only after deterministic prefix
-    /// materialization reaches the attempt's admitted start. Previously
-    /// retained search frontiers remain replay evidence and are not emitted.
-    pub fn enable_signal_fault_campaign_promotion(&mut self) {
-        self.promote_signal_fault_campaign_choices = true;
-    }
-
-    /// Installs the exact nonterminal frontier for the active modeled attempt.
-    ///
-    /// The scheduler composes this caller-owned frontier with its trigger,
-    /// branch, topology, and rendezvous horizons before it advances a backend.
-    /// Passing `None` clears the prior attempt's frontier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError::BoundaryViolation`] when `frontier` precedes
-    /// the scheduler's committed frontier.
-    pub fn set_attempt_stop_frontier(
-        &mut self,
-        frontier: Option<VirtualTime>,
-    ) -> Result<(), SchedulerError> {
-        self.inner
-            .loop_impl_mut()
-            .set_attempt_stop_frontier(frontier)
-    }
-
-    fn authenticate_signal_fault_campaign_branch(
-        &self,
-        branch: &crucible::SignalFaultCampaignBranch,
-    ) -> Result<(), SchedulerError> {
-        let authenticated = if let Some((choice, expected)) = branch.expected_search_override() {
-            self.fault_runtime
-                .lock()
-                .map_err(|_| SchedulerError::BoundaryViolation {
-                    message: String::from("production fault runtime lock is poisoned"),
-                })?
-                .search_override_consumed(choice, &expected)
-        } else {
-            self.inner
-                .loop_impl()
-                .search_frontiers()
-                .iter()
-                .any(|frontier| branch.matches_runtime_frontier(frontier))
-        };
-        if !authenticated {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "signal-fault campaign branch has no exact observed producer choice",
-                ),
-            });
-        }
-        Ok(())
-    }
-
-    /// Normalizes only signal-fault frontiers first observed by this quantum.
-    ///
-    /// The scheduler retains older frontiers for checkpoint and replay
-    /// authentication. Re-emitting that history as a later discovery would
-    /// manufacture a branch point after execution had already passed it, so
-    /// callers supply the frontier count captured before the quantum began.
-    fn signal_fault_campaign_discoveries_at_current_boundary_since(
-        &self,
-        first: usize,
-    ) -> Result<Vec<crucible::campaign::ChoiceDiscovery>, SchedulerError> {
-        if !self.promote_signal_fault_campaign_choices {
-            return Ok(Vec::new());
-        }
-        let frontiers = self.inner.loop_impl().search_frontiers();
-        let current = frontiers
-            .get(first..)
-            .ok_or_else(|| SchedulerError::BoundaryViolation {
-                message: String::from("signal-fault frontier history shrank during one quantum"),
-            })?;
-        if current.len() > crucible::MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES {
-            return Err(SchedulerError::ResourceLimit {
-                field: "signal-fault campaign discoveries",
-                current: 0,
-                requested: u64::try_from(current.len()).unwrap_or(u64::MAX),
-                configured: u64::try_from(crucible::MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES)
-                    .unwrap_or(u64::MAX),
-                hard: u64::try_from(crucible::MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES)
-                    .unwrap_or(u64::MAX),
-            });
-        }
-
-        let mut charged_records = BTreeSet::new();
-        let mut charged_bytes = 0usize;
-        let mut discoveries = Vec::with_capacity(current.len());
-        let configuration = self.inner.loop_impl().configuration();
-        let at = self.inner.loop_impl().frontier();
-        for frontier in current
-            .iter()
-            .filter(|frontier| frontier.configuration == *configuration && frontier.at == at)
-        {
-            let discovery = crucible::SignalFaultSelectable::from_frontier(frontier)
-                .and_then(|selectable| selectable.discovery())
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!("normalize live signal-fault campaign discovery: {error}"),
-                })?;
-            for (id, bytes) in [
-                (
-                    discovery.opportunity().declaration().content_id(),
-                    discovery.declaration().canonical_bytes().len(),
-                ),
-                (
-                    discovery.opportunity().domain().content_id(),
-                    discovery.domain().canonical_bytes().len(),
-                ),
-                (
-                    discovery
-                        .opportunity()
-                        .id()
-                        .map_err(|error| SchedulerError::BoundaryViolation {
-                            message: format!(
-                                "identify live signal-fault campaign discovery: {error}"
-                            ),
-                        })?
-                        .content_id(),
-                    discovery.opportunity().canonical_bytes().len(),
-                ),
-            ] {
-                if !charged_records.insert(id) {
-                    continue;
-                }
-                charged_bytes = charged_bytes.checked_add(bytes).ok_or_else(|| {
-                    SchedulerError::ResourceLimit {
-                        field: "signal-fault campaign discovery bytes",
-                        current: 0,
-                        requested: u64::MAX,
-                        configured: u64::try_from(
-                            crucible::campaign::MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
-                        )
-                        .unwrap_or(u64::MAX),
-                        hard: u64::try_from(
-                            crucible::campaign::MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
-                        )
-                        .unwrap_or(u64::MAX),
-                    }
-                })?;
-                if charged_bytes > crucible::campaign::MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES {
-                    return Err(SchedulerError::ResourceLimit {
-                        field: "signal-fault campaign discovery bytes",
-                        current: 0,
-                        requested: u64::try_from(charged_bytes).unwrap_or(u64::MAX),
-                        configured: u64::try_from(
-                            crucible::campaign::MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
-                        )
-                        .unwrap_or(u64::MAX),
-                        hard: u64::try_from(
-                            crucible::campaign::MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
-                        )
-                        .unwrap_or(u64::MAX),
-                    });
-                }
-            }
-            discoveries.push(discovery);
-        }
-        Ok(discoveries)
-    }
-
-    fn append_live_signal_fault_campaign_discoveries(
-        &self,
-        first: usize,
-        outcome: &mut QuantumOutcome,
-    ) -> Result<(), SchedulerError> {
-        outcome
-            .discovered_choices
-            .extend(self.signal_fault_campaign_discoveries_at_current_boundary_since(first)?);
-        Ok(())
-    }
-}
 
 impl QuantumLoop for ProductionVmLifecycleLoop {
     fn drive_quantum(
@@ -389,27 +77,6 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                         "quantum request configuration is not the scheduler frontier",
                     ),
                 });
-            }
-            let control_present = !request.control.is_empty();
-            if self.settle_logical_replay_boundary(control_present)? {
-                let scheduler = self.inner.loop_impl();
-                let mut outcome = QuantumOutcome {
-                    configuration: scheduler.configuration().clone(),
-                    frontier: scheduler.frontier(),
-                    advanced_node: None,
-                    resolved_events: Vec::new(),
-                    decisions: pre_quantum_decisions,
-                    discovered_choices: Vec::new(),
-                    event_log_entries: Vec::new(),
-                    event_log_segment_bytes: Vec::new(),
-                    event_log_segment_text: String::new(),
-                    event_log_segment_hash: None,
-                    event_log_offset: scheduler.event_log_offset(),
-                    scheduler_quiescence: Some(scheduler.quiescence()?),
-                };
-                prepend_event_log_appends(&mut outcome, pre_quantum_appends);
-                self.capture_debug_runtime_evidence()?;
-                return Ok(outcome);
             }
             let boundary_search_choices = self
                 .fault_runtime
@@ -683,7 +350,18 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                     });
                 }
             }
-            let mut outcome = crucible_session::drive_engine_quantum(&mut self.inner, request)?;
+            let maximum_host_workers = self
+                .inner
+                .backend()
+                .len()
+                .min(self.config.maximum_host_workers)
+                .clamp(1, MAX_PRODUCTION_QEMU_HOST_WORKERS);
+            let concurrent = crucible_session::drive_engine_concurrent_quantum(
+                &mut self.inner,
+                request,
+                maximum_host_workers,
+            )?;
+            let mut outcome = merge_host_concurrent_outcomes(concurrent.outcomes)?;
             let observations = Arc::clone(&self.storage_fault_observations);
             let mut queued =
                 observations
@@ -728,7 +406,6 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             for append in self.settle_trigger_graph()? {
                 merge_event_log_append(&mut outcome, append);
             }
-            self.settle_logical_replay_boundary(control_present)?;
             self.append_live_signal_fault_campaign_discoveries(
                 signal_fault_frontier_start,
                 &mut outcome,
@@ -1007,9 +684,9 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             .append_backend_observations_at_boundary(events, at)
     }
 
-    fn append_backend_causal_decisions(
+    fn append_backend_rng_evidence(
         &mut self,
-        decisions: Vec<Decision>,
+        decisions: Vec<BackendRngEvidence>,
     ) -> Result<
         (
             Vec<Decision>,
@@ -1019,7 +696,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         ),
         SchedulerError,
     > {
-        self.inner.append_backend_causal_decisions(decisions)
+        self.inner.append_backend_rng_evidence(decisions)
     }
 
     fn search_frontiers(&self) -> Result<Vec<crucible::SearchRuntimeFrontier>, SchedulerError> {
@@ -1432,6 +1109,14 @@ impl ProductionVmLifecycleLoop {
                     });
                 }
             };
+            if service_state != ProductionNodeServiceState::PermanentlyFailed {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal lifecycle restart for `{}` requires a descriptor-backed v9 checkpoint",
+                        decision.node.name
+                    ),
+                });
+            }
             if !lifecycle_precommit.actions.contains(&decision.action) {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
@@ -1470,11 +1155,7 @@ impl ProductionVmLifecycleLoop {
                     decision.node.name
                 ),
             })?;
-            let source_run_directory = current_ownership.as_ref().map_or_else(
-                || selected.run_directory.clone(),
-                |current| current.run_directory.clone(),
-            );
-            let source_paths = current_ownership.map(|current| current.artifact_paths);
+            debug_assert!(current_ownership.is_none());
             let next_network_sequence = u32::try_from(
                 snapshot
                     .node_continuation()
@@ -1498,50 +1179,22 @@ impl ProductionVmLifecycleLoop {
                     ),
                 }
             })?;
-            if let Some(source_paths) = source_paths {
-                for (source, target) in source_paths.iter().zip(&selected.artifact_paths) {
-                    fs::copy(source, target).map_err(|error| {
-                        SchedulerError::BoundaryViolation {
-                            message: format!(
-                                "copy terminal lifecycle artifact {} to {}: {error}",
-                                source.display(),
-                                target.display()
-                            ),
-                        }
-                    })?;
-                }
-            }
             prepared.push(PreparedTerminalReplacement {
                 debug_backend_path: selected.debug_backend_path,
                 decision,
                 snapshot,
                 terminal_fingerprint,
-                source_run_directory,
                 run_directory,
                 launch,
                 generation: selected.generation,
                 replacement: None,
                 service_state,
-                crash_detector: selected.crash_detector,
                 backend_node: process_owner.backend_node.take(),
                 observed_exit_node: process_owner.observed_exit_node.take(),
-                fault_coordinators: selected.fault_coordinators,
                 process_owner: Some(process_owner),
             });
         }
         debug_assert!(terminal_fingerprints.is_empty());
-        for replacement in &mut prepared {
-            if let Err(error) = self.stage_terminal_replacement(replacement) {
-                let containment = Self::abort_staged_terminal_replacements(&mut prepared);
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "stage terminal lifecycle replacement: {error}; staged-process containment: {}",
-                        containment
-                            .map_or_else(|error| error.to_string(), |()| String::from("reaped")),
-                    ),
-                });
-            }
-        }
         Ok(prepared)
     }
 
@@ -1580,105 +1233,6 @@ impl ProductionVmLifecycleLoop {
     fn finish_all_reaped_node_leases(&mut self) -> Result<(), SchedulerError> {
         let nodes = self.node_leases.keys().cloned().collect::<Vec<_>>();
         self.finish_reaped_node_leases(&nodes)
-    }
-
-    fn install_prepared_fault_coordinators(
-        node: &NodeId,
-        coordinators: &mut PreparedLifecycleFaultCoordinators,
-        replacement: &mut QemuNode,
-    ) -> Result<(), SchedulerError> {
-        if let Some(block) = coordinators.block.take() {
-            if replacement.shared_block_device().is_none() {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "replacement QEMU node `{}` has no live block device",
-                        node.name
-                    ),
-                });
-            }
-            replacement
-                .install_block_fault_coordinator(block)
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "install replacement block fault coordinator for `{}`: {error}",
-                        node.name
-                    ),
-                })?;
-        }
-        if let Some(ninep) = coordinators.ninep.take() {
-            replacement
-                .install_ninep_fault_coordinator(ninep)
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "install replacement 9p fault coordinator for `{}`: {error}",
-                        node.name
-                    ),
-                })?;
-        }
-        Ok(())
-    }
-
-    fn stage_terminal_replacement(
-        &mut self,
-        prepared: &mut PreparedTerminalReplacement,
-    ) -> Result<(), SchedulerError> {
-        let node = prepared.decision.node.clone();
-        let preparation = ProductionVmNodePreparationKind::Replacement {
-            source_run_directory: &prepared.source_run_directory,
-        };
-        let launched = match prepared.service_state {
-            ProductionNodeServiceState::Running | ProductionNodeServiceState::PoweredOff => {
-                Some(launch_production_node_generation(
-                    self.node_launcher.as_mut(),
-                    ProductionVmNodeLaunchBasis::new(
-                        &prepared.launch,
-                        &prepared.run_directory,
-                        &node,
-                        prepared.generation,
-                    ),
-                    &prepared.crash_detector,
-                    preparation,
-                    ProductionVmNodeLaunchKind::Exact {
-                        snapshot: &prepared.snapshot,
-                        paused: true,
-                    },
-                ))
-            }
-            ProductionNodeServiceState::PermanentlyFailed => None,
-        };
-        if let Some(launched) = launched {
-            let mut launched = launched.map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!(
-                    "stage terminal lifecycle replacement for `{}`: {error}",
-                    node.name
-                ),
-            })?;
-            if let Err(error) = Self::install_prepared_fault_coordinators(
-                &node,
-                &mut prepared.fault_coordinators,
-                launched.node_mut(),
-            ) {
-                let containment = launched.quarantine_and_finish();
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "configure terminal lifecycle replacement for `{}`: {error}; process containment: {}",
-                        node.name,
-                        containment
-                            .map_or_else(|error| error.to_string(), |()| String::from("reaped")),
-                    ),
-                });
-            }
-            prepared.run_directory = launched.run_directory().to_path_buf();
-            if let Some(path) = prepared.debug_backend_path.as_mut() {
-                *path = private_backend_gdbstub_path(&prepared.run_directory);
-            }
-            prepared.launch = prepared
-                .launch
-                .clone()
-                .with_run_directory(&prepared.run_directory);
-            prepared.replacement = Some(launched);
-        }
-        Ok(())
     }
 
     fn commit_terminal_replacements(
@@ -2132,6 +1686,12 @@ impl ProductionVmLifecycleLoop {
         let node_generations = self.node_generations.clone();
         let node_service_states = self.node_service_states.clone();
         let resource_limits = self.source.plan().fault_signals().resource_limits();
+        let fault_manifest_identity =
+            exact_checkpoint_fault_object_identity(&fault_checkpoint, resource_limits).map_err(
+                |error| SchedulerError::BoundaryViolation {
+                    message: error.to_string(),
+                },
+            )?;
 
         boundary()?;
         let checkpoint_parent = self._run_directory.path().join("exact-checkpoints");
@@ -2181,18 +1741,84 @@ impl ProductionVmLifecycleLoop {
                     checkpoint,
                     source_overlay,
                     staged_overlay_chunks,
-                    source_vmstate,
-                    staged_vmstate_chunks,
+                    ram_output,
+                    device_output,
+                    staged_ram_chunks,
+                    staged_device_chunks,
                 } = prepared;
-                let snapshot = match service_state {
+                let immutable_root_image = self
+                    .launch_configs
+                    .get(&node)
+                    .and_then(QemuLiveNodeStepGateConfig::root_image)
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "exact checkpoint has no immutable root image for `{}`",
+                            node.name
+                        ),
+                    })?;
+                let epoch = self
+                    .inner
+                    .backend_mut()
+                    .query_exact_checkpoint_epoch(&node)?;
+                if epoch.candidate().is_some() {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "exact checkpoint capture for `{}` found an unresolved QEMU candidate",
+                            node.name
+                        ),
+                    });
+                }
+                let committed = epoch.committed();
+                let (parent_closure, parent_checkpoint) = retained_exact_ram_parent_for_committed(
+                    &self.exact_ram_parents,
+                    &node,
+                    committed,
+                )?;
+                let compact = parent_checkpoint
+                    .as_ref()
+                    .is_some_and(ProductionExactRamCheckpoint::requires_direct_compaction);
+                let direct_capture = committed.is_none() || compact;
+                let capture_boundary = || crucible_qemu::QemuExactCheckpointCaptureBoundary {
+                    configuration,
+                    immutable_root_image,
+                    node: &node,
+                    counter,
+                    scheduler_time,
+                    checkpoint: &checkpoint,
+                    fault: &fault_checkpoint,
+                    scheduler: &scheduler,
+                };
+                let capture_outputs = || crucible_qemu::QemuExactCheckpointCaptureOutputs {
+                    maximum_ram_bytes: resource_limits.fat_checkpoint_bytes,
+                    maximum_device_bytes: resource_limits.fat_checkpoint_bytes,
+                    ram: &ram_output,
+                    device: &device_output,
+                };
+                let admission = match (committed, compact) {
+                    (Some(parent), false) => QemuExactCheckpointCaptureAdmission::admit_delta(
+                        capture_boundary(),
+                        parent,
+                        capture_outputs(),
+                    ),
+                    _ => QemuExactCheckpointCaptureAdmission::admit_direct(
+                        capture_boundary(),
+                        capture_outputs(),
+                    ),
+                }
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("admit exact checkpoint capture outputs: {error}"),
+                })?;
+                let mut exact_capture = match service_state {
                     ProductionNodeServiceState::Running => self
                         .inner
                         .backend_mut()
-                        .capture_exact_snapshot_for_publication(&node, checkpoint)?,
+                        .capture_exact_checkpoint_for_publication_guarded(
+                            &node, checkpoint, admission,
+                        )?,
                     ProductionNodeServiceState::PoweredOff => self
                         .inner
                         .backend_mut()
-                        .capture_exact_snapshot_paused(&node, checkpoint)?,
+                        .capture_exact_checkpoint_paused_guarded(&node, checkpoint, admission)?,
                     ProductionNodeServiceState::PermanentlyFailed => {
                         return Err(SchedulerError::BoundaryViolation {
                             message: format!(
@@ -2206,10 +1832,14 @@ impl ProductionVmLifecycleLoop {
                     node,
                     counter,
                     scheduler_time,
-                    snapshot,
+                    snapshot: exact_capture.snapshot().clone(),
                     overlay_artifact: None,
-                    vmstate_artifact: None,
-                    snapshot_cleanup_pending: true,
+                    exact_ram: None,
+                    exact_checkpoint: Some(PendingExactCheckpointCandidate {
+                        identity: exact_capture.identity(),
+                        parent: committed,
+                    }),
+                    snapshot_cleanup_pending: false,
                     resume_pending: service_state == ProductionNodeServiceState::Running,
                 });
                 let capture =
@@ -2235,26 +1865,134 @@ impl ProductionVmLifecycleLoop {
                     })?;
                 capture.overlay_artifact = Some(overlay_artifact);
 
-                let vmstate_artifact = stage_checkpoint_artifact_chunks_with_boundary(
-                    &source_vmstate,
-                    &staged_vmstate_chunks,
-                    "VMState",
+                let expected_ram_bytes = exact_capture.ram_bytes();
+                let expected_device_bytes = exact_capture.device_bytes();
+                let (ram_file, device_file) = exact_capture.output_files_mut();
+                let ram_length = ram_file
+                    .metadata()
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "inspect exact RAM output {}: {error}",
+                            ram_output.display()
+                        ),
+                    })?
+                    .len();
+                let device_length = device_file
+                    .metadata()
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "inspect exact device-state output {}: {error}",
+                            device_output.display()
+                        ),
+                    })?
+                    .len();
+                if ram_length != expected_ram_bytes || device_length != expected_device_bytes {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "exact checkpoint output lengths differ from QEMU's capture report",
+                        ),
+                    });
+                }
+                let qemu_output_bytes = ram_length.checked_add(device_length).ok_or_else(|| {
+                    SchedulerError::BoundaryViolation {
+                        message: String::from("exact QEMU output byte accounting overflow"),
+                    }
+                })?;
+                resource_limits
+                    .reserve("fat_checkpoint_bytes", artifact_bytes, qemu_output_bytes)
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!("admit exact QEMU outputs: {error}"),
+                    })?;
+
+                let ram_content_sha256 = hash_exact_checkpoint_open_file_sha256_with_boundary(
+                    ram_file,
+                    &ram_output,
+                    boundary,
+                )?;
+                let ram_artifact = stage_open_checkpoint_artifact_chunks_with_boundary(
+                    ram_file,
+                    &ram_output,
+                    &staged_ram_chunks,
+                    "exact RAM",
+                    artifact_bytes,
+                    resource_limits,
+                    boundary,
+                )?;
+                artifact_bytes =
+                    artifact_bytes
+                        .checked_add(ram_artifact.length)
+                        .ok_or_else(|| SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "exact-checkpoint artifact byte accounting overflow",
+                            ),
+                        })?;
+                let device_content_sha256 = hash_exact_checkpoint_open_file_sha256_with_boundary(
+                    device_file,
+                    &device_output,
+                    boundary,
+                )?;
+                let device_artifact = stage_open_checkpoint_artifact_chunks_with_boundary(
+                    device_file,
+                    &device_output,
+                    &staged_device_chunks,
+                    "exact device VMState",
                     artifact_bytes,
                     resource_limits,
                     boundary,
                 )?;
                 artifact_bytes = artifact_bytes
-                    .checked_add(vmstate_artifact.length)
+                    .checked_add(device_artifact.length)
                     .ok_or_else(|| SchedulerError::BoundaryViolation {
                         message: String::from("exact-checkpoint artifact byte accounting overflow"),
                     })?;
-                capture.vmstate_artifact = Some(vmstate_artifact);
+                if device_artifact.length != expected_device_bytes {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "exact device-state artifact length differs from QEMU's capture report",
+                        ),
+                    });
+                }
+                let layer = ProductionExactRamLayer::from_capture(
+                    &exact_capture,
+                    ram_content_sha256,
+                    ram_artifact,
+                )?;
+                let exact_ram = if direct_capture {
+                    ProductionExactRamCheckpoint::new(
+                        None,
+                        device_content_sha256,
+                        device_artifact.clone(),
+                        vec![layer],
+                    )?
+                } else {
+                    let mut layers = parent_checkpoint
+                        .ok_or_else(|| SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "delta exact checkpoint lost its authenticated parent chain",
+                            ),
+                        })?
+                        .layers;
+                    layers.try_reserve_exact(1).map_err(|error| {
+                        SchedulerError::BoundaryViolation {
+                            message: format!("extend exact RAM checkpoint layers: {error}"),
+                        }
+                    })?;
+                    layers.push(layer);
+                    ProductionExactRamCheckpoint::new(
+                        parent_closure,
+                        device_content_sha256,
+                        device_artifact.clone(),
+                        layers,
+                    )?
+                };
+                capture.exact_ram = Some(exact_ram);
                 boundary()?;
             }
             Ok(())
         })();
         if let Err(error) = capture_result {
-            let cleanup = self.release_exact_captures(&mut captured);
+            let cleanup =
+                self.release_exact_captures(&mut captured, ExactCaptureDisposition::Unpublished);
             return combine_exact_checkpoint_transaction(
                 Err(ExactCheckpointTransactionError::Unpublished(error)),
                 cleanup,
@@ -2274,14 +2012,16 @@ impl ProductionVmLifecycleLoop {
                         ),
                     }
                 })?;
-                let vmstate_artifact = capture.vmstate_artifact.clone().ok_or_else(|| {
-                    SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "exact checkpoint VMState for `{}` is not staged",
-                            capture.node.name
-                        ),
-                    }
-                })?;
+                let exact_ram =
+                    capture
+                        .exact_ram
+                        .clone()
+                        .ok_or_else(|| SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "exact checkpoint RAM closure for `{}` is not staged",
+                                capture.node.name
+                            ),
+                        })?;
                 let immutable_backing = self
                     .immutable_root_images
                     .get(&capture.node)
@@ -2292,29 +2032,38 @@ impl ProductionVmLifecycleLoop {
                             capture.node.name
                         ),
                     })?;
+                let manifest_basis = ExactCheckpointTargetManifestBasis {
+                    configuration: configuration.id(),
+                    immutable_backing,
+                    node: &capture.node,
+                    counter: capture.counter,
+                    scheduler_time: capture.scheduler_time,
+                    snapshot: exact_checkpoint_snapshot_object_identity(
+                        &capture.snapshot,
+                        resource_limits,
+                    )
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: error.to_string(),
+                    })?,
+                    fault_identity: fault_manifest_identity,
+                    overlay: overlay_artifact.identity,
+                    device_state: exact_ram.device_artifact.identity,
+                };
                 let manifest_identity =
-                    exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
-                        configuration: configuration.id(),
-                        immutable_backing: Some(immutable_backing),
-                        node: &capture.node,
-                        counter: capture.counter,
-                        scheduler_time: capture.scheduler_time,
-                        snapshot: capture.snapshot.id(),
-                        fault_identity: fault_checkpoint.id(),
-                        overlay: overlay_artifact.identity,
-                        vmstate: vmstate_artifact.identity,
-                    });
+                    exact_ram_checkpoint_target_manifest_identity(manifest_basis, &exact_ram);
                 targets.insert(
                     capture.node.clone(),
                     ProductionVmExactCheckpointTarget {
-                        configuration: configuration.clone(),
-                        immutable_backing: Some(immutable_backing),
+                        configuration: Arc::new(configuration.clone()),
+                        immutable_backing,
                         counter: capture.counter,
                         scheduler_time: capture.scheduler_time,
                         snapshot: capture.snapshot.clone(),
-                        overlay_artifact,
-                        vmstate_artifact,
-                        manifest_identity,
+                        materialization: ProductionVmExactCheckpointMaterialization::Native {
+                            overlay_artifact,
+                            exact_ram: Box::new(exact_ram),
+                            manifest_identity,
+                        },
                     },
                 );
             }
@@ -2346,8 +2095,9 @@ impl ProductionVmLifecycleLoop {
                 failed_host_io: self.failed_host_io.clone(),
                 node_generations,
                 node_service_states,
+                repository_restore: None,
             };
-            prepare_exact_checkpoint_set_with_boundary(
+            let prepared = prepare_exact_checkpoint_set_with_boundary(
                 &self.config.run_state_root,
                 self.scenario.id(),
                 resource_limits,
@@ -2365,39 +2115,79 @@ impl ProductionVmLifecycleLoop {
                         source,
                     }
                 }
-            })
+            })?;
+            let mut retained_targets = BTreeMap::new();
+            for (node, target) in &checkpoint_set.targets {
+                let exact_ram = target.native_exact_ram().ok_or_else(|| {
+                    ExactCheckpointTransactionError::Unpublished(
+                        SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "captured checkpoint target lost native RAM state",
+                            ),
+                        },
+                    )
+                })?;
+                retained_targets.insert(node.clone(), exact_ram.clone());
+            }
+            let parent = ProductionExactRamPublishedParent {
+                closure: prepared.identity(),
+                targets: retained_targets,
+            };
+            Ok((prepared, parent))
         })();
-        let prepared = match preparation {
+        let (prepared, retained_parent) = match preparation {
             Ok(prepared) => prepared,
-            Err(error) => {
-                let cleanup = self.release_exact_captures(&mut captured);
+            Err(error @ ExactCheckpointTransactionError::Unpublished(_)) => {
+                let cleanup = self
+                    .release_exact_captures(&mut captured, ExactCaptureDisposition::Unpublished);
                 return combine_exact_checkpoint_transaction(Err(error), cleanup, captured);
+            }
+            Err(ExactCheckpointTransactionError::Indeterminate {
+                identity, source, ..
+            }) => {
+                return Err(ExactCheckpointTransactionError::Indeterminate {
+                    identity,
+                    captures: captured,
+                    source,
+                });
             }
         };
         let identity = prepared.identity();
-        let was_already_published = prepared.was_already_published();
-        if let Err(source) = self.release_exact_captures(&mut captured) {
-            return Err(ExactCheckpointTransactionError::Indeterminate {
-                identity: was_already_published.then_some(identity),
-                captures: captured,
-                source,
-            });
-        }
-        prepared
-            .publish()
-            .map(|()| identity)
-            .map_err(|error| match error {
-                PersistExactCheckpointError::Unpublished(source) => {
-                    ExactCheckpointTransactionError::Unpublished(source)
-                }
-                PersistExactCheckpointError::Indeterminate { identity, source } => {
-                    ExactCheckpointTransactionError::Indeterminate {
+        self.exact_ram_parents
+            .insert(configuration.id(), retained_parent);
+        match prepared.publish() {
+            Ok(()) => {
+                if let Err(source) =
+                    self.release_exact_captures(&mut captured, ExactCaptureDisposition::Published)
+                {
+                    return Err(ExactCheckpointTransactionError::Indeterminate {
                         identity: Some(identity),
-                        captures: Vec::new(),
+                        captures: captured,
                         source,
-                    }
+                    });
                 }
-            })
+                self.exact_ram_parents
+                    .retain(|candidate, _| *candidate == configuration.id());
+                Ok(identity)
+            }
+            Err(PersistExactCheckpointError::Unpublished(source)) => {
+                self.exact_ram_parents.remove(&configuration.id());
+                let cleanup = self
+                    .release_exact_captures(&mut captured, ExactCaptureDisposition::Unpublished);
+                combine_exact_checkpoint_transaction(
+                    Err(ExactCheckpointTransactionError::Unpublished(source)),
+                    cleanup,
+                    captured,
+                )
+            }
+            Err(PersistExactCheckpointError::Indeterminate { identity, source }) => {
+                Err(ExactCheckpointTransactionError::Indeterminate {
+                    identity: Some(identity),
+                    captures: captured,
+                    source,
+                })
+            }
+        }
     }
 
     /// Evaluates the signal program exactly once in the ordered sequence of

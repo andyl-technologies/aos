@@ -240,7 +240,15 @@ const STORAGE_MUTATION_EVIDENCE: &[&str] = &[
 /// duplicated, or missing from the closed network vocabulary.
 pub fn production_network_effect_implementation_registry()
 -> Result<EffectImplementationRegistry, EffectImplementationRegistryError> {
-    production_effect_registry(FaultAdapter::Network)
+    let registry = EffectImplementationRegistry::new(
+        FaultAdapter::Network,
+        PRODUCTION_NETWORK_EFFECTS
+            .iter()
+            .copied()
+            .map(production_network_contract),
+    )?;
+    registry.require_complete()?;
+    Ok(registry)
 }
 
 /// Returns the complete implementation registry for production storage and 9p adapters.
@@ -251,7 +259,15 @@ pub fn production_network_effect_implementation_registry()
 /// duplicated, or missing from the closed storage vocabulary.
 pub fn production_storage_effect_implementation_registry()
 -> Result<EffectImplementationRegistry, EffectImplementationRegistryError> {
-    production_effect_registry(FaultAdapter::Storage)
+    let registry = EffectImplementationRegistry::new(
+        FaultAdapter::Storage,
+        PRODUCTION_STORAGE_EFFECTS
+            .iter()
+            .copied()
+            .map(production_storage_contract),
+    )?;
+    registry.require_complete()?;
+    Ok(registry)
 }
 
 /// Derives the host manifests admitted by every production runtime.
@@ -269,49 +285,33 @@ pub fn production_host_fault_adapter_manifests()
     HostFaultAdapterManifests::from_registries(&network, &storage)
 }
 
-fn production_effect_registry(
-    adapter: FaultAdapter,
-) -> Result<EffectImplementationRegistry, EffectImplementationRegistryError> {
-    let effects = match adapter {
-        FaultAdapter::Network => PRODUCTION_NETWORK_EFFECTS,
-        FaultAdapter::Storage => PRODUCTION_STORAGE_EFFECTS,
-        FaultAdapter::Node => &[],
-    };
-    let registry = EffectImplementationRegistry::new(
-        adapter,
-        effects.iter().copied().map(production_contract),
-    )?;
-    registry.require_complete()?;
-    Ok(registry)
+fn production_network_contract(effect: EffectKind) -> EffectImplementationContract {
+    production_contract(
+        effect,
+        network_executor(effect),
+        NETWORK_MUTATION_EVIDENCE,
+        "ProductionNetworkStateCheckpoint",
+        network_conformance(effect),
+    )
 }
 
-fn production_contract(effect: EffectKind) -> EffectImplementationContract {
-    let (executor, mutation_evidence, checkpoint_evidence, production_conformance) =
-        match effect.descriptor().adapter {
-            FaultAdapter::Network => (
-                network_executor(effect),
-                NETWORK_MUTATION_EVIDENCE,
-                "ProductionNetworkStateCheckpoint",
-                network_conformance(effect),
-            ),
-            FaultAdapter::Storage => (
-                storage_executor(effect),
-                STORAGE_MUTATION_EVIDENCE,
-                "ProductionFaultRuntimeCheckpoint and live device state checkpoints",
-                storage_conformance(effect),
-            ),
-            FaultAdapter::Node => (
-                "QemuNodeSet::apply_fault_action",
-                &["QemuFaultResultV1", "QemuFaultEventV1"] as &'static [&'static str],
-                "QemuNodeContinuationCheckpoint",
-                ProductionConformanceEvidence {
-                    case_id: effect.as_str(),
-                    harness: "crucible-qemu::fault_implementation",
-                    live_gate: "gate:live-node-lifecycle-fault",
-                    observed_state: &["QemuFaultResultV1", "QemuFaultEventV1"],
-                },
-            ),
-        };
+fn production_storage_contract(effect: EffectKind) -> EffectImplementationContract {
+    production_contract(
+        effect,
+        storage_executor(effect),
+        STORAGE_MUTATION_EVIDENCE,
+        "ProductionFaultRuntimeCheckpoint and live device state checkpoints",
+        storage_conformance(effect),
+    )
+}
+
+fn production_contract(
+    effect: EffectKind,
+    executor: &'static str,
+    mutation_evidence: &'static [&'static str],
+    checkpoint_evidence: &'static str,
+    production_conformance: ProductionConformanceEvidence,
+) -> EffectImplementationContract {
     EffectImplementationContract {
         effect,
         executor,
@@ -462,8 +462,8 @@ mod tests {
     fn production_registration_is_explicit_and_vocabulary_growth_fails_closed() {
         assert_eq!(PRODUCTION_NETWORK_EFFECTS.len(), 31);
         assert_eq!(PRODUCTION_STORAGE_EFFECTS.len(), 20);
-        assert!(production_effect_registry(FaultAdapter::Network).is_ok());
-        assert!(production_effect_registry(FaultAdapter::Storage).is_ok());
+        assert!(production_network_effect_implementation_registry().is_ok());
+        assert!(production_storage_effect_implementation_registry().is_ok());
         assert_eq!(
             PRODUCTION_NETWORK_EFFECTS
                 .iter()

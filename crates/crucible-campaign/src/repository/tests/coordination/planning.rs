@@ -9,29 +9,48 @@ use crate::{
 mod budget;
 mod budget_scale;
 mod local_budget;
+mod support;
+
+use support::*;
+
+fn encoded_remaining_request_attempts(budget: &crate::PlannerCandidateBudget) -> u64 {
+    let bytes = budget.canonical_bytes();
+    let encoded = bytes
+        .get(bytes.len().saturating_sub(std::mem::size_of::<u64>())..)
+        .expect("candidate budget request allowance bytes");
+    u64::from_be_bytes(
+        encoded
+            .try_into()
+            .expect("candidate budget request allowance width"),
+    )
+}
 
 #[test]
 fn beam_named_boundary_metric_selects_the_deeper_survivor_and_filters_missing_metric() {
     let (repository, lineage, base_policy) = fixture();
     let metric = "boundary.latency";
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        base_policy.mode(),
-        ExplorerPolicy::Beam {
-            width: 1,
-            novelty_reserve: 0,
-        },
-        base_policy.choice_policies().clone(),
-        BTreeMap::from([(
-            metric.to_owned(),
-            Objective::new(metric, ObjectiveGoal::Minimize, 1_000_000).expect("Beam objective"),
-        )]),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            base_policy.mode(),
+            ExplorerPolicy::Beam {
+                width: 1,
+                novelty_reserve: 0,
+            },
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            BTreeMap::from([(
+                metric.to_owned(),
+                Objective::new(metric, ObjectiveGoal::Minimize, 1_000_000).expect("Beam objective"),
+            )]),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("Beam policy")
     .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
@@ -134,21 +153,16 @@ fn beam_named_boundary_metric_selects_the_deeper_survivor_and_filters_missing_me
         "beam-filtered-continuation",
     );
 
-    let selected_measurements = MeasurementSet::new(BTreeMap::from([(
-        metric.to_owned(),
-        MeasurementSeries::new(
-            vec![MetricValue::Unsigned(7)],
-            MetricValue::Unsigned(7),
-            BTreeSet::new(),
-        )
-        .expect("selected boundary metric"),
-    )]))
-    .expect("selected measurements");
+    let selected_measurements = MeasurementSet::test_evaluation(metric.as_bytes(), BTreeSet::new())
+        .expect("selected measurements");
     let selected_measurements = repository
         .publish_measurement_set(&selected_measurements)
         .expect("publish selected measurements");
     let filtered_measurements = repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("empty measurements"))
+        .publish_measurement_set(
+            &MeasurementSet::test_evaluation(b"empty", BTreeSet::new())
+                .expect("empty measurements"),
+        )
         .expect("publish filtered measurements");
     let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
     let properties_id = repository
@@ -161,25 +175,29 @@ fn beam_named_boundary_metric_selects_the_deeper_survivor_and_filters_missing_me
         .expect("publish coverage");
     let selected_observation = Observation::new(
         selected_admission.attempt,
-        selected_configuration,
-        selected_content,
-        selected_path.id().expect("selected path"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        selected_measurements,
-        properties_id,
-        coverage,
+        Observation::outcome(
+            selected_configuration,
+            selected_content,
+            selected_path.id().expect("selected path"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            selected_measurements,
+            properties_id,
+            coverage,
+        ),
         BTreeSet::from([selected_continuation.opportunity()]),
     )
     .expect("selected observation");
     let filtered_observation = Observation::new(
         filtered_admission.attempt,
-        filtered_configuration,
-        filtered_content,
-        filtered_path.id().expect("filtered path"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        filtered_measurements,
-        properties_id,
-        coverage,
+        Observation::outcome(
+            filtered_configuration,
+            filtered_content,
+            filtered_path.id().expect("filtered path"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            filtered_measurements,
+            properties_id,
+            coverage,
+        ),
         BTreeSet::from([filtered_continuation.opportunity()]),
     )
     .expect("filtered observation");
@@ -380,20 +398,24 @@ fn beam_named_boundary_metric_selects_the_deeper_survivor_and_filters_missing_me
 fn beam_projection_failure_discards_partial_cache_state() {
     let (repository, lineage, base_policy) = fixture();
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        base_policy.mode(),
-        ExplorerPolicy::Beam {
-            width: 1,
-            novelty_reserve: 0,
-        },
-        base_policy.choice_policies().clone(),
-        base_policy.objectives().clone(),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            base_policy.mode(),
+            ExplorerPolicy::Beam {
+                width: 1,
+                novelty_reserve: 0,
+            },
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            base_policy.objectives().clone(),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("Beam cache failure policy");
     let name = "beam-cache-failure";
@@ -454,334 +476,6 @@ fn beam_reports_a_closed_cohort_excluded_from_adaptive_learning() {
     exercise_beam_out_of_order_completion(
         CampaignMode::Strict,
         InterventionLearningPolicy::Exclude,
-    );
-}
-
-fn exercise_beam_out_of_order_completion(
-    mode: CampaignMode,
-    intervention_learning: InterventionLearningPolicy,
-) {
-    let (repository, lineage, base_policy) = fixture();
-    let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        mode,
-        ExplorerPolicy::Beam {
-            width: 1,
-            novelty_reserve: 0,
-        },
-        base_policy.choice_policies().clone(),
-        base_policy.objectives().clone(),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
-    )
-    .expect("Beam closure policy");
-    let policy = match intervention_learning {
-        InterventionLearningPolicy::Exclude => policy,
-        InterventionLearningPolicy::IncludeInGuidance => policy
-            .with_intervention_learning_policy(intervention_learning)
-            .expect("intervention-learning Beam closure policy"),
-    };
-    let mode_name = match mode {
-        CampaignMode::Strict => "strict",
-        CampaignMode::Streaming => "streaming",
-        CampaignMode::Statistical => panic!("test only covers deterministic completion modes"),
-    };
-    let learning_name = match intervention_learning {
-        InterventionLearningPolicy::Exclude => "excluded",
-        InterventionLearningPolicy::IncludeInGuidance => "included",
-    };
-    let name = format!("beam-out-of-order-{mode_name}-{learning_name}");
-    let genesis = repository
-        .create_funded(&name, &lineage, &policy, &BTreeMap::new())
-        .expect("create Beam closure campaign");
-    let producing_request = branch_request(
-        &repository,
-        &lineage,
-        lineage.genesis_content(),
-        lineage.genesis(),
-        &format!("{name}-producing"),
-    );
-    let requested = repository
-        .submit_known_branch_request(&name, genesis.snapshot_id(), &producing_request)
-        .expect("submit producing request");
-
-    let first_proposal = finite_proposal(
-        &producing_request,
-        &policy,
-        &repository.head(&name).expect("first proposal head"),
-        ChoiceValue::Boolean(false),
-        1,
-    );
-    let first_issued = repository
-        .issue_proposal(&name, requested.new_snapshot, &first_proposal)
-        .expect("issue first sibling");
-    let (first_selection, first_path, first_attempt) =
-        branch_attempt(&repository, &producing_request, &first_proposal);
-    let first_admitted = repository
-        .admit_proposal(
-            &name,
-            first_issued.new_snapshot,
-            first_issued.proposal,
-            &first_selection,
-            &first_path,
-            &first_attempt,
-        )
-        .expect("admit first sibling");
-    let second_proposal = finite_proposal(
-        &producing_request,
-        &policy,
-        &repository.head(&name).expect("second proposal head"),
-        ChoiceValue::Boolean(true),
-        2,
-    );
-    let second_issued = repository
-        .issue_proposal(&name, first_admitted.new_snapshot, &second_proposal)
-        .expect("issue second sibling");
-    let (second_selection, second_path, second_attempt) =
-        branch_attempt(&repository, &producing_request, &second_proposal);
-    let second_admitted = repository
-        .admit_proposal(
-            &name,
-            second_issued.new_snapshot,
-            second_issued.proposal,
-            &second_selection,
-            &second_path,
-            &second_attempt,
-        )
-        .expect("admit second sibling");
-
-    let make_child = |label: &str| {
-        let configuration = ConfigurationId::from_hash(CampaignHash::derive(
-            "test-beam-closure-child",
-            format!("{mode_name}-{label}").as_bytes(),
-        ));
-        let content = repository
-            .publish_configuration_artifact(
-                lineage.scenario(),
-                lineage.scenario_content(),
-                configuration,
-                1,
-                format!("{mode_name} {label} child").into_bytes(),
-            )
-            .expect("publish Beam closure child");
-        let continuation = branch_request(
-            &repository,
-            &lineage,
-            content,
-            configuration,
-            &format!("{name}-{label}-continuation"),
-        );
-        (configuration, content, continuation)
-    };
-    let (first_configuration, first_content, first_continuation) = make_child("first");
-    let (second_configuration, second_content, second_continuation) = make_child("second");
-    let measurements = repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
-        .expect("publish measurements");
-    let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
-    let properties_id = repository
-        .publish_property_verdict_set(&properties)
-        .expect("publish properties");
-    let coverage = repository
-        .publish_coverage_projection(
-            &CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage"),
-        )
-        .expect("publish coverage");
-    let first_observation = Observation::new(
-        first_admitted.attempt,
-        first_configuration,
-        first_content,
-        first_path.id().expect("first path"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements,
-        properties_id,
-        coverage,
-        BTreeSet::from([first_continuation.opportunity()]),
-    )
-    .expect("first observation");
-    let second_observation = Observation::new(
-        second_admitted.attempt,
-        second_configuration,
-        second_content,
-        second_path.id().expect("second path"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements,
-        properties_id,
-        coverage,
-        BTreeSet::from([second_continuation.opportunity()]),
-    )
-    .expect("second observation");
-
-    let (first_observed, second_observed) = if mode == CampaignMode::Streaming {
-        let second = repository
-            .publish_observation(&name, second_admitted.new_snapshot, &second_observation)
-            .expect("streaming accepts ordinal two first");
-        let second_requested = repository
-            .submit_known_branch_request(&name, second.new_snapshot, &second_continuation)
-            .expect("submit second continuation");
-        let snapshot = repository
-            .read_snapshot(second_requested.new_snapshot.content_id())
-            .expect("load partially closed streaming cohort");
-        let projection = repository
-            .project_beam_planner(&snapshot, &policy)
-            .expect("project partially closed streaming cohort");
-        let second_position = PlanningScanPosition::new(
-            second_continuation.branch_point(),
-            second_continuation.id().expect("second continuation ID"),
-        );
-        assert!(matches!(
-            projection.candidates[&second_position].cohort_state(),
-            crate::PlannerBeamCohortState::AwaitingAttempts(1)
-        ));
-        let first = repository
-            .publish_observation(&name, second_requested.new_snapshot, &first_observation)
-            .expect("streaming accepts late ordinal one");
-        (first, second)
-    } else {
-        assert!(matches!(
-            repository.publish_observation(
-                &name,
-                second_admitted.new_snapshot,
-                &second_observation
-            ),
-            Err(CampaignRepositoryError::Integrity {
-                reason: "strict-completion-order-gap"
-            })
-        ));
-        let first = repository
-            .publish_observation(&name, second_admitted.new_snapshot, &first_observation)
-            .expect("strict accepts ordinal one");
-        let first_requested = repository
-            .submit_known_branch_request(&name, first.new_snapshot, &first_continuation)
-            .expect("submit first continuation");
-        let snapshot = repository
-            .read_snapshot(first_requested.new_snapshot.content_id())
-            .expect("load partially closed strict cohort");
-        let projection = repository
-            .project_beam_planner(&snapshot, &policy)
-            .expect("project partially closed strict cohort");
-        let first_position = PlanningScanPosition::new(
-            first_continuation.branch_point(),
-            first_continuation.id().expect("first continuation ID"),
-        );
-        assert!(matches!(
-            projection.candidates[&first_position].cohort_state(),
-            crate::PlannerBeamCohortState::AwaitingAttempts(1)
-        ));
-        let second = repository
-            .publish_observation(&name, first_requested.new_snapshot, &second_observation)
-            .expect("strict accepts ordinal two after ordinal one");
-        (first, second)
-    };
-
-    let first_evaluation =
-        evaluate_objectives(&policy, &first_observation, &properties, BTreeMap::new())
-            .expect("evaluate first observation");
-    let first_evaluated = repository
-        .publish_objective_evaluation(
-            &name,
-            repository
-                .head(&name)
-                .expect("first evaluation head")
-                .snapshot_id(),
-            &first_evaluation,
-        )
-        .expect("publish first evaluation");
-    let second_evaluation =
-        evaluate_objectives(&policy, &second_observation, &properties, BTreeMap::new())
-            .expect("evaluate second observation");
-    let second_evaluated = repository
-        .publish_objective_evaluation(&name, first_evaluated.new_snapshot, &second_evaluation)
-        .expect("publish second evaluation");
-    repository
-        .submit_known_branch_request(&name, second_evaluated.new_snapshot, &first_continuation)
-        .expect("ensure first continuation");
-    let current = repository.head(&name).expect("continuation replay head");
-    repository
-        .submit_known_branch_request(&name, current.snapshot_id(), &second_continuation)
-        .expect("ensure second continuation");
-    assert!(first_observed.new_snapshot != second_observed.new_snapshot);
-    let settled_snapshot = repository
-        .head(&name)
-        .expect("settled Beam closure head")
-        .snapshot_id();
-    let snapshot = repository
-        .read_snapshot(settled_snapshot.content_id())
-        .expect("load settled Beam closure cohort");
-    let projection = repository
-        .project_beam_planner(&snapshot, &policy)
-        .expect("project settled Beam closure cohort");
-    let first_position = PlanningScanPosition::new(
-        first_continuation.branch_point(),
-        first_continuation.id().expect("first continuation ID"),
-    );
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
-    let restarted_snapshot = restarted
-        .read_snapshot(settled_snapshot.content_id())
-        .expect("load closure cohort after restart");
-    let restarted_projection = restarted
-        .project_beam_planner(&restarted_snapshot, &policy)
-        .expect("cold replay closure cohort");
-    assert_eq!(restarted_projection.candidates, projection.candidates);
-    assert_eq!(restarted_projection.selections, projection.selections);
-
-    if intervention_learning == InterventionLearningPolicy::Exclude {
-        assert!(matches!(
-            projection.candidates[&first_position].cohort_state(),
-            crate::PlannerBeamCohortState::InterventionExcluded(2)
-        ));
-        assert!(projection.selections.is_empty());
-
-        let basis = repository
-            .publish_canonical_beam_planner_basis()
-            .expect("publish excluded-cohort Beam planner basis");
-        let invocation = repository
-            .prepare_planner_invocation(
-                &name,
-                settled_snapshot,
-                basis.engine(),
-                basis.artifact(),
-                basis.initial_state(),
-                None,
-                100,
-                PlanningBudget::new(4, 4, 100, 4 * 1024 * 1024, 10_000)
-                    .expect("excluded-cohort Beam planning budget"),
-            )
-            .expect("prepare excluded-cohort Beam invocation");
-        let request = repository
-            .build_planner_request(
-                settled_snapshot,
-                invocation.id().expect("excluded-cohort Beam invocation ID"),
-            )
-            .expect("build excluded-cohort Beam request");
-        let output = CanonicalBeamPlanner
-            .plan(&request)
-            .expect("plan excluded intervention cohort");
-        assert!(matches!(
-            output.proposal().disposition(),
-            PlannerProposalDisposition::NoWork
-        ));
-        assert_eq!(
-            output.proposal().explanation().terms_micros()["intervention-excluded-cohorts"],
-            1
-        );
-        assert_eq!(
-            output.proposal().explanation().terms_micros()["intervention-excluded-observations"],
-            2
-        );
-        return;
-    }
-
-    let selection = projection.candidates[&first_position]
-        .selection()
-        .expect("settled selection");
-    assert_eq!(
-        restarted_projection.candidates[&first_position].selection(),
-        Some(selection)
     );
 }
 
@@ -1468,13 +1162,9 @@ fn canonical_frontier_planner_carries_the_first_ready_offer_across_pages() {
                         original.remaining_proposals(),
                         original.remaining_attempts(),
                         original.requires_new_attempt(),
+                        encoded_remaining_request_attempts(&original),
                     )
-                    .expect("rebind budget")
-                    .with_request_attempts(
-                        original
-                            .remaining_request_attempts()
-                            .expect("request allowance"),
-                    );
+                    .expect("rebind budget");
                     ObjectEnvelope::for_candidate_budget(&budget).expect("forged budget envelope")
                 }
                 _ => object,
@@ -1615,19 +1305,23 @@ fn canonical_search_driver_carries_a_first_page_winner_through_restart_and_accep
     let (repository, lineage, base_policy, _, planner_authority, debugger_authority) =
         authorized_fixture();
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        base_policy.mode(),
-        ExplorerPolicy::Exhaustive {
-            maximum_cardinality: 100,
-        },
-        base_policy.choice_policies().clone(),
-        base_policy.objectives().clone(),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            base_policy.mode(),
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality: 100,
+            },
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            base_policy.objectives().clone(),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("exhaustive search policy");
     let name = "canonical-search-driver-restart";
@@ -1891,7 +1585,7 @@ fn canonical_search_request_rejects_forged_domain_semantics_and_parent_ancestry(
             .body(),
     )
     .expect("parent path");
-    let mut wrong_segments = parent_path.segments().expect("scoped parent path").to_vec();
+    let mut wrong_segments = parent_path.segments().to_vec();
     wrong_segments.push(crate::BranchPathSegment::new(
         candidate.position().branch_point(),
         wrong_edge,
@@ -1944,10 +1638,7 @@ fn canonical_search_request_rejects_forged_domain_semantics_and_parent_ancestry(
         candidate.edge(),
         unrelated_parent.id().expect("unrelated parent id"),
         {
-            let mut segments = unrelated_parent
-                .segments()
-                .expect("scoped unrelated parent")
-                .to_vec();
+            let mut segments = unrelated_parent.segments().to_vec();
             segments.push(crate::BranchPathSegment::new(
                 candidate.position().branch_point(),
                 candidate.edge(),
@@ -1960,10 +1651,7 @@ fn canonical_search_request_rejects_forged_domain_semantics_and_parent_ancestry(
         candidate.depth() + 1,
     )
     .expect("forge parent ancestry");
-    let mut forged_segments = unrelated_parent
-        .segments()
-        .expect("scoped unrelated parent")
-        .to_vec();
+    let mut forged_segments = unrelated_parent.segments().to_vec();
     forged_segments.push(crate::BranchPathSegment::new(
         candidate.position().branch_point(),
         candidate.edge(),
@@ -1993,19 +1681,23 @@ fn canonical_search_request_rejects_forged_domain_semantics_and_parent_ancestry(
 fn canonical_search_request_rejects_coherent_unrelated_parent_before_acceptance() {
     let (repository, lineage, base_policy, _, planner_authority, _) = authorized_fixture();
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        base_policy.mode(),
-        ExplorerPolicy::Exhaustive {
-            maximum_cardinality: 100,
-        },
-        base_policy.choice_policies().clone(),
-        base_policy.objectives().clone(),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            base_policy.mode(),
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality: 100,
+            },
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            base_policy.objectives().clone(),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("exhaustive search policy");
     let name = "canonical-search-forged-acceptance";
@@ -2063,10 +1755,7 @@ fn canonical_search_request_rejects_coherent_unrelated_parent_before_acceptance(
         )),
     )])
     .expect("unrelated parent");
-    let mut forged_segments = unrelated_parent
-        .segments()
-        .expect("scoped unrelated parent")
-        .to_vec();
+    let mut forged_segments = unrelated_parent.segments().to_vec();
     forged_segments.push(crate::BranchPathSegment::new(
         candidate.position().branch_point(),
         candidate.edge(),
@@ -2217,7 +1906,9 @@ fn canonical_puct_planner_ranks_every_ready_offer_and_replays_owner_guidance() {
         )
         .expect("publish completed child");
     let measurements = repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
+        .publish_measurement_set(
+            &MeasurementSet::test_evaluation(b"empty", BTreeSet::new()).expect("measurements"),
+        )
         .expect("publish measurements");
     let properties = repository
         .publish_property_verdict_set(
@@ -2231,13 +1922,15 @@ fn canonical_puct_planner_ranks_every_ready_offer_and_replays_owner_guidance() {
         .expect("publish coverage");
     let observation = Observation::new(
         admitted.attempt,
-        child,
-        child_content,
-        path.id().expect("path id"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements,
-        properties,
-        coverage,
+        Observation::outcome(
+            child,
+            child_content,
+            path.id().expect("path id"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurements,
+            properties,
+            coverage,
+        ),
         BTreeSet::from([guided.opportunity()]),
     )
     .expect("completed observation");
@@ -2448,222 +2141,6 @@ fn canonical_puct_planner_ranks_every_ready_offer_and_replays_owner_guidance() {
     decoded
         .validate_for(&ranking_request)
         .expect("validate decoded ranking response");
-}
-
-#[derive(Clone)]
-struct ExactCanonicalPlannerSupervisor {
-    calls: Arc<std::sync::atomic::AtomicUsize>,
-}
-
-impl crate::PlannerExecutionSupervisor<CanonicalFrontierPlanner>
-    for ExactCanonicalPlannerSupervisor
-{
-    type Error = std::convert::Infallible;
-
-    fn execute(
-        &mut self,
-        engine: &mut CanonicalFrontierPlanner,
-        request: &PlannerRequest,
-    ) -> Result<crate::SupervisedPlannerExecution<CampaignCodecError>, Self::Error> {
-        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let measured_fuel = u64::try_from(request.invocation().scan_page().positions().len())
-            .expect("page count fits u64")
-            + 1;
-        Ok(crate::SupervisedPlannerExecution::new(
-            engine.plan(request),
-            measured_fuel,
-        ))
-    }
-}
-
-fn canonical_planner_driver_basis(
-    repository: &CampaignRepository,
-) -> (PlannerEngine, PolicyArtifact, PlannerState, PlanningBudget) {
-    let engine = CanonicalFrontierPlanner::descriptor().expect("canonical planner descriptor");
-    let dependency_bytes = b"campaign planner driver dependency".to_vec();
-    let dependency = ContentId::for_bytes(ObjectKind::Trace, 1, &dependency_bytes);
-    repository
-        .blobs
-        .put_if_absent(dependency, &BlobHandle::from_bytes(dependency_bytes))
-        .expect("planner dependency");
-    let artifact = PolicyArtifact::new(
-        engine.id().expect("engine id"),
-        1,
-        dependency,
-        BTreeSet::new(),
-        BTreeMap::new(),
-    )
-    .expect("planner artifact");
-    let initial_state = CanonicalFrontierPlanner::initial_state().expect("initial planner state");
-    let budget = PlanningBudget::new(1, 1, 8, 8_192, 100).expect("planner budget");
-    (engine, artifact, initial_state, budget)
-}
-
-fn legacy_request_budget_planner_driver_basis(
-    repository: &CampaignRepository,
-) -> (PlannerEngine, PolicyArtifact, PlannerState, PlanningBudget) {
-    let engine = PlannerEngine::new(
-        "crucible-canonical-frontier",
-        5,
-        1,
-        BTreeSet::from([
-            crate::CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
-            crate::CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
-            crate::CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
-        ]),
-    )
-    .expect("legacy request-budget planner descriptor");
-    let dependency_bytes = b"legacy request-budget planner driver dependency".to_vec();
-    let dependency = ContentId::for_bytes(ObjectKind::Trace, 1, &dependency_bytes);
-    repository
-        .blobs
-        .put_if_absent(dependency, &BlobHandle::from_bytes(dependency_bytes))
-        .expect("legacy planner dependency");
-    let artifact = PolicyArtifact::new(
-        engine.id().expect("legacy engine id"),
-        1,
-        dependency,
-        BTreeSet::new(),
-        BTreeMap::new(),
-    )
-    .expect("legacy planner artifact");
-    let initial_state = CanonicalFrontierPlanner::initial_state_for_engine(&engine)
-        .expect("legacy initial planner state");
-    let budget = PlanningBudget::new(1, 1, 8, 8_192, 100).expect("legacy planner budget");
-    (engine, artifact, initial_state, budget)
-}
-
-fn canonical_planner_client(
-    authority: &PlannerAuthorityKey,
-    calls: Arc<std::sync::atomic::AtomicUsize>,
-) -> crate::PlannerClient<
-    crate::AuthorizedPlannerService<CanonicalFrontierPlanner, ExactCanonicalPlannerSupervisor>,
-> {
-    crate::PlannerClient::new(
-        crate::AuthorizedPlannerService::new(
-            CanonicalFrontierPlanner,
-            ExactCanonicalPlannerSupervisor { calls },
-            authority.clone(),
-        ),
-        authority.clone(),
-    )
-}
-
-#[derive(Clone)]
-struct ExactSearchPlannerSupervisor {
-    calls: Arc<std::sync::atomic::AtomicUsize>,
-}
-
-impl crate::PlannerExecutionSupervisor<crate::CanonicalSearchPlanner>
-    for ExactSearchPlannerSupervisor
-{
-    type Error = std::convert::Infallible;
-
-    fn execute(
-        &mut self,
-        engine: &mut crate::CanonicalSearchPlanner,
-        request: &PlannerRequest,
-    ) -> Result<crate::SupervisedPlannerExecution<CampaignCodecError>, Self::Error> {
-        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let measured_fuel = u64::try_from(request.invocation().scan_page().positions().len())
-            .expect("page count fits u64")
-            + 1;
-        Ok(crate::SupervisedPlannerExecution::new(
-            engine.plan(request),
-            measured_fuel,
-        ))
-    }
-}
-
-fn canonical_search_planner_client(
-    authority: &PlannerAuthorityKey,
-    calls: Arc<std::sync::atomic::AtomicUsize>,
-    strategy: crate::CanonicalSearchStrategy,
-) -> crate::PlannerClient<
-    crate::AuthorizedPlannerService<crate::CanonicalSearchPlanner, ExactSearchPlannerSupervisor>,
-> {
-    crate::PlannerClient::new(
-        crate::AuthorizedPlannerService::new(
-            crate::CanonicalSearchPlanner::new(strategy),
-            ExactSearchPlannerSupervisor { calls },
-            authority.clone(),
-        ),
-        authority.clone(),
-    )
-}
-
-struct SupervisorExecutor {
-    execution: ExecutionId,
-    cancellations: Arc<std::sync::atomic::AtomicUsize>,
-}
-
-impl crate::ExecutorService for SupervisorExecutor {
-    type Error = &'static str;
-
-    fn submit_attempt(
-        &mut self,
-        request: &SubmitAttemptRequest,
-    ) -> Result<SubmitAttemptResponse, Self::Error> {
-        SubmitAttemptResponse::new(
-            request,
-            SubmitAttemptDisposition::Accepted {
-                execution: self.execution,
-            },
-        )
-        .map_err(|_| "response encoding")
-    }
-}
-
-impl crate::ExecutorStatusService for SupervisorExecutor {
-    fn get_attempt_execution(
-        &mut self,
-        request: &crate::GetAttemptExecutionRequest,
-    ) -> Result<crate::GetAttemptExecutionResponse, Self::Error> {
-        crate::GetAttemptExecutionResponse::new(
-            request,
-            crate::GetAttemptExecutionDisposition::Running,
-        )
-        .map_err(|_| "response encoding")
-    }
-}
-
-impl crate::ExecutorControlService for SupervisorExecutor {
-    fn checkpoint_attempt_execution(
-        &mut self,
-        request: &crate::CheckpointAttemptExecutionRequest,
-    ) -> Result<crate::CheckpointAttemptExecutionResponse, Self::Error> {
-        crate::CheckpointAttemptExecutionResponse::new(
-            request,
-            crate::CheckpointAttemptExecutionDisposition::Requested,
-        )
-        .map_err(|_| "response encoding")
-    }
-
-    fn cancel_attempt_execution(
-        &mut self,
-        request: &crate::CancelAttemptExecutionRequest,
-    ) -> Result<crate::CancelAttemptExecutionResponse, Self::Error> {
-        self.cancellations
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        crate::CancelAttemptExecutionResponse::new(
-            request,
-            crate::CancelAttemptExecutionDisposition::Canceled,
-        )
-        .map_err(|_| "response encoding")
-    }
-}
-
-impl crate::ExecutorResumeService for SupervisorExecutor {
-    fn resume_attempt_execution(
-        &mut self,
-        request: &crate::ResumeAttemptExecutionRequest,
-    ) -> Result<crate::ResumeAttemptExecutionResponse, Self::Error> {
-        crate::ResumeAttemptExecutionResponse::new(
-            request,
-            crate::ResumeAttemptExecutionDisposition::NotCurrent,
-        )
-        .map_err(|_| "response encoding")
-    }
 }
 
 #[test]
@@ -2974,200 +2451,6 @@ fn campaign_supervisor_plans_only_after_executor_scan_proves_no_ready_attempt() 
         })
     ));
     assert_eq!(planner_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-}
-
-#[test]
-fn planner_driver_resumes_a_retained_v1_request_with_v2_construction_after_restart() {
-    let (repository, lineage, policy, _, planner_authority, debugger_authority) =
-        authorized_fixture();
-    let repository = Arc::new(repository);
-    let genesis = repository
-        .create_funded(
-            "planner-driver-restart",
-            &lineage,
-            &policy,
-            &BTreeMap::new(),
-        )
-        .expect("create campaign");
-    let first_request = branch_request(
-        &repository,
-        &lineage,
-        lineage.genesis_content(),
-        lineage.genesis(),
-        "planner-driver-first",
-    );
-    let first = repository
-        .submit_known_branch_request(
-            "planner-driver-restart",
-            genesis.snapshot_id(),
-            &first_request,
-        )
-        .expect("submit first request");
-    let second_request = branch_request(
-        &repository,
-        &lineage,
-        lineage.genesis_content(),
-        lineage.genesis(),
-        "planner-driver-second",
-    );
-    let second = repository
-        .submit_known_branch_request(
-            "planner-driver-restart",
-            first.new_snapshot,
-            &second_request,
-        )
-        .expect("submit second request");
-    let running = repository
-        .apply_control(
-            "planner-driver-restart",
-            &command(
-                "planner-driver-restart-resume",
-                second.new_snapshot,
-                CampaignControlAction::Resume,
-            ),
-        )
-        .expect("resume planner campaign");
-    let (engine, artifact, initial_state, budget) =
-        legacy_request_budget_planner_driver_basis(&repository);
-    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let invocation = repository
-        .prepare_planner_invocation(
-            "planner-driver-restart",
-            running.new_snapshot,
-            &engine,
-            &artifact,
-            &initial_state,
-            None,
-            1,
-            budget,
-        )
-        .expect("prepare legacy first page");
-    let current_request = repository
-        .build_planner_request(
-            running.new_snapshot,
-            invocation.id().expect("legacy invocation ID"),
-        )
-        .expect("build current-schema first request");
-    assert_eq!(
-        u32::from_be_bytes(
-            current_request.canonical_bytes()[..4]
-                .try_into()
-                .expect("current request schema bytes"),
-        ),
-        2
-    );
-    let legacy_request = PlannerRequest::new_for_schema(
-        1,
-        current_request.expected_snapshot(),
-        current_request.invocation().clone(),
-        current_request.engine().clone(),
-        current_request.policy_artifact().clone(),
-        current_request.policy().clone(),
-        current_request.planner_state().clone(),
-        *current_request.input_view(),
-        None,
-        None,
-        current_request.input_bundle().clone(),
-    )
-    .expect("reconstruct retained v1 planner request");
-    assert_ne!(
-        legacy_request.id().expect("legacy request ID"),
-        current_request.id().expect("current request ID")
-    );
-
-    let mut planner = canonical_planner_client(&planner_authority, Arc::clone(&calls));
-    let response = planner
-        .plan(&legacy_request)
-        .expect("plan retained v1 first page");
-    let continued = repository
-        .accept_planner_response("planner-driver-restart", &legacy_request, &response)
-        .expect("accept retained v1 first page");
-    assert_eq!(continued.prior_snapshot, running.new_snapshot);
-    let continued_snapshot = continued.new_snapshot;
-    let continued_step = continued.step;
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-
-    let persisted = repository
-        .load_planner_step_at(continued_snapshot, continued_step)
-        .expect("persisted v1 continue step");
-    let PlannerDisposition::ContinueScan { cursor } = persisted.disposition() else {
-        panic!("first page must continue")
-    };
-    let cursor_position = cursor.after().expect("first page cursor");
-    let retained_v1 = repository
-        .load_planner_request(persisted.request())
-        .expect("retained v1 planner request");
-    assert_eq!(retained_v1, legacy_request);
-    assert_eq!(
-        u32::from_be_bytes(
-            retained_v1.canonical_bytes()[..4]
-                .try_into()
-                .expect("retained request schema bytes"),
-        ),
-        1
-    );
-    drop(planner);
-
-    let restarted = Arc::new(
-        CampaignRepository::with_component_authorities(
-            repository.blobs.clone(),
-            repository.refs.clone(),
-            planner_authority.clone(),
-            debugger_authority,
-        )
-        .expect("restart repository"),
-    );
-    restarted
-        .validate_complete_head(continued_snapshot.content_id())
-        .expect("cold-validate retained v1 planner flight");
-    let persisted = restarted
-        .load_planner_step_at(continued_snapshot, continued_step)
-        .expect("persisted continue step");
-    assert_eq!(
-        persisted.disposition(),
-        &PlannerDisposition::ContinueScan {
-            cursor: crate::PlanningScanCursor::new(persisted.input_view(), Some(cursor_position),)
-        }
-    );
-    let mut restarted_driver = CampaignPlannerDriver::new(
-        Arc::clone(&restarted),
-        canonical_planner_client(&planner_authority, Arc::clone(&calls)),
-        engine,
-        artifact,
-        initial_state,
-        1,
-        budget,
-    )
-    .expect("restarted planner driver");
-    let second_advance = restarted_driver
-        .step("planner-driver-restart")
-        .expect("resume final page");
-    let final_result = match second_advance {
-        CampaignPlannerStepOutcome::Advanced {
-            result,
-            disposition: PlannerDisposition::Issue { selected, .. },
-        } => {
-            assert_eq!(result.prior_snapshot, continued_snapshot);
-            assert_eq!(selected, cursor_position);
-            result
-        }
-        other => panic!("resumed final page must issue, got {other:?}"),
-    };
-    let final_step = restarted
-        .load_planner_step_at(final_result.new_snapshot, final_result.step)
-        .expect("load resumed planner step");
-    let retained_v2 = restarted
-        .load_planner_request(final_step.request())
-        .expect("retained v2 planner request");
-    assert_eq!(
-        u32::from_be_bytes(
-            retained_v2.canonical_bytes()[..4]
-                .try_into()
-                .expect("resumed request schema bytes"),
-        ),
-        2
-    );
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 #[test]
@@ -3496,10 +2779,12 @@ fn planner_issue_atomically_admits_attempts_and_deduplicates_replay() {
     assert!(invocation.scan_page().complete());
 
     let planner_request = BranchRequest::new(
-        source_request.branch_point(),
-        source_request.parent(),
-        source_request.opportunity(),
-        source_request.domain(),
+        BranchRequest::identity(
+            source_request.branch_point(),
+            source_request.parent(),
+            source_request.opportunity(),
+            source_request.domain(),
+        ),
         source_request.source().clone(),
         BranchRequestCause::Planner(invocation.id().expect("invocation id")),
         source_request.budget(),
@@ -3701,6 +2986,7 @@ fn planner_issue_atomically_admits_attempts_and_deduplicates_replay() {
             .snapshot()
             .transition()
             .expect("first issue transition"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged issue successor");
     let forged_content = repository
@@ -3893,13 +3179,15 @@ fn planner_issue_uses_the_canonical_authenticated_path_after_convergence() {
         .expect("admit second convergent attempt");
     let second_observation = Observation::new(
         second_admitted.attempt,
-        first_observation.child(),
-        first_observation.child_content(),
-        second_path.id().expect("second path id"),
-        first_observation.stop().clone(),
-        first_observation.measurements(),
-        first_observation.properties(),
-        first_observation.coverage(),
+        Observation::outcome(
+            first_observation.child(),
+            first_observation.child_content(),
+            second_path.id().expect("second path id"),
+            first_observation.stop().clone(),
+            first_observation.measurements(),
+            first_observation.properties(),
+            first_observation.coverage(),
+        ),
         first_observation.discovered_choices().clone(),
     )
     .expect("second convergent observation");
@@ -3923,10 +3211,12 @@ fn planner_issue_uses_the_canonical_authenticated_path_after_convergence() {
         .expect("nested domain");
     let branch_point = opportunity.branch_point_id(first_observation.child());
     let nested_request = BranchRequest::new(
-        branch_point,
-        first_observation.child_content(),
-        opportunity_id,
-        opportunity.domain(),
+        BranchRequest::identity(
+            branch_point,
+            first_observation.child_content(),
+            opportunity_id,
+            opportunity.domain(),
+        ),
         CandidateSource::finite(BTreeSet::from([
             ChoiceValue::Boolean(false),
             ChoiceValue::Boolean(true),
@@ -4047,12 +3337,9 @@ fn planner_issue_uses_the_canonical_authenticated_path_after_convergence() {
     let crate::SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
         panic!("nested campaign selection")
     };
-    let mut expected_segments = canonical_parent
-        .segments()
-        .expect("scoped canonical parent")
-        .to_vec();
+    let mut expected_segments = canonical_parent.segments().to_vec();
     expected_segments.push(crate::BranchPathSegment::new(branch_point, edge));
-    assert_eq!(path.segments(), Some(expected_segments.as_slice()));
+    assert_eq!(path.segments(), expected_segments.as_slice());
 
     let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
     restarted
@@ -4068,215 +3355,6 @@ fn planner_issue_uses_the_canonical_authenticated_path_after_convergence() {
         .expect("replay nested planner issue");
     assert!(replay.replayed);
     assert_eq!(replay.new_snapshot, accepted.new_snapshot);
-}
-
-#[test]
-fn planner_issue_rejects_a_legacy_parent_path_before_publication() {
-    let (repository, lineage, policy, blobs) = counted_fixture();
-    let genesis = repository
-        .create_funded("planner-legacy-path", &lineage, &policy, &BTreeMap::new())
-        .expect("create legacy-path campaign");
-    let source_request = branch_request(
-        &repository,
-        &lineage,
-        lineage.genesis_content(),
-        lineage.genesis(),
-        "planner-legacy-path-source",
-    );
-    let requested = repository
-        .submit_known_branch_request(
-            "planner-legacy-path",
-            genesis.snapshot_id(),
-            &source_request,
-        )
-        .expect("submit legacy-path source");
-    let source_proposal = finite_proposal(
-        &source_request,
-        &policy,
-        &repository
-            .head("planner-legacy-path")
-            .expect("source request head"),
-        ChoiceValue::Boolean(false),
-        1,
-    );
-    let proposed = repository
-        .issue_proposal(
-            "planner-legacy-path",
-            requested.new_snapshot,
-            &source_proposal,
-        )
-        .expect("issue legacy-path proposal");
-    let (selection, _, _) = branch_attempt(&repository, &source_request, &source_proposal);
-    let crate::SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
-        panic!("campaign branch selection")
-    };
-    let mut legacy_encoder = crate::codec::Encoder::new();
-    crate::codec::Canonical::encode(&1_u32, &mut legacy_encoder);
-    crate::codec::Canonical::encode(&vec![edge], &mut legacy_encoder);
-    let legacy_path =
-        BranchPath::from_canonical_bytes(&legacy_encoder.finish()).expect("legacy branch path");
-    assert!(legacy_path.segments().is_none());
-    let legacy_attempt = Attempt::new(
-        AttemptStart::Branch {
-            edge,
-            parent: source_request.parent(),
-            selection: selection.id().expect("selection id"),
-        },
-        legacy_path.id().expect("legacy path id"),
-        source_request.stop().clone(),
-    )
-    .expect("legacy-path attempt");
-    let admitted = repository
-        .admit_proposal(
-            "planner-legacy-path",
-            proposed.new_snapshot,
-            proposed.proposal,
-            &selection,
-            &legacy_path,
-            &legacy_attempt,
-        )
-        .expect("admit legacy genesis path");
-
-    let child =
-        ConfigurationId::from_hash(CampaignHash::derive("test.planner-legacy-path", b"child"));
-    let child_content = repository
-        .publish_configuration_artifact(
-            lineage.scenario(),
-            lineage.scenario_content(),
-            child,
-            1,
-            b"planner legacy path child".to_vec(),
-        )
-        .expect("publish child");
-    let measurements = repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
-        .expect("publish measurements");
-    let properties = repository
-        .publish_property_verdict_set(
-            &PropertyVerdictSet::new(BTreeMap::new()).expect("properties"),
-        )
-        .expect("publish properties");
-    let coverage = repository
-        .publish_coverage_projection(
-            &CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage"),
-        )
-        .expect("publish coverage");
-    let observation = Observation::new(
-        admitted.attempt,
-        child,
-        child_content,
-        legacy_path.id().expect("legacy path id"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements,
-        properties,
-        coverage,
-        BTreeSet::from([source_request.opportunity()]),
-    )
-    .expect("legacy-path observation");
-    let observed = repository
-        .publish_observation("planner-legacy-path", admitted.new_snapshot, &observation)
-        .expect("publish legacy-path observation");
-
-    let opportunity = repository
-        .load_choice_opportunity(source_request.opportunity())
-        .expect("nested opportunity");
-    let branch_point = opportunity.branch_point_id(child);
-    let nested_request = BranchRequest::new(
-        branch_point,
-        child_content,
-        source_request.opportunity(),
-        source_request.domain(),
-        source_request.source().clone(),
-        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
-            "test.planner-legacy-path",
-            b"nested request",
-        ))),
-        source_request.budget(),
-        source_request.stop().clone(),
-    )
-    .expect("nested request");
-    let nested_requested = repository
-        .submit_known_branch_request(
-            "planner-legacy-path",
-            observed.new_snapshot,
-            &nested_request,
-        )
-        .expect("submit nested request");
-    let engine = PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
-    let (_, _, invocation) = planner_basis(
-        &repository,
-        "planner-legacy-path",
-        nested_requested.new_snapshot,
-        PlannerState::new(
-            engine.id().expect("engine id"),
-            "closed-rust-state",
-            1,
-            vec![0],
-        )
-        .expect("planner state"),
-    );
-    let nested_proposal = Proposal::new(
-        branch_point,
-        nested_request.id().expect("nested request id"),
-        nested_request.domain(),
-        ChoiceValue::Boolean(false),
-        policy.id().expect("policy id"),
-        Some(invocation.id().expect("invocation id")),
-        1,
-        invocation.input_view(),
-    )
-    .expect("nested proposal");
-    let usage = PlanningUsage {
-        branch_requests: 0,
-        proposals: 1,
-        input_objects: invocation.scan_page().input_objects(),
-        input_bytes: invocation.scan_page().input_bytes(),
-        fuel: 3,
-    };
-    let step = PlannerStepProposal::new(
-        invocation.id().expect("invocation id"),
-        PlannerState::new(
-            engine.id().expect("engine id"),
-            "closed-rust-state",
-            1,
-            vec![1],
-        )
-        .expect("next planner state"),
-        usage,
-        GuidanceEvidence::new(BTreeMap::new()).expect("guidance evidence"),
-        PlannerProposalDisposition::Issue {
-            selected: PlanningScanPosition::new(
-                branch_point,
-                nested_request.id().expect("nested request id"),
-            ),
-            branch_requests: Vec::new(),
-            proposals: vec![nested_proposal],
-        },
-    )
-    .expect("legacy-parent planner issue");
-    let before = blobs.object_count().expect("object count before rejection");
-    assert!(matches!(
-        repository.accept_planner_step(
-            "planner-legacy-path",
-            nested_requested.new_snapshot,
-            &step,
-            usage,
-        ),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "planner-issue-parent-path-is-legacy"
-        })
-    ));
-    assert_eq!(
-        blobs.object_count().expect("object count after rejection"),
-        before
-    );
-    assert_eq!(
-        repository
-            .head("planner-legacy-path")
-            .expect("head after rejection")
-            .snapshot_id(),
-        nested_requested.new_snapshot
-    );
 }
 
 #[test]
@@ -4301,7 +3379,7 @@ fn planner_cursor_and_imported_root_fail_closed() {
     );
     let fabricated_source = BranchRequestId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignFact,
-        1,
+        9,
         b"fabricated planner cursor",
     ))
     .expect("fabricated source");
@@ -4389,6 +3467,7 @@ fn planner_cursor_and_imported_root_fail_closed() {
         genesis.snapshot().active_policy(),
         forged_roots,
         CampaignFactId::from_content_id(transition).expect("fact id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged snapshot");
     let forged_content = repository

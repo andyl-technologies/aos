@@ -9,8 +9,9 @@ use std::error::Error;
 use crucible::{
     AppRandomSelectable, AssertionDef, AssertionId, AssertionQuantifierKind, AssertionRunVerdict,
     BlackBoxHostOracle, ChoiceTag, Configuration, ContentHash, Decision, EngineError,
-    FindingDiscoveryPath, FindingReproductionArtifact, Icount, MAX_MINIMIZATION_CANDIDATES,
-    MarkerId, MinimizationConfig, NodeId, NodeTemplate, ObservableEvent, OfflineAssertionChecker,
+    FindingDiscoveryPath, FindingReproductionArtifact, Icount, InterestingScheduleWindowBasis,
+    MAX_AUTOMATIC_INTERESTING_WINDOW_DECISIONS, MAX_MINIMIZATION_CANDIDATES, MarkerId,
+    MinimizationConfig, NodeId, NodeTemplate, ObservableEvent, OfflineAssertionChecker,
     OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint, RecordedAssertionLog,
     RngDecision, RngStreamId, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind,
     SchedulerEventLogPayload, SchedulingPoint, Seed, SelectionDecision, VirtualTime,
@@ -223,6 +224,127 @@ fn gate_minimization_preserves_campaign_branch_prefixes_and_reduces_suffixes()
             .iter()
             .position(|decision| decision == &branch)
             .is_none_or(|index| index == prefix.len() && schedule.decisions()[..index] == prefix)
+    }));
+
+    Ok(())
+}
+
+#[test]
+fn automatic_minimization_selects_and_authenticates_the_latest_interesting_window()
+-> Result<(), Box<dyn Error>> {
+    let scenario = scenario_form()?;
+    let scenario_def = scenario.scenario_def();
+    let fixed_prefix_len = MAX_AUTOMATIC_INTERESTING_WINDOW_DECISIONS + 8;
+    let prefix = (0..fixed_prefix_len)
+        .map(|index| override_decision(&format!("fixed-prefix-{index:03}"), "retained"))
+        .collect::<Vec<_>>();
+    let parent = Configuration {
+        def: scenario_def.clone(),
+        schedule: Schedule::from_decisions(prefix.clone()),
+    };
+    let selectable = AppRandomSelectable::new(
+        &scenario_def,
+        node("automatic-window-node"),
+        RngStreamId::from_name("minimization/automatic-window"),
+        1,
+        8,
+    )?;
+    let branch = Decision::Selection(SelectionDecision::new(
+        &selectable.branch_selection(&parent, 5)?,
+    ));
+    let mut original_decisions = prefix.clone();
+    original_decisions.extend([
+        branch.clone(),
+        override_decision("interesting-noise-left", "removable"),
+        override_decision("interesting-noise-right", "removable"),
+    ]);
+    let original_schedule = Schedule::from_decisions(original_decisions);
+    let target = finding_fingerprint("automatic-interesting-window");
+    let original = finding_artifact(&scenario, original_schedule.clone(), target)?;
+    let config = MinimizationConfig::automatic_interesting_suffix(
+        Seed::from_u64(0x5156),
+        &original_schedule,
+    );
+    let window = config
+        .interesting_window()
+        .expect("automatic minimization selects a window");
+    let mut expected_decisions = prefix.clone();
+    expected_decisions.push(branch);
+    let expected_minimized = Schedule::from_decisions(expected_decisions);
+
+    let first = original.minimize(config, |candidate| {
+        let schedule = candidate.artifact.schedule();
+        Ok(
+            ((schedule == &original_schedule) || (schedule == &expected_minimized))
+                .then_some(target),
+        )
+    })?;
+    let second = original.minimize(config, |candidate| {
+        let schedule = candidate.artifact.schedule();
+        Ok(
+            ((schedule == &original_schedule) || (schedule == &expected_minimized))
+                .then_some(target),
+        )
+    })?;
+
+    assert_eq!(window.start(), fixed_prefix_len);
+    assert_eq!(window.end(), original_schedule.len());
+    assert_eq!(
+        window.basis(),
+        InterestingScheduleWindowBasis::LatestCampaignBranch
+    );
+    assert_eq!(first, second);
+    assert_eq!(first.config(), config);
+    assert_eq!(first.minimized.artifact.schedule(), &expected_minimized);
+    assert!(first.attempts.iter().all(|attempt| {
+        attempt
+            .removed_indices
+            .iter()
+            .all(|index| *index >= window.start() && *index < window.end())
+    }));
+
+    Ok(())
+}
+
+#[test]
+fn automatic_minimization_uses_the_bounded_terminal_suffix_without_a_campaign_branch()
+-> Result<(), Box<dyn Error>> {
+    let scenario = scenario_form()?;
+    let schedule = Schedule::from_decisions(
+        (0..MAX_AUTOMATIC_INTERESTING_WINDOW_DECISIONS + 9)
+            .map(|index| override_decision(&format!("terminal-suffix-{index:03}"), "removable")),
+    );
+    let target = finding_fingerprint("automatic-terminal-suffix");
+    let original = finding_artifact(&scenario, schedule.clone(), target)?;
+    let config =
+        MinimizationConfig::automatic_interesting_suffix(Seed::from_u64(0x5157), &schedule);
+    let window = config
+        .interesting_window()
+        .expect("automatic minimization selects a window");
+    let immutable_prefix = schedule.decisions()[..window.start()].to_vec();
+
+    let run = original.minimize(config, |candidate| {
+        let decisions = candidate.artifact.schedule().decisions();
+        Ok((decisions.starts_with(&immutable_prefix)).then_some(target))
+    })?;
+
+    assert_eq!(
+        window.start(),
+        schedule.len() - MAX_AUTOMATIC_INTERESTING_WINDOW_DECISIONS
+    );
+    assert_eq!(
+        window.basis(),
+        InterestingScheduleWindowBasis::TerminalSuffix
+    );
+    assert_eq!(
+        run.minimized.artifact.schedule().decisions(),
+        immutable_prefix
+    );
+    assert!(run.attempts.iter().all(|attempt| {
+        attempt
+            .removed_indices
+            .iter()
+            .all(|index| *index >= window.start())
     }));
 
     Ok(())

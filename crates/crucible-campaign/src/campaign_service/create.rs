@@ -297,20 +297,24 @@ mod tests {
         )
         .expect("widening");
         let policy = CampaignPolicy::new(
-            scenario,
-            CampaignSeed::from_bytes([7; 32]),
-            CampaignMode::Strict,
-            ExplorerPolicy::TreeSearch {
-                widening: Some(widening),
-                puct: PuctPolicy::new(1_000_000, 1, 0),
-            },
-            BTreeMap::new(),
-            BTreeMap::new(),
-            BTreeMap::new(),
-            BTreeSet::new(),
-            FairnessPolicy::new(0, 0).expect("fairness"),
-            RetentionPolicy::new(true, 1, true, true),
-            true,
+            CampaignPolicy::identity(
+                scenario,
+                CampaignSeed::from_bytes([7; 32]),
+                CampaignMode::Strict,
+                ExplorerPolicy::TreeSearch {
+                    widening: Some(widening),
+                    puct: PuctPolicy::new(1_000_000, 1, 0),
+                },
+            ),
+            CampaignPolicy::rules(
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeSet::new(),
+                FairnessPolicy::new(0, 0).expect("fairness"),
+                RetentionPolicy::new(true, 1, true, true),
+                true,
+            ),
         )
         .expect("policy");
         CreateCampaignRequest::new(
@@ -334,7 +338,7 @@ mod tests {
             &request,
             CampaignSnapshotId::from_content_id(ContentId::for_bytes(
                 ObjectKind::CampaignSnapshot,
-                2,
+                3,
                 b"genesis-snapshot",
             ))
             .expect("snapshot"),
@@ -364,7 +368,7 @@ mod tests {
             ],
             [
                 String::from("0c2444cb54ddd52b1035f7971223fceee611392d8085825076abd10a0b5f35d2"),
-                String::from("2da35bec9e5dfbf8757a373ca586ba799a3a0dddb55732de9b553d404d2ae404"),
+                String::from("7b8eea64edeb7faf80e8ca6da44db6abaac64873eace4eb168ff43eb1e106b34"),
             ]
         );
     }
@@ -376,13 +380,13 @@ mod tests {
             CampaignServiceFailure::Stale {
                 expected: CampaignSnapshotId::from_content_id(ContentId::for_bytes(
                     ObjectKind::CampaignSnapshot,
-                    2,
+                    3,
                     b"expected",
                 ))
                 .expect("expected snapshot"),
                 current: CampaignSnapshotId::from_content_id(ContentId::for_bytes(
                     ObjectKind::CampaignSnapshot,
-                    2,
+                    3,
                     b"current",
                 ))
                 .expect("current snapshot"),

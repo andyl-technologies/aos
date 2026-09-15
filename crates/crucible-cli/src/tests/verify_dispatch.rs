@@ -21,6 +21,40 @@ impl LiveQemuProbeRunner for FakeLiveQemuProbeRunner {
 }
 
 #[test]
+fn total_verify_mismatch_classification_covers_equal_and_divergent_witnesses() {
+    assert_eq!(verify_mismatch_kind(false, false), None);
+    assert_eq!(
+        verify_mismatch_kind(true, false),
+        Some(VerifyMismatchKind::CanonicalLog)
+    );
+    assert_eq!(
+        verify_mismatch_kind(false, true),
+        Some(VerifyMismatchKind::FingerprintStream)
+    );
+    assert_eq!(
+        verify_mismatch_kind(true, true),
+        Some(VerifyMismatchKind::CanonicalLogAndFingerprintStream)
+    );
+}
+
+#[test]
+fn total_triage_member_selection_rejects_disabled_or_empty_selection() {
+    let members = [1_u8, 2];
+    assert_eq!(
+        selected_triage_members(TriageMinimizeArg::Representative, &members)
+            .unwrap_or_else(|error| panic!("representative selection should succeed: {error}")),
+        &[1]
+    );
+    assert_eq!(
+        selected_triage_members(TriageMinimizeArg::All, &members)
+            .unwrap_or_else(|error| panic!("all-member selection should succeed: {error}")),
+        &members
+    );
+    assert!(selected_triage_members(TriageMinimizeArg::None, &members).is_err());
+    assert!(selected_triage_members(TriageMinimizeArg::Representative, &[] as &[u8]).is_err());
+}
+
+#[test]
 pub(super) fn cli_verify_workflow_localizes_divergence_and_writes_side_artifacts()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
@@ -205,6 +239,7 @@ pub(super) fn cli_verify_workflow_remote_divergence_skips_side_artifacts_without
             fingerprint_stream: verify_fingerprint_stream_bytes(&left_samples),
             fingerprint_samples: left_samples,
             live_event_evidence: VerifyLiveEventEvidence::default(),
+            host_scheduler_preemption: None,
             state_dump: String::from("left-state"),
             artifact: None,
         },
@@ -215,6 +250,7 @@ pub(super) fn cli_verify_workflow_remote_divergence_skips_side_artifacts_without
             fingerprint_stream: verify_fingerprint_stream_bytes(&right_samples),
             fingerprint_samples: right_samples,
             live_event_evidence: VerifyLiveEventEvidence::default(),
+            host_scheduler_preemption: None,
             state_dump: String::from("right-state"),
             artifact: None,
         },
@@ -328,7 +364,7 @@ pub(super) fn cli_verify_workflow_compares_existing_reproduction_artifacts()
         qemu: PathBuf::from("/test/qemu"),
         plugin: PathBuf::from("/test/plugin"),
         qemu_build_id: content_address_bytes(b"verify-compare-qemu-build"),
-        qemu_patch_series_hash: content_address_bytes(b"verify-compare-qemu-patches"),
+        qemu_atomic_patch_hash: content_address_bytes(b"verify-compare-qemu-atomic-patch"),
         plugin_abi: required_qemu_plugin_abi(),
         shmem_abi_version: crucible::SHMEM_ABI_VERSION.to_string(),
         qemu_source: QemuDiscoverySource::Flag,
@@ -550,6 +586,7 @@ pub(super) fn cli_verify_workflow_retains_every_passing_reduction_artifact()
             fingerprint_samples: fingerprint_samples.clone(),
             fingerprint_stream: verify_fingerprint_stream_bytes(&fingerprint_samples),
             live_event_evidence: event_evidence.clone(),
+            host_scheduler_preemption: None,
             state_dump: String::from("passing-state"),
             artifact: Some(artifact.clone()),
         })
@@ -588,19 +625,21 @@ pub(super) fn cli_verify_workflow_retains_every_passing_reduction_artifact()
     let canonical_digest_before_host_evidence = outcome.canonical_log_digest.clone();
     let artifact_digest_before_host_evidence = outcome.artifact_digest.clone();
     let artifact_bytes_before_host_evidence = outcome.side_reproduction_artifacts.clone();
-    append_verify_bounded_scheduler_preemption_snapshot(
-        &mut outcome,
-        verify_plan
-            .reductions
-            .first()
-            .expect("verify plan should carry a reduction"),
-        crucible_api::BoundedSchedulerPreemptionEvidenceSnapshot {
+    let reduction = verify_plan
+        .reductions
+        .first()
+        .expect("verify plan should carry a reduction");
+    outcome
+        .host_scheduler_preemption
+        .push(HostSchedulerPreemptionEvidence {
+            reduction_index: reduction.index,
+            run_index: reduction.run_index,
+            host_profile: reduction.host_profile.label().to_owned(),
             applied: true,
             pending_quantum_certified: true,
             perturbations: 6,
             requested_stopped_milliseconds: 90,
-        },
-    )?;
+        });
     assert_eq!(outcome.canonical_log, canonical_log_before_host_evidence);
     assert_eq!(
         outcome.canonical_log_digest,
@@ -646,8 +685,7 @@ pub(super) fn cli_verify_workflow_retains_every_passing_reduction_artifact()
 }
 
 #[test]
-pub(super) fn cli_replay_reports_host_preemption_separately_from_guest_identity()
--> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_reports_campaign_owned_guest_identity() -> Result<(), Box<dyn Error>> {
     let expected_event_stream = content_address_bytes(b"canonical guest events");
     let expected_fingerprint_stream = content_address_bytes(b"canonical guest fingerprints");
     let report = ReplayArtifactReport {
@@ -657,21 +695,22 @@ pub(super) fn cli_replay_reports_host_preemption_separately_from_guest_identity(
         scenario_digest: content_address_bytes(b"scenario"),
         reduction: None,
         live_qemu: Some(ReplayLiveQemuProof {
-            execution_owner: "session",
-            producer: String::from("run"),
+            execution_owner: RunExecutionOwner::Campaign,
+            producer: String::from("campaign-run"),
             terminal_status: String::from("passed"),
             terminal_outcome: String::from("quiescence"),
             terminal_configuration: content_address_bytes(b"terminal configuration"),
             event_stream_digest: expected_event_stream.clone(),
             fingerprint_stream_digest: expected_fingerprint_stream.clone(),
             controls: 3,
-            host_scheduler_preemption: Some(ReplayHostSchedulerPreemptionProof {
-                profile: "bounded-scheduler-preemption",
-                applied: true,
-                pending_quantum_certified: true,
-                perturbations: 6,
-                requested_stopped_milliseconds: 90,
-            }),
+            host_scheduler_preemption: Some(
+                crucible_api::BoundedSchedulerPreemptionEvidenceSnapshot {
+                    applied: true,
+                    pending_quantum_certified: true,
+                    perturbations: 6,
+                    requested_stopped_milliseconds: 90,
+                },
+            ),
         }),
         to_savepoint: None,
         check: None,
@@ -691,19 +730,25 @@ pub(super) fn cli_replay_reports_host_preemption_separately_from_guest_identity(
         live.summary
             .contains(&format!("fingerprint_stream={expected_fingerprint_stream}"))
     );
-    let host = entries
+    assert!(live.summary.contains("owner=campaign"));
+    let preemption = entries
         .iter()
         .find(|entry| entry.kind == "bounded_scheduler_preemption")
-        .expect("machine replay output should include host preemption evidence");
-    assert_eq!(host.node, "host");
-    assert!(host.summary.contains("applied=true"));
-    assert!(host.summary.contains("pending_quantum_certified=true"));
+        .expect("machine replay output should retain host preemption evidence");
+    assert_eq!(preemption.node, "host");
+    assert!(preemption.summary.contains("applied=true"));
+    assert!(
+        preemption
+            .summary
+            .contains("pending_quantum_certified=true")
+    );
+    assert!(preemption.summary.contains("perturbations=6"));
 
     let mut human = Vec::new();
     write_replay_report_human(&mut human, &report)?;
     let human = String::from_utf8(human)?;
-    assert!(human.contains("replay host-preemption"));
-    assert!(human.contains("requested_stopped_ms=90"));
+    assert!(human.contains("owner=campaign producer=campaign-run"));
+    assert!(human.contains("bounded-scheduler-preemption applied=true"));
 
     Ok(())
 }
@@ -767,57 +812,6 @@ pub(super) fn cli_verify_live_event_evidence_decodes_production_event_frames()
         evidence.assertion_transitions,
         ["request-succeeded:Satisfied"]
     );
-    Ok(())
-}
-
-#[test]
-pub(super) fn cli_verify_workflow_routes_local_qemu_into_production_factory()
--> Result<(), Box<dyn Error>> {
-    let temp = TempDir::new()?;
-    let scenario = write_valid_run_scenario(&temp)?;
-    let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
-    let cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--backend"),
-        String::from("qemu"),
-        String::from("--qemu"),
-        qemu,
-        String::from("--plugin"),
-        plugin,
-        String::from("verify"),
-        scenario.display().to_string(),
-        String::from("--runs"),
-        String::from("2"),
-    ]);
-    let Commands::Verify(args) = &cli.command else {
-        panic!("expected verify command");
-    };
-    let verify_plan = plan_verify_invocation(args, temp.path())?;
-    let backend_plan =
-        plan_backend_selection(&cli)?.expect("qemu verify should require backend selection");
-
-    let error = execute_backend_routed_command(
-        &plan_cli_invocation(&cli),
-        &backend_plan,
-        None,
-        None,
-        Some(&verify_plan),
-        None,
-        &mut NullBackendCommandRunner,
-    )
-    .expect_err("fixture QEMU artifacts must fail production backend construction");
-    assert!(matches!(error, CliError::Backend(_)));
-    let message = error.to_string();
-    assert!(
-        message.contains("execution backend construction failed")
-            || message.contains("production QEMU")
-            || message.contains("live local QEMU execution requires")
-            || message.contains("root overlay")
-            || message.contains("qemu-img"),
-        "unexpected production QEMU factory error: {message}"
-    );
-    assert!(!message.contains("double fallback"));
-
     Ok(())
 }
 
@@ -1130,40 +1124,6 @@ pub(super) fn cli_determinism_ergonomics_resolves_seed_by_flag_env_or_generated(
     );
     assert!(generated_plan.proves_t_cli_4());
 
-    let inherited_fork = Cli::parse_from(["crucible", "fork", "source.crucible-savepoint"]);
-    assert_eq!(
-        seed_resolution_mode(&inherited_fork.command),
-        SeedResolutionMode::ArtifactOrSavepointOwned
-    );
-    let draws_before_fork = entropy.draws;
-    assert!(
-        plan_determinism_ergonomics(
-            &inherited_fork,
-            &FakeSeedEnvironment {
-                seed: Some(String::from("123")),
-            },
-            &mut entropy,
-        )?
-        .is_none()
-    );
-    assert_eq!(entropy.draws, draws_before_fork);
-
-    let reseeded_fork = Cli::parse_from([
-        "crucible",
-        "--seed",
-        "123",
-        "fork",
-        "source.crucible-savepoint",
-    ]);
-    let reseeded_fork_plan = plan_determinism_ergonomics(
-        &reseeded_fork,
-        &FakeSeedEnvironment::default(),
-        &mut entropy,
-    )?
-    .expect("explicitly reseeded fork should resolve its seed");
-    assert_eq!(reseeded_fork_plan.seed.value, 123);
-    assert_eq!(reseeded_fork_plan.seed.source, SeedSource::Flag);
-
     let mut recorder = RecordingDeterminismErgonomicsRecorder::default();
     execute_determinism_ergonomics_plan(&generated_plan, &mut recorder)?;
     assert_eq!(recorder.seeds, vec![generated_plan.seed.clone()]);
@@ -1416,7 +1376,6 @@ pub(super) fn cli_determinism_ergonomics_failure_artifact_carries_resolved_seed_
     assert_eq!(report.footer.artifact_path, report.path);
     assert!(report.footer.self_contained_artifact);
     assert!(report.footer.replay_command.starts_with("crucible replay "));
-    assert!(report.footer.debug_command.ends_with(" --at-failure"));
     replay_reproduction_artifact(
         &cli,
         &ReplayArgs {
@@ -1424,6 +1383,7 @@ pub(super) fn cli_determinism_ergonomics_failure_artifact_carries_resolved_seed_
             to: None,
             check: None,
             bisect: None,
+            bounded_scheduler_preemption: false,
         },
     )?;
 
@@ -1481,9 +1441,7 @@ pub(super) fn cli_determinism_ergonomics_emits_trace_and_failure_artifact_from_o
     assert_eq!(artifact.seed, 0x55);
     let footer = reproduction_footer(artifact_path);
     assert!(footer.replay_command.contains('\''));
-    assert!(footer.debug_command.contains('\''));
     assert!(footer.replay_command.starts_with("crucible replay "));
-    assert!(footer.debug_command.ends_with(" --at-failure"));
     assert_eq!(
         CliError::Outcome(BackendCommandStatus::Failed).exit_code(),
         1
@@ -1645,10 +1603,7 @@ pub(super) fn cli_triage_surface_parses_full_t_tri_7_flags_and_pipeline()
     let findings = temp.path().join("findings");
     let store = temp.path().join("store");
     let reports = temp.path().join("triage-reports");
-    fs::write(
-        &findings,
-        crucible::FailureFindingsLedger::from_artifacts([]).artifact_bytes(),
-    )?;
+    fs::write(&findings, reproduction_findings_ledger_bytes(&[])?)?;
     let baseline_cli = Cli::parse_from([
         "crucible",
         "--store",
@@ -1694,7 +1649,7 @@ pub(super) fn cli_triage_surface_parses_full_t_tri_7_flags_and_pipeline()
     assert!(stored_report.stored_ledger.cache_hit);
 
     let signed_findings = temp.path().join("signed-findings");
-    let (signed_ledger, finding) = write_signed_triage_findings_ledger(
+    let (signed_ledger, finding) = write_current_triage_findings_ledger(
         &signed_findings,
         &store,
         "engine-owned.findings-ledger",
@@ -1823,14 +1778,14 @@ pub(super) fn cli_triage_surface_parses_full_t_tri_7_flags_and_pipeline()
 }
 
 #[test]
-pub(super) fn signed_findings_v3_round_trips_timeout_evidence_and_skips_minimization()
+pub(super) fn reproduction_findings_round_trips_timeout_evidence_and_skips_minimization()
 -> Result<(), Box<dyn Error>> {
     let temp = tempfile::tempdir()?;
     let store_root = temp.path().join("store");
     let artifact_dir = temp.path().join("artifacts");
     let form = search_frontier_scenario_form()?;
     let configuration = crucible::Configuration::genesis(form.scenario_def());
-    let fingerprint = crucible::ContentHash::from_bytes(b"timeout-v3-finding");
+    let fingerprint = crucible::ContentHash::from_bytes(b"timeout-reproduction-finding");
     let finding = crucible::FindingReproductionArtifact::capture(
         crucible::FindingDiscoveryPath::CoverageGuidedFuzzing,
         fingerprint,
@@ -1839,12 +1794,34 @@ pub(super) fn signed_findings_v3_round_trips_timeout_evidence_and_skips_minimiza
     )?;
     let store = crucible::LocalDagStore::new(store_root.clone());
     assert_eq!(finding.store_artifact(&store)?, finding.artifact.id());
-    let timeout = crucible_model::FailureTimeoutRecord::new(
+    let missing_icount_timeout = crucible_model::FailureTimeoutRecord::new(
         crucible_model::FailureTimeoutBudgetKind::ExecutionQuanta,
         Some(64),
         64,
         crucible::VirtualTime { ticks: 9 },
         None,
+        None,
+        finding.artifact.id(),
+    );
+    let missing_icount_error = triage_timeout_evidence(
+        finding.clone(),
+        missing_icount_timeout,
+        crucible::ContentHash::from_bytes(b"timeout-missing-icount"),
+        Vec::new(),
+    )
+    .expect_err("exact timeout evidence must reject a missing instruction count");
+    assert!(
+        missing_icount_error
+            .to_string()
+            .contains("retired instruction count")
+    );
+
+    let timeout = crucible_model::FailureTimeoutRecord::new(
+        crucible_model::FailureTimeoutBudgetKind::ExecutionQuanta,
+        Some(64),
+        64,
+        crucible::VirtualTime { ticks: 9 },
+        Some(crucible::Icount { retired: 9 }),
         None,
         finding.artifact.id(),
     );
@@ -1872,7 +1849,7 @@ pub(super) fn signed_findings_v3_round_trips_timeout_evidence_and_skips_minimiza
     let evidence = triage_timeout_evidence(
         finding,
         timeout,
-        crucible::ContentHash::from_bytes(b"timeout-v3-coverage"),
+        crucible::ContentHash::from_bytes(b"timeout-reproduction-coverage"),
         vec![retained_frame.clone()],
     )?;
     let second_form = crucible::ScenarioDefForm::from_components(
@@ -1884,7 +1861,7 @@ pub(super) fn signed_findings_v3_round_trips_timeout_evidence_and_skips_minimiza
     let second_configuration = crucible::Configuration::genesis(second_form.scenario_def());
     let second_finding = crucible::FindingReproductionArtifact::capture(
         crucible::FindingDiscoveryPath::StateSpaceSearch,
-        crucible::ContentHash::from_bytes(b"second-timeout-v3-finding"),
+        crucible::ContentHash::from_bytes(b"second-timeout-reproduction-finding"),
         &second_form,
         &second_configuration,
     )?;
@@ -1893,29 +1870,43 @@ pub(super) fn signed_findings_v3_round_trips_timeout_evidence_and_skips_minimiza
         Some(9),
         12,
         crucible::VirtualTime { ticks: 9 },
-        None,
+        Some(crucible::Icount { retired: 9 }),
         None,
         second_finding.artifact.id(),
     );
     let second_evidence = triage_timeout_evidence(
         second_finding,
         second_timeout,
-        crucible::ContentHash::from_bytes(b"second-timeout-v3-coverage"),
+        crucible::ContentHash::from_bytes(b"second-timeout-reproduction-coverage"),
         Vec::new(),
     )?;
     assert_eq!(
-        failure_findings_ledger_v3_bytes(&[evidence.clone(), second_evidence.clone()])?,
-        failure_findings_ledger_v3_bytes(&[second_evidence, evidence.clone()])?,
-        "v3 ledgers must canonicalize finding-set order"
+        reproduction_findings_ledger_bytes(&[evidence.clone(), second_evidence.clone()])?,
+        reproduction_findings_ledger_bytes(&[second_evidence, evidence.clone()])?,
+        "reproduction ledgers must canonicalize finding-set order"
     );
     assert_eq!(
-        failure_findings_ledger_v3_bytes(&[evidence.clone(), evidence.clone()])?,
-        failure_findings_ledger_v3_bytes(std::slice::from_ref(&evidence))?,
-        "v3 ledgers must deduplicate identical artifact evidence"
+        reproduction_findings_ledger_bytes(&[evidence.clone(), evidence.clone()])?,
+        reproduction_findings_ledger_bytes(std::slice::from_ref(&evidence))?,
+        "reproduction ledgers must deduplicate identical artifact evidence"
     );
     let (ledger_path, _, ledger_bytes) =
-        write_failure_findings_ledger_v3(&artifact_dir, None, std::slice::from_ref(&evidence))?;
+        write_reproduction_findings_ledger(&artifact_dir, None, std::slice::from_ref(&evidence))?;
     let ledger_text = String::from_utf8(ledger_bytes)?;
+    let retired_v3 = ledger_text.replacen(
+        FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA,
+        "crucible.failure-triage.findings-ledger.v3",
+        1,
+    );
+    assert!(
+        parse_failure_findings_ledger_bytes(&store, retired_v3.as_bytes()).is_err(),
+        "the retired V3 findings-ledger schema must fail closed"
+    );
+    let legacy_untyped_v4 = ledger_text.replacen("ledger_kind=reproduction\n", "", 1);
+    assert!(
+        parse_failure_findings_ledger_bytes(&store, legacy_untyped_v4.as_bytes()).is_err(),
+        "V4 ledgers must declare their evidence kind"
+    );
     let frame_hex = ledger_hex(&retained_frame);
     let mut changed_frame_hex = frame_hex.clone();
     changed_frame_hex.replace_range(
@@ -1930,8 +1921,8 @@ pub(super) fn signed_findings_v3_round_trips_timeout_evidence_and_skips_minimiza
     assert!(parse_failure_findings_ledger_bytes(&store, changed_frame.as_bytes()).is_err());
 
     let changed_coverage = ledger_text.replacen(
-        &crucible::ContentHash::from_bytes(b"timeout-v3-coverage").to_hex(),
-        &crucible::ContentHash::from_bytes(b"tampered-timeout-v3-coverage").to_hex(),
+        &crucible::ContentHash::from_bytes(b"timeout-reproduction-coverage").to_hex(),
+        &crucible::ContentHash::from_bytes(b"tampered-timeout-reproduction-coverage").to_hex(),
         1,
     );
     assert!(parse_failure_findings_ledger_bytes(&store, changed_coverage.as_bytes()).is_err());
@@ -1981,649 +1972,11 @@ pub(super) fn signed_findings_v3_round_trips_timeout_evidence_and_skips_minimiza
     Ok(())
 }
 
-struct AllowCampaignFindingExport;
-
-impl crucible_campaign::CampaignPrincipalAuthorizer for AllowCampaignFindingExport {
-    fn authorize(
-        &self,
-        _principal: &crucible_campaign::CampaignPrincipal,
-        _operation: crucible_campaign::CampaignServiceOperation,
-        _campaign: &crucible_campaign::CampaignName,
-        _request_digest: crucible_campaign::CampaignHash,
-    ) -> Result<(), crucible_campaign::CampaignAuthorizationError> {
-        Ok(())
-    }
-}
-
 #[test]
-pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_and_tampering()
--> Result<(), Box<dyn Error>> {
-    use std::collections::{BTreeMap, BTreeSet};
-    use std::sync::Arc;
-
-    use crucible_campaign::{
-        BudgetGrant, CampaignClient, CampaignCommandId, CampaignControlAction, CampaignHash,
-        CampaignLineage, CampaignMode, CampaignName, CampaignPolicy, CampaignPrincipal,
-        CampaignRepository, CampaignSeed, ConfigurationId, ControlRequest, CoverageProjection,
-        ExplorerPolicy, FairnessPolicy, FindingCandidateBundle, FindingExactPins, FindingKind,
-        FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
-        FindingSignatureMinimizationEvidence, FindingTarget, FindingTriageEvidenceSet,
-        FindingTriageReplayEvidence, MeasurementSet, Observation, PropertyEvidence,
-        PropertyVerdict, PropertyVerdictSet, RepositoryCampaignService, RetentionPolicy,
-        ScenarioDefId, StopOutcome,
-    };
-    use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
-
-    const CAMPAIGN: &str = "cli-v4-finding-export";
-    const PROPERTY: &str = "cli-v4-property";
-
-    let form = search_frontier_scenario_form()?;
-    let configuration = crucible::Configuration {
-        def: form.scenario_def(),
-        schedule: crucible::Schedule::from_decisions(search_frontier_decisions()),
-    };
-    let minimized_configuration = crucible::Configuration::genesis(form.scenario_def());
-    let fingerprint = crucible::ContentHash::from_bytes(b"cli-v4-finding-fingerprint");
-    let model_finding = crucible::FindingReproductionArtifact::capture(
-        crucible::FindingDiscoveryPath::StateSpaceSearch,
-        fingerprint,
-        &form,
-        &configuration,
-    )?;
-    let minimized_model_finding = crucible::FindingReproductionArtifact::capture(
-        crucible::FindingDiscoveryPath::StateSpaceSearch,
-        fingerprint,
-        &form,
-        &minimized_configuration,
-    )?;
-    let report = triage_property_evidence_for_violation(
-        model_finding.clone(),
-        crucible_model::HostAssertionViolation {
-            assertion: crucible::AssertionId::from_name(PROPERTY),
-            message: String::from("CLI V4 property violated"),
-            quantifier: crucible::AssertionQuantifierKind::Always,
-            event_kind: String::from("assertion_state_changed"),
-            at_icount: Some(crucible::Icount { retired: 7 }),
-            at_virtual_time: crucible::VirtualTime { ticks: 7 },
-            node: None,
-            detail: String::from("retained campaign finding"),
-            reproduction_artifact: model_finding.artifact.id(),
-        },
-    )?;
-
-    let repository = CampaignRepository::new(
-        Arc::new(MemoryBlobBackend::new("cli-v4-finding-export", u64::MAX)),
-        Arc::new(MemoryRefBackend::new()),
-    );
-    let scenario =
-        ScenarioDefId::from_hash(CampaignHash::from_bytes(form.scenario_def().id().bytes));
-    let scenario_artifact =
-        repository.publish_scenario_artifact(scenario, 1, form.to_compact_binary())?;
-    let genesis = ConfigurationId::from_hash(CampaignHash::derive(
-        "cli-v4-test-configuration",
-        b"genesis",
-    ));
-    let genesis_artifact = repository.publish_configuration_artifact(
-        scenario,
-        scenario_artifact,
-        genesis,
-        1,
-        b"cli v4 genesis".to_vec(),
-    )?;
-    let lineage = CampaignLineage::new(
-        scenario,
-        scenario_artifact,
-        genesis,
-        genesis_artifact,
-        "cli-v4-engine",
-        "cli-v4-qemu",
-        BTreeMap::from([(String::from("control"), 1)]),
-        1,
-        1,
-    )?;
-    let policy = CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([0x47; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::Exhaustive {
-            maximum_cardinality: 1,
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0)?,
-        RetentionPolicy::new(true, 1, true, true),
-        true,
-    )?;
-    let created = repository.create(CAMPAIGN, &lineage, &policy, &BTreeMap::new())?;
-    let resumed = repository.apply_control(
-        CAMPAIGN,
-        &ControlRequest {
-            command: CampaignCommandId::from_hash(CampaignHash::derive(
-                "cli-v4-test-command",
-                b"resume",
-            )),
-            expected_snapshot: created.snapshot_id(),
-            action: CampaignControlAction::Resume,
-        },
-    )?;
-    let _funded = repository.apply_control(
-        CAMPAIGN,
-        &ControlRequest {
-            command: CampaignCommandId::from_hash(CampaignHash::derive(
-                "cli-v4-test-command",
-                b"fund",
-            )),
-            expected_snapshot: resumed.new_snapshot,
-            action: CampaignControlAction::GrantBudget(BudgetGrant::new(0, 1)?),
-        },
-    )?;
-    let attempt = repository
-        .admit_initial_discovery_if_ready(CAMPAIGN)?
-        .ok_or_else(|| std::io::Error::other("missing admitted discovery"))?;
-    let attempt_record = repository.load_attempt(attempt)?;
-    let child = ConfigurationId::from_hash(CampaignHash::from_bytes(configuration.id().bytes));
-    let child_artifact = repository.publish_configuration_artifact(
-        scenario,
-        scenario_artifact,
-        child,
-        1,
-        b"cli v4 child".to_vec(),
-    )?;
-    let minimized_child =
-        ConfigurationId::from_hash(CampaignHash::from_bytes(minimized_configuration.id().bytes));
-    let minimized_child_artifact = repository.publish_configuration_artifact(
-        scenario,
-        scenario_artifact,
-        minimized_child,
-        1,
-        b"cli v4 minimized child".to_vec(),
-    )?;
-    let measurements =
-        repository.publish_measurement_set(&MeasurementSet::new(BTreeMap::new())?)?;
-    let properties =
-        repository.publish_property_verdict_set(&PropertyVerdictSet::new(BTreeMap::from([(
-            String::from(PROPERTY),
-            PropertyEvidence::new(PropertyVerdict::Failed, BTreeSet::new())?,
-        )]))?)?;
-    let coverage = repository
-        .publish_coverage_projection(&CoverageProjection::new(BTreeSet::new(), BTreeSet::new())?)?;
-    let observation = Observation::new(
-        attempt,
-        child,
-        child_artifact,
-        attempt_record.path(),
-        StopOutcome::AssertionFailure(String::from(PROPERTY)),
-        measurements,
-        properties,
-        coverage,
-        BTreeSet::new(),
-    )?;
-    let observation_snapshot = repository.head(CAMPAIGN)?.snapshot_id();
-    let observed = repository.publish_observation(CAMPAIGN, observation_snapshot, &observation)?;
-    let campaign_fingerprint = CampaignHash::from_bytes(fingerprint.bytes);
-    let reproduction_payload = model_finding.artifact.to_compact_binary();
-    let original = repository.publish_reproduction_artifact(
-        scenario,
-        scenario_artifact,
-        child,
-        child_artifact,
-        campaign_fingerprint,
-        1,
-        reproduction_payload.clone(),
-    )?;
-    let replayed_state = CampaignHash::from_bytes(minimized_model_finding.replay.state.bytes);
-    let minimization = FindingMinimizationEvidence::new(
-        original,
-        1,
-        b"cli v4 deterministic minimizer".to_vec(),
-        vec![FindingMinimizationAttempt::new(
-            0,
-            CampaignHash::from_bytes(minimized_model_finding.artifact.id().bytes),
-            CampaignHash::from_bytes(
-                minimized_model_finding
-                    .artifact
-                    .schedule()
-                    .content_hash()
-                    .bytes,
-            ),
-            replayed_state,
-            Some(campaign_fingerprint),
-            true,
-        )],
-        replayed_state,
-    )?;
-    let minimized = repository.publish_minimized_reproduction_artifact(
-        scenario,
-        scenario_artifact,
-        minimized_child,
-        minimized_child_artifact,
-        campaign_fingerprint,
-        1,
-        minimized_model_finding.artifact.to_compact_binary(),
-        minimization.clone(),
-    )?;
-    let signature = FindingSignature::new(
-        FindingKind::PropertyViolation,
-        campaign_fingerprint,
-        Some(String::from(PROPERTY)),
-        String::from("cli.v4-property-violation"),
-        Some(FindingTarget::Configuration(child_artifact)),
-        BTreeSet::from([properties.content_id()]),
-    )?;
-    let minimized_signature = FindingSignature::new(
-        FindingKind::PropertyViolation,
-        campaign_fingerprint,
-        Some(String::from(PROPERTY)),
-        String::from("cli.v4-property-violation"),
-        Some(FindingTarget::Configuration(minimized_child_artifact)),
-        BTreeSet::from([properties.content_id()]),
-    )?;
-    let replay_pass = vec![Some(signature.clone()), Some(minimized_signature.clone())];
-    let signature_minimization = FindingSignatureMinimizationEvidence::new(
-        &signature,
-        &minimization,
-        replay_pass.clone(),
-        replay_pass,
-    )?;
-    let native_replay = crucible::FailureTriageReplayEvidence::new(
-        report.finding.clone(),
-        report.failure.clone(),
-        report.causal_entries.clone(),
-        report.recorded_event_log.coverage_fingerprint(),
-        report.recorded_event_frames.clone(),
-    )?;
-    let minimized_report = triage_evidence_for_finding(minimized_model_finding.clone(), &report)?;
-    let minimized_native_replay = crucible::FailureTriageReplayEvidence::new(
-        minimized_report.finding.clone(),
-        minimized_report.failure.clone(),
-        minimized_report.causal_entries.clone(),
-        minimized_report.recorded_event_log.coverage_fingerprint(),
-        minimized_report.recorded_event_frames.clone(),
-    )?;
-    let mut verification_failure = minimized_report.failure.clone();
-    let crucible::FailureClusterReportFailure::Property(verification_property) =
-        &mut verification_failure
-    else {
-        return Err(std::io::Error::other("expected property replay evidence").into());
-    };
-    verification_property
-        .violation
-        .message
-        .push_str(" during independent verification");
-    let verification_selected_native_replay = crucible::FailureTriageReplayEvidence::new(
-        minimized_report.finding.clone(),
-        verification_failure,
-        minimized_report.causal_entries.clone(),
-        minimized_report.recorded_event_log.coverage_fingerprint(),
-        minimized_report.recorded_event_frames.clone(),
-    )?;
-    assert_eq!(
-        minimized_native_replay.signature(),
-        verification_selected_native_replay.signature()
-    );
-    assert_ne!(
-        minimized_native_replay.to_compact_binary()?,
-        verification_selected_native_replay.to_compact_binary()?
-    );
-
-    let publish_triage_replay = |reproduction,
-                                 observed_signature: &FindingSignature,
-                                 payload: Vec<u8>|
-     -> Result<_, Box<dyn Error>> {
-        let evidence = FindingTriageReplayEvidence::new(
-            reproduction,
-            observed_signature.clone(),
-            crucible::FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION,
-            payload,
-        )?;
-        Ok(repository.publish_finding_triage_replay_evidence(&evidence)?)
-    };
-    let triage_evidence = FindingTriageEvidenceSet::new(
-        publish_triage_replay(original, &signature, native_replay.to_compact_binary()?)?,
-        publish_triage_replay(
-            minimized,
-            &minimized_signature,
-            minimized_native_replay.to_compact_binary()?,
-        )?,
-        publish_triage_replay(original, &signature, native_replay.to_compact_binary()?)?,
-        publish_triage_replay(
-            minimized,
-            &minimized_signature,
-            verification_selected_native_replay.to_compact_binary()?,
-        )?,
-    );
-    let bundle = FindingCandidateBundle::new_with_triage_evidence(
-        observed.observation,
-        signature.clone(),
-        original,
-        minimized,
-        signature_minimization.clone(),
-        FindingExactPins::default(),
-        triage_evidence,
-    )?;
-    let bundle = repository.publish_finding_candidate_bundle(&bundle)?;
-    let published =
-        repository.incorporate_finding_candidate_bundle(CAMPAIGN, observed.new_snapshot, bundle)?;
-    let client = CampaignClient::new(RepositoryCampaignService::new(
-        &repository,
-        AllowCampaignFindingExport,
-    ));
-    let evidence = crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding(
-        &client,
-        CampaignPrincipal::new("operator:cli-v4")?,
-        CampaignName::new(CAMPAIGN)?,
-        published.new_snapshot,
-        published.finding,
-        report,
-    )?;
-
-    let artifact_dir = tempfile::tempdir()?;
-    let (_, _, bytes) =
-        crate::cli_triage_debug::campaign_evidence::write_failure_findings_ledger_v4(
-            artifact_dir.path(),
-            None,
-            std::slice::from_ref(&evidence),
-        )?;
-    let store_temp = tempfile::tempdir()?;
-    let store = crucible::LocalDagStore::new(store_temp.path().join("store"));
-    let loaded = parse_failure_findings_ledger_bytes(&store, &bytes)?;
-    assert_eq!(loaded.campaign_evidence, vec![evidence.clone()]);
-    assert_eq!(loaded.ledger.signed_findings().len(), 1);
-    assert_eq!(
-        loaded.ledger.signed_findings()[0].signature,
-        native_replay.signature().clone()
-    );
-    assert!(
-        loaded.campaign_evidence[0].occurrence_proofs[0]
-            .triage_evidence
-            .is_some()
-    );
-    let policy = crucible::SignaturePolicy::exact();
-    let clustering = crucible::FailureClusteringResult::from_findings(
-        policy,
-        loaded.ledger.signed_findings().iter().cloned(),
-    )?;
-    let triage_plan = TriageInvocationPlan {
-        findings: TriageFindingsSource::Path(artifact_dir.path().join("unused")),
-        policy,
-        minimize: TriageMinimizeArg::All,
-        report_dir: artifact_dir.path().join("reports"),
-        format: crucible::FailureClusterReportFormat::JsonLines,
-        recompute_signatures: true,
-        compare: None,
-        store_root: store_temp.path().join("triage-store"),
-        pipeline: vec![
-            TriagePipelineStep::LoadFindingsLedger,
-            TriagePipelineStep::RecomputeSignatureSelfCheck,
-            TriagePipelineStep::Cluster,
-            TriagePipelineStep::MinimizeAll,
-            TriagePipelineStep::EmitReports,
-            TriagePipelineStep::StoreTriageResult,
-        ],
-        failure_exit_code: 1,
-        thin_driver: true,
-        owns_run_state: false,
-        offline: true,
-        scheduler_started: false,
-    };
-    let minimization = build_triage_minimization(&triage_plan, &clustering, &loaded)?;
-    assert_eq!(minimization.runs.len(), 1);
-    assert!(minimization.runs[0].preserves_signature());
-    assert_eq!(
-        minimization.runs[0].representative_artifact,
-        model_finding.artifact.id()
-    );
-    assert_eq!(
-        minimization.runs[0].minimized_artifact(),
-        minimized_model_finding.artifact.id()
-    );
-    let report_set = build_triage_report_set(policy, &clustering, &minimization, &loaded)?;
-    assert_eq!(report_set.reports.len(), 1);
-    assert_eq!(
-        report_set.reports[0].minimal_representative,
-        minimized_model_finding.artifact.id()
-    );
-    assert_eq!(
-        report_set.reports[0].signature,
-        minimized_native_replay.signature().clone()
-    );
-
-    let other_evidence =
-        crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding(
-            &client,
-            CampaignPrincipal::new("operator:other-cli-v4")?,
-            CampaignName::new(CAMPAIGN)?,
-            published.new_snapshot,
-            published.finding,
-            evidence.report.clone(),
-        )?;
-    let text = String::from_utf8(bytes)?;
-    let response = ledger_hex(
-        &evidence.occurrence_proofs[0]
-            .triage_evidence
-            .as_ref()
-            .ok_or_else(|| std::io::Error::other("missing native triage evidence"))?
-            .verification_selected
-            .response
-            .canonical_bytes(),
-    );
-    let wrong_response = ledger_hex(
-        &other_evidence.occurrence_proofs[0]
-            .triage_evidence
-            .as_ref()
-            .ok_or_else(|| std::io::Error::other("missing native triage evidence"))?
-            .verification_selected
-            .response
-            .canonical_bytes(),
-    );
-    assert_ne!(response, wrong_response);
-    let tampered = text.replacen(&response, &wrong_response, 1);
-    assert!(parse_failure_findings_ledger_bytes(&store, tampered.as_bytes()).is_err());
-
-    let mut alternate_selected_failure = minimized_report.failure.clone();
-    let crucible::FailureClusterReportFailure::Property(alternate_property) =
-        &mut alternate_selected_failure
-    else {
-        return Err(std::io::Error::other("expected property replay evidence").into());
-    };
-    alternate_property
-        .violation
-        .message
-        .push_str(" from a second valid occurrence");
-    let alternate_selected_replay = crucible::FailureTriageReplayEvidence::new(
-        minimized_report.finding.clone(),
-        alternate_selected_failure,
-        minimized_report.causal_entries.clone(),
-        minimized_report.recorded_event_log.coverage_fingerprint(),
-        minimized_report.recorded_event_frames.clone(),
-    )?;
-    assert_eq!(
-        alternate_selected_replay.signature(),
-        minimized_native_replay.signature()
-    );
-    let alternate_selected = publish_triage_replay(
-        minimized,
-        &minimized_signature,
-        alternate_selected_replay.to_compact_binary()?,
-    )?;
-    let duplicate_bundle = FindingCandidateBundle::new_with_triage_evidence(
-        observed.observation,
-        signature.clone(),
-        original,
-        minimized,
-        signature_minimization.clone(),
-        FindingExactPins::default(),
-        FindingTriageEvidenceSet::new(
-            triage_evidence.minimization_original(),
-            triage_evidence.minimization_selected(),
-            triage_evidence.verification_original(),
-            alternate_selected,
-        ),
-    )?;
-    let duplicate_bundle = repository.publish_finding_candidate_bundle(&duplicate_bundle)?;
-    let duplicate_published = repository.incorporate_finding_candidate_bundle(
-        CAMPAIGN,
-        published.new_snapshot,
-        duplicate_bundle,
-    )?;
-    let duplicate_evidence =
-        crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding(
-            &client,
-            CampaignPrincipal::new("operator:cli-v4")?,
-            CampaignName::new(CAMPAIGN)?,
-            duplicate_published.new_snapshot,
-            duplicate_published.finding,
-            evidence.report.clone(),
-        )?;
-    assert_eq!(duplicate_evidence.occurrence_proofs.len(), 2);
-    let (_, _, duplicate_bytes) =
-        crate::cli_triage_debug::campaign_evidence::write_failure_findings_ledger_v4(
-            artifact_dir.path(),
-            None,
-            std::slice::from_ref(&duplicate_evidence),
-        )?;
-    let duplicate_loaded = parse_failure_findings_ledger_bytes(&store, &duplicate_bytes)?;
-    assert_eq!(duplicate_loaded.ledger.signed_findings().len(), 1);
-    assert_eq!(
-        duplicate_loaded.campaign_evidence[0]
-            .occurrence_proofs
-            .len(),
-        2
-    );
-
-    let frame_distinct_replay = crucible::FailureTriageReplayEvidence::new(
-        evidence.report.finding.clone(),
-        evidence.report.failure.clone(),
-        evidence.report.causal_entries.clone(),
-        evidence.report.recorded_event_log.coverage_fingerprint(),
-        vec![b"distinct authenticated event frame".to_vec()],
-    )?;
-    assert_ne!(frame_distinct_replay.signature(), native_replay.signature());
-    let frame_distinct_original = publish_triage_replay(
-        original,
-        &signature,
-        frame_distinct_replay.to_compact_binary()?,
-    )?;
-    let conflicting_bundle = FindingCandidateBundle::new_with_triage_evidence(
-        observed.observation,
-        signature.clone(),
-        original,
-        minimized,
-        signature_minimization.clone(),
-        FindingExactPins::default(),
-        FindingTriageEvidenceSet::new(
-            frame_distinct_original,
-            triage_evidence.minimization_selected(),
-            triage_evidence.verification_original(),
-            triage_evidence.verification_selected(),
-        ),
-    )?;
-    let conflicting_bundle = repository.publish_finding_candidate_bundle(&conflicting_bundle)?;
-    let conflicting_published = repository.incorporate_finding_candidate_bundle(
-        CAMPAIGN,
-        duplicate_published.new_snapshot,
-        conflicting_bundle,
-    )?;
-    let conflicting_evidence =
-        crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding(
-            &client,
-            CampaignPrincipal::new("operator:cli-v4")?,
-            CampaignName::new(CAMPAIGN)?,
-            conflicting_published.new_snapshot,
-            conflicting_published.finding,
-            evidence.report.clone(),
-        )?;
-    let (_, _, conflicting_bytes) =
-        crate::cli_triage_debug::campaign_evidence::write_failure_findings_ledger_v4(
-            artifact_dir.path(),
-            None,
-            std::slice::from_ref(&conflicting_evidence),
-        )?;
-    assert!(matches!(
-        parse_failure_findings_ledger_bytes(&store, &conflicting_bytes),
-        Err(CliError::Artifact(message))
-            if message.contains("conflicting authenticated native signatures")
-    ));
-
-    let foreign_report = triage_property_evidence_for_violation(
-        model_finding.clone(),
-        crucible_model::HostAssertionViolation {
-            assertion: crucible::AssertionId::from_name("cli-v4-foreign-property"),
-            message: String::from("foreign but internally valid native failure"),
-            quantifier: crucible::AssertionQuantifierKind::Always,
-            event_kind: String::from("assertion_state_changed"),
-            at_icount: Some(crucible::Icount { retired: 7 }),
-            at_virtual_time: crucible::VirtualTime { ticks: 7 },
-            node: None,
-            detail: String::from("must not supersede the campaign signature"),
-            reproduction_artifact: model_finding.artifact.id(),
-        },
-    )?;
-    let foreign_native_replay = crucible::FailureTriageReplayEvidence::new(
-        foreign_report.finding,
-        foreign_report.failure,
-        foreign_report.causal_entries,
-        foreign_report.recorded_event_log.coverage_fingerprint(),
-        foreign_report.recorded_event_frames,
-    )?;
-    assert_ne!(
-        foreign_native_replay.signature().property,
-        native_replay.signature().property
-    );
-    let foreign_original = publish_triage_replay(
-        original,
-        &signature,
-        foreign_native_replay.to_compact_binary()?,
-    )?;
-    let foreign_bundle = FindingCandidateBundle::new_with_triage_evidence(
-        observed.observation,
-        signature,
-        original,
-        minimized,
-        signature_minimization,
-        FindingExactPins::default(),
-        FindingTriageEvidenceSet::new(
-            foreign_original,
-            triage_evidence.minimization_selected(),
-            triage_evidence.verification_original(),
-            triage_evidence.verification_selected(),
-        ),
-    )?;
-    let foreign_bundle = repository.publish_finding_candidate_bundle(&foreign_bundle)?;
-    let foreign_published = repository.incorporate_finding_candidate_bundle(
-        CAMPAIGN,
-        conflicting_published.new_snapshot,
-        foreign_bundle,
-    )?;
-    let foreign_capture =
-        crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding(
-            &client,
-            CampaignPrincipal::new("operator:cli-v4")?,
-            CampaignName::new(CAMPAIGN)?,
-            foreign_published.new_snapshot,
-            foreign_published.finding,
-            evidence.report,
-        );
-    assert!(matches!(
-        foreign_capture,
-        Err(CliError::Artifact(message))
-            if message.contains("disagrees with its observed campaign signature")
-    ));
-    Ok(())
-}
-
-#[test]
-pub(super) fn cli_triage_rejects_artifact_only_findings_without_engine_evidence() {
+pub(super) fn cli_triage_rejects_directory_inputs() {
     let temp = TempDir::new().expect("tempdir must be created");
     let findings = temp.path().join("findings");
     fs::create_dir_all(&findings).expect("findings dir must be created");
-    fs::write(
-        findings.join("failure.artifact"),
-        b"opaque failure artifact",
-    )
-    .expect("opaque finding artifact must be written");
     let cli = Cli::parse_from([
         "crucible",
         "--store",
@@ -2635,14 +1988,11 @@ pub(super) fn cli_triage_rejects_artifact_only_findings_without_engine_evidence(
         panic!("expected triage command");
     };
 
-    let error = match run_triage_invocation(&cli, args) {
-        Ok(_) => panic!("artifact-only findings ledgers must not be silently triaged"),
-        Err(error) => error,
-    };
+    let error = run_triage_invocation(&cli, args)
+        .expect_err("a directory cannot impersonate a signed findings ledger");
 
     assert!(matches!(error, CliError::Artifact(_)));
     assert_eq!(error.exit_code(), 5);
-    assert!(error.to_string().contains("signed findings ledger"));
     assert!(error.to_string().contains("is a directory"));
 }
 
@@ -2675,12 +2025,12 @@ pub(super) fn cli_triage_distinguishes_empty_malformed_and_missing_ledgers() {
 }
 
 #[test]
-pub(super) fn cli_explicit_findings_path_writes_triageable_empty_v3_ledger()
+pub(super) fn cli_explicit_findings_path_writes_triageable_empty_reproduction_ledger()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let path = temp.path().join("empty.crucible-findings");
     let (written_path, digest, bytes) =
-        write_failure_findings_ledger_v3(temp.path(), Some(&path), &[])?;
+        write_reproduction_findings_ledger(temp.path(), Some(&path), &[])?;
 
     assert_eq!(written_path, path);
     assert_eq!(fs::read(&path)?, bytes);
@@ -2696,20 +2046,16 @@ pub(super) fn cli_explicit_findings_path_writes_triageable_empty_v3_ledger()
 }
 
 #[test]
-pub(super) fn cli_triage_rejects_cli_sidecar_signature_evidence() {
+pub(super) fn cli_triage_rejects_retired_findings_ledger_schema() {
     let temp = TempDir::new().expect("tempdir must be created");
     let findings = temp.path().join("sidecar.findings-ledger");
     let store_root = temp.path().join("store");
-    let artifact = crucible::ContentHash::from_bytes(b"sidecar-artifact").to_hex();
-    let ledger_bytes = format!(
-        "\
-crucible.failure-triage.findings-ledger.v1
-artifact.0={artifact}
+    let ledger_bytes = b"\
+crucible.failure-triage.findings-ledger.v3
+artifact.0=0000000000000000000000000000000000000000000000000000000000000000
 finding.0.kind=property
-",
-    )
-    .into_bytes();
-    fs::write(&findings, &ledger_bytes).expect("sidecar ledger must be written");
+";
+    fs::write(&findings, ledger_bytes).expect("retired ledger must be written");
     let cli = Cli::parse_from([
         "crucible",
         "--store",
@@ -2722,22 +2068,18 @@ finding.0.kind=property
     };
 
     let error = match run_triage_invocation(&cli, args) {
-        Ok(_) => panic!("CLI-local sidecar signature evidence must be rejected"),
+        Ok(_) => panic!("retired findings ledger schema must be rejected"),
         Err(error) => error,
     };
 
     assert!(matches!(error, CliError::Artifact(_)));
     assert_eq!(error.exit_code(), 5);
-    assert!(
-        error
-            .to_string()
-            .contains("engine-owned discovery artifacts")
-    );
+    assert!(error.to_string().contains("unsupported or malformed input"));
 
     let store = crucible::LocalDagStore::new(store_root.clone());
     let stored_hash = store
-        .put(&ledger_bytes)
-        .expect("sidecar ledger must be stored");
+        .put(ledger_bytes)
+        .expect("retired ledger must be stored");
     let stored_cli = Cli::parse_from([
         "crucible",
         "--store",
@@ -2750,7 +2092,7 @@ finding.0.kind=property
     };
 
     let stored_error = match run_triage_invocation(&stored_cli, stored_args) {
-        Ok(_) => panic!("stored sidecar signature evidence must be rejected"),
+        Ok(_) => panic!("stored retired findings ledger schema must be rejected"),
         Err(error) => error,
     };
 
@@ -2759,7 +2101,7 @@ finding.0.kind=property
     assert!(
         stored_error
             .to_string()
-            .contains("engine-owned discovery artifacts")
+            .contains("unsupported findings ledger artifact schema")
     );
 }
 
@@ -2768,7 +2110,7 @@ pub(super) fn cli_triage_rejects_mismatched_engine_owned_signature_evidence() {
     let temp = TempDir::new().expect("tempdir must be created");
     let store_root = temp.path().join("store");
     let findings_dir = temp.path().join("findings");
-    let (findings, _) = write_signed_triage_findings_ledger(
+    let (findings, _) = write_current_triage_findings_ledger(
         &findings_dir,
         &store_root,
         "mismatched.findings-ledger",
@@ -2794,8 +2136,8 @@ pub(super) fn cli_triage_rejects_mismatched_engine_owned_signature_evidence() {
             Err(error) => error,
         };
 
-        assert!(matches!(error, CliError::Triage(_)));
-        assert_eq!(error.exit_code(), 1);
+        assert!(matches!(error, CliError::Artifact(_)));
+        assert_eq!(error.exit_code(), 5);
     }
 }
 
@@ -2851,6 +2193,7 @@ pub(super) fn cli_replay_validates_reproduction_artifact() -> Result<(), Box<dyn
             to: None,
             check: None,
             bisect: None,
+            bounded_scheduler_preemption: false,
         },
     )?;
 
@@ -3156,7 +2499,6 @@ pub(super) fn cli_replay_to_savepoint_validates_artifact_prefix_and_oracle()
     dispatch(&replay_cli)?;
 
     let store_root = temp.path().join("store");
-    write_checkpoint_closure_fixture(&store_root, &form, &schedule)?;
     let store_arg = store_root.display().to_string();
     let checkpoint_arg = format_content_hash_ref(checkpoint.id);
     let hash_replay_cli = Cli::parse_from([
@@ -3173,15 +2515,9 @@ pub(super) fn cli_replay_to_savepoint_validates_artifact_prefix_and_oracle()
     let Commands::Replay(hash_args) = &hash_replay_cli.command else {
         panic!("expected replay command");
     };
-    let hash_report = replay_reproduction_artifact(&hash_replay_cli, hash_args)?;
-    assert_eq!(
-        hash_report
-            .to_savepoint
-            .as_ref()
-            .expect("hash replay --to should report a target savepoint")
-            .checkpoint,
-        checkpoint.id
-    );
+    let error = replay_reproduction_artifact(&hash_replay_cli, hash_args)
+        .expect_err("offline replay must reject a bare checkpoint hash");
+    assert!(matches!(error, CliError::Artifact(_)));
 
     Ok(())
 }
@@ -3974,6 +3310,7 @@ pub(super) fn cli_replay_rejects_build_identity_mismatch_with_identity_exit()
             to: None,
             check: None,
             bisect: None,
+            bounded_scheduler_preemption: false,
         },
     ) {
         Ok(_) => panic!("replay must reject artifacts from a different QEMU identity"),
@@ -4016,6 +3353,7 @@ pub(super) fn cli_replay_rejects_selected_qemu_file_identity_mismatch_with_ident
             to: None,
             check: None,
             bisect: None,
+            bounded_scheduler_preemption: false,
         },
     ) {
         Ok(_) => panic!("replay must reject the selected QEMU identity mismatch"),
@@ -4063,70 +3401,6 @@ pub(super) fn cli_replay_rejects_remote_daemon_without_producer_identity()
 }
 
 #[test]
-pub(super) fn cli_failure_artifact_writer_emits_replay_and_debug_commands()
--> Result<(), Box<dyn Error>> {
-    let temp = TempDir::new()?;
-    let artifact_dir = temp.path().join("artifact dir with spaces");
-    let cli = Cli::parse_from([
-        "crucible",
-        "--artifact-dir",
-        artifact_dir.to_str().unwrap_or("."),
-        "run",
-        TEST_SCENARIO,
-    ]);
-    let artifact = mock_e2e_reproduction_artifact()?;
-    let artifact_bytes = artifact.encode()?;
-
-    let report = write_reproduction_artifact(&cli, &artifact_bytes, "Property Violation")?;
-
-    assert!(report.path.starts_with(temp.path()));
-    assert!(report.path.exists());
-    assert!(report.footer.replay_command.starts_with("crucible replay "));
-    assert!(report.footer.debug_command.ends_with(" --at-failure"));
-    assert!(
-        report
-            .footer
-            .debug_command
-            .contains("artifact dir with spaces")
-    );
-    assert!(report.footer.debug_command.contains('\''));
-    assert!(report.path.to_string_lossy().contains("property-violation"));
-    let debug_cli = Cli::parse_from([
-        "crucible",
-        "debug",
-        report.path.to_str().unwrap_or("."),
-        "--at-failure",
-        "--gdb-listen",
-        "127.0.0.1:9000",
-    ]);
-    assert!(matches!(
-        debug_cli.command,
-        Commands::Debug(DebugArgs {
-            target: Some(_),
-            at_failure: true,
-            gdb_listen: Some(_),
-            ..
-        })
-    ));
-    assert_eq!(
-        ReproductionArtifact::decode(&fs::read(&report.path)?)?,
-        artifact
-    );
-    replay_reproduction_artifact(
-        &cli,
-        &ReplayArgs {
-            artifact: report.path.clone(),
-            to: None,
-            check: None,
-            bisect: None,
-        },
-    )?;
-    assert_eq!(report.digest, artifact.digest()?);
-
-    Ok(())
-}
-
-#[test]
 pub(super) fn cli_replay_rejects_duplicate_singleton_lines() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let path = temp.path().join("duplicate.crucible");
@@ -4143,6 +3417,7 @@ pub(super) fn cli_replay_rejects_duplicate_singleton_lines() -> Result<(), Box<d
             to: None,
             check: None,
             bisect: None,
+            bounded_scheduler_preemption: false,
         },
     ) {
         Ok(_) => panic!("duplicate singleton line must fail CLI replay validation"),
@@ -4169,3 +3444,6 @@ pub(super) fn cli_mock_failure_artifact_is_harness_decodable() -> Result<(), Box
 mod debug_surface;
 #[path = "verify_dispatch/selftest.rs"]
 mod selftest;
+
+#[path = "verify_dispatch/finding_export.rs"]
+mod finding_export;

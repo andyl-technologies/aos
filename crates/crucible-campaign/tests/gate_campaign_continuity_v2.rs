@@ -23,14 +23,17 @@ use crucible_campaign::{
     CampaignServiceOperation, CampaignSnapshotId, CampaignState, CandidateSource,
     ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceOpportunity, ChoiceSource,
     ChoiceValue, ConfigurationId, ContinuationState, ControlRequest, CoverageProjection,
-    ExactCheckpointId, ExactRational, ExplorerPolicy, FairnessPolicy, FindingKind,
-    FindingSignature, FindingTarget, MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_QUERY_PAGE_ITEMS, MeasurementSeries,
-    MeasurementSet, MetricValue, Observation, ObservationId, PinChange, PinRequest, PinRetention,
-    ProgressiveWideningPolicy, PropertyEvidence, PropertyVerdict, PropertyVerdictSet, Proposal,
-    PuctPolicy, QueryCampaignFindingsRequest, QueryCampaignFrontierRequest,
-    QueryCampaignGraphRequest, RepositoryCampaignService, RetentionPolicy, ScenarioDefId,
-    SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
+    ExactCheckpointId, ExactRational, ExplorerPolicy, FairnessPolicy, FindingCandidateBundle,
+    FindingCandidateCore, FindingExactPins, FindingExactRetention,
+    FindingExactRetentionDisposition, FindingExactRetentionIncomplete, FindingKind,
+    FindingMinimizationEvidence, FindingSignature, FindingSignatureMinimizationEvidence,
+    FindingTarget, MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, MeasurementSet, Observation, ObservationId, PinChange,
+    PinRequest, PinRetention, ProgressiveWideningPolicy, PropertyEvidence, PropertyVerdict,
+    PropertyVerdictSet, Proposal, PuctPolicy, QueryCampaignFindingsRequest,
+    QueryCampaignFrontierRequest, QueryCampaignGraphRequest, RepositoryCampaignService,
+    RetentionPolicy, ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin,
+    StopCondition, StopOutcome,
 };
 use crucible_cas::content_envelope::{ContentChild, ContentEnvelope};
 use crucible_cas::content_store::{
@@ -369,20 +372,24 @@ fn campaign_fixture(
         1,
     )?;
     let policy = CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([0x20; 32]),
-        CampaignMode::Streaming,
-        ExplorerPolicy::TreeSearch {
-            widening: Some(widening),
-            puct: PuctPolicy::new(1_000_000, 1, 0),
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0)?,
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([0x20; 32]),
+            CampaignMode::Streaming,
+            ExplorerPolicy::TreeSearch {
+                widening: Some(widening),
+                puct: PuctPolicy::new(1_000_000, 1, 0),
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0)?,
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )?;
     Ok((lineage, policy))
 }
@@ -426,10 +433,12 @@ fn publish_observed_branch(
         opportunity_id,
     )?;
     let request = BranchRequest::new(
-        opportunity.branch_point_id(lineage.genesis()),
-        lineage.genesis_content(),
-        opportunity_id,
-        domain.id()?,
+        BranchRequest::identity(
+            opportunity.branch_point_id(lineage.genesis()),
+            lineage.genesis_content(),
+            opportunity_id,
+            domain.id()?,
+        ),
         CandidateSource::finite(BTreeSet::from([
             ChoiceValue::Boolean(false),
             ChoiceValue::Boolean(true),
@@ -494,14 +503,13 @@ fn publish_observed_branch(
         1,
         b"selected continuity configuration".to_vec(),
     )?;
-    let measurements = MeasurementSet::new(BTreeMap::from([(
-        String::from("latency"),
-        MeasurementSeries::new(
-            vec![MetricValue::Unsigned(7)],
-            MetricValue::Unsigned(7),
-            BTreeSet::new(),
-        )?,
-    )]))?;
+    let measurements = MeasurementSet::from_evaluation(
+        hash("continuity.measurement-definitions"),
+        1,
+        hash("continuity.measurement-evaluation"),
+        7_u64.to_be_bytes().to_vec(),
+        BTreeSet::new(),
+    )?;
     let measurement_id = repository.publish_measurement_set(&measurements)?;
     let properties = PropertyVerdictSet::new(BTreeMap::from([(
         String::from("network-recovers"),
@@ -512,13 +520,15 @@ fn publish_observed_branch(
     let coverage_id = repository.publish_coverage_projection(&coverage)?;
     let observation = Observation::new(
         admitted.attempt,
-        child,
-        child_content,
-        path.id()?,
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurement_id,
-        property_id,
-        coverage_id,
+        Observation::outcome(
+            child,
+            child_content,
+            path.id()?,
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurement_id,
+            property_id,
+            coverage_id,
+        ),
         BTreeSet::from([opportunity_id]),
     )?;
     let observed =
@@ -541,14 +551,58 @@ fn publish_observed_branch(
         Some(FindingTarget::Configuration(child_content)),
         BTreeSet::from([property_id.content_id()]),
     )?;
-    let found = repository.publish_finding(
+    let replayed_state = hash("retained-finding-replayed-state");
+    let minimization = FindingMinimizationEvidence::new(
+        reproduction,
+        3,
+        b"campaign continuity minimization policy".to_vec(),
+        Vec::new(),
+        replayed_state,
+    )?;
+    let minimized = repository.publish_minimized_reproduction_artifact(
+        lineage.scenario(),
+        lineage.scenario_content(),
+        child,
+        child_content,
+        fingerprint,
+        1,
+        b"portable continuity reproduction".to_vec(),
+        minimization.clone(),
+    )?;
+    let signature_minimization = FindingSignatureMinimizationEvidence::new(
+        &signature,
+        &minimization,
+        vec![Some(signature.clone())],
+        vec![Some(signature.clone())],
+    )?;
+    let retention_basis =
+        repository.attempt_retention_policy_basis_at(observed.new_snapshot, admitted.attempt)?;
+    let exact_retention = FindingExactRetention::new(
+        retention_basis.snapshot(),
+        retention_basis.policy(),
+        retention_basis.admission(),
+        0,
+        FindingExactRetentionDisposition::Incomplete(
+            FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+        ),
+    )?;
+    let bundle = FindingCandidateBundle::new_with_exact_retention(
+        FindingCandidateCore::new(
+            observed.observation,
+            signature,
+            reproduction,
+            minimized,
+            signature_minimization,
+            FindingExactPins::default(),
+        ),
+        None,
+        exact_retention,
+    )?;
+    let bundle = repository.publish_finding_candidate_bundle(&bundle)?;
+    let found = repository.incorporate_finding_candidate_bundle(
         CAMPAIGN_NAME,
         observed.new_snapshot,
-        signature,
-        observed.observation,
-        reproduction,
-        None,
-        BTreeSet::new(),
+        bundle,
     )?;
 
     Ok(ObservedBranch {

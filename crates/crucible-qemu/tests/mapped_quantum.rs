@@ -72,19 +72,6 @@ fn mapped_quantum_publishes_one_outstanding_preemption() -> Result<(), Box<dyn E
 
 #[cfg(unix)]
 #[test]
-fn mapped_quantum_can_publish_shared_shutdown_without_marking_plugin_done()
--> Result<(), Box<dyn Error>> {
-    let region = mapped_region(6, None, &[])?;
-    let hot_path = QemuMappedQuantumShmemHotPath::new(qemu_config(), region, AllowAllSends)?;
-
-    hot_path.request_plugin_shutdown()?;
-
-    assert!(!hot_path.plugin_teardown_done()?);
-    Ok(())
-}
-
-#[cfg(unix)]
-#[test]
 fn mapped_quantum_publishes_one_exact_selectable_reply() -> Result<(), Box<dyn Error>> {
     let trap_icount = 6;
     let stopped_icount = trap_icount + SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS;

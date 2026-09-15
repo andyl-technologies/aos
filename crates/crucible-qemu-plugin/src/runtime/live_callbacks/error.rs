@@ -85,11 +85,23 @@ pub enum LiveVcpuTimeCallbackError {
         /// Underlying queued-advance error.
         source: QueuedIdleAdvanceError,
     },
+    /// QEMU could not arm or authenticate the actual virtual-timer callback.
+    #[error("virtual-timer callback witness failed: {source}")]
+    VirtualTimerWitness {
+        /// Native witness failure.
+        source: crate::VirtualTimerWitnessError,
+    },
     /// The shared idle planning or scheduler wait failed.
     #[error("live idle hot-loop failed: {source}")]
     IdleHotLoop {
         /// Underlying deterministic idle-loop error.
         source: IdleHotLoopError,
+    },
+    /// QEMU rejected the callback's one-shot BQL-releasing idle wait.
+    #[error("QEMU rejected the one-shot idle wake wait with status {status:?}")]
+    IdleWakeWaitRejected {
+        /// Raw QEMU result that makes continuing this callback unsafe.
+        status: i32,
     },
     /// The mapped region could not provide the configured VM slot.
     #[error("mapped setup region cannot provide the live callback node slot")]
@@ -103,26 +115,28 @@ pub enum LiveVcpuTimeCallbackError {
         /// Underlying typed mapping error.
         source: MappedSetupRegionAccessError,
     },
-    /// `fingerprint=on` was requested but the loaded QEMU lacks the exports.
-    #[error("fingerprint sampling requested but QEMU is missing the fingerprint helper exports")]
+    /// `fingerprint=on` was requested but the loaded QEMU lacks the aggregate observer.
+    #[error(
+        "fingerprint sampling requested but QEMU is missing the aggregate fingerprint observer"
+    )]
     FingerprintCapabilityUnavailable,
     /// Capturing a boundary fingerprint sample failed.
-    #[error("{boundary} fingerprint sampling failed: {source}")]
+    #[error("{boundary} fingerprint sampling failed: {message}")]
     FingerprintSample {
         /// Callback boundary that requested the sample.
         boundary: &'static str,
-        /// Underlying plugin fingerprint sampler error.
-        source: FingerprintSamplerError,
+        /// Bounded underlying sampler diagnostic.
+        message: String,
     },
-    /// The exact on-demand request changed before its completed capture was acknowledged.
+    /// The fingerprint slot did not match the generation bound to the control request.
     #[error(
-        "fingerprint capture request changed before acknowledgement: expected {request}, observed {observed}"
+        "control boundary binds fingerprint request {bound:?}, but the sample slot reports {observed:?}"
     )]
-    FingerprintCaptureRequestChanged {
-        /// Odd request generation captured before sampling began.
-        request: u32,
-        /// Request generation observed after synchronous sample publication.
-        observed: u32,
+    ControlBoundaryCaptureRequestMismatch {
+        /// Request generation published with the control token.
+        bound: Option<u32>,
+        /// Pending generation independently visible in the fingerprint slot.
+        observed: Option<u32>,
     },
     /// The dedicated fingerprint digest worker could not be created.
     #[error("fingerprint digest worker could not start: {message}")]
@@ -137,12 +151,6 @@ pub enum LiveVcpuTimeCallbackError {
     #[error("fingerprint digest worker failed: {message}")]
     FingerprintWorkerFailed {
         /// Stable publication failure diagnostic.
-        message: String,
-    },
-    /// Terminal raw-state export setup or boundary activation failed.
-    #[error("terminal raw-state dump failed: {message}")]
-    RawStateDump {
-        /// Stable underlying raw-state export diagnostic.
         message: String,
     },
     /// A mapped callback ring unexpectedly had no backing entries.
@@ -226,9 +234,6 @@ pub enum LiveVcpuTimeCallbackError {
     /// Another live callback state pointer is already globally visible.
     #[error("live production callback state is already published")]
     CallbackStateAlreadyPublished,
-    /// QEMU invoked the global vCPU-init adapter before state publication.
-    #[error("live production callback state is unavailable")]
-    CallbackStateUnavailable,
     /// The callback observed a shutdown action without a matching acquire proof.
     #[error("shared shutdown action could not be proven from the region header")]
     SharedShutdownProofUnavailable,
@@ -347,14 +352,6 @@ pub enum LiveVcpuTimeCallbackError {
     /// QEMU supplied null userdata to a registered live callback.
     #[error("live production callback userdata is null")]
     NullCallbackUserdata,
-    /// A standard lifecycle callback named another plugin instance.
-    #[error("vCPU lifecycle callback plugin id {observed} does not match {expected}")]
-    PluginIdMismatch {
-        /// Plugin identifier captured at registration.
-        expected: QemuPluginId,
-        /// Plugin identifier supplied by QEMU.
-        observed: QemuPluginId,
-    },
     /// QEMU named a vCPU outside the validated execution model.
     #[error("vCPU callback index {vcpu_index} is outside configured count {vcpu_count}")]
     VcpuOutOfRange {

@@ -1,5 +1,11 @@
 //! Fault-addressable processor, memory, clock, and accelerator schemas.
 
+mod clock;
+mod hardware_error;
+
+pub use clock::*;
+pub use hardware_error::*;
+
 use super::*;
 /// Closed architecture register groups exported by the live QEMU manifest.
 #[derive(
@@ -302,278 +308,6 @@ impl WorldNodeInterrupt {
     }
 }
 
-/// Closed guest-visible clock source family.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum WorldNodeClockSourceKind {
-    /// x86 timestamp counter.
-    X86Tsc,
-    /// x86 MC146818-compatible real-time clock.
-    X86Rtc,
-    /// x86 i8254 programmable interval timer.
-    X86Pit,
-    /// x86 high precision event timer.
-    X86Hpet,
-    /// x86 local APIC timer.
-    X86ApicTimer,
-    /// x86 ACPI power-management timer.
-    X86AcpiPmTimer,
-    /// AArch64 architectural generic counter.
-    ArmCounter,
-    /// AArch64 PL031-compatible real-time clock.
-    ArmRtc,
-    /// A registered device-specific clock.
-    Device,
-}
-
-/// Deterministic coordinate underlying a guest-visible clock source.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum WorldNodeClockBaseDomain {
-    /// Deterministic scheduler virtual time.
-    SchedulerVirtual,
-    /// A deterministic RTC epoch derived from scheduler virtual time.
-    RtcEpoch,
-}
-
-/// Relationship between a clock source and guest-programmable timers.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum WorldNodeClockTimerRelationship {
-    /// The source has no programmable timer deadline.
-    None,
-    /// Guest timer deadlines are programmed in this source's domain.
-    Programmable,
-}
-
-/// Required default policy for a clock value that moves backward.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum WorldNodeClockMonotonicity {
-    /// The source contract permits backward values or architectural wrap.
-    AllowBackward,
-    /// QEMU clamps backward values to the last observed value.
-    ClampMonotonic,
-    /// QEMU terminally faults the source on a backward value.
-    FaultOnBackward,
-}
-
-/// One guest-visible clock source exposed by the live fault ABI.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorldNodeClockSource {
-    /// Stable clock-source ID.
-    pub id: SignalId,
-    /// QEMU subsystem that implements reads and related timer deadlines.
-    pub implementation: String,
-    /// Closed architecture or device clock family.
-    pub source_kind: WorldNodeClockSourceKind,
-    /// Deterministic coordinate underlying the source.
-    pub base_domain: WorldNodeClockBaseDomain,
-    /// Relationship to a guest-programmable timer.
-    pub timer_relationship: WorldNodeClockTimerRelationship,
-    /// Architecturally visible source width.
-    pub width_bits: u32,
-    /// Whether the architectural source wraps at its declared width.
-    pub wraps: bool,
-    /// Whether the architecture can report a source read error.
-    pub read_error: bool,
-    /// Exact tick-frequency numerator in ticks per second.
-    pub frequency_numerator: u64,
-    /// Exact tick-frequency denominator in ticks per second.
-    pub frequency_denominator: u64,
-    /// Exact clock opportunities implemented by the QEMU source.
-    pub model_phases: Vec<FaultPhase>,
-    /// Required handling for backward transformed values.
-    pub monotonicity: WorldNodeClockMonotonicity,
-    /// Whether all source, transform, timer, and synchronization state migrates.
-    pub vmstate: bool,
-    /// Exact clock transform semantic version.
-    pub semantic_version: u16,
-}
-impl WorldNodeClockSource {
-    pub(super) const fn id(&self) -> &SignalId {
-        &self.id
-    }
-
-    /// Builds the exact QEMU TCG x86 timestamp-counter contract.
-    #[must_use]
-    pub fn emulated_x86_tsc_v1(id: SignalId) -> Self {
-        Self {
-            id,
-            implementation: "target/i386/tcg".to_owned(),
-            source_kind: WorldNodeClockSourceKind::X86Tsc,
-            base_domain: WorldNodeClockBaseDomain::SchedulerVirtual,
-            timer_relationship: WorldNodeClockTimerRelationship::None,
-            width_bits: 64,
-            wraps: true,
-            read_error: false,
-            frequency_numerator: 1_000_000_000,
-            frequency_denominator: 1,
-            model_phases: vec![
-                FaultPhase::ClockRead,
-                FaultPhase::Synchronize,
-                FaultPhase::SourceSwitch,
-            ],
-            monotonicity: WorldNodeClockMonotonicity::ClampMonotonic,
-            vmstate: true,
-            semantic_version: 1,
-        }
-    }
-
-    /// Builds the exact QEMU MC146818 RTC contract.
-    #[must_use]
-    pub fn emulated_x86_rtc_v1(id: SignalId) -> Self {
-        Self::emulated_programmable_v1(
-            id,
-            "hw/rtc/mc146818rtc",
-            WorldNodeClockSourceKind::X86Rtc,
-            WorldNodeClockBaseDomain::RtcEpoch,
-            64,
-            false,
-            1_000_000_000,
-            WorldNodeClockMonotonicity::AllowBackward,
-        )
-    }
-
-    /// Builds the exact QEMU i8254 PIT contract.
-    #[must_use]
-    pub fn emulated_x86_pit_v1(id: SignalId) -> Self {
-        Self::emulated_programmable_v1(
-            id,
-            "hw/timer/i8254",
-            WorldNodeClockSourceKind::X86Pit,
-            WorldNodeClockBaseDomain::SchedulerVirtual,
-            64,
-            false,
-            1_000_000_000,
-            WorldNodeClockMonotonicity::AllowBackward,
-        )
-    }
-
-    /// Builds the exact QEMU HPET contract.
-    #[must_use]
-    pub fn emulated_x86_hpet_v1(id: SignalId) -> Self {
-        Self::emulated_programmable_v1(
-            id,
-            "hw/timer/hpet",
-            WorldNodeClockSourceKind::X86Hpet,
-            WorldNodeClockBaseDomain::SchedulerVirtual,
-            64,
-            true,
-            10_000_000,
-            WorldNodeClockMonotonicity::AllowBackward,
-        )
-    }
-
-    /// Builds the exact QEMU userspace local-APIC timer contract.
-    #[must_use]
-    pub fn emulated_x86_apic_timer_v1(id: SignalId) -> Self {
-        Self::emulated_programmable_v1(
-            id,
-            "hw/intc/apic",
-            WorldNodeClockSourceKind::X86ApicTimer,
-            WorldNodeClockBaseDomain::SchedulerVirtual,
-            64,
-            false,
-            1_000_000_000,
-            WorldNodeClockMonotonicity::AllowBackward,
-        )
-    }
-
-    /// Builds the exact QEMU ACPI power-management timer contract.
-    #[must_use]
-    pub fn emulated_x86_acpi_pm_timer_v1(id: SignalId) -> Self {
-        Self::emulated_programmable_v1(
-            id,
-            "hw/acpi/core",
-            WorldNodeClockSourceKind::X86AcpiPmTimer,
-            WorldNodeClockBaseDomain::SchedulerVirtual,
-            24,
-            true,
-            3_579_545,
-            WorldNodeClockMonotonicity::AllowBackward,
-        )
-    }
-
-    /// Builds the exact QEMU AArch64 architectural-counter contract.
-    #[must_use]
-    pub fn emulated_arm_counter_v1(id: SignalId, frequency_hz: u64) -> Self {
-        Self::emulated_programmable_v1(
-            id,
-            "target/arm/generic-timer",
-            WorldNodeClockSourceKind::ArmCounter,
-            WorldNodeClockBaseDomain::SchedulerVirtual,
-            64,
-            false,
-            frequency_hz,
-            WorldNodeClockMonotonicity::ClampMonotonic,
-        )
-    }
-
-    /// Builds the exact QEMU PL031 RTC contract.
-    #[must_use]
-    pub fn emulated_arm_rtc_v1(id: SignalId) -> Self {
-        Self::emulated_programmable_v1(
-            id,
-            "hw/rtc/pl031",
-            WorldNodeClockSourceKind::ArmRtc,
-            WorldNodeClockBaseDomain::RtcEpoch,
-            32,
-            true,
-            1,
-            WorldNodeClockMonotonicity::AllowBackward,
-        )
-    }
-
-    // crucible-lint: allow rust-allow -- the clock manifest carries each independent hardware identity and behavior field.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the closed clock-source manifest carries independent hardware identity and behavior fields"
-    )]
-    fn emulated_programmable_v1(
-        id: SignalId,
-        implementation: &str,
-        source_kind: WorldNodeClockSourceKind,
-        base_domain: WorldNodeClockBaseDomain,
-        width_bits: u32,
-        wraps: bool,
-        frequency_numerator: u64,
-        monotonicity: WorldNodeClockMonotonicity,
-    ) -> Self {
-        Self {
-            id,
-            implementation: implementation.to_owned(),
-            source_kind,
-            base_domain,
-            timer_relationship: WorldNodeClockTimerRelationship::Programmable,
-            width_bits,
-            wraps,
-            read_error: false,
-            frequency_numerator,
-            frequency_denominator: 1,
-            model_phases: vec![
-                FaultPhase::ClockRead,
-                FaultPhase::Arm,
-                FaultPhase::Fire,
-                FaultPhase::Synchronize,
-                FaultPhase::SourceSwitch,
-            ],
-            monotonicity,
-            vmstate: true,
-            semantic_version: 1,
-        }
-    }
-}
-
 /// Closed accelerator class implemented by the patched QEMU device.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -617,132 +351,6 @@ pub enum WorldNodeArchitecture {
     X86_64,
     /// AArch64 architectural register, interrupt, and hardware-error ABI.
     Aarch64,
-}
-
-/// Closed guest-visible hardware-error record families.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum WorldNodeHardwareErrorRecordKind {
-    /// x86 machine-check architecture record.
-    X86MachineCheck,
-    /// AArch64 RAS synchronous abort or asynchronous SError record.
-    Aarch64Ras,
-    /// Platform or architecture memory-ECC record.
-    MemoryEcc,
-}
-
-/// Closed hardware-error severity and delivery classes.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum WorldNodeHardwareErrorClass {
-    /// Corrected error reported without an uncorrectable exception.
-    Corrected,
-    /// Uncorrectable error from which execution may recover.
-    Recoverable,
-    /// Fatal error whose architecture path terminates or resets the node.
-    Fatal,
-    /// AArch64 synchronous external abort.
-    Synchronous,
-    /// AArch64 asynchronous SError.
-    Asynchronous,
-}
-
-/// Closed hardware-error publication and delivery mechanisms.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum WorldNodeHardwareErrorMechanism {
-    /// x86 machine-check architecture banks and vector 18.
-    X86Mca,
-    /// ACPI APEI GHES platform memory-error record.
-    AcpiGhes,
-    /// AArch64 RAS synchronous abort or SError delivery.
-    Aarch64Ras,
-}
-
-/// One guest-observable consequence permitted by a hardware-error row.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum WorldNodeHardwareErrorVisibility {
-    /// Publishes an architecture or firmware telemetry record.
-    Telemetry,
-    /// Raises the corrected-error interrupt supported by the realized platform.
-    Interrupt,
-    /// Delivers the complete architecture exception described by the request.
-    Exception,
-}
-
-/// One exact hardware-error row exposed by the realized QEMU machine.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorldNodeHardwareError {
-    /// Stable row identity selected by a hardware-error fault.
-    pub id: SignalId,
-    /// Stable architecture bank or platform-record identity.
-    pub bank: SignalId,
-    /// Stable memory-channel identity.
-    pub channel: SignalId,
-    /// Stable memory-rank identity.
-    pub rank: SignalId,
-    /// Exact firmware or table prerequisite.
-    pub firmware: SignalId,
-    /// Exact resulting QEMU and guest-visible state contract.
-    pub state: SignalId,
-    /// Typed architecture or platform record family.
-    pub record_kind: WorldNodeHardwareErrorRecordKind,
-    /// Error severity or AArch64 delivery class.
-    pub error_class: WorldNodeHardwareErrorClass,
-    /// Architecture or platform publication mechanism.
-    pub mechanism: WorldNodeHardwareErrorMechanism,
-    /// Canonically ordered guest-visible consequences admitted by this row.
-    pub visibility: Vec<WorldNodeHardwareErrorVisibility>,
-    /// First numeric architecture bank or platform record.
-    pub bank_number: u32,
-    /// Number of consecutive banks or records in this row.
-    pub bank_count: u32,
-    /// Required architecture vector or exception class.
-    pub vector: u32,
-    /// Status bits that every request must set.
-    #[serde(
-        deserialize_with = "super::super::toml::deserialize_u64_toml_number_or_string",
-        serialize_with = "super::super::toml::serialize_u64_toml_number_or_string"
-    )]
-    pub status_required: u64,
-    /// Complete mask of status bits a request may set.
-    #[serde(
-        deserialize_with = "super::super::toml::deserialize_u64_toml_number_or_string",
-        serialize_with = "super::super::toml::serialize_u64_toml_number_or_string"
-    )]
-    pub status_allowed: u64,
-    /// Syndrome bits that every request must set.
-    #[serde(
-        deserialize_with = "super::super::toml::deserialize_u64_toml_number_or_string",
-        serialize_with = "super::super::toml::serialize_u64_toml_number_or_string"
-    )]
-    pub syndrome_required: u64,
-    /// Complete mask of syndrome bits a request may set.
-    #[serde(
-        deserialize_with = "super::super::toml::deserialize_u64_toml_number_or_string",
-        serialize_with = "super::super::toml::serialize_u64_toml_number_or_string"
-    )]
-    pub syndrome_allowed: u64,
-    /// Ordered model phases at which this row may apply.
-    pub model_phases: Vec<FaultPhase>,
-    /// Canonically ordered x86 CPLs or AArch64 exception levels (0 through 3).
-    pub privilege_levels: Vec<u8>,
-    /// Identifies a corrected rather than uncorrectable record.
-    pub corrected: bool,
-    /// Allows architecture masking to defer delivery.
-    pub maskable: bool,
-    /// Confirms that all resulting architecture and platform state has VMState coverage.
-    pub vmstate: bool,
 }
 
 impl WorldNodeArchitecture {
@@ -1177,9 +785,12 @@ impl WorldNodeFaultCapabilities {
 }
 
 fn decode_world_mask(value: &str) -> Option<Vec<u8>> {
-    value
-        .as_bytes()
-        .chunks_exact(2)
+    let (pairs, remainder) = value.as_bytes().as_chunks::<2>();
+    if !remainder.is_empty() {
+        return None;
+    }
+    pairs
+        .iter()
         .map(|pair| {
             let high = world_hex_nibble(pair[0])?;
             let low = world_hex_nibble(pair[1])?;
@@ -1218,7 +829,7 @@ pub struct WorldNodeDramGeometry {
 }
 
 impl WorldNodeDramGeometry {
-    /// Returns the only DRAM mapping implemented by the current QEMU patch set.
+    /// Returns the only DRAM mapping implemented by the atomic QEMU patch.
     #[must_use]
     pub const fn emulated_v1() -> Self {
         Self {

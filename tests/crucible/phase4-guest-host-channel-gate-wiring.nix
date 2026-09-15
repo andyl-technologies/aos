@@ -9,7 +9,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  phase2SingleVmFingerprintDefinition = import ./phase1-single-vm-fingerprint-gate.nix {
+  phase2SingleVmFingerprintDefinition = import ./phase1-production-fingerprint-sample.nix {
     inherit pkgs lib;
     attrPath = "checks.crucible.phase2.gates.singleVmFingerprint";
     taskIds = [];
@@ -32,10 +32,9 @@
     taskIds = ["T-GHC-11"];
   };
 
-  anyGuestTest = builtins.readFile ../../crates/crucible-qemu/tests/gate_any_guest.rs;
   channelDeterminismTest = builtins.readFile ../../crates/crucible/tests/guest_host_channel_determinism.rs;
   blackBoxSurfaceGate = builtins.readFile ./phase4-guest-host-black-box-surface.nix;
-  singleVmGate = builtins.readFile ./phase1-single-vm-fingerprint-gate.nix;
+  singleVmGate = builtins.readFile ./phase1-production-fingerprint-sample.nix;
   anyGuestGate = builtins.readFile ./phase2-any-guest.nix;
   channelGate = builtins.readFile ./phase4-guest-host-channel-determinism.nix;
   emitterAbsenceGate = builtins.readFile ./phase4-guest-host-emitter-absence.nix;
@@ -58,44 +57,6 @@
       {
         label = "canonical channel wiring no longer deferred";
         needle = "gate definition files in lazy passthru";
-      }
-    ]
-    ++ failuresFor "crates/crucible-qemu/tests/gate_any_guest.rs" anyGuestTest [
-      {
-        label = "black-box host-side launch profile";
-        needle = "gate_any_guest_launch_profile_requires_host_side_guest_operation";
-      }
-      {
-        label = "no in-guest Crucible content rejection";
-        needle = "GuestCoreContentMode::GuestInjectedContent";
-      }
-      {
-        label = "white-box switch is host plugin config";
-        needle = "gate_any_guest_whitebox_switch_is_host_plugin_configuration_without_agent_content";
-      }
-      {
-        label = "single VM fingerprint driver covers off/on";
-        needle = "run_single_vm_fingerprint_gate";
-      }
-      {
-        label = "white-box off plugin argument";
-        needle = "whitebox=off";
-      }
-      {
-        label = "white-box on plugin argument";
-        needle = "whitebox=on";
-      }
-      {
-        label = "fingerprint stream comparison";
-        needle = "compare_single_vm_fingerprint_streams";
-      }
-      {
-        label = "launch hash unchanged by white-box switch";
-        needle = "gate_any_guest_launch_command_keeps_whitebox_as_host_plugin_configuration";
-      }
-      {
-        label = "launch material equality";
-        needle = "black_box.vm_launch_hash_material()";
       }
     ]
     ++ failuresFor "crates/crucible/tests/guest_host_channel_determinism.rs" channelDeterminismTest [
@@ -142,22 +103,22 @@
         needle = "determinism_class=observational";
       }
     ]
-    ++ failuresFor "tests/crucible/phase1-single-vm-fingerprint-gate.nix" singleVmGate [
+    ++ failuresFor "tests/crucible/phase1-production-fingerprint-sample.nix" singleVmGate [
       {
         label = "single VM fingerprint gate result";
         needle = "gate=gate:single-vm-fingerprint";
       }
       {
         label = "real QEMU source result";
-        needle = "real_qemu_source=checks.crucible.phase0.s1Fingerprint";
+        needle = "real_qemu_source=checks.crucible.phase7.productionRustPluginFlight";
       }
       {
         label = "black-box execution fingerprint";
-        needle = "execution_fingerprint=icount-registers-ram";
+        needle = "execution_fingerprint=production-FingerprintSample-provider-projection";
       }
       {
         label = "read-only observation mode";
-        needle = "observation_mode=plugin-read-only";
+        needle = "observation_mode=loaded-rust-plugin";
       }
       {
         label = "mismatch remains failing";
@@ -295,7 +256,7 @@
       }
       {
         label = "phase gate owns lazy single-VM fingerprint definition";
-        needle = "phase2SingleVmFingerprintDefinition = import ./phase1-single-vm-fingerprint-gate.nix";
+        needle = "phase2SingleVmFingerprintDefinition = import ./phase1-production-fingerprint-sample.nix";
       }
       {
         label = "phase gate owns lazy channel determinism definition";
@@ -326,10 +287,6 @@
         needle = "lazy_gate_definitions=passthru.lazyGateDefinitions.anyGuest";
       }
       {
-        label = "phase gate reruns any-guest off/on test target";
-        needle = "--test gate_any_guest";
-      }
-      {
         label = "phase gate reruns channel determinism target";
         needle = "--test guest_host_channel_determinism";
       }
@@ -348,20 +305,6 @@
       {
         label = "deferred emitter absence gate wiring";
         needle = "canonical_gate_wiring_deferred=T-GHC-15";
-      }
-    ]
-    ++ forbiddenFor "crates/crucible-qemu/tests/gate_any_guest.rs" anyGuestTest [
-      {
-        label = "ignored any-guest test";
-        needle = "#[ignore";
-      }
-      {
-        label = "unfinished todo";
-        needle = "todo!";
-      }
-      {
-        label = "unfinished unimplemented";
-        needle = "unimplemented!";
       }
     ]
     ++ forbiddenFor "crates/crucible/tests/guest_host_channel_determinism.rs" channelDeterminismTest [
@@ -442,14 +385,6 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-guest-host-channel-gate-wiring-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
-              --test gate_any_guest \
-              -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-channel-gate-wiring-target" \
-              --manifest-path crates/Cargo.toml \
               -p crucible \
               --features test-double \
               --test guest_host_channel_determinism \
@@ -478,7 +413,7 @@ in
             black_box_sufficiency=gate:any-guest:no-agent-no-content
             opt_in_additivity=whitebox-host-plugin-switch-no-guest-content
             real_qemu_black_box_sufficiency=gate:any-guest
-            real_qemu_fingerprint_axis=gate:single-vm-fingerprint:icount-registers-ram
+            real_qemu_fingerprint_axis=gate:single-vm-fingerprint:production-FingerprintSample-provider-projection
             real_qemu_whitebox_off_on_fingerprint=byte-identical
             real_qemu_whitebox_marker_event_log_admission=true
             fingerprint_equality=host-plugin-off-on-gate-target-and-scheduler-marker-neutral

@@ -24,7 +24,7 @@ pub(crate) struct ReproductionScenarioPayload<'a> {
     pub(crate) bytes: &'a [u8],
 }
 
-/// Exact producer evidence required to replay one v3 artifact through QEMU.
+/// Exact producer evidence required to replay the current artifact through QEMU.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LiveQemuArtifactEvidence {
     /// Canonical execution recipe and terminal target.
@@ -63,35 +63,29 @@ pub(crate) struct LiveQemuArtifactRecipe<'a> {
     pub(crate) branch: LiveQemuReplayBranch,
 }
 
-/// Builds the required v3 live-QEMU components from one completed run.
+struct LiveQemuArtifactTerminalBoundary {
+    event_log_len: u64,
+    schedule: Vec<u8>,
+    savepoint: Option<Vec<u8>>,
+}
+
+/// Builds the required v4 live-QEMU components from one completed run.
 pub(crate) fn live_qemu_artifact_evidence_from_run(
     recipe: LiveQemuArtifactRecipe<'_>,
     scenario: &crucible::ScenarioDefForm,
     report: &RunWorkflowReport,
 ) -> Result<LiveQemuArtifactEvidence, CliError> {
-    if recipe.execution_mode == RunExecutionMode::Interactive {
-        return Err(artifact_error(
-            "live-QEMU reproduction artifacts do not yet support interactive control recipes",
-        ));
-    }
     let campaign_replay_closure = match (
         recipe.producer,
         report.execution_owner,
         report.campaign_replay_closure.as_ref(),
     ) {
-        (
-            "campaign-run" | "campaign-search" | "fuzz" | "fork",
-            RunExecutionOwner::Campaign,
-            Some(closure),
-        ) => Some(closure.clone()),
-        ("campaign-run" | "campaign-search" | "fuzz", _, _) => {
+        ("campaign-run" | "campaign-search", RunExecutionOwner::Campaign, Some(closure)) => {
+            Some(closure.clone())
+        }
+        ("campaign-run" | "campaign-search", _, _) => {
             return Err(artifact_error(
                 "campaign-owned artifact capture requires campaign execution and its authenticated replay closure",
-            ));
-        }
-        ("fork", RunExecutionOwner::Campaign, None) => {
-            return Err(artifact_error(
-                "campaign-owned fork artifact capture requires its authenticated replay closure",
             ));
         }
         (_, RunExecutionOwner::Session, None) => None,
@@ -104,8 +98,15 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
     let terminal = report.terminal_configuration.as_ref().ok_or_else(|| {
         artifact_error("live-QEMU artifact capture requires a terminal configuration")
     })?;
+    let initial = crucible::Configuration::genesis(scenario.scenario_def());
+    let terminal_boundary = match recipe.execution_mode {
+        RunExecutionMode::Interactive => interactive_artifact_terminal_boundary(report, terminal)?,
+        RunExecutionMode::ToCompletion => batch_artifact_terminal_boundary(report, terminal)?,
+    };
     let all_fingerprint_samples = run_fingerprint_samples(report);
-    let fingerprint_scope = if recipe.producer == "fork" {
+    let fingerprint_scope = if recipe.execution_mode == RunExecutionMode::Interactive
+        || !matches!(recipe.branch, LiveQemuReplayBranch::None)
+    {
         LiveQemuFingerprintScope::TerminalAllNodes
     } else {
         LiveQemuFingerprintScope::FullExecution
@@ -149,12 +150,20 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
     };
     let contract = LiveQemuReplayContract {
         producer: recipe.producer.to_string(),
+        execution_owner: report.execution_owner,
+        execution_mode: recipe.execution_mode,
+        initial_configuration: format_content_hash_ref(initial.id()),
+        initial_scenario: scenario.to_compact_binary(),
+        initial_schedule: initial.schedule.to_compact_binary(),
         terminal_condition: recipe.terminal_condition.label().to_string(),
         terminal_status: report.status.label().to_string(),
         terminal_outcome: terminal_outcome_label(report.outcome).to_string(),
         terminal_configuration: format_content_hash_ref(terminal.id()),
         final_frontier_ticks: report.final_frontier_ticks,
         final_quanta: report.final_quanta,
+        final_event_log_len: terminal_boundary.event_log_len,
+        final_schedule: terminal_boundary.schedule,
+        terminal_savepoint: terminal_boundary.savepoint,
         budget_timed_out: report.budget_timed_out,
         max_virtual_time_ticks: recipe.max_virtual_time_ticks,
         max_quanta: recipe.max_quanta,
@@ -167,6 +176,7 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
         startup_controls: encode_plan_controls(recipe.startup_commands),
         initial_controls: encode_plan_controls(recipe.initial_control_commands),
         controls,
+        reproduction_commands: report.reproduction_commands.clone(),
     };
     let fingerprint_stream = verify_fingerprint_stream_bytes(&fingerprint_samples);
     Ok(LiveQemuArtifactEvidence {
@@ -179,15 +189,94 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
     })
 }
 
-fn select_live_qemu_artifact_fingerprints(
-    nodes: &[crucible::WorldNode],
+fn interactive_artifact_terminal_boundary(
+    report: &RunWorkflowReport,
+    terminal: &crucible::Configuration,
+) -> Result<LiveQemuArtifactTerminalBoundary, CliError> {
+    if report.execution_owner != RunExecutionOwner::Session {
+        return Err(artifact_error(
+            "interactive live-QEMU artifact capture requires session execution ownership",
+        ));
+    }
+    let snapshot = report.final_snapshot.as_ref().ok_or_else(|| {
+        artifact_error(
+            "interactive live-QEMU artifact capture requires the authoritative retained final snapshot",
+        )
+    })?;
+    let snapshot_outcome = match &snapshot.state {
+        crucible_session::EngineState::Stopped { outcome } => Some(OutcomeKind::from(outcome)),
+        crucible_session::EngineState::Loaded
+        | crucible_session::EngineState::Running
+        | crucible_session::EngineState::Paused { .. } => None,
+    };
+    if snapshot.configuration != *terminal
+        || snapshot.frontier.ticks != report.final_frontier_ticks
+        || snapshot.quanta != report.final_quanta
+        || snapshot.event_log_len != report.streamed_event_frames.len()
+        || snapshot_outcome != report.outcome
+        || snapshot
+            .terminal_savepoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.id)
+            != report.terminal_savepoint
+    {
+        return Err(artifact_error(
+            "interactive live-QEMU final snapshot does not match the terminal run report",
+        ));
+    }
+
+    Ok(LiveQemuArtifactTerminalBoundary {
+        event_log_len: u64::try_from(snapshot.event_log_len)
+            .map_err(|_| artifact_error("final event-log length cannot be represented"))?,
+        schedule: snapshot.configuration.schedule.to_compact_binary(),
+        savepoint: snapshot
+            .terminal_savepoint
+            .as_ref()
+            .map(crucible::Checkpoint::to_compact_binary),
+    })
+}
+
+fn batch_artifact_terminal_boundary(
+    report: &RunWorkflowReport,
+    terminal: &crucible::Configuration,
+) -> Result<LiveQemuArtifactTerminalBoundary, CliError> {
+    if report.execution_owner != RunExecutionOwner::Campaign {
+        return Err(artifact_error(
+            "to-completion live-QEMU artifact capture requires campaign execution ownership",
+        ));
+    }
+    if report.final_snapshot.is_some() {
+        return Err(artifact_error(
+            "to-completion campaign artifact capture cannot consume a session final snapshot",
+        ));
+    }
+    if report.terminal_savepoint.is_some() {
+        return Err(artifact_error(
+            "to-completion campaign artifact capture requires its checkpoint through the campaign replay closure",
+        ));
+    }
+
+    Ok(LiveQemuArtifactTerminalBoundary {
+        event_log_len: u64::try_from(report.streamed_event_frames.len())
+            .map_err(|_| artifact_error("final event-log length cannot be represented"))?,
+        schedule: terminal.schedule.to_compact_binary(),
+        savepoint: None,
+    })
+}
+
+fn select_live_qemu_artifact_fingerprints<'a>(
+    nodes: impl IntoIterator<Item = &'a crucible::WorldNode>,
     mut samples: Vec<VerifyFingerprintSample>,
     scope: LiveQemuFingerprintScope,
 ) -> Result<Vec<VerifyFingerprintSample>, CliError> {
     if scope == LiveQemuFingerprintScope::FullExecution {
         return Ok(samples);
     }
-    let node_count = nodes.len();
+    let expected_nodes = nodes
+        .into_iter()
+        .map(|node| node.id.name.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let node_count = expected_nodes.len();
     if samples.len() < node_count {
         return Err(artifact_error(format!(
             "terminal fingerprint capture produced {} samples for {node_count} VM nodes",
@@ -195,10 +284,6 @@ fn select_live_qemu_artifact_fingerprints(
         )));
     }
     let mut terminal = samples.split_off(samples.len() - node_count);
-    let expected_nodes = nodes
-        .iter()
-        .map(|node| node.id.name.clone())
-        .collect::<std::collections::BTreeSet<_>>();
     let actual_nodes = terminal
         .iter()
         .map(|sample| sample.node.clone())
@@ -214,7 +299,7 @@ fn select_live_qemu_artifact_fingerprints(
     Ok(terminal)
 }
 
-/// Encodes the required live-QEMU evidence components for a v3 artifact.
+/// Encodes the required live-QEMU evidence components for a v4 artifact.
 pub(crate) fn live_qemu_artifact_payloads(
     evidence: &LiveQemuArtifactEvidence,
 ) -> Vec<ReproductionArtifactComponentPayload> {
@@ -420,20 +505,6 @@ pub(crate) fn decode_lifecycle_artifact_bundle(
     decode_artifact_object_records(bytes, HEADER_BYTES, "lifecycle", maximum_payload_bytes)
 }
 
-/// Restores and authenticates the legacy signal-only object closure.
-pub(crate) fn decode_signal_artifact_bundle(
-    bytes: &[u8],
-    maximum_payload_bytes: u64,
-) -> Result<std::sync::Arc<crucible::MemoryDagStore>, CliError> {
-    const HEADER_BYTES: usize = 16;
-    if bytes.len() < HEADER_BYTES || bytes.get(..8) != Some(&b"CSAB\0\0\0\x01"[..]) {
-        return Err(artifact_error(
-            "signal artifact bundle has an invalid header",
-        ));
-    }
-    decode_artifact_object_records(bytes, HEADER_BYTES, "signal", maximum_payload_bytes)
-}
-
 fn decode_artifact_object_records(
     bytes: &[u8],
     header_bytes: usize,
@@ -593,7 +664,7 @@ pub(crate) fn verify_reproduction_artifact_bytes_with_components(
     )
 }
 
-pub(crate) fn run_failure_reproduction_artifact_bytes(
+pub(crate) fn run_reproduction_artifact_bytes(
     seed: u64,
     backend: Option<&ResolvedLocalBackend>,
     producer: &str,
@@ -602,12 +673,13 @@ pub(crate) fn run_failure_reproduction_artifact_bytes(
     canonical_log: &[CanonicalLogEntry],
 ) -> Result<Vec<u8>, CliError> {
     let scenario = run_plan.scenario.scenario_form();
-    let terminal_configuration = report.terminal_configuration.as_ref().ok_or_else(|| {
-        artifact_error("failed-run artifact capture requires a terminal configuration")
-    })?;
+    let terminal_configuration = report
+        .terminal_configuration
+        .as_ref()
+        .ok_or_else(|| artifact_error("run artifact capture requires a terminal configuration"))?;
     if terminal_configuration.def.id() != scenario.id() {
         return Err(CliError::Identity(format!(
-            "failed-run terminal scenario {} did not match captured scenario {}",
+            "run terminal scenario {} did not match captured scenario {}",
             terminal_configuration.def.id().to_hex(),
             scenario.id().to_hex()
         )));
@@ -615,14 +687,10 @@ pub(crate) fn run_failure_reproduction_artifact_bytes(
     let model_artifact =
         crucible::ReproductionArtifact::capture(scenario, &terminal_configuration.schedule)
             .map_err(|error| {
-                artifact_error(format!(
-                    "failed-run model reproduction capture failed: {error}"
-                ))
+                artifact_error(format!("run model reproduction capture failed: {error}"))
             })?;
     let replay = model_artifact.replay().map_err(|error| {
-        artifact_error(format!(
-            "failed-run model reproduction replay failed: {error}"
-        ))
+        artifact_error(format!("run model reproduction replay failed: {error}"))
     })?;
     let mut model_payloads = model_reproduction_artifact_payloads(&model_artifact, replay.state);
     let mut fingerprint_samples = run_fingerprint_samples(report);
@@ -659,7 +727,7 @@ pub(crate) fn run_failure_reproduction_artifact_bytes(
     )
 }
 
-/// Encodes a live QEMU finding with the complete v3 replay evidence bundle.
+/// Encodes a live QEMU finding with the complete current replay evidence bundle.
 ///
 /// # Errors
 ///

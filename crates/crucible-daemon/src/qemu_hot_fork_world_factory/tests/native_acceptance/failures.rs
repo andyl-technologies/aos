@@ -85,9 +85,13 @@ where
         &mut self,
         resources: AttemptResourceLimits,
         cancellation: ExecutionCancellation,
-    ) -> Result<Self::Guard, QemuVmRealizationError> {
+        selected_checkpoint: Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
+    ) -> Result<Self::Guard, crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure>
+    {
         Ok(FinishFailingGuard {
-            inner: self.inner.begin(resources, cancellation)?,
+            inner: self
+                .inner
+                .begin(resources, cancellation, selected_checkpoint)?,
             failures: Arc::clone(&self.failures),
         })
     }
@@ -217,7 +221,7 @@ fn production_factory_exposes_no_world_when_second_real_fork_fails() {
         ))
     ));
     assert_eq!(hot_fork_adoption_count_for_test(), 0);
-    assert!(!factory.sources().available());
+    assert!(!factory.sources.available());
     eprintln!(
         "atomic-world phase=fork-failure-complete failed_source_pid={failed_pid} public_world=false"
     );
@@ -307,7 +311,7 @@ fn production_factory_exposes_no_world_when_second_real_adoption_fails() {
         ))
     ));
     assert_eq!(hot_fork_adoption_count_for_test(), 1);
-    assert!(!factory.sources().available());
+    assert!(!factory.sources.available());
     eprintln!(
         "atomic-world phase=adoption-failure-complete adopted_before_failure=1 public_world=false"
     );
@@ -344,7 +348,7 @@ fn production_factory_keeps_source_private_until_target_cleanup_retries() {
         QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
         QemuHotForkWorldLifecycleStart::Declined => panic!("prepared source was declined"),
     };
-    assert!(!factory.sources().available());
+    assert!(!factory.sources.available());
     QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle).expect("shutdown child world");
 
     let mut observed_failure = false;
@@ -362,14 +366,14 @@ fn production_factory_keeps_source_private_until_target_cleanup_retries() {
     }
     assert!(observed_failure);
     assert_eq!(failures.load(Ordering::SeqCst), 0);
-    assert!(!factory.sources().available());
+    assert!(!factory.sources.available());
     eprintln!(
         "atomic-world phase=target-cleanup-failure source_reusable=false retry_authority=true"
     );
 
     reconcile_native_world(&mut lifecycle);
     assert!(factory.recover(lifecycle).is_ok());
-    assert!(factory.sources().available());
+    assert!(factory.sources.available());
     eprintln!("atomic-world phase=target-cleanup-retry-complete source_reusable=true");
 }
 
@@ -423,6 +427,7 @@ fn production_factory_keeps_source_private_across_repository_publication_retry()
         attempt,
         resources,
         ExecutionRetentionIntent::Discard,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("publication submission");
     let admission = RepositoryAttemptAdmission::new(Arc::clone(&repository), profile);
@@ -455,43 +460,29 @@ fn production_factory_keeps_source_private_across_repository_publication_retry()
     };
     let observation = prepared.observation();
     assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
-    assert!(
-        !worker
-            .model()
-            .runner()
-            .hot_fork()
-            .lifecycle_factory()
-            .sources()
-            .available()
-    );
-
     let staged = stage_prepared_attempt_result(&mut supervisor, *prepared)
         .expect("stage native publication result");
     let AttemptResultStageOutcome::Publish(staged) = staged else {
         panic!("native publication result must require immutable publication")
     };
     publication.fail_next_observation();
-    let failure = publish_prepared_attempt_result(&store, staged)
+    let exact_authenticator =
+        crate::exact_checkpoint_store::ExactFindingCheckpointAuthenticator::new(
+            &store,
+            &checkpoints,
+        );
+    let failure = publish_prepared_attempt_result(&store, &exact_authenticator, staged)
         .expect_err("inject repository observation publication failure");
     assert!(failure.source.is_retryable());
     assert!(matches!(
         repository.load_observation(observation),
         Err(crucible_campaign::CampaignRepositoryError::NotFound)
     ));
-    assert!(
-        !worker
-            .model()
-            .runner()
-            .hot_fork()
-            .lifecycle_factory()
-            .sources()
-            .available()
-    );
     eprintln!(
         "atomic-world phase=repository-publication-failure observation_visible=false source_reusable=false"
     );
 
-    let published = publish_prepared_attempt_result(&store, failure.staged)
+    let published = publish_prepared_attempt_result(&store, &exact_authenticator, failure.staged)
         .expect("retry exact native publication");
     repository
         .load_observation(observation)
@@ -513,15 +504,6 @@ fn production_factory_keeps_source_private_across_repository_publication_retry()
         .expect("reconcile native published world")
             == AttemptExecutionReconciliationStep::Complete
         {
-            assert!(
-                worker
-                    .model()
-                    .runner()
-                    .hot_fork()
-                    .lifecycle_factory()
-                    .sources()
-                    .available()
-            );
             eprintln!(
                 "atomic-world phase=repository-publication-complete observation_visible=true source_reusable=true"
             );
@@ -589,20 +571,24 @@ fn publication_campaign(
     )
     .expect("publication widening policy");
     let policy = CampaignPolicy::new(
-        scenario_artifact.scenario(),
-        CampaignSeed::from_bytes([0x78; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            widening: Some(widening),
-            puct: PuctPolicy::new(1_000_000, 1, 0),
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("publication fairness policy"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario_artifact.scenario(),
+            CampaignSeed::from_bytes([0x78; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                widening: Some(widening),
+                puct: PuctPolicy::new(1_000_000, 1, 0),
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("publication fairness policy"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("publication campaign policy");
     let created = repository

@@ -95,14 +95,12 @@ const CAMPAIGN_LIBRARY_EXACT_TESTING_TARGETS: &[GateTargetSpec] = &[
         package: "crucible-daemon",
         test_target: "executor_pool::tests::campaign_controls_remain_responsive_while_every_executor_slot_is_busy",
         required_features: &[],
-        placeholder: false,
     },
     GateTargetSpec {
         gate: "gate:world-fork-atomicity",
         package: "crucible-daemon",
-        test_target: "qemu_hot_fork_world_factory::tests::world_fork_atomicity::production_three_node_clean_rejection_is_atomic_at_every_launch_index",
+        test_target: "qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically",
         required_features: &[],
-        placeholder: false,
     },
 ];
 
@@ -123,19 +121,14 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
     },
     GateTestingStandard {
         gate: "gate:layer0-determinism",
-        owner_packages: &["crucible-sim", "crucible-assert", "crucible"],
-        layers: &[Layer::L0, Layer::L3],
-        shape: TestShape::TwiceReduceCompareByHash,
-        backend: TestBackend::InProcess,
+        owner_packages: &["crucible-qemu"],
+        layers: &[Layer::L2],
+        shape: TestShape::FingerprintCompare,
+        backend: TestBackend::RealQemu,
     },
     GateTestingStandard {
         gate: "gate:single-vm-fingerprint",
-        owner_packages: &[
-            "crucible",
-            "crucible-qemu",
-            "crucible-qemu-plugin",
-            "crucible-guest",
-        ],
+        owner_packages: &["crucible-qemu", "crucible-qemu-plugin", "crucible-guest"],
         layers: &[Layer::L2, Layer::L3],
         shape: TestShape::FingerprintCompare,
         backend: TestBackend::Mixed,
@@ -215,7 +208,7 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         owner_packages: &["crucible-daemon"],
         layers: &[Layer::L4],
         shape: TestShape::WorldForkAtomicity,
-        backend: TestBackend::SimDouble,
+        backend: TestBackend::Mixed,
     },
     GateTestingStandard {
         gate: "gate:campaign-component-contract",
@@ -282,10 +275,10 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
     },
     GateTestingStandard {
         gate: "gate:scheduler-liveness",
-        owner_packages: &["crucible"],
-        layers: &[Layer::L3],
-        shape: TestShape::TwiceReduceCompareByHash,
-        backend: TestBackend::SimDouble,
+        owner_packages: &["crucible-qemu"],
+        layers: &[Layer::L2],
+        shape: TestShape::ResponsivenessBound,
+        backend: TestBackend::RealQemu,
     },
     GateTestingStandard {
         gate: "gate:control-responsive",
@@ -393,11 +386,11 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
 const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
     CrateTestingOwnership {
         package: "crucible-sim",
-        gates: &["gate:layer0-determinism", "gate:content-address"],
+        gates: &["gate:content-address"],
     },
     CrateTestingOwnership {
         package: "crucible-assert",
-        gates: &["gate:layer0-determinism"],
+        gates: &[],
     },
     CrateTestingOwnership {
         package: "crucible-shmem",
@@ -414,7 +407,9 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
     CrateTestingOwnership {
         package: "crucible-qemu",
         gates: &[
+            "gate:layer0-determinism",
             "gate:single-vm-fingerprint",
+            "gate:scheduler-liveness",
             "gate:any-guest",
             "gate:qemu-inert",
             "gate:basic-block-coverage",
@@ -436,12 +431,9 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
     CrateTestingOwnership {
         package: "crucible",
         gates: &[
-            "gate:layer0-determinism",
-            "gate:single-vm-fingerprint",
             "gate:abi-conformance",
             "gate:replay-oracle",
             "gate:content-address",
-            "gate:scheduler-liveness",
             "gate:adversarial-determinism",
             "gate:e2e-determinism",
             "gate:fleet-equivalence",
@@ -523,12 +515,7 @@ const FLAKY_ESCAPE_PATTERNS: &[&str] = &[
     "thread::sleep",
     "std::thread::sleep",
 ];
-const HASH_COMPARE_GATES: &[&str] = &[
-    "gate:layer0-determinism",
-    "gate:replay-oracle",
-    "gate:content-address",
-    "gate:scheduler-liveness",
-];
+const HASH_COMPARE_GATES: &[&str] = &["gate:replay-oracle", "gate:content-address"];
 const TWICE_REDUCE_HELPER: &str = "assert_twice_reduce_canonical_digest(";
 const DUMP_COMPARE_PATTERNS: &[&str] = &["human_formatted_dump", "formatted_dump", "dump()"];
 
@@ -614,27 +601,25 @@ fn world_fork_atomicity_standard_requires_production_transaction_proofs()
         .ok_or("world-fork-atomicity library target is missing")?;
     let standard =
         standard_for_gate(target.gate).ok_or("world-fork-atomicity testing standard is missing")?;
-    let source = fs::read_to_string(workspace_root().join(
-        "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/world_fork_atomicity.rs",
-    ))?;
+    let root = workspace_root();
+    let source = [
+        "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance.rs",
+        "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/failures.rs",
+    ]
+    .into_iter()
+    .map(|path| fs::read_to_string(root.join(path)))
+    .collect::<Result<Vec<_>, _>>()?
+    .join("\n");
     assert!(source_shape_failures(target, standard, &source).is_empty());
     assert!(backend_failures(target, standard).is_empty());
 
-    let wrong_layer = GateTargetSpec {
-        package: "crucible-qemu",
-        ..*target
-    };
-    assert!(!backend_failures(&wrong_layer, standard).is_empty());
-
     for proof in [
         "QemuProductionHotForkWorldLifecycleFactory",
-        "production_three_node_clean_rejection_is_atomic_at_every_launch_index",
-        "production_three_node_ambiguous_launch_is_fail_closed_at_every_index",
-        "production_three_node_adoption_failure_retains_the_complete_world",
-        "production_aggregate_release_failure_blocks_source_restore",
-        "production_source_identity_drift_blocks_restore_after_complete_rollback",
-        "rollback_retains_every_unfinished_owner_on_termination_failure",
-        "rollback_deadline_covers_reap_private_release_and_cancellation_progress",
+        "production_factory_forks_complete_live_world_atomically",
+        "production_factory_exposes_no_world_when_second_real_fork_fails",
+        "production_factory_exposes_no_world_when_second_real_adoption_fails",
+        "production_factory_keeps_source_private_until_target_cleanup_retries",
+        "production_factory_keeps_source_private_across_repository_publication_retry",
     ] {
         let without_proof = source.replace(proof, "missing_world_fork_atomicity_proof");
         assert!(

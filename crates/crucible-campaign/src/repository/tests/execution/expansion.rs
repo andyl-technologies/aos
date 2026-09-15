@@ -142,7 +142,9 @@ fn exercise_intervention_guidance_ordering(
         )
         .expect("publish intervention-guidance child");
     let measurements = repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
+        .publish_measurement_set(
+            &MeasurementSet::test_evaluation(b"empty", BTreeSet::new()).expect("measurements"),
+        )
         .expect("publish measurements");
     let properties = repository
         .publish_property_verdict_set(
@@ -156,13 +158,15 @@ fn exercise_intervention_guidance_ordering(
         .expect("publish coverage");
     let observation = Observation::new(
         basis.attempt,
-        child,
-        child_content,
-        basis_path.id().expect("basis path ID"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements,
-        properties,
-        coverage,
+        Observation::outcome(
+            child,
+            child_content,
+            basis_path.id().expect("basis path ID"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurements,
+            properties,
+            coverage,
+        ),
         BTreeSet::from([operator_request.opportunity()]),
     )
     .expect("intervention-guidance observation");
@@ -196,10 +200,12 @@ fn planner_duplicate_request(
     .expect("planner state");
     let (_, _, invocation) = planner_basis(repository, name, snapshot, state);
     BranchRequest::new(
-        source.branch_point(),
-        source.parent(),
-        source.opportunity(),
-        source.domain(),
+        BranchRequest::identity(
+            source.branch_point(),
+            source.parent(),
+            source.opportunity(),
+            source.domain(),
+        ),
         source.source().clone(),
         BranchRequestCause::Planner(invocation.id().expect("planner invocation ID")),
         source.budget(),
@@ -244,20 +250,25 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
     let (repository, lineage, base_policy) = fixture();
     let objective_name = "recovery.score";
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        base_policy.mode(),
-        base_policy.explorer().clone(),
-        base_policy.choice_policies().clone(),
-        BTreeMap::from([(
-            objective_name.to_owned(),
-            Objective::new(objective_name, ObjectiveGoal::Maximize, 1_000_000).expect("objective"),
-        )]),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            base_policy.mode(),
+            base_policy.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            BTreeMap::from([(
+                objective_name.to_owned(),
+                Objective::new(objective_name, ObjectiveGoal::Maximize, 1_000_000)
+                    .expect("objective"),
+            )]),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("objective-guided finite-expansion policy")
     .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
@@ -295,10 +306,12 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         b"wrong network retry",
     ));
     let mismatched_request = BranchRequest::new(
-        first_request.branch_point(),
-        first_request.parent(),
-        first_request.opportunity(),
-        first_request.domain(),
+        BranchRequest::identity(
+            first_request.branch_point(),
+            first_request.parent(),
+            first_request.opportunity(),
+            first_request.domain(),
+        ),
         CandidateSource::modeled_finite(
             wrong_model,
             BTreeMap::from([
@@ -335,10 +348,12 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         .submit_branch_request("finite-expansion", discovered.new_snapshot, &first_request)
         .expect("first request");
     let second_request = BranchRequest::new(
-        first_request.branch_point(),
-        first_request.parent(),
-        first_request.opportunity(),
-        first_request.domain(),
+        BranchRequest::identity(
+            first_request.branch_point(),
+            first_request.parent(),
+            first_request.opportunity(),
+            first_request.domain(),
+        ),
         first_request.source().clone(),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -546,7 +561,10 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         )
         .expect("publish finite expansion child");
     let measurements = repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("empty measurements"))
+        .publish_measurement_set(
+            &MeasurementSet::test_evaluation(b"empty", BTreeSet::new())
+                .expect("empty measurements"),
+        )
         .expect("publish finite expansion measurements");
     let properties = repository
         .publish_property_verdict_set(
@@ -569,13 +587,15 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         .expect("publish finite expansion coverage");
     let observation = Observation::new(
         first_admitted.attempt,
-        child,
-        child_content,
-        path.id().expect("first path id"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements,
-        properties,
-        coverage,
+        Observation::outcome(
+            child,
+            child_content,
+            path.id().expect("first path id"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurements,
+            properties,
+            coverage,
+        ),
         BTreeSet::from([first_request.opportunity()]),
     )
     .expect("finite expansion observation");
@@ -627,6 +647,7 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
             .snapshot
             .transition()
             .expect("observation transition"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged path-index successor");
     let forged_path_content = repository
@@ -660,13 +681,15 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         .expect("publish conflicting finite expansion child");
     let conflicting_observation = Observation::new(
         first_admitted.attempt,
-        child,
-        conflicting_child_content,
-        path.id().expect("first path id"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements,
-        properties,
-        coverage,
+        Observation::outcome(
+            child,
+            conflicting_child_content,
+            path.id().expect("first path id"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurements,
+            properties,
+            coverage,
+        ),
         BTreeSet::from([first_request.opportunity()]),
     )
     .expect("finite expansion conflicting observation");
@@ -739,10 +762,12 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         .expect("nested domain");
     let nested_branch_point = nested_opportunity.branch_point_id(child);
     let nested_request = BranchRequest::new(
-        nested_branch_point,
-        child_content,
-        first_request.opportunity(),
-        first_request.domain(),
+        BranchRequest::identity(
+            nested_branch_point,
+            child_content,
+            first_request.opportunity(),
+            first_request.domain(),
+        ),
         CandidateSource::weighted_finite(BTreeMap::from([
             (ChoiceValue::Boolean(false), 9),
             (ChoiceValue::Boolean(true), 1),
@@ -827,7 +852,7 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         nested_proposed.new_snapshot
     );
 
-    let mut nested_segments = path.segments().expect("scoped first path").to_vec();
+    let mut nested_segments = path.segments().to_vec();
     nested_segments.push(crate::BranchPathSegment::new(
         nested_branch_point,
         nested_edge,
@@ -879,13 +904,15 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         .expect("publish nested coverage");
     let nested_observation = Observation::new(
         nested_admitted.attempt,
-        nested_child,
-        nested_child_content,
-        nested_path.id().expect("nested path id"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements,
-        properties,
-        nested_coverage,
+        Observation::outcome(
+            nested_child,
+            nested_child_content,
+            nested_path.id().expect("nested path id"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurements,
+            properties,
+            nested_coverage,
+        ),
         BTreeSet::from([first_request.opportunity()]),
     )
     .expect("nested observation");
@@ -1062,13 +1089,7 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         .expect("weighted-guidance snapshot");
     let mut candidate_cache = Default::default();
     let weighted_guidance = repository
-        .planner_candidate_guidance(
-            &loaded,
-            &root_puct,
-            &second_proposal,
-            2,
-            &mut candidate_cache,
-        )
+        .planner_candidate_guidance(&loaded, &root_puct, &second_proposal, &mut candidate_cache)
         .expect("weighted prospective guidance");
     assert_eq!(weighted_guidance.statistics().prior_micros(), 750_000);
     let second_proposed = repository

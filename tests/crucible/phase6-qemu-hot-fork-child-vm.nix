@@ -1,10 +1,12 @@
 # Forks one real retained template into a child that adopts a child-private
 # VMState copy, inside a disposable VM that owns cgroup-v2 and project quotas.
-# This is the first positive hot-fork execution flight; it does not prove
-# whole-world adoption, disk overlays, or parent/child guest equivalence.
+# The retained source is restored through two generations and saves VMState
+# after each restoration. The flight does not prove whole-world adoption,
+# disk overlays, or parent/child guest equivalence.
 {
   pkgs,
   lib,
+  qemuPackage ? pkgs.qemu-crucible,
   attrPath ? "checks.crucible.phase6.qemuHotForkChildVm",
   taskIds ? [],
 }: let
@@ -44,7 +46,7 @@
   # The flight attaches a debugger to a child that stalls before its private
   # QMP greeting, so its QEMU keeps the symbol table: only DWARF is removed,
   # which is what would otherwise pull the compiler into the closure.
-  qemuWithSymbols = pkgs.qemu-crucible.overrideAttrs (prev: {
+  qemuWithSymbols = qemuPackage.overrideAttrs (prev: {
     dontStrip = "1";
     phases =
       prev.phases
@@ -134,6 +136,9 @@ in
       grep -Fxq child_released_source_vmstate_inode=true /tmp/hot-fork-child-result
       grep -Fxq source_vmstate_unchanged=true /tmp/hot-fork-child-result
       grep -Fxq children_forked=3 /tmp/hot-fork-child-result
+      grep -Fxq retained_transactions=2 /tmp/hot-fork-child-result
+      grep -Fxq restored_vmstate_saves=2 /tmp/hot-fork-child-result
+      grep -Fxq source_suffix_icount=9000001 /tmp/hot-fork-child-result
       grep -Fxq source_threads_leaked=0 /tmp/hot-fork-child-result
       grep -Fxq source_descriptors_leaked=0 /tmp/hot-fork-child-result
       grep -Fxq whole_world_child_handoff=false /tmp/hot-fork-child-result

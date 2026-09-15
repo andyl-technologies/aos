@@ -417,9 +417,9 @@ pub(super) fn validate_properties_for_world(
     world: &World,
     assertions: &[AssertionDef],
 ) -> Result<(), EngineError> {
-    let node_ids = world.nodes.iter().map(|node| &node.id).collect();
+    let node_ids = world.vm_nodes().iter().map(|node| &node.id).collect();
     let white_box_node_ids = world
-        .nodes
+        .vm_nodes()
         .iter()
         .filter(|node| node.white_box == WhiteBoxPolicy::Enabled)
         .map(|node| &node.id)

@@ -42,7 +42,7 @@ use crucible_campaign::{
     SubmitAttemptResponse, WatchExecutorCapacityRequest,
 };
 
-use crate::campaign_endpoint::{ExecutorLoopbackEndpointConfig, ExecutorLoopbackEndpointError};
+use crate::campaign_endpoint::{CampaignLoopbackEndpointError, ExecutorLoopbackEndpointConfig};
 
 const FRAME_MAGIC: &[u8; 8] = b"CRUCEX05";
 const FRAME_HEADER_BYTES: usize = 16;
@@ -178,7 +178,7 @@ impl LoopbackExecutorService {
     ///
     /// Returns an endpoint or socket-configuration error when the initial
     /// authenticated connection cannot be established.
-    pub fn connect_with_timeouts(
+    fn connect_with_timeouts(
         endpoint: ExecutorLoopbackEndpointConfig,
         timeouts: LoopbackExecutorTimeouts,
     ) -> Result<Self, LoopbackExecutorProtocolError> {
@@ -695,7 +695,7 @@ pub enum LoopbackExecutorProtocolError {
     Io(#[from] std::io::Error),
     /// An authenticated executor endpoint could not be connected.
     #[error(transparent)]
-    Endpoint(#[from] ExecutorLoopbackEndpointError),
+    Endpoint(#[from] CampaignLoopbackEndpointError),
     /// Canonical request or response bytes failed strict validation.
     #[error(transparent)]
     Codec(#[from] CampaignCodecError),

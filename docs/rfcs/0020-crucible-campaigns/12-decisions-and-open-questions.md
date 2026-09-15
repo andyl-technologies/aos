@@ -157,7 +157,7 @@ submitted again to the local executor through either supported adapter.
 The scheduler may realize a branch through:
 
 1. a hot on-host QEMU template, optimized for high-rate forking;
-2. an exact durable checkpoint closure, optimized for replay, hibernation, and
+2. an exact durable checkpoint closure, optimized for replay, exact pause, and
    migration; or
 3. a thin recipe, optimized for low storage when deterministic recomputation is
    acceptable.
@@ -203,7 +203,7 @@ continues. Such a child would not correspond to a single scenario state.
 Hot fork is deliberately host-local and ephemeral. The exact closure includes
 all VM, environment, control-plane, continuation, disk, and identity state
 needed for portable restore. Durable closure export is the bridge to
-hibernation, long-lived midpoint debugging, archival, and offline maintenance
+exact pause, long-lived midpoint debugging, archival, and offline maintenance
 transfer.
 
 ### D-17: Durable storage is a composable content-store graph
@@ -243,10 +243,9 @@ future system that can be written independently of the local executor.
 ### D-20: Campaigns are first-class user-facing objects
 
 The `crucible campaign` porcelain owns creation, running, semantic branching,
-campaign derivation, inspection, comparison, steering, hibernation, export,
-replay, and garbage-collection workflows. Existing one-run and corpus commands
-remain useful and may be
-implemented as bounded campaign policies.
+campaign derivation, inspection, comparison, steering, exact pause, archive
+transfer, replay, and garbage-collection workflows. Existing one-run and corpus
+commands remain useful and may be implemented as bounded campaign policies.
 
 A user sees a decision graph with evidence and measurements, not a directory of
 opaque worker jobs.

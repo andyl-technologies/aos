@@ -17,11 +17,11 @@ pub struct GuestEntropySeed {
 impl GuestEntropySeed {
     /// Derives guest entropy from a scenario seed.
     #[must_use]
-    pub fn from_scenario_seed(scenario_seed: u64) -> Self {
+    pub(super) fn from_scenario_seed(scenario_seed: u64) -> Self {
         let mut bytes = [0; GUEST_ENTROPY_SEED_BYTES];
         let mut state = scenario_seed ^ 0x4352_5543_4942_4c45;
 
-        for (index, chunk) in bytes.chunks_exact_mut(8).enumerate() {
+        for (index, chunk) in bytes.as_chunks_mut::<8>().0.iter_mut().enumerate() {
             state = state
                 .wrapping_add(0x9e37_79b9_7f4a_7c15)
                 .wrapping_add(index as u64);
@@ -39,7 +39,7 @@ impl GuestEntropySeed {
 
     /// Returns the seed bytes as lowercase hexadecimal text.
     #[must_use]
-    pub fn to_lower_hex(&self) -> String {
+    pub(super) fn to_lower_hex(self) -> String {
         let mut hex = String::with_capacity(GUEST_ENTROPY_SEED_BYTES * 2);
         for byte in self.bytes {
             hex.push(nibble_to_hex(byte >> 4));
@@ -88,9 +88,7 @@ fn splitmix64(mut value: u64) -> u64 {
 }
 
 fn nibble_to_hex(nibble: u8) -> char {
-    match nibble {
-        0..=9 => (b'0' + nibble) as char,
-        10..=15 => (b'a' + (nibble - 10)) as char,
-        _ => unreachable!("nibble is masked to four bits"),
-    }
+    const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+    char::from(LOWER_HEX_DIGITS[usize::from(nibble & 0x0f)])
 }

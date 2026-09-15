@@ -3,9 +3,11 @@
 //! The QEMU plugin ABI executes this safe contract while holding raw QEMU handles.
 
 use std::collections::BTreeSet;
-use std::os::raw::{c_int, c_void};
+use std::os::raw::{c_int, c_uint, c_void};
 
 use thiserror::Error;
+
+use crucible_shmem::{FutexWait, NODE_SLOT_WAKE_SIGNAL_OFFSET, NodeSlot};
 
 mod request;
 pub use request::{PluginTimeControlRequestError, QemuRequestTimeControlFn};
@@ -17,10 +19,8 @@ pub const QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL: &str = "qemu_plugin_advance_time_n
 /// Crucible-stable plugin API symbol used to register queued-advance completion.
 pub const QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL: &str =
     "qemu_plugin_register_time_advance_cb";
-/// QEMU plugin API predicate used by the no-warp patch.
-pub const QEMU_PLUGIN_HAS_TIME_CONTROL_SYMBOL: &str = "qemu_plugin_has_time_control";
-/// Upstream QEMU plugin API symbol used by the time-control owner.
-pub const QEMU_PLUGIN_UPDATE_NS_SYMBOL: &str = "qemu_plugin_update_ns";
+/// Crucible-stable one-shot idle futex-wait export.
+pub const QEMU_PLUGIN_CRUCIBLE_WAIT_IDLE_WAKE_SYMBOL: &str = "qemu_plugin_crucible_wait_idle_wake";
 /// Largest `-icount shift=N` value representable by a `u64` nanosecond scale.
 pub const MAX_PLUGIN_ICOUNT_SHIFT: u8 = 63;
 
@@ -39,6 +39,116 @@ pub type QemuTimeAdvanceCompletionCbFn = extern "C" fn(c_int, i64, *mut c_void);
 /// registration, including while another advance remains outstanding.
 pub type QemuRegisterTimeAdvanceCbFn =
     extern "C" fn(Option<QemuTimeAdvanceCompletionCbFn>, *mut c_void) -> c_int;
+
+/// QEMU's one-shot BQL-releasing idle futex wait.
+///
+/// QEMU declares the return type as
+/// enum qemu_plugin_crucible_idle_wait_status, whose ABI is a C int.
+pub(crate) type QemuCrucibleWaitIdleWakeFn = extern "C" fn(c_uint, *mut u32, u32) -> c_int;
+
+/// Result of QEMU's one-shot idle futex wait.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QemuIdleWakeWaitStatus {
+    /// The raw futex syscall returned zero, including a possible spurious wake.
+    Woken,
+    /// The futex word changed before the kernel could park the callback.
+    ValueChanged,
+    /// A signal interrupted the futex wait.
+    Interrupted,
+    /// The pinned callback CPU changed while the BQL was released.
+    CpuChanged,
+    /// QEMU rejected an invalid futex address.
+    InvalidArgument,
+    /// QEMU rejected a call outside the exact simulated RR idle callback.
+    InvalidContext,
+    /// The same idle callback attempted a second exported wait.
+    AlreadyIssued,
+    /// The current QEMU host does not provide a raw futex wait.
+    Unsupported,
+    /// The raw futex syscall failed for another reason.
+    SyscallError,
+    /// QEMU discovered pending work during its final pre-wait check.
+    QemuWorkPending,
+    /// QEMU returned a status unknown to this plugin build.
+    Unknown(i32),
+}
+
+impl QemuIdleWakeWaitStatus {
+    fn from_qemu(status: c_int) -> Self {
+        match status {
+            0 => Self::Woken,
+            1 => Self::ValueChanged,
+            2 => Self::Interrupted,
+            3 => Self::CpuChanged,
+            4 => Self::InvalidArgument,
+            5 => Self::InvalidContext,
+            6 => Self::AlreadyIssued,
+            7 => Self::Unsupported,
+            8 => Self::SyscallError,
+            9 => Self::QemuWorkPending,
+            status => Self::Unknown(status),
+        }
+    }
+
+    pub(crate) const fn into_raw(self) -> i32 {
+        match self {
+            Self::Woken => 0,
+            Self::ValueChanged => 1,
+            Self::Interrupted => 2,
+            Self::CpuChanged => 3,
+            Self::InvalidArgument => 4,
+            Self::InvalidContext => 5,
+            Self::AlreadyIssued => 6,
+            Self::Unsupported => 7,
+            Self::SyscallError => 8,
+            Self::QemuWorkPending => 9,
+            Self::Unknown(status) => status,
+        }
+    }
+}
+
+/// Required handle for QEMU's one-shot idle wake wait.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct QemuIdleWakeWait {
+    wait_idle_wake: QemuCrucibleWaitIdleWakeFn,
+}
+
+impl QemuIdleWakeWait {
+    #[cfg(test)]
+    pub(crate) const fn test_stub(wait_idle_wake: QemuCrucibleWaitIdleWakeFn) -> Self {
+        Self { wait_idle_wake }
+    }
+
+    /// Wraps the required QEMU one-shot idle-wait export.
+    pub(crate) const fn from_required_pointer(wait_idle_wake: QemuCrucibleWaitIdleWakeFn) -> Self {
+        Self { wait_idle_wake }
+    }
+
+    /// Performs at most one QEMU-owned wait for a published idle request.
+    ///
+    /// A runnable request never crosses the FFI boundary. A wait request passes
+    /// the stable shared wake word and exact expected value to QEMU, which
+    /// releases the BQL only around one raw non-private FUTEX_WAIT.
+    #[must_use]
+    pub fn wait_once(
+        self,
+        vcpu_index: u32,
+        slot: &NodeSlot,
+        wait: FutexWait,
+    ) -> Option<QemuIdleWakeWaitStatus> {
+        let FutexWait::Wait { expected } = wait else {
+            return None;
+        };
+
+        let slot_address = std::ptr::from_ref(slot).cast_mut().cast::<u8>();
+        // SAFETY: NodeSlot has a stable repr(C) shared-memory layout, and the
+        // exported offset identifies its aligned AtomicU32 wake word. The setup
+        // mapping retains the slot for every registered callback.
+        let wake_signal = unsafe { slot_address.add(NODE_SLOT_WAKE_SIGNAL_OFFSET).cast::<u32>() };
+        let status = (self.wait_idle_wake)(vcpu_index, wake_signal, expected);
+        Some(QemuIdleWakeWaitStatus::from_qemu(status))
+    }
+}
 
 /// The canonical registration steps that protect virtual time before guest code runs.
 pub const CANONICAL_TIME_CONTROL_REGISTRATION_ORDER: [PluginRegistrationStep; 10] = [
@@ -238,20 +348,59 @@ impl QueuedIdleAdvance {
         &self,
         target_virtual_ns: u64,
     ) -> Result<PendingIdleAdvance, QueuedIdleAdvanceError> {
+        let prepared = self.prepare(target_virtual_ns)?;
+        let pending = prepared.pending();
+
+        self.enqueue_prepared(prepared)?;
+        Ok(pending)
+    }
+
+    /// Validates an advance target before its completion identity is published.
+    pub(crate) fn prepare(
+        &self,
+        target_virtual_ns: u64,
+    ) -> Result<PreparedIdleAdvance, QueuedIdleAdvanceError> {
         let qemu_target_ns = i64::try_from(target_virtual_ns).map_err(|_error| {
             QueuedIdleAdvanceError::VirtualTimeOutOfRange { target_virtual_ns }
         })?;
-        let status = (self.advance_time_ns)(qemu_target_ns);
+
+        Ok(PreparedIdleAdvance {
+            target_virtual_ns,
+            qemu_target_ns,
+        })
+    }
+
+    /// Submits a target whose completion identity is already visible to callbacks.
+    pub(crate) fn enqueue_prepared(
+        &self,
+        prepared: PreparedIdleAdvance,
+    ) -> Result<(), QueuedIdleAdvanceError> {
+        let status = (self.advance_time_ns)(prepared.qemu_target_ns);
         if status != 0 {
             return Err(QueuedIdleAdvanceError::EnqueueRejected {
-                target_virtual_ns,
+                target_virtual_ns: prepared.target_virtual_ns,
                 status,
             });
         }
-        Ok(PendingIdleAdvance {
-            target_virtual_ns,
+
+        Ok(())
+    }
+}
+
+/// A validated target that has not yet crossed the QEMU enqueue boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PreparedIdleAdvance {
+    target_virtual_ns: u64,
+    qemu_target_ns: i64,
+}
+
+impl PreparedIdleAdvance {
+    /// Returns the completion identity that callers must publish before enqueueing.
+    pub(crate) const fn pending(self) -> PendingIdleAdvance {
+        PendingIdleAdvance {
+            target_virtual_ns: self.target_virtual_ns,
             completion_pending: true,
-        })
+        }
     }
 }
 
@@ -383,16 +532,6 @@ impl PluginVirtualClock {
     #[must_use]
     pub const fn icount_shift(&self) -> u8 {
         self.icount_shift
-    }
-
-    /// Returns the current virtual nanoseconds.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PluginClockError::VirtualTimeOverflow`] when the current icount
-    /// cannot be projected with this clock's fixed shift.
-    pub fn current_virtual_ns(&self) -> Result<u64, PluginClockError> {
-        project_virtual_ns(self.current_icount, self.icount_shift)
     }
 
     /// Advances by retired guest instructions bounded by a scheduler ceiling.
@@ -954,7 +1093,10 @@ mod tests {
         assert_eq!(advance.to_icount(), 15);
         assert_eq!(advance.virtual_ns(), 60);
         assert_eq!(clock.current_icount(), 15);
-        assert_eq!(clock.current_virtual_ns(), Ok(60));
+        assert_eq!(
+            project_virtual_ns(clock.current_icount(), clock.icount_shift()),
+            Ok(60)
+        );
     }
 
     #[test]

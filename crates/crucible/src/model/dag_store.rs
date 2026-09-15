@@ -333,7 +333,7 @@ impl DagStore for MemoryDagStore {
 
 mod local;
 
-pub use local::{LocalCheckpointClosureIndex, LocalDagStore};
+pub use local::LocalDagStore;
 
 /// Reproduction artifact expressed only as DAG-store keys.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

@@ -6,18 +6,6 @@ impl SingleScheduler {
         self.accept_control_at_boundary(operation);
     }
 
-    pub(super) fn validate_max_host_workers(
-        &self,
-        max_host_workers: usize,
-    ) -> Result<(), SchedulerError> {
-        if max_host_workers == 0 {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from("concurrent scheduler max_host_workers must be positive"),
-            });
-        }
-        Ok(())
-    }
-
     pub(super) fn vm_node_index(&self, node: &NodeId) -> Result<usize, SchedulerError> {
         self.nodes
             .iter()
@@ -183,23 +171,6 @@ impl SingleScheduler {
         blockers
     }
 
-    /// Queues a topology change for the next quantum boundary.
-    ///
-    /// This is the infallible legacy entry point and is signature-compatible with
-    /// its prior form. A change armed at an activation virtual time the run has
-    /// already passed (`at < frontier`) cannot apply — its activation cap can never
-    /// reach an instant below the frontier. Rather than wedge the run with a vague,
-    /// repeating per-node "missed exact virtual time" boundary error at apply time,
-    /// such a change is still enqueued but the next boundary surfaces a clear,
-    /// localized [`SchedulerError::TopologyActivationInPast`] (see
-    /// `SingleScheduler::apply_topology_changes_at_boundary`). Callers that can
-    /// observe a `Result` should prefer [`SingleScheduler::schedule_topology_change`],
-    /// which rejects the same condition at enqueue time.
-    pub fn queue_topology_change(&mut self, change: SchedulerTopologyChange) {
-        self.topology_changes.push(change);
-        self.topology_changes.sort_by(topology_change_order);
-    }
-
     /// Consumes a network-link latency recompute signal and schedules lookahead refresh.
     ///
     /// `crucible-device` owns the live network-link fault table. When a link's
@@ -344,12 +315,9 @@ impl SingleScheduler {
         };
         for change in changes {
             if let Some(activation_time) = change.activation_time {
-                // Fail loud and localized for a change armed in the past. The
-                // infallible `queue_topology_change` entry point cannot reject at
-                // enqueue time, so an `at < frontier` change reaches here; surface a
-                // clear `TopologyActivationInPast` rather than deferring it forever
-                // (a silent wedge) or letting `topology_activation_ready` report a
-                // vague per-node skew error.
+                // Keep boundary admission fail-closed even though current enqueue
+                // paths reject a change armed in the past. This guards decoded or
+                // otherwise reconstructed scheduler state before applying it.
                 if activation_time < frontier {
                     return Err(SchedulerError::TopologyActivationInPast {
                         at: activation_time.nanos,
@@ -578,67 +546,6 @@ impl SingleScheduler {
         };
 
         Ok(target_counter > node.counter)
-    }
-
-    pub(super) fn concurrent_run_set_from_candidates(
-        &self,
-        max_host_workers: usize,
-        candidates: &[AdvanceCandidate],
-    ) -> Result<SchedulerConcurrentRunSet, SchedulerError> {
-        self.validate_max_host_workers(max_host_workers)?;
-        let mut selected = Vec::new();
-        let frontier = SimInstant {
-            nanos: self.frontier.ticks,
-        };
-        let target_time = candidates.first().map(|candidate| candidate.target_time);
-        // A parked peer can hold the global frontier behind the canonical
-        // global-minimum candidate. Batching frontier peers in that state would
-        // reorder PICK relative to the authoritative serial path. Advance only
-        // that canonical first candidate; normal independent batches resume
-        // once the common frontier is restored.
-        if let Some(candidate) = candidates.first() {
-            let draft = self.advance_plan_draft(candidate)?;
-            let current_time =
-                self.node_time_for_counter(&self.nodes[draft.index], draft.before)?;
-            if current_time != frontier {
-                selected.push(SchedulerConcurrentRunCandidate {
-                    node: draft.node,
-                    current_time,
-                    target_time: candidate.target_time,
-                    max_advance_icount: draft.target_counter,
-                });
-                return Ok(SchedulerConcurrentRunSet {
-                    max_host_workers,
-                    candidates: selected,
-                });
-            }
-        }
-
-        for candidate in candidates.iter() {
-            if selected.len() >= max_host_workers {
-                break;
-            }
-            if Some(candidate.target_time) != target_time {
-                break;
-            }
-            let draft = self.advance_plan_draft(candidate)?;
-            let current_time =
-                self.node_time_for_counter(&self.nodes[draft.index], draft.before)?;
-            if current_time != frontier {
-                continue;
-            }
-            selected.push(SchedulerConcurrentRunCandidate {
-                node: draft.node,
-                current_time,
-                target_time: candidate.target_time,
-                max_advance_icount: draft.target_counter,
-            });
-        }
-
-        Ok(SchedulerConcurrentRunSet {
-            max_host_workers,
-            candidates: selected,
-        })
     }
 
     pub(super) fn advance_plan_draft(
@@ -1098,7 +1005,7 @@ impl SingleScheduler {
         // The gate on a non-empty `effective_topology` mirrors the synthetic-
         // liveness exemption: when no live edge set is installed, the per-node
         // `network_lookahead` is a pre-supplied fixed parking point rather than a
-        // frontier-tracking CMB bound, so the legacy idle-on-reach behavior is
+        // frontier-tracking CMB bound, so the fixed-cap idle-on-reach behavior is
         // retained.
         let network_bounded = !self.effective_topology.edges().is_empty()
             && horizon.source == SchedulerHorizonSource::NetworkLookahead;
@@ -1359,9 +1266,7 @@ impl SingleScheduler {
     pub(super) fn drive_concurrent_authoritative_quantum(
         &mut self,
         request: QuantumRequest,
-        max_host_workers: usize,
     ) -> Result<SchedulerConcurrentQuantumOutcome, SchedulerError> {
-        self.validate_max_host_workers(max_host_workers)?;
         if request.configuration != self.configuration {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -1387,7 +1292,7 @@ impl SingleScheduler {
         self.last_topology_recompute = topology_recomputed;
 
         let candidates = self.advance_candidates()?;
-        let run_set = self.concurrent_run_set_from_candidates(max_host_workers, &candidates)?;
+        let run_set = self.concurrent_run_set_from_candidates(&candidates)?;
         let selected_candidates = candidates
             .into_iter()
             .filter(|candidate| {
@@ -1414,7 +1319,7 @@ impl SingleScheduler {
                 at,
                 emit_boundary,
             )?;
-            let configuration = self.step_quantum(&decisions);
+            let configuration = self.step_quantum(&decisions)?;
             if !decisions.is_empty() {
                 self.configuration = configuration.clone();
                 self.quanta = self.quanta.saturating_add(1);
@@ -1526,7 +1431,7 @@ impl SingleScheduler {
                 after_time,
                 true,
             )?;
-            let configuration = self.step_quantum(&decisions);
+            let configuration = self.step_quantum(&decisions)?;
             let frontier = frontier_for(&self.nodes, self.timeline.shift(), Some(self.frontier))?;
 
             self.configuration = configuration.clone();
@@ -1619,7 +1524,7 @@ impl SingleScheduler {
                     },
                     emit_boundary,
                 )?;
-                let configuration = self.step_quantum(&decisions);
+                let configuration = self.step_quantum(&decisions)?;
                 if !decisions.is_empty() {
                     self.configuration = configuration.clone();
                     self.quanta = self.quanta.saturating_add(1);
@@ -1692,7 +1597,7 @@ impl SingleScheduler {
             true,
         )?;
         // STEP phase: apply the emitted decisions to the frontier configuration.
-        let configuration = self.step_quantum(&decisions);
+        let configuration = self.step_quantum(&decisions)?;
         let frontier = frontier_for(&self.nodes, self.timeline.shift(), Some(self.frontier))?;
 
         self.configuration = configuration.clone();
@@ -1802,12 +1707,19 @@ impl SingleScheduler {
         self.event_log.append_entries(entries)
     }
 
-    pub(super) fn step_quantum(&self, decisions: &[Decision]) -> Configuration {
+    pub(super) fn step_quantum(
+        &self,
+        decisions: &[Decision],
+    ) -> Result<Configuration, SchedulerError> {
         let mut configuration = self.configuration.clone();
         for decision in decisions {
-            configuration = step(&configuration, decision.clone());
+            configuration = try_step(&configuration, decision.clone()).map_err(|source| {
+                SchedulerError::BoundaryViolation {
+                    message: format!("scheduler decision violated the scenario model: {source}"),
+                }
+            })?;
         }
-        configuration
+        Ok(configuration)
     }
 
     pub(super) fn admit_control_at_boundary(&mut self, control: Vec<ControlOperation>) {

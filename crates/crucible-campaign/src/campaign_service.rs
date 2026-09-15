@@ -22,6 +22,7 @@ use crate::{
 mod create;
 mod derive;
 mod discovery;
+mod finding_triage;
 mod get_snapshot;
 mod list;
 mod pin;
@@ -38,6 +39,11 @@ pub use create::{
 };
 pub use derive::{DeriveCampaignRequest, DeriveCampaignResponse};
 pub use discovery::{SubmitCampaignDiscoveryRequest, SubmitCampaignDiscoveryResponse};
+pub use finding_triage::{
+    CampaignFindingTriageReplayProofs, CampaignFindingTriageReplayRole,
+    CampaignFindingTriageReplaySegment, CampaignFindingTriageReplaySelection,
+    GetCampaignFindingTriageReplaySegmentRequest, GetCampaignFindingTriageReplaySegmentResponse,
+};
 pub use get_snapshot::{GetCampaignSnapshotRequest, GetCampaignSnapshotResponse};
 pub use list::{
     CampaignListEntry, ListCampaignsRequest, ListCampaignsResponse, MAX_CAMPAIGN_LIST_PAGE_ITEMS,
@@ -193,6 +199,8 @@ pub enum CampaignServiceOperation {
     QueryCampaignFindingOccurrences,
     /// Read one exact dependency named by a retained candidate bundle.
     GetCampaignFindingOccurrenceObject,
+    /// Read one bounded stored-envelope segment for candidate triage evidence.
+    GetCampaignFindingTriageReplaySegment,
     /// Read one exact dependency named by an authenticated finding.
     GetCampaignFindingObject,
     /// Explain one exact attempt, execution basis, proposal, and completion.
@@ -213,6 +221,8 @@ pub enum CampaignServiceOperation {
     SubmitBranchRequest,
     /// Attach one daemon runtime to a local executor endpoint.
     AttachCampaignRuntime,
+    /// Open one exclusive read-only session from an authenticated finding.
+    DebugCampaign,
 }
 
 /// Stable fail-closed authorization failure.
@@ -549,6 +559,19 @@ impl CampaignServiceFailure {
         self.validate_for_query_campaign_graph(expected_snapshot)
     }
 
+    /// Validates a failure for one exact triage-replay storage-segment read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
+    /// or when a stale failure does not describe this request's exact snapshot.
+    pub fn validate_for_get_campaign_finding_triage_replay_segment(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        self.validate_for_query_campaign_graph(expected_snapshot)
+    }
+
     /// Validates a failure for one exact campaign finding-dependency read.
     ///
     /// # Errors
@@ -721,6 +744,23 @@ impl CampaignServiceFailure {
             | Self::InvalidTransition { .. } => Err(CampaignCodecError::InvalidValue {
                 reason: "campaign service failure is invalid for runtime attachment",
             }),
+            _ => Ok(()),
+        }
+    }
+
+    /// Validates a failure for one campaign debug-session allocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for failures that cannot arise after a
+    /// snapshot-bound debug request has been authenticated.
+    pub fn validate_for_debug_campaign(self) -> Result<(), CampaignCodecError> {
+        match self {
+            Self::InvalidTransition { .. } | Self::ConcurrentUpdate => {
+                Err(CampaignCodecError::InvalidValue {
+                    reason: "campaign service failure is invalid for debug allocation",
+                })
+            }
             _ => Ok(()),
         }
     }
@@ -1351,7 +1391,6 @@ pub struct SubmitCampaignBranchResponse {
     summary: crate::BranchAcceptanceSummary,
     snapshot: CampaignSnapshot,
     acceptance_fact: CampaignFact,
-    summary_recorded: bool,
     replayed: bool,
 }
 
@@ -1380,7 +1419,6 @@ impl SubmitCampaignBranchResponse {
             summary: result.summary,
             snapshot: result.snapshot,
             acceptance_fact: result.acceptance_fact,
-            summary_recorded: result.summary_recorded,
             replayed: result.replayed,
         };
         response.validate_for(request)?;
@@ -1412,15 +1450,6 @@ impl SubmitCampaignBranchResponse {
         self.summary
     }
 
-    /// Returns whether the accepting transition recorded the summary.
-    ///
-    /// `false` identifies a legacy transition whose summary was owner-recomputed
-    /// from its immutable original snapshot during replay.
-    #[must_use]
-    pub const fn summary_recorded(&self) -> bool {
-        self.summary_recorded
-    }
-
     /// Returns whether the service observed an idempotent replay.
     #[must_use]
     pub const fn replayed(&self) -> bool {
@@ -1446,10 +1475,6 @@ impl SubmitCampaignBranchResponse {
             Err(CampaignCodecError::InvalidValue {
                 reason: "new campaign branch response has the wrong prior snapshot",
             })
-        } else if !self.summary_recorded && !self.replayed {
-            Err(CampaignCodecError::InvalidValue {
-                reason: "new campaign branch response has an unrecorded summary",
-            })
         } else if self.summary.maximum_proposals() != request.request.budget().maximum_proposals()
             || self.summary.maximum_attempts() != request.request.budget().maximum_attempts()
         {
@@ -1465,15 +1490,11 @@ impl SubmitCampaignBranchResponse {
         if self.snapshot.id()? != self.new_snapshot
             || self.snapshot.parent() != Some(self.prior_snapshot)
             || self.snapshot.transition() != Some(self.acceptance_fact.id()?)
-            || if self.summary_recorded {
-                self.acceptance_fact
-                    != (CampaignFact::BranchRequestAccepted {
-                        request: self.request,
-                        summary: self.summary,
-                    })
-            } else {
-                self.acceptance_fact != CampaignFact::BranchRequestIssued(self.request)
-            }
+            || self.acceptance_fact
+                != (CampaignFact::BranchRequestAccepted {
+                    request: self.request,
+                    summary: self.summary,
+                })
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "campaign branch summary is not bound to its accepting transition",
@@ -1509,7 +1530,7 @@ impl Canonical for SubmitCampaignBranchResponse {
         self.summary.encode(encoder);
         self.snapshot.encode(encoder);
         self.acceptance_fact.encode(encoder);
-        self.summary_recorded.encode(encoder);
+        true.encode(encoder);
         self.replayed.encode(encoder);
     }
 
@@ -1519,16 +1540,27 @@ impl Canonical for SubmitCampaignBranchResponse {
                 reason: "unsupported campaign branch response schema version",
             });
         }
+        let request_digest = CampaignHash::decode(decoder)?;
+        let prior_snapshot = CampaignSnapshotId::decode(decoder)?;
+        let new_snapshot = CampaignSnapshotId::decode(decoder)?;
+        let request = crate::BranchRequestId::decode(decoder)?;
+        let summary = crate::BranchAcceptanceSummary::decode(decoder)?;
+        let snapshot = CampaignSnapshot::decode(decoder)?;
+        let acceptance_fact = CampaignFact::decode(decoder)?;
+        if !bool::decode(decoder)? {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign branch response requires a recorded summary",
+            });
+        }
         let response = Self {
             schema_version: SUBMIT_CAMPAIGN_BRANCH_RESPONSE_SCHEMA_VERSION,
-            request_digest: CampaignHash::decode(decoder)?,
-            prior_snapshot: CampaignSnapshotId::decode(decoder)?,
-            new_snapshot: CampaignSnapshotId::decode(decoder)?,
-            request: crate::BranchRequestId::decode(decoder)?,
-            summary: crate::BranchAcceptanceSummary::decode(decoder)?,
-            snapshot: CampaignSnapshot::decode(decoder)?,
-            acceptance_fact: CampaignFact::decode(decoder)?,
-            summary_recorded: bool::decode(decoder)?,
+            request_digest,
+            prior_snapshot,
+            new_snapshot,
+            request,
+            summary,
+            snapshot,
+            acceptance_fact,
             replayed: bool::decode(decoder)?,
         };
         ensure_message_size(&response, "submit-campaign-branch-response-encoded-bytes")?;
@@ -1911,6 +1943,19 @@ pub trait CampaignFindingOccurrenceService: CampaignService {
         &self,
         request: &GetCampaignFindingOccurrenceObjectRequest,
     ) -> Result<GetCampaignFindingOccurrenceObjectResponse, Self::Error>;
+
+    /// Returns one canonical segment of a triage replay's stored envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// snapshot precondition, finding or bundle membership, replay-role or
+    /// storage-object binding, repository access, or response construction
+    /// fails.
+    fn get_campaign_finding_triage_replay_segment(
+        &self,
+        request: &GetCampaignFindingTriageReplaySegmentRequest,
+    ) -> Result<GetCampaignFindingTriageReplaySegmentResponse, Self::Error>;
 }
 
 /// Failure from the checked campaign-service client.
@@ -2350,6 +2395,38 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_get_campaign_finding_occurrence_object(request.snapshot())
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Reads one candidate triage-replay storage segment and validates its basis.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different snapshot, finding, bundle, role, storage object, or segment.
+    pub fn get_campaign_finding_triage_replay_segment(
+        &self,
+        request: &GetCampaignFindingTriageReplaySegmentRequest,
+    ) -> Result<GetCampaignFindingTriageReplaySegmentResponse, CampaignClientError>
+    where
+        S: CampaignFindingOccurrenceService,
+    {
+        let response = match self
+            .service
+            .get_campaign_finding_triage_replay_segment(request)
+        {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_get_campaign_finding_triage_replay_segment(request.snapshot())
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }

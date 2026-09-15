@@ -64,10 +64,12 @@ fn ten_thousand_distinct_request_transitions_keep_indexed_cap_queries_bounded() 
             &format!("request-index-{ordinal}"),
         );
         let request = BranchRequest::new(
-            template.branch_point(),
-            template.parent(),
-            template.opportunity(),
-            template.domain(),
+            BranchRequest::identity(
+                template.branch_point(),
+                template.parent(),
+                template.opportunity(),
+                template.domain(),
+            ),
             template.source().clone(),
             template.cause(),
             BranchBudget::new(2, 1).expect("request cap"),
@@ -115,12 +117,12 @@ fn ten_thousand_distinct_request_transitions_keep_indexed_cap_queries_bounded() 
 
     let head = repository.head(CAMPAIGN).expect("scaled head");
     let ledger = repository
-        .read_budget_ledger(head.snapshot().budget_ledger().expect("ledger id"))
+        .read_budget_ledger(head.snapshot().budget_ledger())
         .expect("ledger");
     assert_eq!(
         repository
             .merkle
-            .inspect_shallow(ledger.request_spending().expect("index"))
+            .inspect_shallow(ledger.request_spending())
             .expect("request index")
             .entry_count(),
         REQUESTS

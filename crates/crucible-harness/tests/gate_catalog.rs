@@ -37,7 +37,7 @@ fn canonical_gate_statuses_are_current() {
             }
         })
         .collect();
-    let expected = BTreeSet::from(["gate:e2e-determinism"]);
+    let expected = BTreeSet::new();
 
     assert_eq!(placeholders, expected);
 
@@ -115,7 +115,7 @@ fn canonical_gate_statuses_are_current() {
     ));
     assert!(matches!(
         find_gate("gate:e2e-determinism").map(|spec| spec.status),
-        Some(GateStatus::RedPlaceholder)
+        Some(GateStatus::Implemented)
     ));
     assert!(matches!(
         find_gate("gate:fleet-equivalence").map(|spec| spec.status),
@@ -123,6 +123,10 @@ fn canonical_gate_statuses_are_current() {
     ));
     assert!(matches!(
         find_gate("gate:campaign-continuity").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
+    assert!(matches!(
+        find_gate("gate:production-rust-plugin-flight").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
     assert!(matches!(
@@ -167,6 +171,7 @@ fn canonical_gate_statuses_are_current() {
         ("gate:perf-bench", GatePhase::Phase7),
         ("gate:fleet-equivalence", GatePhase::Phase7),
         ("gate:campaign-continuity", GatePhase::Phase7),
+        ("gate:production-rust-plugin-flight", GatePhase::Phase7),
         ("gate:signal-fault-system", GatePhase::Phase7),
     ]);
 

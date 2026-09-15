@@ -409,6 +409,7 @@ fn harness_lint_rejects_banned_code_patterns() {
         r#"
             fn bad() {
                 let _ = std::time::SystemTime::now();
+                let _ = std::time::UNIX_EPOCH.elapsed();
                 let _ = rand::thread_rng();
                 let _ = std::collections::HashMap::<u8, u8>::new();
                 let _ = std::collections::hash_map::DefaultHasher::new();
@@ -418,6 +419,7 @@ fn harness_lint_rejects_banned_code_patterns() {
     );
 
     assert_contains(&findings, "host wall-clock");
+    assert_contains(&findings, "UNIX_EPOCH");
     assert_contains(&findings, "thread/global RNG");
     assert_contains(&findings, "unordered map/set");
     assert_contains(&findings, "default/random hasher");

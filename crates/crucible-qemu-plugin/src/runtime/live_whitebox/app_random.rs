@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use crucible_protocol::app_random_branch_plan::AppRandomBranchPlan;
 use crucible_protocol::app_random_transport::{
-    AppRandomDecisionTransportRecord, WHITEBOX_SHMEM_KIND_APP_RANDOM_DECISION,
+    BackendRngEvidenceTransportRecord, WHITEBOX_SHMEM_KIND_APP_RANDOM_DECISION,
     app_random_stream_name,
 };
 use crucible_protocol::{WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST, WhiteboxDoorbellFrame};
@@ -12,8 +12,8 @@ use crucible_shmem::MAX_FRAME_DATA;
 
 use super::*;
 use crate::{
-    AppRandomDecisionError, AppRandomDecisionRecord, AppRandomDecisionSource,
-    AppRandomDoorbellOutcome, WhiteboxGuestInputCapability, WhiteboxGuestInputWriteError,
+    AppRandomDoorbellOutcome, BackendRngEvidenceError, BackendRngEvidenceRecord,
+    BackendRngEvidenceSource, WhiteboxGuestInputCapability, WhiteboxGuestInputWriteError,
     WhiteboxGuestInputWriter, handle_whitebox_app_random_callback,
 };
 
@@ -50,7 +50,7 @@ impl LiveWhiteboxState {
         )
         .map_err(callback_error)?;
         if let AppRandomDoorbellOutcome::Served(service) = outcome {
-            let record = AppRandomDecisionTransportRecord::new(
+            let record = BackendRngEvidenceTransportRecord::new(
                 service.request().guest_request_id(),
                 service.request().width_bytes(),
                 service.decision().value(),
@@ -77,7 +77,7 @@ impl LiveWhiteboxMarkerShmemProducer {
         &mut self,
         current_icount: u64,
         vcpu_index: u32,
-        record: &AppRandomDecisionTransportRecord,
+        record: &BackendRngEvidenceTransportRecord,
     ) -> Result<(), WhiteboxMarkerSinkError> {
         self.record(
             current_icount,
@@ -131,8 +131,8 @@ impl WhiteboxGuestInputWriter for LiveGuestMemoryWriter {
 
 pub(super) struct LiveAppRandomState {
     capability: WhiteboxGuestInputCapability,
-    decisions: LiveAppRandomDecisionSource,
-    restore_decisions: Option<LiveAppRandomDecisionSource>,
+    decisions: LiveBackendRngEvidenceSource,
+    restore_decisions: Option<LiveBackendRngEvidenceSource>,
 }
 
 impl LiveAppRandomState {
@@ -143,13 +143,13 @@ impl LiveAppRandomState {
     ) -> Self {
         Self {
             capability,
-            decisions: LiveAppRandomDecisionSource::new(config, branch_plan),
+            decisions: LiveBackendRngEvidenceSource::new(config, branch_plan),
             // Restore launches execute a throwaway boot-barrier quantum before
             // loading VMState. Retain a second, already-allocated decision
             // source so the logical-restore boundary can discard any priming
             // draws without allocating in a QEMU callback. Cold launches never
             // arm that boundary, so this owner remains unused there.
-            restore_decisions: Some(LiveAppRandomDecisionSource::new(config, branch_plan)),
+            restore_decisions: Some(LiveBackendRngEvidenceSource::new(config, branch_plan)),
         }
     }
 
@@ -169,8 +169,8 @@ impl LiveAppRandomState {
 }
 
 fn restore_app_random_decisions(
-    decisions: &mut LiveAppRandomDecisionSource,
-    restore_decisions: &mut Option<LiveAppRandomDecisionSource>,
+    decisions: &mut LiveBackendRngEvidenceSource,
+    restore_decisions: &mut Option<LiveBackendRngEvidenceSource>,
 ) -> Result<(), LiveWhiteboxError> {
     let restored = restore_decisions
         .take()
@@ -179,7 +179,7 @@ fn restore_app_random_decisions(
     Ok(())
 }
 
-struct LiveAppRandomDecisionSource {
+struct LiveBackendRngEvidenceSource {
     root_seed: u64,
     streams: BTreeMap<String, PluginDecisionStream>,
     node_name: String,
@@ -191,7 +191,7 @@ struct LiveAppRandomDecisionSource {
     next_branch_plan_entry: usize,
 }
 
-impl LiveAppRandomDecisionSource {
+impl LiveBackendRngEvidenceSource {
     fn new(config: &PluginAppRandomConfig, branch_plan: &AppRandomBranchPlan) -> Self {
         let streams = config
             .stream_positions()
@@ -236,14 +236,14 @@ impl LiveAppRandomDecisionSource {
     }
 }
 
-impl AppRandomDecisionSource for LiveAppRandomDecisionSource {
+impl BackendRngEvidenceSource for LiveBackendRngEvidenceSource {
     fn serve_app_random(
         &mut self,
         request: &crate::AppRandomDoorbellRequest,
-    ) -> Result<AppRandomDecisionRecord, AppRandomDecisionError> {
+    ) -> Result<BackendRngEvidenceRecord, BackendRngEvidenceError> {
         self.apply_branch_reseed_if_due();
         if self.draws >= self.draw_cap {
-            return Err(AppRandomDecisionError::new(format!(
+            return Err(BackendRngEvidenceError::new(format!(
                 "scenario app-random draw cap {} exceeded by draw {}",
                 self.draw_cap,
                 self.draws.saturating_add(1)
@@ -265,26 +265,26 @@ impl AppRandomDecisionSource for LiveAppRandomDecisionSource {
         };
         let value = match self.branch_plan.entries().get(self.next_branch_plan_entry) {
             Some(entry) if entry.draw_index() < draw_index => {
-                return Err(AppRandomDecisionError::new(format!(
+                return Err(BackendRngEvidenceError::new(format!(
                     "app-random branch plan entry {} was not consumed before draw {draw_index}",
                     entry.draw_index()
                 )));
             }
             Some(entry) if entry.draw_index() == draw_index => {
                 if entry.stream_name() != stream_name {
-                    return Err(AppRandomDecisionError::new(format!(
+                    return Err(BackendRngEvidenceError::new(format!(
                         "app-random branch plan stream `{}` differs from live stream `{stream_name}` at draw {draw_index}",
                         entry.stream_name()
                     )));
                 }
                 if entry.expected_raw_value() != raw_value {
-                    return Err(AppRandomDecisionError::new(format!(
+                    return Err(BackendRngEvidenceError::new(format!(
                         "app-random branch plan raw draw differs at position {draw_index}"
                     )));
                 }
                 let selected = entry.selected_value();
                 if width_bits < 64 && selected >= (1_u64 << width_bits) {
-                    return Err(AppRandomDecisionError::new(format!(
+                    return Err(BackendRngEvidenceError::new(format!(
                         "app-random branch selection {selected} does not fit {width_bits} bits"
                     )));
                 }
@@ -293,7 +293,7 @@ impl AppRandomDecisionSource for LiveAppRandomDecisionSource {
             }
             Some(_) | None => model_value,
         };
-        Ok(AppRandomDecisionRecord::new(
+        Ok(BackendRngEvidenceRecord::new(
             request.node_name(),
             request.stream_tag(),
             u64::from(request.guest_request_id()),
@@ -359,13 +359,12 @@ impl PluginStableHasher {
     fn write_bytes(&mut self, bytes: &[u8]) {
         self.mix_word(bytes.len() as u64);
         self.bytes_written = self.bytes_written.wrapping_add(8);
-        let mut chunks = bytes.chunks_exact(8);
-        for chunk in &mut chunks {
+        let (chunks, remainder) = bytes.as_chunks::<8>();
+        for chunk in chunks {
             let mut word = [0; 8];
             word.copy_from_slice(chunk);
             self.mix_word(u64::from_le_bytes(word));
         }
-        let remainder = chunks.remainder();
         if !remainder.is_empty() {
             let mut word = [0; 8];
             word[..remainder.len()].copy_from_slice(remainder);
@@ -417,7 +416,7 @@ mod branch_plan_tests {
             [0x5a; 32],
             stream_name,
         )?])?;
-        let mut source = LiveAppRandomDecisionSource::new(&config, &plan);
+        let mut source = LiveBackendRngEvidenceSource::new(&config, &plan);
 
         let served = source.serve_app_random(&request)?;
 
@@ -441,7 +440,7 @@ mod branch_plan_tests {
             [0x5a; 32],
             app_random_stream_name("node-a", "other"),
         )?])?;
-        let mut source = LiveAppRandomDecisionSource::new(&config, &plan);
+        let mut source = LiveBackendRngEvidenceSource::new(&config, &plan);
 
         assert!(source.serve_app_random(&request).is_err());
         assert_eq!(source.next_branch_plan_entry, 0);
@@ -481,8 +480,8 @@ mod tests {
             .app_random()
             .unwrap_or_else(|| panic!("continuation configuration should include app-random"));
         let branch_plan = AppRandomBranchPlan::default();
-        let mut decisions = LiveAppRandomDecisionSource::new(config, &branch_plan);
-        let mut restore_decisions = Some(LiveAppRandomDecisionSource::new(config, &branch_plan));
+        let mut decisions = LiveBackendRngEvidenceSource::new(config, &branch_plan);
+        let mut restore_decisions = Some(LiveBackendRngEvidenceSource::new(config, &branch_plan));
         decisions.draws = 7;
         decisions.streams.clear();
 
@@ -500,13 +499,13 @@ mod tests {
     #[test]
     fn branch_reseed_restarts_every_plugin_stream_at_cursor_zero() {
         let args = PluginArgs::parse(
-            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=11,app_random_cap=8,app_random_node=node-a,app_random_branch_seed=29,app_random_branch_after=1",
+            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=11,app_random_cap=8,app_random_node=node-a,app_random_branch_seeds=29,app_random_branch_afters=1",
         )
         .unwrap_or_else(|error| panic!("branch configuration should parse: {error}"));
         let config = args
             .app_random()
             .unwrap_or_else(|| panic!("branch configuration should include app-random"));
-        let mut source = LiveAppRandomDecisionSource::new(config, &AppRandomBranchPlan::default());
+        let mut source = LiveBackendRngEvidenceSource::new(config, &AppRandomBranchPlan::default());
         let stream_name = String::from("node-a/workload");
         let prefix_stream = source
             .streams
@@ -538,7 +537,7 @@ mod tests {
         let config = args
             .app_random()
             .unwrap_or_else(|| panic!("branch sequence should include app-random"));
-        let mut source = LiveAppRandomDecisionSource::new(config, &AppRandomBranchPlan::default());
+        let mut source = LiveBackendRngEvidenceSource::new(config, &AppRandomBranchPlan::default());
         source.streams.insert(
             String::from("node-a/workload"),
             PluginDecisionStream::new(11, "node-a/workload"),
@@ -570,7 +569,7 @@ mod tests {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         let raw_args = format!(
-            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=2,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=29,app_random_cap=8,app_random_node=node-a,app_random_branch_seed=47,app_random_branch_after=3,app_random_draw_offset=2,app_random_positions={encoded_stream_name}:1"
+            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=2,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=29,app_random_cap=8,app_random_node=node-a,app_random_branch_seeds=47,app_random_branch_afters=3,app_random_draw_offset=2,app_random_positions={encoded_stream_name}:1"
         );
         let args = PluginArgs::parse(&raw_args)
             .unwrap_or_else(|error| panic!("replacement configuration should parse: {error}"));
@@ -585,7 +584,7 @@ mod tests {
         let _ = active_stream.next_u64();
         let expected_resumed = active_stream.next_u64();
         let expected_reseeded = PluginDecisionStream::new(47, &stream_name).next_u64();
-        let mut source = LiveAppRandomDecisionSource::new(config, &AppRandomBranchPlan::default());
+        let mut source = LiveBackendRngEvidenceSource::new(config, &AppRandomBranchPlan::default());
 
         let resumed = source
             .serve_app_random(&resumed_request)

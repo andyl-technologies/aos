@@ -167,14 +167,16 @@ pub(crate) fn stage_sparse_checkpoint_artifact_chunks_with_boundary(
     let identity = sparse_artifact_identity(source_length, &extents)?;
     sync_directory(object_directory)?;
 
-    Ok(ProductionCheckpointArtifact {
+    let artifact = ProductionCheckpointArtifact {
         source: ProductionCheckpointArtifactSource::ChunkStore(object_directory.to_path_buf()),
         identity,
         length: source_length,
         chunks: Vec::new(),
         sparse: true,
         extents,
-    })
+    };
+    let manifest = artifact_manifest_with_boundary(&artifact, boundary)?;
+    install_retained_artifact_from_manifest(&artifact, object_directory, &manifest, boundary)
 }
 
 pub(super) fn sparse_artifact_identity(
@@ -349,46 +351,6 @@ fn validate_sparse_chunk_geometry(
         ));
     }
     Ok(())
-}
-
-pub(super) fn materialize_sparse_checkpoint_artifact(
-    directory: &Path,
-    artifact: &ProductionCheckpointArtifact,
-    destination: &mut File,
-) -> Result<(), LifecycleApiError> {
-    let manifest = ArtifactManifest {
-        identity: artifact.identity,
-        length: artifact.length,
-        chunks: artifact.chunks.clone(),
-        sparse: artifact.sparse,
-        extents: artifact.extents.clone(),
-    };
-    validate_sparse_artifact_manifest(directory, &manifest)?;
-    for extent in &artifact.extents {
-        for (index, identity) in extent.chunks.iter().enumerate() {
-            let index = u64::try_from(index)
-                .map_err(|_| loop_factory_error("sparse artifact chunk index overflow"))?;
-            let chunk_index = extent
-                .start_chunk
-                .checked_add(index)
-                .ok_or_else(|| loop_factory_error("sparse artifact chunk index overflow"))?;
-            let offset = chunk_index
-                .checked_mul(ARTIFACT_CHUNK_BYTES_U64)
-                .ok_or_else(|| loop_factory_error("sparse artifact chunk offset overflow"))?;
-            destination.seek(SeekFrom::Start(offset)).map_err(|error| {
-                loop_factory_error(format!("seek sparse checkpoint destination: {error}"))
-            })?;
-            let mut source = File::open(object_path(directory, *identity)).map_err(|error| {
-                loop_factory_error(format!("open sparse checkpoint chunk: {error}"))
-            })?;
-            std::io::copy(&mut source, destination).map_err(|error| {
-                loop_factory_error(format!("write sparse checkpoint chunk: {error}"))
-            })?;
-        }
-    }
-    destination
-        .set_len(artifact.length)
-        .map_err(|error| loop_factory_error(format!("size sparse checkpoint destination: {error}")))
 }
 
 pub(super) fn stream_sparse_artifact_bytes(

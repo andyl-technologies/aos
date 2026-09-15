@@ -1,189 +1,31 @@
 //! Scheduler unit tests separated from the production quantum-loop implementation.
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crate::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use super::*;
-use crate::model::{BindingSearchChoice, SearchChoiceId, SearchOverride};
+use crate::model::{
+    BindingSearchCandidateSemantics, BindingSearchChoice, SearchChoiceId, SearchOverride,
+};
 use crate::{
-    BackendEffect, BackendNetworkFaultContinuation, IoEventKind, MockSimulationBackend,
-    RngDecision, ScenarioDef,
+    BackendNetworkFaultContinuation, BackendSnapshot, IoEventKind, MockSimulationBackend,
+    RngDecision, ScenarioDef, StepObservation,
 };
 
+#[path = "tests/concurrent.rs"]
+mod concurrent;
+#[path = "tests/event_log_contracts.rs"]
+mod event_log_contracts;
 #[path = "tests/network_checkpoint.rs"]
 mod network_checkpoint;
 #[path = "tests/ordering.rs"]
 mod ordering;
 #[path = "tests/production_backend.rs"]
 mod production_backend;
-
-#[test]
-fn backend_quantum_loop_routes_gdbstub_to_wrapped_backend() {
-    struct StubLoop;
-
-    impl QuantumLoop for StubLoop {
-        fn drive_quantum(
-            &mut self,
-            request: QuantumRequest,
-        ) -> Result<QuantumOutcome, SchedulerError> {
-            Ok(QuantumOutcome {
-                configuration: request.configuration,
-                frontier: VirtualTime { ticks: 0 },
-                advanced_node: None,
-                resolved_events: Vec::new(),
-                decisions: Vec::new(),
-                discovered_choices: Vec::new(),
-                event_log_entries: Vec::new(),
-                event_log_segment_bytes: Vec::new(),
-                event_log_segment_text: String::new(),
-                event_log_segment_hash: None,
-                event_log_offset: EventLogOffset::default(),
-                scheduler_quiescence: None,
-            })
-        }
-    }
-
-    #[derive(Default)]
-    struct GdbBackend {
-        opened: Vec<(NodeId, String)>,
-    }
-
-    impl SimulationBackend for GdbBackend {
-        fn step_to(
-            &mut self,
-            _ceiling: VirtualTime,
-        ) -> Result<crate::StepObservation, BackendError> {
-            Err(BackendError::NotImplemented {
-                operation: "step_to",
-            })
-        }
-
-        fn apply(
-            &mut self,
-            _effect: &crate::BackendEffect,
-            _at: VirtualTime,
-        ) -> Result<(), BackendError> {
-            Err(BackendError::NotImplemented { operation: "apply" })
-        }
-
-        fn snapshot(&mut self) -> Result<crate::BackendSnapshot, BackendError> {
-            Err(BackendError::NotImplemented {
-                operation: "snapshot",
-            })
-        }
-
-        fn restore(&mut self, _snapshot: &crate::BackendSnapshot) -> Result<(), BackendError> {
-            Err(BackendError::NotImplemented {
-                operation: "restore",
-            })
-        }
-
-        fn now(&self) -> VirtualTime {
-            VirtualTime::default()
-        }
-
-        fn fingerprint(&mut self, _node: NodeId) -> Result<crate::FingerprintSample, BackendError> {
-            Err(BackendError::NotImplemented {
-                operation: "fingerprint",
-            })
-        }
-
-        fn open_gdbstub(
-            &mut self,
-            node: NodeId,
-            listen: GdbListen,
-        ) -> Result<GdbAttachInfo, BackendError> {
-            self.opened.push((node.clone(), listen.as_str().to_owned()));
-            GdbAttachInfo::new(node, "tcp:127.0.0.1:9001", listen)
-        }
-
-        fn shutdown(&mut self) -> Result<(), BackendError> {
-            Ok(())
-        }
-    }
-
-    let mut adapter = BackendQuantumLoop::new(StubLoop, GdbBackend::default());
-    let info = adapter
-        .open_gdbstub(
-            NodeId {
-                name: String::from("vm-a"),
-            },
-            GdbListen::new("127.0.0.1:9000")
-                .unwrap_or_else(|error| panic!("test listen should be stable: {error}")),
-        )
-        .unwrap_or_else(|error| panic!("backend adapter should route gdbstub attach: {error}"));
-
-    assert_eq!(info.qemu_endpoint, "tcp:127.0.0.1:9001");
-    assert_eq!(
-        adapter.backend().opened,
-        vec![(
-            NodeId {
-                name: String::from("vm-a"),
-            },
-            String::from("127.0.0.1:9000"),
-        )]
-    );
-}
-
-#[test]
-fn backend_quantum_loop_applies_resolved_preemption_before_run() {
-    struct PreemptionLoop {
-        decision: PreemptionDecision,
-    }
-
-    impl QuantumLoop for PreemptionLoop {
-        fn drive_quantum(
-            &mut self,
-            request: QuantumRequest,
-        ) -> Result<QuantumOutcome, SchedulerError> {
-            Ok(QuantumOutcome {
-                configuration: request.configuration,
-                frontier: VirtualTime { ticks: 10 },
-                advanced_node: Some(scheduler_node("vm-a", SchedulingNodeKind::Vm)),
-                resolved_events: Vec::new(),
-                decisions: vec![Decision::Preemption(self.decision.clone())],
-                discovered_choices: Vec::new(),
-                event_log_entries: Vec::new(),
-                event_log_segment_bytes: Vec::new(),
-                event_log_segment_text: String::new(),
-                event_log_segment_hash: None,
-                event_log_offset: EventLogOffset::default(),
-                scheduler_quiescence: None,
-            })
-        }
-    }
-
-    let decision = PreemptionDecision {
-        node: NodeId {
-            name: String::from("vm-a"),
-        },
-        at: Icount { retired: 7 },
-        kind: PreemptionKind::VcpuSwitch {
-            from_vcpu: VcpuId { index: 0 },
-            to_vcpu: VcpuId { index: 1 },
-        },
-    };
-    let config = Configuration::genesis(ScenarioDef::from_canonical_material(
-        "crucible.test.scheduler.backend-preemption",
-        "scenario=backend-preemption",
-    ));
-    let mut adapter = BackendQuantumLoop::new(
-        PreemptionLoop {
-            decision: decision.clone(),
-        },
-        MockSimulationBackend::default(),
-    );
-
-    adapter
-        .drive_quantum(QuantumRequest {
-            configuration: config,
-            control: Vec::new(),
-        })
-        .unwrap_or_else(|error| panic!("preemption-backed quantum should run: {error}"));
-
-    assert_eq!(adapter.backend().now(), VirtualTime { ticks: 10 });
-    assert_eq!(
-        adapter.backend().state().applied_effects,
-        vec![BackendEffect::Preemption(decision)]
-    );
-}
 
 #[test]
 fn pending_network_boundary_release_settles_before_a_far_quantum() {
@@ -469,106 +311,8 @@ fn failed_exact_boundary_network_append_poison_preserves_pending_frame() {
     assert!(
         error
             .to_string()
-            .contains("network settlement continuation is poisoned")
+            .contains("backend continuation is poisoned")
     );
-}
-
-#[test]
-fn event_log_append_rejects_class_catalog_mismatch() {
-    let mut entry = scheduler_event_log_entry(
-        0,
-        VirtualTime { ticks: 0 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("class-catalog-mismatch"),
-            value: 17,
-        })),
-    );
-    entry.class = SchedulerEventLogClass::Observational;
-
-    let error = EventLog::new()
-        .append_entries(vec![entry])
-        .expect_err("append must reject class/catalog mismatches");
-
-    assert!(matches!(
-        error,
-        SchedulerError::BoundaryViolation { message }
-            if message.contains("class observational does not match catalog class causal")
-                && message.contains("payload kind rng_draw")
-    ));
-}
-
-#[test]
-fn event_log_append_rejects_typed_kind_catalog_drift() {
-    let mut entry = scheduler_event_log_entry(
-        0,
-        VirtualTime { ticks: 0 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("typed-kind-catalog-drift"),
-            value: 23,
-        })),
-    );
-    entry.event_payload = EventPayload::new("diagnostic", entry.event_payload.attributes().clone());
-
-    let error = EventLog::new()
-        .append_entries(vec![entry])
-        .expect_err("append must reject typed payload kind/catalog drift");
-
-    assert!(matches!(
-        error,
-        SchedulerError::BoundaryViolation { message }
-            if message.contains("class causal does not match catalog class observational")
-                && message.contains("payload kind diagnostic")
-    ));
-}
-
-#[test]
-fn event_log_append_rejects_unknown_typed_kind() {
-    let mut entry = scheduler_event_log_entry(
-        0,
-        VirtualTime { ticks: 0 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("unknown-typed-kind"),
-            value: 31,
-        })),
-    );
-    entry.event_payload = EventPayload::new(
-        "unregistered_kind",
-        entry.event_payload.attributes().clone(),
-    );
-
-    let error = EventLog::new()
-        .append_entries(vec![entry])
-        .expect_err("append must reject unknown typed payload kinds");
-
-    assert!(matches!(
-        error,
-        SchedulerError::BoundaryViolation { message }
-            if message.contains("payload kind unregistered_kind is not in the event-kind catalog")
-    ));
-}
-
-#[test]
-fn event_log_segment_binary_round_trips_to_same_bytes() {
-    let previous_prefix = scheduler_event_log_empty_prefix();
-    let entry = scheduler_event_log_entry(
-        0,
-        VirtualTime { ticks: 9 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("segment-round-trip"),
-            value: 41,
-        })),
-    );
-    let entries = vec![entry];
-    let segment = scheduler_event_log_segment_material(previous_prefix, &entries);
-    let bytes = segment.encode();
-
-    let decoded = decode_scheduler_event_log_segment(&bytes)
-        .unwrap_or_else(|error| panic!("segment should decode: {error:?}"));
-
-    assert_eq!(decoded, segment);
-    assert_eq!(decoded.encode(), bytes);
-    assert_eq!(decoded.text_view(), segment.text_view());
-    assert!(decoded.text_view().contains("entry.payload.kind=rng_draw"));
 }
 
 #[test]
@@ -735,7 +479,7 @@ fn quantum_outcome_carries_step_decisions() {
         stream: crate::RngStreamId::from_name("scheduler"),
         value: 7,
     });
-    let child = step(&config, decision.clone());
+    let child = accepted_step!(&config, decision.clone());
     let outcome = QuantumOutcome {
         configuration: child,
         frontier: VirtualTime { ticks: 1 },
@@ -1202,15 +946,10 @@ fn scheduler_errors_render_all_variants_deterministically() {
     let boundary = SchedulerError::BoundaryViolation {
         message: String::from("bypassed scheduler boundary"),
     };
-    let not_implemented = SchedulerError::NotImplemented { operation: "pick" };
     let conversion = SchedulerError::from(TimeConversionError::InvalidShift {
         shift: Shift { bits: 64 },
     });
 
-    assert_eq!(
-        not_implemented.to_string(),
-        "scheduler operation pick is not implemented yet"
-    );
     assert_eq!(
         backend.to_string(),
         "backend failed under scheduler control: backend refused"
@@ -1274,13 +1013,15 @@ fn event_key(
     producer: &SchedulerNodeId,
     sequence: u64,
 ) -> ScheduledEventKey {
-    ScheduledEventKey::from_parts(
-        VirtualTime {
-            ticks: virtual_time,
+    ScheduledEventKey::new(
+        SharedTimelineKey {
+            virtual_time: SimInstant {
+                nanos: virtual_time,
+            },
+            node: consumer.clone(),
+            sequence,
         },
-        consumer.clone(),
         producer.clone(),
-        sequence,
     )
 }
 
@@ -1369,6 +1110,7 @@ fn signal_fault_frontier_preserves_parent_time_and_typed_candidates() {
         id: SearchChoiceId::from_content_hash(ContentHash::from_bytes(b"binding-choice")),
         candidates_digest: ContentHash::from_bytes(b"binding-candidates"),
         candidate_count: 2,
+        candidate_semantics: BindingSearchCandidateSemantics::Outcome,
         selected_index: None,
         overridden: false,
     };

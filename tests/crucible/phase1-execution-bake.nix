@@ -9,7 +9,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
-  realization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
+  bakedGenesis = builtins.readFile ../../crates/crucible-daemon/src/qemu_baked_genesis.rs;
+  freshLifecycle = builtins.readFile ../../crates/crucible-daemon/src/qemu_campaign_lifecycle.rs;
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
   patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
@@ -89,26 +90,36 @@
         needle = "fn generated_world(seed: u64) -> World";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/realization.rs" realization [
+    ++ failuresFor "crates/crucible-daemon/src/qemu_baked_genesis.rs" bakedGenesis [
       {
-        label = "QEMU bake executor";
-        needle = "pub trait QemuVmBakeExecutor";
+        label = "production baked-genesis capture entry point";
+        needle = "pub(crate) fn capture_production_baked_genesis<F>(";
       }
       {
-        label = "QEMU bake API";
-        needle = "pub fn bake_qemu_genesis_vm";
+        label = "production baked-genesis capture uses fresh lifecycle";
+        needle = "capture_fresh_genesis_checkpoint_candidate(factory, source, context)?;";
+      }
+    ]
+    ++ failuresFor "crates/crucible-daemon/src/qemu_campaign_lifecycle.rs" freshLifecycle [
+      {
+        label = "fresh genesis capture lifecycle entry point";
+        needle = "pub(crate) fn capture_fresh_genesis_checkpoint_candidate<F>(";
       }
       {
-        label = "only QEMU bake invokes cold boot executor";
-        needle = "executor.cold_boot_to_ready_and_savevm(world)";
+        label = "fresh capture starts from the exact genesis configuration";
+        needle = "let genesis = Configuration::genesis(scenario.clone());";
       }
       {
-        label = "QEMU bake entrypoint test";
-        needle = "qemu_bake_is_the_only_cold_boot_entry_point";
+        label = "fresh capture requires exact checkpoint readiness";
+        needle = "lifecycle.exact_checkpoint_ready()";
       }
       {
-        label = "hot genesis load avoids cold boot test";
-        needle = "qemu_instantiate_loads_baked_genesis_for_genesis_without_cold_boot";
+        label = "fresh capture obtains the authenticated attempt checkpoint";
+        needle = ".capture_attempt_checkpoint(context)";
+      }
+      {
+        label = "fresh capture always shuts down the lifecycle";
+        needle = "let cleanup = lifecycle.shutdown();";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -119,12 +130,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
       {
-        label = "T-PAT-9 completion names model bake";
-        needle = "`crucible::bake`";
-      }
-      {
-        label = "T-PAT-9 completion names QEMU bake";
-        needle = "`bake_qemu_genesis_vm`";
+        label = "T-PAT-9 confines cold boot to baked capture";
+        needle = "cold boot remains inside baked";
       }
       {
         label = "T-PAT-9 completion names execution bake gate";
@@ -142,8 +149,6 @@ in
 
       buildDeps = [
         pkgs.coreutils
-        pkgs.findutils
-        pkgs.grep
         pkgs.rust
         pkgs.sed
       ];
@@ -193,70 +198,12 @@ in
             cargo test \
               --frozen \
               --offline \
-              --target-dir "$TMPDIR/crucible-execution-bake-qemu-target" \
+              --target-dir "$TMPDIR/crucible-execution-bake-daemon-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
+              -p crucible-daemon \
               --lib \
-              qemu_bake_is_the_only_cold_boot_entry_point \
+              baked_catalog_routes_by_the_complete_world_scenario_basis \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-execution-bake-qemu-target" \
-              --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
-              --lib \
-              qemu_instantiate_loads_baked_genesis_for_genesis_without_cold_boot \
-              -- --test-threads=1
-
-            if grep -R -n -E 'cold[_ -]?boot|ColdBoot|cold_boot_to_ready|boot_to_ready' crates/*/src \
-              | grep -v '^crates/crucible-qemu/src/realization.rs:' \
-              | grep -v '^crates/crucible-harness/' \
-              | grep -v -E '^[^:]+:[0-9]+:[[:space:]]*//' \
-              > "$TMPDIR/production-cold-boot-markers.txt"; then
-              cat "$TMPDIR/production-cold-boot-markers.txt" >&2
-              echo "unexpected production cold-boot marker outside the QEMU bake coordinator" >&2
-              exit 1
-            fi
-
-            sed -n '1,/^#\[cfg(test)\]/p' crates/crucible-qemu/src/realization.rs \
-              > "$TMPDIR/qemu-realization-production.rs"
-            cold_boot_symbol_count="$(
-              grep -n 'cold_boot_to_ready_and_savevm' "$TMPDIR/qemu-realization-production.rs" \
-                | wc -l \
-                | tr -d ' '
-            )"
-            if [ "$cold_boot_symbol_count" != "2" ]; then
-              grep -n 'cold_boot_to_ready_and_savevm' "$TMPDIR/qemu-realization-production.rs" >&2 || true
-              echo "expected exactly one QEMU bake executor declaration and one bake call" >&2
-              exit 1
-            fi
-            cold_boot_call_count="$(
-              grep -n 'executor.cold_boot_to_ready_and_savevm(world)' "$TMPDIR/qemu-realization-production.rs" \
-                | wc -l \
-                | tr -d ' '
-            )"
-            if [ "$cold_boot_call_count" != "1" ]; then
-              grep -n 'executor.cold_boot_to_ready_and_savevm(world)' "$TMPDIR/qemu-realization-production.rs" >&2 || true
-              echo "expected exactly one production cold-boot executor call" >&2
-              exit 1
-            fi
-            sed -n '/^pub fn bake_qemu_genesis_vm/,/^}/p' "$TMPDIR/qemu-realization-production.rs" \
-              | grep -q 'executor.cold_boot_to_ready_and_savevm(world)' || {
-                echo "the single production cold-boot executor call must be inside bake_qemu_genesis_vm" >&2
-                exit 1
-              }
-            grep -n -E 'cold_boot|fn [A-Za-z0-9_]*boot|pub fn [A-Za-z0-9_]*boot' \
-              "$TMPDIR/qemu-realization-production.rs" \
-              | grep -v 'fn cold_boot_to_ready_and_savevm' \
-              | grep -v 'pub fn bake_qemu_genesis_vm' \
-              | grep -v 'executor.cold_boot_to_ready_and_savevm(world)' \
-              > "$TMPDIR/qemu-realization-cold-boot-markers.txt" || true
-            if grep -q . "$TMPDIR/qemu-realization-cold-boot-markers.txt"; then
-              cat "$TMPDIR/qemu-realization-cold-boot-markers.txt" >&2
-              echo "unexpected production cold-boot entry point in QEMU realization" >&2
-              exit 1
-            fi
           '';
         }
         {
@@ -270,11 +217,11 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             related_gates=gate:content-address,gate:replay-oracle
             model_bake=world-derived-fat-genesis-checkpoint
-            qemu_bake=cold-boot-to-ready-savevm
+            production_bake=authenticated-fresh-lifecycle-v9-descriptor-capture
             pattern_PAT_12=cold-boot-confined-to-bake
             production_cold_boot_lint=bake-only
-            first_run_realization=loadvm-baked-genesis
-            qemu_hot_genesis_test=no-cold-boot
+            first_run_realization=v9-descriptor-baked-genesis
+            baked_catalog_basis=world-plus-scenario
             RESULT
           '';
         }

@@ -20,7 +20,7 @@ fn production_resolve_availability_suppresses_the_routed_frame() {
         WorldIoLayoutPolicy::default(),
     )
     .unwrap_or_else(|error| panic!("test scheduler should build: {error}"));
-    let mut nodes = ProductionNodeSet::new();
+    let mut nodes = QemuNodeSet::new();
     let runtime = ProductionFaultRuntime::new(
         down_plan_at(segment, FaultPhase::Resolve),
         Some(Arc::new(NoArtifacts)),

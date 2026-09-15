@@ -13,6 +13,7 @@
 #[macro_use]
 #[cfg(any(test, feature = "test-double"))]
 mod quantum_loop_method;
+mod host_boundary;
 mod portable_artifact_constants;
 
 use portable_artifact_constants::*;
@@ -25,7 +26,6 @@ use std::future::Future;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-#[cfg(any(test, feature = "test-double"))]
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,8 +37,9 @@ use crucible_api::{
     InProcessLifecycleClient, LifecycleControlPlane, LifecycleServerMode, QuiescentLifecycleLoop,
     RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR, RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH,
     ResumeSessionRequest, RpcControlClient, RpcEndpoint, RpcMutualTlsConfig, SendRequest,
-    SessionRef, mutual_tls_acceptor_from_pem, serve_lifecycle_http2_mtls_with_mode_until_shutdown,
-    serve_lifecycle_http2_with_debug_policy_until_shutdown,
+    SessionRef, mutual_tls_acceptor_from_pem,
+    serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown,
+    serve_shared_lifecycle_http2_with_debug_policy_until_shutdown,
 };
 use crucible_session::engine as crucible_model;
 #[cfg(test)]
@@ -56,9 +57,9 @@ use crucible_session::{
     EngineSnapshot, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand,
     SessionCommandKind, StepMode,
     engine::{
-        self as crucible, Checkpoint, CheckpointKind, ChoiceTag, DagStore, FindingDiscoveryPath,
-        FindingReproductionArtifact, MemoryDagStore, OverrideDecision, RecordedAssertionLog,
-        Schedule, SchedulingPoint, SearchRetainedLogAssertionEvidence, SimDuration, VirtualTime,
+        self as crucible, Checkpoint, CheckpointKind, DagStore, MemoryDagStore,
+        RecordedAssertionLog, Schedule, SearchRetainedLogAssertionEvidence, SimDuration,
+        VirtualTime,
     },
 };
 #[cfg(test)]
@@ -71,13 +72,13 @@ use test_double_imports::*;
 #[cfg(any(test, feature = "test-double"))]
 use tokio::sync::{mpsc, oneshot};
 
-const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v3";
+const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v4";
 const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
 const MODEL_REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str =
     "application/vnd.crucible.model-reproduction+binary";
 const MODEL_REPLAY_STATE_MEDIA_TYPE: &str = "application/vnd.crucible.model-replay-state+text";
 const LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE: &str =
-    "application/vnd.crucible.live-qemu-replay-contract.v2+text";
+    "application/vnd.crucible.live-qemu-replay-contract.v4+text";
 const LIVE_QEMU_EVENT_STREAM_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-event-stream.v1+bytes";
 const LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE: &str =
@@ -88,8 +89,6 @@ const CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE: &str =
     "application/vnd.crucible.campaign-replay-closure.v1+binary";
 const LIFECYCLE_ARTIFACT_BUNDLE_MEDIA_TYPE: &str =
     "application/vnd.crucible.lifecycle-artifact-bundle.v1+binary";
-const SIGNAL_ARTIFACT_BUNDLE_MEDIA_TYPE: &str =
-    "application/vnd.crucible.signal-artifact-bundle.v1+binary";
 const SIGNAL_MUTATION_PROVENANCE_MEDIA_TYPE: &str =
     "application/vnd.crucible.signal-mutation-provenance.v1+json";
 const REPLAY_SCHEDULE_PREFIX_PROOF_SCHEMA: &str = "crucible.replay.schedule-prefix-proof.v1";
@@ -115,8 +114,6 @@ const BACKEND_VALUE_NAME: &str = "auto|qemu";
 const SAVE_DOUBLE_ASSERTION_VIOLATION: &str = "no-split-brain";
 #[cfg(test)]
 const SAVE_DOUBLE_GUEST_MARKER: &str = "compaction-started";
-#[cfg(any(test, feature = "test-double"))]
-const SAVE_GUEST_MARKER_CMDLINE_PREFIX: &str = "crucible-guest-marker=";
 const REAL_QEMU_SELFTEST_GATES: &[&str] = &[
     "gate:single-vm-fingerprint",
     "gate:any-guest",
@@ -148,6 +145,7 @@ const CANONICAL_GATE_NAMES: &[&str] = &[
     "gate:perf-bench",
     "gate:fleet-equivalence",
     "gate:campaign-continuity",
+    "gate:production-rust-plugin-flight",
     "gate:signal-fault-system",
 ];
 
@@ -279,8 +277,6 @@ enum Commands {
     Save(SaveArgs),
     /// Resume a run from a checkpoint or savepoint.
     Resume(ResumeArgs),
-    /// Fork a run from a savepoint with a new seed or decision override.
-    Fork(ForkArgs),
     /// Replay a reproduction artifact, bit-identically.
     Replay(ReplayArgs),
     /// Drive state-space search over the schedule space (22).
@@ -375,6 +371,10 @@ enum CampaignCommand {
     Findings(CampaignPageArgs),
     /// Inspect one exact branch request and its current continuation state.
     FrontierObject(CampaignFrontierObjectArgs),
+    /// Replay one authenticated finding reproduction through its pure oracle.
+    Replay(CampaignReplayArgs),
+    /// Open an authenticated retained finding checkpoint in the debug relay.
+    Debug(CampaignDebugArgs),
     /// Begin issuing work for a newly created campaign.
     Start(CampaignMutationBasisArgs),
     /// Begin or resume issuing campaign work.
@@ -396,6 +396,41 @@ enum CampaignCommand {
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignReplayArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact authenticated campaign snapshot.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact finding identity retained by the snapshot.
+    #[arg(long, value_name = "FINDING", required = true)]
+    finding: String,
+    /// Replay the authenticated minimized reproduction when present.
+    #[arg(long, action = ArgAction::SetTrue)]
+    minimized: bool,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignDebugArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact historical snapshot retaining the finding and checkpoint pins.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact finding whose retained state is opened.
+    #[arg(long, value_name = "FINDING", required = true)]
+    finding: String,
+    /// Attach this node's gdbstub.
+    #[arg(long, value_name = "ID", required = true)]
+    node: String,
+    /// Listen for gdb-protocol clients here.
+    #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:0")]
+    gdb_listen: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignArchiveArgs {
     #[command(subcommand)]
     command: CampaignArchiveCommand,
@@ -403,8 +438,6 @@ struct CampaignArchiveArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum CampaignArchiveCommand {
-    /// Plan and review one transfer without changing either deployment.
-    Plan(CampaignArchivePlanArgs),
     /// Transfer one exact snapshot between stopped deployment owners.
     Transfer(CampaignArchiveTransferArgs),
     /// Authenticate one named archive in a stopped deployment.
@@ -421,7 +454,7 @@ enum CampaignArchiveMode {
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
-struct CampaignArchivePlanArgs {
+struct CampaignArchiveTransferArgs {
     /// Exact durable source campaign state directory.
     #[arg(long, value_name = "path")]
     source_state: PathBuf,
@@ -470,29 +503,6 @@ struct CampaignArchivePlanArgs {
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
-struct CampaignArchiveTransferArgs {
-    #[command(flatten)]
-    plan: CampaignArchivePlanArgs,
-    /// Exact operation identity returned by `campaign archive plan`.
-    #[arg(long, value_name = "operation-id")]
-    reviewed_operation: String,
-}
-
-impl std::ops::Deref for CampaignArchiveTransferArgs {
-    type Target = CampaignArchivePlanArgs;
-
-    fn deref(&self) -> &Self::Target {
-        &self.plan
-    }
-}
-
-impl std::ops::DerefMut for CampaignArchiveTransferArgs {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.plan
-    }
-}
-
-#[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignArchiveInspectArgs {
     /// Exact durable campaign state directory.
     #[arg(long, value_name = "path")]
@@ -524,6 +534,83 @@ enum StoreCommand {
     Verify(StoreVerifyArgs),
     /// Plan or apply stopped-owner campaign-store garbage collection.
     Gc(CampaignStoreGcArgs),
+    /// Plan or apply one exact physical storage transformation.
+    Transform(CampaignStoreTransformArgs),
+    /// Reload and validate deployment credential capabilities.
+    Credentials(StoreCredentialsArgs),
+    /// Reclaim unreachable incomplete physical material under a stopped owner.
+    Cleanup(StoreCleanupArgs),
+    /// Repair one physical copy from an independently authenticated peer.
+    Repair(StoreRepairArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreCredentialsArgs {
+    #[command(subcommand)]
+    operation: StoreCredentialsCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum StoreCredentialsCommand {
+    /// Reload current credential files and validate every bound capability.
+    Refresh(StoreCredentialRefreshArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreCredentialRefreshArgs {
+    /// Strict composed repository-store deployment file.
+    #[arg(value_name = "STORE")]
+    deployment: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreCleanupArgs {
+    #[command(subcommand)]
+    operation: StoreCleanupCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum StoreCleanupCommand {
+    /// Reclaim complete and staging packs absent from the authenticated index.
+    IncompletePacks(StoreIncompletePackCleanupArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreIncompletePackCleanupArgs {
+    /// Exact durable campaign state directory whose owner lock must be free.
+    #[arg(long, value_name = "path")]
+    state: PathBuf,
+    /// Strict owner-only campaign peer policy used by this deployment.
+    #[arg(long, value_name = "path")]
+    policy: PathBuf,
+    /// Strict composed repository-store deployment file.
+    #[arg(long, value_name = "path")]
+    store: PathBuf,
+    /// Exact packed graph node; optional only when exactly one exists.
+    #[arg(long, value_name = "node")]
+    node: Option<String>,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreRepairArgs {
+    /// Exact durable campaign state directory whose owner lock must be free.
+    #[arg(long, value_name = "path")]
+    state: PathBuf,
+    /// Strict owner-only campaign peer policy used by this deployment.
+    #[arg(long, value_name = "path")]
+    policy: PathBuf,
+    /// Strict composed repository-store deployment file.
+    #[arg(long, value_name = "path")]
+    store: PathBuf,
+    /// Independently authenticated physical source node.
+    #[arg(long, value_name = "node")]
+    source: String,
+    /// Absent or corrupt physical target node.
+    #[arg(long, value_name = "node")]
+    target: String,
+    /// Exact canonical content ID to repair.
+    #[arg(value_name = "CONTENT_ID")]
+    content: String,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
@@ -573,6 +660,41 @@ enum CampaignStoreGcCommand {
     /// Inventory exact roots and persist a non-destructive deletion plan.
     Plan,
     /// Revalidate every generation and apply one persisted deletion plan.
+    Apply,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignStoreTransformArgs {
+    #[command(subcommand)]
+    transform: CampaignStoreTransformCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignStoreTransformCommand {
+    /// Repack one exact packed-leaf generation.
+    Packed(CampaignStorePackedTransformArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignStorePackedTransformArgs {
+    /// Strict composed repository-store deployment file.
+    #[arg(long, value_name = "path")]
+    store: PathBuf,
+    /// Durable external plan and recovery journal directory.
+    #[arg(long, value_name = "path")]
+    journal: PathBuf,
+    /// Exact packed graph node; optional only when exactly one exists.
+    #[arg(long, value_name = "node")]
+    node: Option<String>,
+    #[command(subcommand)]
+    operation: CampaignStorePackedTransformCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignStorePackedTransformCommand {
+    /// Persist a non-destructive exact-generation repack plan.
+    Plan,
+    /// Revalidate and apply one persisted exact-generation repack plan.
     Apply,
 }
 
@@ -1273,7 +1395,7 @@ struct VerifyArgs {
     /// Number of runs to compare. Default: 2.
     #[arg(long, value_name = "n", default_value_t = 2)]
     runs: usize,
-    /// Perturb observer polling order, yields, and timeouts.
+    /// Run the full hostile host scheduling, clock, core, and I/O matrix.
     #[arg(long, action = ArgAction::SetTrue)]
     adversarial: bool,
     /// On divergence, run divergence-bisection (24 §5) and print the report.
@@ -1290,7 +1412,7 @@ struct SelftestArgs {
     #[arg(long, value_name = "list")]
     gates: Option<String>,
     /// Execute the QEMU-backed gates.
-    #[cfg_attr(not(any(test, feature = "test-double")), arg(hide = true))]
+    #[cfg(any(test, feature = "test-double"))]
     #[arg(long, action = ArgAction::SetTrue)]
     with_qemu: bool,
     /// Test-only manifest of built-in fixture names.
@@ -1354,7 +1476,7 @@ struct SaveArgs {
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct ResumeArgs {
-    /// A savepoint handle / checkpoint content hash (07).
+    /// A current portable savepoint handle (07).
     #[arg(value_name = "SAVEPOINT", required = true)]
     savepoint: Option<String>,
     /// Terminal condition, as in `run` (§6).
@@ -1377,41 +1499,6 @@ struct ResumeArgs {
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
-struct ForkArgs {
-    /// The fork point: a savepoint handle / checkpoint hash (07).
-    #[arg(value_name = "SAVEPOINT", required = true)]
-    savepoint: Option<String>,
-    /// Override a decision at/after the fork point (05 §3). Repeatable.
-    #[arg(
-        long = "override",
-        value_name = "decision=value",
-        action = ArgAction::Append,
-        conflicts_with = "seed"
-    )]
-    overrides: Vec<String>,
-    /// Terminal condition, as in `run` (§6).
-    #[arg(
-        long,
-        value_enum,
-        value_name = "quiescence|virtual-time|property|stopped",
-        default_value_t = RunUntilArg::Quiescence
-    )]
-    until: RunUntilArg,
-    /// Stop with Timeout past this virtual time (20 §2).
-    #[arg(long, value_name = "dur", required_if_eq("until", "virtual-time"))]
-    max_virtual_time: Option<String>,
-    /// Label the forked branch.
-    #[arg(long, value_name = "name")]
-    label: Option<String>,
-    /// Drive the forked session interactively.
-    #[arg(long, action = ArgAction::SetTrue)]
-    interactive: bool,
-    /// Stream the live status line (20 §9).
-    #[arg(long, action = ArgAction::SetTrue)]
-    watch: bool,
-}
-
-#[derive(Args, Debug, Default, PartialEq, Eq)]
 struct ReplayArgs {
     /// A reproduction artifact (06 §7.1) or its content hash.
     #[arg(value_name = "ARTIFACT")]
@@ -1419,12 +1506,15 @@ struct ReplayArgs {
     /// Assert the replayed canonical log is byte-identical to this one.
     #[arg(long, value_name = "original-log")]
     check: Option<PathBuf>,
-    /// Validate a target savepoint handle or checkpoint hash.
+    /// Validate a target savepoint handle.
     #[arg(long, value_name = "savepoint")]
     to: Option<String>,
     /// Bisect this artifact against another (24 §5).
     #[arg(long, value_name = "other-artifact")]
     bisect: Option<PathBuf>,
+    /// Inject and require authenticated bounded host scheduler preemption during live QEMU replay.
+    #[arg(long, action = ArgAction::SetTrue)]
+    bounded_scheduler_preemption: bool,
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
@@ -1456,7 +1546,7 @@ struct SearchArgs {
     #[arg(long, value_name = "path")]
     schedule_named_truths: Option<PathBuf>,
     /// Load backend-retained assertion evidence.
-    #[arg(long, value_name = "path", hide = true)]
+    #[arg(long, value_name = "path")]
     retained_evidence: Option<PathBuf>,
 }
 
@@ -1899,7 +1989,6 @@ enum CliSubcommand {
     Selftest,
     Save,
     Resume,
-    Fork,
     Replay,
     Search,
     Fuzz,
@@ -1919,7 +2008,6 @@ impl CliSubcommand {
             Commands::Selftest(_) => Self::Selftest,
             Commands::Save(_) => Self::Save,
             Commands::Resume(_) => Self::Resume,
-            Commands::Fork(_) => Self::Fork,
             Commands::Replay(_) => Self::Replay,
             Commands::Search(_) => Self::Search,
             Commands::Fuzz(_) => Self::Fuzz,
@@ -1939,7 +2027,6 @@ impl CliSubcommand {
             Self::Selftest => "selftest",
             Self::Save => "save",
             Self::Resume => "resume",
-            Self::Fork => "fork",
             Self::Replay => "replay",
             Self::Search => "search",
             Self::Fuzz => "fuzz",
@@ -2049,7 +2136,6 @@ struct CliThinWrapperPlan {
     owns_canonical_run_state: bool,
     implements_scheduler: bool,
     implements_checkpoint_materialization: bool,
-    implements_fork_logic: bool,
     extra_control_capabilities: Vec<&'static str>,
 }
 
@@ -2059,7 +2145,6 @@ impl CliThinWrapperPlan {
             && !self.owns_canonical_run_state
             && !self.implements_scheduler
             && !self.implements_checkpoint_materialization
-            && !self.implements_fork_logic
             && self.extra_control_capabilities.is_empty()
             && !self.delegated_drivers.is_empty()
             && self
@@ -2114,7 +2199,6 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             owns_canonical_run_state: false,
             implements_scheduler: false,
             implements_checkpoint_materialization: false,
-            implements_fork_logic: false,
             extra_control_capabilities: Vec::new(),
         },
         Commands::Verify(_) => CliThinWrapperPlan {
@@ -2137,7 +2221,6 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             owns_canonical_run_state: false,
             implements_scheduler: false,
             implements_checkpoint_materialization: false,
-            implements_fork_logic: false,
             extra_control_capabilities: Vec::new(),
         },
         Commands::Selftest(_) => CliThinWrapperPlan {
@@ -2154,7 +2237,6 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             owns_canonical_run_state: false,
             implements_scheduler: false,
             implements_checkpoint_materialization: false,
-            implements_fork_logic: false,
             extra_control_capabilities: Vec::new(),
         },
         Commands::Save(_) => CliThinWrapperPlan {
@@ -2186,7 +2268,6 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             owns_canonical_run_state: false,
             implements_scheduler: false,
             implements_checkpoint_materialization: false,
-            implements_fork_logic: false,
             extra_control_capabilities: Vec::new(),
         },
         Commands::Resume(_) => CliThinWrapperPlan {
@@ -2212,31 +2293,6 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             owns_canonical_run_state: false,
             implements_scheduler: false,
             implements_checkpoint_materialization: false,
-            implements_fork_logic: false,
-            extra_control_capabilities: Vec::new(),
-        },
-        Commands::Fork(_) => CliThinWrapperPlan {
-            subcommand,
-            session_commands: vec![
-                SessionCommandKind::Fork,
-                SessionCommandKind::Continue,
-                SessionCommandKind::Query,
-            ],
-            api_calls: vec![
-                CliApiCall::Hello,
-                CliApiCall::CreateSession,
-                CliApiCall::SendCommand,
-            ],
-            delegated_drivers: vec![CliDelegatedDriver::SessionControlPlane],
-            state_references: vec![
-                CliStateReferenceKind::SavepointHandle,
-                CliStateReferenceKind::ContentAddressedStore,
-            ],
-            thin_wrapper: true,
-            owns_canonical_run_state: false,
-            implements_scheduler: false,
-            implements_checkpoint_materialization: false,
-            implements_fork_logic: false,
             extra_control_capabilities: Vec::new(),
         },
         Commands::Replay(_) => CliThinWrapperPlan {
@@ -2255,7 +2311,6 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             owns_canonical_run_state: false,
             implements_scheduler: false,
             implements_checkpoint_materialization: false,
-            implements_fork_logic: false,
             extra_control_capabilities: Vec::new(),
         },
         Commands::Search(_) | Commands::Fuzz(_) => CliThinWrapperPlan {
@@ -2284,7 +2339,6 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             owns_canonical_run_state: false,
             implements_scheduler: false,
             implements_checkpoint_materialization: false,
-            implements_fork_logic: false,
             extra_control_capabilities: Vec::new(),
         },
         Commands::Triage(_) => CliThinWrapperPlan {
@@ -2301,7 +2355,6 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             owns_canonical_run_state: false,
             implements_scheduler: false,
             implements_checkpoint_materialization: false,
-            implements_fork_logic: false,
             extra_control_capabilities: Vec::new(),
         },
         Commands::Debug(_) => CliThinWrapperPlan {
@@ -2333,7 +2386,6 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             owns_canonical_run_state: false,
             implements_scheduler: false,
             implements_checkpoint_materialization: false,
-            implements_fork_logic: false,
             extra_control_capabilities: Vec::new(),
         },
         Commands::Serve(_) => CliThinWrapperPlan {
@@ -2357,7 +2409,6 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             owns_canonical_run_state: false,
             implements_scheduler: false,
             implements_checkpoint_materialization: false,
-            implements_fork_logic: false,
             extra_control_capabilities: Vec::new(),
         },
         Commands::Campaign(_) => CliThinWrapperPlan {
@@ -2370,7 +2421,6 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             owns_canonical_run_state: false,
             implements_scheduler: false,
             implements_checkpoint_materialization: false,
-            implements_fork_logic: false,
             extra_control_capabilities: Vec::new(),
         },
         Commands::Store(_) => CliThinWrapperPlan {
@@ -2383,7 +2433,6 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             owns_canonical_run_state: false,
             implements_scheduler: false,
             implements_checkpoint_materialization: false,
-            implements_fork_logic: false,
             extra_control_capabilities: Vec::new(),
         },
         Commands::Completions(_) => CliThinWrapperPlan {
@@ -2396,7 +2445,6 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             owns_canonical_run_state: false,
             implements_scheduler: false,
             implements_checkpoint_materialization: false,
-            implements_fork_logic: false,
             extra_control_capabilities: Vec::new(),
         },
     };
@@ -2442,12 +2490,16 @@ mod cli_planning;
 mod cli_replay;
 #[path = "cli/report.rs"]
 mod cli_report;
-#[path = "cli/resume_fork.rs"]
-mod cli_resume_fork;
+#[path = "cli/resume.rs"]
+mod cli_resume;
 #[path = "cli/run_save.rs"]
 mod cli_run_save;
 #[path = "cli/campaign/gc.rs"]
 mod cli_store;
+#[path = "cli/campaign/maintenance.rs"]
+mod cli_store_maintenance;
+#[path = "cli/campaign/transform.rs"]
+mod cli_store_transform;
 #[path = "cli/triage_debug.rs"]
 mod cli_triage_debug;
 #[path = "cli/verify_serve.rs"]
@@ -2462,7 +2514,7 @@ use cli_exploration::*;
 use cli_planning::*;
 use cli_replay::*;
 use cli_report::*;
-use cli_resume_fork::*;
+use cli_resume::*;
 use cli_run_save::*;
 use cli_store::*;
 use cli_triage_debug::*;

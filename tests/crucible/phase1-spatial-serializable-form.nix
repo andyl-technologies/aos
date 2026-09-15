@@ -9,6 +9,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
+  workloadTest = builtins.readFile ../../crates/crucible/tests/workload_parameterization.rs;
+  devicesTest = builtins.readFile ../../crates/crucible/tests/world_devices.rs;
   cargoManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
   cargoLock = builtins.readFile ../../crates/Cargo.lock;
   defaultChecks = builtins.readFile ./default.nix;
@@ -139,40 +141,40 @@
         needle = "ContentAddressedBlobRef";
       }
       {
-        label = "focused serialization test";
-        needle = "serializable_scenario_form_round_trips_and_rejects_host_paths";
-      }
-      {
-        label = "test checks TOML round trip";
-        needle = "ScenarioDefForm::from_canonical_toml";
-      }
-      {
-        label = "test checks binary round trip";
-        needle = "ScenarioDefForm::from_compact_binary";
+        label = "focused portable node serialization test";
+        needle = "world_node_launch_inputs_are_portable_and_identity_bearing";
       }
       {
         label = "test rejects host path image refs";
         needle = "ScenarioImageReferenceNotContentAddressed";
       }
       {
-        label = "test serializes kernel reference";
-        needle = "kernel = \\\"{}\\\"";
+        label = "test rejects concrete host path";
+        needle = "ContentAddressedBlobRef::parse(\"kernel\", \"/nix/store/kernel\")";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/workload_parameterization.rs" workloadTest [
+      {
+        label = "scenario TOML round trip";
+        needle = "ScenarioDefForm::from_canonical_toml(&form.to_canonical_toml()?)?";
       }
       {
-        label = "test serializes root image reference";
-        needle = "root_image = \\\"{}\\\"";
+        label = "scenario binary round trip";
+        needle = "ScenarioDefForm::from_compact_binary(&form.to_compact_binary())?";
       }
       {
-        label = "test serializes initrd reference";
-        needle = "initrd = \\\"{}\\\"";
+        label = "round trips preserve scenario identity";
+        needle = "assert_eq!(form.id(), binary.id());";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/world_devices.rs" devicesTest [
+      {
+        label = "current heterogeneous scenario form round trip";
+        needle = "fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable()";
       }
       {
-        label = "test compares canonical hash material bytes";
-        needle = "parsed_binary.canonical_bytes()";
-      }
-      {
-        label = "test rejects empty world id drift";
-        needle = "wrong_empty_world_toml";
+        label = "current scenario binary envelope";
+        needle = "crucible.scenario-def-form.v7";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -236,7 +238,25 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible \
               --lib \
-              serializable_scenario_form_round_trips \
+              world_node_launch_inputs_are_portable_and_identity_bearing \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-spatial-serializable-form-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible \
+              --test workload_parameterization \
+              scalar_parameter_change_changes_scenario_id_and_reproduces \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-spatial-serializable-form-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible \
+              --test world_devices \
+              heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable \
               -- --test-threads=1
           '';
         }

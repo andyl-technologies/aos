@@ -227,7 +227,7 @@ impl ExecutorLoopbackEndpointConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`ExecutorLoopbackEndpointError`] for the same invalid path,
+    /// Returns [`CampaignLoopbackEndpointError`] for the same invalid path,
     /// ownership profile, or socket mode as
     /// [`CampaignLoopbackEndpointConfig::new`].
     pub fn new(
@@ -235,7 +235,7 @@ impl ExecutorLoopbackEndpointConfig {
         owner_user_id: u32,
         owner_group_id: u32,
         socket_mode: u32,
-    ) -> Result<Self, ExecutorLoopbackEndpointError> {
+    ) -> Result<Self, CampaignLoopbackEndpointError> {
         CampaignLoopbackEndpointConfig::new(path, owner_user_id, owner_group_id, socket_mode)
             .map(|inner| Self { inner })
     }
@@ -268,10 +268,10 @@ impl ExecutorLoopbackEndpointConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`ExecutorLoopbackEndpointError`] when the namespace contract,
+    /// Returns [`CampaignLoopbackEndpointError`] when the namespace contract,
     /// stale entry, lifetime lock, bind result, ownership, permissions, or
     /// directory synchronization cannot be validated exactly.
-    pub fn bind(&self) -> Result<ManagedExecutorLoopbackListener, ExecutorLoopbackEndpointError> {
+    pub fn bind(&self) -> Result<ManagedExecutorLoopbackListener, CampaignLoopbackEndpointError> {
         let (listener, guard) = self.inner.bind_parts(
             EXECUTOR_ENDPOINT_LOCK_FILE,
             "bind-executor-endpoint",
@@ -290,11 +290,11 @@ impl ExecutorLoopbackEndpointConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`ExecutorLoopbackEndpointError`] when the parent, named socket,
+    /// Returns [`CampaignLoopbackEndpointError`] when the parent, named socket,
     /// connection, peer credentials, or before/after identity cannot be
     /// authenticated exactly. A connected stream is shut down before any
     /// post-connect authentication error is returned.
-    pub fn connect(&self) -> Result<UnixStream, ExecutorLoopbackEndpointError> {
+    pub fn connect(&self) -> Result<UnixStream, CampaignLoopbackEndpointError> {
         self.connect_with_timeout(DEFAULT_EXECUTOR_CONNECT_TIMEOUT)
     }
 
@@ -305,13 +305,13 @@ impl ExecutorLoopbackEndpointConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`ExecutorLoopbackEndpointError::InvalidConnectTimeout`] when
+    /// Returns [`CampaignLoopbackEndpointError::InvalidConnectTimeout`] when
     /// `timeout` is zero or exceeds one hour. Other failures match
     /// [`Self::connect`].
     pub fn connect_with_timeout(
         &self,
         timeout: Duration,
-    ) -> Result<UnixStream, ExecutorLoopbackEndpointError> {
+    ) -> Result<UnixStream, CampaignLoopbackEndpointError> {
         if timeout.is_zero() || timeout > MAX_EXECUTOR_CONNECT_TIMEOUT {
             return Err(CampaignLoopbackEndpointError::InvalidConnectTimeout);
         }
@@ -490,9 +490,6 @@ pub enum CampaignLoopbackEndpointError {
         source: io::Error,
     },
 }
-
-/// Failure to establish or retain one managed executor endpoint.
-pub type ExecutorLoopbackEndpointError = CampaignLoopbackEndpointError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FileIdentity {

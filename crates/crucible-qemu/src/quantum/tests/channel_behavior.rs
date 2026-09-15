@@ -120,7 +120,7 @@ fn qemu_quantum_reports_device_io_freeze_across_burst_release() {
     assert!(report.device_io_freeze.was_active());
 }
 #[test]
-fn qemu_quantum_drains_plugin_emitted_frames_toward_router() {
+fn qemu_quantum_repoll_retains_and_drains_one_outbound_frame_once() {
     let slot = NodeSlot::default();
     let inbound_ring = RingHeader::new();
     let outbound_ring = RingHeader::new();
@@ -143,13 +143,23 @@ fn qemu_quantum_drains_plugin_emitted_frames_toward_router() {
         Ok(pending) => pending,
         Err(error) => panic!("quantum start should publish ceiling: {error}"),
     };
+    let outbound_read_index = outbound_ring.read_index();
+    assert!(matches!(
+        hot_path.poll_quantum(&pending),
+        Err(QemuQuantumError::PluginReportNotPublished {
+            current_icount: 0,
+            ceiling: 3,
+        })
+    ));
+    assert_eq!(outbound_ring.read_index(), outbound_read_index);
+
     if let Err(error) = slot.publish_reached_icount(3, 0) {
         panic!("plugin report should publish through shared node slot: {error}");
     }
 
-    let report = match hot_path.finish_quantum(pending) {
+    let report = match hot_path.poll_quantum(&pending) {
         Ok(report) => report,
-        Err(error) => panic!("quantum should drain emitted frame: {error}"),
+        Err(error) => panic!("same pending quantum should drain emitted frame: {error}"),
     };
 
     assert_eq!(
@@ -162,6 +172,19 @@ fn qemu_quantum_drains_plugin_emitted_frames_toward_router() {
             payload: vec![8, 9],
         }]
     );
+    assert_eq!(outbound_ring.read_index(), outbound_read_index + 1);
+
+    let next = hot_path
+        .start_quantum(horizon(4))
+        .unwrap_or_else(|error| panic!("next quantum should start: {error}"));
+    slot.publish_reached_icount(4, 0)
+        .unwrap_or_else(|error| panic!("next quantum report should publish: {error}"));
+    let next_report = hot_path
+        .poll_quantum(&next)
+        .unwrap_or_else(|error| panic!("next quantum should finish: {error}"));
+    assert!(next_report.emitted_frames.is_empty());
+    assert_eq!(outbound_ring.read_index(), outbound_read_index + 1);
+
     assert!(
         hot_path
             .operation_log()

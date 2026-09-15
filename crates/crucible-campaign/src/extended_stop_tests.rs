@@ -31,12 +31,12 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         2,
         "extended-stop-path"
     );
-    let legacy_attempt = Attempt::new(
+    let terminal_attempt = Attempt::new(
         AttemptStart::Discover { configuration },
         path,
         StopCondition::Terminal,
     )
-    .expect("legacy attempt");
+    .expect("terminal attempt");
     let attempt = Attempt::new(
         AttemptStart::Discover { configuration },
         path,
@@ -51,7 +51,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         },
     )
     .expect("next-choice-or-timeout attempt");
-    assert_eq!(legacy_attempt.schema_version(), 1);
+    assert_eq!(terminal_attempt.schema_version(), 1);
     assert_eq!(attempt.schema_version(), 2);
     assert_eq!(next_choice_or_timeout_attempt.schema_version(), 2);
     assert_eq!(
@@ -105,10 +105,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         b"branch-command",
     )));
     let branch = BranchRequest::new(
-        branch_point,
-        configuration,
-        opportunity,
-        domain,
+        BranchRequest::identity(branch_point, configuration, opportunity, domain),
         CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(false)]))
             .expect("finite source"),
         cause,
@@ -119,7 +116,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         },
     )
     .expect("combined-stop branch request");
-    assert_eq!(branch.schema_version(), 6);
+    assert_eq!(branch.schema_version(), 9);
     assert_eq!(
         BranchRequest::from_canonical_bytes(&branch.canonical_bytes()).expect("branch round trip"),
         branch
@@ -130,7 +127,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
             .expect("branch ID")
             .content_id()
             .schema_version(),
-        6
+        9
     );
     let mut downgraded_branch = branch.canonical_bytes();
     downgraded_branch[..4].copy_from_slice(&5_u32.to_be_bytes());
@@ -144,10 +141,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
     );
     let value = ChoiceValue::Boolean(false);
     let smc_branch = BranchRequest::new(
-        branch_point,
-        configuration,
-        opportunity,
-        domain,
+        BranchRequest::identity(branch_point, configuration, opportunity, domain),
         CandidateSource::statistical_smc(
             StatisticalGenerationId::from_hash(CampaignHash::derive(
                 "extended-stop-test",
@@ -172,7 +166,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         },
     )
     .expect("combined-stop SMC branch request");
-    assert_eq!(smc_branch.schema_version(), 8);
+    assert_eq!(smc_branch.schema_version(), 9);
     assert_eq!(
         BranchRequest::from_canonical_bytes(&smc_branch.canonical_bytes())
             .expect("SMC branch round trip"),
@@ -184,13 +178,13 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
             .expect("SMC branch ID")
             .content_id()
             .schema_version(),
-        8
+        9
     );
 
     let measurements = stored_id!(
         MeasurementSetId,
         ObjectKind::Observation,
-        1,
+        2,
         "extended-stop-measurements"
     );
     let properties = stored_id!(
@@ -207,13 +201,15 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
     );
     let observation = Observation::new(
         attempt.id().expect("attempt ID"),
-        ConfigurationId::from_hash(CampaignHash::derive("extended-stop-test", b"child")),
-        configuration,
-        path,
-        StopOutcome::Reached(StopCondition::ExecutionQuanta(7)),
-        measurements,
-        properties,
-        coverage,
+        Observation::outcome(
+            ConfigurationId::from_hash(CampaignHash::derive("extended-stop-test", b"child")),
+            configuration,
+            path,
+            StopOutcome::Reached(StopCondition::ExecutionQuanta(7)),
+            measurements,
+            properties,
+            coverage,
+        ),
         BTreeSet::new(),
     )
     .expect("execution-quanta observation");
@@ -305,7 +301,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
     );
 
     let golden_digests = [
-        blake3::hash(&legacy_attempt.canonical_bytes())
+        blake3::hash(&terminal_attempt.canonical_bytes())
             .to_hex()
             .to_string(),
         blake3::hash(&attempt.canonical_bytes())
@@ -328,9 +324,9 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         [
             "16a43db59753647e81b424e087085d2dc4602cc1de21daad6cca851064461a54",
             "ca56047687eabd692abfa41dba49e9abbebdaa49e20e4fd4e143d4e13035f95f",
-            "747d69bbba99888605848fd8d053f9bcbc47aaab957f37f5f3cadfd1a276ca02",
-            "0c7770852530d0d7998409a6dac1f44c02cec7ef01785f51eb3d26c27fef45bc",
-            "269a80641393f566e0f0bc846dbc8a0f4d4ef626503e0adc4f7c3b56204492f9",
+            "2c33f5842cc9ed13e921d287b34c5776385503e3feac253c4c4993b0cee7f36c",
+            "c01f43dfaf3eccd05cfd8ffbf024fbd0cfd34561eb0e5a1f4d6d595745d6fd48",
+            "4843bdc4e0e715066fbc04ab31be52ea01c6df4811431fb0358aba1fcfc1fbcb",
             "2964e78ecc7b1fa408b1e5c16aaad83629f0a09738db28a4d1ed9d264bc06773",
             "62f72751a8db51bb3c033a9da6e454000bda19ab6c1793a92df75b31e86c2b9e",
         ]

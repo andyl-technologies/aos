@@ -52,32 +52,13 @@ use crate::{
 mod completion;
 pub use completion::LocalExecutorPoolCompletion;
 use completion::{PoolCompletionState, WorkerCompletion};
-
 mod promotion;
-pub use promotion::{
-    LocalCheckpointPromotionWorker, MAX_LOCAL_CHECKPOINT_PROMOTION_QUEUE,
-    MAX_LOCAL_CHECKPOINT_PROMOTION_WORKERS, ProductionCheckpointPromotionWorker,
-};
-use promotion::{PromotionQueue, promotion_worker_loop};
-
-struct DisabledCheckpointPromotionWorker;
-
-impl LocalCheckpointPromotionWorker for DisabledCheckpointPromotionWorker {
-    type Error = ();
-
-    fn prepare(
-        &mut self,
-        _work: crate::CheckpointPromotionRestartWork,
-        _cancellation: crate::ExecutionCancellation,
-    ) -> Result<crate::PreparedPausedCheckpointPromotionRestart, AttemptWorkerFailure<Self::Error>>
-    {
-        Err(AttemptWorkerFailure::Terminal(()))
-    }
-}
+use promotion::{DisabledCheckpointPromotionWorker, PromotionQueue, promotion_worker_loop};
+pub(crate) use promotion::{LocalCheckpointPromotionWorker, ProductionCheckpointPromotionWorker};
+pub use promotion::{MAX_LOCAL_CHECKPOINT_PROMOTION_QUEUE, MAX_LOCAL_CHECKPOINT_PROMOTION_WORKERS};
 
 /// Maximum execution threads accepted by one local executor pool.
 pub const MAX_LOCAL_EXECUTOR_WORKERS: usize = 256;
-
 const WORKER_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 pub(crate) const WORKER_SHUTDOWN_WAIT: Duration = Duration::from_secs(30);
 const POOL_RUNNING: u8 = 0;
@@ -414,43 +395,6 @@ where
             Vec::<DisabledCheckpointPromotionWorker>::new(),
             Some(checkpoint_observer),
             prepared_results,
-        )
-    }
-
-    /// Starts fixed semantic and paused-checkpoint promotion workers.
-    ///
-    /// Startup inventories compact raw/staged promotion records before any
-    /// service handle is returned. Promotion workers run repository, QEMU, and
-    /// immutable-store phases outside supervisor ownership and borrow the actor
-    /// only for exact ledger transitions.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid semantic or promotion worker counts, more
-    /// than 65,536 durable restart items, an unreadable restart inventory, or an
-    /// operating-system thread-spawn failure.
-    pub fn start_with_checkpoint_promotions<W, P>(
-        executor: LocalExecutorCapabilityService<L, V>,
-        store: CampaignExecutorStore,
-        checkpoints: Arc<ExactCheckpointStore>,
-        workers: Vec<W>,
-        promotion_workers: Vec<P>,
-    ) -> Result<Self, LocalExecutorPoolConfigError>
-    where
-        W: LocalAttemptWorker + Send + 'static,
-        P: LocalCheckpointPromotionWorker + Send + 'static,
-    {
-        if promotion_workers.is_empty() {
-            return Err(LocalExecutorPoolConfigError::ZeroPromotionWorkers);
-        }
-        Self::start_inner(
-            executor,
-            store,
-            checkpoints,
-            workers,
-            promotion_workers,
-            None,
-            None,
         )
     }
 
@@ -1150,10 +1094,8 @@ where
             }
             match shared
                 .checkpoints
-                .prepare_attempt_checkpoint_with_cancellation(
-                    capture.reopenable_copy(),
-                    self.queued.cancellation(),
-                ) {
+                .prepare_attempt_checkpoint_with_cancellation(capture, self.queued.cancellation())
+            {
                 Ok(prepared) => break prepared,
                 Err(crate::ExactCheckpointStoreError::Canceled) => {
                     return Err(CheckpointHandoffFailure::Canceled);
@@ -1672,19 +1614,19 @@ where
             prepared,
         ) {
             Ok((journaled, _)) => return Some(journaled),
-            Err(error) if matches!(error.source, PreparedResultJournalError::Io { .. }) => {
-                prepared = *error.prepared;
-                increment(&shared.counters.publication_retries);
-                thread::sleep(WORKER_RETRY_INTERVAL);
-            }
             Err(error) => {
-                let source = error.source;
+                if matches!(error.source.as_ref(), PreparedResultJournalError::Io { .. }) {
+                    prepared = *error.prepared;
+                    increment(&shared.counters.publication_retries);
+                    thread::sleep(WORKER_RETRY_INTERVAL);
+                    continue;
+                }
                 match (*error.prepared).into_queued_without_journal() {
                     Ok(queued) => {
                         reconcile_worker_failure(
                             shared,
                             queued,
-                            AttemptWorkerFailure::Terminal(source),
+                            AttemptWorkerFailure::Terminal(*error.source),
                         );
                     }
                     Err(prepared) => retain_forever(shared, prepared),
@@ -2046,7 +1988,12 @@ where
             abort_staged(shared, staged);
             return PublishDisposition::Finished(AttemptExecutionDisposition::Canceled);
         }
-        match publish_prepared_attempt_result(store, staged) {
+        let exact_authenticator =
+            crate::exact_checkpoint_store::ExactFindingCheckpointAuthenticator::new(
+                store,
+                &shared.checkpoints,
+            );
+        match publish_prepared_attempt_result(store, &exact_authenticator, staged) {
             Ok(published) => return PublishDisposition::Published(Box::new(published)),
             Err(error)
                 if error.source.executor_rejection() == ExecutorRejection::UnavailableInput =>
@@ -2101,8 +2048,8 @@ where
             }
             Err(AttemptWorkerReconcileError::JournalCleanupPending {
                 published: next,
-                source: PreparedResultJournalError::Io { .. },
-            }) => {
+                source,
+            }) if matches!(source.as_ref(), PreparedResultJournalError::Io { .. }) => {
                 published = *next;
                 increment(&shared.counters.publication_retries);
                 drop(executor);

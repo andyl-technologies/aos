@@ -7,9 +7,8 @@ where
     B: QemuHotForkReconciliationBackend,
 {
     /// Begins ownership of one already-created exact child.
-    pub fn new(attempt: QemuHotForkAttemptBasis, backend: B) -> Self {
+    pub fn new(backend: B) -> Self {
         Self {
-            attempt,
             backend: Some(backend),
             phase: QemuHotForkReconciliationPhase::AwaitingChildAdmission,
             child_admitted: false,
@@ -19,45 +18,10 @@ where
         }
     }
 
-    pub(crate) fn from_reconciled_backend(
-        attempt: QemuHotForkAttemptBasis,
-        backend: B,
-        terminal: Option<QemuHotForkChildObservation>,
-        publication: Option<QemuHotForkPublicationDisposition>,
-    ) -> Self {
-        Self {
-            attempt,
-            backend: Some(backend),
-            phase: QemuHotForkReconciliationPhase::Reconciled,
-            child_admitted: true,
-            terminal,
-            publication,
-            diagnostics_drained: true,
-        }
-    }
-
-    /// Returns the exact supervisor reservation basis.
-    #[must_use]
-    pub const fn attempt(&self) -> QemuHotForkAttemptBasis {
-        self.attempt
-    }
-
     /// Returns the current monotonic phase.
     #[must_use]
     pub const fn phase(&self) -> QemuHotForkReconciliationPhase {
         self.phase
-    }
-
-    /// Returns the final parent-owned child status once observed.
-    #[must_use]
-    pub const fn terminal_observation(&self) -> Option<QemuHotForkChildObservation> {
-        self.terminal
-    }
-
-    /// Returns the semantic publication disposition once reconciled.
-    #[must_use]
-    pub const fn publication(&self) -> Option<QemuHotForkPublicationDisposition> {
-        self.publication
     }
 
     /// Authenticates the private child QMP channel before modeled execution.
@@ -343,25 +307,6 @@ where
             backend.quarantine();
         }
         self.phase = QemuHotForkReconciliationPhase::Quarantined;
-    }
-
-    /// Recovers the backend only after complete reconciliation.
-    ///
-    /// On an incomplete owner, returns the unchanged owner so no authority can
-    /// escape the state machine.
-    ///
-    /// # Errors
-    ///
-    /// Returns the unchanged owner until its phase is
-    /// [`QemuHotForkReconciliationPhase::Reconciled`].
-    pub fn into_reconciled_backend(mut self) -> Result<B, Box<Self>> {
-        if self.phase != QemuHotForkReconciliationPhase::Reconciled {
-            return Err(Box::new(self));
-        }
-        match self.backend.take() {
-            Some(backend) => Ok(backend),
-            None => Err(Box::new(self)),
-        }
     }
 
     pub(super) fn require_phase(

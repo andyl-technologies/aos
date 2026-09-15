@@ -1431,27 +1431,22 @@
       qemu-crucible = callPackage ./emulation/qemu.nix {
         pname = "qemu-crucible";
         enablePlugins = true;
-        applyCruciblePatches = true;
+        applyCruciblePatch = true;
+      };
+      # Rebuild the shipped patched identity and run QEMU's complete configured
+      # regression target without adding that cost to normal installation.
+      qemu-crucible-full-test-suite = callPackage ./emulation/qemu.nix {
+        pname = "qemu-crucible";
+        enablePlugins = true;
+        applyCruciblePatch = true;
+        testOnlyNonDistributable = true;
+        fullUpstreamTestSuiteOnly = true;
       };
       qemu-crucible-reference = callPackage ./emulation/qemu.nix {
         pname = "qemu-crucible-reference";
         enablePlugins = true;
-        applyCruciblePatches = false;
+        applyCruciblePatch = false;
       };
-      # Focused compatibility gates build an explicitly selected tracked patch
-      # prefix. Keeping construction here preserves the same hermetic package
-      # dependency injection as the published full-series QEMU package.
-      qemuCrucibleNonDistributableTestPrefix = {
-        pname,
-        series,
-        testOnlyPostPatch ? null,
-      }:
-        callPackage ./emulation/qemu.nix {
-          inherit pname series testOnlyPostPatch;
-          enablePlugins = true;
-          applyCruciblePatches = true;
-          testOnlyNonDistributable = true;
-        };
       crucibleQemuPluginFor = qemuPackage:
         callPackage ./emulation/crucible-qemu-plugin.nix {
           qemu-crucible = qemuPackage;

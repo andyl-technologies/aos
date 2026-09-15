@@ -54,11 +54,11 @@
       }
       {
         label = "representative decision driver";
-        needle = "fn record_representative_decision(recorder: &mut DecisionRecorder, index: u64)";
+        needle = "pub(in crate::tests) fn record_representative_decision(";
       }
       {
         label = "pure fingerprint helper";
-        needle = "pub(super) fn configuration_execution_fingerprint(";
+        needle = "pub(in crate::tests) fn configuration_execution_fingerprint(";
       }
     ]
     ++ failuresFor "crates/crucible/src/decision.rs" decision [

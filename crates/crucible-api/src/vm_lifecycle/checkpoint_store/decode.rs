@@ -130,19 +130,9 @@ pub(super) fn decode_manifest_with_limits(
     bytes: &[u8],
     limits: FaultResourceLimits,
 ) -> Result<ClosureManifest, LifecycleApiError> {
-    let (format_version, payload) = if let Some(payload) = bytes.strip_prefix(MANIFEST_MAGIC) {
-        (MANIFEST_VERSION, payload)
-    } else if let Some(payload) = bytes.strip_prefix(PREVIOUS_MANIFEST_MAGIC) {
-        (PREVIOUS_MANIFEST_VERSION, payload)
-    } else if let Some(payload) = bytes.strip_prefix(OLDER_MANIFEST_MAGIC) {
-        (OLDER_MANIFEST_VERSION, payload)
-    } else if let Some(payload) = bytes.strip_prefix(LEGACY_MANIFEST_MAGIC) {
-        (LEGACY_MANIFEST_VERSION, payload)
-    } else if let Some(payload) = bytes.strip_prefix(OLDEST_MANIFEST_MAGIC) {
-        (OLDEST_MANIFEST_VERSION, payload)
-    } else {
-        return Err(loop_factory_error("unsupported closure manifest version"));
-    };
+    let payload = bytes
+        .strip_prefix(MANIFEST_MAGIC)
+        .ok_or_else(|| loop_factory_error("unsupported closure manifest version"))?;
     if payload.len() > MAX_MANIFEST_BYTES {
         return Err(loop_factory_error(
             "closure manifest exceeds its size limit",
@@ -151,7 +141,7 @@ pub(super) fn decode_manifest_with_limits(
 
     let mut manifest: ClosureManifest =
         decode_cbor_with_limits(payload, limits, "malformed closure manifest")?;
-    manifest.format_version = format_version;
+    manifest.format_version = MANIFEST_VERSION;
     let canonical =
         encode_manifest(&manifest).map_err(|error| loop_factory_error(error.to_string()))?;
     if canonical != bytes {

@@ -3,12 +3,11 @@
 //! This module joins three independently owned authorities without granting
 //! any of them broader mutation capability: a semantic exact pin or durable
 //! attempt-resume root, the operational owner that retained it, and the
-//! immutable exact-checkpoint store. The VMState child streams into a pinned
-//! run-directory transaction; only a complete authenticated copy becomes
-//! eligible for guarded launch.
+//! immutable exact-checkpoint store. Runtime restore accepts only version-nine
+//! production closures and consumes sealed RAM and device-state descriptors
+//! through the production lifecycle.
 
 use std::collections::BTreeMap;
-use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -16,136 +15,64 @@ use crucible::{
     Configuration, ContentHash, Decision, NodeId, ScenarioDefForm, SingleSchedulerCheckpoint,
 };
 use crucible_api::{
-    LifecycleApiError, ProductionExactCheckpointClosure, ProductionExactCheckpointResumeBasis,
-    authenticate_portable_exact_checkpoint_replay_oracle_promotion_with_boundary,
-    authenticate_portable_exact_checkpoint_resume_basis_with_boundary,
-    install_exact_checkpoint_closure_with_boundary_and_admission,
+    DecodedProductionExactCheckpoint, LifecycleApiError, ProductionExactCheckpointClosure,
+    ProductionExactCheckpointResumeBasis, ProductionVmExactNodeRestoreAdmissions,
+    open_exact_checkpoint_closure,
 };
-use crucible_cas::content_store::{BlobHandle, BlobSource, StoreError};
 use crucible_qemu::{
-    QemuBakedGenesisRestoreAdmission, QemuCapturedVmState, QemuFailedLaunchChildSource,
-    QemuGuardedNodeRealizationLauncher, QemuGuardedThinNodeRealizationLauncher,
-    QemuNodeRealizationExecutor, QemuPreparedRunDirectory, QemuReplayOracleCheck, QemuSpawnError,
-    QemuVmLiveRealizationExecutor, QemuVmRealization, QemuVmRealizationError,
-    QemuVmRealizationExecutor, QemuVmRealizationKind, QemuVmRealizationOperation,
-    QemuVmReplayRequest, QemuVmSnapshot, QemuVmStateBinding,
+    QemuBakedGenesisSnapshot, QemuReplayOracleMatch, QemuReplayValidationExecutor,
+    QemuVmRealizationError, QemuVmReplayRequest, QemuVmSnapshot,
 };
 use thiserror::Error;
 
-use crucible_campaign::{
-    CampaignFactId, CampaignName, CampaignRepository, ConfigurationId, ExactCheckpointId,
-};
+use crucible_campaign::ExactCheckpointId;
 
 use crate::{
-    ExactCheckpointStore, ExactCheckpointStoreError, ExactPinRetentionAdmin,
-    ExactPinRetentionError, ExecutionCancellation, LoadedExactCheckpoint,
-    PreparedProductionExactCheckpoint, QemuAttemptOperationalBoundary,
-    QemuAttemptProcessResourceGuard, QemuExactCheckpointRealization,
+    ExactCheckpointStore, ExactCheckpointStoreError, ExecutionCancellation,
+    PreparedProductionExactCheckpoint, QemuAttemptProcessResourceGuard,
 };
 
-/// Converts a post-reap QEMU VMState capability into a reopenable CAS source.
-///
-/// Every opened reader has an independent positional cursor over the same
-/// retained inode. The source therefore remains deterministic when immutable
-/// publication retries or mirrors it after the run-directory entry is removed.
-#[must_use]
-pub fn captured_qemu_vmstate_blob(source: QemuCapturedVmState) -> BlobHandle {
-    BlobHandle::new(Arc::new(CapturedQemuVmStateSource {
-        source: Arc::new(source),
-    }))
-}
-
-struct CapturedQemuVmStateSource {
-    source: Arc<QemuCapturedVmState>,
-}
-
-impl BlobSource for CapturedQemuVmStateSource {
-    fn logical_length(&self) -> u64 {
-        self.source.logical_length()
-    }
-
-    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
-        Ok(Box::new(CapturedQemuVmStateReader {
-            source: Arc::clone(&self.source),
-            offset: 0,
-        }))
-    }
-}
-
-struct CapturedQemuVmStateReader {
-    source: Arc<QemuCapturedVmState>,
-    offset: u64,
-}
-
-impl Read for CapturedQemuVmStateReader {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let remaining = self.source.logical_length().saturating_sub(self.offset);
-        if remaining == 0 || buffer.is_empty() {
-            return Ok(0);
-        }
-        let maximum = usize::try_from(remaining).unwrap_or(usize::MAX);
-        let read_length = buffer.len().min(maximum);
-        let read = self
-            .source
-            .read_at(&mut buffer[..read_length], self.offset)?;
-        if read == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "captured QEMU VMState ended before its attested length",
-            ));
-        }
-        self.offset = self
-            .offset
-            .checked_add(u64::try_from(read).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "VMState read length overflow")
-            })?)
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "VMState read offset overflow")
-            })?;
-        Ok(read)
-    }
-}
-
-/// One exact checkpoint durably materialized for guarded QEMU restore.
-#[derive(Clone, Debug)]
-pub struct MaterializedExactCheckpoint {
-    checkpoint: ExactCheckpointId,
-    pin_fact: CampaignFactId,
-    vmstate_binding: QemuVmStateBinding,
-    snapshot: QemuVmSnapshot,
-}
-
-/// One operational attempt checkpoint durably materialized for guarded resume.
-///
-/// Unlike [`MaterializedExactCheckpoint`], this value is rooted by the exact
-/// resume identity retained in the supervisor ledger rather than by a semantic
-/// campaign pin. It still authenticates the same complete immutable root and
-/// commits the same root-derived VMState binding before launch.
-#[derive(Clone, Debug)]
-pub struct MaterializedAttemptCheckpoint {
-    checkpoint: ExactCheckpointId,
-    vmstate_binding: QemuVmStateBinding,
-    snapshot: QemuVmSnapshot,
-    scheduler: SingleSchedulerCheckpoint,
-}
-
-/// Installed and semantically bound version-four production continuation.
+/// Installed and semantically bound production continuation proof.
 ///
 /// The value proves that the complete portable closure was authenticated under
 /// the admitted scenario and that its restored schedule continues the exact
 /// effective attempt start without introducing another campaign branch edge.
 /// It grants no process-launch or replay-oracle authority.
-#[derive(Clone)]
-pub struct InstalledProductionAttemptCheckpoint {
+pub(crate) struct InstalledProductionAttemptCheckpoint {
     checkpoint: ExactCheckpointId,
     closure: ProductionExactCheckpointClosure,
     configuration: Configuration,
     scheduler: SingleSchedulerCheckpoint,
+    decoded: Option<DecodedProductionExactCheckpoint>,
+}
+
+/// Repository-authenticated resume state retained until atomic QEMU launch.
+pub(crate) struct AuthenticatedProductionAttemptResume {
+    production_identity: ContentHash,
+    decoded: DecodedProductionExactCheckpoint,
+}
+
+impl AuthenticatedProductionAttemptResume {
+    pub(crate) const fn production_identity(&self) -> ContentHash {
+        self.production_identity
+    }
+
+    pub(crate) fn configuration(&self) -> &Configuration {
+        self.decoded.configuration()
+    }
+
+    pub(crate) fn scheduler(&self) -> &SingleSchedulerCheckpoint {
+        self.decoded.scheduler()
+    }
+
+    pub(crate) fn into_decoded(self) -> DecodedProductionExactCheckpoint {
+        self.decoded
+    }
 }
 
 /// No-write campaign-root replacement for one installed production attempt.
 #[derive(Debug)]
-pub struct PreparedProductionAttemptReplayOraclePromotion {
+pub(crate) struct PreparedProductionAttemptReplayOraclePromotion {
     source: ExactCheckpointId,
     replacement: PreparedProductionExactCheckpoint,
 }
@@ -153,13 +80,13 @@ pub struct PreparedProductionAttemptReplayOraclePromotion {
 impl PreparedProductionAttemptReplayOraclePromotion {
     /// Returns the raw attempt root retained throughout promotion.
     #[must_use]
-    pub const fn source(&self) -> ExactCheckpointId {
+    pub(crate) const fn source(&self) -> ExactCheckpointId {
         self.source
     }
 
     /// Returns the derived promoted root that must be staged before writes.
     #[must_use]
-    pub const fn promoted(&self) -> ExactCheckpointId {
+    pub(crate) const fn promoted(&self) -> ExactCheckpointId {
         self.replacement.root()
     }
 
@@ -171,38 +98,34 @@ impl PreparedProductionAttemptReplayOraclePromotion {
 impl InstalledProductionAttemptCheckpoint {
     /// Returns the exact campaign-CAS root that supplied this continuation.
     #[must_use]
-    pub const fn checkpoint(&self) -> ExactCheckpointId {
+    pub(crate) const fn checkpoint(&self) -> ExactCheckpointId {
         self.checkpoint
     }
 
     /// Returns the installed native production closure.
     #[must_use]
-    pub const fn closure(&self) -> &ProductionExactCheckpointClosure {
+    pub(crate) const fn closure(&self) -> &ProductionExactCheckpointClosure {
         &self.closure
     }
 
     /// Returns the exact restored modeled configuration.
     #[must_use]
-    pub const fn configuration(&self) -> &Configuration {
+    pub(crate) const fn configuration(&self) -> &Configuration {
         &self.configuration
     }
 
     /// Returns the complete restored scheduler continuation.
     #[must_use]
-    pub const fn scheduler(&self) -> &SingleSchedulerCheckpoint {
+    pub(crate) const fn scheduler(&self) -> &SingleSchedulerCheckpoint {
         &self.scheduler
     }
 
-    /// Consumes the proof into its native closure and modeled continuation.
-    #[must_use]
-    pub fn into_parts(
-        self,
-    ) -> (
-        ProductionExactCheckpointClosure,
-        Configuration,
-        SingleSchedulerCheckpoint,
-    ) {
-        (self.closure, self.configuration, self.scheduler)
+    pub(crate) fn take_node_restore_admissions(
+        &mut self,
+    ) -> Option<ProductionVmExactNodeRestoreAdmissions> {
+        self.decoded
+            .take()
+            .map(DecodedProductionExactCheckpoint::into_node_restore_admissions)
     }
 }
 
@@ -210,34 +133,30 @@ impl InstalledProductionAttemptCheckpoint {
 ///
 /// The session routes the selected fat probe through the exact-root launcher
 /// and every cached-ancestor or baked-genesis restore through a disjoint thin-
-/// path launcher. It owns the attempt resource guard until the last live QEMU
-/// generation is reaped. Any realization failure is conservatively transferred
-/// to guard quarantine after first transferring any retained pre-install child
-/// authority into that guard.
-pub struct QemuGuardedReplayOracleSession<'a, L, G>
+/// path launcher. It borrows the promotion's aggregate attempt guard while the
+/// current node is active. Any realization failure transfers that aggregate
+/// authority to quarantine after retaining any pre-install child.
+pub(crate) struct QemuGuardedReplayOracleSession<'a, G>
 where
-    L: QemuGuardedNodeRealizationLauncher
-        + QemuGuardedThinNodeRealizationLauncher
-        + QemuFailedLaunchChildSource,
     G: QemuAttemptProcessResourceGuard,
 {
-    executor: &'a mut QemuNodeRealizationExecutor<L>,
-    guard: G,
+    executor: &'a mut QemuReplayValidationExecutor,
+    guard: &'a mut G,
     realization_failed: bool,
     backend_reaped: bool,
     guard_terminal: bool,
 }
 
-impl<'a, L, G> QemuGuardedReplayOracleSession<'a, L, G>
+impl<'a, G> QemuGuardedReplayOracleSession<'a, G>
 where
-    L: QemuGuardedNodeRealizationLauncher
-        + QemuGuardedThinNodeRealizationLauncher
-        + QemuFailedLaunchChildSource,
     G: QemuAttemptProcessResourceGuard,
 {
-    /// Takes ownership of one installed attempt guard for replay validation.
+    /// Borrows one aggregate attempt guard for node-local replay validation.
     #[must_use]
-    pub const fn new(executor: &'a mut QemuNodeRealizationExecutor<L>, guard: G) -> Self {
+    pub(crate) const fn new(
+        executor: &'a mut QemuReplayValidationExecutor,
+        guard: &'a mut G,
+    ) -> Self {
         Self {
             executor,
             guard,
@@ -247,15 +166,76 @@ where
         }
     }
 
-    /// Reaps the final thin-path generation and releases its resource guard.
+    /// Reaps the final thin-path generation while retaining the aggregate guard.
     ///
     /// # Errors
     ///
     /// Returns [`QemuVmRealizationError::ReapQuarantined`] when realization or
     /// reap failed and resource ownership was transferred to quarantine. Other
     /// cleanup diagnostics are returned only after reap attestation.
-    pub fn finish(mut self) -> Result<(), QemuVmRealizationError> {
+    pub(crate) fn finish(mut self) -> Result<(), QemuVmRealizationError> {
         self.cleanup()
+    }
+
+    /// Compares one authenticated fat snapshot with replay from baked genesis.
+    ///
+    /// Runtime observations stay opaque outside `crucible-qemu`; this session
+    /// may sequence guarded operations but cannot manufacture comparison
+    /// evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when either guarded realization,
+    /// replay quantum, or final source-bound comparison fails.
+    pub(crate) fn check_snapshot_replay_oracle(
+        &mut self,
+        world: &crucible::World,
+        configuration: &Configuration,
+        snapshot: &QemuVmSnapshot,
+        baked: &QemuBakedGenesisSnapshot,
+    ) -> Result<QemuReplayOracleMatch, QemuVmRealizationError> {
+        self.guard.check_operational_boundary()?;
+        let result = self
+            .executor
+            .load_materialized_exact_snapshot_probe_guarded(configuration, snapshot);
+        let fat = self.observe_realization(result)?;
+
+        let genesis = Configuration::genesis(configuration.def.clone());
+        self.guard.check_operational_boundary()?;
+        let process_contract = self.guard.child_process_contract()?;
+        let result = self.executor.load_prepared_baked_genesis_guarded(
+            process_contract,
+            &genesis,
+            world,
+            baked,
+        );
+        let mut thin = self.observe_realization(result)?;
+
+        let mut current = genesis;
+        for decision in configuration.schedule.decisions() {
+            let next = crucible::try_step(&current, decision.clone()).map_err(|source| {
+                QemuVmRealizationError::InvalidCheckpoint {
+                    role: "baked-genesis replay target",
+                    message: format!("decision violates the scenario model: {source}"),
+                }
+            })?;
+            self.guard.check_operational_boundary()?;
+            self.guard.charge_execution_quantum()?;
+            let result = self.executor.replay_materialized_one_quantum(
+                thin,
+                QemuVmReplayRequest::new(current, decision.clone())?,
+            );
+            thin = self.observe_realization(result)?;
+            current = next;
+        }
+        if &current != configuration {
+            return Err(QemuVmRealizationError::InvalidAncestor {
+                message: String::from("baked-genesis replay did not reach target configuration"),
+            });
+        }
+
+        self.executor
+            .finish_replay_oracle_comparison(snapshot, configuration, fat, thin)
     }
 
     fn observe_realization<T>(
@@ -284,8 +264,8 @@ where
             });
         }
         if !self.backend_reaped {
-            match QemuVmLiveRealizationExecutor::shutdown_live_backend(self.executor) {
-                Ok(_outcome) => self.backend_reaped = true,
+            match self.executor.shutdown_active_node() {
+                Ok(()) => self.backend_reaped = true,
                 Err(error) => {
                     if !self.guard_terminal {
                         self.guard.quarantine();
@@ -298,91 +278,12 @@ where
                 }
             }
         }
-        if !self.guard_terminal {
-            let result = self.guard.finish();
-            self.guard_terminal = true;
-            result?;
-        }
         Ok(())
     }
 }
 
-impl<L, G> QemuVmRealizationExecutor for QemuGuardedReplayOracleSession<'_, L, G>
+impl<G> Drop for QemuGuardedReplayOracleSession<'_, G>
 where
-    L: QemuGuardedNodeRealizationLauncher
-        + QemuGuardedThinNodeRealizationLauncher
-        + QemuFailedLaunchChildSource,
-    G: QemuAttemptProcessResourceGuard,
-{
-    fn load_exact_snapshot(
-        &mut self,
-        config: &Configuration,
-        snapshot: &QemuVmSnapshot,
-        authorization: crucible_qemu::QemuLoadvmCommandAuthorization,
-        admission: crucible_qemu::QemuLoadvmRealizationAdmission,
-    ) -> Result<crucible::RuntimeState, QemuVmRealizationError> {
-        self.guard.check_operational_boundary()?;
-        let result = self.executor.load_prepared_thin_snapshot_guarded(
-            self.guard.child_process_contract()?,
-            config,
-            snapshot,
-            authorization,
-            admission,
-        );
-        self.observe_realization(result)
-    }
-
-    fn load_exact_snapshot_for_replay_oracle_probe(
-        &mut self,
-        config: &Configuration,
-        snapshot: &QemuVmSnapshot,
-        authorization: crucible_qemu::QemuLoadvmCommandAuthorization,
-    ) -> Result<crucible::RuntimeState, QemuVmRealizationError> {
-        self.guard.check_operational_boundary()?;
-        let result = self
-            .executor
-            .load_materialized_exact_snapshot_probe_guarded(
-                self.guard.child_process_contract()?,
-                config,
-                snapshot,
-                authorization,
-            );
-        self.observe_realization(result)
-    }
-
-    fn load_baked_genesis(
-        &mut self,
-        config: &Configuration,
-        admission: QemuBakedGenesisRestoreAdmission<'_>,
-    ) -> Result<crucible::RuntimeState, QemuVmRealizationError> {
-        self.guard.check_operational_boundary()?;
-        let result = self.executor.load_prepared_baked_genesis_guarded(
-            self.guard.child_process_contract()?,
-            config,
-            admission,
-        );
-        self.observe_realization(result)
-    }
-
-    fn replay_one_quantum(
-        &mut self,
-        runtime: crucible::RuntimeState,
-        request: QemuVmReplayRequest,
-    ) -> Result<crucible::RuntimeState, QemuVmRealizationError> {
-        self.guard.check_operational_boundary()?;
-        self.guard.charge_execution_quantum()?;
-        let result = self
-            .executor
-            .replay_materialized_one_quantum(runtime, request);
-        self.observe_realization(result)
-    }
-}
-
-impl<L, G> Drop for QemuGuardedReplayOracleSession<'_, L, G>
-where
-    L: QemuGuardedNodeRealizationLauncher
-        + QemuGuardedThinNodeRealizationLauncher
-        + QemuFailedLaunchChildSource,
     G: QemuAttemptProcessResourceGuard,
 {
     fn drop(&mut self) {
@@ -390,133 +291,7 @@ where
     }
 }
 
-impl MaterializedExactCheckpoint {
-    /// Returns the complete immutable exact-checkpoint root.
-    #[must_use]
-    pub const fn checkpoint(&self) -> ExactCheckpointId {
-        self.checkpoint
-    }
-
-    /// Returns the exact semantic pin fact authorizing materialization.
-    #[must_use]
-    pub const fn pin_fact(&self) -> CampaignFactId {
-        self.pin_fact
-    }
-
-    /// Returns the complete-root binding committed with the pinned VMState.
-    #[must_use]
-    pub const fn vmstate_binding(&self) -> QemuVmStateBinding {
-        self.vmstate_binding
-    }
-
-    /// Returns the authenticated snapshot metadata bound to the VMState file.
-    #[must_use]
-    pub const fn snapshot(&self) -> &QemuVmSnapshot {
-        &self.snapshot
-    }
-
-    /// Consumes the materialization into its authenticated snapshot metadata.
-    #[must_use]
-    pub fn into_snapshot(self) -> QemuVmSnapshot {
-        self.snapshot
-    }
-}
-
-impl MaterializedAttemptCheckpoint {
-    /// Returns the complete immutable exact-checkpoint root.
-    #[must_use]
-    pub const fn checkpoint(&self) -> ExactCheckpointId {
-        self.checkpoint
-    }
-
-    /// Returns the complete-root binding committed with the pinned VMState.
-    #[must_use]
-    pub const fn vmstate_binding(&self) -> QemuVmStateBinding {
-        self.vmstate_binding
-    }
-
-    /// Returns the authenticated snapshot metadata bound to the VMState file.
-    #[must_use]
-    pub const fn snapshot(&self) -> &QemuVmSnapshot {
-        &self.snapshot
-    }
-
-    /// Returns the complete scheduler continuation bound to this root.
-    #[must_use]
-    pub const fn scheduler(&self) -> &SingleSchedulerCheckpoint {
-        &self.scheduler
-    }
-
-    /// Consumes the materialization into its authenticated snapshot metadata.
-    #[must_use]
-    pub fn into_snapshot(self) -> QemuVmSnapshot {
-        self.snapshot
-    }
-}
-
-/// Materializes the current selected exact checkpoint into `run_directory`.
-///
-/// Selection inventory authority is held only for the bounded journal lookup.
-/// Campaign and checkpoint authentication, streaming copy, and file sync occur
-/// after that fence is released. Cancellation is checked before and after each
-/// destination write; a cancellation or any source/destination failure leaves
-/// the pinned destination explicitly unready.
-///
-/// The caller remains responsible for retaining the exact campaign resume
-/// precondition until it consumes the returned materialization in guarded QEMU
-/// launch. The returned pin fact provides that reconciliation basis.
-///
-/// # Errors
-///
-/// Returns [`ExactCheckpointRestoreError`] when cancellation has won, no
-/// selection exists, the selection is stale or corrupt, checkpoint closure
-/// authentication fails, or the pinned destination cannot be committed.
-pub fn materialize_selected_exact_checkpoint<A>(
-    repository: &CampaignRepository,
-    checkpoints: &ExactCheckpointStore,
-    selections: &mut A,
-    campaign: &CampaignName,
-    configuration: ConfigurationId,
-    run_directory: &mut QemuPreparedRunDirectory,
-    cancellation: &ExecutionCancellation,
-) -> Result<MaterializedExactCheckpoint, ExactCheckpointRestoreError>
-where
-    A: ExactPinRetentionAdmin + ?Sized,
-{
-    check_cancellation(cancellation)?;
-    let selection = {
-        let mut fence = selections.acquire_exact_pin_retention_fence()?;
-        fence.selection(campaign, configuration)?.ok_or_else(|| {
-            ExactCheckpointRestoreError::MissingSelection {
-                campaign: campaign.clone(),
-                configuration,
-            }
-        })?
-    };
-
-    check_cancellation(cancellation)?;
-    let loaded = selection
-        .authenticate_current(repository, checkpoints)?
-        .into_single_node()
-        .ok_or(ExactPinRetentionError::ProductionOperationUnsupported {
-            operation: "materialize-selected-single-node-checkpoint",
-        })?;
-    let (vmstate_binding, snapshot) = materialize_loaded_checkpoint(
-        selection.checkpoint(),
-        &loaded,
-        run_directory,
-        cancellation,
-    )?;
-
-    Ok(MaterializedExactCheckpoint {
-        checkpoint: selection.checkpoint(),
-        pin_fact: selection.pin_fact(),
-        vmstate_binding,
-        snapshot,
-    })
-}
-
-/// Installs and binds one version-four production checkpoint for attempt resume.
+/// Installs and binds one version-nine production checkpoint for attempt resume.
 ///
 /// `initial` is the authenticated pre-selection configuration. A branch
 /// attempt supplies `post_selection`, which becomes its effective modeled
@@ -537,7 +312,7 @@ where
 /// Returns [`ProductionAttemptCheckpointRestoreError::Canceled`] when
 /// cancellation wins, or an exact store, semantic-installation, scenario,
 /// identity, configuration, or attempt-prefix error otherwise.
-pub fn install_attempt_production_exact_checkpoint(
+pub(crate) fn install_attempt_production_exact_checkpoint(
     checkpoints: &ExactCheckpointStore,
     checkpoint: ExactCheckpointId,
     source: &ScenarioDefForm,
@@ -546,7 +321,7 @@ pub fn install_attempt_production_exact_checkpoint(
     run_state_root: &Path,
     cancellation: &ExecutionCancellation,
 ) -> Result<InstalledProductionAttemptCheckpoint, ProductionAttemptCheckpointRestoreError> {
-    install_attempt_production_exact_checkpoint_inner(
+    install_attempt_production_exact_checkpoint_inner(AttemptCheckpointInstallation {
         checkpoints,
         checkpoint,
         source,
@@ -554,16 +329,15 @@ pub fn install_attempt_production_exact_checkpoint(
         post_selection,
         run_state_root,
         cancellation,
-        false,
-    )
+    })
 }
 
-/// Installs one resume-eligible version-four production checkpoint.
+/// Installs one resume-eligible version-nine production checkpoint.
 ///
 /// This applies the complete attempt-prefix and scenario checks from
 /// [`install_attempt_production_exact_checkpoint`] and additionally requires
 /// every live-node snapshot to carry source-bound `Match` replay-oracle
-/// evidence. A raw `NotRun` closure is rejected during no-write native
+/// evidence. A raw closure is rejected during no-write native
 /// admission and can never reach guarded process launch.
 ///
 /// # Errors
@@ -571,16 +345,119 @@ pub fn install_attempt_production_exact_checkpoint(
 /// Returns [`ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady`]
 /// for a raw or partially promoted closure, or any error documented by
 /// [`install_attempt_production_exact_checkpoint`].
-pub fn install_attempt_production_resume_checkpoint(
+pub(crate) fn install_attempt_production_resume_checkpoint(
     checkpoints: &ExactCheckpointStore,
     checkpoint: ExactCheckpointId,
     source: &ScenarioDefForm,
     initial: &Configuration,
     post_selection: Option<&Configuration>,
-    run_state_root: &Path,
     cancellation: &ExecutionCancellation,
+) -> Result<AuthenticatedProductionAttemptResume, ProductionAttemptCheckpointRestoreError> {
+    check_production_cancellation(cancellation)?;
+    let effective_start = post_selection.unwrap_or(initial);
+    let scenario = source.scenario_def();
+    if initial.def != scenario || post_selection.is_some_and(|selected| selected.def != scenario) {
+        return Err(ProductionAttemptCheckpointRestoreError::AttemptScenarioMismatch);
+    }
+    if let Some(selected) = post_selection {
+        validate_production_post_selection(initial, selected)?;
+    }
+
+    let loaded = Arc::new(
+        checkpoints
+            .load_production_closure_with_cancellation(checkpoint, cancellation)
+            .map_err(map_production_store_error)?,
+    );
+    if loaded.scenario() != scenario.id() {
+        return Err(
+            ProductionAttemptCheckpointRestoreError::CheckpointScenarioMismatch {
+                checkpoint,
+                scenario: loaded.scenario(),
+            },
+        );
+    }
+    let replay_claim =
+        authenticate_loaded_replay_oracle_promotion(checkpoints, &loaded, cancellation)?;
+    let decoded = loaded
+        .decode_semantic_checkpoint(source, cancellation)
+        .map_err(map_production_store_error)?;
+    if decoded.configuration().id() != loaded.configuration() {
+        return Err(
+            ProductionAttemptCheckpointRestoreError::CheckpointConfigurationMismatch {
+                checkpoint,
+                configuration: loaded.configuration(),
+            },
+        );
+    }
+    validate_production_attempt_continuation(effective_start, decoded.configuration(), checkpoint)?;
+    replay_claim.commit().map_err(map_production_store_error)?;
+    Ok(AuthenticatedProductionAttemptResume {
+        production_identity: loaded.production_identity(),
+        decoded,
+    })
+}
+
+struct AttemptCheckpointInstallation<'a> {
+    checkpoints: &'a ExactCheckpointStore,
+    checkpoint: ExactCheckpointId,
+    source: &'a ScenarioDefForm,
+    initial: &'a Configuration,
+    post_selection: Option<&'a Configuration>,
+    run_state_root: &'a Path,
+    cancellation: &'a ExecutionCancellation,
+}
+
+fn authenticate_loaded_replay_oracle_promotion<'a>(
+    checkpoints: &'a ExactCheckpointStore,
+    promoted: &crate::LoadedProductionExactCheckpoint,
+    cancellation: &ExecutionCancellation,
+) -> Result<
+    crate::exact_checkpoint_store::LiveReplayPromotionClaim<'a>,
+    ProductionAttemptCheckpointRestoreError,
+> {
+    let promoted_checkpoint = promoted.root();
+    let evidence_id = promoted.promotion_evidence_id().ok_or(
+        ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
+            checkpoint: promoted_checkpoint,
+        },
+    )?;
+    let raw_checkpoint = promoted.promotion_source().ok_or(
+        ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
+            checkpoint: promoted_checkpoint,
+        },
+    )?;
+    if raw_checkpoint == promoted_checkpoint {
+        return Err(
+            ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
+                checkpoint: promoted_checkpoint,
+            },
+        );
+    }
+    let raw = checkpoints
+        .load_production_closure_with_cancellation(raw_checkpoint, cancellation)
+        .map_err(map_production_store_error)?;
+    let _evidence = promoted.promotion_evidence().ok_or(
+        ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
+            checkpoint: promoted_checkpoint,
+        },
+    )?;
+    promoted
+        .authenticate_replay_oracle_promotion(&raw)
+        .map_err(map_production_store_error)?;
+    checkpoints
+        .acquire_live_replay_promotion(promoted_checkpoint, evidence_id)
+        .map_err(map_production_store_error)?
+        .ok_or(
+            ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
+                checkpoint: promoted_checkpoint,
+            },
+        )
+}
+
+fn install_attempt_production_exact_checkpoint_inner(
+    installation: AttemptCheckpointInstallation<'_>,
 ) -> Result<InstalledProductionAttemptCheckpoint, ProductionAttemptCheckpointRestoreError> {
-    install_attempt_production_exact_checkpoint_inner(
+    let AttemptCheckpointInstallation {
         checkpoints,
         checkpoint,
         source,
@@ -588,31 +465,7 @@ pub fn install_attempt_production_resume_checkpoint(
         post_selection,
         run_state_root,
         cancellation,
-        true,
-    )
-}
-
-/// Authenticates one resume-eligible production checkpoint without installation.
-///
-/// This performs the same scenario, effective attempt-start, exact-prefix, and
-/// replay-oracle admission as [`install_attempt_production_resume_checkpoint`],
-/// but it does not populate a native run-state catalog. Restart recovery uses
-/// this boundary to distinguish a legacy completed promotion from a raw root
-/// before deciding whether any guarded QEMU comparison remains necessary.
-///
-/// # Errors
-///
-/// Returns [`ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady`]
-/// for a raw or partially promoted closure, or any error documented by
-/// [`install_attempt_production_exact_checkpoint`].
-pub(crate) fn authenticate_attempt_production_resume_checkpoint(
-    checkpoints: &ExactCheckpointStore,
-    checkpoint: ExactCheckpointId,
-    source: &ScenarioDefForm,
-    initial: &Configuration,
-    post_selection: Option<&Configuration>,
-    cancellation: &ExecutionCancellation,
-) -> Result<(), ProductionAttemptCheckpointRestoreError> {
+    } = installation;
     check_production_cancellation(cancellation)?;
     let effective_start = post_selection.unwrap_or(initial);
     let scenario = source.scenario_def();
@@ -623,9 +476,11 @@ pub(crate) fn authenticate_attempt_production_resume_checkpoint(
         validate_production_post_selection(initial, selected)?;
     }
 
-    let loaded = checkpoints
-        .load_production_closure_with_cancellation(checkpoint, cancellation)
-        .map_err(map_production_store_error)?;
+    let loaded = Arc::new(
+        checkpoints
+            .load_production_closure_with_cancellation(checkpoint, cancellation)
+            .map_err(map_production_store_error)?,
+    );
     if loaded.scenario() != scenario.id() {
         return Err(
             ProductionAttemptCheckpointRestoreError::CheckpointScenarioMismatch {
@@ -634,14 +489,15 @@ pub(crate) fn authenticate_attempt_production_resume_checkpoint(
             },
         );
     }
+    check_production_cancellation(cancellation)?;
 
+    let closure =
+        open_exact_checkpoint_closure(run_state_root, source, loaded.production_identity())
+            .map_err(map_production_lifecycle_error)?;
     let mut boundary = || production_restore_boundary(cancellation);
-    let basis = authenticate_portable_exact_checkpoint_resume_basis_with_boundary(
-        source,
-        &loaded,
-        &mut boundary,
-    )
-    .map_err(map_production_lifecycle_error)?;
+    let basis = closure
+        .authenticate_resume_basis_with_boundary(&mut boundary)
+        .map_err(map_production_lifecycle_error)?;
     validate_production_resume_basis(
         &basis,
         loaded.production_identity(),
@@ -649,114 +505,20 @@ pub(crate) fn authenticate_attempt_production_resume_checkpoint(
         effective_start,
         checkpoint,
     )?;
-    if !basis.replay_oracle_ready() {
-        return Err(ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady { checkpoint });
-    }
-
-    Ok(())
-}
-
-// The final boolean is deliberately private type state: public callers choose
-// either raw promotion installation or replay-validated resume installation.
-// crucible-lint: allow rust-allow -- the private helper keeps one validation and publication implementation for both public type-state entry points.
-#[allow(clippy::too_many_arguments)]
-fn install_attempt_production_exact_checkpoint_inner(
-    checkpoints: &ExactCheckpointStore,
-    checkpoint: ExactCheckpointId,
-    source: &ScenarioDefForm,
-    initial: &Configuration,
-    post_selection: Option<&Configuration>,
-    run_state_root: &Path,
-    cancellation: &ExecutionCancellation,
-    require_replay_oracle: bool,
-) -> Result<InstalledProductionAttemptCheckpoint, ProductionAttemptCheckpointRestoreError> {
-    check_production_cancellation(cancellation)?;
-    let effective_start = post_selection.unwrap_or(initial);
-    let scenario = source.scenario_def();
-    if initial.def != scenario || post_selection.is_some_and(|selected| selected.def != scenario) {
-        return Err(ProductionAttemptCheckpointRestoreError::AttemptScenarioMismatch);
-    }
-    if let Some(selected) = post_selection {
-        validate_production_post_selection(initial, selected)?;
-    }
-
-    let loaded = checkpoints
-        .load_production_closure_with_cancellation(checkpoint, cancellation)
-        .map_err(map_production_store_error)?;
-    if loaded.scenario() != scenario.id() {
-        return Err(
-            ProductionAttemptCheckpointRestoreError::CheckpointScenarioMismatch {
-                checkpoint,
-                scenario: loaded.scenario(),
-            },
-        );
-    }
-    check_production_cancellation(cancellation)?;
-
-    let (installation, admitted_basis, mut admission_error) = {
-        let mut admitted_basis: Option<ProductionExactCheckpointResumeBasis> = None;
-        let mut admission_error = None;
-        let mut boundary = || production_restore_boundary(cancellation);
-        let mut admit = |basis: &ProductionExactCheckpointResumeBasis| {
-            let result = validate_production_resume_basis(
-                basis,
-                loaded.production_identity(),
-                loaded.configuration(),
-                effective_start,
-                checkpoint,
-            )
-            .and_then(|()| {
-                if require_replay_oracle && !basis.replay_oracle_ready() {
-                    Err(
-                        ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
-                            checkpoint,
-                        },
-                    )
-                } else {
-                    Ok(())
-                }
-            });
-            match result {
-                Ok(()) => {
-                    admitted_basis = Some(basis.clone());
-                    Ok(())
-                }
-                Err(error) => {
-                    admission_error = Some(error);
-                    Err(LifecycleApiError::LoopFactory {
-                        message: String::from(
-                            "production exact checkpoint failed attempt-basis admission",
-                        ),
-                    })
-                }
-            }
-        };
-        let installation = install_exact_checkpoint_closure_with_boundary_and_admission(
-            run_state_root,
-            source,
-            &loaded,
-            &mut boundary,
-            &mut admit,
-        );
-        (installation, admitted_basis, admission_error)
-    };
-    let closure = match installation {
-        Ok(closure) => closure,
-        Err(error) => {
-            if let Some(error) = admission_error.take() {
-                return Err(error);
-            }
-            return Err(map_production_lifecycle_error(error));
-        }
-    };
-    let basis = admitted_basis.ok_or_else(|| {
-        ProductionAttemptCheckpointRestoreError::Lifecycle(LifecycleApiError::LoopFactory {
-            message: String::from("production checkpoint installation skipped attempt admission"),
-        })
-    })?;
     if closure.identity() != loaded.production_identity() {
         return Err(
             ProductionAttemptCheckpointRestoreError::ClosureIdentityMismatch { checkpoint },
+        );
+    }
+    let decoded = loaded
+        .decode_semantic_checkpoint(source, cancellation)
+        .map_err(map_production_store_error)?;
+    if decoded.configuration().id() != loaded.configuration() {
+        return Err(
+            ProductionAttemptCheckpointRestoreError::CheckpointConfigurationMismatch {
+                checkpoint,
+                configuration: loaded.configuration(),
+            },
         );
     }
     let (configuration, scheduler) = basis.into_parts();
@@ -765,14 +527,15 @@ fn install_attempt_production_exact_checkpoint_inner(
         closure,
         configuration,
         scheduler,
+        decoded: Some(decoded),
     })
 }
 
-/// Reauthenticates one durable version-four replay-oracle root replacement.
+/// Reauthenticates one durable replay-oracle root replacement.
 ///
 /// The raw and promoted campaign-CAS roots are loaded independently and must
 /// name the submitted scenario. Both complete portable closures then pass the
-/// no-write production validator, which proves an exact `NotRun` to `Match`
+/// no-write production validator, which proves an exact source-to-certificate
 /// transition for every live-node snapshot and forbids every other modeled or
 /// artifact change. This is the restart boundary used before a staged ledger
 /// pair can advance to its promoted resume root.
@@ -782,13 +545,16 @@ fn install_attempt_production_exact_checkpoint_inner(
 /// Returns [`ProductionAttemptCheckpointRestoreError::Canceled`] when
 /// cancellation wins, or an exact-store, scenario, semantic-closure, or
 /// replay-oracle relationship error otherwise.
-pub fn authenticate_production_exact_checkpoint_replay_oracle_promotion(
-    checkpoints: &ExactCheckpointStore,
+pub(crate) fn acquire_production_exact_checkpoint_replay_oracle_promotion<'a>(
+    checkpoints: &'a ExactCheckpointStore,
     raw: ExactCheckpointId,
     promoted: ExactCheckpointId,
     source: &ScenarioDefForm,
     cancellation: &ExecutionCancellation,
-) -> Result<(), ProductionAttemptCheckpointRestoreError> {
+) -> Result<
+    crate::exact_checkpoint_store::LiveReplayPromotionClaim<'a>,
+    ProductionAttemptCheckpointRestoreError,
+> {
     check_production_cancellation(cancellation)?;
     let raw_closure = checkpoints
         .load_production_closure_with_cancellation(raw, cancellation)
@@ -812,20 +578,44 @@ pub fn authenticate_production_exact_checkpoint_replay_oracle_promotion(
             },
         );
     }
+    if promoted_closure.promotion_source() != Some(raw) {
+        return Err(
+            ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
+                checkpoint: promoted,
+            },
+        );
+    }
+    let _evidence = promoted_closure.promotion_evidence().ok_or(
+        ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
+            checkpoint: promoted,
+        },
+    )?;
 
-    let mut boundary = || production_restore_boundary(cancellation);
-    authenticate_portable_exact_checkpoint_replay_oracle_promotion_with_boundary(
-        source,
-        &raw_closure,
-        &promoted_closure,
-        &mut boundary,
-    )
-    .map_err(map_production_lifecycle_error)
+    promoted_closure
+        .authenticate_replay_oracle_promotion(&raw_closure)
+        .map_err(map_production_store_error)?;
+    let evidence_id = promoted_closure.promotion_evidence_id().ok_or(
+        ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
+            checkpoint: promoted,
+        },
+    )?;
+    checkpoints
+        .acquire_live_replay_promotion(promoted, evidence_id)
+        .map_err(
+            |_| ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
+                checkpoint: promoted,
+            },
+        )?
+        .ok_or(
+            ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
+                checkpoint: promoted,
+            },
+        )
 }
 
 /// Prepares one attempt-bound production replay-oracle root without writes.
 ///
-/// The installed closure must come from `raw`. `checks` must contain exactly
+/// The installed closure must come from `raw`. `matches` must contain exactly
 /// one source-bound matching result for every live production node. The native
 /// validator derives the promoted closure lazily, and the campaign store then
 /// prepares its complete root/index/object graph without publishing it. The
@@ -837,11 +627,11 @@ pub fn authenticate_production_exact_checkpoint_replay_oracle_promotion(
 /// Returns [`ProductionAttemptCheckpointRestoreError::Canceled`] when
 /// cancellation wins, or an installed-root mismatch, native promotion,
 /// immutable-store, identity, scenario, or configuration error otherwise.
-pub fn prepare_attempt_production_replay_oracle_promotion(
+pub(crate) fn prepare_attempt_production_replay_oracle_promotion(
     checkpoints: &ExactCheckpointStore,
     raw: ExactCheckpointId,
     installed: &InstalledProductionAttemptCheckpoint,
-    checks: &BTreeMap<NodeId, QemuReplayOracleCheck>,
+    matches: BTreeMap<NodeId, QemuReplayOracleMatch>,
     cancellation: &ExecutionCancellation,
 ) -> Result<PreparedProductionAttemptReplayOraclePromotion, ProductionAttemptCheckpointRestoreError>
 {
@@ -854,7 +644,7 @@ pub fn prepare_attempt_production_replay_oracle_promotion(
     let mut boundary = || production_restore_boundary(cancellation);
     let promotion = installed
         .closure()
-        .prepare_replay_oracle_promotion_with_boundary(checks, &mut boundary)
+        .prepare_replay_oracle_promotion_with_boundary(raw, matches, &mut boundary)
         .map_err(map_production_lifecycle_error)?;
     if promotion.source() != installed.closure().identity() {
         return Err(
@@ -862,7 +652,12 @@ pub fn prepare_attempt_production_replay_oracle_promotion(
         );
     }
     let replacement = checkpoints
-        .prepare_production_replay_oracle_promotion_with_cancellation(promotion, cancellation)
+        .prepare_production_replay_oracle_promotion_with_cancellation(
+            raw,
+            installed.closure().clone(),
+            promotion,
+            cancellation,
+        )
         .map_err(map_production_store_error)?;
     if replacement.scenario() != installed.configuration().def.id() {
         return Err(
@@ -886,266 +681,9 @@ pub fn prepare_attempt_production_replay_oracle_promotion(
     })
 }
 
-/// Materializes one supervisor-retained exact root for attempt resume.
-///
-/// The root is authenticated directly from the immutable checkpoint store.
-/// Its checkpoint configuration must equal `initial` or, for a branch attempt,
-/// `post_selection`. The VMState child is streamed into the pinned destination
-/// and authenticated before the destination becomes eligible for guarded QEMU
-/// launch. No semantic pin or selection journal is consulted: the durable
-/// supervisor execution origin is the root authority for this operation.
-///
-/// # Errors
-///
-/// Returns [`ExactCheckpointRestoreError`] when cancellation wins, the root is
-/// unavailable or corrupt, the checkpoint names another configuration, or the
-/// pinned destination cannot be committed.
-pub fn materialize_attempt_exact_checkpoint(
-    checkpoints: &ExactCheckpointStore,
-    checkpoint: ExactCheckpointId,
-    initial: &Configuration,
-    post_selection: Option<&Configuration>,
-    run_directory: &mut QemuPreparedRunDirectory,
-    cancellation: &ExecutionCancellation,
-) -> Result<MaterializedAttemptCheckpoint, ExactCheckpointRestoreError> {
-    check_cancellation(cancellation)?;
-    let loaded = checkpoints.load(checkpoint)?;
-    check_cancellation(cancellation)?;
-
-    let configuration_id = loaded.snapshot().checkpoint().configuration;
-    let configuration = if configuration_id == initial.id() {
-        initial
-    } else if post_selection.is_some_and(|selected| configuration_id == selected.id()) {
-        post_selection.ok_or(
-            ExactCheckpointRestoreError::CheckpointConfigurationMismatch {
-                checkpoint,
-                configuration: configuration_id,
-            },
-        )?
-    } else {
-        return Err(
-            ExactCheckpointRestoreError::CheckpointConfigurationMismatch {
-                checkpoint,
-                configuration: configuration_id,
-            },
-        );
-    };
-    let scheduler = loaded
-        .scheduler()
-        .ok_or(ExactCheckpointRestoreError::MissingSchedulerContinuation { checkpoint })?;
-    if scheduler
-        .configuration_for(&configuration.def)
-        .map_err(|_| ExactCheckpointRestoreError::SchedulerConfigurationMismatch { checkpoint })?
-        != *configuration
-    {
-        return Err(ExactCheckpointRestoreError::SchedulerConfigurationMismatch { checkpoint });
-    }
-
-    let (vmstate_binding, snapshot) =
-        materialize_loaded_checkpoint(checkpoint, &loaded, run_directory, cancellation)?;
-    Ok(MaterializedAttemptCheckpoint {
-        checkpoint,
-        vmstate_binding,
-        snapshot,
-        scheduler: scheduler.clone(),
-    })
-}
-
-/// Realizes one materialized exact checkpoint under its attempt process guard.
-///
-/// The QEMU executor rechecks the paired snapshot and the launcher's selected
-/// root binding before guarded spawn. Replay-oracle evidence is admitted inside
-/// `crucible-qemu`; this function cannot mint a raw `loadvm` authorization.
-/// Cancellation and resource state are checked immediately before and after the
-/// blocking realization operation. The caller must still run the session
-/// cleanup ladder on every returned error so failed child ownership is reaped
-/// or transferred to quarantine.
-///
-/// # Errors
-///
-/// Returns [`ExactCheckpointResumeError::Canceled`] when cancellation wins, or
-/// [`ExactCheckpointResumeError::Realization`] when replay admission, the
-/// selected root, guarded launch, restore, or runtime validation fails.
-pub fn realize_materialized_exact_checkpoint_guarded<L, G>(
-    executor: &mut QemuNodeRealizationExecutor<L>,
-    guard: &mut G,
-    configuration: &Configuration,
-    materialized: &MaterializedExactCheckpoint,
-) -> Result<QemuVmRealization, ExactCheckpointResumeError>
-where
-    L: QemuGuardedNodeRealizationLauncher,
-    G: QemuAttemptProcessResourceGuard,
-{
-    realize_materialized_snapshot_guarded(executor, guard, configuration, materialized.snapshot())
-}
-
-/// Realizes one supervisor-retained attempt materialization under its guard.
-/// The returned realization explicitly echoes the immutable root authenticated
-/// by `materialized`, allowing the runner to reject cross-root substitution.
-///
-/// # Errors
-///
-/// Returns [`ExactCheckpointResumeError::Canceled`] when cancellation wins, or
-/// [`ExactCheckpointResumeError::Realization`] when replay admission, guarded
-/// launch, restore, or runtime validation fails.
-pub fn realize_materialized_attempt_checkpoint_guarded<L, G>(
-    executor: &mut QemuNodeRealizationExecutor<L>,
-    guard: &mut G,
-    configuration: &Configuration,
-    materialized: &MaterializedAttemptCheckpoint,
-) -> Result<QemuExactCheckpointRealization, ExactCheckpointResumeError>
-where
-    L: QemuGuardedNodeRealizationLauncher,
-    G: QemuAttemptProcessResourceGuard,
-{
-    let realization = realize_materialized_snapshot_guarded(
-        executor,
-        guard,
-        configuration,
-        materialized.snapshot(),
-    )?;
-    Ok(QemuExactCheckpointRealization::new(
-        materialized.checkpoint(),
-        realization,
-        materialized.scheduler().clone(),
-    ))
-}
-
-fn materialize_loaded_checkpoint(
-    checkpoint: ExactCheckpointId,
-    loaded: &LoadedExactCheckpoint,
-    run_directory: &mut QemuPreparedRunDirectory,
-    cancellation: &ExecutionCancellation,
-) -> Result<(QemuVmStateBinding, QemuVmSnapshot), ExactCheckpointRestoreError> {
-    check_cancellation(cancellation)?;
-    let snapshot = loaded.snapshot().clone();
-    let vmstate_binding = restore_binding(checkpoint);
-    let mut materialization = run_directory
-        .begin_exact_vmstate_materialization(vmstate_binding, loaded.vmstate_bytes())?;
-    let copy_result = {
-        let mut destination = CancellationCheckedWriter {
-            destination: &mut materialization,
-            cancellation,
-        };
-        loaded.copy_vmstate_to(&mut destination)
-    };
-    if let Err(source) = copy_result {
-        if cancellation.is_canceled() {
-            return Err(ExactCheckpointRestoreError::Canceled);
-        }
-        return Err(ExactCheckpointRestoreError::Checkpoint(source));
-    }
-    check_cancellation(cancellation)?;
-    materialization.finish()?;
-    run_directory.require_exact_vmstate(vmstate_binding)?;
-    check_cancellation(cancellation)?;
-    Ok((vmstate_binding, snapshot))
-}
-
-fn realize_materialized_snapshot_guarded<L, G>(
-    executor: &mut QemuNodeRealizationExecutor<L>,
-    guard: &mut G,
-    configuration: &Configuration,
-    snapshot: &QemuVmSnapshot,
-) -> Result<QemuVmRealization, ExactCheckpointResumeError>
-where
-    L: QemuGuardedNodeRealizationLauncher,
-    G: QemuAttemptProcessResourceGuard,
-{
-    check_resume_boundary(guard)?;
-    let runtime = executor.resume_materialized_exact_snapshot_guarded(
-        guard.child_process_contract()?,
-        configuration,
-        snapshot,
-    )?;
-    check_resume_boundary(guard)?;
-    Ok(QemuVmRealization {
-        operation: QemuVmRealizationOperation::Resume,
-        configuration: configuration.clone(),
-        runtime,
-        branch: QemuVmRealizationKind::ExactSnapshotLoadvm {
-            checkpoint: snapshot.checkpoint().clone(),
-        },
-    })
-}
-
-struct CancellationCheckedWriter<'a, 'b> {
-    destination: &'a mut crucible_qemu::QemuVmStateMaterialization<'b>,
-    cancellation: &'a ExecutionCancellation,
-}
-
-impl Write for CancellationCheckedWriter<'_, '_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self.cancellation.is_canceled() {
-            return Err(canceled_io());
-        }
-        let written = self.destination.write(bytes)?;
-        if self.cancellation.is_canceled() {
-            return Err(canceled_io());
-        }
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        if self.cancellation.is_canceled() {
-            return Err(canceled_io());
-        }
-        self.destination.flush()?;
-        if self.cancellation.is_canceled() {
-            return Err(canceled_io());
-        }
-        Ok(())
-    }
-}
-
-/// Failure while resolving or materializing one retained exact checkpoint.
-#[derive(Debug, Error)]
-pub enum ExactCheckpointRestoreError {
-    /// The attempt was canceled before materialization committed.
-    #[error("exact-checkpoint restore materialization was canceled")]
-    Canceled,
-    /// No durable operational checkpoint was selected for the exact pin.
-    #[error("campaign {campaign:?} configuration {configuration} has no selected exact checkpoint")]
-    MissingSelection {
-        /// Exact campaign being resumed.
-        campaign: CampaignName,
-        /// Exact pinned configuration being resumed.
-        configuration: ConfigurationId,
-    },
-    /// The retained root belongs to neither legal attempt boundary.
-    #[error("exact checkpoint {checkpoint} names foreign configuration {configuration:?}")]
-    CheckpointConfigurationMismatch {
-        /// Exact root selected by the durable execution origin.
-        checkpoint: ExactCheckpointId,
-        /// Configuration committed by the checkpoint metadata.
-        configuration: ContentHash,
-    },
-    /// A legacy exact root lacks the complete modeled scheduler continuation.
-    #[error("exact checkpoint {checkpoint} has no complete scheduler continuation")]
-    MissingSchedulerContinuation {
-        /// Legacy exact root that cannot resume campaign execution.
-        checkpoint: ExactCheckpointId,
-    },
-    /// The scheduler continuation reconstructs another configuration.
-    #[error("exact checkpoint {checkpoint} scheduler continuation names another configuration")]
-    SchedulerConfigurationMismatch {
-        /// Exact root whose scheduler continuation failed configuration binding.
-        checkpoint: ExactCheckpointId,
-    },
-    /// Semantic pin or selection-journal authentication failed.
-    #[error(transparent)]
-    Selection(#[from] ExactPinRetentionError),
-    /// Immutable checkpoint closure authentication or streaming failed.
-    #[error(transparent)]
-    Checkpoint(#[from] ExactCheckpointStoreError),
-    /// Pinned run-directory materialization failed.
-    #[error(transparent)]
-    Spawn(#[from] QemuSpawnError),
-}
-
 /// Failure while installing and binding a production attempt continuation.
 #[derive(Debug, Error)]
-pub enum ProductionAttemptCheckpointRestoreError {
+pub(crate) enum ProductionAttemptCheckpointRestoreError {
     /// Cancellation won during bounded root loading or semantic installation.
     #[error("production exact-checkpoint installation was canceled")]
     Canceled,
@@ -1155,7 +693,7 @@ pub enum ProductionAttemptCheckpointRestoreError {
     /// The supplied branch post-selection boundary is not the exact next edge.
     #[error("production exact-checkpoint post-selection boundary is not one branch edge")]
     AttemptSelectionMismatch,
-    /// The version-four root names another scenario.
+    /// The version-nine root names another scenario.
     #[error("production exact checkpoint {checkpoint} names foreign scenario {scenario:?}")]
     CheckpointScenarioMismatch {
         /// Exact campaign-CAS root being installed.
@@ -1203,33 +741,12 @@ pub enum ProductionAttemptCheckpointRestoreError {
         /// Exact raw or partially promoted campaign-CAS root.
         checkpoint: ExactCheckpointId,
     },
-    /// Immutable version-four root authentication failed.
+    /// Immutable version-nine root authentication failed.
     #[error(transparent)]
     Checkpoint(#[from] ExactCheckpointStoreError),
     /// Complete scenario-aware native installation failed.
     #[error(transparent)]
     Lifecycle(#[from] LifecycleApiError),
-}
-
-/// Failure while turning a selected materialization into a guarded live node.
-#[derive(Debug, Error)]
-pub enum ExactCheckpointResumeError {
-    /// Cancellation won before or during guarded realization.
-    #[error("exact-checkpoint resume was canceled")]
-    Canceled,
-    /// QEMU replay admission, launch, restore, or runtime validation failed.
-    #[error(transparent)]
-    Realization(#[from] QemuVmRealizationError),
-}
-
-fn check_cancellation(
-    cancellation: &ExecutionCancellation,
-) -> Result<(), ExactCheckpointRestoreError> {
-    if cancellation.is_canceled() {
-        Err(ExactCheckpointRestoreError::Canceled)
-    } else {
-        Ok(())
-    }
 }
 
 /// Requires a capture root to denote the exact materialized attempt start.
@@ -1291,9 +808,7 @@ fn validate_production_resume_basis(
 }
 
 fn validate_production_post_selection(
-    // crucible-lint: allow host-nondeterminism-state -- this immutable initial configuration was authenticated from the exact checkpoint; host observations cannot alter it.
     initial: &Configuration,
-    // crucible-lint: allow host-nondeterminism-state -- this immutable selected configuration is compared structurally and never derived from host timing or randomness.
     selected: &Configuration,
 ) -> Result<(), ProductionAttemptCheckpointRestoreError> {
     let prefix = initial.schedule.decisions();
@@ -1359,51 +874,12 @@ fn map_production_lifecycle_error(
     }
 }
 
-fn canceled_io() -> io::Error {
-    io::Error::other("exact-checkpoint restore materialization was canceled")
-}
-
-fn restore_binding(checkpoint: ExactCheckpointId) -> QemuVmStateBinding {
-    QemuVmStateBinding::from_exact_checkpoint_root_digest(checkpoint.content_id().digest())
-}
-
-fn check_resume_boundary(
-    guard: &mut impl QemuAttemptOperationalBoundary,
-) -> Result<(), ExactCheckpointResumeError> {
-    match guard.check_operational_boundary() {
-        Ok(()) => Ok(()),
-        Err(QemuVmRealizationError::Canceled { .. }) => Err(ExactCheckpointResumeError::Canceled),
-        Err(source) => Err(ExactCheckpointResumeError::Realization(source)),
-    }
-}
-
 #[cfg(test)]
 mod captured_source_tests {
     use super::*;
+
     use crucible::{RngDecision, RngStreamId, Schedule};
-    use crucible_api::build_authenticated_production_checkpoint_codec_fixture;
-    use crucible_cas::content_store::{ContentId, DirectoryBlobBackend, ObjectKind};
-
-    #[test]
-    fn captured_vmstate_blob_reopens_after_the_named_file_is_removed()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let payload = b"reopenable captured VMState";
-        let mut named = tempfile::NamedTempFile::new()?;
-        named.write_all(payload)?;
-        named.as_file().sync_all()?;
-        let source = QemuCapturedVmState::from_unvalidated_test_file(
-            named.reopen()?,
-            u64::try_from(payload.len())?,
-        );
-        let blob = captured_qemu_vmstate_blob(source);
-        let path = named.path().to_owned();
-        drop(named);
-        assert!(!path.exists());
-
-        assert_eq!(blob.read_all(1024)?, payload);
-        assert_eq!(blob.read_all(1024)?, payload);
-        Ok(())
-    }
+    use crucible_cas::content_store::{ContentId, ObjectKind};
 
     #[test]
     fn production_resume_basis_requires_the_exact_attempt_prefix() {
@@ -1457,42 +933,5 @@ mod captured_source_tests {
             validate_production_post_selection(&start, &restored),
             Err(ProductionAttemptCheckpointRestoreError::AttemptSelectionMismatch)
         ));
-    }
-
-    #[test]
-    fn replay_ready_production_root_authenticates_without_native_installation() {
-        let temporary = tempfile::tempdir()
-            .unwrap_or_else(|error| panic!("create production fixture root: {error}"));
-        let production = build_authenticated_production_checkpoint_codec_fixture(
-            &temporary.path().join("native-checkpoint"),
-        )
-        .unwrap_or_else(|error| panic!("build production checkpoint fixture: {error}"));
-        let checkpoints = ExactCheckpointStore::new(
-            Arc::new(DirectoryBlobBackend::new(
-                "resume-authentication",
-                temporary.path().join("checkpoint-objects"),
-            )),
-            64 * 1024 * 1024,
-        )
-        .unwrap_or_else(|error| panic!("create exact checkpoint store: {error}"));
-        let prepared = checkpoints
-            .prepare_production_closure(production.closure().clone())
-            .unwrap_or_else(|error| panic!("prepare production checkpoint: {error}"));
-        let checkpoint = checkpoints
-            .publish_production_closure(&prepared)
-            .unwrap_or_else(|error| panic!("publish production checkpoint: {error}"))
-            .root();
-
-        authenticate_attempt_production_resume_checkpoint(
-            &checkpoints,
-            checkpoint,
-            production.source(),
-            production.configuration(),
-            None,
-            &ExecutionCancellation::default(),
-        )
-        .unwrap_or_else(|error| {
-            panic!("authenticate promoted checkpoint without install: {error}")
-        });
     }
 }
