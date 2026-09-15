@@ -829,6 +829,7 @@ let
     "storage/_mariadb-tests/lifecycle.nix" = "linux-only-test-source";
     "storage/_postgresql/module.nix" = "linux-only-config-source";
     "storage/_postgresql-tests/lifecycle.nix" = "linux-only-test-source";
+    "storage/_zfstools/module.nix" = "linux-only-config-source";
     "system/_dbus/module.nix" = "linux-only-config-source";
     "system/_dbus/registration-interface.nix" = "target-independent-source";
     "system/_dbus/registration-provider.nix" = "target-independent-source";
