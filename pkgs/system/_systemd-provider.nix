@@ -74,6 +74,7 @@
       };
 
   referenceFor = instance: key: {
+    _type = "aos-resource-reference";
     interface = lib.abilities.interfaceIdentity (
       lib.abilities.interfaceDocumentFromDeclaration interface
     );
@@ -164,6 +165,7 @@
       inherit requestName binding;
       parameters = context.requests.${requestName}.parameters;
       reference = {
+        _type = "aos-resource-reference";
         interface = selected.identity;
         resource = {
           provider = context.instance.id;
@@ -173,9 +175,24 @@
         lifetime = "instance";
       };
     }) (builtins.attrNames context.requests);
+    preparations =
+      if selected.alias != serviceInterfaces.directories.alias
+      then []
+      else
+        builtins.concatMap (entry:
+          preparationsFor {
+            resource = entry.reference.resource;
+            value.directories.managed = entry.parameters.managed;
+          })
+        entries;
   in
     emptyResult
     // {
+      requests = builtins.listToAttrs (builtins.map (preparation: {
+          name = preparation.key;
+          value = preparation.request;
+        })
+        preparations);
       outputs =
         if publishesServiceResource
         then
@@ -209,6 +226,7 @@
     in {
       inherit requestName;
       reference = {
+        _type = "aos-resource-reference";
         interface = selected.identity;
         resource = {
           provider = context.instance.id;
@@ -351,11 +369,115 @@
     inherit lib serviceFacets;
     unitNameForReference = unitIdentityForReference;
   };
-  composeServices = controllerInterface: {resources, ...}:
-    emptyResult
-    // {
-      realizations = builtins.mapAttrs (_: serviceRenderer.realizationFor controllerInterface) resources;
+  directoryRoot = {
+    cache = "/var/cache";
+    configuration = "/etc";
+    logs = "/var/log";
+    runtime = "/run";
+    state = "/var/lib";
+  };
+  needsDirectoryPreparation = value: directory: let
+    identity = value.identity or {};
+    owner = directory.owner or null;
+    group = directory.group or null;
+  in
+    (owner != null && owner != (identity.principal or null))
+    || (group != null && group != (identity.primary_group or null));
+  preparationFor = resource: directory: let
+    destination = "${directoryRoot.${directory.purpose}}/${directory.path}";
+    key = "directory-${builtins.hashString "sha256" (builtins.toJSON {
+      inherit (resource) resource;
+      inherit (directory) purpose path;
+    })}";
+  in {
+    inherit key destination directory;
+    request = {
+      requirement = "directory-preparation";
+      scope = ["managed-directory"];
+      slot = key;
+      parameters =
+        {
+          name = key;
+          entry.kind = "directory";
+          inherit destination;
+          inherit (directory) mode;
+          prerequisites = [];
+        }
+        // lib.optionalAttrs ((directory.owner or null) != null) {
+          inherit (directory) owner;
+        }
+        // lib.optionalAttrs ((directory.group or null) != null) {
+          inherit (directory) group;
+        };
     };
+  };
+  preparationsFor = resource:
+    builtins.map (preparationFor resource) (
+      builtins.filter
+      (needsDirectoryPreparation resource.value)
+      ((resource.value.directories or {managed = [];}).managed)
+    );
+  withoutPreparedDirectories = resource: let
+    value = resource.value;
+    directories = value.directories or null;
+  in
+    if directories == null
+    then resource
+    else
+      resource
+      // {
+        value = value // {
+          directories = directories // {
+            managed = builtins.filter
+              (directory: !needsDirectoryPreparation value directory)
+              directories.managed;
+          };
+        };
+      };
+  preparationReference = providerInstance: preparation: let
+    requestKey = lib.abilities.compositionRequestKey {
+      implementation = "${packageName}:${serviceInterfaces.directories.alias}";
+      inherit providerInstance;
+      key = preparation.key;
+    };
+    outputs = config.aos.abilities.compositionOutputs.${requestKey};
+    plannedPath = outputs.planned-path or (throw "systemd directory preparation omitted planned-path");
+    entryResource = outputs.entry-resource or (throw "systemd directory preparation omitted entry-resource");
+  in
+    if plannedPath.phase != "planning" || plannedPath.value != preparation.destination
+    then throw "systemd directory preparation planned another destination"
+    else if entryResource.phase != "planning" || !lib.abilities.types.resourceReference.check entryResource.value
+    then throw "systemd directory preparation omitted an exact planning ResourceReference"
+    else entryResource.value;
+  composeServices = controllerInterface: {
+    bindings,
+    resources,
+    ...
+  }: let
+    selectedBindings = builtins.attrValues bindings;
+    providerInstance =
+      if selectedBindings == []
+      then throw "systemd service controller has no selected binding"
+      else (builtins.head selectedBindings).providerInstance;
+    preparationsByResource = builtins.mapAttrs (_: preparationsFor) resources;
+    preparations = builtins.concatLists (builtins.attrValues preparationsByResource);
+    destinations = builtins.map (preparation: preparation.destination) preparations;
+    referencesFor = resourceName:
+      builtins.map (preparationReference providerInstance) preparationsByResource.${resourceName};
+  in
+    if !builtins.all (binding: binding.providerInstance == providerInstance) selectedBindings
+    then throw "systemd service controller received several provider instances"
+    else if builtins.length destinations != builtins.length (lib.unique destinations)
+    then throw "systemd service directories select the same prepared destination more than once"
+    else
+      emptyResult
+      // {
+        requests = {};
+        realizations = builtins.mapAttrs (resourceName: resource:
+          (serviceRenderer.realizationFor controllerInterface (withoutPreparedDirectories resource))
+          // {prerequisites = referencesFor resourceName;})
+        resources;
+      };
 
   unitDocument = import ./_systemd-unit-document.nix {inherit lib;};
   joinDocuments = separator: documents:
@@ -464,7 +586,10 @@
       '';
   in
     rendered;
-  staticArtifacts = builtins.map staticArtifactFor (selectedResources ++ selectedServiceResources);
+  staticArtifacts =
+    if config.aos.abilities.compositionPendingRequests != {}
+    then []
+    else builtins.map staticArtifactFor (selectedResources ++ selectedServiceResources);
   serviceProviderImplementations = builtins.listToAttrs (builtins.map (featureName: let
       selected = serviceInterfaces.${featureName};
     in {

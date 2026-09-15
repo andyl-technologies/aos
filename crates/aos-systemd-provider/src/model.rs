@@ -209,6 +209,7 @@ pub(crate) struct ServiceRealization {
     pub(crate) units: Vec<SystemdUnitDocument>,
     pub(crate) facets: Vec<ServiceFacetIdentity>,
     pub(crate) links: Vec<RealizedServiceLink>,
+    pub(crate) prerequisites: Vec<ResourceReference>,
     pub(crate) enabled: bool,
 }
 

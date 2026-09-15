@@ -264,6 +264,7 @@ mod tests {
                 observation_schema: "aos.ability.service-lifecycle-observation/v1".to_string(),
             }],
             links: Vec::new(),
+            prerequisites: Vec::new(),
             enabled: true,
         };
 

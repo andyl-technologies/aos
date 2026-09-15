@@ -492,6 +492,9 @@
   systemdServiceRealization = import ./systemd-service-realization.nix {
     inherit pkgs lib;
   };
+  systemdDirectoryPreparation = import ./systemd-directory-preparation.nix {
+    inherit pkgs lib;
+  };
   systemdReadiness = import ./systemd-readiness.nix {
     inherit pkgs lib;
   };
@@ -903,6 +906,7 @@ in
   assert compositionDriver;
   assert systemdPackagedUnit;
   assert systemdServiceRealization;
+  assert systemdDirectoryPreparation;
   assert systemdReadiness;
   assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
