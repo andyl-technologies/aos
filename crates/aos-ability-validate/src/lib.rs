@@ -36,7 +36,9 @@ pub use graph::{
     CheckedPackageDocument, ValidationContext,
 };
 pub use output::{InputValidationError, OutputValidationError, ProviderReadinessError};
-pub use package_contract::{CheckedPackageContract, PackageContractValidationError};
+pub use package_contract::{
+    CheckedPackageContract, PackageContractValidationError, package_source_supported_features,
+};
 pub use package_projection::{
     CONFIG_ARTIFACT_SELECTOR_MARKER, ConfigArtifactSelector, InterfaceDocumentProjection,
     PACKAGE_OUTPUT_SELECTOR_MARKER, PACKAGE_PROJECTION_SCHEMA, PATH_WITHIN_REFERENCE_MARKER,

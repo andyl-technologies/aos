@@ -204,7 +204,7 @@
           (package:
             builtins.isAttrs package
             && (
-              (package ? abilities && package.abilities ? module)
+              package ? _aosAbilityCarrier
               || package ? packageModule
             ))
           selectionEvaluation.config.environment.systemPackages)
@@ -217,13 +217,17 @@
         name = package.pname or package.name;
         version = package.version or "0";
         module =
-          if package ? abilities && package.abilities ? module
-          then package.abilities.module
+          if package ? _aosAbilityCarrier
+          then package._aosAbilityCarrier.module
           else package.packageModule;
         outputs =
-          if package ? abilities && package.abilities ? moduleOutputs
-          then package.abilities.moduleOutputs
+          if package ? _aosAbilityCarrier
+          then {
+            self = builtins.toString package;
+            dependencies = {};
+          }
           else package.packageModuleOutputs;
+        packageVersion = package.version or "0";
       }) (builtins.filter
         (package: !(builtins.elem (package.pname or package.name) callerPackageNames))
         selectedAbilityPackages);

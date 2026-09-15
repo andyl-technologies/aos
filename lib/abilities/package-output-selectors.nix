@@ -1,8 +1,14 @@
 ##! Package-output selector normalization at the package carrier boundary.
 {
   diagnostics,
+  limits ? {
+    maxCollectionItems = 2000000;
+    maxStringBytes = 1048576;
+    maxStructuralDepth = 64;
+  },
 }: let
   marker = "aos-package-output-selector";
+  inherit (limits) maxCollectionItems maxStringBytes maxStructuralDepth;
   fail = message:
     diagnostics.throw "value-type-mismatch" "abilities: ${message}";
 
@@ -16,30 +22,75 @@
     then value
     else fail "${context} must match [A-Za-z0-9._-]+ and contain at most 128 bytes";
 
-  normalize = owner: depth: value:
-    if depth > 64
-    then fail "package output selector value exceeds 64 structural levels"
+  checkedCount = count:
+    if count > maxCollectionItems
+    then fail "package output selector value exceeds ${toString maxCollectionItems} aggregate collection items"
+    else count;
+  reverseList = builtins.foldl' (reversed: value: [value] ++ reversed) [];
+
+  normalize = owner: depth: count: value:
+    if depth > maxStructuralDepth
+    then fail "package output selector value exceeds ${toString maxStructuralDepth} structural levels"
     else if builtins.isList value
-    then map (normalize owner (depth + 1)) value
+    then let
+      initial = {
+        count = checkedCount (count + builtins.length value);
+        values = [];
+      };
+      normalized = builtins.foldl' (state: item: let
+        result = normalize owner (depth + 1) state.count item;
+      in {
+        count = result.count;
+        values = [result.value] ++ state.values;
+      }) initial value;
+    in {
+      inherit (normalized) count;
+      value = reverseList normalized.values;
+    }
     else if builtins.isAttrs value && (value._type or null) == marker
     then
       if builtins.attrNames value != ["_type" "output" "package"]
       then fail "package output selector must contain only _type, package, and output"
       else {
-        _type = marker;
-        package =
-          if requireLocalKey "package output package" value.package == "self"
-          then owner
-          else value.package;
-        output = requireLocalKey "package output output" value.output;
+        count = checkedCount (count + 3);
+        value = {
+          _type = marker;
+          package =
+            if requireLocalKey "package output package" value.package == "self"
+            then owner
+            else value.package;
+          output = requireLocalKey "package output output" value.output;
+        };
       }
     else if builtins.isAttrs value
-    then builtins.mapAttrs (_: normalize owner (depth + 1)) value
-    else value;
+    then let
+      names = builtins.attrNames value;
+      initial = {
+        count = checkedCount (count + builtins.length names);
+        values = [];
+      };
+      normalized = builtins.foldl' (state: name:
+        if builtins.stringLength name > maxStringBytes
+        then fail "package output selector value contains an oversized member name"
+        else let
+          result = normalize owner (depth + 1) state.count value.${name};
+        in {
+          count = result.count;
+          values = [{inherit name; value = result.value;}] ++ state.values;
+        }) initial names;
+    in {
+      inherit (normalized) count;
+      value = builtins.listToAttrs normalized.values;
+    }
+    else if builtins.isString value && builtins.stringLength value > maxStringBytes
+    then fail "package output selector value contains an oversized string"
+    else {inherit count value;};
 in {
   normalizePackageOutputSelectors = {
     owner,
     value,
-  }:
-    normalize (requireLocalKey "ability package owner" owner) 1 value;
+  }: let
+    result = normalize (requireLocalKey "ability package owner" owner) 1 0 value;
+  in
+    builtins.seq result.count result.value;
 }

@@ -607,19 +607,23 @@
       }
     ];
   };
+  projectAbilityConfig = packageName: evaluation:
+    (import ../../lib/abilities/package-projection.nix {
+      inherit lib;
+      abilities = lib.abilities;
+    }) {
+      inherit packageName;
+      version = "1";
+      evaluated = evaluation.config.aos.abilities;
+    };
+  missingGuaranteeReferenceEvaluation = lib.evalModules {
+    modules = [
+      lib.abilities.module
+      {config.aos.abilities.interfaces.test = guaranteeReferenceDeclaration;}
+    ];
+  };
   missingGuaranteeReference = builtins.tryEval (builtins.deepSeq (
-      (lib.evalModules {
-        modules = [
-          lib.abilities.module
-          {config.aos.abilities.interfaces.test = guaranteeReferenceDeclaration;}
-        ];
-      })
-      .config
-      .aos
-      .abilities
-      .interfaces
-      .test
-      .guarantees
+      projectAbilityConfig "missing" missingGuaranteeReferenceEvaluation
     ) true);
   conflictingGuaranteeCatalog = builtins.tryEval (builtins.deepSeq (
       (lib.evalModules {
@@ -636,6 +640,7 @@
     version = authoredGuarantee.version;
     semantics = authoredGuarantee.semantics;
   };
+  guaranteeReferenceProjection = projectAbilityConfig "authoring" guaranteeReferenceEvaluation;
   packageModuleFor = package: {
     name = package;
     module.config.aos.abilities = {
@@ -791,11 +796,11 @@ in
   == "instance-122435614f54784fad556d4f153bdccaa571e66af26db80f2330fd7dca893044";
   assert combinedPackageEvaluation.config.aos.abilities.implementations."alpha:test".package == "alpha";
   assert combinedPackageEvaluation.config.aos.abilities.implementations."alpha:test".interface == "alpha:test";
-  assert rejectsImplementation (implementation // {artifact = pkgs.bash;});
+  assert rejectsImplementation (implementation // {artifact = {};});
   assert rejectsImplementation (implementation // {
     artifact = "/nix/store/00000000000000000000000000000000-artifact";
   });
-  assert rejectsImplementation (implementation // {artifacts = [pkgs.bash];});
+  assert rejectsImplementation (implementation // {artifacts = [{}];});
   assert rejectsImplementation (implementation // {
     artifact = forgedSelector "bad/package" "out";
   });
@@ -805,7 +810,7 @@ in
   assert rejectsImplementation (implementation // {
     artifact = (forgedSelector "self" "out") // {unknown = true;};
   });
-  assert rejectsImplementation (handlerImplementation pkgs.bash "bin/handler");
+  assert rejectsImplementation (handlerImplementation {} "bin/handler");
   assert rejectsImplementation (handlerImplementation selfOutput "/bin/handler");
   assert rejectsImplementation (handlerImplementation selfOutput "");
   assert rejectsImplementation (handlerImplementation selfOutput "bin//handler");
@@ -895,7 +900,8 @@ in
   assert validExecutableRequest.config.aos.abilities.requests."authoring:executable".parameters.executable.entry_point == "bin/server";
   assert !(authoredGuarantee ? descriptor);
   assert guaranteeReferenceEvaluation.config.aos.abilities.guarantees.authoring == authoredGuarantee;
-  assert guaranteeReferenceEvaluation.config.aos.abilities.interfaces.test.guarantees == [{
+  assert guaranteeReferenceEvaluation.config.aos.abilities.interfaces.test.guarantees == ["authoring"];
+  assert (builtins.head guaranteeReferenceProjection.value.interface_documents).document.interface.guarantees == [{
     name = authoredGuarantee.name;
     version = authoredGuarantee.version;
     descriptor = expectedGuaranteeDescriptor;
@@ -904,7 +910,7 @@ in
   assert !conflictingGuaranteeCatalog.success;
   assert lib.abilities.guaranteeIdentity authoredGuarantee == lib.abilities.guaranteeIdentity proseChangedGuarantee;
   assert lib.abilities.guaranteeIdentity authoredGuarantee != lib.abilities.guaranteeIdentity semanticsChangedGuarantee;
-  assert guaranteeReferenceEvaluation.config.aos.abilities.interfaces.test.guarantees
+  assert (builtins.head guaranteeReferenceProjection.value.interface_documents).document.interface.guarantees
   == [{
     name = authoredGuarantee.name;
     version = authoredGuarantee.version;

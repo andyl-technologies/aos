@@ -774,6 +774,7 @@ let
     "containers/_containerd-tests/lifecycle.nix" = "linux-only-test-source";
     "db/_etcd-config/module.nix" = "linux-only-config-source";
     "kubernetes/_cilium-config/module.nix" = "linux-only-config-source";
+    "kubernetes/_cilium-package-module.nix" = "linux-only-config-source";
     "kubernetes/_cloudcore-config/module.nix" = "linux-only-config-source";
     "kubernetes/_edgecore-config/module.nix" = "linux-only-config-source";
     "kubernetes/_k3s-ability-provider/default.nix" = "target-independent-source";
@@ -796,9 +797,7 @@ let
     "system/_dbus-conf-xsl/make-system-conf.xsl" = "target-independent-source";
     "tests/_aos-registry-server-config/module.nix" = "linux-only-config-source";
     "tools/_conntrackd/module.nix" = "linux-only-config-source";
-    "tools/_rsyncd/module.nix" = "linux-only-config-source";
-    "tools/aos/_configuration-provider/module.nix" = "linux-only-config-source";
-    "tools/aos/_configuration-provider/provider.nix" = "linux-only-config-source";
+    "tools/_rsyncd-config/module.nix" = "linux-only-config-source";
   };
 
   isLinux = system: builtins.match "[a-zA-Z0-9_]+-linux" system != null;

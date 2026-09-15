@@ -764,20 +764,8 @@
         && portableType.check implementation.qualification.observer.result
       )
     )
-    && (
-      config
-      == null
-      || (
-        builtins.hasAttr implementation.interface configuredInterfaces
-        && (let
-          declaration = configuredInterfaces.${implementation.interface};
-        in
-          uniqueValues implementation.methods
-          && uniqueValues implementation.guarantees
-          && builtins.all (method: builtins.hasAttr method declaration.methods) implementation.methods
-          && builtins.all (guarantee: builtins.elem guarantee declaration.guarantees) implementation.guarantees)
-      )
-    ));
+    && uniqueValues implementation.methods
+    && uniqueValues implementation.guarantees);
 
   guaranteeType = abilityTypes.record {
     fields = {
@@ -826,27 +814,6 @@
       description = "Human-readable guarantee documentation excluded from semantic identity.";
     };
   };
-
-  resolveGuaranteeReference = reference:
-    if config == null || !(builtins.hasAttr reference config.aos.abilities.guarantees)
-    then throw "Ability guarantee reference '${reference}' has no exact package declaration."
-    else guaranteeIdentity config.aos.abilities.guarantees.${reference};
-  resolveRequirementGuarantees = requirement:
-    requirement // {guarantees = builtins.map resolveGuaranteeReference requirement.guarantees;};
-  resolveInterfaceGuarantees = interface:
-    interface
-    // {
-      guarantees = builtins.map resolveGuaranteeReference interface.guarantees;
-      methods = builtins.mapAttrs (_: method:
-        method // {guarantees = builtins.map resolveGuaranteeReference method.guarantees;})
-      interface.methods;
-    };
-  resolveImplementationGuarantees = implementation:
-    implementation
-    // {
-      guarantees = builtins.map resolveGuaranteeReference implementation.guarantees;
-      requirements = builtins.mapAttrs (_: resolveRequirementGuarantees) implementation.requirements;
-    };
 
   requirementBaseType = strictSubmodule {
     description = mkOption {
@@ -1342,15 +1309,14 @@ in {
       default = {};
       contributable = true;
       apply = interfaces: let
-        resolved = builtins.mapAttrs (_: resolveInterfaceGuarantees) interfaces;
-        declaredNames = builtins.map (declaration: declaration.name) (builtins.attrValues resolved);
+        declaredNames = builtins.map (declaration: declaration.name) (builtins.attrValues interfaces);
         targetsExist = builtins.all (declaration:
           builtins.all (method: builtins.elem method.targetResource declaredNames)
           (builtins.attrValues declaration.methods))
-        (builtins.attrValues resolved);
+        (builtins.attrValues interfaces);
       in
         if config == null || config.aos.abilities.environment == null || targetsExist
-        then resolved
+        then interfaces
         else throw "An ability method targets an interface that is absent from the final fixed point.";
       description = "Provider-neutral interface declarations available independently of implementations.";
     };
@@ -1358,18 +1324,15 @@ in {
       type = abilityMapType "implementations" implementationType;
       default = {};
       contributable = true;
-      apply = builtins.mapAttrs (_: resolveImplementationGuarantees);
       description = "Package-owned ability implementations available to provider discovery.";
     };
     requirementTemplates = mkOption {
       type = abilityMapType "requirementTemplates" requirementBaseType;
       default = {};
       contributable = true;
-      apply = requirements: let
-        resolved = builtins.mapAttrs (_: resolveRequirementGuarantees) requirements;
-      in
-        if builtins.all requirementAccepted (builtins.attrValues resolved)
-        then resolved
+      apply = requirements:
+        if builtins.all requirementAccepted (builtins.attrValues requirements)
+        then requirements
         else throw "An ability requirement fallback does not match its declared interface output type.";
       description = "Package-owned ability requirements available to configured instances.";
     };

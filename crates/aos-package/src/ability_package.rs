@@ -1235,6 +1235,9 @@ pub(crate) fn collect_distinct_artifacts(
     for handler in package.implementation.handlers.values() {
         insert(&handler.artifact)?;
     }
+    for qualification in package.implementation.qualification.values() {
+        insert(&qualification.observer.artifact)?;
+    }
 
     Ok(by_identity.into_values().collect())
 }

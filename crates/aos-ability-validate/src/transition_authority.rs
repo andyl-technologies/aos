@@ -1720,6 +1720,7 @@ mod tests {
                         result: ValueSchema::Boolean,
                     },
                 )]),
+                qualification: BTreeMap::new(),
             },
         };
         let package_digest = package.content_digest().expect("package digest");

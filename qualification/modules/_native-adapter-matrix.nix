@@ -67,14 +67,30 @@
     if packages == null
     then []
     else builtins.filter (package: package ? abilities) packages;
-  selectedImplementations = builtins.concatMap (package:
-    map (name: {
-      inherit package name;
-      implementation = package.abilities.implementations.${name};
-      interface = package.abilities.interfaces.${package.abilities.implementations.${name}.interface};
-    }) (builtins.filter
-      (name: package.abilities.implementations.${name}.qualification != null)
-      (builtins.attrNames package.abilities.implementations)))
+  selectExact = context: predicate: values: let
+    matches = builtins.filter predicate values;
+  in
+    if builtins.length matches == 1
+    then builtins.head matches
+    else throw "${context} must resolve exactly once";
+  providerByName = package: name:
+    selectExact "native qualification implementation '${package.pname}:${name}'"
+      (provider: provider.name == name)
+      package.abilities.implementation.providers;
+  interfaceByIdentity = package: identity:
+    (selectExact "native qualification interface '${identity.descriptor}'"
+      (entry: entry.descriptor == identity.descriptor)
+      package.abilities.interface_documents).document;
+  selectedImplementations = builtins.concatMap (package: let
+    projection = package.abilities;
+  in
+    map (name: let
+      implementation = providerByName package name;
+    in {
+      inherit package name implementation;
+      qualification = projection.qualification.${name};
+      interface = interfaceByIdentity package implementation.interface;
+    }) (builtins.attrNames projection.qualification))
   selectedPackages;
   packageDependencies = package:
     [package]
@@ -105,7 +121,7 @@
   };
   projectedHandler = owner: handler: {
     artifact = resolvedArtifact owner handler.artifact;
-    entry_point = handler.entryPoint;
+    inherit (handler) entry_point;
     inherit (handler) arguments result;
   };
   interfaceIdentity = interface: lib.abilities.interfaceIdentity interface;
@@ -138,7 +154,7 @@
     else "mutation";
   adapterFor = entry: let
     implementation = entry.implementation;
-    qualification = implementation.qualification;
+    qualification = entry.qualification;
     interface = entry.interface;
     methodNames = implementation.methods;
     observer = projectedHandler entry.package qualification.observer;
@@ -147,13 +163,13 @@
     scope = closedObserverResult "scope" qualification.observer;
     identity = interfaceIdentity interface;
   in
-    assert qualification.conformanceFamilies != [];
-    assert unique qualification.conformanceFamilies;
-    assert builtins.all (family: builtins.elem family scenarioFamilies) qualification.conformanceFamilies;
+    assert qualification.conformance_families != [];
+    assert unique qualification.conformance_families;
+    assert builtins.all (family: builtins.elem family scenarioFamilies) qualification.conformance_families;
     assert token oracleKind; {
       inherit adapter;
       inherit scope;
-      conformance_families = builtins.sort builtins.lessThan qualification.conformanceFamilies;
+      conformance_families = qualification.conformance_families;
       interface_name = identity.name;
       interface_abi = identity.abi;
       interface_descriptor = identity.descriptor;

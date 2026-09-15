@@ -15,13 +15,11 @@
     name = "aos.local-systemd-manager";
     version = 1;
     semantics = "the selected manager controls the local host systemd instance";
-    description = "Controls the local host systemd manager.";
   };
   delegatedManager = lib.abilities.guarantee {
     name = "aos.system-container-manager-delegation";
     version = 1;
     semantics = "the selected manager delegates lifecycle control into a system container";
-    description = "Delegates lifecycle control into a system container.";
   };
   string = maximum:
     types.string {
@@ -107,45 +105,18 @@
       })
       methods);
     inherit lifecycle;
-    guarantees = ["local-manager" "delegated-manager"];
+    guarantees = [localManager delegatedManager];
     aggregation = aggregation "systemd-manager";
   };
-  systemdManagerDocument = lib.abilities.interfaceDocumentFromDeclaration (
-    systemdManagerDeclaration
-    // {guarantees = builtins.map lib.abilities.guaranteeIdentity [localManager delegatedManager];}
-  );
+  systemdManagerDocument = lib.abilities.interfaceDocumentFromDeclaration systemdManagerDeclaration;
   systemdManagerIdentity = lib.abilities.interfaceIdentity systemdManagerDocument;
-  driverDeclaration = lib.abilities.declareInterface {
-    name = "aos.test.systemd-manager-matrix";
-    abi = 1;
-    description = "Exercises selected systemd manager lifecycle operations.";
-    requestType = types.boolean;
-    configurationType = types.record {
-      fields = {
-        action = types.enum methods;
-        revision = string 128;
-      };
-      optional = [];
-    };
-    outputs.managers = {
-      description = "Maps fixture units to their exact managed resources.";
-      schema = resourceMap;
-      phase = "planning";
-      visibility = "protected";
-      lifetime = "instance";
-    };
-    methods = {};
-    inherit lifecycle;
-    guarantees = [];
-    aggregation = aggregation "matrix-systemd";
-  };
-  managerRequirement = {
-    alias = "manager";
-    accepted_interfaces = [systemdManagerIdentity];
+  requirement = {
+    interface = systemdManagerIdentity.name;
+    inherit (systemdManagerIdentity) abi descriptor;
     inherit methods;
     strength = "required";
     fallback = null;
-    guarantees = ["local-manager"];
+    guarantees = [localManager];
   };
   provider = import ./provider/default.nix {systemdManager = systemdManagerIdentity;};
   packageRuntimeSelector = lib.abilities.packageOutput {
@@ -160,30 +131,38 @@
       observerPackage = qualificationObserver;
     };
   abilities = {
-    config.aos.abilities = {
-      guarantees = {
-        local-manager = localManager;
-        delegated-manager = delegatedManager;
-      };
-      interfaces = {
-        driver = driverDeclaration;
-        systemd-manager = systemdManagerDeclaration;
-      };
-      implementations.driver = {
-        description = "Composes and transitions the systemd manager matrix.";
-        interface = "driver";
-        methods = [];
-        guarantees = [];
-        requirements.manager = managerRequirement;
-        compose = provider.compose;
-        transition = provider.transition;
-        desiredType = driverDeclaration.configurationType;
-        providerModule = {
-          artifact = lib.abilities.packageOutput {};
-          path = "share/ability-reference-systemd-manager/provider.nix";
+    config.aos.abilities = lib.abilities.projectDefinitions {
+      driver = {
+        definition = lib.abilities.define {
+          interface = "aos.test.systemd-manager-matrix";
+          abi = 1;
+          requestSchema = types.boolean;
+          configurationSchema = types.record {
+            fields = {
+              action = types.enum methods;
+              revision = string 128;
+            };
+            optional = [];
+          };
+          outputs.managers = {
+            schema = resourceMap;
+            phase = "planning";
+            visibility = "protected";
+            lifetime = "instance";
+          };
+          methods = {};
+          inherit lifecycle;
+          guarantees = [];
+          aggregation = aggregation "matrix-systemd";
+          requires.manager = requirement;
+          composeEntry = "compose";
+          transitionEntry = "transition";
+          ownsResourceKinds = [systemdManager.name];
+          compose = provider.compose;
+          transition = provider.transition;
         };
       };
-      implementations.systemd-manager = {
+      systemd-manager = rec {
         qualification =
           if qualificationSupport == null
           then null
@@ -202,13 +181,25 @@
               scope = "host-manager";
             };
           };
-        description = "Executes systemd manager lifecycle operations.";
-        interface = "systemd-manager";
-        inherit methods;
-        guarantees = ["local-manager" "delegated-manager"];
-        requirements = {};
         artifact = packageRuntimeSelector;
-        handlerDescriptor = {
+        definition = lib.abilities.define {
+          interface = systemdManager.name;
+          inherit (systemdManager) abi;
+          requestSchema = request;
+          outputs = {};
+          methods = builtins.listToAttrs (builtins.map (name: {
+              inherit name;
+              value = method name;
+            })
+            methods);
+          inherit lifecycle;
+          guarantees = [localManager delegatedManager];
+          aggregation = aggregation "systemd-manager";
+          requires = {};
+          ownsResourceKinds = [systemdManager.name];
+          handler = "native-systemd-manager";
+        };
+        handler = {
           artifact = packageRuntimeSelector;
           entryPoint = "libexec/aos-systemd-manager-handler";
           arguments = request;
@@ -229,7 +220,6 @@ in
         name = "install";
         script = ''
           mkdir -p "$out/share/ability-reference-systemd-manager"
-          cp "$src/default.nix" "$out/share/ability-reference-systemd-manager/provider.nix"
           printf '%s\n' 'native systemd manager matrix fixture' \
             > "$out/share/ability-reference-systemd-manager/README"
         '';

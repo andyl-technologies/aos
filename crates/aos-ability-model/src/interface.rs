@@ -611,6 +611,19 @@ pub struct PackageImplementation {
     pub providers: Vec<ProviderImplementation>,
     /// Maps handler names to exact constrained handler artifacts.
     pub handlers: BTreeMap<LocalKey, HandlerDescriptor>,
+    /// Maps exact implementation descriptors to package-owned qualification claims.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub qualification: BTreeMap<Sha256Digest, ProviderQualification>,
+}
+
+/// Declares package-owned native qualification evidence for one implementation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderQualification {
+    /// Lists the semantic conformance families claimed by the implementation.
+    pub conformance_families: Vec<LocalKey>,
+    /// Defines the package-owned observer used to collect independent evidence.
+    pub observer: HandlerDescriptor,
 }
 
 /// Describes one constrained terminal handler artifact.
