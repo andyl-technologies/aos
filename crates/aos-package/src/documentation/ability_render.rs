@@ -38,8 +38,8 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
         output.push_str("No provider interfaces are declared.\n");
     }
     for export in &reference.exports {
-        let interface = &export.interface.interface;
-        let descriptor = export.interface.interface_key()?.descriptor;
+        let interface = &reference.interface_for_export(export)?.interface;
+        let descriptor = export.interface.descriptor;
         let _ = writeln!(
             output,
             "declared export\t{}\t{}\tABI {}",
@@ -104,19 +104,18 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
                 method.as_str()
             );
         }
-        if let Some(aggregation) = &export.aggregation {
-            let _ = writeln!(
-                output,
-                "  declared contribution aggregation\tkey {}\tcontroller group {}\tslot collisions {}",
-                aggregation.key.as_str(),
-                aggregation.controller_group.as_str(),
-                if aggregation.reject_slot_collisions {
-                    "rejected"
-                } else {
-                    "allowed"
-                }
-            );
-        }
+        let aggregation = &interface.aggregation;
+        let _ = writeln!(
+            output,
+            "  declared contribution aggregation\tkey {}\tcontroller group {}\tslot collisions {}",
+            aggregation.key.as_str(),
+            aggregation.controller_group.as_str(),
+            if aggregation.reject_slot_collisions {
+                "rejected"
+            } else {
+                "allowed"
+            }
+        );
     }
 
     output.push_str("\nCONSUMED ABILITIES\n");
@@ -186,8 +185,8 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
         output.push_str("<p>No provider interfaces are declared.</p>");
     }
     for export in &reference.exports {
-        let interface = &export.interface.interface;
-        let descriptor = export.interface.interface_key()?.descriptor;
+        let interface = &reference.interface_for_export(export)?.interface;
+        let descriptor = export.interface.descriptor;
         output.push_str("<article><h4>Declared export <code>");
         escape_html_into(export.name.as_str(), &mut output);
         output.push_str("</code></h4><dl><dt>Interface</dt><dd><code>");
@@ -266,19 +265,18 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
         }
         output.push_str("</ul>");
 
-        if let Some(aggregation) = &export.aggregation {
-            output.push_str("<h5>Declared contribution aggregation</h5><p>Key <code>");
-            escape_html_into(aggregation.key.as_str(), &mut output);
-            output.push_str("</code>; controller group <code>");
-            escape_html_into(aggregation.controller_group.as_str(), &mut output);
-            output.push_str("</code>; slot collisions are ");
-            output.push_str(if aggregation.reject_slot_collisions {
-                "rejected"
-            } else {
-                "allowed"
-            });
-            output.push_str(".</p>");
-        }
+        let aggregation = &interface.aggregation;
+        output.push_str("<h5>Declared contribution aggregation</h5><p>Key <code>");
+        escape_html_into(aggregation.key.as_str(), &mut output);
+        output.push_str("</code>; controller group <code>");
+        escape_html_into(aggregation.controller_group.as_str(), &mut output);
+        output.push_str("</code>; slot collisions are ");
+        output.push_str(if aggregation.reject_slot_collisions {
+            "rejected"
+        } else {
+            "allowed"
+        });
+        output.push_str(".</p>");
         output.push_str("</article>");
     }
 
@@ -448,7 +446,6 @@ fn scalar(value: &impl serde::Serialize) -> Result<String> {
     Ok(serde_json::to_string(value)?.trim_matches('"').to_string())
 }
 
-
 fn safe_plain_text(value: &str) -> String {
     let mut safe = String::with_capacity(value.len());
     for character in value.chars() {
@@ -476,7 +473,11 @@ const fn requirement_strength(strength: RequirementStrength) -> &'static str {
 }
 
 const fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
 }
 
 fn escape_html_into(value: &str, output: &mut String) {

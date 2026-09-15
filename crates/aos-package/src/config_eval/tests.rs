@@ -1077,8 +1077,7 @@ fn legacy_host_selection_cannot_activate_a_structured_package_without_owned_inpu
 #[test]
 fn documentation_prose_changes_only_document_identity_not_activation_inputs() {
     use aos_doc_model::{
-        DOCUMENT_SCHEMA, DocumentationIdentity, DocumentedPackage, InlineSpan,
-        PackageDocumentation, ProseBlock, Section,
+        DOCUMENT_SCHEMA, DocumentationIdentity, DocumentedPackage, PackageDocumentation,
     };
 
     use super::runtime::{
@@ -1093,7 +1092,7 @@ fn documentation_prose_changes_only_document_identity_not_activation_inputs() {
                 name: "web".to_string(),
                 version: "1.0.0".to_string(),
                 platform: "x86_64-linux".to_string(),
-                summary: "Web service".to_string(),
+                summary: prose.to_string(),
                 homepage: None,
                 license: "Apache-2.0".to_string(),
             },
@@ -1104,19 +1103,9 @@ fn documentation_prose_changes_only_document_identity_not_activation_inputs() {
                     "sha256:{}",
                     config_hash.to_string().repeat(64)
                 )),
-                system_module_nar_hash: None,
-                expose_artifact_nar_hash: None,
+                    expose_artifact_nar_hash: None,
                 source_nar_hash: format!("sha256:{}", "2".repeat(64)),
             },
-            sections: vec![Section {
-                id: "reference".to_string(),
-                title: "Reference".to_string(),
-                blocks: vec![ProseBlock::Paragraph {
-                    spans: vec![InlineSpan::Text {
-                        text: prose.to_string(),
-                    }],
-                }],
-            }],
             options: Vec::new(),
         };
         document.identity.semantic_schema_sha256 =

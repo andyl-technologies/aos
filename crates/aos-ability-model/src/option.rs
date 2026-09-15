@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::document::{DocumentError, PackageDocument, VersionedDocument};
@@ -14,7 +15,7 @@ use crate::schema::{JsonValueKind, StringConstraint, StringSyntax};
 use crate::value::{AbilityValue, ArtifactReference};
 
 /// Records one package-owned module option from the authenticated evaluator.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackageOptionDeclaration {
     /// Carries the exact option path segments.
@@ -48,7 +49,7 @@ pub struct PackageOptionDeclaration {
 }
 
 /// Selects the visibility of one authenticated package option declaration.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OptionVisibility {
     /// Exposes the option to package users.
@@ -60,7 +61,7 @@ pub enum OptionVisibility {
 }
 
 /// Describes one option using the closed portable module type algebra.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum OptionType {
     /// Boolean value.
@@ -153,8 +154,10 @@ pub enum OptionType {
     /// Closed portable record with local-key field names.
     Record {
         /// Defines every permitted field.
+        #[schemars(with = "BTreeMap<String, OptionType>")]
         fields: BTreeMap<LocalKey, OptionType>,
         /// Names fields that may be absent.
+        #[schemars(with = "Vec<String>")]
         optional_fields: Vec<LocalKey>,
     },
     /// Closed portable object retaining application-owned field spelling.
@@ -169,8 +172,10 @@ pub enum OptionType {
     /// Closed record union selected by one local-key tag field.
     TaggedUnion {
         /// Names the discriminating record field.
+        #[schemars(with = "String")]
         tag: LocalKey,
         /// Maps tag values to their complete record variants.
+        #[schemars(with = "BTreeMap<String, OptionType>")]
         variants: BTreeMap<LocalKey, OptionType>,
     },
     /// Portable union whose variants have distinct top-level JSON kinds.
@@ -209,7 +214,7 @@ pub enum OptionType {
 }
 
 /// Describes one value in a package option enumeration.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OptionEnumValue {
     /// Carries the exact enumerated value.
@@ -217,12 +222,13 @@ pub struct OptionEnumValue {
 }
 
 /// Preserves one bounded literal or explanatory computed option value.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum DocumentedValue {
     /// Carries a canonical JSON-compatible literal.
     Literal {
         /// Carries the exact literal value.
+        #[schemars(with = "serde_json::Value")]
         value: AbilityValue,
     },
     /// Carries stable explanatory text for a computed value.
@@ -696,10 +702,11 @@ fn key_accepts(constraint: &StringConstraint, value: &str) -> bool {
 }
 
 /// Locates one option declaration below the authenticated package module root.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OptionSource {
     /// Names the normalized source file below the package module artifact.
+    #[schemars(with = "String")]
     pub path: RelativePath,
 }
 

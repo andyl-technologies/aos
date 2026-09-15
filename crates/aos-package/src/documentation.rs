@@ -14,8 +14,11 @@ use std::net::{IpAddr, SocketAddr};
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use aos_ability_model::VersionedDocument as _;
+use aos_ability_validate::{
+    validate_ability_contract, AbilityContractData, CheckedAbilityContract,
+};
 use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
 use aos_doc_model::{
@@ -27,12 +30,12 @@ use aos_proto_types::{
     GetPackageDocumentationRequest, GetPackageDocumentationSchemaRequest,
     SearchPackageDocumentationRequest,
 };
-use aos_remote::{HubClient, hub_rpc};
+use aos_remote::{hub_rpc, HubClient};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::documentation_lsp;
-use crate::profile::{Profile, meta};
+use crate::profile::{meta, Profile};
 use crate::types::{DocumentationArtifactMeta, ProfileScope};
 use crate::{DocumentationCacheCommand, DocumentationCommand, DocumentationOutput, OptionsCommand};
 
@@ -532,12 +535,16 @@ fn load_ability_reference(
         bail!("installed ability semantic identity mismatch for '{package_name}'");
     }
 
-    let supported_features = aos_doc_model::ability_reference_supported_features()?;
-    let mut interfaces = Vec::with_capacity(package.exports.len());
-    for export in &package.exports {
+    let mut interfaces = Vec::with_capacity(package.interfaces.len());
+    let interface_keys = package
+        .interfaces
+        .values()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    for interface_key in interface_keys {
         let path = Path::new(&ability.store_path)
             .join("interfaces")
-            .join(format!("{}.json", export.interface.descriptor.hex()));
+            .join(format!("{}.json", interface_key.descriptor.hex()));
         let file = fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -563,22 +570,18 @@ fn load_ability_reference(
                 path.display()
             );
         }
-        let interface =
-            aos_ability_model::decode_canonical::<aos_ability_model::InterfaceDocument>(
-                &bytes,
-                aos_ability_model::ABILITY_LIMITS_V1,
-                &supported_features,
-            )
-            .with_context(|| format!("decoding installed ability interface {}", path.display()))?;
-        if interface.interface_key()? != export.interface {
-            bail!(
-                "installed ability interface identity mismatch for '{}'.",
-                export.name.as_str()
-            );
-        }
-        interfaces.push(interface);
+        interfaces.push(bytes);
     }
-    PackageAbilityReference::from_documents(&package, &interfaces)
+    let checked = validate_ability_contract(AbilityContractData::PackageSource {
+        manifest: &manifest,
+        retained_interfaces: &interfaces,
+    })
+    .context("checking installed package ability companion")?;
+    let CheckedAbilityContract::PackageSource(checked) = checked else {
+        bail!("package source validation returned another contract family");
+    };
+
+    PackageAbilityReference::from_checked_contract(&checked)
         .context("generating authenticated package ability reference")
 }
 
@@ -1258,8 +1261,8 @@ fn install_manpage(
 mod tests {
     use super::*;
     use aos_ability_model::{
-        ABILITY_LIMITS_V1, AbilityActivationMode, InterfaceDocument, LocalKey, RequiredFeature,
-        RequirementDeclaration, RequirementStrength, ValueSchema, decode_canonical,
+        decode_canonical, AbilityActivationMode, InterfaceDocument, LocalKey, RequiredFeature,
+        RequirementDeclaration, RequirementStrength, ValueSchema, ABILITY_LIMITS_V1,
     };
     use aos_contract::Sha256Digest;
     use aos_doc_model::{
@@ -1284,11 +1287,9 @@ mod tests {
                 semantic_schema_sha256: String::new(),
                 runtime_nar_hash: format!("sha256:{}", "a".repeat(64)),
                 config_module_nar_hash: None,
-                system_module_nar_hash: None,
-                expose_artifact_nar_hash: None,
+                    expose_artifact_nar_hash: None,
                 source_nar_hash: format!("sha256:{}", "b".repeat(64)),
             },
-            sections: Vec::new(),
             options: vec![OptionDocument {
                 path: vec![
                     aos_doc_model::PathSegment::Literal {
@@ -1318,11 +1319,9 @@ mod tests {
                     interface_abi: Some(1),
                 },
                 contributable: false,
-                activation: None,
                 source: Some(SourceLocator {
-                    path: "pkgs/networking/nginx.nix".to_string(),
-                    attribute: Some("nginx.enable".to_string()),
-                    line: Some(1),
+                    path: aos_ability_model::RelativePath::new("pkgs/networking/nginx.nix")
+                        .expect("valid source path"),
                 }),
             }],
         };
@@ -1357,11 +1356,15 @@ mod tests {
             manifest_sha256: Sha256Digest::of_bytes("manifest"),
             package_digest: Sha256Digest::of_bytes("package"),
             activation_mode: AbilityActivationMode::StructuredEffects,
+            interfaces: std::collections::BTreeMap::from([(
+                LocalKey::new("server-interface").unwrap(),
+                interface,
+            )]),
+            guarantees: std::collections::BTreeMap::new(),
             exports: vec![AbilityExportReference {
                 name: LocalKey::new("server").unwrap(),
                 implementation: Sha256Digest::of_bytes("implementation"),
-                interface,
-                aggregation: None,
+                interface: interface_key.clone(),
                 requirements: vec![RequirementDeclaration {
                     alias: LocalKey::new("service-runtime").unwrap(),
                     accepted_interfaces: vec![interface_key],
@@ -1396,7 +1399,6 @@ mod tests {
             document_sha256: document.document_sha256().unwrap(),
             document_size: bytes.len() as u64,
             semantic_schema_sha256: document.identity.semantic_schema_sha256.clone(),
-            system_module_nar_hash: None,
             references: Vec::new(),
         };
         assert!(load_document_file(&path, Some(&artifact), "fixture").is_ok());
@@ -1459,11 +1461,9 @@ mod tests {
         assert!(!detail.contains("<script"));
 
         let rejected = local_http_response(&[], b"POST / HTTP/1.1\r\n\r\n");
-        assert!(
-            String::from_utf8(rejected)
-                .unwrap()
-                .starts_with("HTTP/1.1 405 Method Not Allowed")
-        );
+        assert!(String::from_utf8(rejected)
+            .unwrap()
+            .starts_with("HTTP/1.1 405 Method Not Allowed"));
     }
 
     #[test]
@@ -1508,27 +1508,25 @@ mod tests {
             .ability_reference
             .as_mut()
             .unwrap()
-            .exports[0]
-            .interface
+            .interfaces
+            .values_mut()
+            .next()
+            .unwrap()
             .interface
             .configuration = None;
-        assert!(
-            without_configuration
-                .render_plain()
-                .unwrap()
-                .contains("no operator-owned provider instance configuration is declared")
-        );
+        assert!(without_configuration
+            .render_plain()
+            .unwrap()
+            .contains("no operator-owned provider instance configuration is declared"));
 
         let canonical_document = rendered_bytes(&loaded, DocumentationOutput::Json).unwrap();
         assert_eq!(
             PackageDocumentation::from_canonical_json(&canonical_document).unwrap(),
             loaded.document
         );
-        assert!(
-            !String::from_utf8(canonical_document)
-                .unwrap()
-                .contains("package-ability-reference")
-        );
+        assert!(!String::from_utf8(canonical_document)
+            .unwrap()
+            .contains("package-ability-reference"));
     }
 
     #[test]

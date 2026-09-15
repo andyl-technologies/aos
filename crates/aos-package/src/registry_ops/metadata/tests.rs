@@ -306,7 +306,6 @@ fn build_package_toml_binds_documentation_as_a_signed_platform_artifact() {
         document_size: 384,
         semantic_schema_sha256:
             "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_string(),
-        system_module_nar_hash: None,
         references: vec![],
     };
     let attestation = AttestationMeta {

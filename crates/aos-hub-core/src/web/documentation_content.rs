@@ -27,7 +27,6 @@ fn link_href(target: &LinkTarget, slug: &str, release: &str) -> Option<String> {
         LinkTarget::Option { path } => {
             Some(node_href(slug, release, &documentation_node_key(path)))
         }
-        LinkTarget::Section { id } => Some(format!("#{}", urlencode(id))),
         LinkTarget::Https { url }
             if url::Url::parse(url)
                 .is_ok_and(|url| url.scheme() == "https" && url.host_str().is_some()) =>
@@ -291,33 +290,20 @@ pub(super) fn option(option: &OptionDocument, slug: &str, release: &str) -> Stri
         OptionType::Bool => html.push_str("<section><h3>Allowed values</h3><div class=\"doc-badges\"><code>true</code><code>false</code></div></section>"),
         OptionType::Enum { values } => {
             html.push_str("<section><h3>Allowed values</h3><div class=\"doc-enum\">");
-            for value in values { let _ = write!(html, "<div><code>{}</code>{}</div>", escape(&value.value), prose(&value.description, slug, release)); }
+            for value in values {
+                let _ = write!(html, "<div><code>{}</code></div>", escape(&value.value));
+            }
             html.push_str("</div></section>");
         }
         _ => {}
-    }
-    if let Some(activation) = &option.activation {
-        let _ = write!(
-            html,
-            "<section><h3>When changed</h3><p>{:?}</p>",
-            activation.kind
-        );
-        for unit in &activation.units {
-            let _ = write!(html, "<code>{}</code> ", escape(unit));
-        }
-        html.push_str("</section>");
     }
     let _ = write!(html, "<details><summary>Declaration details</summary><dl><dt>Owner</dt><dd><a href=\"/{}/-/packages/{}?release={}\">{}</a></dd><dt>Visibility</dt><dd>{:?}</dd>",
         escape(slug), urlencode(&option.owner.package), urlencode(release), escape(&option.owner.package), option.visibility);
     if let Some(source) = &option.source {
         let _ = write!(
             html,
-            "<dt>Source</dt><dd><code>{}{}</code></dd>",
-            escape(&source.path),
-            source
-                .line
-                .map(|line| format!(":{line}"))
-                .unwrap_or_default()
+            "<dt>Source</dt><dd><code>{}</code></dd>",
+            escape(source.path.as_str())
         );
     }
     html.push_str("</dl></details></article>");

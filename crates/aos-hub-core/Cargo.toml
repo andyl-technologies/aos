@@ -63,6 +63,7 @@ aos-registry-surface = { workspace = true }
 aos-oci-types = { workspace = true }
 aos-ability-model = { workspace = true }
 aos-ability-inspect = { workspace = true }
+aos-ability-validate = { workspace = true }
 aos-contract = { workspace = true }
 aos-doc-model = { workspace = true }
 aos-hub-console-contract = { workspace = true }

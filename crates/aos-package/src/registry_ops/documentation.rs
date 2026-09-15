@@ -1,9 +1,7 @@
 //! Package documentation derivation and publication.
 
 use crate::registry_ops::attestation::documentation_nar_identity;
-use crate::registry_ops::config_modules::{
-    DerivedOptionDeclaration, PublishConfigModuleManifest, nix_publish_string,
-};
+use crate::registry_ops::config_modules::{DerivedOptionDeclaration, PublishConfigModuleManifest};
 use crate::registry_ops::mac::PublishExposeManifest;
 use crate::registry_ops::store_paths::{StorePathInfo, introspect_store_path, nix_command};
 use crate::registry_ops::uki::sha256_hex;
@@ -12,145 +10,17 @@ use crate::types::{
 };
 use anyhow::{Context, Result, bail};
 use aos_doc_model::{
-    ActivationEffect, DOCUMENT_FORMAT, DOCUMENT_SCHEMA, DocumentationIdentity, DocumentedPackage,
-    OptionDocument, OptionOwner, PackageDocumentation, PathSegment, ProseBlock, Section, Visibility,
+    DOCUMENT_FORMAT, DOCUMENT_SCHEMA, DocumentationIdentity, DocumentedPackage, OptionDocument,
+    OptionOwner, PackageDocumentation, PathSegment, ProseBlock, Visibility,
 };
-use serde::Deserialize;
-use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write as _;
-use std::process::Command;
-
-/// Package-authored enrichment that cannot be inferred from option/expose
-/// declarations. It is closed data copied into the trusted config companion;
-/// the canonical document model performs the final deep validation.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(in crate::registry_ops) struct PublishDocumentationManifest {
-    #[serde(default)]
-    pub(in crate::registry_ops) summary: Option<String>,
-    #[serde(default)]
-    sections: BTreeMap<String, PublishDocumentationSection>,
-    #[serde(default)]
-    options: BTreeMap<String, PublishOptionDocumentation>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PublishDocumentationSection {
-    title: String,
-    blocks: Vec<ProseBlock>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PublishOptionDocumentation {
-    #[serde(default)]
-    activation: Option<ActivationEffect>,
-    #[serde(default)]
-    deprecated: Option<String>,
-    #[serde(default)]
-    replacement: Option<Vec<PathSegment>>,
-}
 
 #[derive(Debug)]
 pub(in crate::registry_ops) struct PublishedDocumentation {
     pub(in crate::registry_ops) metadata: DocumentationArtifactMeta,
     pub(in crate::registry_ops) info: StorePathInfo,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DerivedSystemDocumentation {
-    declarations: Vec<DerivedOptionDeclaration>,
-}
-
-#[derive(Debug)]
-pub(in crate::registry_ops) struct PublishedSystemDocumentation {
-    pub(in crate::registry_ops) base_lib: StorePathInfo,
-    pub(in crate::registry_ops) declarations: Vec<DerivedOptionDeclaration>,
-}
-
-/// Extracts system-owned service options from the evaluated image module graph.
-pub(in crate::registry_ops) fn derive_system_documentation(
-    base_lib: StorePathInfo,
-    package_name: &str,
-) -> Result<Option<PublishedSystemDocumentation>> {
-    let expression = format!(
-        r#"let
-  base = import <aos-documentation-base-lib>;
-  evaluated = base.evalHostConfig {{}};
-  service = evaluated.config.aos.documentation.systemServices.{} or null;
-  publicDeclarations = builtins.filter
-    (declaration: declaration.visibility != "internal")
-    (base.lib.optionSurface evaluated);
-  matchesPrefix = prefix: declaration:
-    declaration.pathStr == prefix || base.lib.hasPrefix "${{prefix}}." declaration.pathStr;
-  selected =
-    if service == null then []
-    else builtins.filter
-      (declaration: builtins.any (prefix: matchesPrefix prefix declaration) service.optionPrefixes)
-      publicDeclarations;
-in if service == null then null else {{
-    declarations = builtins.map (declaration: {{
-      inherit (declaration)
-        path pathStr typeSig type description default example visibility readOnly
-        contributable;
-      owner = "aos";
-    }}) selected;
-  }}"#,
-        nix_publish_string(package_name),
-    );
-    let search_path = format!("aos-documentation-base-lib={}", base_lib.path);
-    let evaluator = std::env::var_os("PATH")
-        .and_then(|path| {
-            std::env::split_paths(&path)
-                .map(|directory| directory.join("nix-instantiate"))
-                .find(|candidate| candidate.is_file())
-        })
-        .context("cannot find nix-instantiate in the AOS command path")?;
-    let output = Command::new(evaluator)
-        .env_clear()
-        .args([
-            "--eval",
-            "--strict",
-            "--json",
-            "--option",
-            "restrict-eval",
-            "true",
-            "--option",
-            "allow-import-from-derivation",
-            "false",
-            "-I",
-            &search_path,
-            "--expr",
-            &expression,
-        ])
-        .output()
-        .with_context(|| {
-            format!("extracting system-owned documentation for package '{package_name}'")
-        })?;
-    if !output.status.success() {
-        bail!(
-            "system-owned documentation evaluation failed for package '{package_name}': {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    let surface: Option<DerivedSystemDocumentation> = serde_json::from_slice(&output.stdout)
-        .with_context(|| {
-            format!("parsing system-owned documentation for package '{package_name}'")
-        })?;
-    let Some(surface) = surface else {
-        return Ok(None);
-    };
-    if surface.declarations.is_empty() {
-        bail!("system-owned documentation entry for package '{package_name}' selects no options");
-    }
-    Ok(Some(PublishedSystemDocumentation {
-        base_lib,
-        declarations: surface.declarations,
-    }))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -165,46 +35,12 @@ pub(in crate::registry_ops) fn publish_package_documentation(
     source: Option<&StorePathInfo>,
     config_module: Option<&ConfigModuleMeta>,
     config_manifest: Option<&PublishConfigModuleManifest>,
-    system_documentation: Option<&PublishedSystemDocumentation>,
     _expose_manifest: Option<&PublishExposeManifest>,
     expose_artifact: Option<&StorePathInfo>,
     declarations: &[DerivedOptionDeclaration],
 ) -> Result<PublishedDocumentation> {
-    let authored = config_manifest
-        .map(|manifest| &manifest.documentation)
-        .cloned()
-        .unwrap_or_default();
-    if let Some(summary) = authored.summary.as_deref()
-        && summary != description
-    {
-        bail!(
-            "package '{name}' documentation summary must equal its catalog description so there is one summary authority"
-        );
-    }
-
-    let declaration_paths = documented_option_declarations(declarations)
-        .map(|declaration| declaration.path_str.as_str())
-        .collect::<HashSet<_>>();
-    if let Some(foreign) = authored
-        .options
-        .keys()
-        .find(|path| !declaration_paths.contains(path.as_str()))
-    {
-        bail!("package '{name}' documentation enriches undeclared option '{foreign}'");
-    }
-
-    let sections = authored
-        .sections
-        .into_iter()
-        .map(|(id, section)| Section {
-            id,
-            title: section.title,
-            blocks: section.blocks,
-        })
-        .collect::<Vec<_>>();
     let options = documented_option_declarations(declarations)
         .map(|declaration| {
-            let enrichment = authored.options.get(&declaration.path_str);
             if declaration.description.trim().is_empty() {
                 bail!(
                     "public configuration option '{}' has no description",
@@ -241,15 +77,14 @@ pub(in crate::registry_ops) fn publish_package_documentation(
                 example: declaration.example.clone(),
                 visibility: declaration.visibility,
                 read_only: declaration.read_only,
-                deprecated: enrichment.and_then(|entry| entry.deprecated.clone()),
-                replacement: enrichment.and_then(|entry| entry.replacement.clone()),
+                deprecated: None,
+                replacement: None,
                 owner: OptionOwner {
                     package: declaration.owner.clone(),
                     root,
                     interface_abi,
                 },
                 contributable: declaration.contributable,
-                activation: enrichment.and_then(|entry| entry.activation.clone()),
                 source: None,
             })
         })
@@ -271,9 +106,6 @@ pub(in crate::registry_ops) fn publish_package_documentation(
             config_module_nar_hash: config_module
                 .map(|module| documentation_nar_identity(&module.config_output.nar_hash))
                 .transpose()?,
-            system_module_nar_hash: system_documentation
-                .map(|surface| documentation_nar_identity(&surface.base_lib.nar_hash))
-                .transpose()?,
             expose_artifact_nar_hash: expose_artifact
                 .map(|artifact| documentation_nar_identity(&artifact.nar_hash))
                 .transpose()?,
@@ -281,7 +113,6 @@ pub(in crate::registry_ops) fn publish_package_documentation(
                 source.map_or(runtime.nar_hash.as_str(), |source| source.nar_hash.as_str()),
             )?,
         },
-        sections,
         options,
     };
     document.identity.semantic_schema_sha256 = document
@@ -351,9 +182,6 @@ pub(in crate::registry_ops) fn publish_package_documentation(
         document_sha256,
         document_size: bytes.len() as u64,
         semantic_schema_sha256: document.identity.semantic_schema_sha256,
-        system_module_nar_hash: system_documentation
-            .map(|surface| documentation_nar_identity(&surface.base_lib.nar_hash))
-            .transpose()?,
         references: Vec::new(),
     };
     validate_documentation_artifact_meta(&metadata)

@@ -7,6 +7,7 @@ description = "Closed package-documentation schema, validation, search, and safe
 
 [dependencies]
 aos-ability-model = { workspace = true }
+aos-ability-validate = { workspace = true }
 aos-contract = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -225,7 +225,6 @@ fn documented_provenance_paths_change_with_the_documentation_nar() {
         document_size: 384,
         semantic_schema_sha256:
             "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string(),
-        system_module_nar_hash: None,
         references: vec![],
     };
 

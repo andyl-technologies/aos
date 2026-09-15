@@ -1,6 +1,5 @@
 //! Config-module interface derivation and validation of builder-authored claims.
 
-use crate::registry_ops::documentation::PublishDocumentationManifest;
 use crate::registry_ops::store_paths::{
     StorePathInfo, TARGET_PLATFORM_RELATIVE_PATH, introspect_store_path, nix_command,
 };
@@ -39,8 +38,6 @@ pub(in crate::registry_ops) struct PublishConfigModuleManifest {
     pub(in crate::registry_ops) provides_capabilities: Vec<String>,
     #[serde(default)]
     pub(in crate::registry_ops) dependencies: Vec<String>,
-    #[serde(default)]
-    pub(in crate::registry_ops) documentation: PublishDocumentationManifest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
