@@ -17,9 +17,9 @@
 ##!      - the kernel-tunable provider applies the requested value.
 ##!      - the new service starts and the removed service stops before its
 ##!        provider realization disappears.
-##!   4. perturbed dbus.service (a serviceConfig limit) → its unit text
-##!      changes, so the reconciler must act on the system message bus. Since
-##!      dbus.service is reloadIfChanged, this exercises reload-not-restart:
+##!   4. perturbed D-Bus package service (an open-file limit) → its native
+##!      service resource changes, so the reconciler must act on the system
+##!      message bus. Its configuration-change policy exercises reload:
 ##!      the bus the reconciler is driven over must NOT be torn down. Guards
 ##!      the dbus-self-restart hang.
 ##!
@@ -54,12 +54,12 @@
     text = "marker = 1\n";
   };
 
-  # Perturb dbus.service so its effective fingerprint differs between gen-1
-  # and gen-2, forcing the reconciler to act on the system message bus. This
-  # is the regression surface for the "restart dbus over its own bus" hang:
-  # because dbus.service is reloadIfChanged (modules/services/dbus.nix), the
-  # diff must schedule a *reload* (preserving the daemon's PID and the live
-  # bus), never a restart. The fleet test asserts exactly that. The added
-  # limit is innocuous; only the resulting unit-text change matters.
-  systemd.services.dbus.serviceConfig.LimitNOFILE = "16384";
+  # Perturb the package-owned D-Bus service resource so its effective
+  # fingerprint differs between gen-1 and gen-2, forcing the reconciler to act
+  # on the system message bus. This is the regression surface for the "restart
+  # dbus over its own bus" hang: the D-Bus declaration requests reload on
+  # configuration changes, preserving the daemon's PID and the live bus. The
+  # fleet test asserts exactly that. The added limit is innocuous; only the
+  # resulting service-resource change matters.
+  aos.services.dbus.openFileLimit = 16384;
 }
