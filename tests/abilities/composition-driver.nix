@@ -12,6 +12,13 @@
         visibility = "protected";
         lifetime = "instance";
       };
+      outputs.runtime-marker = {
+        description = "Proves pure composition cannot manufacture runtime evidence.";
+        schema = lib.abilities.types.boolean;
+        phase = "runtime";
+        visibility = "protected";
+        lifetime = "instance";
+      };
     };
   lifecycleInterface =
     interfaces.lifecycle
@@ -61,7 +68,6 @@
     requests = {};
     outputs = {};
     resourceFragments = {};
-    conditionalRequirements = [];
   };
   provideFacet = facet: {requests, ...}:
     emptyProvision
@@ -130,7 +136,6 @@
           }: {
             requests = {};
             outputs = builtins.mapAttrs (_: _: {marker = true;}) requests;
-            conditionalRequirements = [];
             realizations = builtins.mapAttrs (_: _: {backend = "fixture";}) resources;
           };
         };
@@ -228,23 +233,26 @@
   evaluate = {
     providerAdditions ? [],
     consumerAdditions ? [],
+    roundAdditions ? [],
     bindings ? baseBindings,
   }:
     lib.evalModules {
       inherit lib;
-      modules = [
-        lib.abilities.module
-        {
-          config.aos.abilities = {
-            environment = {
-              authority = "test";
-              key = "composition";
-              stage = "host";
+      modules =
+        [
+          lib.abilities.module
+          {
+            config.aos.abilities = {
+              environment = {
+                authority = "test";
+                key = "composition";
+                stage = "host";
+              };
+              inherit bindings;
             };
-            inherit bindings;
-          };
-        }
-      ];
+          }
+        ]
+        ++ roundAdditions;
       packageModules = [
         {
           name = "provider";
@@ -329,22 +337,33 @@
       }
     ];
   };
+  childRequirementKey = lib.abilities.compositionRequirementKey {
+    implementation = "provider:service-lifecycle";
+    alias = "network";
+  };
+  childRequestKey = lib.abilities.compositionRequestKey {
+    implementation = "provider:service-lifecycle";
+    providerInstance = "provider:manager";
+    key = "child";
+  };
+  childParameters = {
+    scope = "configured-connectivity";
+    address_families = ["ipv4"];
+  };
+  childRequest = {
+    requirement = "network";
+    scope = ["child"];
+    parameters = childParameters;
+  };
+  lifecycleWithChild = {
+    config.aos.abilities.implementations.service-lifecycle.provide = context:
+      (provideFacet "lifecycle" context)
+      // {
+        requests.child = childRequest;
+      };
+  };
   pendingChildRequest = evaluate {
-    providerAdditions = [
-      {
-        config.aos.abilities.implementations.service-lifecycle.compose = context: {
-          requests."provider:child" = {
-            requirement = "consumer:dependencies";
-            consumer = "consumer:consumer";
-            scope = ["child"];
-            parameters = dependencyRequest;
-          };
-          outputs = builtins.mapAttrs (_: _: {marker = true;}) context.requests;
-          realizations = builtins.mapAttrs (_: _: {backend = "fixture";}) context.resources;
-          conditionalRequirements = [];
-        };
-      }
-    ];
+    providerAdditions = [lifecycleWithChild];
   };
   duplicatePendingChildRequest = evaluate {
     providerAdditions = [
@@ -353,29 +372,18 @@
           provide = context:
             (provideFacet "lifecycle" context)
             // {
-              requests."provider:child" = {
-                requirement = "consumer:dependencies";
-                consumer = "consumer:consumer";
-                scope = ["child"];
-                parameters = dependencyRequest;
-              };
+              requests.child = childRequest;
             };
           compose = context: {
-            requests."provider:child" = {
-              requirement = "consumer:dependencies";
-              consumer = "consumer:consumer";
-              scope = ["child"];
-              parameters = dependencyRequest;
-            };
+            requests.child = childRequest;
             outputs = builtins.mapAttrs (_: _: {marker = true;}) context.requests;
             realizations = builtins.mapAttrs (_: _: {backend = "fixture";}) context.resources;
-            conditionalRequirements = [];
           };
         };
       }
     ];
   };
-  pendingConditionalRequirement = evaluate {
+  authoredConditionalRequirement = evaluate {
     providerAdditions = [
       {
         config.aos.abilities.implementations.service-lifecycle.provide = context:
@@ -384,18 +392,131 @@
       }
     ];
   };
-  duplicateConditionalRequirement = evaluate {
+  resolvedChild = evaluate {
+    providerAdditions = [
+      lifecycleWithChild
+      {
+        config.aos.abilities.implementations.service-lifecycle.compose = context: {
+          requests = {};
+          outputs = assert context.children.child.request == childRequestKey;
+          assert context.children.child.binding == "test:child-network";
+          assert context.children.child.outputs.readiness-resource.phase == "planning";
+            builtins.mapAttrs (_: _: {marker = true;}) context.requests;
+          realizations = builtins.mapAttrs (_: _: {backend = "fixture";}) context.resources;
+        };
+      }
+    ];
+    bindings =
+      baseBindings
+      // {
+        "test:child-network" = {
+          request = childRequestKey;
+          implementation = "provider:network-readiness";
+          providerInstance = "provider:manager";
+          slot = "network-child";
+        };
+      };
+  };
+  collidingAuthoredChild = evaluate {
+    providerAdditions = [lifecycleWithChild];
+    roundAdditions = [
+      {
+        config.aos.abilities.requests.${childRequestKey} = {
+          requirement = "consumer:lifecycle";
+          consumer = "consumer:consumer";
+          scope = [];
+          parameters = lifecycleRequest;
+        };
+      }
+    ];
+  };
+  forgedAuthoredChild = evaluate {
+    roundAdditions = [
+      {
+        config.aos.abilities.requests.${childRequestKey} = {
+          requirement = childRequirementKey;
+          consumer = "provider:manager";
+          scope = ["child"];
+          parameters = childParameters;
+        };
+      }
+    ];
+  };
+  orphanChildBinding = evaluate {
+    bindings =
+      baseBindings
+      // {
+        "test:child-network" = {
+          request = childRequestKey;
+          implementation = "provider:network-readiness";
+          providerInstance = "provider:manager";
+          slot = "network-child";
+        };
+      };
+  };
+  mismatchedChildBinding = evaluate {
+    providerAdditions = [
+      lifecycleWithChild
+      {
+        config.aos.abilities.implementations.network-incomplete = {
+          description = "Omits the observe method required by the child request.";
+          interface = interfaces.networkReadiness.alias;
+          methods = [];
+          guarantees = [];
+          provide = providerModule.config.aos.abilities.implementations.network-readiness.provide;
+        };
+      }
+    ];
+    bindings =
+      baseBindings
+      // {
+        "test:child-network" = {
+          request = childRequestKey;
+          implementation = "provider:network-incomplete";
+          providerInstance = "provider:manager";
+          slot = "network-child";
+        };
+      };
+  };
+  multiplyBoundChild = evaluate {
+    providerAdditions = [lifecycleWithChild];
+    bindings =
+      baseBindings
+      // {
+        "test:child-network" = {
+          request = childRequestKey;
+          implementation = "provider:network-readiness";
+          providerInstance = "provider:manager";
+          slot = "network-child";
+        };
+        "test:duplicate-child-network" = {
+          request = childRequestKey;
+          implementation = "provider:network-readiness";
+          providerInstance = "provider:manager";
+          slot = "network-child-duplicate";
+        };
+      };
+  };
+  runtimeOutput = evaluate {
     providerAdditions = [
       {
-        config.aos.abilities.implementations.service-lifecycle.provide = context:
-          (provideFacet "lifecycle" context)
-          // {conditionalRequirements = ["network" "network"];};
+        config.aos.abilities.implementations.service-lifecycle.compose = context: {
+          requests = {};
+          outputs =
+            builtins.mapAttrs (_: _: {
+              marker = true;
+              runtime-marker = true;
+            })
+            context.requests;
+          realizations = builtins.mapAttrs (_: _: {backend = "fixture";}) context.resources;
+        };
       }
     ];
   };
   pendingRequirement = builtins.head (
-    builtins.attrValues pendingConditionalRequirement.config.aos.abilities.compositionPendingRequirements
+    builtins.attrValues pendingChildRequest.config.aos.abilities.compositionPendingRequirements
   );
+  pendingRequest = pendingChildRequest.config.aos.abilities.compositionPendingRequests.${childRequestKey};
 in
   assert builtins.length (builtins.attrNames abilities.desiredResources) == 1;
   assert desired.controller == "test:lifecycle";
@@ -412,11 +533,43 @@ in
   assert rejects duplicateDependency.config.aos.abilities.desiredResources;
   assert rejects ambiguousController.config.aos.abilities.desiredResources;
   assert rejects duplicateOutput.config.aos.abilities.desiredResources;
-  assert builtins.attrNames pendingChildRequest.config.aos.abilities.compositionPendingRequests == ["provider:child"];
+  assert builtins.attrNames pendingChildRequest.config.aos.abilities.compositionPendingRequests == [childRequestKey];
+  assert pendingRequest.localRequestKey == "child";
+  assert pendingRequest.implementation == "provider:service-lifecycle";
+  assert pendingRequest.providerInstance == "provider:manager";
+  assert pendingRequest.requirement == "network";
+  assert pendingRequest.declaration.requirement == childRequirementKey;
+  assert lib.abilities.types.declarationKey.check childRequirementKey;
+  assert lib.abilities.types.declarationKey.check childRequestKey;
+  assert childRequirementKey
+  == lib.abilities.compositionRequirementKey {
+    implementation = "provider:service-lifecycle";
+    alias = "network";
+  };
+  assert childRequestKey
+  == lib.abilities.compositionRequestKey {
+    implementation = "provider:service-lifecycle";
+    providerInstance = "provider:manager";
+    key = "child";
+  };
+  assert childRequestKey
+  != lib.abilities.compositionRequestKey {
+    implementation = "provider:service-lifecycle";
+    providerInstance = "provider:alternate-manager";
+    key = "child";
+  };
   assert rejects pendingChildRequest.config.aos.abilities.desiredResources;
   assert rejects duplicatePendingChildRequest.config.aos.abilities.compositionPendingRequests;
   assert pendingRequirement.implementation == "provider:service-lifecycle";
   assert pendingRequirement.providerInstance == "provider:manager";
   assert pendingRequirement.requirements == ["network"];
-  assert rejects pendingConditionalRequirement.config.aos.abilities.desiredResources;
-  assert rejects duplicateConditionalRequirement.config.aos.abilities.compositionPendingRequirements; true
+  assert resolvedChild.config.aos.abilities.compositionPendingRequests == {};
+  assert resolvedChild.config.aos.abilities.compositionRequests.${childRequestKey}.parameters == childParameters;
+  assert builtins.length (builtins.attrNames resolvedChild.config.aos.abilities.desiredResources) == 1;
+  assert rejects authoredConditionalRequirement.config.aos.abilities.compositionPendingRequirements;
+  assert rejects collidingAuthoredChild.config.aos.abilities.desiredResources;
+  assert rejects forgedAuthoredChild.config.aos.abilities.requests;
+  assert rejects orphanChildBinding.config.aos.abilities.desiredResources;
+  assert rejects mismatchedChildBinding.config.aos.abilities.desiredResources;
+  assert rejects multiplyBoundChild.config.aos.abilities.desiredResources;
+  assert rejects runtimeOutput.config.aos.abilities.compositionOutputs; true
