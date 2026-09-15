@@ -18,37 +18,9 @@
     inherit (pkgs.buildPackages) mkDerivation coreutils findutils gzip jq tar;
     abilityContractValidator = pkgs.buildPackages.aos-ability-contract-validator;
   };
-  retainedSource = name: source:
-    pkgs.writeTextFile {
-      name = "aos-container-source-${name}";
-      text = builtins.readFile source;
-      destination = "/source/${builtins.baseNameOf source}";
-    };
-  evidenceOverrides = let
-    artifacts = config.aos.config.artifacts;
-    version = config.aos.system.version;
-    bootStorageSource = retainedSource "boot-storage" ../base/boot-storage.nix;
-  in [
-    {
-      output = artifacts.esp-mount;
-      outputName = "out";
-      pname = "aos-mount-esp";
-      inherit version;
-      licenses = ["Apache-2.0"];
-      sources = [bootStorageSource (retainedSource "mount-esp" ../base/mount-esp.sh.in)];
-    }
-    {
-      output = artifacts.esp-sync;
-      outputName = "out";
-      pname = "aos-sync-esps";
-      inherit version;
-      licenses = ["Apache-2.0"];
-      sources = [bootStorageSource (retainedSource "sync-esps" ../base/sync-esps.sh.in)];
-    }
-  ];
   defaultAosDefinition =
     (import ../../containers/aos.nix {
-      inherit lib pkgs evidenceOverrides;
+      inherit lib pkgs;
       goldenRoots = config.environment.systemPackages;
       aosSystem = pkgs.stdenv.hostPlatform.system;
     })

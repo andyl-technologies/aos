@@ -486,6 +486,9 @@
   bootPreparationProvider = import ./boot-preparation-provider.nix {
     inherit lib pkgs;
   };
+  bootStorageServices = import ./boot-storage-services.nix {
+    inherit lib pkgs;
+  };
   stagedEnvironment = import ./staged-environment.nix {
     inherit lib mkSystem;
   };
@@ -1041,6 +1044,7 @@ in
   assert bootPreparationCore;
   assert nixStoreDatabase;
   assert bootPreparationProvider;
+  assert bootStorageServices;
   assert stagedEnvironment;
   assert postgresqlService;
   assert securityWrappers;

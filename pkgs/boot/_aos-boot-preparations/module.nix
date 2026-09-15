@@ -6,24 +6,12 @@
 }: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
+  interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "boot-preparations";
   initrdStage =
     config.aos.abilities.environment != null
     && config.aos.abilities.environment.stage == "initrd";
-
-  qualifiedResultOf = request: output: {
-    _type = "aos-request-output-reference";
-    inherit request output;
-  };
-  unitResource = key: qualifiedResultOf "systemd:${key}" "unit-resource";
-  initrdFiles = unitResource "initrd-fs-target";
-  initrdSwitchRoot = unitResource "initrd-switch-root-target";
-  sysroot = unitResource "sysroot-mount";
-  mountVar = unitResource "mount-var-service";
-  nixOverlay = unitResource "nix-overlay-setup-service";
-  runEtc = unitResource "run-etc-setup-service";
-  etcOverlay = unitResource "etc-overlay-setup-service";
 
   command = operation: {
     executable = {
@@ -33,6 +21,31 @@
     };
     ignore_failure = false;
   };
+  earlySystem = serviceManagement.forProducer {
+    inherit consumerInstance;
+    key = "early-system";
+    interface = interfaces.activationMilestone;
+    parameters.milestone = "early-system";
+  };
+  earlySystemReadiness = resultOf "early-system" "readiness-resource";
+  systemMilestone = key: milestone:
+    serviceManagement.forProducer {
+      inherit consumerInstance key;
+      interface = interfaces.systemMilestoneReadiness;
+      parameters = {inherit milestone;};
+    };
+  switchRoot = systemMilestone "switch-root" "switch-root";
+  sysroot = systemMilestone "sysroot" "sysroot";
+  var = systemMilestone "var" "var";
+  nixOverlay = systemMilestone "nix-overlay" "nix-overlay";
+  etcOverlay = systemMilestone "etc-overlay" "etc-overlay";
+  runEtc = systemMilestone "run-etc" "run-etc";
+  switchRootReadiness = resultOf "switch-root" "readiness-resource";
+  sysrootReadiness = resultOf "sysroot" "readiness-resource";
+  varReadiness = resultOf "var" "readiness-resource";
+  nixOverlayReadiness = resultOf "nix-overlay" "readiness-resource";
+  etcOverlayReadiness = resultOf "etc-overlay" "readiness-resource";
+  runEtcReadiness = resultOf "run-etc" "readiness-resource";
   service = {
     key,
     description,
@@ -76,21 +89,21 @@
     operation = "recover-credentials";
     dependencies = {
       prerequisites = [];
-      after = [sysroot mountVar nixOverlay];
+      after = [sysrootReadiness varReadiness nixOverlayReadiness];
       before = [
-        (resultOf "configuration-seed-lifecycle" "service-resource")
-        etcOverlay
-        initrdFiles
-        initrdSwitchRoot
+        (resultOf "aos-config-seed-lifecycle" "service-resource")
+        etcOverlayReadiness
+        earlySystemReadiness
+        switchRootReadiness
       ];
-      requires = [sysroot mountVar nixOverlay];
+      requires = [sysrootReadiness varReadiness nixOverlayReadiness];
       wants = [];
       requisite = [];
       conflicts = [];
       binds_to = [];
       part_of = [];
       upholds = [];
-      required_by = [initrdFiles];
+      required_by = [earlySystemReadiness];
       wanted_by = [];
       required_mounts = [];
       implicit_dependencies = false;
@@ -103,15 +116,15 @@
     dependencies = {
       prerequisites = [];
       after = [
-        mountVar
+        varReadiness
         (resultOf "aos-credential-recovery-lifecycle" "service-resource")
-        runEtc
+        runEtcReadiness
       ];
-      before = [etcOverlay initrdFiles initrdSwitchRoot];
+      before = [etcOverlayReadiness earlySystemReadiness switchRootReadiness];
       requires = [
-        mountVar
+        varReadiness
         (resultOf "aos-credential-recovery-lifecycle" "service-resource")
-        runEtc
+        runEtcReadiness
       ];
       wants = [];
       requisite = [];
@@ -119,13 +132,23 @@
       binds_to = [];
       part_of = [];
       upholds = [];
-      required_by = [initrdFiles];
+      required_by = [earlySystemReadiness];
       wanted_by = [];
       required_mounts = [];
       implicit_dependencies = false;
     };
   };
-  fragments = [credentialRecovery configurationSeed];
+  fragments = [
+    earlySystem
+    switchRoot
+    sysroot
+    var
+    nixOverlay
+    etcOverlay
+    runEtc
+    credentialRecovery
+    configurationSeed
+  ];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
   config = lib.mkMerge [

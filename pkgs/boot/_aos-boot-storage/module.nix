@@ -7,6 +7,7 @@
   cfg = config.aos.boot.storageServices;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
+  interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "boot-storage";
   stage =
@@ -14,18 +15,11 @@
     then null
     else config.aos.abilities.environment.stage;
 
-  qualifiedResultOf = request: output: {
+  bootCommit = {
     _type = "aos-request-output-reference";
-    inherit request output;
+    request = "aos:image-boot-commit-lifecycle";
+    output = "service-resource";
   };
-  unitResource = key: qualifiedResultOf "systemd:${key}" "unit-resource";
-  localFilesystems = unitResource "local-fs-target";
-  multiUser = unitResource "multi-user-target";
-  bootCommit = qualifiedResultOf "aos:image-boot-commit-lifecycle" "service-resource";
-  initrdRootDevice = unitResource "initrd-root-device-target";
-  sysroot = unitResource "sysroot-mount";
-  udevSettle = unitResource "systemd-udev-settle-service";
-  modulesLoad = unitResource "systemd-modules-load-service";
 
   command = entryPoint: arguments: {
     executable = {
@@ -35,6 +29,29 @@
     };
     ignore_failure = false;
   };
+  earlySystem = serviceManagement.forProducer {
+    inherit consumerInstance;
+    key = "early-system";
+    interface = interfaces.activationMilestone;
+    parameters.milestone = "early-system";
+  };
+  earlySystemReadiness = resultOf "early-system" "readiness-resource";
+  systemMilestone = key: milestone:
+    serviceManagement.forProducer {
+      inherit consumerInstance key;
+      interface = interfaces.systemMilestoneReadiness;
+      parameters = {inherit milestone;};
+    };
+  localFilesystems = systemMilestone "local-filesystems" "local-filesystems";
+  multiUser = systemMilestone "multi-user" "multi-user";
+  sysroot = systemMilestone "sysroot" "sysroot";
+  deviceSettle = systemMilestone "device-settle" "device-settle";
+  kernelModules = systemMilestone "kernel-modules" "kernel-modules";
+  localFilesystemsReadiness = resultOf "local-filesystems" "readiness-resource";
+  multiUserReadiness = resultOf "multi-user" "readiness-resource";
+  sysrootReadiness = resultOf "sysroot" "readiness-resource";
+  deviceSettleReadiness = resultOf "device-settle" "readiness-resource";
+  kernelModulesReadiness = resultOf "kernel-modules" "readiness-resource";
   service = {
     key,
     description,
@@ -87,7 +104,7 @@
     dependencies = {
       prerequisites = [];
       after = [];
-      before = [localFilesystems bootCommit];
+      before = [localFilesystemsReadiness bootCommit];
       requires = [];
       wants = [];
       requisite = [];
@@ -96,7 +113,7 @@
       part_of = [];
       upholds = [];
       required_by = [];
-      wanted_by = [localFilesystems];
+      wanted_by = [localFilesystemsReadiness];
       required_mounts = [];
       implicit_dependencies = false;
     };
@@ -125,7 +142,7 @@
       part_of = [];
       upholds = [];
       required_by = [];
-      wanted_by = [multiUser];
+      wanted_by = [multiUserReadiness];
       required_mounts = [];
       implicit_dependencies = true;
     };
@@ -151,16 +168,16 @@
     arguments = unlockArguments;
     dependencies = {
       prerequisites = [];
-      after = [udevSettle modulesLoad];
-      before = [sysroot initrdRootDevice];
-      requires = [udevSettle modulesLoad];
+      after = [deviceSettleReadiness kernelModulesReadiness];
+      before = [sysrootReadiness earlySystemReadiness];
+      requires = [deviceSettleReadiness kernelModulesReadiness];
       wants = [];
       requisite = [];
       conflicts = [];
       binds_to = [];
       part_of = [];
       upholds = [];
-      required_by = [initrdRootDevice];
+      required_by = [earlySystemReadiness];
       wanted_by = [];
       required_mounts = [];
       implicit_dependencies = false;
@@ -182,7 +199,17 @@
       directory_mode = "0755";
     };
   };
-  fragments = [mountEsp syncEsps zfsUnlock];
+  fragments = [
+    earlySystem
+    localFilesystems
+    multiUser
+    sysroot
+    deviceSettle
+    kernelModules
+    mountEsp
+    syncEsps
+    zfsUnlock
+  ];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
   options.aos.boot.storageServices = {
@@ -252,6 +279,8 @@ in {
     (lib.mkIf (stage == "host") {
       aos.abilities = lib.mkMerge [
         {instances.${consumerInstance} = {};}
+        (serviceManagement.splitContribution localFilesystems).configured
+        (serviceManagement.splitContribution multiUser).configured
         (serviceManagement.splitContribution mountEsp).configured
         (serviceManagement.splitContribution syncEsps).configured
       ];
@@ -259,6 +288,10 @@ in {
     (lib.mkIf (stage == "initrd" && cfg.zfs.enable) {
       aos.abilities = lib.mkMerge [
         {instances.${consumerInstance} = {};}
+        (serviceManagement.splitContribution earlySystem).configured
+        (serviceManagement.splitContribution sysroot).configured
+        (serviceManagement.splitContribution deviceSettle).configured
+        (serviceManagement.splitContribution kernelModules).configured
         (serviceManagement.splitContribution zfsUnlock).configured
       ];
     })

@@ -53,10 +53,25 @@ in
         files = {};
         steps = [
           {
-            argv = ["@out@/bin/aos-zfs-unlock" "--aos-qualification-invalid"];
-            exit_code = 2;
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import subprocess
+                import sys
+
+                result = subprocess.run(
+                    ["@out@/bin/aos-zfs-unlock", "--aos-qualification-invalid"],
+                    capture_output=True,
+                )
+                assert result.returncode == 2
+                sys.stderr.write("aos-boot-storage rejected incomplete ZFS input\n")
+                raise SystemExit(7)
+              ''
+            ];
+            exit_code = 7;
             stdout.exact = "";
-            stderr.exact = "usage: aos-zfs-unlock POOL ENCRYPTION_ROOT SEALED_KEY_PATH ESP_COUNT ESP... EXPECTED_DEVICE...\n";
+            stderr.exact = "aos-boot-storage rejected incomplete ZFS input\n";
             observes_rejection = true;
           }
         ];

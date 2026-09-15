@@ -42,8 +42,6 @@
     lib.genList (
       depth: lib.concatStringsSep "/" (lib.take (depth + 1) segments)
     ) (builtins.length segments);
-  espSync = config.aos.config.artifacts.esp-sync;
-  espMount = config.aos.config.artifacts.esp-mount;
   deviceOption = name:
     lib.mkOption {
       type = lib.types.nullOr lib.types.str;
@@ -137,44 +135,6 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.config._artifactSources = {
-        esp-sync =
-          if config.aos.config.frozenArtifacts ? "esp-sync"
-          then null
-          else
-            pkgs.runCommand "aos-sync-esps" {
-              buildDeps = [pkgs.coreutils pkgs.perl];
-            } ''
-              mkdir -p "$out/bin"
-              cp ${./sync-esps.sh.in} "$out/bin/aos-sync-esps"
-              substituteInPlace "$out/bin/aos-sync-esps" \
-                --replace-fail '@bash@' '${pkgs.bash}/bin/bash' \
-                --replace-fail '@coreutils@' '${pkgs.coreutils}' \
-                --replace-fail '@jq@' '${pkgs.jq}' \
-                --replace-fail '@rsync@' '${pkgs.rsync}' \
-                --replace-fail '@util_linux@' '${pkgs.util-linux}'
-              ${pkgs.bash}/bin/bash -n "$out/bin/aos-sync-esps"
-              chmod 0755 "$out/bin/aos-sync-esps"
-            '';
-        esp-mount =
-          if config.aos.config.frozenArtifacts ? "esp-mount"
-          then null
-          else
-            pkgs.runCommand "aos-mount-esp" {
-              buildDeps = [pkgs.coreutils pkgs.perl];
-            } ''
-              mkdir -p "$out/bin"
-              cp ${./mount-esp.sh.in} "$out/bin/aos-mount-esp"
-              substituteInPlace "$out/bin/aos-mount-esp" \
-                --replace-fail '@bash@' '${pkgs.bash}/bin/bash' \
-                --replace-fail '@coreutils@' '${pkgs.coreutils}' \
-                --replace-fail '@jq@' '${pkgs.jq}' \
-                --replace-fail '@util_linux@' '${pkgs.util-linux}'
-              ${pkgs.bash}/bin/bash -n "$out/bin/aos-mount-esp"
-              chmod 0755 "$out/bin/aos-mount-esp"
-            '';
-      };
-
       assertions = [
         {
           assertion = lib.all (device: lib.hasPrefix "/dev/" device) cfg.espDevices;
@@ -200,41 +160,27 @@ in {
 
       aos.boot.storage.resolvedDevices = resolvedDevices;
       aos.filesystems.espDevice = lib.mkDefault (builtins.head cfg.espDevices);
-      environment.systemPackages = [espMount espSync];
-      systemd.services.aos-mount-esp = {
-        description = "Mount an available booted EFI System Partition";
-        wantedBy = ["local-fs.target"];
-        before = ["local-fs.target" "aos-image-boot-commit.service"];
-        unitConfig = {
-          DefaultDependencies = "no";
-          ConditionPathExists = "/sys/firmware/efi";
-        };
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-        };
-        script = ''${espMount}/bin/aos-mount-esp'';
-      };
-      systemd.services.aos-sync-esps = {
-        description = "Replicate the primary EFI System Partition";
-        wantedBy = ["multi-user.target"];
-        after = ["aos-image-boot-commit.service"];
-        requires = ["aos-image-boot-commit.service"];
-        unitConfig.ConditionPathExists = "/sys/firmware/efi";
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-        };
-        script = ''
-          ${espSync}/bin/aos-sync-esps
-        '';
-      };
+      environment.systemPackages = [pkgs.aos-boot-storage];
     }
     (lib.mkIf (cfg.backend == "zfs-zvol") {
       aos.kernel.modulePackages = [zfsPackage];
       aos.boot.initrd.modulePackages = [zfsPackage];
-      aos.boot.initrd.extraPackages = [zfsPackage];
+      aos.boot.initrd.extraPackages = [pkgs.aos-boot-storage zfsPackage];
       aos.boot.initrd.loadModules = ["zfs"];
+      aos.abilities.stages.initrd = {
+        packages = [
+          pkgs.aos-boot-storage
+          pkgs.systemd
+        ];
+        intent.aos.boot.storageServices = {
+          espDevices = cfg.espDevices;
+          zfs = {
+            enable = true;
+            inherit (cfg.zfs) poolName encryptionRoot sealedKeyPath;
+            expectedDevices = builtins.attrValues resolvedDevices;
+          };
+        };
+      };
       aos.filesystems.zfs = {
         enable = true;
         poolName = cfg.zfs.poolName;
@@ -243,86 +189,6 @@ in {
           mountPoint = null;
           snapshot = false;
         });
-      };
-
-      boot.initrd.systemd.services."aos-zfs-unlock" = {
-        description = "Import and unlock immutable ZFS boot storage";
-        requiredBy = ["initrd-root-device.target"];
-        before = ["sysroot.mount" "initrd-root-device.target"];
-        after = ["systemd-udev-settle.service" "systemd-modules-load.service"];
-        requires = ["systemd-udev-settle.service" "systemd-modules-load.service"];
-        unitConfig.DefaultDependencies = "no";
-        environment.PATH = lib.concatStringsSep ":" [
-          (lib.makeBinPath [pkgs.coreutils pkgs.systemd pkgs.util-linux zfsPackage])
-          (lib.makeSearchPath "sbin" [pkgs.coreutils pkgs.systemd pkgs.util-linux zfsPackage])
-        ];
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          StandardOutput = "journal+console";
-          StandardError = "journal+console";
-        };
-        script = ''
-          set -euo pipefail
-          key=/run/aos-zfs.key
-          esp=/run/aos-zfs-esp
-          mounted=false
-          cleanup() {
-            rm -f "$key"
-            if [ "$mounted" = true ]; then umount "$esp" || true; fi
-          }
-          trap cleanup EXIT INT TERM
-          mkdir -p "$esp"
-          signature=
-          for candidate in /run/systemd/tpm2-pcr-signature.json \
-            /.extra/tpm2-pcr-signature.json \
-            /run/credentials/@system/tpm2-pcr-signature.json; do
-            if [ -r "$candidate" ]; then signature="$candidate"; break; fi
-          done
-          signature_arg=
-          [ -n "$signature" ] && signature_arg="--tpm2-signature=$signature"
-          unlocked=false
-          for device in ${lib.concatMapStringsSep " " lib.escapeShellArg cfg.espDevices}; do
-            [ -e "$device" ] || continue
-            if mount -t vfat -o ro,noatime,fmask=0077,dmask=0077 "$device" "$esp"; then
-              mounted=true
-              if [ -r "$esp/${cfg.zfs.sealedKeyPath}" ]; then
-                rm -f "$key"
-                if systemd-creds decrypt --name=aos-zfs-key $signature_arg \
-                  "$esp/${cfg.zfs.sealedKeyPath}" "$key"; then
-                  chmod 0400 "$key"
-                  unlocked=true
-                  umount "$esp"
-                  mounted=false
-                  break
-                fi
-                rm -f "$key"
-              fi
-              umount "$esp"
-              mounted=false
-            fi
-          done
-          if [ "$unlocked" != true ]; then
-            echo "aos-zfs-unlock: no configured ESP supplied a usable sealed key" >&2
-            exit 1
-          fi
-
-          zpool import -N -f ${lib.escapeShellArg cfg.zfs.poolName}
-          zfs load-key -L "file://$key" ${lib.escapeShellArg cfg.zfs.encryptionRoot}
-          rm -f "$key"
-          udevadm settle
-          ${lib.concatMapStringsSep "\n" (device: ''
-            i=0
-            while [ ! -e ${lib.escapeShellArg device} ] && [ "$i" -lt 60 ]; do
-              i=$((i + 1))
-              sleep 0.5
-            done
-            [ -e ${lib.escapeShellArg device} ] || {
-              echo "aos-zfs-unlock: expected zvol did not appear: ${device}" >&2
-              exit 1
-            }
-          '') (builtins.attrValues resolvedDevices)}
-        '';
       };
     })
   ];
