@@ -345,9 +345,11 @@ impl PackageAbilityDeploymentOverlay {
 
         let mut reference_exports = BTreeMap::new();
         for export in &reference.exports {
-            let interface = export.interface.interface_key().map_err(invalid_model)?;
             if reference_exports
-                .insert(&export.name, (interface, export.implementation))
+                .insert(
+                    &export.name,
+                    (export.interface.clone(), export.implementation),
+                )
                 .is_some()
             {
                 return Err(invalid("package reference repeats an export identity"));
