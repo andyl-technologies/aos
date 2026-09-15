@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use aos_ability_model::{ArtifactReference, InterfaceKey, LocalKey, ResourceReference};
+use aos_ability_model::{
+    AbilityValue, ArtifactReference, InterfaceKey, LocalKey, ResourceReference,
+};
 use serde::{Deserialize, Serialize};
 
 pub(crate) const INTERFACE_NAME: &str = "aos.systemd.packaged-unit";
@@ -10,6 +12,7 @@ pub(crate) const OBSERVATION_SCHEMA: &str = "aos.ability.systemd-packaged-unit-o
 pub(crate) const REALIZATION_SCHEMA: &str = "aos.systemd.packaged-unit-realization/v1";
 pub(crate) const PROVIDER_CONTEXT_SCHEMA: &str = "aos.systemd.packaged-unit-context/v1";
 pub(crate) const SERVICE_REALIZATION_SCHEMA: &str = "aos.systemd.service-realization/v2";
+pub(crate) const SERVICE_EFFECTS_INTERFACE_NAME: &str = "aos.systemd.service-effects";
 pub(crate) const STATIC_MANIFEST_SCHEMA: &str = "aos.systemd.static-unit-manifest/v1";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -219,6 +222,20 @@ pub(crate) struct ServiceRealization {
     pub(crate) prerequisites: Vec<ResourceReference>,
     pub(crate) aliases: Vec<RealizedServiceAlias>,
     pub(crate) enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub(crate) enum ServiceEffectsRequest {
+    Service { desired: AbilityValue },
+}
+
+impl ServiceEffectsRequest {
+    pub(crate) const fn desired(&self) -> &AbilityValue {
+        match self {
+            Self::Service { desired } => desired,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

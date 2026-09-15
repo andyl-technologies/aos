@@ -23,8 +23,9 @@ use crate::materialize::{
     service_paths_for,
 };
 use crate::model::{
-    PROVIDER_CONTEXT_SCHEMA, ProviderContext, SERVICE_REALIZATION_SCHEMA, ServiceFacetIdentity,
-    ServiceRealization, empty_outputs,
+    PROVIDER_CONTEXT_SCHEMA, ProviderContext, SERVICE_EFFECTS_INTERFACE_NAME,
+    SERVICE_REALIZATION_SCHEMA, ServiceEffectsRequest, ServiceFacetIdentity, ServiceRealization,
+    empty_outputs,
 };
 use crate::render::{RenderedService, render_service};
 use crate::{decode_value, provider_context, require_resource_contexts, target_context, value};
@@ -44,7 +45,13 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
 
     let realization: ServiceRealization = decode_value(&request.resource_spec.realization)?;
     let rendered = render_service(&realization)?;
-    let facet = require_method(&request.method, &request.semantics, &realization)?;
+    let terminal_effect = request.method.interface.name.as_str() == SERVICE_EFFECTS_INTERFACE_NAME;
+    let facet = if terminal_effect {
+        require_effect_method(&request.method, &request.semantics)?;
+        lifecycle_facet(&realization)?
+    } else {
+        require_method(&request.method, &request.semantics, &realization)?
+    };
     let expected = expected_request(&request.resource_spec.value, facet)?;
     let references = all_service_resource_references(&request.resource_spec.value, &realization)?;
     require_resource_contexts(&references, &request.resources)?;
@@ -95,7 +102,11 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
             AdmissionRevision::Absent
         },
         incarnation: Some(request.assignment.incarnation),
-        observation: inspection.observation,
+        observation: if terminal_effect {
+            effect_observation(&inspection.observation)?
+        } else {
+            inspection.observation
+        },
         native_context: context,
         supported_purposes,
     })
@@ -120,17 +131,35 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
 
     let realization: ServiceRealization = decode_value(&bound.resource_spec.realization)?;
     let rendered = render_service(&realization)?;
-    let selected_facet = require_method(&invocation.method, &invocation.semantics, &realization)?;
-    let primary_facet = require_method(
-        &invocation.request.method,
-        &invocation.request.semantics,
-        &realization,
-    )?;
-    if selected_facet.interface != primary_facet.interface {
-        bail!("service recovery cannot cross feature interfaces");
-    }
+    let terminal_effect =
+        invocation.method.interface.name.as_str() == SERVICE_EFFECTS_INTERFACE_NAME;
+    let primary_terminal_effect =
+        invocation.request.method.interface.name.as_str() == SERVICE_EFFECTS_INTERFACE_NAME;
+    let primary_facet = if terminal_effect && primary_terminal_effect {
+        require_effect_method(&invocation.method, &invocation.semantics)?;
+        require_effect_method(&invocation.request.method, &invocation.request.semantics)?;
+        lifecycle_facet(&realization)?
+    } else if !terminal_effect && !primary_terminal_effect {
+        let selected = require_method(&invocation.method, &invocation.semantics, &realization)?;
+        let primary = require_method(
+            &invocation.request.method,
+            &invocation.request.semantics,
+            &realization,
+        )?;
+        if selected.interface != primary.interface {
+            bail!("service recovery cannot cross feature interfaces");
+        }
+        primary
+    } else {
+        bail!("service recovery cannot cross the controller and terminal interfaces");
+    };
     let expected = expected_request(&bound.resource_spec.value, primary_facet)?;
-    if invocation.request.inputs != expected {
+    if terminal_effect {
+        let effect: ServiceEffectsRequest = decode_value(&invocation.request.inputs)?;
+        if effect.desired() != &bound.resource_spec.value {
+            bail!("systemd service effect inputs differ from the checked desired resource");
+        }
+    } else if invocation.request.inputs != expected {
         bail!("invocation inputs differ from the checked service facet");
     }
     let references = all_service_resource_references(&bound.resource_spec.value, &realization)?;
@@ -162,20 +191,34 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     let selected_method = invocation.method.method.as_str();
     let goal = match primary_method {
         "stop" => Goal::Stopped,
-        "release" => Goal::Absent,
+        "release" | "remove" => Goal::Absent,
         _ => Goal::Desired,
     };
     if invocation.purpose == InvocationPurpose::Effect {
-        apply_method(
-            &manager,
-            selected_method,
-            &realization,
-            &bound.resource_spec.resource,
-            bound.resource_spec.revision,
-            &rendered,
-            &paths,
-        )
-        .await?;
+        if terminal_effect {
+            apply_effect_method(
+                &manager,
+                selected_method,
+                &bound.resource_spec.value,
+                &realization,
+                &bound.resource_spec.resource,
+                bound.resource_spec.revision,
+                &rendered,
+                &paths,
+            )
+            .await?;
+        } else {
+            apply_method(
+                &manager,
+                selected_method,
+                &realization,
+                &bound.resource_spec.resource,
+                bound.resource_spec.revision,
+                &rendered,
+                &paths,
+            )
+            .await?;
+        }
     } else if invocation.purpose != InvocationPurpose::Reconcile || selected_method != "observe" {
         bail!("systemd service provider does not advertise this invocation purpose");
     }
@@ -197,8 +240,13 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     } else {
         InvocationDisposition::SafeToRetry
     };
+    let observation = if terminal_effect {
+        effect_observation(&inspection.observation)?
+    } else {
+        inspection.observation
+    };
     let outputs = if inspection.complete {
-        outputs_for(primary_method, &inspection.observation, &invocation)?
+        outputs_for(primary_method, &observation, &invocation, terminal_effect)?
     } else {
         empty_outputs()
     };
@@ -206,10 +254,51 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     Ok(InvocationResult {
         schema: RESULT_SCHEMA.to_string(),
         disposition,
-        evidence: inspection.observation,
+        evidence: observation,
         outputs,
         native_context_digest: invocation.request.native_context_digest,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_effect_method(
+    manager: &PinnedSystemdManager,
+    method: &str,
+    desired: &AbilityValue,
+    realization: &ServiceRealization,
+    resource: &ResourceId,
+    revision: RevisionId,
+    rendered: &RenderedService,
+    paths: &ServicePaths,
+) -> Result<()> {
+    let concrete = match method {
+        "create" => "start",
+        "reconcile" => "restart",
+        "remove" => "release",
+        "observe" => return Ok(()),
+        "update" => desired
+            .as_json()
+            .get("lifecycle")
+            .and_then(|lifecycle| lifecycle.get("configuration_change_action"))
+            .and_then(Value::as_str)
+            .context("service desired value has no configuration change action")?,
+        _ => bail!("unsupported systemd service terminal effect method"),
+    };
+    let concrete = if concrete == "none" {
+        "materialize"
+    } else {
+        concrete
+    };
+    apply_method(
+        manager,
+        concrete,
+        realization,
+        resource,
+        revision,
+        rendered,
+        paths,
+    )
+    .await
 }
 
 async fn apply_method(
@@ -435,6 +524,41 @@ fn require_method<'a>(
         bail!("service method carries mismatched semantics");
     }
     Ok(facet)
+}
+
+fn require_effect_method(method: &MethodReference, semantics: &MethodSemantics) -> Result<()> {
+    if method.interface.name.as_str() != SERVICE_EFFECTS_INTERFACE_NAME {
+        bail!("systemd service terminal method selects another interface");
+    }
+    let expected = match method.method.as_str() {
+        "observe" => MethodSemantics::ordinary(AccessMode::Read),
+        "create" | "reconcile" | "update" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+        "remove" => MethodSemantics::provider_stop(),
+        _ => bail!("unsupported systemd service terminal method"),
+    };
+    if *semantics != expected {
+        bail!("systemd service terminal method carries mismatched semantics");
+    }
+    Ok(())
+}
+
+fn lifecycle_facet(realization: &ServiceRealization) -> Result<&ServiceFacetIdentity> {
+    let matches = realization
+        .facets
+        .iter()
+        .filter(|facet| facet.interface.name.as_str() == SERVICE_LIFECYCLE_INTERFACE)
+        .collect::<Vec<_>>();
+    if matches.len() != 1 || matches[0].facet.as_str() != "lifecycle" {
+        bail!("systemd service terminal requires one authenticated lifecycle facet");
+    }
+    Ok(matches[0])
+}
+
+fn effect_observation(observation: &AbilityValue) -> Result<AbilityValue> {
+    value(&serde_json::json!({
+        "kind": "service",
+        "observation": observation.as_json(),
+    }))
 }
 
 fn expected_request(value: &AbilityValue, facet: &ServiceFacetIdentity) -> Result<AbilityValue> {
@@ -700,10 +824,11 @@ fn outputs_for(
     method: &str,
     observation: &AbilityValue,
     invocation: &Invocation,
+    terminal_effect: bool,
 ) -> Result<BTreeMap<LocalKey, AbilityValue>> {
     let mut outputs = BTreeMap::new();
     outputs.insert(LocalKey::new("observation")?, observation.clone());
-    if matches!(method, "start" | "restart" | "reload" | "materialize") {
+    if !terminal_effect && matches!(method, "start" | "restart" | "reload" | "materialize") {
         outputs.insert(
             LocalKey::new("retained-resource")?,
             value(&invocation.request.target)?,

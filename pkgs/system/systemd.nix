@@ -434,6 +434,7 @@ in
           cp ${./_systemd-provider.nix} "$out/share/aos/providers/systemd.nix"
           cp ${./_systemd-service-provider-lib.nix} "$out/share/aos/providers/_systemd-service-provider-lib.nix"
           cp ${./_systemd-service-document.nix} "$out/share/aos/providers/_systemd-service-document.nix"
+          cp ${./_systemd-service-transition.nix} "$out/share/aos/providers/_systemd-service-transition.nix"
           cp ${./_systemd-unit-document.nix} "$out/share/aos/providers/_systemd-unit-document.nix"
         '';
       }
