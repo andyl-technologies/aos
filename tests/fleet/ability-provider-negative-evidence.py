@@ -29,22 +29,6 @@ EXCLUDED_CELLS = {
         "reload/block-dependent-effect"
     ),
 }
-ORACLE_KINDS = {
-    "credential-delivery": "credential-view",
-    "foreground-process": "foreground-process",
-    "host-network-policy": "nft-policy",
-    "host-storage": "storage-tree",
-    "image-rollout": "boot-slot",
-    "kubernetes-object": "kubernetes-object",
-    "managed-configuration": "managed-file",
-    "network-endpoint": "loopback-listener",
-    "nginx-validation": "nginx-association",
-    "systemd-bootstrap": "systemd-unit",
-    "systemd-manager": "systemd-unit",
-    "service-management": "systemd-unit",
-}
-
-
 def canonical(value: Any) -> bytes:
     """Encodes one value with the release canonical JSON profile."""
 
@@ -157,9 +141,7 @@ class ProviderNegativeEvidence:
     ) -> None:
         """Binds one real rejected operation and blocked successor to two cells."""
 
-        oracle_kind = ORACLE_KINDS.get(adapter)
-        if oracle_kind is None:
-            raise RuntimeError(f"unknown provider oracle for adapter {adapter!r}")
+        oracle_kind = self._observation_kind(adapter)
         bundle = json.loads(plan_bundle)
         if canonical(bundle) != plan_bundle:
             raise RuntimeError("provider-negative plan bundle is not canonical")
@@ -273,14 +255,16 @@ class ProviderNegativeEvidence:
             },
             "foreign-resource": self._oracle(oracle_kind, observation.foreign),
             "blocked-successor": self._oracle(
-                ORACLE_KINDS[self._adapter_for_operation(dependent_identity)],
+                self._observation_kind(
+                    self._adapter_for_operation(dependent_identity)
+                ),
                 observation.successor,
             ),
             "blocked-witness": (
                 None
                 if observation.witness is None
                 else self._oracle(
-                    ORACLE_KINDS[self._adapter_for_operation(witness)],
+                    self._observation_kind(self._adapter_for_operation(witness)),
                     observation.witness,
                 )
             ),
@@ -631,6 +615,16 @@ class ProviderNegativeEvidence:
             raise RuntimeError("behavioral witness does not resolve one native adapter")
         return next(iter(matches))
 
+    def _observation_kind(self, adapter: str) -> str:
+        matches = [
+            claim.get("observation_kind")
+            for claim in self._matrix_spec.get("surface", {}).get("adapters", [])
+            if claim.get("adapter") == adapter
+        ]
+        if len(matches) != 1 or not isinstance(matches[0], str):
+            raise RuntimeError("adapter does not resolve one observation kind")
+        return matches[0]
+
     def _behavioral_witness(
         self,
         bundle: dict[str, Any],
@@ -651,7 +645,7 @@ class ProviderNegativeEvidence:
             if cell["interface"] == dependent["interface"]
             and cell["method"] == dependent["method"]
         }
-        if dependent_class == {"mutation"}:
+        if dependent_class == {"exclusive-write"}:
             return operation_identity(
                 dependent,
                 bundle["transition"]["effect_document"]["operations"].index(dependent),
@@ -680,7 +674,7 @@ class ProviderNegativeEvidence:
                 if cell["interface"] == operation["interface"]
                 and cell["method"] == operation["method"]
             }
-            if classes == {"mutation"}:
+            if classes == {"exclusive-write"}:
                 matches.append(operation_identity(operation, ordinal))
         if not matches:
             return operation_identity(
