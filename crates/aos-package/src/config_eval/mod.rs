@@ -1163,13 +1163,6 @@ fn enrich_manifest(
         )
     };
 
-    if ability_activation.is_some() || runtime_modules.is_some() {
-        object.insert(
-            "schema".into(),
-            serde_json::Value::String(materialize::ConfigManifest::SCHEMA_V2.to_string()),
-        );
-    }
-
     let mut inputs = serde_json::json!({
         "base_lib": {
             "store_path": cmd.base_lib,
@@ -1716,12 +1709,6 @@ pub fn reeval_cross_abi(
         inputs.expected_current_generation = Some(
             expected_current_generation
                 .context("transactional re-evaluation requires the active generation snapshot")?,
-        );
-    }
-    if inputs.ability_activation.is_some() || inputs.runtime_modules.is_some() {
-        object.insert(
-            "schema".into(),
-            serde_json::Value::String(materialize::ConfigManifest::SCHEMA_V2.to_string()),
         );
     }
     object.insert("inputs".into(), serde_json::to_value(inputs)?);
