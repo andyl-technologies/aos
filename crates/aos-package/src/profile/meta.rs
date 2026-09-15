@@ -400,7 +400,6 @@ pub fn rebuild_meta(
                     source_nar_hash: pkg.source_nar_hash.clone(),
                     expose: pkg.expose.clone(),
                     expose_artifact: pkg.expose_artifact.clone(),
-                    config_module: pkg.config_module.clone(),
                     documentation: pkg.documentation.clone(),
                     contract: pkg.contract.clone(),
                     permissions: pkg.permissions.clone(),
@@ -450,7 +449,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    use crate::types::{PackageContractMeta, ProfileScope};
+    use crate::types::ProfileScope;
 
     fn test_profile(tmp: &TempDir) -> Profile {
         Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap()
@@ -476,7 +475,6 @@ mod tests {
                 source_nar_hash: String::new(),
                 expose: None,
                 expose_artifact: None,
-                config_module: None,
                 documentation: None,
                 contract: None,
                 permissions: Default::default(),

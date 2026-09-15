@@ -322,47 +322,6 @@ fn migrated_projection_fails_closed_when_missing_or_tampered() {
 }
 
 #[test]
-fn legacy_config_schema_is_manifest_pinned_and_exclusive() {
-    let mut value: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
-    let signed_config = serde_json::json!({
-        "artifacts": [{
-            "name": "env",
-            "path": "/etc/aos/packages/example/config.env",
-            "format": "env",
-            "required": [],
-            "optional": ["TOKEN"],
-            "units": ["example.service"],
-            "reload": "reload"
-        }],
-        "credentials": []
-    });
-    value["packageOutputs"]["example"]["legacy_config"] = signed_config;
-    value["config"] = serde_json::json!({"example": {"env": {"TOKEN": "pinned"}}});
-
-    let manifest: ConfigManifest = serde_json::from_value(value.clone()).unwrap();
-    manifest.validate().unwrap();
-    assert_eq!(
-        serde_json::to_value(&manifest).unwrap()["packageOutputs"]["example"]["legacy_config"]["artifacts"]
-            [0]["optional"],
-        serde_json::json!(["TOKEN"])
-    );
-
-    let migrated = migrated_fixture();
-    value["packageOutputs"]["example"]["config_projection"] =
-        migrated["packageOutputs"]["example"]["config_projection"].clone();
-    value["configProjections"] = migrated["configProjections"].clone();
-    value["config"] = migrated["config"].clone();
-    let manifest: ConfigManifest = serde_json::from_value(value).unwrap();
-    let error = manifest
-        .validate()
-        .expect_err("legacy and migrated schemas must be mutually exclusive");
-    assert!(
-        error.to_string().contains("both migrated and legacy"),
-        "{error}"
-    );
-}
-
-#[test]
 fn package_state_cannot_name_an_absent_owner() {
     let mut value: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
     value["config"] = serde_json::json!({"absent": {}});

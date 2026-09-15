@@ -153,9 +153,9 @@ struct LegacySystemGeneration {
     image_gen_parent: Option<u32>,
     module_abi_pinned: Option<u32>,
     manifest_hash: Option<String>,
-    config_module_closure: Option<String>,
-    config_module_paths: Option<Vec<String>>,
-    config_module_packages: Option<Vec<String>>,
+    package_module_closure: Option<String>,
+    package_module_paths: Option<Vec<String>>,
+    package_module_packages: Option<Vec<String>>,
     host_nix_ref: Option<String>,
     host_nix_commit: Option<String>,
     facts_hash: Option<String>,
@@ -885,19 +885,19 @@ pub fn reeval_active_config_for_boot(
         .iter()
         .find(|generation| generation.number == state.current)
         .context("no active system configuration generation")?;
-    if active.config_module_paths.len() != active.config_module_packages.len() {
+    if active.package_module_paths.len() != active.package_module_packages.len() {
         bail!(
             "config-gen {} has {} retained modules but {} authenticated package identities",
             active.number,
-            active.config_module_paths.len(),
-            active.config_module_packages.len()
+            active.package_module_paths.len(),
+            active.package_module_packages.len()
         );
     }
 
     let running = running_image_generation()?;
     let retained = CrossAbiReEvalInputs {
-        config_module_paths: active.config_module_paths.clone(),
-        config_module_packages: active.config_module_packages.clone(),
+        package_module_paths: active.package_module_paths.clone(),
+        package_module_packages: active.package_module_packages.clone(),
         host_nix_ref: active.host_nix_ref.clone(),
         facts_hash: active.facts_hash.clone(),
         facts_ref: active.facts_ref.clone(),
@@ -3506,22 +3506,22 @@ fn migrate_legacy_generation_state(
             );
         }
         let parent = matching[0];
-        let config_module_closure = old.config_module_closure.with_context(|| {
+        let package_module_closure = old.package_module_closure.with_context(|| {
             format!(
                 "legacy generation {} has no config module closure",
                 old.number
             )
         })?;
-        let config_module_paths = old
-            .config_module_paths
-            .unwrap_or_else(|| vec![config_module_closure.clone()]);
-        let config_module_packages = old.config_module_packages.with_context(|| {
+        let package_module_paths = old
+            .package_module_paths
+            .unwrap_or_else(|| vec![package_module_closure.clone()]);
+        let package_module_packages = old.package_module_packages.with_context(|| {
             format!(
                 "legacy generation {} has no authenticated config module package identities",
                 old.number
             )
         })?;
-        if config_module_paths.len() != config_module_packages.len() {
+        if package_module_paths.len() != package_module_packages.len() {
             bail!(
                 "legacy generation {} has mismatched module and package identity counts",
                 old.number
@@ -3534,9 +3534,9 @@ fn migrate_legacy_generation_state(
             manifest_hash: old.manifest_hash.with_context(|| {
                 format!("legacy generation {} has no manifest hash", old.number)
             })?,
-            config_module_closure,
-            config_module_paths,
-            config_module_packages,
+            package_module_closure,
+            package_module_paths,
+            package_module_packages,
             host_nix_ref: old.host_nix_ref.with_context(|| {
                 format!(
                     "legacy generation {} has no host.nix content pin",
@@ -6724,9 +6724,9 @@ mod tests {
             image_gen_parent: 1,
             module_abi_pinned: 1,
             manifest_hash: format!("sha256:manifest-{number}"),
-            config_module_closure: format!("/nix/store/config-{number}"),
-            config_module_paths: vec![format!("/nix/store/config-{number}")],
-            config_module_packages: vec!["server".into()],
+            package_module_closure: format!("/nix/store/config-{number}"),
+            package_module_paths: vec![format!("/nix/store/config-{number}")],
+            package_module_packages: vec!["server".into()],
             host_nix_ref: format!("/nix/store/host-{number}"),
             host_nix_commit: None,
             facts_hash: format!("sha256:facts-{number}"),
@@ -6773,9 +6773,9 @@ mod tests {
                 image_gen_parent: 1,
                 module_abi_pinned: 1,
                 manifest_hash: "sha256:manifest".into(),
-                config_module_closure: "/nix/store/config".into(),
-                config_module_paths: vec!["/nix/store/config".into()],
-                config_module_packages: vec!["server".into()],
+                package_module_closure: "/nix/store/config".into(),
+                package_module_paths: vec!["/nix/store/config".into()],
+                package_module_packages: vec!["server".into()],
                 host_nix_ref: "/nix/store/host".into(),
                 host_nix_commit: None,
                 facts_hash: "sha256:facts".into(),
@@ -6869,9 +6869,9 @@ mod tests {
                 "image_gen_parent": 4,
                 "module_abi_pinned": manifest.module_abi,
                 "manifest_hash": manifest_hash,
-                "config_module_closure": modules[0],
-                "config_module_paths": modules,
-                "config_module_packages": packages,
+                "package_module_closure": modules[0],
+                "package_module_paths": modules,
+                "package_module_packages": packages,
                 "host_nix_ref": host,
                 "facts_hash": facts_hash,
                 "facts_ref": facts_ref,
@@ -6949,7 +6949,7 @@ mod tests {
 
         assert_eq!(loaded.current, 2);
         assert_eq!(
-            loaded.generations[1].config_module_paths,
+            loaded.generations[1].package_module_paths,
             [
                 "/nix/store/cfg-a-2".to_string(),
                 "/nix/store/cfg-b-2".to_string(),
@@ -7236,12 +7236,12 @@ mod tests {
             image_gen_parent: 1,
             module_abi_pinned: 1,
             manifest_hash: format!("sha256:{number}"),
-            config_module_closure: format!("/nix/store/cfg-{number}"),
-            config_module_paths: vec![
+            package_module_closure: format!("/nix/store/cfg-{number}"),
+            package_module_paths: vec![
                 format!("/nix/store/cfg-a-{number}"),
                 format!("/nix/store/cfg-b-{number}"),
             ],
-            config_module_packages: vec!["cfg-a".into(), "cfg-b".into()],
+            package_module_packages: vec!["cfg-a".into(), "cfg-b".into()],
             host_nix_ref: format!("/nix/store/host-{number}"),
             host_nix_commit: None,
             facts_hash: format!("sha256:facts-{number}"),

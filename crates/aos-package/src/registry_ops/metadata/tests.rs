@@ -1,26 +1,26 @@
 //! Tests for package catalog TOML construction and platform metadata recording.
 
 use super::{
-    build_package_toml, build_package_toml_with_documentation,
-    record_config_module_platform_fields, record_named_output, record_package_contract,
+    build_package_toml, build_package_toml_with_documentation, record_named_output,
+    record_package_contract,
 };
-use crate::registry_ops::attestation::{package_nar_root_digest, publish_config_attestation_meta};
+use crate::registry_ops::attestation::package_nar_root_digest;
 use crate::registry_ops::mac::{PublishExposeManifest, PublishMacProfileManifest};
 use crate::registry_ops::provenance::{bind_documentation_provenance, publish_provenance_ref};
 use crate::registry_ops::store_paths::StorePathInfo;
 use crate::registry_ops::test_support::{
-    config_module_fixture, config_module_fixture_with_base, inspect_test_image,
-    rewrite_test_image_parent, verity_expose_manifest, write_direct_image_output,
+    inspect_test_image, rewrite_test_image_parent, verity_expose_manifest,
+    write_direct_image_output,
 };
 use crate::types::{
     AttestationMeta, DocumentationArtifactMeta, ExposeMeta, FEATURE_ABILITIES_V1,
     FEATURE_ABILITY_EFFECTS_V1, FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1,
-    FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1,
-    FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1, FEATURE_MAC_PROFILE_V1,
-    FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PACKAGE_DOCUMENTATION_V1,
-    FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT,
-    PackageContractArtifactMeta, PackageContractClosureMemberMeta, PackageContractDocumentMeta,
-    PackageContractMeta, PermissionsMeta, RecoveryUkiEntry, SbatEntry, UkiSlot,
+    FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
+    FEATURE_MAC_PROFILE_V1, FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_NETWORK_POLICY_V1,
+    FEATURE_PACKAGE_DOCUMENTATION_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1,
+    FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT, PackageContractArtifactMeta,
+    PackageContractClosureMemberMeta, PackageContractDocumentMeta, PackageContractMeta,
+    PermissionsMeta, RecoveryUkiEntry, SbatEntry, UkiSlot,
 };
 use aos_ability_model::document::PackageSubject;
 use aos_ability_model::{
@@ -55,8 +55,6 @@ fn sysroot_publication_emits_structural_native_rollout_gate() {
         true,
         None,
         &[],
-        None,
-        None,
         None,
         None,
         None,
@@ -100,8 +98,6 @@ fn record_ability_preserves_stronger_format_and_feature_gates() {
         false,
         None,
         &[],
-        None,
-        None,
         None,
         None,
         None,
@@ -234,97 +230,6 @@ fn record_ability_preserves_stronger_format_and_feature_gates() {
             .any(|feature| feature == FEATURE_ABILITY_EFFECTS_V1)
     );
 }
-
-#[test]
-fn record_config_module_emits_table_and_feature() {
-    let mut table = toml::map::Map::new();
-    record_config_module_platform_fields(&mut table, "firewall", &config_module_fixture())
-        .expect("records config module");
-    assert!(table.contains_key("config_module"));
-    let features = table
-        .get("requires-features")
-        .and_then(toml::Value::as_array)
-        .expect("feature array");
-    assert!(features.contains(&toml::Value::String(FEATURE_CONFIG_MODULE_V1.to_string())));
-    // Idempotent feature append.
-    record_config_module_platform_fields(&mut table, "firewall", &config_module_fixture())
-        .expect("re-records");
-    let features = table
-        .get("requires-features")
-        .and_then(toml::Value::as_array)
-        .expect("feature array");
-    assert_eq!(
-        features
-            .iter()
-            .filter(|f| **f == toml::Value::String(FEATURE_CONFIG_MODULE_V1.to_string()))
-            .count(),
-        1
-    );
-}
-
-#[test]
-fn build_package_toml_round_trips_config_output_hash_and_base_lib_binding() {
-    let info = StorePathInfo {
-        path: "/nix/store/0000000000000000000000000000000d-firewall-1".to_string(),
-        nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            .to_string(),
-        nar_size: 1024,
-        references: vec![],
-        closure_size: 1024,
-    };
-    let module = config_module_fixture_with_base();
-    let attestation =
-        publish_config_attestation_meta("firewall", "1", "x86_64-linux", &info, &module, None)
-            .expect("config attestation");
-    let content = build_package_toml(
-        "",
-        "firewall",
-        "1",
-        "x86_64-linux",
-        &info,
-        Some("Firewall configuration"),
-        None,
-        Some("Apache-2.0"),
-        Some("Andyl, Inc."),
-        false,
-        None,
-        &[],
-        None,
-        None,
-        None,
-        None,
-        Some(&module),
-        Some(&attestation),
-    )
-    .expect("render config-module package metadata");
-
-    let parsed = crate::registry::parse::parse_package_toml(&content, "x86_64-linux")
-        .expect("parse package metadata")
-        .expect("matching platform");
-    let parsed_module = parsed.config_module.expect("config module metadata");
-    assert_eq!(
-        parsed_module.config_output.nar_hash,
-        module.config_output.nar_hash
-    );
-    assert_eq!(
-        parsed_module
-            .evaluation_base_lib
-            .expect("base-lib binding")
-            .nar_hash,
-        module
-            .evaluation_base_lib
-            .expect("fixture base-lib binding")
-            .nar_hash
-    );
-    assert!(
-        parsed
-            .requires_features
-            .iter()
-            .any(|feature| { feature == FEATURE_CONFIG_MODULE_V1 })
-    );
-    assert_eq!(parsed.attestation.provenance, attestation.provenance);
-}
-
 #[test]
 fn build_package_toml_binds_documentation_as_a_signed_platform_artifact() {
     let info = StorePathInfo {
@@ -370,8 +275,6 @@ fn build_package_toml_binds_documentation_as_a_signed_platform_artifact() {
         false,
         None,
         &[],
-        None,
-        None,
         None,
         None,
         None,
@@ -429,8 +332,6 @@ fn build_package_toml_new() {
         false,
         None,
         &[],
-        None,
-        None,
         None,
         None,
         None,
@@ -542,8 +443,6 @@ source_nar_hash = ""
         None,
         None,
         None,
-        None,
-        None,
     )
     .unwrap();
 
@@ -587,8 +486,6 @@ fn build_package_toml_records_source_deriver() {
         None,
         &[],
         Some(&source_info),
-        None,
-        None,
         None,
         None,
         None,
@@ -699,8 +596,6 @@ fn build_package_toml_records_expose_manifest_metadata() {
         Some(&manifest),
         Some(&artifact),
         Some(&manifest_digest),
-        None,
-        None,
     )
     .unwrap();
 
@@ -893,8 +788,6 @@ fn build_package_toml_detects_ebpf_feature_from_package_name() {
         Some(&manifest),
         Some(&artifact),
         Some(&manifest_digest),
-        None,
-        None,
     )
     .unwrap();
 
@@ -958,8 +851,6 @@ fn build_package_toml_rejects_expose_manifest_without_artifact() {
         &[],
         None,
         Some(&manifest),
-        None,
-        None,
         None,
         None,
     )
@@ -1028,8 +919,6 @@ fn build_package_toml_records_expose_artifact_metadata() {
         Some(&manifest),
         Some(&artifact),
         Some(&manifest_digest),
-        None,
-        None,
     )
     .unwrap();
 
@@ -1147,8 +1036,6 @@ fn build_package_toml_records_package_attestation_measurement() {
         Some(&manifest),
         Some(&artifact),
         Some(&manifest_digest),
-        None,
-        None,
     )
     .unwrap();
 
@@ -1257,8 +1144,6 @@ references = []
         None,
         None,
         None,
-        None,
-        None,
     )
     .unwrap();
     // Should contain both platforms.
@@ -1301,8 +1186,6 @@ fn build_package_toml_with_sysroot() {
         true,
         Some("2026.03"),
         &[image],
-        None,
-        None,
         None,
         None,
         None,
@@ -1356,8 +1239,6 @@ fn build_package_toml_keeps_disk_image_verity_sidecars_out_of_catalog() {
         true,
         None,
         &[image],
-        None,
-        None,
         None,
         None,
         None,
@@ -1428,8 +1309,6 @@ fn build_package_toml_catalogs_verity_for_raw_recovery_image() {
         None,
         None,
         None,
-        None,
-        None,
     )
     .unwrap();
 
@@ -1470,8 +1349,6 @@ fn build_package_toml_escapes_maintainer_metadata() {
         false,
         Some("0.9.0+build\"meta"),
         &[image],
-        None,
-        None,
         None,
         None,
         None,

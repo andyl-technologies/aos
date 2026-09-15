@@ -374,14 +374,9 @@ fn reevaluate_manifest(
     Ok(manifest)
 }
 
-#[cfg(test)]
-fn manifest_path(profile: &Path, target: &ConfigGeneration) -> std::path::PathBuf {
-    profile.join(format!("gen-{}/manifest.json", target.number))
-}
-
 fn validate_reevaluation_artifacts(target: &ConfigGeneration) -> Result<()> {
     let paths = target
-        .config_module_paths
+        .package_module_paths
         .iter()
         .map(String::as_str)
         .chain([
@@ -436,9 +431,9 @@ mod tests {
             image_gen_parent: 2,
             module_abi_pinned: 1,
             manifest_hash: "sha256:manifest".to_string(),
-            config_module_closure: "sha256:closure".to_string(),
-            config_module_paths: vec![format!("/nix/store/{}-missing-module", "0".repeat(32))],
-            config_module_packages: vec!["example@1".to_string()],
+            package_module_closure: "sha256:closure".to_string(),
+            package_module_paths: vec![format!("/nix/store/{}-missing-module", "0".repeat(32))],
+            package_module_packages: vec!["example@1".to_string()],
             host_nix_ref: format!("/nix/store/{}-missing-host", "1".repeat(32)),
             host_nix_commit: None,
             facts_hash: "sha256:facts".to_string(),
