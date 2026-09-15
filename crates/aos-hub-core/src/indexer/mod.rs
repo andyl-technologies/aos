@@ -1727,7 +1727,12 @@ fn descriptor_identity_matches(left: &Descriptor, right: &Descriptor) -> bool {
 fn container_evidence_descriptors(
     release: &ContainerRelease,
 ) -> Vec<(&'static str, ContainerReleaseDescriptorRole, &Descriptor)> {
-    let mut descriptors = vec![
+    vec![
+        (
+            "abilities",
+            ContainerReleaseDescriptorRole::Abilities,
+            &release.evidence.abilities,
+        ),
         (
             "Nix closure",
             ContainerReleaseDescriptorRole::NixClosure,
@@ -1758,15 +1763,7 @@ fn container_evidence_descriptors(
             ContainerReleaseDescriptorRole::Signature,
             &release.evidence.signature,
         ),
-    ];
-    if let Some(abilities) = &release.evidence.abilities {
-        descriptors.push((
-            "abilities",
-            ContainerReleaseDescriptorRole::Abilities,
-            abilities,
-        ));
-    }
-    descriptors
+    ]
 }
 
 fn release_snapshot_artifacts(
@@ -3500,10 +3497,7 @@ mod tests {
             closure: evidence(MediaType::AosNixClosure, "closure"),
         };
         let release_evidence = ContainerReleaseEvidence {
-            abilities: Some(evidence(
-                MediaType::AosContainerStaticAbilities,
-                "abilities",
-            )),
+            abilities: evidence(MediaType::AosContainerStaticAbilities, "abilities"),
             sbom: evidence(MediaType::SpdxJson, "sbom"),
             source: evidence(MediaType::AosSourceClosure, "source"),
             license: evidence(MediaType::AosLicenseReport, "license"),
@@ -3526,7 +3520,7 @@ mod tests {
         };
         let release = ContainerRelease {
             schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
-            media_type: MediaType::AosContainerReleaseV2,
+            media_type: MediaType::AosContainerRelease,
             identity,
             oci,
             nix,

@@ -406,7 +406,7 @@ async fn process_publish_finalizes_complete_signed_graph_without_a_data_plane_ta
     .expect("release sidecar");
     let release_value = serde_json::to_value(&release).expect("release JSON");
     let signature_input = serde_json::json!({
-        "schema": "aos.container.signature-input/v2",
+        "schema": "aos.container.signature-input/v1",
         "identity": release_value["identity"].clone(),
         "oci": release_value["oci"].clone(),
         "nix": release_value["nix"].clone(),

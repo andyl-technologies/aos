@@ -6,8 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use aos_oci_types::{
-    CONTAINER_RELEASE_SIDECAR_PATH, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
-    CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE_V1, CONTAINER_SIGNATURE_INPUT_SCHEMA_V1, ContainerRelease,
+    CONTAINER_RELEASE_SIDECAR_PATH, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE, ContainerRelease,
     ContainerSignatureInput, Descriptor, ImageIndex, ImageManifest, MediaType,
 };
 use aos_release::artifact::{ArtifactKind, ArtifactRelation, ArtifactRelationship, Compression};
@@ -54,18 +53,16 @@ pub(super) fn assemble(
     }
 
     let layout = root.join("layout");
-    let mut roots = vec![
+    let roots = vec![
         &release.oci.index,
         &release.nix.closure,
+        &release.evidence.abilities,
         &release.evidence.sbom,
         &release.evidence.source,
         &release.evidence.license,
         &release.evidence.provenance,
         &release.evidence.signature,
     ];
-    if let Some(abilities) = &release.evidence.abilities {
-        roots.push(abilities);
-    }
     let mut graph = BTreeMap::new();
     for descriptor in roots {
         visit(&layout, descriptor, &mut graph)?;
@@ -166,17 +163,9 @@ pub(super) fn assemble(
         "provenance/container-signature-input".to_owned(),
         ArtifactKind::Provenance,
         "oci/signature-input.json".to_owned(),
-        ArtifactAttributes::exact(signature_input_media_type(&input), &input_bytes)?,
+        ArtifactAttributes::exact(CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE, &input_bytes)?,
     )?;
     Ok(())
-}
-
-fn signature_input_media_type(input: &ContainerSignatureInput) -> &'static str {
-    if input.schema == CONTAINER_SIGNATURE_INPUT_SCHEMA_V1 {
-        CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE_V1
-    } else {
-        CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE
-    }
 }
 
 pub(super) fn require_absent(registry: &Path) -> Result<()> {

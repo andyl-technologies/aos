@@ -8,13 +8,14 @@ use std::io::Write as _;
 use std::path::Path;
 
 use aos_oci_types::{
-    Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
-    CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerEvidenceMappingQualification,
-    ContainerEvidenceQualification, ContainerEvidenceQualificationCheck, ContainerNixProvenance,
-    ContainerOciRelease, ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity,
-    ContainerSignatureInput, ContainerSignatureInputEvidence, Descriptor, HistoryEntry,
-    ImageConfig, ImageIndex, ImageManifest, ImageRuntimeConfig, MediaType, NixDefinitionIdentity,
-    NixOutputIdentity, Platform, RootFs, RootFsType, Sha256Digest, to_canonical_json,
+    Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
+    CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE, CONTAINER_SIGNATURE_INPUT_SCHEMA,
+    ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
+    ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
+    ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity, ContainerSignatureInput,
+    ContainerSignatureInputEvidence, Descriptor, HistoryEntry, ImageConfig, ImageIndex,
+    ImageManifest, ImageRuntimeConfig, MediaType, NixDefinitionIdentity, NixOutputIdentity,
+    Platform, RootFs, RootFsType, Sha256Digest, to_canonical_json,
 };
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -238,8 +239,8 @@ pub fn add_signed_release_graph(fixture: &Fixture) -> ContainerRelease {
     };
 
     ContainerRelease {
-        schema_version: 2,
-        media_type: MediaType::AosContainerReleaseV2,
+        schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
+        media_type: MediaType::AosContainerRelease,
         identity: ContainerReleaseIdentity {
             release: "1.0.0".to_string(),
             package: "aos".to_string(),
@@ -264,10 +265,7 @@ pub fn add_signed_release_graph(fixture: &Fixture) -> ContainerRelease {
         },
         qualification: ready_qualification(),
         evidence: ContainerReleaseEvidence {
-            abilities: Some(artifact(
-                "abilities",
-                MediaType::AosContainerStaticAbilities,
-            )),
+            abilities: artifact("abilities", MediaType::AosContainerStaticAbilities),
             sbom: artifact("sbom", MediaType::SpdxJson),
             source: artifact("source", MediaType::AosSourceClosure),
             license: artifact("license", MediaType::AosLicenseReport),
@@ -341,7 +339,7 @@ pub fn write_publication_inputs(inputs: &Path, layout: &Path, input: &ContainerS
             "artifactManifestMediaType": "application/vnd.oci.image.manifest.v1+json",
             "artifactSubject": input.oci.index,
             "finalSidecarPath": "containers/v1/index.json",
-            "finalSidecarMediaType": "application/vnd.aos.container-release.v2+json",
+            "finalSidecarMediaType": "application/vnd.aos.container-release.v1+json",
         },
         "constraints": {
             "exactInputBytesRequired": true,

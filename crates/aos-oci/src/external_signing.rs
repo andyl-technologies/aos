@@ -340,7 +340,7 @@ fn validate_signing_request(
                 == serde_json::to_value(&input.oci.index)?
             && request["requiredOutput"]["finalSidecarPath"] == CONTAINER_RELEASE_SIDECAR_PATH
             && request["requiredOutput"]["finalSidecarMediaType"]
-                == MediaType::AosContainerReleaseV2.as_str(),
+                == MediaType::AosContainerRelease.as_str(),
         "container signing request required output contract drifted"
     );
     let mut unsigned = serde_json::to_value(input).context("encoding unsigned release identity")?;
@@ -403,17 +403,14 @@ fn validate_publication_roots(inputs: &Path, input: &ContainerSignatureInput) ->
 }
 
 fn unsigned_evidence(input: &ContainerSignatureInput) -> Vec<&Descriptor> {
-    let mut evidence = vec![
+    vec![
         &input.nix.closure,
+        &input.evidence.abilities,
         &input.evidence.sbom,
         &input.evidence.source,
         &input.evidence.license,
         &input.evidence.provenance,
-    ];
-    if let Some(abilities) = &input.evidence.abilities {
-        evidence.push(abilities);
-    }
-    evidence
+    ]
 }
 
 fn unsigned_roots(input: &ContainerSignatureInput) -> Vec<Descriptor> {
@@ -521,7 +518,7 @@ fn signed_release(
 
     let release = ContainerRelease {
         schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
-        media_type: MediaType::AosContainerReleaseV2,
+        media_type: MediaType::AosContainerRelease,
         identity: input.identity.clone(),
         oci: input.oci.clone(),
         nix: input.nix.clone(),
@@ -601,18 +598,16 @@ fn write_complete_layout(
 }
 
 fn validate_finalized_graph(layout: &Path, release: &ContainerRelease) -> Result<()> {
-    let mut roots = vec![
+    let roots = vec![
         release.oci.index.clone(),
         release.nix.closure.clone(),
+        release.evidence.abilities.clone(),
         release.evidence.sbom.clone(),
         release.evidence.source.clone(),
         release.evidence.license.clone(),
         release.evidence.provenance.clone(),
         release.evidence.signature.clone(),
     ];
-    if let Some(abilities) = &release.evidence.abilities {
-        roots.push(abilities.clone());
-    }
     let objects = validate_graph(layout, &roots, &release.oci.index)?;
     ensure!(
         objects.len() >= roots.len(),
@@ -799,7 +794,7 @@ mod tests {
 
     #[test]
     fn pae_matches_dsse_v1_length_framing() {
-        let payload = br#"{"schema":"aos.container.signature-input/v2"}"#;
+        let payload = br#"{"schema":"aos.container.signature-input/v1"}"#;
         let expected = format!(
             "DSSEv1 {} {} {} ",
             CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE.len(),

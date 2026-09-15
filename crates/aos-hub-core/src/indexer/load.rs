@@ -19,13 +19,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use aos_oci_types::{
-    limits::MAX_JSON_BYTES as MAX_OCI_JSON_BYTES, to_canonical_json, ContainerRelease,
-    CONTAINER_RELEASE_SIDECAR_PATH,
+    CONTAINER_RELEASE_SIDECAR_PATH, ContainerRelease, limits::MAX_JSON_BYTES as MAX_OCI_JSON_BYTES,
+    to_canonical_json,
 };
 use aos_registry_surface::manifest::{
-    parse_package_file, KeysToml, PackageToml, ReferenceField, RegistryRootConfig,
+    KeysToml, PackageToml, ReferenceField, RegistryRootConfig, parse_package_file,
 };
 use aos_registry_surface::object::{self, Commit, ObjectKind, Oid};
 use aos_registry_surface::store::{self, StoreEntry};
@@ -626,11 +626,11 @@ fn parse_container_release(bytes: &[u8]) -> Result<LoadedContainerRelease> {
 mod container_release_tests {
     use super::*;
     use aos_oci_types::{
-        Annotations, ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
+        Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
+        ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
         ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
         ContainerReleaseEvidence, ContainerReleaseIdentity, Descriptor, MediaType,
         NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest,
-        CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
     };
 
     fn descriptor(media_type: MediaType, label: &str) -> Descriptor {
@@ -658,7 +658,7 @@ mod container_release_tests {
         platform_manifest.platform = Some(Platform::linux_amd64());
         ContainerRelease {
             schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
-            media_type: MediaType::AosContainerReleaseV2,
+            media_type: MediaType::AosContainerRelease,
             identity: ContainerReleaseIdentity {
                 release: "1.0.0".to_string(),
                 package: "aos".to_string(),
@@ -699,10 +699,7 @@ mod container_release_tests {
                 ready_for_verified_publication: true,
             },
             evidence: ContainerReleaseEvidence {
-                abilities: Some(evidence_descriptor(
-                    MediaType::AosContainerStaticAbilities,
-                    "abilities",
-                )),
+                abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
                 source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
                 license: evidence_descriptor(MediaType::AosLicenseReport, "license"),
