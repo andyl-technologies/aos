@@ -1038,6 +1038,7 @@ in {
       # Boot preparations are selected through this package's authenticated
       # module and transaction-scoped command handler.
       pkgs.aos-boot-preparation-provider
+      pkgs.aos-boot-preparations
       pkgs.e2fsprogs
       pkgs.less
     ];

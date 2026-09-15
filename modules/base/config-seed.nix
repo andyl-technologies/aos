@@ -22,7 +22,7 @@
     # Rendered unit scripts are also part of the initrd closure graph, but this
     # declaration makes the backend self-contained if unit materialization is
     # refactored independently of the initrd package set.
-    aos.boot.initrd.extraPackages = [pkgs.aos.packageRuntime pkgs.erofs-utils];
+    aos.boot.initrd.extraPackages = [pkgs.aos-boot-preparations];
 
     boot.initrd.systemd.services."aos-credential-recovery" = {
       description = "Recover interrupted AOS credential publication";
@@ -53,7 +53,7 @@
         RemainAfterExit = true;
       };
       script = ''
-        AOS_ROOT=/sysroot ${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped recover-credential-transactions
+        ${pkgs.aos-boot-preparations}/bin/aos-boot-preparations recover-credentials
       '';
     };
 
@@ -81,24 +81,9 @@
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        # AOS_PROFILE_GEN is published by aos-seed-profiles.service.
-        EnvironmentFile = "/run/aos-profile-gen.env";
       };
       script = ''
-        set -euo pipefail
-        lower="/run/etc/config-$AOS_PROFILE_GEN/etc"
-        generation="/sysroot/var/lib/profiles/system/gen-$AOS_PROFILE_GEN"
-        manifest="$generation/manifest.json"
-        ${pkgs.coreutils}/bin/mkdir -p "$lower"
-        if [ -s "$manifest" ]; then
-          ${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped __materialize \
-            --manifest "$manifest" \
-            --generation-dir "$generation" \
-            --mkfs-erofs ${pkgs.erofs-utils}/bin/mkfs.erofs \
-            --fsck-erofs ${pkgs.erofs-utils}/bin/fsck.erofs
-          ${pkgs.util-linux}/bin/mount -t erofs -o ro,nodev,nosuid \
-            "$generation/config-lower/etc.erofs" "$lower"
-        fi
+        ${pkgs.aos-boot-preparations}/bin/aos-boot-preparations seed-configuration
       '';
     };
   };
