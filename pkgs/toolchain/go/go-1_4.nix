@@ -72,7 +72,7 @@ in
   if stdenv.hostPlatform.isDarwin
   then
     import ./_go-darwin.nix {
-      inherit mkDerivation pname version src stdenv;
+      inherit mkDerivation pname version src stdenv qualification;
       nativeGo = buildPackages.go-1_4;
       nativeCc = buildPackages.cc;
       legacyCBootstrap = true;
@@ -80,7 +80,7 @@ in
     }
   else
     mkDerivation {
-      inherit pname version src;
+      inherit pname version src qualification;
 
       buildDeps = [];
       runtimeDeps = [];

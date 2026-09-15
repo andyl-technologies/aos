@@ -128,6 +128,8 @@
         // extra;
     };
   withDefaultMaintainers = withDistributionMeta {};
+  withContractFrom = declaration: package:
+    package // {inherit (declaration) contract;};
 
   cargoArtifactsSupport = import ./build-support/_cargo-artifacts.nix {
     inherit lib mkDerivation;
@@ -137,6 +139,72 @@
     inherit lib;
     abilities = lib.abilities;
   };
+
+  packageContractDocument = {
+    packageName,
+    version,
+    projection,
+  }: let
+    projectionJson = builtins.unsafeDiscardStringContext (builtins.toJSON projection);
+    source = builtins.toFile "${packageName}-package-projection.json" projectionJson;
+  in
+    if builtins.hasContext projectionJson || lib.hasInfix "/nix/store/" projectionJson
+    then throw "package projection for '${packageName}' contains a store locator"
+    else
+      rawMkDerivation {
+        pname = "${packageName}-package-contract";
+        inherit version;
+        src = null;
+        phases = [
+          {
+            name = "install";
+            script = ''
+              ${stdenv.coreutils}/bin/rm -rf "$out"
+              ${stdenv.coreutils}/bin/cp ${source} "$out"
+            '';
+          }
+        ];
+        outputChecks.out.allowedReferences = [];
+        preferLocalBuild = true;
+        allowSubstitutes = false;
+      };
+
+  probeOnlyPackageContract = {
+    packageName,
+    version,
+    packageProbe,
+  }: let
+    projected = projectPackageAbilities {
+      inherit packageName version packageProbe;
+      evaluated = {
+        guarantees = {};
+        implementations = {};
+        interfaces = {};
+        qualification.implementations = {};
+        requirementTemplates = {};
+      };
+    };
+  in {
+    value = projected.value;
+    document = packageContractDocument {
+      inherit packageName version;
+      projection = projected.value;
+    };
+    selectors = projected.selectors;
+  };
+
+  withProbeOnlyPackageContract = {
+    packageName,
+    version,
+    packageProbe,
+  }:
+    package:
+      package
+      // {
+        contract = probeOnlyPackageContract {
+          inherit packageName version packageProbe;
+        };
+      };
 
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH),
   # wrapped to inject nuke-references into every package's buildDeps so
@@ -364,31 +432,12 @@
     packageProjectionSource =
       if packageProjection == null
       then null
-      else let
-        projectionJson = builtins.unsafeDiscardStringContext (builtins.toJSON packageProjection);
-      in
-        if builtins.hasContext projectionJson || lib.hasInfix "/nix/store/" projectionJson
-        then throw "ability projection for package '${packageName}' contains a store locator"
-        else let
-          source = builtins.toFile "${packageName}-package-projection.json" projectionJson;
-        in
-          rawMkDerivation {
-            pname = "${packageName}-package-contract";
-            version = args.version or "0";
-            src = null;
-            phases = [
-              {
-                name = "install";
-                script = ''
-                  ${stdenv.coreutils}/bin/rm -rf "$out"
-                  ${stdenv.coreutils}/bin/cp ${source} "$out"
-                '';
-              }
-            ];
-            outputChecks.out.allowedReferences = [];
-            preferLocalBuild = true;
-            allowSubstitutes = false;
-          };
+      else
+        packageContractDocument {
+          inherit packageName;
+          version = args.version or "0";
+          projection = packageProjection;
+        };
     crossFixupPhase =
       if stdenv.hostPlatform.objectFormat == "macho"
       then phases.darwinCrossFixupPhase
@@ -1058,7 +1107,8 @@
     auto = builtins.intersectAttrs (builtins.functionArgs fn) (
       packageArgumentScope
       // {
-        inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream callPackage;
+      inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream callPackage;
+      inherit withProbeOnlyPackageContract;
       }
     );
   in
@@ -1483,11 +1533,72 @@
       # nuke-references uses the raw (un-wrapped) mkDerivation so it can't
       # depend on itself. Every other package gets nuke-references injected
       # into buildDeps automatically via the wrapped mkDerivation above.
-      nuke-references = import ../lib/build-support/nuke-references {
+      nuke-references = withProbeOnlyPackageContract {
+        packageName = "nuke-references";
+        version = "0";
+        packageProbe = lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [
+                {
+                  "path" = "reference.txt";
+                  "text" = "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-package/data\n";
+                }
+              ];
+              "expected" = "The hash is replaced by 32 e characters while surrounding bytes remain unchanged.";
+              "files" = {
+                "reference.txt" = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-package/data\n";
+              };
+              "input" = "Text containing one syntactically valid Nix store reference.";
+              "operation" = "Rewrite the store hash through nuke-refs.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/nuke-refs"
+                    "reference.txt"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+              ];
+            };
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "nuke-refs rejects the exclusion with status 1.";
+              "files" = {
+                "reference.txt" = "unchanged\n";
+              };
+              "input" = "An exclusion value that is not a complete Nix store path.";
+              "operation" = "Parse the malformed exclusion through nuke-refs.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/nuke-refs"
+                    "-e"
+                    "not-a-store-path"
+                    "reference.txt"
+                  ];
+                  "exit_code" = 1;
+                  "observes_rejection" = true;
+                  "stderr" = {
+                    "exact" = "nuke-refs: -e needs a store path\n";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+              ];
+            };
+        };
+      } (import ../lib/build-support/nuke-references {
         mkDerivation = args:
           withDefaultMaintainers (rawMkDerivation args);
         inherit (self) bash coreutils grep sed;
-      };
+      });
     }
     // discoveredPackages
     // {
@@ -1690,7 +1801,61 @@
       darwinSdk = self.darwin-sdk;
       darwin-runtimes =
         if stdenv.hostPlatform.isDarwin
-        then withDefaultMaintainers stdenv.darwinRuntimes
+        then
+          withProbeOnlyPackageContract {
+            packageName = "darwin-runtimes";
+            version = stdenv.darwinRuntimes.version or "0";
+            packageProbe = lib.qualification.commandProbe {
+              "primary" = {
+                "artifacts" = [];
+                "expected" = "All three public runtime libraries resolve to Mach-O binaries.";
+                "files" = {};
+                "input" = "The installed Darwin libc++, libc++abi, and libunwind libraries.";
+                "operation" = "Resolve their dylinks and inspect the Mach-O library magic.";
+                "steps" = [
+                  {
+                    "argv" = [
+                      "@python@"
+                      "-c"
+                      "import pathlib\nroot = pathlib.Path(\"@out@\")\nmacho_magic = {bytes.fromhex(\"cffaedfe\"), bytes.fromhex(\"feedfacf\")}\nlibraries = [next(root.rglob(name)).resolve() for name in [\"libc++.dylib\", \"libc++abi.dylib\", \"libunwind.dylib\"]]\nassert all(library.read_bytes()[:4] in macho_magic for library in libraries)\nprint(\"darwin-runtimes data passed\")\n"
+                    ];
+                    "exit_code" = 0;
+                    "stderr" = {
+                      "exact" = "";
+                    };
+                    "stdout" = {
+                      "exact" = "darwin-runtimes data passed\n";
+                    };
+                  }
+                ];
+              };
+              "badInput" = {
+                "artifacts" = [];
+                "expected" = "The runtime set rejects the disabled sanitizer artifact.";
+                "files" = {};
+                "input" = "A request for the disabled AddressSanitizer Darwin runtime.";
+                "operation" = "Resolve an undeclared sanitizer dynamic library.";
+                "steps" = [
+                  {
+                    "argv" = [
+                      "@python@"
+                      "-c"
+                      "import pathlib, sys\nif pathlib.Path(\"@out@/lib/libclang_rt.asan_osx_dynamic.dylib\").exists():\n    raise SystemExit(2)\nsys.stderr.write(\"darwin-runtimes rejected invalid input\\n\")\nraise SystemExit(7)\n"
+                    ];
+                    "exit_code" = 7;
+                    "observes_rejection" = true;
+                    "stderr" = {
+                      "exact" = "darwin-runtimes rejected invalid input\n";
+                    };
+                    "stdout" = {
+                      "exact" = "";
+                    };
+                  }
+                ];
+              };
+            };
+          }
+          (withDefaultMaintainers stdenv.darwinRuntimes)
         else null;
       darwinRuntimes = self.darwin-runtimes;
       java-native-foundation =
@@ -1699,7 +1864,74 @@
         else null;
 
       # --- stdenv packages (linked, not rebuilt) ---
-      gcc =
+      gcc = withProbeOnlyPackageContract {
+        packageName = "gcc";
+        version = "16.2.0";
+        packageProbe = lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [];
+              "expected" = "The compiler succeeds and the binary prints the fixed result.";
+              "files" = {
+                "valid.c" = "#include <stdio.h>\n\nint main(void) {\n    int values[] = {19, 23};\n    return printf(\"compiler result: %d\\n\", values[0] + values[1]) < 0;\n}\n";
+              };
+              "input" = "A C program that computes and prints an integer result.";
+              "operation" = "Compile the program with gcc, then execute the generated binary.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/gcc"
+                    "valid.c"
+                    "-o"
+                    "compiled-program"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+                {
+                  "argv" = [
+                    "@work@/primary/compiled-program"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "compiler result: 42\n";
+                  };
+                }
+              ];
+            };
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "The compiler rejects the syntax error with status 1.";
+              "files" = {
+                "invalid.c" = "int main(void) { int answer = ; return answer; }\n";
+              };
+              "input" = "A C translation unit with an incomplete initializer.";
+              "operation" = "Ask gcc to compile the malformed source.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/gcc"
+                    "invalid.c"
+                    "-o"
+                    "invalid-program"
+                  ];
+                  "exit_code" = 1;
+                  "observes_rejection" = true;
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+              ];
+            };
+        };
+      } (
         (withDistributionMeta {
             description = "GNU Compiler Collection with AOS target and runtime defaults";
             license = "GPL-3.0-or-later WITH GCC-exception-3.1";
@@ -1711,8 +1943,95 @@
             then linuxHostedGcc
             else stdenv.gcc
           ))
-        // {version = "16.2.0";};
-      glibc =
+        // {version = "16.2.0";}
+      );
+      glibc = withProbeOnlyPackageContract {
+        packageName = "glibc";
+        version = "2.39.0";
+        packageProbe = lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [];
+              "expected" = "The AOS libc sorts the vector into the exact ascending sequence.";
+              "files" = {
+                "primary.c" = "#include <stdio.h>\n#include <stdlib.h>\n\nstatic int compare(const void *left, const void *right) {\n    int a = *(const int *)left;\n    int b = *(const int *)right;\n    return (a > b) - (a < b);\n}\n\nint main(void) {\n    int values[] = {23, 5, 42, 17};\n    qsort(values, 4, sizeof(values[0]), compare);\n    return printf(\"%d,%d,%d,%d\\n\", values[0], values[1], values[2], values[3]) < 0;\n}\n";
+              };
+              "input" = "A C program sorting a fixed integer vector with libc qsort.";
+              "operation" = "Compile it and execute it through the packaged dynamic loader and libc.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@cc@"
+                    "primary.c"
+                    "-o"
+                    "primary"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+                {
+                  "argv" = [
+                    "@python@"
+                    "-c"
+                    "import pathlib, subprocess\nloader = next(pathlib.Path(\"@out@/lib\").glob(\"ld-linux*.so*\"))\nresult = subprocess.run([str(loader), \"--library-path\", \"@out@/lib\", \"@work@/primary/primary\"], capture_output=True, text=True)\nassert result.returncode == 0 and result.stderr == \"\"\nprint(result.stdout, end=\"\")\n"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "5,17,23,42\n";
+                  };
+                }
+              ];
+            };
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "Glibc rejects the unknown conversion and sets EINVAL.";
+              "files" = {
+                "bad-input.c" = "#include <errno.h>\n#include <iconv.h>\n#include <stdio.h>\n\nint main(void) {\n    errno = 0;\n    iconv_t conversion = iconv_open(\"AOS-NOT-A-CHARSET\", \"UTF-8\");\n    if (conversion != (iconv_t)-1 || errno != EINVAL) {\n        if (conversion != (iconv_t)-1) {\n            iconv_close(conversion);\n        }\n        return 2;\n    }\n    fputs(\"glibc rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+              };
+              "input" = "A request for a character-set conversion name that does not exist.";
+              "operation" = "Call iconv_open through a program loaded by the packaged libc.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@cc@"
+                    "bad-input.c"
+                    "-o"
+                    "bad-input"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+                {
+                  "argv" = [
+                    "@python@"
+                    "-c"
+                    "import pathlib, subprocess, sys\nloader = next(pathlib.Path(\"@out@/lib\").glob(\"ld-linux*.so*\"))\nresult = subprocess.run([str(loader), \"--library-path\", \"@out@/lib\", \"@work@/bad-input/bad-input\"], capture_output=True)\nif result.returncode != 7 or result.stderr != b\"glibc rejected invalid input\\n\":\n    raise SystemExit(2)\nsys.stderr.write(\"glibc rejected invalid input\\n\")\nraise SystemExit(7)\n"
+                  ];
+                  "exit_code" = 7;
+                  "observes_rejection" = true;
+                  "stderr" = {
+                    "exact" = "glibc rejected invalid input\n";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+              ];
+            };
+        };
+      } (
         (withDistributionMeta {
             description = "GNU C Library for the AOS target runtime";
             license = "LGPL-2.1-or-later";
@@ -1724,8 +2043,62 @@
               static = stdenv.glibc;
             }
           ))
-        // {version = "2.39.0";};
-      binutils =
+        // {version = "2.39.0";}
+      );
+      binutils = withProbeOnlyPackageContract {
+        packageName = "binutils";
+        version = "2.41.0";
+        packageProbe = lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [];
+              "expected" = "Strings emits exactly the two qualifying runs.";
+              "files" = {
+                "sample.bin" = "alpha\nxy\nbravo\n";
+              };
+              "input" = "Data containing printable runs above and below a five-byte threshold.";
+              "operation" = "Extract printable runs of at least five bytes with GNU strings.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/strings"
+                    "--bytes=5"
+                    "@work@/primary/sample.bin"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "alpha\nbravo\n";
+                  };
+                }
+              ];
+            };
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "Strings rejects the bound with status 1.";
+              "files" = {
+                "sample.bin" = "alpha\n";
+              };
+              "input" = "A minimum string length of zero, outside the accepted positive range.";
+              "operation" = "Invoke strings with the invalid length bound.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/strings"
+                    "--bytes=0"
+                    "@work@/bad-input/sample.bin"
+                  ];
+                  "exit_code" = 1;
+                  "observes_rejection" = true;
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+              ];
+            };
+        };
+      } (
         (withDistributionMeta {
             description = "GNU binary utilities for the AOS target toolchain";
             license = "GPL-3.0-or-later";
@@ -1737,11 +2110,79 @@
             then linuxHostedBinutils
             else stdenv.binutils
           ))
-        // {version = "2.41.0";};
+        // {version = "2.41.0";}
+      );
       inherit darwinDtraceCompiler;
       inherit appleLibTapi;
       inherit darwinCctoolsLinker;
-      cc =
+      cc = withProbeOnlyPackageContract {
+        packageName = "cc";
+        version = "0.1.0";
+        packageProbe = lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [];
+              "expected" = "The compiler succeeds and the binary prints the fixed result.";
+              "files" = {
+                "valid.c" = "#include <stdio.h>\n\nint main(void) {\n    int values[] = {19, 23};\n    return printf(\"compiler result: %d\\n\", values[0] + values[1]) < 0;\n}\n";
+              };
+              "input" = "A C program that computes and prints an integer result.";
+              "operation" = "Compile the program with cc, then execute the generated binary.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/cc"
+                    "valid.c"
+                    "-o"
+                    "compiled-program"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+                {
+                  "argv" = [
+                    "@work@/primary/compiled-program"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "compiler result: 42\n";
+                  };
+                }
+              ];
+            };
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "The compiler rejects the syntax error with status 1.";
+              "files" = {
+                "invalid.c" = "int main(void) { int answer = ; return answer; }\n";
+              };
+              "input" = "A C translation unit with an incomplete initializer.";
+              "operation" = "Ask cc to compile the malformed source.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/cc"
+                    "invalid.c"
+                    "-o"
+                    "invalid-program"
+                  ];
+                  "exit_code" = 1;
+                  "observes_rejection" = true;
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+              ];
+            };
+        };
+      } (
         (withDistributionMeta {
             description = "AOS C and C++ compiler wrapper toolchain";
             license = "GPL-3.0-or-later WITH GCC-exception-3.1";
@@ -1753,12 +2194,80 @@
             then linuxHostedCc
             else stdenv.cc
           ))
-        // {version = "0.1.0";};
+        // {version = "0.1.0";}
+      );
       # The unwrapped gcc-16.2.0-stage2. `pkgs.gcc` is the wrapped
       # gcc-16.2.0-wrapped; the perl Config scrub needs to substitute
       # and block the unwrapped one, since that's what Configure
       # records via specs/PATH.
-      gccUnwrapped =
+      gccUnwrapped = withProbeOnlyPackageContract {
+        packageName = "gccUnwrapped";
+        version = "16.2.0";
+        packageProbe = lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [];
+              "expected" = "The compiler succeeds and the binary prints the fixed result.";
+              "files" = {
+                "valid.c" = "#include <stdio.h>\n\nint main(void) {\n    int values[] = {19, 23};\n    return printf(\"compiler result: %d\\n\", values[0] + values[1]) < 0;\n}\n";
+              };
+              "input" = "A C program that computes and prints an integer result.";
+              "operation" = "Compile the program with gcc, then execute the generated binary.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/gcc"
+                    "valid.c"
+                    "-o"
+                    "compiled-program"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+                {
+                  "argv" = [
+                    "@work@/primary/compiled-program"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "compiler result: 42\n";
+                  };
+                }
+              ];
+            };
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "The compiler rejects the syntax error with status 1.";
+              "files" = {
+                "invalid.c" = "int main(void) { int answer = ; return answer; }\n";
+              };
+              "input" = "A C translation unit with an incomplete initializer.";
+              "operation" = "Ask gcc to compile the malformed source.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/gcc"
+                    "invalid.c"
+                    "-o"
+                    "invalid-program"
+                  ];
+                  "exit_code" = 1;
+                  "observes_rejection" = true;
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+              ];
+            };
+        };
+      } (
         (withDistributionMeta {
             description = "Unwrapped GNU Compiler Collection for the AOS target toolchain";
             license = "GPL-3.0-or-later WITH GCC-exception-3.1";
@@ -1772,14 +2281,67 @@
             then stdenv.gccStage2
             else stdenv.gcc
           ))
-        // {version = "16.2.0";};
+        // {version = "16.2.0";}
+      );
       gcc-libs =
         if stdenv.hostPlatform.isDarwin
         then withDefaultMaintainers darwinGcc
         else if stdenv.isCross && stdenv.hostPlatform.isLinux
         then withDefaultMaintainers linuxTargetGccLibs
         else discoveredPackages.gcc-libs;
-      getent =
+      getent = withProbeOnlyPackageContract {
+        packageName = "getent";
+        version = "2.39.0";
+        packageProbe = lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [];
+              "expected" = "Getent returns the protocol number 6 record for TCP.";
+              "files" = {};
+              "input" = "The TCP protocol key in the files-backed protocols database.";
+              "operation" = "Resolve the key through getent with the files service selected explicitly.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@python@"
+                    "-c"
+                    "import subprocess\nresult = subprocess.run([\"@out@/bin/getent\", \"--service=files\", \"protocols\", \"tcp\"], capture_output=True, text=True)\nassert result.returncode == 0, result.stderr\nfields = result.stdout.split()\nassert fields[0] == \"tcp\" and fields[1] == \"6\"\nprint(\"getent operation passed\")\n"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "getent operation passed\n";
+                  };
+                }
+              ];
+            };
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "Getent rejects the unknown database name.";
+              "files" = {};
+              "input" = "A database name that getent does not support.";
+              "operation" = "Resolve a key through the unknown database.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@python@"
+                    "-c"
+                    "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/getent\", \"aos-unknown-database\", \"key\"], capture_output=True)\nif result.returncode == 0:\n    raise SystemExit(2)\nsys.stderr.write(\"getent rejected invalid input\\n\")\nraise SystemExit(7)\n"
+                  ];
+                  "exit_code" = 7;
+                  "observes_rejection" = true;
+                  "stderr" = {
+                    "exact" = "getent rejected invalid input\n";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+              ];
+            };
+        };
+      } (
         (withDistributionMeta {
             description = "Name service database lookup utility from GNU C Library";
             license = "LGPL-2.1-or-later";
@@ -1788,65 +2350,66 @@
         // {
           version = "2.39.0";
           passthru.evidenceSources = stdenv.glibc.passthru.evidenceSources;
-        };
+        }
+      );
       # Native package sets retain the final stdenv tools. Cross package roots
       # must be actual target builds; scheduler-native tools remain available
       # only through buildPackages and build-dependency splicing.
-      bash = withDefaultMaintainers (
+      bash = withContractFrom discoveredPackages.bash (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.bash
         else stdenv.bash
-      );
-      coreutils = withDefaultMaintainers (
+      ));
+      coreutils = withContractFrom discoveredPackages.coreutils (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.coreutils
         else stdenv.coreutils
-      );
-      gnumake = withDefaultMaintainers (
+      ));
+      gnumake = withContractFrom discoveredPackages.gnumake (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.gnumake
         else stdenv.gnumake
-      );
-      sed = withDefaultMaintainers (
+      ));
+      sed = withContractFrom discoveredPackages.sed (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.sed
         else stdenv.sed
-      );
-      grep = withDefaultMaintainers (
+      ));
+      grep = withContractFrom discoveredPackages.grep (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.grep
         else stdenv.grep
-      );
-      findutils = withDefaultMaintainers (
+      ));
+      findutils = withContractFrom discoveredPackages.findutils (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.findutils
         else stdenv.findutils
-      );
-      gawk = withDefaultMaintainers (
+      ));
+      gawk = withContractFrom discoveredPackages.gawk (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.gawk
         else stdenv.gawk
-      );
-      diffutils = withDefaultMaintainers (
+      ));
+      diffutils = withContractFrom discoveredPackages.diffutils (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.diffutils
         else stdenv.diffutils
-      );
-      tar = withDefaultMaintainers (
+      ));
+      tar = withContractFrom discoveredPackages.tar (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.tar
         else stdenv.tar
-      );
-      gzip = withDefaultMaintainers (
+      ));
+      gzip = withContractFrom discoveredPackages.gzip (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.gzip
         else stdenv.gzip
-      );
-      patch = withDefaultMaintainers (
+      ));
+      patch = withContractFrom discoveredPackages.patch (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.patch
         else stdenv.patch
-      );
+      ));
     }
     # --- Trivial builders, exposed flat on the package set ---
     # The file at pkgs/build-support/trivial-builders.nix is also picked up
