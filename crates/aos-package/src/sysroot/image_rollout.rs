@@ -157,11 +157,11 @@ fn validate_image_selection_compatibility(
         "running image has no authenticated state version"
     );
     ensure!(
-        running.state_version.as_deref() == Some(immutable_running_state_version),
+        running.state_version == immutable_running_state_version,
         "running image state version differs from immutable toplevel metadata"
     );
     ensure!(
-        running.native_executor_ref.as_deref() == Some(immutable_running_executor),
+        running.native_executor_ref == immutable_running_executor,
         "running native executor differs from immutable toplevel metadata"
     );
     ensure!(
@@ -252,11 +252,7 @@ pub(super) fn qualified_rollout_record(
     let running = state
         .running_generation()
         .context("image state has no running generation")?;
-    let running_state_version = running
-        .state_version
-        .as_deref()
-        .filter(|version| !version.is_empty())
-        .context("running image has no authenticated state version")?;
+    let running_state_version = &running.state_version;
     ensure!(
         !candidate_state_version.is_empty() && candidate_state_version == running_state_version,
         "qualified image rollout requires identical nonempty state versions"
@@ -299,8 +295,7 @@ pub(super) fn validate_active_rollout_selection(
             .generations
             .iter()
             .filter(|generation| {
-                generation.number == number
-                    && generation.state_version.as_deref() == Some(rollout.state_version.as_str())
+                generation.number == number && generation.state_version == rollout.state_version
             })
             .count();
         ensure!(
@@ -315,7 +310,7 @@ pub(super) fn validate_active_rollout_selection(
 mod tests {
     use tempfile::TempDir;
 
-    use crate::types::{ImageSlot, RecoveryPublication};
+    use crate::types::ImageSlot;
 
     use super::*;
     use crate::sysroot::{
@@ -336,8 +331,8 @@ mod tests {
             toplevel: format!("/nix/store/{}-top-{number}", "0".repeat(32)),
             package_name: "aos".into(),
             version: number.to_string(),
-            state_version: Some(state_version.to_string()),
-            native_executor_ref: Some(executor.to_string()),
+            state_version: state_version.to_string(),
+            native_executor_ref: executor.to_string(),
             registry: "test".into(),
             kernel_path: None,
             evaluator_ref: format!("/nix/store/{}-base-{number}", "1".repeat(32)),

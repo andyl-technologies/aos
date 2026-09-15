@@ -2370,13 +2370,7 @@ where
                 );
             }
             let rollout = qualified_rollout
-                .then(|| {
-                    let pending_state_version = pending
-                        .state_version
-                        .as_deref()
-                        .context("pending image has no authenticated state version")?;
-                    qualified_rollout_record(&state, pending.number, pending_state_version)
-                })
+                .then(|| qualified_rollout_record(&state, pending.number, &pending.state_version))
                 .transpose()?;
             select_image_default_with(
                 profile,
@@ -2444,9 +2438,7 @@ where
     // into the persistent upper rather than a replaceable immutable lower.
     persist_store_closure_to_upper(&running.evaluator_ref, upper_store)?;
     persist_store_closure_to_upper(&running.toplevel, upper_store)?;
-    if let Some(executor) = &running.native_executor_ref {
-        persist_store_closure_to_upper(executor, upper_store)?;
-    }
+    persist_store_closure_to_upper(&running.native_executor_ref, upper_store)?;
     persist_store_closure_to_upper(&evaluator_ref, upper_store)?;
     persist_store_closure_to_upper(&package.store_path, upper_store)?;
     persist_store_closure_to_upper(&native_executor_ref, upper_store)?;
@@ -2485,8 +2477,8 @@ where
         toplevel: package.store_path.clone(),
         package_name: package.name.clone(),
         version: package.version.clone(),
-        state_version: Some(state_version.clone()),
-        native_executor_ref: Some(native_executor_ref),
+        state_version: state_version.clone(),
+        native_executor_ref,
         registry: registry.to_string(),
         kernel_path: resolve_kernel_path(&package.store_path),
         evaluator_ref: evaluator_ref.clone(),
@@ -2683,14 +2675,10 @@ pub async fn rollback_image_generation(
     )?;
     let rollout = if qualified_rollout {
         drain_workloads(printer).await?;
-        let state_version = target
-            .state_version
-            .as_deref()
-            .context("rollback image has no authenticated state version")?;
         Some(qualified_rollout_record(
             &state,
             target.number,
-            state_version,
+            &target.state_version,
         )?)
     } else {
         None
@@ -5621,8 +5609,8 @@ mod tests {
                 toplevel: logical_toplevel.to_string_lossy().into_owned(),
                 package_name: "server".into(),
                 version: "1".into(),
-                state_version: None,
-                native_executor_ref: None,
+                state_version: "1".into(),
+                native_executor_ref: format!("/nix/store/{}-executor", "e".repeat(32)),
                 registry: "test".into(),
                 kernel_path: None,
                 evaluator_ref: logical_base_lib.to_string_lossy().into_owned(),
@@ -6288,8 +6276,8 @@ mod tests {
             toplevel: format!("/nix/store/top-{number}"),
             package_name: "aos".into(),
             version: number.to_string(),
-            state_version: None,
-            native_executor_ref: None,
+            state_version: "1".into(),
+            native_executor_ref: format!("/nix/store/{}-executor", "e".repeat(32)),
             registry: "core".into(),
             kernel_path: None,
             evaluator_ref: format!("/nix/store/base-{number}"),
