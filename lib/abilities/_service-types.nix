@@ -877,6 +877,26 @@
     };
   };
 
+  kernelModuleNames = types.list {
+    element = localKey;
+    maxItems = 256;
+  };
+  kernelModules = types.record {
+    fields = {
+      modules = kernelModuleNames;
+      required = types.boolean;
+    };
+  };
+  kernelModulesObservation = types.record {
+    fields = {
+      schema = types.enum ["aos.ability.kernel-modules-observation/v1"];
+      expected = kernelModules;
+      loaded = kernelModuleNames;
+      unavailable = kernelModuleNames;
+      state = types.enum ["absent" "failed" "partial" "ready" "unknown"];
+    };
+  };
+
   calendarSchedule = types.record {
     fields = {
       kind = types.enum ["calendar"];
@@ -1347,6 +1367,8 @@ in {
     networkReadinessObservation
     filesystemReadiness
     filesystemReadinessObservation
+    kernelModules
+    kernelModulesObservation
     credentialDelivery
     storageView
     storageAllocation

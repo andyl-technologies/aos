@@ -6,6 +6,7 @@
   ninja,
   pkg-config,
   openssl,
+  jansson,
   zlib,
   xz,
   zstd,
@@ -36,6 +37,7 @@ in
     ];
     runtimeDeps = [
       openssl
+      jansson
       zlib
       xz
       zstd
@@ -46,6 +48,8 @@ in
       xz
       zstd
     ];
+
+    abilities = ./_kmod-abilities.nix;
 
     phases = [
       {
@@ -84,6 +88,15 @@ in
           nativeMesonRoot=$(dirname "$(dirname "$(command -v meson)")")
           export PYTHONPATH="$nativeMesonRoot/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
           ninja -C build install
+
+          mkdir -p $out/libexec $out/share/aos/providers
+          cc -std=c11 -Wall -Wextra -Werror -O2 \
+            ${./_kmod-handler.c} \
+            -o $out/libexec/aos-kmod-handler \
+            -ljansson -lcrypto
+          install -m 444 \
+            ${./_kmod-provider.nix} \
+            $out/share/aos/providers/kmod.nix
         '';
       }
     ];
