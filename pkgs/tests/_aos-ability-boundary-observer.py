@@ -20,18 +20,37 @@ from pathlib import Path
 from typing import Any
 
 
-SOCKET_PATH = Path("/run/aos-instrumentation/controller.sock")
 FORWARD_SOCKET_ENV = "AOS_ABILITY_FORWARD_SOCKET"
-STATE_ROOT = Path("/var/lib/aos/ability-boundary-test")
-EVENT_LOG = STATE_ROOT / "events.jsonl"
-HELD_EVENT = STATE_ROOT / "held-event.json"
-RESUMED_EVENT = STATE_ROOT / "resumed-event.json"
-CONTINUE = STATE_ROOT / "continue.json"
-TARGET = STATE_ROOT / "target.json"
+STATE_ROOT: Path
+EVENT_LOG: Path
+HELD_EVENT: Path
+RESUMED_EVENT: Path
+CONTINUE: Path
+TARGET: Path
 EVENT_SCHEMA = "aos.ability-execution-boundary-event/v1"
 ACK_SCHEMA = "aos.ability-execution-boundary-ack/v1"
 EVENT_DIGEST_DOMAIN = b"aos.ability-execution-boundary-event/v1\0"
 MAX_FRAME_BYTES = 16 * 1024
+
+
+def canonical_absolute_path(value: str, label: str) -> Path:
+    """Parse one normalized absolute path from package-owned configuration."""
+    path = Path(value)
+    if not path.is_absolute() or ".." in path.parts or str(path) != value:
+        raise ValueError(f"{label} must be absolute and normalized")
+    return path
+
+
+def configure_state_root(value: str) -> None:
+    """Bind all persistent fixture paths below one configured allocation."""
+    global STATE_ROOT, EVENT_LOG, HELD_EVENT, RESUMED_EVENT, CONTINUE, TARGET
+
+    STATE_ROOT = canonical_absolute_path(value, "state root")
+    EVENT_LOG = STATE_ROOT / "events.jsonl"
+    HELD_EVENT = STATE_ROOT / "held-event.json"
+    RESUMED_EVENT = STATE_ROOT / "resumed-event.json"
+    CONTINUE = STATE_ROOT / "continue.json"
+    TARGET = STATE_ROOT / "target.json"
 
 
 def canonical_bytes(value: Any) -> bytes:
@@ -390,44 +409,76 @@ def serve_connection(connection: socket.socket) -> None:
         acknowledge(connection, payload)
 
 
-def main() -> None:
-    """Bind the protected socket and serve package runtimes serially."""
+def inherited_listener() -> socket.socket | None:
+    """Adopt the single socket passed by the service manager when present."""
+    listen_pid = os.environ.get("LISTEN_PID")
+    listen_fds = os.environ.get("LISTEN_FDS")
+    if listen_pid is None and listen_fds is None:
+        return None
+    if listen_pid != str(os.getpid()) or listen_fds != "1":
+        raise ValueError("socket activation must pass exactly one descriptor")
+    return socket.socket(fileno=3)
+
+
+def main(socket_path: Path) -> None:
+    """Serve package runtimes through the inherited or configured socket."""
     STATE_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
     sync_directory(STATE_ROOT.parent)
-    SOCKET_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    try:
-        SOCKET_PATH.unlink()
-    except FileNotFoundError:
-        pass
 
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
-        listener.bind(str(SOCKET_PATH))
-        os.chmod(SOCKET_PATH, 0o600)
-        listener.listen(8)
+    activated = inherited_listener()
+    with activated or socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        if activated is None:
+            socket_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                socket_path.unlink()
+            except FileNotFoundError:
+                pass
+            listener.bind(str(socket_path))
+            os.chmod(socket_path, 0o600)
+            listener.listen(8)
         while True:
             connection, _ = listener.accept()
             with connection:
                 serve_connection(connection)
 
 
-def command(arguments: list[str]) -> bool:
-    """Persist fixture control input when invoked outside server mode."""
-    if len(arguments) == 3 and arguments[1] == "persist-file":
-        persist_file(fixture_path(arguments[2]))
-        return True
-    if len(arguments) == 4 and arguments[1] == "write-canonical":
-        path = fixture_path(arguments[2])
-        payload = bytes.fromhex(arguments[3])
+def run(arguments: list[str]) -> None:
+    """Parse one closed controller command and execute it."""
+    if arguments == ["--version"]:
+        print("aos-ability-boundary-observer 1")
+        return
+    if len(arguments) < 3 or arguments[0] != "--state-root":
+        raise ValueError("a state root and one controller command are required")
+
+    configure_state_root(arguments[1])
+    command = arguments[2]
+    operands = arguments[3:]
+    if command == "--version" and operands == []:
+        print("aos-ability-boundary-observer 1")
+        return
+    if command == "serve" and len(operands) == 2 and operands[0] == "--socket":
+        main(canonical_absolute_path(operands[1], "socket path"))
+        return
+    if command == "persist-file" and len(operands) == 1:
+        persist_file(fixture_path(operands[0]))
+        return
+    if command == "write-canonical" and len(operands) == 2:
+        path = fixture_path(operands[0])
+        payload = bytes.fromhex(operands[1])
         value = json.loads(payload)
         if canonical_bytes(value) != payload:
             raise ValueError("fixture control input is not canonical")
         replace_canonical(path, value)
-        return True
-    if len(arguments) == 1:
-        return False
+        return
     raise ValueError("unknown execution-boundary controller command")
 
 
 if __name__ == "__main__":
-    if not command(sys.argv):
-        main()
+    try:
+        run(sys.argv[1:])
+    except (OSError, ValueError) as error:
+        print(
+            f"aos-ability-boundary-observer rejected invalid input: {error}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from None

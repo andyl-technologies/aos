@@ -4,7 +4,7 @@
   mkSystem,
   pkgs,
   qualificationImage ? false,
-  observerForwardSocket ? null,
+  observerForwardEndpoint ? null,
   extraRuntimeModules ? [],
   extraHostModule ? "",
   additionalClosures ? [],
@@ -42,42 +42,12 @@
     text = builtins.toJSON authorityMatrix.spec;
   };
 
-  observerController = pkgs.writeTextFile {
-    name = "aos-ability-boundary-controller";
-    destination = "/bin/aos-ability-boundary-controller";
-    executable = true;
-    text = ''
-      #!${pkgs.python3}/bin/python3
-      ${builtins.readFile ./ability-boundary-observer.py}
-    '';
+  observerFixture = import ./_ability-execution-observer.nix {
+    inherit lib pkgs;
+    forwardEndpoint = observerForwardEndpoint;
   };
-  observerRequires = lib.optional (observerForwardSocket != null) "aos-ability-crucible.service";
-  observerAfter = ["local-fs.target"] ++ observerRequires;
-  observerService = {
-    description = "AOS native ability boundary test controller";
-    wantedBy = ["multi-user.target"];
-    requires = observerRequires;
-    after = observerAfter;
-    before = ["aos-activate.service"];
-    serviceConfig =
-      {
-        Type = "simple";
-        ExecStart = "${observerController}/bin/aos-ability-boundary-controller";
-        Restart = "on-failure";
-        RestartSec = "1s";
-        RuntimeDirectory = "aos-instrumentation";
-        RuntimeDirectoryMode = "0700";
-        UMask = "0077";
-      }
-      // lib.optionalAttrs (observerForwardSocket != null) {
-        Environment = "AOS_ABILITY_FORWARD_SOCKET=${observerForwardSocket}";
-      };
-  };
-  observerModule = {
-    imports = [./_ability-execution-observer.nix];
-    aos.tests.executionObserver.enable = true;
-    systemd.services.aos-ability-boundary-controller = observerService;
-  };
+  observerController = observerFixture.controller;
+  observerModule = observerFixture.module;
   observerSystem = mkSystem (fixture.runtimeModules ++ [observerModule] ++ extraRuntimeModules);
   bootInitrdIdentityModule = {config, ...}: {
     # The fleet harness applies this module to the effective machine system,
@@ -87,32 +57,8 @@
     '';
   };
 
-  # Every switched generation must retain the opt-in and controller because
-  # native execution begins only after that generation replaces /etc.
-  observerHostModule = ''
-    imports = [ ${./_ability-execution-observer.nix} ];
-    aos.tests.executionObserver.enable = true;
-    systemd.services.aos-ability-boundary-controller = {
-      description = "AOS native ability boundary test controller";
-      wantedBy = [ "multi-user.target" ];
-      requires = ${builtins.toJSON observerRequires};
-      after = ${builtins.toJSON observerAfter};
-      before = [ "aos-activate.service" ];
-      serviceConfig = {
-        Type = "simple";
-        ExecStart = "${observerController}/bin/aos-ability-boundary-controller";
-        Restart = "on-failure";
-        RestartSec = "1s";
-        RuntimeDirectory = "aos-instrumentation";
-        RuntimeDirectoryMode = "0700";
-        UMask = "0077";
-        ${lib.optionalString (observerForwardSocket != null) ''
-          Environment = "AOS_ABILITY_FORWARD_SOCKET=${observerForwardSocket}";
-        ''}
-      };
-    };
-    ${extraHostModule}
-  '';
+  # Every switched generation retains the package selection and typed endpoint.
+  observerHostModule = observerFixture.hostModule + extraHostModule;
   packageRuntime =
     if qualificationImage
     then "runtime.guest_package_runtime()"
@@ -181,7 +127,7 @@ in {
       REFERENCE_ATTEMPT_TIMEOUT_MILLIS = 300_000
       REFERENCE_TOTAL_RECOVERY_MILLIS = 1_200_000
       OBSERVER_FORWARD_ENABLED = ${
-        if observerForwardSocket == null
+        if observerForwardEndpoint == null
         then "False"
         else "True"
       }

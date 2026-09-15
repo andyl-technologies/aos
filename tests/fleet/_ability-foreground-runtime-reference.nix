@@ -19,10 +19,11 @@
       transitionTransform
       ;
   };
-  observerClientModule = ''
-    imports = [ ${./_ability-execution-observer.nix} ];
-    aos.tests.executionObserver.enable = true;
-  '';
+  observerFixture = import ./_ability-execution-observer.nix {
+    inherit lib pkgs;
+    external = true;
+  };
+  observerClientModule = observerFixture.hostModule;
   containerRuntimeModules =
     [
       ../../systems/server.nix
@@ -31,12 +32,7 @@
       }
     ]
     ++ builtins.tail reference.runtimeModules
-    ++ [
-      {
-        imports = [./_ability-execution-observer.nix];
-        aos.tests.executionObserver.enable = true;
-      }
-    ];
+    ++ [observerFixture.module];
   containerSystem = mkSystem containerRuntimeModules;
   containerToplevel = containerSystem.config.system.build.toplevel;
   baseContainerSystem = mkSystem [../../systems/server.nix];

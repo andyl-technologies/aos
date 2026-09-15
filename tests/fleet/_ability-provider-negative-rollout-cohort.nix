@@ -22,7 +22,6 @@
   imageLifecycle = import ./system-image-rollback.nix {
     inherit lib mkSystem pkgs systems;
     extraFixtureModules = [observerModule];
-    extraTestArtifactRoots = [pkgs.python3];
   };
   image = imageLifecycle.abilityRolloutFixture;
   rollout = import ./_image-rollout-runtime-reference.nix {
@@ -40,62 +39,21 @@
     destination = "/cells.json";
     text = builtins.toJSON cellIds;
   };
-  observerController = pkgs.writeTextFile {
-    name = "aos-rollout-provider-negative-boundary-controller";
-    destination = "/bin/aos-ability-boundary-controller";
-    executable = true;
-    text = ''
-      #!${pkgs.python3}/bin/python3
-      ${builtins.readFile ./ability-boundary-observer.py}
-    '';
+  observerFixture = import ./_ability-execution-observer.nix {
+    inherit lib pkgs;
   };
-  observerModule = {
-    imports = [./_ability-execution-observer.nix];
-    aos.tests.executionObserver.enable = true;
-    systemd.services.aos-ability-boundary-controller = {
-      description = "AOS rollout provider-negative boundary controller";
-      wantedBy = ["multi-user.target"];
+  observerController = observerFixture.controller;
+  foreignModule.systemd.services.aos-rollout-matrix-foreign = {
+    description = "Independent rollout qualification sentinel";
+    wantedBy = ["multi-user.target"];
       after = ["local-fs.target"];
       before = ["aos-activate.service"];
-      serviceConfig = {
-        Type = "simple";
-        ExecStart = "${observerController}/bin/aos-ability-boundary-controller";
-        Restart = "on-failure";
-        RestartSec = "1s";
-        RuntimeDirectory = "aos-instrumentation";
-        RuntimeDirectoryMode = "0700";
-        UMask = "0077";
-      };
-    };
-    systemd.services.aos-rollout-matrix-foreign = {
-      description = "Independent rollout qualification sentinel";
-      wantedBy = ["multi-user.target"];
-      after = ["local-fs.target"];
-      before = ["aos-activate.service"];
-      serviceConfig = {
-        Type = "simple";
-        ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
-      };
+    serviceConfig = {
+      Type = "simple";
+      ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
     };
   };
-  observerHostModule = ''
-    imports = [ ${./_ability-execution-observer.nix} ];
-    aos.tests.executionObserver.enable = true;
-    systemd.services.aos-ability-boundary-controller = {
-      description = "AOS rollout provider-negative boundary controller";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "local-fs.target" ];
-      before = [ "aos-activate.service" ];
-      serviceConfig = {
-        Type = "simple";
-        ExecStart = "${observerController}/bin/aos-ability-boundary-controller";
-        Restart = "on-failure";
-        RestartSec = "1s";
-        RuntimeDirectory = "aos-instrumentation";
-        RuntimeDirectoryMode = "0700";
-        UMask = "0077";
-      };
-    };
+  foreignHostModule = ''
     systemd.services.aos-rollout-matrix-foreign = {
       description = "Independent rollout qualification sentinel";
       wantedBy = [ "multi-user.target" ];
@@ -107,6 +65,8 @@
       };
     };
   '';
+  observerModule = lib.mkMerge [observerFixture.module foreignModule];
+  observerHostModule = observerFixture.hostModule + foreignHostModule;
   setupBody = observerHostModule;
   extraClosures =
     rollout.extraClosures

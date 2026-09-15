@@ -429,6 +429,7 @@ let
   buildOnly = [
     "ability-package-smoke"
     "aos-ability-contract-validator"
+    "aos-ability-boundary-observer"
     "aos-hub-dialect-tests"
     "aos-hub-e2e"
     "aos-hub-worker-do-e2e"
@@ -835,6 +836,11 @@ let
     "system/_dbus/registration-provider.nix" = "target-independent-source";
     "system/_dbus/registration-transition.nix" = "target-independent-source";
     "tests/_aos-registry-server/module.nix" = "linux-only-config-source";
+    "tests/_aos-ability-boundary-observer/endpoint-interface.nix" = "target-independent-source";
+    "tests/_aos-ability-boundary-observer/endpoint-provider.nix" = "target-independent-source";
+    "tests/_aos-ability-boundary-observer/module.nix" = "linux-only-config-source";
+    "tests/_aos-ability-boundary-observer/settings.nix" = "target-independent-source";
+    "tests/_aos-ability-boundary-observer.py" = "target-independent-source";
     "tests/_aos-secret-reference-test/module.nix" = "linux-only-config-source";
     "tests/_aos-test-agent/module.nix" = "linux-only-config-source";
     "tests/_apm-systemd-client-test/module.nix" = "linux-only-config-source";

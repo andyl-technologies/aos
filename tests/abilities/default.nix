@@ -444,6 +444,9 @@
   abilityCrucibleService = import ./ability-crucible-service.nix {
     inherit lib pkgs;
   };
+  abilityBoundaryObserverService = import ./ability-boundary-observer-service.nix {
+    inherit lib pkgs;
+  };
   zfstoolsService = import ./zfstools-service.nix {
     inherit lib pkgs;
   };
@@ -978,6 +981,7 @@ in
   assert attestationVerifierService;
   assert aosPackageRuntimeServices;
   assert abilityCrucibleService;
+  assert abilityBoundaryObserverService;
   assert zfstoolsService;
   assert serviceManagement;
   assert managedIdentityAllocation;
