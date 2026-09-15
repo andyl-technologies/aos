@@ -7,10 +7,10 @@
 use anyhow::{Context as _, Result};
 use aos_ability_model::document::PackageSubject;
 use aos_ability_model::{
-    AbilityValue, ArtifactReference, DocumentedValue, LocalKey, ModuleLocator, OptionEnumValue,
-    OptionSource, OptionType, OptionVisibility, PackageDocument, PackageImplementation,
-    PackageOptionDeclaration, PackageQualification, RequiredFeature, VersionedDocument,
-    encode_canonical,
+    encode_canonical, AbilityValue, ArtifactReference, DocumentedValue, LocalKey, ModuleLocator,
+    OptionEnumValue, OptionSource, OptionType, OptionVisibility, PackageDocument,
+    PackageImplementation, PackageOptionDeclaration, PackageQualification, RequiredFeature,
+    VersionedDocument,
 };
 use aos_contract::Sha256Digest;
 use aos_doc_model::PackageDocumentation;
@@ -120,18 +120,18 @@ pub(super) fn write(root: &Path) -> Result<String> {
         qualification: PackageQualification::default(),
     };
     let package_document_bytes = encode_canonical(&package_document)?;
-    let ability_nar = regular_nar(&package_document_bytes);
-    let ability_nar_digest = hex::encode(Sha256::digest(&ability_nar));
-    let ability_store_hash = "f".repeat(32);
-    let ability_store_path = format!("/nix/store/{ability_store_hash}-config-demo-abilities");
-    let ability_nar_key = format!("nar/{ability_store_hash}.nar");
-    std::fs::write(root.join(&ability_nar_key), &ability_nar)?;
+    let contract_nar = regular_nar(&package_document_bytes);
+    let contract_nar_digest = hex::encode(Sha256::digest(&contract_nar));
+    let contract_store_hash = "f".repeat(32);
+    let document_store_path = format!("/nix/store/{contract_store_hash}-config-demo-abilities");
+    let contract_nar_key = format!("nar/{contract_store_hash}.nar");
+    std::fs::write(root.join(&contract_nar_key), &contract_nar)?;
     std::fs::write(
-        root.join(format!("{ability_store_hash}.narinfo")),
+        root.join(format!("{contract_store_hash}.narinfo")),
         format!(
-            "StorePath: {ability_store_path}\nURL: {ability_nar_key}\nCompression: none\nFileHash: sha256:{ability_nar_digest}\nFileSize: {}\nNarHash: sha256:{ability_nar_digest}\nNarSize: {}\nReferences: \n",
-            ability_nar.len(),
-            ability_nar.len(),
+            "StorePath: {document_store_path}\nURL: {contract_nar_key}\nCompression: none\nFileHash: sha256:{contract_nar_digest}\nFileSize: {}\nNarHash: sha256:{contract_nar_digest}\nNarSize: {}\nReferences: \n",
+            contract_nar.len(),
+            contract_nar.len(),
         ),
     )?;
     let artifact = aos_registry_surface::manifest::PackageContractArtifactMeta {
@@ -151,9 +151,9 @@ pub(super) fn write(root: &Path) -> Result<String> {
     };
     let contract = aos_registry_surface::manifest::PackageContractMeta {
         document: aos_registry_surface::manifest::PackageContractDocumentMeta {
-            store_path: ability_store_path,
-            nar_hash: format!("sha256:{ability_nar_digest}"),
-            nar_size: u64::try_from(ability_nar.len())?,
+            store_path: document_store_path,
+            nar_hash: format!("sha256:{contract_nar_digest}"),
+            nar_size: u64::try_from(contract_nar.len())?,
             document_sha256: Sha256Digest::of_bytes(&package_document_bytes).to_string(),
             document_size: u64::try_from(package_document_bytes.len())?,
             references: Vec::new(),

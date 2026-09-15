@@ -167,9 +167,10 @@ impl<'a> StockAbilityRoundResolver<'a> {
             .context("checked package-backed binding has no provider package digest")?;
         let mut matches = Vec::new();
         for member in self.working_set {
-            let Some(package) = &member.ability else {
+            let Some(contract) = &member.contract else {
                 continue;
             };
+            let package = &contract.document;
             if package.content_digest()? != package_digest {
                 continue;
             }
@@ -198,10 +199,11 @@ impl<'a> StockAbilityRoundResolver<'a> {
 
         ensure!(
             member.package
-                == member
-                    .ability
-                    .as_ref()
-                    .map_or("", |package| package.package.name.as_str()),
+                == member.contract.as_ref().map_or("", |contract| contract
+                    .document
+                    .package
+                    .name
+                    .as_str()),
             "checked implementation package identity differs from its working-set declaration"
         );
         Ok((*member, *provider, implementation.clone()))
@@ -800,8 +802,8 @@ where
 {
     let mut items = Vec::new();
     for member in members {
-        let module = member.ability.as_ref().and_then(|document| {
-            document.package_module.as_ref().map(|locator| {
+        let module = member.contract.as_ref().and_then(|contract| {
+            contract.document.package_module.as_ref().map(|locator| {
                 (
                     locator.artifact.store_path.as_str(),
                     locator.artifact.nar_hash.to_string(),
@@ -1176,16 +1178,10 @@ fn resolved_registry_package_module(
     registry: &crate::registry::Registry,
     package: &crate::types::PackageMeta,
 ) -> Result<Option<ResolvedPackageModule>> {
-    let Some(document) = crate::package_contract::resolve_package_document(package)? else {
+    let Some((document, interfaces)) = crate::package_contract::resolve_package_contract(package)?
+    else {
         return Ok(None);
     };
-    let ability_store_path = package
-        .contract
-        .as_ref()
-        .context("resolved package document has no authenticated contract")?
-        .document
-        .store_path
-        .clone();
     let Some(module) = document.package_module.as_ref() else {
         return Ok(None);
     };
@@ -1202,8 +1198,10 @@ fn resolved_registry_package_module(
         version: package.version.clone(),
         platform: package.platform.clone(),
         runtime_output: package.store_path.clone(),
-        ability_store_path,
-        document,
+        contract: super::ResolvedPackageContract {
+            document,
+            interfaces,
+        },
     }))
 }
 
@@ -1214,7 +1212,6 @@ fn resolved_image_package_module(
     let Some(contract) = package.contract.clone() else {
         return Ok(None);
     };
-    let ability_store_path = contract.document.store_path.clone();
     let package_meta = crate::types::PackageMeta {
         name: name.to_string(),
         version: package.version.clone(),
@@ -1243,19 +1240,23 @@ fn resolved_image_package_module(
         bpf_lsm: None,
         attestation: Default::default(),
     };
-    let document = crate::package_contract::resolve_package_document(&package_meta)?;
+    let resolved = crate::package_contract::resolve_package_contract(&package_meta)?;
 
-    Ok(document.map(|document| ResolvedPackageModule {
-        registry: String::new(),
-        release_trust: None,
-        realization: None,
-        package: name.to_string(),
-        version: package.version.clone(),
-        platform: "image".to_string(),
-        runtime_output: package.store_path.clone(),
-        ability_store_path: ability_store_path.clone(),
-        document,
-    }))
+    Ok(
+        resolved.map(|(document, interfaces)| ResolvedPackageModule {
+            registry: String::new(),
+            release_trust: None,
+            realization: None,
+            package: name.to_string(),
+            version: package.version.clone(),
+            platform: "image".to_string(),
+            runtime_output: package.store_path.clone(),
+            contract: super::ResolvedPackageContract {
+                document,
+                interfaces,
+            },
+        }),
+    )
 }
 
 fn immutable_image_seed_catalog() -> Result<BTreeMap<String, crate::types::InstalledMeta>> {
@@ -1412,28 +1413,29 @@ mod tests {
     use crate::types::ApmMeta;
 
     fn member(pkg: &str, module_artifact: Option<&str>) -> WorkingSetMember {
-        let ability = module_artifact.map(|store_path| {
-            ability_document(
-                pkg,
-                ModuleLocator {
-                    artifact: ArtifactReference {
-                        content: Sha256Digest::of_bytes(store_path.as_bytes()),
-                        store_path: store_path.to_string(),
-                        nar_hash: Sha256Digest::of_bytes(b"module NAR"),
-                        closure: Sha256Digest::of_bytes(b"module closure"),
+        let contract =
+            module_artifact.map(|store_path| crate::config_eval::ResolvedPackageContract {
+                document: ability_document(
+                    pkg,
+                    ModuleLocator {
+                        artifact: ArtifactReference {
+                            content: Sha256Digest::of_bytes(store_path.as_bytes()),
+                            store_path: store_path.to_string(),
+                            nar_hash: Sha256Digest::of_bytes(b"module NAR"),
+                            closure: Sha256Digest::of_bytes(b"module closure"),
+                        },
+                        path: RelativePath::new("module.nix").unwrap(),
                     },
-                    path: RelativePath::new("module.nix").unwrap(),
-                },
-            )
-        });
+                ),
+                interfaces: Vec::new(),
+            });
         WorkingSetMember {
             registry: None,
             release_trust: None,
             config_realization: None,
             package: pkg.to_string(),
             version: Some("1.0.0".to_string()),
-            ability,
-            ability_store_path: None,
+            contract,
             outputs: super::super::PackageOutputs::default(),
         }
     }
@@ -1569,19 +1571,22 @@ mod tests {
     #[test]
     fn locked_entry_imports_the_authenticated_package_module_and_version() {
         let mut web = member("web", None);
-        web.ability = Some(ability_document(
-            "web",
-            ModuleLocator {
-                artifact: ArtifactReference {
-                    content: Sha256Digest::of_bytes(b"web module"),
-                    store_path: "/nix/store/00000000000000000000000000000000-web-module"
-                        .to_string(),
-                    nar_hash: Sha256Digest::of_bytes(b"web module NAR"),
-                    closure: Sha256Digest::of_bytes(b"web module closure"),
+        web.contract = Some(crate::config_eval::ResolvedPackageContract {
+            document: ability_document(
+                "web",
+                ModuleLocator {
+                    artifact: ArtifactReference {
+                        content: Sha256Digest::of_bytes(b"web module"),
+                        store_path: "/nix/store/00000000000000000000000000000000-web-module"
+                            .to_string(),
+                        nar_hash: Sha256Digest::of_bytes(b"web module NAR"),
+                        closure: Sha256Digest::of_bytes(b"web module closure"),
+                    },
+                    path: RelativePath::new("abilities/module.nix").unwrap(),
                 },
-                path: RelativePath::new("abilities/module.nix").unwrap(),
-            },
-        ));
+            ),
+            interfaces: Vec::new(),
+        });
 
         let mut admitted = Vec::new();
         let rendered = render_package_module_list_with(&[web], true, |path, nar_hash| {

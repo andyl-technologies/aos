@@ -153,9 +153,6 @@ struct LegacySystemGeneration {
     image_gen_parent: Option<u32>,
     module_abi_pinned: Option<u32>,
     manifest_hash: Option<String>,
-    package_module_closure: Option<String>,
-    package_module_paths: Option<Vec<String>>,
-    package_module_packages: Option<Vec<String>>,
     host_nix_ref: Option<String>,
     host_nix_commit: Option<String>,
     facts_hash: Option<String>,
@@ -885,19 +882,9 @@ pub fn reeval_active_config_for_boot(
         .iter()
         .find(|generation| generation.number == state.current)
         .context("no active system configuration generation")?;
-    if active.package_module_paths.len() != active.package_module_packages.len() {
-        bail!(
-            "config-gen {} has {} retained modules but {} authenticated package identities",
-            active.number,
-            active.package_module_paths.len(),
-            active.package_module_packages.len()
-        );
-    }
-
     let running = running_image_generation()?;
     let retained = CrossAbiReEvalInputs {
-        package_module_paths: active.package_module_paths.clone(),
-        package_module_packages: active.package_module_packages.clone(),
+        package_modules: active.package_modules.clone(),
         host_nix_ref: active.host_nix_ref.clone(),
         facts_hash: active.facts_hash.clone(),
         facts_ref: active.facts_ref.clone(),
@@ -3506,27 +3493,28 @@ fn migrate_legacy_generation_state(
             );
         }
         let parent = matching[0];
-        let package_module_closure = old.package_module_closure.with_context(|| {
+        let manifest_path = profile_path
+            .join(format!("gen-{}", old.number))
+            .join("manifest.json");
+        let manifest_bytes = std::fs::read(&manifest_path).with_context(|| {
             format!(
-                "legacy generation {} has no config module closure",
-                old.number
+                "reading authenticated legacy manifest {}",
+                manifest_path.display()
             )
         })?;
-        let package_module_paths = old
-            .package_module_paths
-            .unwrap_or_else(|| vec![package_module_closure.clone()]);
-        let package_module_packages = old.package_module_packages.with_context(|| {
+        let manifest: crate::config_eval::materialize::ConfigManifest =
+            serde_json::from_slice(&manifest_bytes).with_context(|| {
+                format!(
+                    "parsing authenticated legacy manifest {}",
+                    manifest_path.display()
+                )
+            })?;
+        manifest.validate().with_context(|| {
             format!(
-                "legacy generation {} has no authenticated config module package identities",
-                old.number
+                "validating authenticated legacy manifest {}",
+                manifest_path.display()
             )
         })?;
-        if package_module_paths.len() != package_module_packages.len() {
-            bail!(
-                "legacy generation {} has mismatched module and package identity counts",
-                old.number
-            );
-        }
         let generation = ConfigGeneration {
             number: old.number,
             image_gen_parent: parent.number,
@@ -3534,9 +3522,7 @@ fn migrate_legacy_generation_state(
             manifest_hash: old.manifest_hash.with_context(|| {
                 format!("legacy generation {} has no manifest hash", old.number)
             })?,
-            package_module_closure,
-            package_module_paths,
-            package_module_packages,
+            package_modules: manifest.inputs.package_modules.modules,
             host_nix_ref: old.host_nix_ref.with_context(|| {
                 format!(
                     "legacy generation {} has no host.nix content pin",
@@ -5526,6 +5512,18 @@ fn days_to_ymd(days: i64) -> (i32, u32, u32) {
 mod tests {
     use super::*;
     use crate::registry_ops::test_support::synthetic_pe_section;
+    use crate::types::{PackageModule, PackageModuleOrigin};
+
+    fn package_module(package: &str, store_path: String) -> PackageModule {
+        PackageModule {
+            package: package.to_string(),
+            document_digest: format!("sha256:{}", "a".repeat(64)),
+            store_path,
+            nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+            entrypoint: "module.nix".to_string(),
+            origin: PackageModuleOrigin::Registry,
+        }
+    }
 
     #[test]
     fn uki_identity_section_reader_removes_only_nul_padding() {
@@ -6724,9 +6722,10 @@ mod tests {
             image_gen_parent: 1,
             module_abi_pinned: 1,
             manifest_hash: format!("sha256:manifest-{number}"),
-            package_module_closure: format!("/nix/store/config-{number}"),
-            package_module_paths: vec![format!("/nix/store/config-{number}")],
-            package_module_packages: vec!["server".into()],
+            package_modules: vec![package_module(
+                "server",
+                format!("/nix/store/config-{number}"),
+            )],
             host_nix_ref: format!("/nix/store/host-{number}"),
             host_nix_commit: None,
             facts_hash: format!("sha256:facts-{number}"),
@@ -6773,9 +6772,7 @@ mod tests {
                 image_gen_parent: 1,
                 module_abi_pinned: 1,
                 manifest_hash: "sha256:manifest".into(),
-                package_module_closure: "/nix/store/config".into(),
-                package_module_paths: vec!["/nix/store/config".into()],
-                package_module_packages: vec!["server".into()],
+                package_modules: vec![package_module("server", "/nix/store/config".into())],
                 host_nix_ref: "/nix/store/host".into(),
                 host_nix_commit: None,
                 facts_hash: "sha256:facts".into(),
@@ -6806,20 +6803,6 @@ mod tests {
             crate::graph_compile::reproject::hash_cjson(&serde_json::to_value(&manifest).unwrap());
         let base = manifest.inputs.base_lib.store_path.clone();
         let evaluator = manifest.inputs.evaluator.store_path.clone();
-        let modules = manifest
-            .inputs
-            .package_modules
-            .modules
-            .iter()
-            .map(|module| module.store_path.clone())
-            .collect::<Vec<_>>();
-        let packages = manifest
-            .inputs
-            .package_modules
-            .modules
-            .iter()
-            .map(|module| module.package.clone())
-            .collect::<Vec<_>>();
         let host = manifest.inputs.host_nix.store_path.clone();
         let facts_hash = manifest.inputs.instance_facts.facts_hash.clone();
         let facts_ref = manifest.inputs.instance_facts.store_path.clone();
@@ -6869,9 +6852,6 @@ mod tests {
                 "image_gen_parent": 4,
                 "module_abi_pinned": manifest.module_abi,
                 "manifest_hash": manifest_hash,
-                "package_module_closure": modules[0],
-                "package_module_paths": modules,
-                "package_module_packages": packages,
                 "host_nix_ref": host,
                 "facts_hash": facts_hash,
                 "facts_ref": facts_ref,
@@ -6949,7 +6929,11 @@ mod tests {
 
         assert_eq!(loaded.current, 2);
         assert_eq!(
-            loaded.generations[1].package_module_paths,
+            loaded.generations[1]
+                .package_modules
+                .iter()
+                .map(|module| module.store_path.clone())
+                .collect::<Vec<_>>(),
             [
                 "/nix/store/cfg-a-2".to_string(),
                 "/nix/store/cfg-b-2".to_string(),
@@ -7236,12 +7220,10 @@ mod tests {
             image_gen_parent: 1,
             module_abi_pinned: 1,
             manifest_hash: format!("sha256:{number}"),
-            package_module_closure: format!("/nix/store/cfg-{number}"),
-            package_module_paths: vec![
-                format!("/nix/store/cfg-a-{number}"),
-                format!("/nix/store/cfg-b-{number}"),
+            package_modules: vec![
+                package_module("cfg-a", format!("/nix/store/cfg-a-{number}")),
+                package_module("cfg-b", format!("/nix/store/cfg-b-{number}")),
             ],
-            package_module_packages: vec!["cfg-a".into(), "cfg-b".into()],
             host_nix_ref: format!("/nix/store/host-{number}"),
             host_nix_commit: None,
             facts_hash: format!("sha256:facts-{number}"),

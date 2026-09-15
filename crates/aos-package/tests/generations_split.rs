@@ -2,6 +2,7 @@
 
 use aos_package::types::{
     ConfigGeneration, ConfigGenerationState, ImageGeneration, ImageGenerationState, ImageSlot,
+    PackageModule, PackageModuleOrigin,
 };
 
 fn config_generation(parent: u32, abi: u32) -> ConfigGeneration {
@@ -11,9 +12,14 @@ fn config_generation(parent: u32, abi: u32) -> ConfigGeneration {
         image_gen_parent: parent,
         module_abi_pinned: abi,
         manifest_hash: "sha256:manifest".into(),
-        package_module_closure: "/nix/store/cfg-config".into(),
-        package_module_paths: vec!["/nix/store/cfg-config".into()],
-        package_module_packages: vec!["service".into()],
+        package_modules: vec![PackageModule {
+            package: "service".into(),
+            document_digest: format!("sha256:{}", "a".repeat(64)),
+            store_path: "/nix/store/cfg-config".into(),
+            nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+            entrypoint: "module.nix".into(),
+            origin: PackageModuleOrigin::Registry,
+        }],
         host_nix_ref: "/nix/store/host-host.nix".into(),
         host_nix_commit: None,
         facts_hash: "sha256:facts".into(),
@@ -79,7 +85,7 @@ fn generation_axes_round_trip_independently() {
         serde_json::from_str(&encoded).expect("parse config state");
     assert_eq!(decoded.generations[0].image_gen_parent, 3);
     assert_eq!(decoded.generations[0].module_abi_pinned, 9);
-    assert_eq!(decoded.generations[0].package_module_packages, ["service"]);
+    assert_eq!(decoded.generations[0].package_modules[0].package, "service");
 }
 
 #[test]
@@ -102,7 +108,10 @@ fn cross_abi_reactivation_replays_retained_inputs() {
     };
     assert_eq!(inputs.from_module_abi, 8);
     assert_eq!(inputs.to_module_abi, 9);
-    assert_eq!(inputs.package_module_paths, ["/nix/store/cfg-config"]);
+    assert_eq!(
+        inputs.package_modules[0].store_path,
+        "/nix/store/cfg-config"
+    );
     assert_eq!(inputs.host_nix_ref, "/nix/store/host-host.nix");
     assert_eq!(inputs.facts_ref, "/nix/store/facts-json");
 }
@@ -124,4 +133,25 @@ fn legacy_bundled_state_is_not_live_config_authority() {
     let error = serde_json::from_str::<ConfigGenerationState>(legacy)
         .expect_err("legacy bundled records must require authenticated migration");
     assert!(error.to_string().contains("image_gen_parent"));
+}
+
+#[test]
+fn generation_state_rejects_parallel_package_module_vectors() {
+    let state = ConfigGenerationState {
+        current: 7,
+        next: 8,
+        generations: vec![config_generation(3, 9)],
+    };
+    let mut encoded = serde_json::to_value(state).expect("serialize config state");
+    let obsolete_field = ["package_module_", "paths"].concat();
+    encoded["generations"][0][obsolete_field] = serde_json::json!(["/nix/store/cfg-config"]);
+
+    let error = serde_json::from_value::<ConfigGenerationState>(encoded)
+        .expect_err("parallel package-module vectors must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains(&["package_module_", "paths"].concat()),
+        "{error}"
+    );
 }

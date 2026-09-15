@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail, ensure};
-use aos_ability_model::{ExecutionStage, LocalKey, PackageDocument};
+use aos_ability_model::{ExecutionStage, InterfaceDocument, LocalKey, PackageDocument};
 use aos_ability_plan::{PlanningReplayInputs, PlanningSnapshot};
 use aos_ability_validate::PackageOutputSelector;
 use aos_ability_validate::build_frontend::ResolvedPackageOutput;
@@ -97,7 +97,7 @@ pub fn plan_build_stage(spec_path: &Path, output_path: &Path) -> Result<()> {
     validate_environment(&desired, spec.stage, &spec.authority, &spec.key)?;
 
     let LoadedPackages { documents, .. } = load_packages(&spec.packages)?;
-    let catalog = VerifiedPackagePlanningCatalog::from_authenticated_documents(documents)?;
+    let catalog = VerifiedPackagePlanningCatalog::from_resolved_contracts(documents)?;
     let mut composition_evaluator = super::native_activation::production_evaluator()?;
     let outcome = catalog.composer().compose(
         &policies.policies,
@@ -180,7 +180,7 @@ pub fn resolve_build_stage(spec_path: &Path, output_path: &Path, eval_root: &Pat
         documents,
         artifact_locators,
     } = load_packages(&spec.packages)?;
-    let catalog = VerifiedPackagePlanningCatalog::from_authenticated_documents(documents)?;
+    let catalog = VerifiedPackagePlanningCatalog::from_resolved_contracts(documents)?;
     let mut composition_evaluator = super::native_activation::production_evaluator()?;
     let verified = planning.replay_with(
         &catalog.composer(),
@@ -315,7 +315,7 @@ fn validate_stage_inputs<'a>(
 
 struct LoadedPackages {
     working_set: Vec<WorkingSetMember>,
-    documents: Vec<(PackageDocument, PathBuf)>,
+    documents: Vec<(PackageDocument, Vec<InterfaceDocument>)>,
     artifact_locators:
         BTreeMap<String, BTreeMap<PackageOutputSelector, aos_ability_model::ArtifactReference>>,
 }
@@ -333,6 +333,7 @@ fn load_packages(companions: &[PathBuf]) -> Result<LoadedPackages> {
             &interface_path,
         )?;
         let package: PackageDocument = read_canonical(&package_path, "resolved package document")?;
+        let interfaces = load_package_interfaces(&package, &interface_path)?;
         let resolved: Vec<ResolvedPackageOutput> = read_canonical(
             &companion.join("selectors.json"),
             "resolved selector manifest",
@@ -349,11 +350,13 @@ fn load_packages(companions: &[PathBuf]) -> Result<LoadedPackages> {
             config_realization: None,
             package: name,
             version: Some(package.package.version.clone()),
-            ability: Some(package.clone()),
-            ability_store_path: Some(companion.display().to_string()),
+            contract: Some(super::ResolvedPackageContract {
+                document: package.clone(),
+                interfaces: interfaces.clone(),
+            }),
             outputs,
         });
-        documents.push((package, companion.clone()));
+        documents.push((package, interfaces));
     }
     working_set.sort_by(|left, right| left.package.cmp(&right.package));
     ensure!(
@@ -368,6 +371,27 @@ fn load_packages(companions: &[PathBuf]) -> Result<LoadedPackages> {
         documents,
         artifact_locators,
     })
+}
+
+fn load_package_interfaces(
+    package: &PackageDocument,
+    directory: &Path,
+) -> Result<Vec<InterfaceDocument>> {
+    package
+        .interfaces
+        .values()
+        .map(|expected| {
+            let path = directory.join(format!("{}.json", expected.descriptor.hex()));
+            let document: InterfaceDocument =
+                read_canonical(&path, "resolved package interface document")?;
+            ensure!(
+                document.interface_key()? == *expected,
+                "resolved package interface {} disagrees with its package contract",
+                path.display()
+            );
+            Ok(document)
+        })
+        .collect()
 }
 
 fn package_outputs(
