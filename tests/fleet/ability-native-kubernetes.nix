@@ -207,11 +207,11 @@ in {
       runtime.succeed("${pkgs.iproute2}/sbin/ip route replace default dev eth0")
       runtime.succeed(
           f"{COREUTILS}/install -d -o root -g root -m 0700 "
-          "/run/credstore/k3s-combined && "
+          "/run/credentials/@system && "
           f"{COREUTILS}/install -o root -g root -m 0600 /dev/null "
-          "/run/credstore/k3s-combined/token && "
+          "/run/credentials/@system/token && "
           f"{COREUTILS}/printf '%s' ability-kubernetes-token "
-          "> /run/credstore/k3s-combined/token"
+          "> /run/credentials/@system/token"
       )
       runtime.fail("systemctl is-active --quiet k3s.service")
       runtime.fail("systemctl is-active --quiet containerd.service")

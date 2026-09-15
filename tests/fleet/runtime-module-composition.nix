@@ -168,26 +168,10 @@ in {
               "/etc/aos/packages/envoy/bootstrap.json"
           )
 
-          # A worker without a real control plane is intentionally disabled;
-          # its package target and fully rendered typed configuration still
-          # exercise the k3s module/expose boundary without asserting a false
-          # readiness signal.
-          runtime.succeed(
-              "systemctl is-active --quiet aos-pkg-k3s-worker.target"
-          )
+          # A worker without a real control plane remains declarable while its
+          # native ability requests stay absent.
           runtime.fail("systemctl is-active --quiet k3s.service")
-          runtime.succeed(
-              "grep -qx 'K3S_ENABLED=false' "
-              "/etc/aos/packages/k3s-worker/k3s.env"
-          )
-          runtime.succeed(
-              "grep -qx 'K3S_NODE_NAME=runtime-worker' "
-              "/etc/aos/packages/k3s-worker/k3s.env"
-          )
-          runtime.succeed(
-              "grep -qx 'K3S_FLANNEL_BACKEND=wireguard-native' "
-              "/etc/aos/packages/k3s-worker/k3s.env"
-          )
+          runtime.fail("test -e /etc/aos/packages/k3s-worker")
 
 
       def payload_nar_hash(path):
