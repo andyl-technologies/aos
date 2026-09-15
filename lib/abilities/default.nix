@@ -18,6 +18,13 @@
   resourceControllerTransition = import ./resource-controller-transition.nix;
   diagnostics = import ./diagnostic.nix;
   packageOutputSelectors = import ./package-output-selectors.nix {inherit diagnostics;};
+  packageOutputSelectorsFor = limits:
+    import ./package-output-selectors.nix {inherit diagnostics limits;};
+  packageProjectionFor = {
+    lib,
+    abilities,
+  }:
+    import ./package-projection.nix {inherit lib abilities;};
   inherit
     (packageOutputSelectors)
     canonicalizePackageOutputSelectors
@@ -1589,6 +1596,8 @@ in rec {
     interfaceSelectorMatches
     canonicalizePackageOutputSelectors
     normalizePackageOutputSelectors
+    packageOutputSelectorsFor
+    packageProjectionFor
     resourceRevision
     ;
   types = abilityTypes;

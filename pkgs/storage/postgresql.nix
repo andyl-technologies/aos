@@ -638,8 +638,7 @@ in
         && requirementMethods "network-readiness" == ["observe"]
         && requirementMethods "persistent-storage-allocation" == ["allocate" "observe" "release"]
         && requirementMethods "storage-allocation" == ["allocate" "observe" "release"]
-        && requirementMethods "service-lifecycle" == ["observe" "reload" "restart" "start" "stop"]
-        && !(self ? expose);
+        && requirementMethods "service-lifecycle" == ["observe" "reload" "restart" "start" "stop"];
     in {
       version = testing.mkToolCheck {
         pname = "storage-postgresql";

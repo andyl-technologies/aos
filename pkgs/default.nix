@@ -210,7 +210,7 @@
       or args.name
       or (throw "mkDerivation: package must set pname or name");
     existingOutputs = args.outputs or ["out"];
-    reservedAbilityOutputs = ["abilities" "abilityContract" "abilityModule" "module"];
+    reservedAbilityOutputs = ["abilities" "module"];
     conflictingAbilityOutputs =
       builtins.filter
       (output: builtins.elem output reservedAbilityOutputs)

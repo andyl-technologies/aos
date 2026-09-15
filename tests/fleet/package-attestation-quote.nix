@@ -49,12 +49,11 @@
       credential_raw = target.succeed(
           f"{apm} --json credential encrypt bootstrap-token "
           f"{credential_plaintext} --pcr-public-key {credential_public} "
-          f"--output {credential_ciphertext} --unit bootstrap.service --expose-nix"
+          f"--output {credential_ciphertext}"
       )
       credential = json.loads(credential_raw)
       assert credential["name"] == "bootstrap-token", credential
       assert len(credential["ciphertext"]) > 64, credential
-      assert "bootstrap.service" in credential["expose_nix"], credential
       target.succeed(f"test -s {credential_ciphertext}")
       target.succeed(f"test $(stat -c %a {credential_ciphertext}) = 600")
 

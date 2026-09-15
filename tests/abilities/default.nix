@@ -5,13 +5,10 @@
   mkSystem,
 }: let
   fails = value: !(builtins.tryEval (builtins.deepSeq value true)).success;
-  boundedSelectorNormalizer = import ../../lib/abilities/package-output-selectors.nix {
-    diagnostics = import ../../lib/abilities/diagnostic.nix;
-    limits = {
+  boundedSelectorNormalizer = lib.abilities.packageOutputSelectorsFor {
       maxCollectionItems = 4;
       maxStringBytes = 16;
       maxStructuralDepth = 4;
-    };
   };
   normalizeBounded = value:
     boundedSelectorNormalizer.normalizePackageOutputSelectors {
@@ -662,8 +659,6 @@ in
   assert (lib.abilities.types.schemaOf "execution path" lib.abilities.types.executionPath).syntax == "execution-path-v1";
   assert fails (lib.abilities.schemas.checkValue documentRecordSchema {unknown = true;});
   assert reservedAbilityOutputRejected "abilities";
-  assert reservedAbilityOutputRejected "abilityContract";
-  assert reservedAbilityOutputRejected "abilityModule";
   assert reservedAbilityOutputRejected "module";
   assert inlineAbilitiesRejected;
   assert canonicalInterface == expectedInterface;
