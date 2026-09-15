@@ -414,9 +414,6 @@
   systemServiceModules = import ./system-service-modules.nix {
     inherit lib;
   };
-  serviceModuleCutover = import ./service-module-cutover.nix {
-    inherit lib;
-  };
   dockerService = import ./docker-service.nix {
     inherit pkgs lib;
   };
@@ -848,7 +845,6 @@ in
   assert productionKubernetes;
   assert serviceManagement;
   assert systemServiceModules;
-  assert serviceModuleCutover;
   assert compositionDriver;
   assert builtins.attrNames smokeAbilityProjection == ["contract" "documentation" "implementations" "interfaces" "module" "moduleOutputs" "optionSurface" "requirements"];
   assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];
