@@ -696,6 +696,36 @@
     ];
   };
   sharedImplementationProjection = projectAbilityConfig "authoring" sharedImplementationEvaluation;
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
+  serviceGuarantees = serviceManagement.guaranteeAliases;
+  coreGuaranteeProviderEvaluation = lib.evalModules {
+    modules = [lib.abilities.module];
+    packageModules = [
+      {
+        name = "core-guarantee-provider";
+        module.config.aos.abilities.implementations = {
+          lifecycle =
+            implementation
+            // {
+              description = "Implements the canonical service lifecycle with exact template reuse.";
+              interface = serviceManagement.interfaces.lifecycle.identity;
+              methods = ["observe"];
+              guarantees = [serviceGuarantees.templateExactReuse];
+            };
+          conditions =
+            implementation
+            // {
+              description = "Implements the canonical provider-neutral service conditions.";
+              interface = serviceManagement.interfaces.conditions.identity;
+              methods = ["observe"];
+              guarantees = builtins.attrValues serviceGuarantees.condition;
+            };
+        };
+      }
+    ];
+  };
+  coreGuaranteeProviderProjection =
+    projectAbilityConfig "core-guarantee-provider" coreGuaranteeProviderEvaluation;
   sharedImplementationFixedPoint = lib.evalModules {
     modules = [
       lib.abilities.module
@@ -995,6 +1025,19 @@ in
   == sharedInterfaceIdentity;
   assert sharedImplementationProjection.interfaces == {};
   assert (builtins.head sharedImplementationProjection.exports).interface == sharedInterfaceIdentity;
+  assert coreGuaranteeProviderProjection.guarantees == {};
+  assert builtins.map (provider: provider.name) coreGuaranteeProviderProjection.implementation.providers
+  == ["conditions" "lifecycle"];
+  assert builtins.map (guarantee: guarantee.name)
+  (builtins.head coreGuaranteeProviderProjection.implementation.providers).guarantees
+  == [
+    "aos.guarantee.service-condition.kernel-argument"
+    "aos.guarantee.service-condition.mandatory-access-control"
+    "aos.guarantee.service-condition.path"
+  ];
+  assert builtins.map (guarantee: guarantee.name)
+  (builtins.elemAt coreGuaranteeProviderProjection.implementation.providers 1).guarantees
+  == ["aos.guarantee.service-template-exact-reuse"];
   assert sharedImplementationFixedPoint.config.aos.abilities.instances."authoring:shared".configuration;
   assert (builtins.head guaranteeReferenceProjection.interface_documents).document.interface.guarantees
   == [

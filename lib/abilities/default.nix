@@ -1612,6 +1612,7 @@ in rec {
         normalizePackageOutputSelectors
         resourceRevision
         ;
+      coreGuarantees = interfaces.serviceManagement.guaranteeDeclarations;
       coreInterfaces =
         interfaces.serviceManagement.declarations
         // interfaces.networkPolicy.declarations

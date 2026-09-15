@@ -75,38 +75,64 @@
   write = semantics "exclusive-write" false;
   stopSemantics = semantics "exclusive-write" true;
 
-  executionGuarantee = name: semantics: {
-    inherit name;
+  guaranteeDeclaration = name: semantics: description: {
+    inherit name semantics description;
     version = 1;
+  };
+  guaranteeIdentity = declaration: {
+    inherit (declaration) name version;
     descriptor = descriptorFor "aos.ability.execution-guarantee/v1" {
-      inherit name semantics;
-      version = 1;
+      inherit (declaration) name semantics version;
     };
   };
-  conditionGuarantees = {
+  conditionGuaranteeDeclarations = {
     path =
-      executionGuarantee
+      guaranteeDeclaration
       "aos.guarantee.service-condition.path"
-      "the provider evaluates the declared path predicate without translating provider-specific condition tokens";
+      "the provider evaluates the declared path predicate without translating provider-specific condition tokens"
+      "Evaluates an exact provider-neutral service path condition.";
     kernel-argument =
-      executionGuarantee
+      guaranteeDeclaration
       "aos.guarantee.service-condition.kernel-argument"
-      "the provider evaluates exact kernel argument presence without translating provider-specific condition tokens";
+      "the provider evaluates exact kernel argument presence without translating provider-specific condition tokens"
+      "Evaluates exact kernel argument presence for a service condition.";
     mandatory-access-control =
-      executionGuarantee
+      guaranteeDeclaration
       "aos.guarantee.service-condition.mandatory-access-control"
-      "the provider evaluates whether mandatory access control is available or enforcing without translating provider-specific condition tokens";
+      "the provider evaluates whether mandatory access control is available or enforcing without translating provider-specific condition tokens"
+      "Evaluates exact mandatory access control state for a service condition.";
   };
-  linuxConditionGuarantees = {
+  linuxConditionGuaranteeDeclarations = {
     capability =
-      executionGuarantee
+      guaranteeDeclaration
       "aos.guarantee.linux-service-condition.capability"
-      "the provider evaluates availability of the declared Linux capability name";
+      "the provider evaluates availability of the declared Linux capability name"
+      "Evaluates availability of an exact Linux capability for a service condition.";
   };
-  templateInstanceGuarantee =
-    executionGuarantee
+  templateInstanceGuaranteeDeclaration =
+    guaranteeDeclaration
     "aos.guarantee.service-template-exact-reuse"
-    "a concrete instance retains and authenticates its static template resource, matches every reusable service facet in canonical bytes after omitting service, enabled, and instantiation identity, and installs no instance-specific drop-in";
+    "a concrete instance retains and authenticates its static template resource, matches every reusable service facet in canonical bytes after omitting service, enabled, and instantiation identity, and installs no instance-specific drop-in"
+    "Retains exact reusable service-template semantics in a concrete instance.";
+  conditionGuarantees = builtins.mapAttrs (_: guaranteeIdentity) conditionGuaranteeDeclarations;
+  linuxConditionGuarantees = builtins.mapAttrs (_: guaranteeIdentity) linuxConditionGuaranteeDeclarations;
+  templateInstanceGuarantee = guaranteeIdentity templateInstanceGuaranteeDeclaration;
+  guaranteeAliases = {
+    condition = {
+      path = "core:service-condition-path";
+      kernelArgument = "core:service-condition-kernel-argument";
+      mandatoryAccessControl = "core:service-condition-mandatory-access-control";
+    };
+    linuxCondition.capability = "core:linux-service-condition-capability";
+    templateExactReuse = "core:service-template-exact-reuse";
+  };
+  guaranteeDeclarations = {
+    ${guaranteeAliases.condition.path} = conditionGuaranteeDeclarations.path;
+    ${guaranteeAliases.condition.kernelArgument} = conditionGuaranteeDeclarations.kernel-argument;
+    ${guaranteeAliases.condition.mandatoryAccessControl} = conditionGuaranteeDeclarations.mandatory-access-control;
+    ${guaranteeAliases.linuxCondition.capability} = linuxConditionGuaranteeDeclarations.capability;
+    ${guaranteeAliases.templateExactReuse} = templateInstanceGuaranteeDeclaration;
+  };
 
   canonicalWithGuarantees = guarantees: interfaceOutputs: alias: name: description: requestType: observationType: methodsFor: let
     methods = methodsFor "aos.service.instance";
@@ -1096,5 +1122,7 @@
       outputType = serviceTypes.deviceNode;
     };
   };
-in
-  declarations
+in {
+  interfaces = declarations;
+  inherit guaranteeAliases guaranteeDeclarations;
+}

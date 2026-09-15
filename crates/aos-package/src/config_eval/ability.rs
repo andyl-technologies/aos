@@ -945,6 +945,7 @@ mod tests {
                 abi: 1.try_into().unwrap(),
                 descriptor: digest(1),
             },
+            guarantees: Vec::new(),
             artifact: ArtifactReference {
                 content: digest(2),
                 store_path: store_path.to_string(),

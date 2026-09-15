@@ -361,6 +361,8 @@ pub struct ProviderImplementation {
     pub description: String,
     /// Identifies the exact public interface implemented.
     pub interface: InterfaceKey,
+    /// Names exact execution guarantees supplied by this implementation.
+    pub guarantees: Vec<GuaranteeKey>,
     /// Identifies the authenticated implementation artifact.
     pub artifact: ArtifactReference,
     /// Lists the bounded lower-interface discovery vocabulary.
@@ -417,6 +419,7 @@ impl ProviderImplementation {
         #[derive(Serialize)]
         struct SemanticProviderImplementation<'a> {
             interface: &'a InterfaceKey,
+            guarantees: &'a [GuaranteeKey],
             artifact: ArtifactIdentity,
             requirements: Vec<SemanticRequirement<'a>>,
             desired_schema: &'a Option<ValueSchema>,
@@ -428,6 +431,7 @@ impl ProviderImplementation {
 
         let semantic = SemanticProviderImplementation {
             interface: &self.interface,
+            guarantees: &self.guarantees,
             artifact: self.artifact.identity(),
             requirements: self
                 .requirements
@@ -476,6 +480,13 @@ fn validate_provider_implementation_limits(
             "provider implementation description must be nonempty, control-free, and within the version-1 string limit"
         );
     }
+    if implementation
+        .guarantees
+        .windows(2)
+        .any(|pair| pair[0] >= pair[1])
+    {
+        bail!("provider implementation guarantees are not unique and canonically ordered");
+    }
 
     let mut remaining_items = limits.max_collection_items;
     consume_provider_implementation_items(
@@ -501,9 +512,14 @@ fn consume_provider_implementation_items(
 ) -> anyhow::Result<()> {
     // Count the fixed provider, interface-key, and artifact record members
     // alongside every dynamic collection below.
-    consume_items(remaining_items, 6)?;
+    consume_items(remaining_items, 7)?;
     consume_items(remaining_items, 3)?;
     consume_items(remaining_items, 4)?;
+    consume_items(remaining_items, implementation.guarantees.len())?;
+    consume_items(
+        remaining_items,
+        implementation.guarantees.len().saturating_mul(3),
+    )?;
     if implementation.provider_module.is_some() {
         consume_items(remaining_items, 1)?;
         consume_items(remaining_items, 2)?;
@@ -761,6 +777,7 @@ mod tests {
                 abi: std::num::NonZeroU32::new(1).expect("nonzero ABI"),
                 descriptor: digest(1),
             },
+            guarantees: Vec::new(),
             artifact: ArtifactReference {
                 content: digest(2),
                 store_path: "/nix/store/provider".to_string(),
@@ -833,6 +850,35 @@ mod tests {
             aos_contract::canonical::to_vec(&original).expect("original canonical provider"),
             aos_contract::canonical::to_vec(&edited).expect("edited canonical provider")
         );
+
+        let mut guarantees_changed = original.clone();
+        guarantees_changed.guarantees = original.requirements[0].guarantees.clone();
+        assert_ne!(
+            original
+                .descriptor_digest()
+                .expect("original provider descriptor"),
+            guarantees_changed
+                .descriptor_digest()
+                .expect("guarantee-bearing provider descriptor")
+        );
+    }
+
+    #[test]
+    fn provider_guarantees_require_unique_canonical_order() {
+        let mut implementation = provider_implementation();
+        let first = GuaranteeKey {
+            name: InterfaceName::new("aos.test.alpha").expect("valid guarantee name"),
+            version: std::num::NonZeroU32::new(1).expect("nonzero guarantee version"),
+            descriptor: digest(7),
+        };
+        let second = GuaranteeKey {
+            name: InterfaceName::new("aos.test.beta").expect("valid guarantee name"),
+            version: std::num::NonZeroU32::new(1).expect("nonzero guarantee version"),
+            descriptor: digest(8),
+        };
+
+        implementation.guarantees = vec![second, first];
+        assert!(validate_provider_implementation_limits(&implementation).is_err());
     }
 
     #[test]
@@ -845,6 +891,7 @@ mod tests {
                 abi: std::num::NonZeroU32::new(1).expect("nonzero ABI"),
                 descriptor: digest(1),
             },
+            guarantees: Vec::new(),
             artifact: ArtifactReference {
                 content: digest(2),
                 store_path: "/nix/store/stateless-provider".to_string(),
@@ -858,7 +905,7 @@ mod tests {
             owns_resource_kinds: Vec::new(),
             state_format: None,
         };
-        let expected = br#"{"artifact":{"closure":"sha256:0404040404040404040404040404040404040404040404040404040404040404","content":"sha256:0202020202020202020202020202020202020202020202020202020202020202","nar_hash":"sha256:0303030303030303030303030303030303030303030303030303030303030303","store_path":"/nix/store/stateless-provider"},"description":"Stateless test provider.","handler":"run","interface":{"abi":1,"descriptor":"sha256:0101010101010101010101010101010101010101010101010101010101010101","name":"aos.test.stateless"},"name":"stateless","owns_resource_kinds":[],"requirements":[]}"#;
+        let expected = br#"{"artifact":{"closure":"sha256:0404040404040404040404040404040404040404040404040404040404040404","content":"sha256:0202020202020202020202020202020202020202020202020202020202020202","nar_hash":"sha256:0303030303030303030303030303030303030303030303030303030303030303","store_path":"/nix/store/stateless-provider"},"description":"Stateless test provider.","guarantees":[],"handler":"run","interface":{"abi":1,"descriptor":"sha256:0101010101010101010101010101010101010101010101010101010101010101","name":"aos.test.stateless"},"name":"stateless","owns_resource_kinds":[],"requirements":[]}"#;
 
         let encoded = aos_contract::canonical::to_vec(&stateless)
             .expect("stateless provider implementation encodes canonically");

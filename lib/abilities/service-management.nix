@@ -9,7 +9,7 @@
   serviceTypes = import ./_service-types.nix {
     inherit types;
   };
-  interfaces = import ./_service-interfaces.nix {
+  interfaceCatalog = import ./_service-interfaces.nix {
     inherit
       declareInterface
       descriptorFor
@@ -18,12 +18,14 @@
       serviceTypes
       ;
   };
+  inherit (interfaceCatalog) interfaces;
   constructors = import ./_service-declaration.nix {
     inherit interfaceDocumentFromDeclaration interfaceIdentity;
     serviceInterfaces = interfaces;
   };
 in {
   types = serviceTypes;
+  inherit (interfaceCatalog) guaranteeAliases guaranteeDeclarations;
   inherit interfaces;
   declarations = builtins.listToAttrs (builtins.map (value: {
       name = value.alias;

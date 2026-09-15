@@ -15,6 +15,7 @@
   interfaceIdentity,
   normalizeSemanticValue,
   resourceRevision,
+  coreGuarantees,
   coreInterfaces,
   normalizePackageOutputSelectors,
 }: let
@@ -111,7 +112,10 @@
   qualifyGuarantees = package: guarantees:
     builtins.map (guarantee:
       if builtins.isString guarantee
-      then qualify package guarantee
+      then
+        if declarationKeyType.check guarantee
+        then guarantee
+        else qualify package guarantee
       else guarantee)
     guarantees;
   qualifyRequirementGuarantees = package: requirement:
@@ -1462,6 +1466,7 @@ in {
   };
 
   config.aos.abilities = {
+    guarantees = coreGuarantees;
     interfaces = coreInterfaces;
     instanceIdentities = projectedInstanceIdentities;
   };

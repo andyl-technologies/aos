@@ -296,6 +296,7 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
         name: key("terminal"),
         description: "Terminal test implementation.".to_string(),
         interface: terminal_interface.clone(),
+        guarantees: Vec::new(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
         desired_schema: None,
@@ -335,6 +336,7 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
         name: key("owner"),
         description: "State-owning test implementation.".to_string(),
         interface: owner_interface_key.clone(),
+        guarantees: Vec::new(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
         provider_module: Some(ModuleLocator {
