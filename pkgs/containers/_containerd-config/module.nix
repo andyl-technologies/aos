@@ -5,7 +5,7 @@
   ...
 }: let
   cfg = config.containerd;
-  inherit (lib) mkOption types;
+  inherit (lib) mkOption;
   inherit (lib.abilities) resultOf;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
@@ -372,12 +372,12 @@
 in {
   options.containerd = {
     enable = mkOption {
-      type = types.bool;
+      type = abilityTypes.boolean;
       default = false;
       description = "Run containerd as a standalone host runtime.";
     };
     restartToken = mkOption {
-      type = types.nullOr serviceTypes.restartToken;
+      type = abilityTypes.optional serviceTypes.restartToken;
       default = null;
       description = "Operator-controlled token whose change requests a service restart.";
     };
@@ -397,7 +397,7 @@ in {
       description = "Socket path relative to the allocated volatile state directory.";
     };
     metricsAddress = mkOption {
-      type = types.nullOr metricsAddress;
+      type = abilityTypes.optional metricsAddress;
       default = null;
       description = "Optional Prometheus metrics listen address.";
     };
@@ -412,17 +412,17 @@ in {
       description = "Plugins whose initialization failure aborts startup.";
     };
     snapshotter = mkOption {
-      type = types.enum ["native" "overlayfs"];
+      type = abilityTypes.enum ["native" "overlayfs"];
       default = "overlayfs";
       description = "Default CRI image snapshotter.";
     };
     defaultRuntime = mkOption {
-      type = types.enum ["runc"];
+      type = abilityTypes.enum ["runc"];
       default = "runc";
       description = "Default OCI runtime registered with the CRI plugin.";
     };
     systemdCgroup = mkOption {
-      type = types.bool;
+      type = abilityTypes.boolean;
       default = true;
       description = "Whether runc delegates cgroup management to the selected service manager.";
     };
@@ -432,7 +432,7 @@ in {
       description = "CRI pod sandbox image reference.";
     };
     registryConfigResource = mkOption {
-      type = types.nullOr abilityTypes.resourceReference;
+      type = abilityTypes.optional abilityTypes.resourceReference;
       default = null;
       description = "Optional authorized host resource containing registry configuration.";
     };

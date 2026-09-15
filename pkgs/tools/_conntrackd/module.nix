@@ -5,7 +5,7 @@
   ...
 }: let
   cfg = config.conntrackd;
-  inherit (lib) mkOption types;
+  inherit (lib) mkOption;
   inherit (lib.abilities) resultOf;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
@@ -14,6 +14,10 @@
   positiveInt = abilityTypes.integer {
     minimum = 1;
     maximum = 9007199254740991;
+  };
+  port = abilityTypes.integer {
+    minimum = 1;
+    maximum = 65535;
   };
   ipv4Address = abilityTypes.refined {
     name = "conntrackd IPv4 address";
@@ -268,17 +272,17 @@
 in {
   options.conntrackd = {
     enable = mkOption {
-      type = types.bool;
+      type = abilityTypes.boolean;
       default = false;
       description = "Enable the package-owned connection tracking daemon.";
     };
     restartToken = mkOption {
-      type = types.nullOr serviceTypes.restartToken;
+      type = abilityTypes.optional serviceTypes.restartToken;
       default = null;
       description = "Operator-controlled token whose change requests a service restart.";
     };
     mode = mkOption {
-      type = types.enum ["stats" "sync"];
+      type = abilityTypes.enum ["stats" "sync"];
       default = "stats";
       description = "Run as a local statistics collector or an FTFW state replicator.";
     };
@@ -303,12 +307,12 @@ in {
       description = "Maximum dynamically grown netlink buffer size in bytes.";
     };
     pollSeconds = mkOption {
-      type = types.nullOr positiveInt;
+      type = abilityTypes.optional positiveInt;
       default = null;
       description = "Optional kernel conntrack polling interval.";
     };
     logConnections = mkOption {
-      type = types.bool;
+      type = abilityTypes.boolean;
       default = false;
       description = "Log destroyed connections in statistics mode.";
     };
@@ -329,12 +333,12 @@ in {
         description = "Dedicated replication network interface.";
       };
       port = mkOption {
-        type = types.port;
+        type = port;
         default = 3780;
         description = "UDP replication port.";
       };
       checksum = mkOption {
-        type = types.bool;
+        type = abilityTypes.boolean;
         default = true;
         description = "Verify checksums on state replication messages.";
       };

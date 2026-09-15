@@ -5,7 +5,7 @@
   ...
 }: let
   cfg = config.etcd;
-  inherit (lib) mkOption types;
+  inherit (lib) mkOption;
   inherit (lib.abilities) resultOf;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
@@ -412,7 +412,7 @@
 in {
   options.etcd = {
     enable = mkOption {
-      type = types.bool;
+      type = abilityTypes.boolean;
       default = false;
       description = "Enable the package-owned etcd service.";
     };
@@ -433,7 +433,7 @@ in {
         description = "Client endpoints advertised to clients and peers.";
       };
       enableGrpcGateway = mkOption {
-        type = types.bool;
+        type = abilityTypes.boolean;
         default = true;
         description = "Enable the embedded gRPC-to-JSON gateway.";
       };
@@ -507,7 +507,7 @@ in {
       description = "Prometheus metric detail exported by etcd.";
     };
     restartToken = mkOption {
-      type = types.nullOr serviceTypes.restartToken;
+      type = abilityTypes.optional serviceTypes.restartToken;
       default = null;
       description = "Optional operator token that forces lifecycle reconciliation when changed.";
     };

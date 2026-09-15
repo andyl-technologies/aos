@@ -119,6 +119,7 @@
   };
   contractHolds =
     assertionsHold evaluated
+    && lib.abilities.types.isPortableOptionTree evaluated.options.containerd
     && assertionsHold evaluatedWithRegistry
     && !assertionsHold invalidDisabledRuntime
     && !assertionsHold invalidDuplicateRequired

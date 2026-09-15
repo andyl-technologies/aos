@@ -873,6 +873,7 @@ in
       allVariantsEvaluate = builtins.all assertionsHold evaluations;
       contractHolds =
         allVariantsEvaluate
+        && lib.abilities.types.isPortableOptionTree evaluated.options.mariadb
         && assertionsHold disabledTlsCredentials
         && assertionsHold disabledIncompleteTls
         && !assertionsHold invalidTls

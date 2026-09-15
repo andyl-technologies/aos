@@ -207,6 +207,7 @@ in
       '';
       contractHolds =
         assertionsHold evaluated
+        && lib.abilities.types.isPortableOptionTree evaluated.options.garage
         && !assertionsHold invalidRpc
         && !assertionsHold invalidAdmin
         && !assertionsHold invalidPeers

@@ -1273,6 +1273,8 @@ in
         };
       assertionsHoldFor = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
+      bootstrapSourceFor = result:
+        result.config.aos.abilities.requests."envoy:bootstrap-configuration".parameters.source;
       ownedValues = lib.filterAttrs (name: _: lib.hasPrefix "envoy:" name);
       disabledConfig = evalConfig {};
       evaluatedConfig = evalConfig {
@@ -1346,12 +1348,9 @@ in
         admin.address = "0.0.0.0";
       };
       invalidAdminLog = builtins.tryEval (builtins.deepSeq
-        ((evalConfig {
-            admin.accessLog = "stderr";
-          })
-          .config
-          .envoy
-          .renderedBootstrap)
+        (serviceManagement.valueFromStructuredSource (bootstrapSourceFor (evalConfig {
+          admin.accessLog = "stderr";
+        })))
         true);
       validSds = evalConfig {
         enable = true;
@@ -1401,6 +1400,7 @@ in
       plainRequests = builtins.attrNames plainAbilities.requests;
       disabledRequirements = builtins.attrNames disabledAbilities.requirementTemplates;
       configuration = (abilities.requests."envoy:bootstrap-configuration" or {parameters = {};}).parameters;
+      evaluatedConfiguration = bootstrapSourceFor evaluatedConfig;
       mainLifecycle = (abilities.requests."envoy:main-lifecycle" or {parameters = {};}).parameters;
       mainStorage = (abilities.requests."envoy:main-storage" or {parameters = {};}).parameters;
       mainResources = (abilities.requests."envoy:main-resources" or {parameters = {};}).parameters;
@@ -1410,6 +1410,7 @@ in
       };
       contractHolds =
         assertionsHoldFor evaluatedConfig
+        && lib.abilities.types.isPortableOptionTree evaluatedConfig.options.envoy
         && assertionsHoldFor validSds
         && assertionsHoldFor validCredentialTls
         && !assertionsHoldFor invalidRoute
@@ -1457,7 +1458,10 @@ in
         && !(lib.hasInfix "/var/log/aos-pkg-envoy" (builtins.toJSON abilities.requests));
       renderedBootstrap =
         if assertionsHoldFor evaluatedConfig
-        then builtins.toFile "envoy-ability-check.json" (builtins.toJSON evaluatedConfig.config.envoy.renderedBootstrap)
+        then
+          builtins.toFile "envoy-ability-check.json" (
+            builtins.toJSON (serviceManagement.valueFromStructuredSource evaluatedConfiguration)
+          )
         else throw "the Envoy ability fixture has a failing assertion";
     in {
       version = testing.mkVMTest {
