@@ -327,7 +327,7 @@ fn seed_modules_are_fetched_and_loaded_before_iteration_zero() {
     let fetcher = RecordingFetcher::new();
     let mut seeds = vec![WorkingSetMember::seed("web")];
 
-    hydrate_seed_config_modules(&mut seeds, &resolver, &fetcher, 1).unwrap();
+    hydrate_seed_modules(&mut seeds, &resolver, &fetcher, 1).unwrap();
 
     assert_eq!(seeds[0].version.as_deref(), Some("1.0.0"));
     assert_eq!(
@@ -345,7 +345,7 @@ fn seed_module_abi_is_gated_before_fetch() {
     let fetcher = RecordingFetcher::new();
     let mut seeds = vec![WorkingSetMember::seed("web")];
 
-    let error = hydrate_seed_config_modules(&mut seeds, &resolver, &fetcher, 1).unwrap_err();
+    let error = hydrate_seed_modules(&mut seeds, &resolver, &fetcher, 1).unwrap_err();
 
     assert!(matches!(error, FixpointError::SeedAbiMismatch(_)));
     assert!(fetcher.fetched.borrow().is_empty());
