@@ -46,10 +46,14 @@ in {
       # initrd identity and data-only enable intent.
       aos.abilities.stages.initrd = {
         packages = [pkgs.util-linux pkgs.systemd];
-        intent.aos.services.getty.autologin = {
-          enable = true;
-          stage = "initrd";
-        };
+        intent = [
+          {
+            aos.services.getty.autologin = {
+              enable = true;
+              stage = "initrd";
+            };
+          }
+        ];
       };
 
       # The gettys bypass login(1), so preserve the development image's empty

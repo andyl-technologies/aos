@@ -47,13 +47,15 @@ in {
       };
 
       intent = lib.mkOption {
-        type = lib.types.attrs;
-        default = {};
+        type = lib.types.listOf lib.types.attrs;
+        default = [];
         internal = true;
         description = ''
-          Data-only initrd module configuration retained as the hermetic
-          build-stage evaluator input. Package modules remain authoritative for
-          their declarations, implementations, and composition behavior.
+          Data-only initrd module configurations retained as the hermetic
+          build-stage evaluator input. Each contributor remains a separate
+          module value so the initrd fixed point performs ordinary typed merges
+          and conflict checks. Package modules remain authoritative for their
+          declarations, implementations, and composition behavior.
         '';
       };
 

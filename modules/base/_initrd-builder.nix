@@ -64,7 +64,7 @@
   abilityActivationSelection,
   abilityResolutionInput ? null,
   abilityEnvironment,
-  abilityIntent ? {},
+  abilityIntent ? [],
   baseLib,
   maskedUnits ? [],
   validateBootIdentity ? false,
@@ -147,8 +147,10 @@
     name = "aos-initrd-ability-intent";
     destination = "/module.nix";
     text = ''
-      { ... }: {
-        config = builtins.fromJSON ${builtins.toJSON (builtins.toJSON abilityIntent)};
+      { lib, ... }: {
+        config = lib.mkMerge (
+          builtins.fromJSON ${builtins.toJSON (builtins.toJSON abilityIntent)}
+        );
       }
     '';
   };

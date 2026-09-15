@@ -556,7 +556,7 @@
     inherit pkgs lib;
   };
   initrdSecurityServices = import ./initrd-security-services.nix {
-    inherit pkgs lib;
+    inherit pkgs lib mkSystem;
   };
   baseKernelNative = import ./base-kernel-native.nix {
     inherit pkgs lib;
