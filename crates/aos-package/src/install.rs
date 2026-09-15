@@ -961,6 +961,7 @@ pub(crate) fn verify_ability_packages_from_cache_with_store<'a>(
 ) -> Result<Vec<crate::ability_package::VerifiedAbilityPackage>> {
     let cache_root = config.cache_path();
     let mut trusted_keys = BTreeMap::<String, Vec<provenance::TrustedProvenanceKey>>::new();
+    let mut transparency_logs = BTreeMap::<String, String>::new();
     let mut seen = BTreeMap::new();
     let mut verified = Vec::new();
     let retention_verifier = crate::ability_package::NativeAbilityRetentionVerifier::new();
@@ -981,13 +982,38 @@ pub(crate) fn verify_ability_packages_from_cache_with_store<'a>(
                 read_registry_provenance_trusted_keys(&cache_root, registry_name)?,
             ),
         };
+        let transparency_log = match transparency_logs.entry(registry_name.to_string()) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                let (_, content) = read_registry_cache_artifact(
+                    &cache_root,
+                    registry_name,
+                    crate::registry_ops::PACKAGE_CONTRACT_TRANSPARENCY_LOG,
+                    "package contract transparency log",
+                )?;
+                entry.insert(content)
+            }
+        };
+        let retention_digest = crate::ability_package::ability_retention_digest(ability)?;
+        let publication_sequence = crate::registry_ops::package_contract_transparency_sequence(
+            transparency_log.as_bytes(),
+            crate::registry_ops::PACKAGE_CONTRACT_TRANSPARENCY_LOG,
+            &meta.name,
+            &meta.version,
+            &meta.platform,
+            &ability.package_digest,
+            &retention_digest.to_string(),
+            &ability.provenance,
+            provenance_jsonl.as_bytes(),
+        )?;
         let manifest_bytes = crate::ability_package::read_package_manifest(&ability.store_path)?;
-        let package = crate::ability_package::verify_ability_package(
+        let package = crate::ability_package::verify_ability_package_at_sequence(
             meta,
             &manifest_bytes,
             &provenance_jsonl,
             registry_name,
             registry_trusted_keys,
+            publication_sequence,
             &retention_verifier,
         )
         .with_context(|| {
@@ -1224,6 +1250,7 @@ pub(crate) fn read_registry_provenance_trusted_keys(
             key_id: entry.id.clone(),
             key: entry.key.clone(),
             retired_before_sequence: None,
+            package_contract_retired_before_sequence: None,
         });
     }
     for entry in &roster.revoked {
@@ -1250,6 +1277,7 @@ pub(crate) fn read_registry_provenance_trusted_keys(
             key_id: entry.id.clone(),
             key: key.clone(),
             retired_before_sequence: Some(retired_before_sequence),
+            package_contract_retired_before_sequence: entry.package_contract_before_sequence,
         });
     }
     Ok(trusted)

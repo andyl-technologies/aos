@@ -31,7 +31,7 @@ fn retire_roster_key_preserves_provenance_key_cutoff() {
     };
 
     let vouching_id =
-        retire_roster_key(&mut roster, "old", Some("planned"), &None, 4).expect("retire key");
+        retire_roster_key(&mut roster, "old", Some("planned"), &None, 4, 7).expect("retire key");
 
     assert_eq!(vouching_id, "new");
     assert!(roster.active.iter().all(|entry| entry.id != "old"));
@@ -42,6 +42,7 @@ fn retire_roster_key_preserves_provenance_key_cutoff() {
         Some("aos-core:Ed25519:YWJjZA==")
     );
     assert_eq!(roster.revoked[0].provenance_before_sequence, Some(4));
+    assert_eq!(roster.revoked[0].package_contract_before_sequence, Some(7));
 }
 
 #[test]
