@@ -849,53 +849,6 @@
       reference = types.artifactPathReference;
     };
   };
-  interpolatedTextFragment = types.taggedUnion {
-    tag = "kind";
-    variants = {
-      literal = types.record {
-        fields = {
-          kind = types.enum ["literal"];
-          text = boundedString 1048576;
-        };
-      };
-      execution-path = types.record {
-        fields = {
-          kind = types.enum ["execution-path"];
-          value = types.deferredResult executionPath;
-        };
-      };
-    };
-  };
-  interpolatedTextSourceBase = types.record {
-    fields = {
-      kind = types.enum ["interpolated-text"];
-      fragments = types.list {
-        element = interpolatedTextFragment;
-        maxItems = 65536;
-      };
-      maximum_size_bytes = types.integer {
-        minimum = 1;
-        maximum = 16777216;
-      };
-    };
-  };
-  interpolatedTextSource = types.refined {
-    name = "interpolated text configuration source";
-    description = "exact ordered byte concatenation of literal and execution-path fragments within the declared resolved-size bound";
-    type = interpolatedTextSourceBase;
-    predicate = source:
-      builtins.foldl'
-      (total: fragment:
-        total
-        + (
-          if fragment.kind == "literal"
-          then builtins.stringLength fragment.text
-          else 0
-        ))
-      0
-      source.fragments
-      <= source.maximum_size_bytes;
-  };
   documentPathSegment = types.taggedUnion {
     tag = "kind";
     variants = {
@@ -1623,8 +1576,6 @@ in {
     restartToken
     resourceLimit
     capabilityBounds
-    interpolatedTextFragment
-    interpolatedTextSource
     configurationMaterialization
     configurationMaterializationObservation
     networkReadiness

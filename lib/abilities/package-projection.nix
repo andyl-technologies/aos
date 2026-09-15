@@ -25,10 +25,32 @@
     || implementation.handlerDescriptor != null)
   implementationNames;
 
+  guaranteeFor = reference:
+    if builtins.hasAttr reference evaluated.guarantees
+    then abilities.guaranteeIdentity evaluated.guarantees.${reference}
+    else throw "Ability guarantee reference '${reference}' has no exact package declaration.";
+  semanticRequirement = requirement:
+    requirement // {guarantees = map guaranteeFor requirement.guarantees;};
+  semanticInterface = interface:
+    interface
+    // {
+      guarantees = map guaranteeFor interface.guarantees;
+      methods = builtins.mapAttrs (_: method:
+        method // {guarantees = map guaranteeFor method.guarantees;})
+      interface.methods;
+    };
+  semanticImplementation = implementation:
+    implementation
+    // {
+      guarantees = map guaranteeFor implementation.guarantees;
+      requirements = builtins.mapAttrs (_: semanticRequirement) implementation.requirements;
+    };
+  semanticImplementations = builtins.mapAttrs (_: semanticImplementation) evaluated.implementations;
+
   interfaceDocuments = builtins.mapAttrs (
     _:
       abilities.interfaceDocumentFromDeclaration
-  ) evaluated.interfaces;
+  ) (builtins.mapAttrs (_: semanticInterface) evaluated.interfaces);
   interfaceFor = implementation: interfaceDocuments.${implementation.interface};
   interfaceIdentityFor = implementation:
     abilities.interfaceIdentity (interfaceFor implementation);
@@ -37,7 +59,7 @@
     (builtins.attrNames implementation.requirements);
   packageRequirements = abilities.normalizeRequirements (builtins.listToAttrs (map (name: {
       name = localName name;
-      value = evaluated.requirementTemplates.${name};
+      value = semanticRequirement evaluated.requirementTemplates.${name};
     })
     (builtins.attrNames evaluated.requirementTemplates)));
   guarantees = builtins.listToAttrs (map (name: {
@@ -55,6 +77,12 @@
     artifact = selector implementation.providerModule.artifact;
     inherit (implementation.providerModule) path;
   };
+  projectedHandler = context: handler:
+    (builtins.removeAttrs handler ["arguments" "result"])
+    // {
+      arguments = abilities.types.schemaOf "${context} arguments" handler.arguments;
+      result = abilities.types.schemaOf "${context} result" handler.result;
+    };
   ownedResourceKinds = implementation: let
     declaration = interfaceFor implementation;
   in
@@ -103,10 +131,10 @@
     then left.name < right.name
     else leftInterface < rightInterface;
   providers = builtins.sort providerLessThan (map
-    (name: providerFor name evaluated.implementations.${name})
+    (name: providerFor name semanticImplementations.${name})
     implementationNames);
   handlerPairs = lib.concatMap (name: let
-    implementation = evaluated.implementations.${name};
+    implementation = semanticImplementations.${name};
     handler = implementation.handlerDescriptor;
   in
     lib.optional (handler != null) {
@@ -126,7 +154,7 @@
       (packageModuleLocator != null)
       (selector packageModuleLocator.artifact)
       ++ lib.concatMap (name: let
-        implementation = evaluated.implementations.${name};
+        implementation = semanticImplementations.${name};
       in
         [(implementationArtifact implementation)]
         ++ map selector implementation.artifacts
@@ -135,9 +163,25 @@
         (selector implementation.providerModule.artifact)
         ++ lib.optional
         (implementation.handlerDescriptor != null)
-        (selector implementation.handlerDescriptor.artifact))
+        (selector implementation.handlerDescriptor.artifact)
+        ++ lib.optional
+        (implementation.qualification != null)
+        (selector implementation.qualification.observer.artifact))
       implementationNames
     ));
+  qualification = builtins.listToAttrs (lib.concatMap (name: let
+    implementation = semanticImplementations.${name};
+  in
+    lib.optional (implementation.qualification != null) {
+      name = localName name;
+      value = {
+        conformance_families = builtins.sort builtins.lessThan implementation.qualification.conformanceFamilies;
+        observer = projectedHandler
+          "qualification observer"
+          implementation.qualification.observer;
+      };
+    })
+  implementationNames);
   interfaceAliases = map (name: let
     document = interfaceDocuments.${name};
     identity = abilities.interfaceIdentity document;
@@ -182,9 +226,15 @@
       value = abilities.interfaceIdentity entry.value;
     }) interfaceAliases);
     inherit guarantees;
-    package_module = packageModuleLocator;
+    package_module =
+      if packageModuleLocator == null
+      then null
+      else {
+        artifact = selector packageModuleLocator.artifact;
+        inherit (packageModuleLocator) path;
+      };
     exports = map (name: let
-      implementation = evaluated.implementations.${name};
+      implementation = semanticImplementations.${name};
     in {
       name = localName name;
       interface = interfaceIdentityFor implementation;
@@ -199,6 +249,7 @@
       inherit providers;
       handlers = builtins.listToAttrs handlerPairs;
     };
+    inherit qualification;
   };
 in {
   value = projectionValue;

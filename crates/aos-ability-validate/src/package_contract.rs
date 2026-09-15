@@ -109,7 +109,7 @@ pub(crate) fn validate_package_contract<B>(
 where
     B: AsRef<[u8]>,
 {
-    let supported_features = supported_features()?;
+    let supported_features = package_source_supported_features()?;
     let package = decode_canonical::<PackageDocument>(
         manifest,
         aos_ability_model::ABILITY_LIMITS_V1,
@@ -203,10 +203,41 @@ fn validate_local_declarations(
         "package guarantee declarations must exactly cover all referenced guarantee identities"
     );
 
+    anyhow::ensure!(
+        package.artifacts.contains(&package.package_module.artifact),
+        "package module artifact is absent from the retained artifact catalog"
+    );
+    let implementation_descriptors = package
+        .implementation
+        .providers
+        .iter()
+        .map(aos_ability_model::ProviderImplementation::descriptor_digest)
+        .collect::<anyhow::Result<BTreeSet<_>>>()?;
+    for (implementation, qualification) in &package.implementation.qualification {
+        anyhow::ensure!(
+            implementation_descriptors.contains(implementation),
+            "package qualification claim names an absent implementation descriptor"
+        );
+        anyhow::ensure!(
+            package.artifacts.contains(&qualification.observer.artifact),
+            "package qualification observer is absent from the retained artifact catalog"
+        );
+    }
+
     Ok(())
 }
 
-fn supported_features() -> Result<BTreeSet<RequiredFeature>, PackageContractValidationError> {
+/// Returns the exact semantic feature set accepted by the package-source reader.
+///
+/// Reference decoders and documentation consumers use this shared set so they
+/// cannot drift from the package publication gate.
+///
+/// # Errors
+///
+/// Returns an error if a built-in feature name violates the closed identity
+/// grammar.
+pub fn package_source_supported_features()
+-> Result<BTreeSet<RequiredFeature>, PackageContractValidationError> {
     [
         aos_ability_model::builtin::AB_IMAGE_ROLLOUT_FEATURE,
         "abilities-v1",

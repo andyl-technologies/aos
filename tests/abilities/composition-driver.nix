@@ -57,6 +57,16 @@ args @ {lib, ...}: let
     start_timeout_millis = 1000;
     stop_timeout_millis = 1000;
   };
+  qualifiedLifecycleRequest = lifecycleRequest // {
+    start = map (command:
+      command
+      // {
+        executable = command.executable // {
+          artifact = command.executable.artifact // {package = "consumer";};
+        };
+      })
+    lifecycleRequest.start;
+  };
   dependencyRequest = {
     service = "main";
     enabled = true;
@@ -575,7 +585,7 @@ in
     assert builtins.length (builtins.attrNames abilities.desiredResources) == 1;
     assert desired.controller == "test:lifecycle";
     assert desired.kind == interfaces.serviceInstance.identity.name;
-    assert desired.value.lifecycle == builtins.removeAttrs lifecycleRequest ["service" "enabled"];
+    assert desired.value.lifecycle == builtins.removeAttrs qualifiedLifecycleRequest ["service" "enabled"];
     assert desired.value.dependencies == builtins.removeAttrs dependencyRequest ["service" "enabled"];
     assert desired.realization == {backend = "fixture";};
     assert builtins.length resolved == 2;

@@ -159,7 +159,7 @@
         maintainers = ["AOS test"];
         aos.platformSupport = {disposition = "target";};
       };
-      abilities.projection.artifactOutputs.module = {
+      _aosAbilityCarrier.artifactOutputs.module = {
         derivation = "/nix/store/44444444444444444444444444444444-example-module.drv";
         storePath = "/nix/store/55555555555555555555555555555555-example-module";
       };
@@ -183,8 +183,9 @@
     };
   fileModulePayload = abilityModulePayload ./fixtures/ability-module-file.nix;
   directoryModulePayload = abilityModulePayload ./fixtures/ability-module-directory;
-  fileModuleArtifact = fileModulePayload.abilities.projection.artifactOutputs.module.output;
-  directoryModuleArtifact = directoryModulePayload.abilities.projection.artifactOutputs.module.output;
+  missingEntryRejected = !(builtins.tryEval (abilityModulePayload ./fixtures)).success;
+  fileModuleArtifact = fileModulePayload._aosAbilityCarrier.artifactOutputs.module.output;
+  directoryModuleArtifact = directoryModulePayload._aosAbilityCarrier.artifactOutputs.module.output;
   sourceRoots = (builtins.head derivationProbe.packages).source_store_paths;
   nestedSourceRoot = builtins.unsafeDiscardStringContext (toString (builtins.path {
     path = nestedSource;
@@ -242,13 +243,14 @@ in
     }
   ];
   assert fileModulePayload.drvPath == directoryModulePayload.drvPath;
-  assert fileModulePayload.abilities.projection.value.package_module.path == "module.nix";
-  assert directoryModulePayload.abilities.projection.value.package_module.path == "module.nix";
+  assert missingEntryRejected;
+  assert fileModulePayload.abilities.package_module.path == "module.nix";
+  assert directoryModulePayload.abilities.package_module.path == "module.nix";
   assert builtins.elem {
     package = "self";
     output = "module";
   }
-  fileModulePayload.abilities.projection.value.artifacts;
+  fileModulePayload.abilities.artifacts;
   assert releaseSourcesComplete;
   assert builtins.length (releasePackageByName "aos").source_store_paths >= 2;
   assert builtins.length (releasePackageByName "docker-compose").source_store_paths >= 2;
@@ -310,7 +312,7 @@ in
             test -f ${directoryModuleArtifact}/module.nix
             test -f ${directoryModuleArtifact}/private.nix
             test ! -e ${directoryModuleArtifact}/ability-module-directory-sibling.txt
-            test "$(find ${directoryModuleArtifact} -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)" = "$(printf 'module.nix\nprivate.nix')"
+            test "$(find ${directoryModuleArtifact} -mindepth 1 -maxdepth 1 ! -name nix-support -printf '%f\n' | sort)" = "$(printf 'module.nix\nprivate.nix')"
             mkdir -p "$out"
             cat > "$out/result" <<'EOF'
             schema=${support.schema}

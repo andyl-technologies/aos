@@ -40,13 +40,16 @@
     else
       map (package: {
         payload = package;
-        manifest = package.abilities.projection;
+        manifest = {
+          value = package.abilities;
+          inherit (package._aosAbilityCarrier) document interfaces artifactOutputs;
+        };
       })
       (builtins.filter (
           package:
             builtins.isAttrs package
             && package ? abilities
-            && package.abilities ? projection
+            && package ? _aosAbilityCarrier
         )
         packageRoots);
   packagePaths =
@@ -97,7 +100,7 @@
       else if builtins.isAttrs packageRegistry && builtins.hasAttr selector.package packageRegistry
       then builtins.getAttr selector.package packageRegistry
       else common.fail "ability selector names unknown package '${selector.package}'";
-    projectedOutputs = package.abilities.projection.artifactOutputs or {};
+    projectedOutputs = package._aosAbilityCarrier.artifactOutputs or {};
     selectedProjection = projectedOutputs.${selector.output} or null;
     outputs = lib.unique ((package.outputs or ["out"]) ++ builtins.attrNames projectedOutputs);
   in

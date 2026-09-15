@@ -12,6 +12,28 @@
   authoredRequests = abilities.requests;
 
   fail = message: throw "ability composition: ${message}";
+  guaranteeFor = reference:
+    if builtins.hasAttr reference abilities.guarantees
+    then lib.abilities.guaranteeIdentity abilities.guarantees.${reference}
+    else fail "guarantee reference '${reference}' has no exact declaration";
+  semanticRequirement = requirement:
+    requirement // {guarantees = builtins.map guaranteeFor requirement.guarantees;};
+  semanticInterface = interface:
+    interface
+    // {
+      guarantees = builtins.map guaranteeFor interface.guarantees;
+      methods = builtins.mapAttrs (_: method:
+        method // {guarantees = builtins.map guaranteeFor method.guarantees;})
+      interface.methods;
+    };
+  semanticImplementation = implementation:
+    implementation
+    // {
+      guarantees = builtins.map guaranteeFor implementation.guarantees;
+      requirements = builtins.mapAttrs (_: semanticRequirement) implementation.requirements;
+    };
+  semanticInterfaces = builtins.mapAttrs (_: semanticInterface) abilities.interfaces;
+  semanticImplementations = builtins.mapAttrs (_: semanticImplementation) abilities.implementations;
   emptyProvision = {
     requests = {};
     outputs = {};
@@ -102,7 +124,7 @@
     })
     (builtins.attrValues abilities.bindings)));
   nestedRequirementEntries = builtins.concatLists (builtins.map (implementationName: let
-    implementation = abilities.implementations.${implementationName} or (fail "binding selects absent implementation '${implementationName}'");
+    implementation = semanticImplementations.${implementationName} or (fail "binding selects absent implementation '${implementationName}'");
   in
     builtins.map (alias: {
       name = lib.abilities.compositionRequirementKey {
@@ -130,8 +152,8 @@
       else provisionGeneratedRequests.${binding.request}
         or compositionGeneratedRequests.${binding.request}
         or (fail "binding '${bindingName}' selects an absent request");
-    implementation = abilities.implementations.${binding.implementation} or (fail "binding '${bindingName}' selects an absent implementation");
-    interface = abilities.interfaces.${implementation.interface} or (fail "implementation '${binding.implementation}' references an absent interface");
+    implementation = semanticImplementations.${binding.implementation} or (fail "binding '${bindingName}' selects an absent implementation");
+    interface = semanticInterfaces.${implementation.interface} or (fail "implementation '${binding.implementation}' references an absent interface");
     instance = abilities.instances.${binding.providerInstance} or (fail "binding '${bindingName}' selects an absent provider instance");
     provider = abilities.instanceIdentities.${binding.providerInstance} or (fail "binding '${bindingName}' has no canonical provider identity");
   in {
@@ -247,7 +269,7 @@
 
   requestedMethods = entry:
     if builtins.hasAttr entry.request.requirement abilities.requirementTemplates
-    then abilities.requirementTemplates.${entry.request.requirement}.methods
+    then (semanticRequirement abilities.requirementTemplates.${entry.request.requirement}).methods
     else (generatedRequirements.${entry.request.requirement} or (fail "request '${entry.binding.request}' has no exact requirement")).requirement.methods;
   controlsKind = kind: entry:
     builtins.any (methodName: let
@@ -360,7 +382,7 @@
     })
     childrenByOrigin;
   childDeclarationsValid = builtins.all (child: let
-    implementation = abilities.implementations.${child.implementation};
+    implementation = semanticImplementations.${child.implementation};
     requirement = implementation.requirements.${child.requirement} or null;
     acceptedDeclarations =
       if requirement == null
@@ -372,7 +394,7 @@
           );
         in
           builtins.elem identity requirement.accepted_interfaces)
-        (builtins.attrValues abilities.interfaces);
+        (builtins.attrValues semanticInterfaces);
   in
     lib.abilities.types.localKey.check child.localRequestKey
     && lib.abilities.types.localKey.check child.requirement

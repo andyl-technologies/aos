@@ -12,8 +12,9 @@ use aos_ability_model::document::PackageSubject;
 use aos_ability_model::{
     AbilityActivationMode, ArtifactReference, ExportDeclaration, GuaranteeDeclaration,
     HandlerDescriptor, InterfaceDocument, InterfaceKey, InterfaceName, LocalKey, ModuleLocator,
-    PackageDocument, PackageImplementation, ProviderImplementation, ProviderStateFormat,
-    RelativePath, RequiredFeature, RequirementDeclaration, ValueSchema, VersionedDocument,
+    PackageDocument, PackageImplementation, ProviderImplementation, ProviderQualification,
+    ProviderStateFormat, RelativePath, RequiredFeature, RequirementDeclaration, ValueSchema,
+    VersionedDocument,
 };
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
@@ -333,6 +334,16 @@ pub struct PackageImplementationProjection {
     pub handlers: BTreeMap<LocalKey, HandlerProjection>,
 }
 
+/// Declares package-owned native qualification evidence for one implementation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct QualificationProjection {
+    /// Semantic conformance families claimed by the implementation.
+    pub conformance_families: Vec<LocalKey>,
+    /// Package-owned observer used to collect independent qualification evidence.
+    pub observer: HandlerProjection,
+}
+
 /// Carries one canonical interface document emitted with the projection.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -372,6 +383,9 @@ pub struct PackageAbilityProjection {
     pub requirements: Vec<RequirementDeclaration>,
     /// Contains symbolic provider and handler declarations.
     pub implementation: PackageImplementationProjection,
+    /// Maps implementation aliases to package-owned qualification claims.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub qualification: BTreeMap<LocalKey, QualificationProjection>,
 }
 
 /// Decodes one canonical, bounded package ability projection.
@@ -499,6 +513,33 @@ pub fn resolve_package_projection(
             ))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
+    let qualification = projection
+        .qualification
+        .into_iter()
+        .map(|(name, qualification)| {
+            let provider = provider_names
+                .get(&name)
+                .and_then(|position| providers.get(*position))
+                .with_context(|| {
+                    format!(
+                        "ability qualification claim '{}' has no matching implementation",
+                        name.as_str()
+                    )
+                })?;
+            Ok((
+                provider.descriptor_digest()?,
+                ProviderQualification {
+                    conformance_families: qualification.conformance_families,
+                    observer: HandlerDescriptor {
+                        artifact: resolver.select(&qualification.observer.artifact)?,
+                        entry_point: qualification.observer.entry_point,
+                        arguments: qualification.observer.arguments,
+                        result: qualification.observer.result,
+                    },
+                },
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
     let exports = projection
         .exports
         .into_iter()
@@ -545,6 +586,7 @@ pub fn resolve_package_projection(
         implementation: PackageImplementation {
             providers,
             handlers,
+            qualification,
         },
     })
 }
@@ -583,9 +625,39 @@ fn validate_projection_structure(projection: &PackageAbilityProjection) -> Resul
         .implementation
         .providers
         .windows(2)
-        .any(|pair| pair[0].name >= pair[1].name)
+        .any(|pair| {
+            pair[0].interface > pair[1].interface
+                || (pair[0].interface == pair[1].interface && pair[0].name >= pair[1].name)
+        })
     {
-        bail!("ability projection implementations are not unique and canonically ordered");
+        bail!("ability projection implementations are not in canonical interface/name order");
+    }
+    let provider_names = projection
+        .implementation
+        .providers
+        .iter()
+        .map(|provider| &provider.name)
+        .collect::<BTreeSet<_>>();
+    for (implementation, qualification) in &projection.qualification {
+        if !provider_names.contains(implementation) {
+            bail!("ability qualification claim has no exact implementation");
+        }
+        if qualification.conformance_families.is_empty()
+            || qualification
+                .conformance_families
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+        {
+            bail!("ability qualification families are empty, repeated, or unordered");
+        }
+        RelativePath::new(&qualification.observer.entry_point)
+            .context("validating qualification observer entry point")?;
+        if !projection
+            .artifacts
+            .contains(&qualification.observer.artifact)
+        {
+            bail!("ability qualification observer artifact is not retained");
+        }
     }
 
     let limits = aos_ability_model::ABILITY_LIMITS_V1;
@@ -688,8 +760,11 @@ fn validate_projected_interfaces(projection: &PackageAbilityProjection) -> Resul
 mod tests {
     use super::{
         decode_package_projection, resolve_artifact_selectors, resolve_package_projection,
+        validate_projection_value_budget,
     };
-    use aos_ability_model::{ArtifactReference, LocalKey, VersionedDocument};
+    use aos_ability_model::{
+        ABILITY_LIMITS_V1, ArtifactReference, LimitProfile, LocalKey, VersionedDocument,
+    };
     use aos_contract::Sha256Digest;
     use serde_json::json;
 
@@ -723,6 +798,18 @@ mod tests {
             "requirements": [],
             "implementation": {"providers": [], "handlers": {}}
         })
+    }
+
+    #[test]
+    fn recursive_projection_budget_rejects_wide_values() {
+        let limits = LimitProfile {
+            max_collection_items: 4,
+            ..ABILITY_LIMITS_V1
+        };
+        let value = json!([null, null, null, null, null]);
+        let mut items = 0;
+
+        assert!(validate_projection_value_budget(&value, 1, &mut items, &limits).is_err());
     }
 
     #[test]
@@ -974,6 +1061,64 @@ mod tests {
             original.content_digest().unwrap(),
             changed_path.content_digest().unwrap()
         );
+    }
+
+    #[test]
+    fn qualification_identity_uses_observer_semantics_without_store_locator() {
+        let bytes = aos_contract::canonical::to_vec(&projection()).unwrap();
+        let projection = decode_package_projection(&bytes).unwrap();
+        let payload = artifact("payload", "/nix/store/payload");
+        let source = artifact("source", "/nix/store/source.drv");
+        let mut document =
+            resolve_package_projection(projection, payload.clone(), source, |selector| {
+                match (selector.package.as_str(), selector.output.as_str()) {
+                    ("self", "out") => Ok(payload.clone()),
+                    ("self", "module") => Ok(artifact("module", "/nix/store/owner-module")),
+                    ("dependency", "bin") => {
+                        Ok(artifact("dependency", "/nix/store/dependency-bin"))
+                    }
+                    _ => unreachable!("fixture contains only declared selectors"),
+                }
+            })
+            .unwrap();
+        let observer = artifact("observer", "/nix/store/observer");
+        document.implementation.qualification.insert(
+            Sha256Digest::of_bytes("implementation"),
+            aos_ability_model::ProviderQualification {
+                conformance_families: vec![LocalKey::new("lifecycle").unwrap()],
+                observer: aos_ability_model::HandlerDescriptor {
+                    artifact: observer,
+                    entry_point: "bin/observe".to_string(),
+                    arguments: serde_json::from_value(json!({"kind": "boolean"})).unwrap(),
+                    result: serde_json::from_value(json!({"kind": "boolean"})).unwrap(),
+                },
+            },
+        );
+
+        let semantic = document.content_digest().unwrap();
+        let mut relocated = document.clone();
+        relocated
+            .implementation
+            .qualification
+            .values_mut()
+            .next()
+            .unwrap()
+            .observer
+            .artifact
+            .store_path = "/nix/store/relocated-observer".to_string();
+        assert_eq!(semantic, relocated.content_digest().unwrap());
+
+        let mut changed = document;
+        changed
+            .implementation
+            .qualification
+            .values_mut()
+            .next()
+            .unwrap()
+            .observer
+            .artifact
+            .closure = Sha256Digest::of_bytes("changed observer closure");
+        assert_ne!(semantic, changed.content_digest().unwrap());
     }
 
     #[test]

@@ -1685,6 +1685,7 @@ fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
         implementation: PackageImplementation {
             providers: vec![implementation],
             handlers: BTreeMap::new(),
+            qualification: BTreeMap::new(),
         },
     };
     binding.provider_package = Some(

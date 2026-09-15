@@ -225,23 +225,35 @@
     authoredConfigModule = args.configModule or null;
     authoredAbilities = args.abilities or null;
     abilityModuleSource =
-      if authoredAbilities != null && builtins.isPath authoredAbilities
-      then let
-        isDirectory = builtins.pathExists (authoredAbilities + "/module.nix");
-      in {
-        source = authoredAbilities;
-        inherit isDirectory;
-        path = "module.nix";
-      }
-      else null;
+      if authoredAbilities == null
+      then null
+      else if !builtins.isPath authoredAbilities
+      then throw "mkDerivation abilities for package '${packageName}' must be a path-backed file or directory module"
+      else let
+        sourceType = builtins.readFileType authoredAbilities;
+        modulePath = authoredAbilities + "/module.nix";
+      in
+        if sourceType == "regular"
+        then {
+          source = authoredAbilities;
+          isDirectory = false;
+          path = "module.nix";
+        }
+        else if sourceType != "directory"
+        then throw "mkDerivation abilities for package '${packageName}' must name a regular file or directory"
+        else if !builtins.pathExists modulePath || builtins.readFileType modulePath != "regular"
+        then throw "mkDerivation abilities directory for package '${packageName}' must contain a regular module.nix"
+        else {
+          source = authoredAbilities;
+          isDirectory = true;
+          path = "module.nix";
+        };
     abilityModules =
       if authoredAbilities == null
       then []
-      else if builtins.isList authoredAbilities
-      then authoredAbilities
-      else if abilityModuleSource != null && abilityModuleSource.isDirectory
+      else if abilityModuleSource.isDirectory
       then [(abilityModuleSource.source + "/module.nix")]
-      else [authoredAbilities];
+      else [abilityModuleSource.source];
     retainedAbilityModule = {imports = abilityModules;};
     abilityModuleArtifact =
       if abilityModuleSource == null
@@ -255,6 +267,7 @@
           version = args.version or "0";
           src = null;
           outputs = ["module"];
+          buildDeps = [resolvedBuildPackages.nix];
           phases = [
             {
               name = "install";
@@ -266,6 +279,13 @@
                   else ''cp ${abilityModuleSource.source} "$module/module.nix"''
                 }
                 test -f "$module/module.nix"
+                invalid_entry=$(${stdenv.findutils}/bin/find "$module" ! -type d ! -type f -print -quit)
+                if [ -n "$invalid_entry" ]; then
+                  echo "ability module for '${packageName}' contains a non-regular entry: $invalid_entry" >&2
+                  exit 1
+                fi
+                ${stdenv.findutils}/bin/find "$module" -type f -name '*.nix' \
+                  -exec ${resolvedBuildPackages.nix}/bin/nix-instantiate --store dummy:// --parse {} \; >/dev/null
               '';
             }
           ];
@@ -323,24 +343,6 @@
               };
             };
         };
-    publishedAbilityImplementations =
-      if abilityProjection == null
-      then null
-      else
-        builtins.mapAttrs (_: implementation:
-          implementation
-          // {
-            handlerDescriptor = projectAbilityHandler "implementation handler" implementation.handlerDescriptor;
-            qualification =
-              if implementation.qualification == null
-              then null
-              else
-                implementation.qualification
-                // {
-                  observer = projectAbilityHandler "qualification observer" implementation.qualification.observer;
-                };
-          })
-        abilityProjection.implementations;
     preparedAuthoredConfigModule =
       if authoredConfigModule != null
       then
@@ -567,9 +569,12 @@
     abilityAttrs =
       if abilityProjection != null
       then {
-        abilities = {
+        abilities = abilityProjection.value;
+        _aosAbilityCarrier = {
           module = retainedAbilityModule;
-          projection = abilityProjection;
+          document = abilityProjection.document;
+          interfaces = abilityProjection.interfaces;
+          artifactOutputs = abilityProjection.artifactOutputs;
           optionSurface =
             builtins.filter
             (declaration: declaration.owner == packageName)

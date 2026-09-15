@@ -4,6 +4,19 @@
   lib,
 }: let
   fails = value: !(builtins.tryEval (builtins.deepSeq value true)).success;
+  boundedSelectorNormalizer = import ../../lib/abilities/package-output-selectors.nix {
+    diagnostics = import ../../lib/abilities/diagnostic.nix;
+    limits = {
+      maxCollectionItems = 4;
+      maxStringBytes = 16;
+      maxStructuralDepth = 4;
+    };
+  };
+  normalizeBounded = value:
+    boundedSelectorNormalizer.normalizePackageOutputSelectors {
+      owner = "test";
+      inherit value;
+    };
 
   interfaceDocument = import ./interface.nix {
     inherit (lib) abilities;
@@ -412,13 +425,13 @@
     inherit (lib) abilities;
   };
   effectPlan = effectFixture.normalized;
-  productionKubernetes = import ./production-kubernetes.nix {
-    inherit pkgs lib;
-  };
   serviceManagement = import ./service-management.nix {
     inherit lib;
   };
   systemServiceModules = import ./system-service-modules.nix {
+    inherit lib;
+  };
+  serviceModuleCutover = import ./service-module-cutover.nix {
     inherit lib;
   };
   dockerService = import ./docker-service.nix {
@@ -443,17 +456,7 @@
     inherit lib;
   };
   smokeAbilityProjection = pkgs.ability-package-smoke.abilities;
-  smokePublishedInterfaces = builtins.fromJSON (
-    builtins.unsafeDiscardStringContext pkgs.ability-package-smoke.abilities.contract.abilityInterfacesJson
-  );
-  migratedServiceContracts =
-    map (
-      name: pkgs.${name}.abilities.contract
-    )
-    (import ../../qualification/package-activation-inventory.nix {
-      inherit pkgs lib;
-    })
-    .activationPackages;
+  smokeInterfaceProjection = pkgs.ability-package-smoke._aosAbilityCarrier.interfaces;
   oversizedFallback = builtins.tryEval (builtins.deepSeq (
       requirementExport "advisory" {outputs.payload = effectFixture.oversizedValue;}
     )
@@ -476,41 +479,20 @@
         src = null;
         outputs = ["out" output];
         phases = [];
-        abilities = {};
+        abilities = ../build/fixtures/ability-module-file.nix;
       })
-      .abilities
-      .contract
-      .outPath))
+      ._aosAbilityCarrier
+      .document))
     .success;
-  proseVariant = prose:
-    pkgs.mkDerivation {
-      pname = "ability-prose-invariance";
-      version = "1.0.0";
-      src = ./prose-invariance;
-      phases = [
-        {
-          name = "install";
-          script = ''
-            mkdir -p "$out/share/ability-prose-invariance"
-            echo payload > "$out/share/ability-prose-invariance/value"
-          '';
-        }
-      ];
-      configModule = {
-        src = ./prose-invariance;
-        moduleAbiCompat = {
-          min = 1;
-          max = 1;
-        };
-        declares = [];
-        documentation.sections.reference = lib.aosDoc.section "Reference" [
-          (lib.aosDoc.paragraph prose)
-        ];
-      };
-      abilities = {};
-    };
-  proseBefore = proseVariant "Original package guidance.";
-  proseAfter = proseVariant "Revised package guidance with no contract change.";
+  inlineAbilitiesRejected = !(
+    builtins.tryEval (pkgs.mkDerivation {
+      pname = "inline-ability-module";
+      version = "0";
+      src = null;
+      phases = [];
+      abilities = {config.aos.abilities = {};};
+    })
+  ).success;
   authoringConformance = import ./authoring-conformance.nix {
     inherit pkgs lib;
   };
@@ -542,6 +524,8 @@ in
   assert reservedAbilityOutputRejected "abilities";
   assert reservedAbilityOutputRejected "abilityContract";
   assert reservedAbilityOutputRejected "abilityModule";
+  assert reservedAbilityOutputRejected "module";
+  assert inlineAbilitiesRejected;
   # Documentation prose is retained in the config companion and therefore
   # changes that companion (and the later documentation object's identity).
   # mkDerivation removes configModule before building the payload and prepares
@@ -860,14 +844,13 @@ in
   effectFixture.bootstrap.edges;
   assert !(builtins.head effectFixture.kubernetes.operations ? semantics);
   assert effectFixture.omitted == emptyEffects;
-  assert productionKubernetes;
   assert serviceManagement;
   assert systemServiceModules;
+  assert serviceModuleCutover;
   assert compositionDriver;
-  assert builtins.attrNames smokeAbilityProjection == ["contract" "documentation" "implementations" "interfaces" "module" "moduleOutputs" "optionSurface" "requirements"];
-  assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];
+  assert map (provider: provider.name) smokeAbilityProjection.implementation.providers == ["default"];
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
-  assert builtins.attrNames smokeAbilityProjection.requirements == ["canonical-edge"];
+  assert builtins.length smokeAbilityProjection.requirements == 1;
   assert dockerService;
   assert containerdStaticProjection;
   assert kernelModules;
@@ -875,6 +858,10 @@ in
   assert postgresqlService;
   assert (builtins.head smokePublishedInterfaces).document == smokeAbilityProjection.interfaces.default;
   assert networkPolicyCore;
+  assert fails (normalizeBounded [true false null true false]);
+  assert fails (normalizeBounded {oversized-member-name = true;});
+  assert fails (normalizeBounded "0123456789abcdefg");
+  assert (builtins.head smokeAbilityProjection.interface_documents).document == (builtins.head smokeInterfaceProjection).value;
   assert fails (lib.abilities.effects.normalize [] effectFixture.missingReference);
   assert fails (lib.abilities.effects.normalize [] effectFixture.cycle);
   assert fails (lib.abilities.effects.normalize [] effectFixture.incompleteBoolean);
@@ -901,5 +888,5 @@ in
           '';
         }
       ];
-      buildDeps = [authoringConformance] ++ migratedServiceContracts;
+      buildDeps = [authoringConformance];
     }

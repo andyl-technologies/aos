@@ -404,6 +404,7 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
                     result: ValueSchema::Boolean,
                 },
             )]),
+            qualification: BTreeMap::new(),
         },
     };
     let package_digest = package.content_digest().expect("stateful package digest");

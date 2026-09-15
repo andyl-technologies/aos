@@ -989,7 +989,7 @@
 
   checkCompositionValue = schemaValue: value: let
     schema = schemas.validateSchema "composition value schema" schemaValue;
-    marker = builtins.isAttrs value && (value._type or null) == "aos-request-output-reference";
+    resultMarker = builtins.isAttrs value && (value._type or null) == "aos-request-output-reference";
     pathMarker = builtins.isAttrs value && (value._type or null) == "aos-runtime-path";
     invalid = expected: fail "composition value must be ${expected}";
     valueKind = candidate:
@@ -1005,7 +1005,7 @@
       then "object"
       else null;
   in
-    if marker
+    if resultMarker
     then value
     else if pathMarker
     then let
@@ -1306,7 +1306,8 @@
 
     resolveComposition = nodes: sourceName: schemaValue: value: trail: let
       schema = schemas.validateSchema "composition projection schema" schemaValue;
-      marker = builtins.isAttrs value && (value._type or null) == "aos-request-output-reference";
+      resultMarker = builtins.isAttrs value && (value._type or null) == "aos-request-output-reference";
+      pathMarker = builtins.isAttrs value && (value._type or null) == "aos-path-within-reference";
       sourceNode = nodes.${sourceName};
       valueKind = candidate:
         if builtins.isBool candidate
@@ -1321,7 +1322,26 @@
         then "object"
         else null;
     in
-      if marker
+      if pathMarker
+      then let
+        checked = checkCompositionValue schema value;
+        base = resolveComposition nodes sourceName schema checked.base trail;
+      in
+        if builtins.isString base
+        then let
+          separator =
+            if base == "/"
+            then ""
+            else "/";
+          joined = "${base}${separator}${checked.relative_path}";
+        in
+          if abilityTypes.executionPath.check joined
+          then joined
+          else fail "path-within expression did not resolve to a normalized absolute path"
+        else if builtins.isAttrs base && (base._type or null) == "aos-request-output-reference"
+        then checked // {inherit base;}
+        else fail "path-within base did not resolve to an execution path"
+      else if resultMarker
       then let
         matches =
           builtins.filter

@@ -848,6 +848,23 @@ impl VersionedDocument for PackageDocument {
             ensure_schema_depth(&handler.arguments, limits)?;
             ensure_schema_depth(&handler.result, limits)?;
         }
+        for qualification in self.implementation.qualification.values() {
+            if qualification.conformance_families.is_empty()
+                || qualification
+                    .conformance_families
+                    .windows(2)
+                    .any(|pair| pair[0] >= pair[1])
+            {
+                return Err(DocumentError::Decode {
+                    label: Self::SCHEMA.to_string(),
+                    source: anyhow::anyhow!(
+                        "package qualification families must be non-empty and strictly ordered"
+                    ),
+                });
+            }
+            ensure_schema_depth(&qualification.observer.arguments, limits)?;
+            ensure_schema_depth(&qualification.observer.result, limits)?;
+        }
         Ok(())
     }
 
@@ -885,6 +902,13 @@ impl VersionedDocument for PackageDocument {
         struct SemanticPackageImplementation<'a> {
             providers: Vec<Sha256Digest>,
             handlers: BTreeMap<&'a LocalKey, SemanticHandler<'a>>,
+            qualification: BTreeMap<&'a Sha256Digest, SemanticQualification<'a>>,
+        }
+
+        #[derive(Serialize)]
+        struct SemanticQualification<'a> {
+            conformance_families: &'a [LocalKey],
+            observer: SemanticHandler<'a>,
         }
 
         #[derive(Serialize)]
@@ -942,6 +966,25 @@ impl VersionedDocument for PackageDocument {
                 )
             })
             .collect();
+        let qualification = self
+            .implementation
+            .qualification
+            .iter()
+            .map(|(implementation, qualification)| {
+                (
+                    implementation,
+                    SemanticQualification {
+                        conformance_families: &qualification.conformance_families,
+                        observer: SemanticHandler {
+                            artifact: qualification.observer.artifact.identity(),
+                            entry_point: &qualification.observer.entry_point,
+                            arguments: &qualification.observer.arguments,
+                            result: &qualification.observer.result,
+                        },
+                    },
+                )
+            })
+            .collect();
         let semantic = SemanticPackage {
             schema: &self.schema,
             required_features: &self.required_features,
@@ -968,6 +1011,7 @@ impl VersionedDocument for PackageDocument {
             implementation: SemanticPackageImplementation {
                 providers,
                 handlers,
+                qualification,
             },
         };
 
