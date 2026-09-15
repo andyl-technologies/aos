@@ -668,11 +668,25 @@ pub fn validate_package_source(manifest: &Path, interface_directory: &Path) -> R
     };
     validate_module_locator_target(&contract.package().package_module)
         .context("validating package ability module locator")?;
+    validate_option_source_targets(contract.package())?;
     for provider in &contract.package().implementation.providers {
         if let Some(locator) = &provider.provider_module {
             validate_module_locator_target(locator)
                 .context("validating provider ability module locator")?;
         }
+    }
+    Ok(())
+}
+
+fn validate_option_source_targets(package: &aos_ability_model::PackageDocument) -> Result<()> {
+    let module_root = Path::new(&package.package_module.artifact.store_path);
+    for declaration in &package.option_declarations {
+        let target = module_root.join(declaration.source.path.as_str());
+        ensure!(
+            target.is_file(),
+            "ability option declaration source {} is not a regular file in the authenticated module artifact",
+            target.display()
+        );
     }
     Ok(())
 }
@@ -842,5 +856,40 @@ mod tests {
         };
         assert!(validate_module_locator_target(&missing).is_err());
         fs::remove_dir_all(root).expect("remove module fixture root");
+    }
+
+    #[test]
+    fn option_declaration_source_must_exist_in_the_authenticated_module_artifact() {
+        let root = std::env::temp_dir().join(format!(
+            "aos-option-source-validation-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create option source fixture root");
+        fs::write(root.join("module.nix"), "{ ... }: {}").expect("write module fixture");
+
+        let mut fixture = crate::test_support::stateful_owner_plan_fixture();
+        let mut package = fixture.binding_inputs.packages.remove(0);
+        package.package_module.artifact.store_path = root.display().to_string();
+        package.option_declarations = vec![aos_ability_model::PackageOptionDeclaration {
+            path: vec!["service".to_string(), "enable".to_string()],
+            type_signature: "boolean".to_string(),
+            structured_type: aos_ability_model::OptionType::Bool,
+            description: "Enables the service.".to_string(),
+            default: None,
+            example: None,
+            visibility: aos_ability_model::OptionVisibility::Public,
+            read_only: false,
+            contributable: false,
+            deprecated: None,
+            replacement: None,
+            source: aos_ability_model::OptionSource {
+                path: aos_ability_model::RelativePath::new("missing.nix")
+                    .expect("valid missing source path"),
+            },
+        }];
+
+        assert!(validate_option_source_targets(&package).is_err());
+        fs::remove_dir_all(root).expect("remove option source fixture root");
     }
 }

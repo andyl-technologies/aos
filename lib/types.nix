@@ -375,7 +375,6 @@ in rec {
         values =
           builtins.map (value: {
             inherit value;
-            description = [];
           })
           allowedValues;
       }

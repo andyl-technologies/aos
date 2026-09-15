@@ -222,11 +222,18 @@
           allowSubstitutes = false;
         }
       else null;
+    existingOutputs = args.outputs or ["out"];
+    reservedAbilityOutputs = ["abilities" "abilityContract" "abilityModule" "module"];
+    conflictingAbilityOutputs = builtins.filter
+      (output: builtins.elem output reservedAbilityOutputs)
+      existingOutputs;
     authoredConfigModule = args.configModule or null;
     authoredAbilities = args.abilities or null;
     abilityModuleSource =
       if authoredAbilities == null
       then null
+      else if conflictingAbilityOutputs != []
+      then throw "mkDerivation abilities for package '${packageName}' reserves output names ${builtins.toJSON conflictingAbilityOutputs}"
       else if !builtins.isPath authoredAbilities
       then throw "mkDerivation abilities for package '${packageName}' must be a path-backed file or directory module"
       else let
@@ -323,6 +330,43 @@
       if abilityEvaluation == null
       then null
       else abilityEvaluation.config.aos.abilities;
+    normalizeOptionType = value:
+      if builtins.isList value
+      then builtins.map normalizeOptionType value
+      else if builtins.isAttrs value
+      then
+        lib.mapAttrs (_: normalizeOptionType)
+        (lib.filterAttrs (_: field: field != null) value)
+      else value;
+    abilityOptionDeclarations =
+      if abilityEvaluation == null
+      then []
+      else let
+        moduleSource = builtins.toString abilityModuleSource.source;
+        sourceFor = declaration: let
+          source = builtins.toString declaration.source;
+          directoryPrefix = "${moduleSource}/";
+        in
+          if !abilityModuleSource.isDirectory && source == moduleSource
+          then "module.nix"
+          else if abilityModuleSource.isDirectory && lib.hasPrefix directoryPrefix source
+          then builtins.substring (builtins.stringLength directoryPrefix) (-1) source
+          else throw "ability option '${declaration.pathStr}' for package '${packageName}' is declared outside its authenticated module tree";
+      in
+        builtins.map (declaration:
+          {
+            inherit (declaration) path description visibility contributable;
+          type_signature = declaration.typeSig;
+            structured_type = normalizeOptionType declaration.type;
+          read_only = declaration.readOnly;
+          source.path = sourceFor declaration;
+          }
+          // lib.optionalAttrs (declaration.default != null) {inherit (declaration) default;}
+          // lib.optionalAttrs (declaration.example != null) {inherit (declaration) example;}
+          // lib.optionalAttrs (declaration.deprecated != null) {inherit (declaration) deprecated;}
+          // lib.optionalAttrs (declaration.replacement != null) {inherit (declaration) replacement;}) (builtins.filter
+          (declaration: declaration.owner == packageName)
+          abilityEvaluation._optionDecls);
     abilityProjection =
       if localAbilityProjection == null
       then null
@@ -332,6 +376,7 @@
             version = args.version or "0";
             evaluated = localAbilityProjection;
             packageModuleLocator = symbolicAbilityModuleLocator;
+            optionDeclarations = abilityOptionDeclarations;
           })
         // {
           artifactOutputs =
@@ -441,7 +486,6 @@
       if hasConfigModule
       then builtins.toFile "config-meta-${packageName}.json" preparedConfigModule.metaJson
       else null;
-    existingOutputs = args.outputs or ["out"];
     configStoreDir = args.storeDir or "/nix/store";
     configArtifact =
       if hasConfigModule
@@ -575,10 +619,6 @@
           document = abilityProjection.document;
           interfaces = abilityProjection.interfaces;
           artifactOutputs = abilityProjection.artifactOutputs;
-          optionSurface =
-            builtins.filter
-            (declaration: declaration.owner == packageName)
-            abilityEvaluation._optionDecls;
         };
       }
       else if hasConfigModule

@@ -422,11 +422,6 @@
   };
 
   interfaceDeclarationBaseType = strictSubmodule {
-    _legacy = mkOption {
-      type = moduleTypes.bool;
-      default = false;
-      internal = true;
-    };
     description = mkOption {
       type = moduleTypes.nullOr descriptionType;
       default = null;
@@ -458,17 +453,14 @@
     };
   };
   interfaceDeclarationType = checkedSubmodule "ability interface declaration" interfaceDeclarationBaseType (declaration:
-    declaration._legacy
-    || (
-      declaration.description
+    declaration.description
+    != null
+    && builtins.all (output: output.description != null) (builtins.attrValues declaration.outputs)
+    && builtins.all (method:
+      method.description
       != null
-      && builtins.all (output: output.description != null) (builtins.attrValues declaration.outputs)
-      && builtins.all (method:
-        method.description
-        != null
-        && builtins.all (output: output.description != null) (builtins.attrValues method.outputs))
-      (builtins.attrValues declaration.methods)
-    ));
+      && builtins.all (output: output.description != null) (builtins.attrValues method.outputs))
+    (builtins.attrValues declaration.methods));
 
   projectedRequirementType = strictSubmodule {
     alias = mkOption {type = localKeyType;};
@@ -642,11 +634,6 @@
   };
 
   implementationBaseType = strictSubmodule {
-    _legacy = mkOption {
-      type = moduleTypes.bool;
-      default = false;
-      internal = true;
-    };
     description = mkOption {
       type = moduleTypes.nullOr descriptionType;
       default = null;
@@ -730,7 +717,7 @@
     };
   };
   implementationType = checkedSubmodule "ability implementation" implementationBaseType (implementation:
-    (implementation._legacy || implementation.description != null)
+    implementation.description != null
     && (implementation.artifact == null || packageOutputType.check implementation.artifact)
     && builtins.all packageOutputType.check implementation.artifacts
     && (

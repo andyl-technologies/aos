@@ -1819,6 +1819,7 @@ fn pure_service_package(
             path: aos_ability_model::RelativePath::new("module.nix")
                 .expect("fixture package module path is valid"),
         },
+        option_declarations: Vec::new(),
         exports: vec![ExportDeclaration {
             name: key("service"),
             interface: interface.clone(),
@@ -1863,6 +1864,7 @@ fn terminal_package(
             path: aos_ability_model::RelativePath::new("module.nix")
                 .expect("fixture package module path is valid"),
         },
+        option_declarations: Vec::new(),
         exports: vec![ExportDeclaration {
             name: key("manager"),
             interface: interface.clone(),
@@ -2619,6 +2621,7 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
             path: aos_ability_model::RelativePath::new("module.nix")
                 .expect("fixture package module path is valid"),
         },
+        option_declarations: Vec::new(),
         exports: vec![ExportDeclaration {
             name: key("provider"),
             interface: interface.clone(),
@@ -2672,6 +2675,7 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
             path: aos_ability_model::RelativePath::new("module.nix")
                 .expect("fixture package module path is valid"),
         },
+        option_declarations: Vec::new(),
         exports: vec![ExportDeclaration {
             name: key("provider"),
             interface: interface.clone(),

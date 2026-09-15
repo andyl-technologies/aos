@@ -438,6 +438,7 @@ fn build_verified_planning_fixture(
             path: aos_ability_model::RelativePath::new("module.nix")
                 .expect("fixture package module path is valid"),
         },
+        option_declarations: Vec::new(),
         exports: vec![ExportDeclaration {
             name: key("provider"),
             interface: interface.clone(),

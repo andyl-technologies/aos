@@ -780,21 +780,20 @@
         else requireDigest "provider state-format descriptor" checked.stateFormat;
       inherit compose transition handler provide;
       _interface_declaration = {
-        _legacy = true;
-        description = null;
+        description = "Ability interface ${checked.interface}.";
         name = checked.interface;
         abi = checked.abi;
         requestType = checked.requestSchema;
         configurationType = checked.configurationSchema or null;
-        outputs = builtins.mapAttrs (_: output:
-          output // {description = null;})
+        outputs = builtins.mapAttrs (name: output:
+          output // {description = "Output ${name} from ${checked.interface}.";})
         checked.outputs;
-        methods = builtins.mapAttrs (_: method:
+        methods = builtins.mapAttrs (name: method:
           method
           // {
-            description = null;
-            outputs = builtins.mapAttrs (_: output:
-              output // {description = null;})
+            description = "Method ${name} on ${checked.interface}.";
+            outputs = builtins.mapAttrs (outputName: output:
+              output // {description = "Output ${outputName} from ${checked.interface}.${name}.";})
             method.outputs;
           })
         (checked.methods or {});
@@ -1307,7 +1306,7 @@
     resolveComposition = nodes: sourceName: schemaValue: value: trail: let
       schema = schemas.validateSchema "composition projection schema" schemaValue;
       resultMarker = builtins.isAttrs value && (value._type or null) == "aos-request-output-reference";
-      pathMarker = builtins.isAttrs value && (value._type or null) == "aos-path-within-reference";
+      pathMarker = builtins.isAttrs value && (value._type or null) == "aos-runtime-path";
       sourceNode = nodes.${sourceName};
       valueKind = candidate:
         if builtins.isBool candidate
@@ -1673,22 +1672,6 @@ in rec {
   in {
     _type = "aos-config-artifact-selector";
     name = requireLocalKey "configuration artifact name" checked.name;
-  };
-
-  pathWithin = args: let
-    checked = requireAttrs "path-within expression" ["base" "relativePath"] args;
-  in {
-    _type = "aos-path-within-reference";
-    base =
-      if
-        abilityTypes.executionPath.check checked.base
-        || (abilityTypes.fromSchema schemas.operationResultReference).check checked.base
-      then checked.base
-      else fail "path-within base must be a normalized absolute path or operation result reference";
-    relative_path =
-      if abilityTypes.relativePath.check checked.relativePath
-      then checked.relativePath
-      else fail "path-within relativePath must be a normalized relative path";
   };
 
   pinInterface = args: let

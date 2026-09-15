@@ -162,6 +162,7 @@ fn install_package_with_feature(
             artifact: artifact.clone(),
             path: aos_ability_model::RelativePath::new("module.nix")?,
         },
+        option_declarations: Vec::new(),
         exports,
         requirements: Vec::new(),
         implementation: PackageImplementation {

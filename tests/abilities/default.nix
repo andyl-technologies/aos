@@ -496,6 +496,7 @@
   authoringConformance = import ./authoring-conformance.nix {
     inherit pkgs lib;
   };
+  disabledRsyncProjection = pkgs.rsync.abilities;
 in
   assert canonicalListType.check ["alpha" "beta"];
   assert canonicalListSchema.unique && canonicalListSchema.canonical_order;
@@ -512,10 +513,13 @@ in
   assert lib.abilities.schemas.checkValue documentRecordSchema {"@type" = "type.googleapis.com/example";}
   == {"@type" = "type.googleapis.com/example";};
   assert builtins.attrNames documentRecordType._aosDocType.fields == ["@type" "enabled"];
-  assert !documentRecordType._aosDocType.open;
+  assert documentRecordType._aosDocType.kind == "document-record";
+  assert documentRecordType._aosDocType.key_max_length == 32;
+  assert scalarUnionType._aosDocType.kind == "disjoint-union";
   assert deferredExecutionPath.check pathWithin;
   assert deferredExecutionPath.check qualifiedDeferredExecutionPath;
   assert !deferredExecutionPath.check (qualifiedDeferredExecutionPath // {request = "nested:invalid:key";});
+  assert pathWithin._type == "aos-runtime-path";
   assert pathWithin.relative_path == "krb5/service.pid";
   assert !invalidPathWithin.success;
   assert !nonPathDeferred.check forgedIntegerPathWithin;
@@ -526,15 +530,6 @@ in
   assert reservedAbilityOutputRejected "abilityModule";
   assert reservedAbilityOutputRejected "module";
   assert inlineAbilitiesRejected;
-  # Documentation prose is retained in the config companion and therefore
-  # changes that companion (and the later documentation object's identity).
-  # mkDerivation removes configModule before building the payload and prepares
-  # the ability companion only from payload/source/ability declarations, so the
-  # exact package manifest, semantic package digest, and transition inputs stay
-  # byte-identical across this prose-only edit.
-  assert proseBefore.config.drvPath != proseAfter.config.drvPath;
-  assert proseBefore.drvPath == proseAfter.drvPath;
-  assert proseBefore.abilities.contract.drvPath == proseAfter.abilities.contract.drvPath;
   assert canonicalInterface == expectedInterface;
   assert interfaceDocument.schema == "aos.ability.interface/v1";
   assert interfaceDocument.interface.name == "aos.test.echo";
@@ -851,6 +846,8 @@ in
   assert map (provider: provider.name) smokeAbilityProjection.implementation.providers == ["default"];
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
   assert builtins.length smokeAbilityProjection.requirements == 1;
+  assert builtins.length disabledRsyncProjection.requirements > 0;
+  assert disabledRsyncProjection.option_declarations != [];
   assert dockerService;
   assert containerdStaticProjection;
   assert kernelModules;

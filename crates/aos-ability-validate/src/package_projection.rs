@@ -12,9 +12,9 @@ use aos_ability_model::document::PackageSubject;
 use aos_ability_model::{
     AbilityActivationMode, ArtifactReference, ExportDeclaration, GuaranteeDeclaration,
     HandlerDescriptor, InterfaceDocument, InterfaceKey, InterfaceName, LocalKey, ModuleLocator,
-    PackageDocument, PackageImplementation, ProviderImplementation, ProviderQualification,
-    ProviderStateFormat, RelativePath, RequiredFeature, RequirementDeclaration, ValueSchema,
-    VersionedDocument,
+    PackageDocument, PackageImplementation, PackageOptionDeclaration, ProviderImplementation,
+    ProviderQualification, ProviderStateFormat, RelativePath, RequiredFeature,
+    RequirementDeclaration, ValueSchema, VersionedDocument, validate_package_option_declarations,
 };
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
@@ -27,9 +27,6 @@ pub const PACKAGE_OUTPUT_SELECTOR_MARKER: &str = "aos-package-output-selector";
 
 /// Exact authoring marker for a symbolic evaluated configuration artifact selector.
 pub const CONFIG_ARTIFACT_SELECTOR_MARKER: &str = "aos-config-artifact-selector";
-
-/// Exact marker for a deferred path derived within a checked absolute base.
-pub const PATH_WITHIN_REFERENCE_MARKER: &str = "aos-path-within-reference";
 
 /// Selects one named output from a package in the enclosing orchestration set.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -64,15 +61,6 @@ struct TaggedConfigArtifactSelector {
     #[serde(rename = "_type")]
     marker: String,
     name: LocalKey,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct TaggedPathWithinReference {
-    #[serde(rename = "_type")]
-    marker: String,
-    base: serde_json::Value,
-    relative_path: RelativePath,
 }
 
 struct PackageOutputResolver<F> {
@@ -171,31 +159,6 @@ where
                 *value = serde_json::to_value(artifact)
                     .context("encoding resolved configuration artifact")?;
             }
-            serde_json::Value::Object(fields)
-                if fields.get("_type").and_then(serde_json::Value::as_str)
-                    == Some(PATH_WITHIN_REFERENCE_MARKER) =>
-            {
-                let mut tagged: TaggedPathWithinReference =
-                    serde_json::from_value(value.clone())
-                        .context("decoding deferred path-within expression")?;
-                if tagged.marker != PATH_WITHIN_REFERENCE_MARKER {
-                    bail!("deferred path-within expression has an invalid marker");
-                }
-                self.resolve_value(&mut tagged.base, depth.saturating_add(1))?;
-                if let Some(base) = tagged.base.as_str() {
-                    if !normalized_absolute_path(base) {
-                        bail!("deferred path-within base is not a normalized absolute path");
-                    }
-                    let separator = if base == "/" { "" } else { "/" };
-                    *value = serde_json::Value::String(format!(
-                        "{base}{separator}{}",
-                        tagged.relative_path.as_str()
-                    ));
-                } else {
-                    *value = serde_json::to_value(tagged)
-                        .context("encoding unresolved path-within expression")?;
-                }
-            }
             serde_json::Value::Object(fields) => {
                 for value in fields.values_mut() {
                     self.resolve_value(value, depth.saturating_add(1))?;
@@ -205,16 +168,6 @@ where
         }
         Ok(())
     }
-}
-
-fn normalized_absolute_path(path: &str) -> bool {
-    path.len() <= 4096
-        && path.starts_with('/')
-        && (path == "/"
-            || path
-                .split('/')
-                .skip(1)
-                .all(|component| !component.is_empty() && component != "." && component != ".."))
 }
 
 /// Resolves symbolic artifact selectors nested in one evaluated ability value.
@@ -375,6 +328,8 @@ pub struct PackageAbilityProjection {
     /// Symbolic locator for the package's executable ability/configuration module.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_module: Option<ModuleLocatorProjection>,
+    /// Retains package-owned option declarations from the authenticated module evaluation.
+    pub option_declarations: Vec<PackageOptionDeclaration>,
     /// Lists public exports in canonical name order.
     pub exports: Vec<ExportProjection>,
     /// Carries the pure interface documents retained by this projection.
@@ -581,6 +536,7 @@ pub fn resolve_package_projection(
         interfaces: projection.interfaces,
         guarantees: projection.guarantees,
         package_module,
+        option_declarations: projection.option_declarations,
         exports,
         requirements: projection.requirements,
         implementation: PackageImplementation {
@@ -592,6 +548,11 @@ pub fn resolve_package_projection(
 }
 
 fn validate_projection_structure(projection: &PackageAbilityProjection) -> Result<()> {
+    validate_package_option_declarations(
+        &projection.option_declarations,
+        &aos_ability_model::ABILITY_LIMITS_V1,
+    )
+    .context("validating projected package option declarations")?;
     let required_features = projection
         .required_features
         .iter()
@@ -621,15 +582,10 @@ fn validate_projection_structure(projection: &PackageAbilityProjection) -> Resul
     {
         bail!("ability projection requirements are not unique and canonically ordered");
     }
-    if projection
-        .implementation
-        .providers
-        .windows(2)
-        .any(|pair| {
-            pair[0].interface > pair[1].interface
-                || (pair[0].interface == pair[1].interface && pair[0].name >= pair[1].name)
-        })
-    {
+    if projection.implementation.providers.windows(2).any(|pair| {
+        pair[0].interface > pair[1].interface
+            || (pair[0].interface == pair[1].interface && pair[0].name >= pair[1].name)
+    }) {
         bail!("ability projection implementations are not in canonical interface/name order");
     }
     let provider_names = projection
@@ -793,6 +749,7 @@ mod tests {
                 "artifact": {"package": "self", "output": "module"},
                 "path": "module.nix"
             },
+            "option_declarations": [],
             "exports": [],
             "interface_documents": [],
             "requirements": [],
@@ -1226,33 +1183,11 @@ mod tests {
     }
 
     #[test]
-    fn resolves_a_normalized_path_within_a_materialized_base() {
+    fn preserves_the_canonical_runtime_path_expression_for_later_typed_resolution() {
         let mut value = json!({
-            "_type": "aos-path-within-reference",
+            "_type": "aos-runtime-path",
             "base": "/nix/store/service",
             "relative_path": "bin/daemon"
-        });
-
-        resolve_artifact_selectors(
-            &mut value,
-            |_| unreachable!("fixture contains no package selector"),
-            |_| unreachable!("fixture contains no configuration selector"),
-        )
-        .unwrap();
-
-        assert_eq!(value, json!("/nix/store/service/bin/daemon"));
-    }
-
-    #[test]
-    fn preserves_path_within_an_unresolved_operation_result() {
-        let mut value = json!({
-            "_type": "aos-path-within-reference",
-            "base": {
-                "_type": "aos-request-output-reference",
-                "request": "credential",
-                "output": "path"
-            },
-            "relative_path": "krb5.conf"
         });
         let original = value.clone();
 
@@ -1264,45 +1199,5 @@ mod tests {
         .unwrap();
 
         assert_eq!(value, original);
-    }
-
-    #[test]
-    fn rejects_a_path_within_expression_with_extra_authority() {
-        let mut value = json!({
-            "_type": "aos-path-within-reference",
-            "base": "/nix/store/service",
-            "relative_path": "bin/daemon",
-            "store_path": "/nix/store/untrusted"
-        });
-
-        assert!(
-            resolve_artifact_selectors(
-                &mut value,
-                |_| unreachable!("malformed path must fail before package resolution"),
-                |_| unreachable!("malformed path must fail before config resolution"),
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn rejects_non_normalized_path_within_bases() {
-        for base in ["relative", "/nix/../store", "/nix/./store", "/nix//store"] {
-            let mut value = json!({
-                "_type": "aos-path-within-reference",
-                "base": base,
-                "relative_path": "bin/daemon"
-            });
-
-            assert!(
-                resolve_artifact_selectors(
-                    &mut value,
-                    |_| unreachable!("fixture contains no package selector"),
-                    |_| unreachable!("fixture contains no configuration selector"),
-                )
-                .is_err(),
-                "base {base:?} must be rejected"
-            );
-        }
     }
 }

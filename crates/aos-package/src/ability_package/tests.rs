@@ -252,6 +252,7 @@ fn stateful_package() -> PackageDocument {
             path: aos_ability_model::RelativePath::new("module.nix")
                 .expect("fixture package module path is valid"),
         },
+        option_declarations: Vec::new(),
         exports: vec![ExportDeclaration {
             name: LocalKey::new("stateful").unwrap(),
             interface,
@@ -317,6 +318,7 @@ impl TestFixture {
                 path: aos_ability_model::RelativePath::new("module.nix")
                     .expect("fixture package module path is valid"),
             },
+            option_declarations: Vec::new(),
             exports: Vec::new(),
             requirements: Vec::new(),
             implementation: PackageImplementation {

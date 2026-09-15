@@ -28,6 +28,7 @@ use crate::interface::{
     PackageImplementation, ProviderImplementationReference, RequirementDeclaration,
 };
 use crate::limits::{ABILITY_LIMITS_V1, LimitProfile};
+use crate::option::{PackageOptionDeclaration, validate_package_option_declarations};
 use crate::plan::{
     Binding, BindingId, BindingRequest, ControllerAssignment, DecisionNode, DependencyEdge,
     DeploymentObligation, MergeNode, Operation, ResourceRevision,
@@ -378,6 +379,8 @@ pub struct PackageDocument {
     pub guarantees: BTreeMap<LocalKey, GuaranteeDeclaration>,
     /// Locates the package's executable ability/configuration module.
     pub package_module: ModuleLocator,
+    /// Retains the mechanically derived package-owned module option declarations.
+    pub option_declarations: Vec<PackageOptionDeclaration>,
     /// Lists public exports in canonical name order.
     pub exports: Vec<ExportDeclaration>,
     /// Lists declarative imports in canonical alias order.
@@ -825,6 +828,7 @@ impl VersionedDocument for PackageDocument {
     }
 
     fn validate_structure(&self, limits: &LimitProfile) -> Result<(), DocumentError> {
+        validate_package_option_declarations(&self.option_declarations, limits)?;
         for provider in &self.implementation.providers {
             if let Some(schema) = &provider.desired_schema {
                 ensure_schema_depth(schema, limits)?;
@@ -921,6 +925,7 @@ impl VersionedDocument for PackageDocument {
             interfaces: &'a BTreeMap<LocalKey, InterfaceKey>,
             guarantees: BTreeMap<LocalKey, SemanticGuarantee<'a>>,
             package_module: SemanticModuleLocator<'a>,
+            option_declarations: &'a [PackageOptionDeclaration],
             exports: &'a [ExportDeclaration],
             requirements: &'a [RequirementDeclaration],
             implementation: SemanticPackageImplementation<'a>,
@@ -1006,6 +1011,7 @@ impl VersionedDocument for PackageDocument {
                 artifact: self.package_module.artifact.identity(),
                 path: &self.package_module.path,
             },
+            option_declarations: &self.option_declarations,
             exports: &self.exports,
             requirements: &self.requirements,
             implementation: SemanticPackageImplementation {
@@ -1172,6 +1178,7 @@ mod tests {
     };
     use crate::schema::ValueSchema;
     use crate::value::ResourceLifetime;
+    use crate::{DocumentedValue, OptionSource, OptionType, OptionVisibility};
 
     fn interface_document() -> InterfaceDocument {
         InterfaceDocument {
@@ -1332,6 +1339,57 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    fn package_option(path: &str, option_type: OptionType) -> PackageOptionDeclaration {
+        PackageOptionDeclaration {
+            path: vec![path.to_string()],
+            type_signature: "test option".to_string(),
+            structured_type: option_type,
+            description: "Test option declaration.".to_string(),
+            default: None,
+            example: None,
+            visibility: OptionVisibility::Public,
+            read_only: false,
+            contributable: false,
+            deprecated: None,
+            replacement: None,
+            source: OptionSource {
+                path: RelativePath::new("module.nix").expect("valid option source path"),
+            },
+        }
+    }
+
+    #[test]
+    fn package_option_declarations_reject_opaque_public_types() {
+        let declaration = package_option(
+            "opaque",
+            OptionType::Opaque {
+                signature: "unstructured".to_string(),
+            },
+        );
+
+        assert!(validate_package_option_declarations(&[declaration], &ABILITY_LIMITS_V1).is_err());
+    }
+
+    #[test]
+    fn package_option_declarations_check_literal_defaults_against_the_type() {
+        let mut declaration = package_option("enabled", OptionType::Bool);
+        declaration.default = Some(DocumentedValue::Literal {
+            value: AbilityValue::new(serde_json::json!("yes")).expect("canonical test literal"),
+        });
+
+        assert!(validate_package_option_declarations(&[declaration], &ABILITY_LIMITS_V1).is_err());
+    }
+
+    #[test]
+    fn package_option_declarations_require_strict_path_order() {
+        let first = package_option("same", OptionType::Bool);
+        let second = first.clone();
+
+        assert!(
+            validate_package_option_declarations(&[first, second], &ABILITY_LIMITS_V1).is_err()
+        );
     }
 
     #[test]

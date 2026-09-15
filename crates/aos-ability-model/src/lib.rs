@@ -26,6 +26,7 @@ pub mod document;
 pub mod identity;
 pub mod interface;
 pub mod limits;
+pub mod option;
 pub mod plan;
 pub mod schema;
 pub mod transition;
@@ -54,6 +55,10 @@ pub use identity::{
 };
 pub use interface::*;
 pub use limits::{ABILITY_LIMITS_V1, LimitProfile};
+pub use option::{
+    DocumentedValue, OptionEnumValue, OptionSource, OptionType, OptionVisibility,
+    PackageOptionDeclaration, validate_package_option_declarations,
+};
 pub use plan::*;
 pub use schema::*;
 pub use transition::*;
