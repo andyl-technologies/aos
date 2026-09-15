@@ -186,6 +186,7 @@
     moduleTypes.addCheck moduleTypes.int (value:
       value > 0 && value <= 4294967295);
   stageType = abilityTypes.stage;
+  valuePhaseType = abilityTypes.valuePhase;
   lifetimeType = abilityTypes.lifetime;
 
   interfaceKeyType = abilityTypes.interfaceKey;
@@ -203,7 +204,7 @@
       description = "Portable output value schema projected from its authored option type.";
     };
     phase = mkOption {
-      type = moduleTypes.enum ["evaluation" "artifact" "planning" "admission" "runtime" "observation"];
+      type = valuePhaseType;
       description = "First phase in which the output is available.";
     };
     visibility = mkOption {
@@ -311,7 +312,7 @@
       default = null;
     };
     schema = mkOption {type = portableType;};
-    phase = mkOption {type = moduleTypes.enum ["planning" "runtime"];};
+    phase = mkOption {type = valuePhaseType;};
     visibility = mkOption {type = moduleTypes.enum ["public" "protected"];};
     lifetime = mkOption {type = lifetimeType;};
   };

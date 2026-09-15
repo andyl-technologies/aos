@@ -324,6 +324,15 @@ in rec {
     ])
     stageType;
 
+  valuePhase = enum [
+    "evaluation"
+    "artifact"
+    "planning"
+    "admission"
+    "runtime"
+    "observation"
+  ];
+
   lifetime = decorate "resource lifetime" (schemas.enum [
     "attempt"
     "transaction"
