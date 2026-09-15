@@ -76,6 +76,8 @@ in
 
     inherit version src;
 
+    abilities = ./_tailscale/module.nix;
+
     buildDeps = [buildPackages.go];
     runtimeDeps = [getent iproute2 iptables procps-ng];
     propagatedDeps = [];

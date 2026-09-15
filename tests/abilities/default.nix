@@ -450,6 +450,12 @@
   dockerService = import ./docker-service.nix {
     inherit pkgs lib;
   };
+  tailscaleService = import ./tailscale-service.nix {
+    inherit pkgs lib;
+  };
+  nftablesFirewall = import ./nftables-firewall.nix {
+    inherit pkgs lib;
+  };
   containerdStaticProjection = import ./containerd-static-projection.nix {
     inherit pkgs lib;
   };
@@ -1001,6 +1007,8 @@ in
   assert selectedChronyAbilities.requests ? "chrony:chronyd-lifecycle";
   assert selectedChronyAbilities.requests ? "chrony:chrony-configuration";
   assert dockerService;
+  assert tailscaleService;
+  assert nftablesFirewall;
   assert containerdStaticProjection;
   assert zram;
   assert kernelModules;

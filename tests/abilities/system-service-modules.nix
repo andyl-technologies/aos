@@ -1,6 +1,7 @@
-##! Checks system-owned service modules at their typed ability boundary.
+##! Checks the package-owned firewall module at its typed ability boundary.
 {lib}: let
   systemdProvider = import ../../pkgs/system/_systemd-service-provider-lib.nix {inherit lib;};
+  nftables = builtins.toFile "nftables-test" "";
   evaluate = {
     allowedTCP,
     allowedUDP,
@@ -8,11 +9,15 @@
     lib.evalModules {
       specialArgs = {
         inherit lib;
-        pkgs.nftables = builtins.toFile "nftables-test" "";
+        pkgs.nftables = nftables;
       };
       modules = [
         ../../modules/abilities/default.nix
         ({lib, ...}: {
+          options.environment.systemPackages = lib.mkOption {
+            type = lib.types.listOf lib.types.anything;
+            default = [];
+          };
           options.system.checks = lib.mkOption {
             type = lib.types.attrsOf lib.types.anything;
             default = {};
@@ -31,6 +36,12 @@
           };
         }
       ];
+      packageModules = [
+        {
+          name = "nftables";
+          module.imports = [../../pkgs/networking/_nftables/module.nix];
+        }
+      ];
     };
   baseline = evaluate {
     allowedTCP = [22 443];
@@ -41,11 +52,11 @@
     allowedUDP = [53];
   };
   requestNames = [
-    "system:firewall-ruleset"
-    "system:nftables-configuration"
-    "system:nftables-dependencies"
-    "system:nftables-lifecycle"
-    "system:nftables-reload"
+    "nftables:ruleset"
+    "nftables:nftables-configuration"
+    "nftables:nftables-dependencies"
+    "nftables:nftables-lifecycle"
+    "nftables:nftables-reload"
   ];
   requestsFor = evaluated: evaluated.config.aos.abilities.requests;
   serviceProjectionFor = evaluated: let
@@ -58,7 +69,7 @@
       requestNames);
   resourceIdFor = evaluated: let
     config = evaluated.config;
-    lifecycle = (requestsFor evaluated)."system:nftables-lifecycle".parameters;
+    lifecycle = (requestsFor evaluated)."nftables:nftables-lifecycle".parameters;
   in
     systemdProvider.normalizedResourceId {
       provider = {
@@ -69,14 +80,14 @@
     };
   inherit (baseline) config;
   requests = requestsFor baseline;
-  lifecycle = requests."system:nftables-lifecycle".parameters;
-  dependencies = requests."system:nftables-dependencies".parameters;
-  reload = requests."system:nftables-reload".parameters;
-  configuration = requests."system:nftables-configuration".parameters;
-  materialization = requests."system:firewall-ruleset".parameters;
+  lifecycle = requests."nftables:nftables-lifecycle".parameters;
+  dependencies = requests."nftables:nftables-dependencies".parameters;
+  reload = requests."nftables:nftables-reload".parameters;
+  configuration = requests."nftables:nftables-configuration".parameters;
+  materialization = requests."nftables:ruleset".parameters;
   executionPath = {
     _type = "aos-request-output-reference";
-    request = "system:firewall-ruleset";
+    request = "nftables:ruleset";
     output = "planned-path";
   };
   command = arguments: {
@@ -89,7 +100,7 @@
   };
 in
   assert !(config ? systemd);
-  assert !(config ? environment);
+  assert config.environment.systemPackages == [nftables];
   assert materialization.source.kind == "inline-text";
   assert materialization.mode == "0444";
   assert lib.hasInfix "elements = { 22, 443 }" materialization.source.content;
@@ -101,25 +112,33 @@ in
   assert lifecycle.restart == "never";
   assert lifecycle.stop == [(command ["flush" "ruleset"])];
   assert reload.commands == lifecycle.start;
-  assert configuration.views == [{
-    name = "ruleset";
-    source = executionPath;
-    optional = false;
-  }];
-  assert dependencies.after == [{
-    _type = "aos-request-output-reference";
-    request = "system:firewall-filesystems";
-    output = "readiness-resource";
-  }];
-  assert dependencies.before == [{
-    _type = "aos-request-output-reference";
-    request = "system:firewall-network-stack";
-    output = "readiness-resource";
-  }];
+  assert configuration.views
+  == [
+    {
+      name = "ruleset";
+      source = executionPath;
+      optional = false;
+    }
+  ];
+  assert dependencies.after
+  == [
+    {
+      _type = "aos-request-output-reference";
+      request = "nftables:local-filesystems";
+      output = "readiness-resource";
+    }
+  ];
+  assert dependencies.before
+  == [
+    {
+      _type = "aos-request-output-reference";
+      request = "nftables:network-readiness";
+      output = "readiness-resource";
+    }
+  ];
   assert dependencies.before == dependencies.wants;
-  assert requests."system:firewall-filesystems".parameters.scope == "local-filesystems";
-  assert requests."system:firewall-network-stack".parameters.scope == "stack-prepared";
-  assert materialization.source.content != (requestsFor changed)."system:firewall-ruleset".parameters.source.content;
+  assert requests."nftables:local-filesystems".parameters.scope == "local-filesystems";
+  assert requests."nftables:network-readiness".parameters.scope == "stack-prepared";
+  assert materialization.source.content != (requestsFor changed)."nftables:ruleset".parameters.source.content;
   assert serviceProjectionFor baseline != serviceProjectionFor changed;
-  assert resourceIdFor baseline == resourceIdFor changed;
-  true
+  assert resourceIdFor baseline == resourceIdFor changed; true
