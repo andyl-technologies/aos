@@ -11,7 +11,7 @@
   lib,
   mkSystem,
   pkgs,
-  systems,
+  qualificationImage ? false,
   observerForwardEndpoint ? null,
   extraRuntimeModules ? [],
   extraHostModule ? "",
@@ -51,6 +51,56 @@
       ${config.system.build.initrd}/initrd.img
     '';
   };
+  qualificationImagePython =
+    if qualificationImage
+    then "True"
+    else "False";
+  qualificationSetupBody = ''
+    aos.packages = {
+      aos-ability-boundary-observer = {
+        package = ${pkgs.aos-ability-boundary-observer};
+        bundle = true;
+        preset = false;
+      };
+      nginx = {
+        package = ${pkgs.nginx};
+        bundle = true;
+        preset = false;
+      };
+      envoy = {
+        package = ${pkgs.envoy};
+        bundle = true;
+        preset = false;
+      };
+      k3s-worker = {
+        package = ${pkgs.k3s-worker};
+        bundle = true;
+        preset = false;
+      };
+    };
+    aos.apm.desiredPackages = lib.mkBefore [ "envoy" "k3s-worker" ];
+    ${observerFixture.hostModule}
+    ${extraHostModule}
+  '';
+  fixtureClosures =
+    [
+      pkgs.aos-ability-boundary-observer
+      pkgs.diffutils
+      pkgs.envoy
+      pkgs.envoy.contract.document
+      pkgs.findutils
+      pkgs.git
+      pkgs.grep
+      pkgs.k3s-worker
+      pkgs.k3s-worker.contract.document
+      pkgs.nginx
+      pkgs.nginx.config
+      pkgs.nginx.contract.document
+      pkgs.nginx.expose
+      pkgs.nix
+      pkgs.util-linux
+    ]
+    ++ additionalClosures;
 in {
   name = "runtime-module-composition";
   timeout = 1800;
@@ -70,16 +120,7 @@ in {
       "envoy"
       "k3s-worker"
     ];
-    extraClosures = [
-      pkgs.diffutils
-      pkgs.findutils
-      pkgs.git
-      pkgs.grep
-      pkgs.nix
-      pkgs.util-linux
-      observerFixture.package
-    ]
-    ++ additionalClosures;
+    extraClosures = fixtureClosures;
     metadata."host.nix" = ''
       { lib, ... }: {
         ${observerFixture.hostModule}
@@ -114,9 +155,21 @@ in {
       import textwrap
       from pathlib import Path
 
-      APM = "${pkgs.aos.apm}/bin/apm"
-      APR = "${pkgs.aos.apr}/bin/apr"
-      AOS = "${pkgs.aos}/bin/aos"
+      APM = ${
+        if qualificationImage
+        then ''runtime.guest_tool("apm")''
+        else builtins.toJSON "${pkgs.aos.apm}/bin/apm"
+      }
+      APR = ${
+        if qualificationImage
+        then ''runtime.guest_tool("apr")''
+        else builtins.toJSON "${pkgs.aos.apr}/bin/apr"
+      }
+      AOS = ${
+        if qualificationImage
+        then ''runtime.guest_tool("aos")''
+        else builtins.toJSON "${pkgs.aos}/bin/aos"
+      }
       CURL = "${pkgs.curl}/bin/curl"
       COREUTILS = "${pkgs.coreutils}/bin"
       FIND = "${pkgs.findutils}/bin/find"
@@ -136,9 +189,11 @@ in {
       OBSERVER_CONTROLLER = (
           "${observerFixture.controller}/bin/aos-ability-boundary-controller"
       )
-      PACKAGE_RUNTIME = (
-          "${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped"
-      )
+      PACKAGE_RUNTIME = ${
+        if qualificationImage
+        then ''runtime.guest_package_runtime()''
+        else builtins.toJSON "${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped"
+      }
       OBSERVER_FORWARD_ENABLED = ${
         if observerForwardEndpoint == null
         then "False"
@@ -490,6 +545,10 @@ in {
 
 
       def actual_boot_initrd_identity(expected_path):
+          if ${qualificationImagePython}:
+              assert runtime.boot == "published-image", runtime.boot
+              return runtime.assert_published_boot_contract(expected_path)
+
           assert runtime.boot == "kernel", runtime.boot
           assert runtime.initrd_path == expected_path, (
               runtime.initrd_path, expected_path,
@@ -581,9 +640,12 @@ in {
       )
       runtime.succeed("test -S /run/aos-instrumentation/controller.sock")
       runtime.succeed(f"install -d -m 0700 {XDG_CACHE_HOME}")
-      expected_boot_initrd = runtime.succeed(
-          f"{COREUTILS}/cat /etc/aos/fleet-boot-initrd"
-      ).strip()
+      if ${qualificationImagePython}:
+          expected_boot_initrd = runtime.published_boot_identity()
+      else:
+          expected_boot_initrd = runtime.succeed(
+              f"{COREUTILS}/cat /etc/aos/fleet-boot-initrd"
+          ).strip()
       boot_initrd_identity_before = actual_boot_initrd_identity(
           expected_boot_initrd
       )
@@ -1431,4 +1493,11 @@ in {
       assert_package_configuration()
       assert_payloads_immutable()
     '';
+}
+// lib.optionalAttrs qualificationImage {
+  qualification = {
+    candidateRuntimeCompanions = [];
+    extraClosures = fixtureClosures;
+    setupBody = qualificationSetupBody;
+  };
 }
