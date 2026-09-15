@@ -112,6 +112,8 @@ in
     runtimeDeps = [glib expat linux-pam dbus duktape systemd gcc-libs];
     propagatedDeps = [glib];
 
+    abilities = ./_polkit/module.nix;
+
     phases = [
       {
         name = "unpack";

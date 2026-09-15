@@ -405,7 +405,13 @@
     ++ field "tasks" "TasksMax"
     ++ field "locked_memory_bytes" "LimitMEMLOCK"
     ++ field "memory_high_bytes" "MemoryHigh"
-    ++ field "memory_max_bytes" "MemoryMax";
+    ++ field "memory_max_bytes" "MemoryMax"
+    ++ field "memory_swap_max_bytes" "MemorySwapMax"
+    ++ (
+      if resources == null || !(resources ? oom_policy)
+      then []
+      else one "OOMPolicy" resources.oom_policy
+    );
 
   isolationDirectives = value: let
     isolation = value.isolation or null;
