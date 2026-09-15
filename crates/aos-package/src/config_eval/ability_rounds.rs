@@ -178,6 +178,8 @@ pub struct SelectedAbilityBinding {
 pub struct SelectedProviderModule {
     /// Names the package whose implementation selected this module.
     pub package: String,
+    /// Retains the exact authenticated package version supplying the module.
+    pub version: String,
     /// Locates the module below its exact authenticated artifact root.
     pub locator: ModuleLocator,
     /// Supplies only the package outputs authorized by release dependency metadata.
@@ -872,6 +874,7 @@ mod tests {
             slot: slot.to_string(),
             provider_module: Some(SelectedProviderModule {
                 package: "lower".to_string(),
+                version: "1.0.0".to_string(),
                 locator: ModuleLocator {
                     artifact: ArtifactReference {
                         content: Sha256Digest::of_bytes("provider-module"),

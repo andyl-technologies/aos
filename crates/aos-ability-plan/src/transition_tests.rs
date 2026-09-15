@@ -1828,6 +1828,7 @@ fn pure_service_package(
         implementation: PackageImplementation {
             providers: vec![implementation],
             handlers: BTreeMap::new(),
+            qualification: BTreeMap::new(),
         },
     }
 }
@@ -1871,6 +1872,7 @@ fn terminal_package(
         implementation: PackageImplementation {
             providers: vec![provider],
             handlers: BTreeMap::from([(handler_key, handler)]),
+            qualification: BTreeMap::new(),
         },
     }
 }
@@ -2626,6 +2628,7 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
         implementation: PackageImplementation {
             providers: vec![pure_implementation],
             handlers: BTreeMap::new(),
+            qualification: BTreeMap::new(),
         },
     };
     let pure_package_digest = pure_package
@@ -2686,6 +2689,7 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
                     result: ValueSchema::Boolean,
                 },
             )]),
+            qualification: BTreeMap::new(),
         },
     };
     let terminal_package_digest = terminal_package
