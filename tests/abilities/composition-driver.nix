@@ -359,6 +359,7 @@ args @ {lib, ...}: let
   childRequest = {
     requirement = "network";
     scope = ["child"];
+    slot = "network-child";
     parameters = childParameters;
   };
   lifecycleWithChild = {
@@ -565,7 +566,11 @@ args @ {lib, ...}: let
   pendingRequest = pendingChildRequest.config.aos.abilities.compositionPendingRequests.${childRequestKey};
 in
   if returnPending
-  then {requests = pendingChildRequest.config.aos.abilities.compositionPendingRequests;}
+  then {
+    requests = pendingChildRequest.config.aos.abilities.compositionPendingRequests;
+    requirements = pendingChildRequest.config.aos.abilities.compositionRequirements;
+    providerInstances = builtins.attrNames pendingChildRequest.config.aos.abilities.instances;
+  }
   else
     assert builtins.length (builtins.attrNames abilities.desiredResources) == 1;
     assert desired.controller == "test:lifecycle";
@@ -592,6 +597,7 @@ in
     assert rejects duplicateOutput.config.aos.abilities.desiredResources;
     assert builtins.attrNames pendingChildRequest.config.aos.abilities.compositionPendingRequests == [childRequestKey];
     assert pendingRequest.localRequestKey == "child";
+    assert pendingRequest.slot == "network-child";
     assert pendingRequest.implementation == "provider:service-lifecycle";
     assert pendingRequest.providerInstance == "provider:manager";
     assert pendingRequest.requirement == "network";

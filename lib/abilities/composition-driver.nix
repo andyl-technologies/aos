@@ -62,7 +62,7 @@
         authored =
           exactAttrs
           "child request '${localRequestKey}' from '${group.implementationKey}'"
-          ["parameters" "requirement" "scope"]
+          ["parameters" "requirement" "scope" "slot"]
           group.result.requests.${localRequestKey};
         requirementKey = lib.abilities.compositionRequirementKey {
           implementation = group.implementationKey;
@@ -79,6 +79,7 @@
         implementation = group.implementationKey;
         inherit (group) providerInstance;
         requirement = authored.requirement;
+        slot = authored.slot;
         request = requestKey;
         declaration = {
           package = null;
@@ -530,7 +531,7 @@
       builtins.listToAttrs (builtins.map (child: {
           name = child.request;
           value = {
-            inherit (child) originGroup localRequestKey implementation providerInstance requirement request declaration;
+            inherit (child) originGroup localRequestKey implementation providerInstance requirement request slot declaration;
           };
         })
         unresolvedChildren);

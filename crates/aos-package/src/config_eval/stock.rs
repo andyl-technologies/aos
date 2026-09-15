@@ -235,7 +235,11 @@ impl StockNixEvaluator {
             \x20   then {{ status = \"complete\"; manifest = finalManifest; }}\n\
             \x20   else {{\n\
             \x20     status = \"pending\";\n\
-            \x20     pending = {{ requests = pendingAbilityRequests; }};\n\
+            \x20     pending = {{\n\
+            \x20       requests = pendingAbilityRequests;\n\
+            \x20       requirements = system.config.aos.abilities.compositionRequirements;\n\
+            \x20       providerInstances = builtins.attrNames system.config.aos.abilities.instances;\n\
+            \x20     }};\n\
             \x20   }};\n\
              }}\n",
             base = base,

@@ -1173,6 +1173,7 @@
     implementation = mkOption {type = declarationKeyType;};
     providerInstance = mkOption {type = declarationKeyType;};
     requirement = mkOption {type = localKeyType;};
+    slot = mkOption {type = localKeyType;};
     request = mkOption {type = declarationKeyType;};
     declaration = mkOption {type = requestBaseType;};
   };
