@@ -35,6 +35,7 @@ members = [
     "aos-hub-console",
     "aos-profile",
     "aos-systemd",
+    "aos-provider-protocol",
     "crucible-cas",
     "crucible-sim",
     "crucible-assert",
@@ -236,6 +237,7 @@ aos-release = { path = "aos-release" }
 aos-image-finalizer = { path = "aos-image-finalizer" }
 aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }
+aos-provider-protocol = { path = "aos-provider-protocol" }
 
 [workspace.lints.clippy]
 all = "deny"
