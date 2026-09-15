@@ -106,18 +106,18 @@
     "incarnation-replacement"
     "provider-state-transfer"
   ];
-  qualificationFor = adapter: scope:
+  qualificationFor = adapter: observationKind: scope:
     if qualificationSupport == null
     then null
     else {
-      inherit adapter conformanceFamilies scope;
+      inherit adapter conformanceFamilies observationKind scope;
       observer = qualificationSupport.observer;
     };
   nginxQualificationClaims = {
-    network-endpoint = qualificationFor "network-endpoint" "host-resource";
-    network-policy = qualificationFor "host-network-policy" "host-resource";
-    nginx-validation = qualificationFor "nginx-validation" "host-process";
-    storage = qualificationFor "host-storage" "host-resource";
+    network-endpoint = qualificationFor "network-endpoint" "network" "host-resource";
+    network-policy = qualificationFor "host-network-policy" "network" "host-resource";
+    nginx-validation = qualificationFor "nginx-validation" "filesystem" "host-process";
+    storage = qualificationFor "host-storage" "filesystem" "host-resource";
   };
 
   interface = name: descriptor: {
@@ -757,7 +757,7 @@ in {
         };
       };
       managed-configuration-effects = {
-        qualification = qualificationFor "managed-configuration" "host-filesystem";
+        qualification = qualificationFor "managed-configuration" "filesystem" "host-filesystem";
         artifact = selectorFor managedConfigurationRuntimeDependency;
         definition = terminalExport {
           name = managedConfigurationEffects.name;
@@ -819,7 +819,7 @@ in {
         };
       };
       credential-delivery-effects = {
-        qualification = qualificationFor "credential-delivery" "host-resource";
+        qualification = qualificationFor "credential-delivery" "filesystem" "host-resource";
         artifact = selectorFor credentialRuntimeDependency;
         definition = terminalExport {
           name = credentialDeliveryEffects.name;
@@ -850,7 +850,7 @@ in {
   service = mkPackage "ability-reference-service" serviceArtifact ([serviceRuntimeDependency] ++ qualificationDependencies) {
     config.aos.abilities = lib.recursiveUpdate (lib.abilities.projectDefinitions {
       foreground-process = {
-        qualification = qualificationFor "foreground-process" "application-container-process";
+        qualification = qualificationFor "foreground-process" "foreground-process" "application-container-process";
         artifact = packageRuntimeSelector;
         definition = terminalExport {
           name = foregroundProcess.name;
@@ -903,7 +903,7 @@ in {
         };
       };
       service-management = {
-        qualification = qualificationFor "service-management" "host-manager";
+        qualification = qualificationFor "service-management" "systemd" "host-manager";
         artifact = packageRuntimeSelector;
         definition = terminalExport {
           name = serviceManagement.name;

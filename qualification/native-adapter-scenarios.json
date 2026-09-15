@@ -1,11 +1,21 @@
 {
-  "baseline_postconditions": [
-    "durable-attempt-state-classified",
-    "at-most-one-resource-owner",
-    "foreign-resources-unchanged"
+  "invalidation_dimensions": [
+    "subject",
+    "policy",
+    "executor",
+    "environment"
   ],
-  "failure_postcondition": "dependent-effects-not-executed",
   "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+  "postcondition_groups": {
+    "baseline": [
+      "durable-attempt-state-classified",
+      "at-most-one-resource-owner",
+      "foreign-resources-unchanged"
+    ],
+    "failure": [
+      "dependent-effects-not-executed"
+    ]
+  },
   "postcondition_kinds": {
     "at-most-one-resource-owner": "ownership-inventory",
     "compatible-state-adopted": "state-adoption",
@@ -24,209 +34,486 @@
   "scenarios": [
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "before-acquisition",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "rejected-before-acquisition"
+      },
       "failure": "injected-interruption",
       "family": "durability-recovery",
       "id": "interrupt-before-acquisition",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "none"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "after-acquisition",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "unsettled-after-acquisition"
+      },
       "failure": "injected-interruption",
       "family": "durability-recovery",
       "id": "interrupt-after-acquisition",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "after-durable-intent",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "reconciled-after-interruption"
+      },
       "failure": "injected-interruption",
       "family": "durability-recovery",
       "id": "interrupt-after-durable-intent",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "after-external-return",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "reconciled-completed"
+      },
       "failure": "lost-result",
       "family": "durability-recovery",
       "id": "lose-external-result",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "after-durable-outcome",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "completed-before-interruption"
+      },
       "failure": "injected-interruption",
       "family": "durability-recovery",
       "id": "interrupt-after-durable-outcome",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "cancellation",
       "candidate": "same",
+      "disposition": {
+        "kind": "cancellation-route",
+        "supported": "cancelled-after-reconciliation",
+        "unsupported": "unsupported-cancellation-retains-ownership"
+      },
       "failure": "route-dependent",
       "family": "durability-recovery",
       "id": "cancel-unsettled-attempt",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "deadline",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "deadline-exceeded-retains-ownership"
+      },
       "failure": "deadline-expired",
       "family": "durability-recovery",
       "id": "expire-attempt-deadline",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "cleanup",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "cleanup-failed-retains-ownership"
+      },
       "failure": "cleanup-failed",
       "family": "durability-recovery",
       "id": "fail-cleanup",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "release",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "release-failed-retains-ownership"
+      },
       "failure": "release-failed",
       "family": "durability-recovery",
       "id": "fail-release",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "before-acquisition",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "rejected-before-effect"
+      },
       "failure": "caller-authority-revoked",
       "family": "authority-revocation",
       "id": "revoke-caller-before-acquisition",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "after-acquisition",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "rejected-before-effect"
+      },
       "failure": "caller-authority-revoked",
       "family": "authority-revocation",
       "id": "revoke-caller-after-acquisition",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "before-external-effect",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "rejected-before-effect"
+      },
       "failure": "caller-authority-revoked",
       "family": "authority-revocation",
       "id": "revoke-caller-before-external-effect",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "before-acquisition",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "rejected-before-effect"
+      },
       "failure": "provider-authority-revoked",
       "family": "authority-revocation",
       "id": "revoke-provider-before-acquisition",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "after-acquisition",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "rejected-before-effect"
+      },
       "failure": "provider-authority-revoked",
       "family": "authority-revocation",
       "id": "revoke-provider-after-acquisition",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "before-external-effect",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "rejected-before-effect"
+      },
       "failure": "provider-authority-revoked",
       "family": "authority-revocation",
       "id": "revoke-provider-before-external-effect",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "before-acquisition",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "rejected-before-effect"
+      },
       "failure": "enforcement-authority-revoked",
       "family": "authority-revocation",
       "id": "revoke-enforcement-before-acquisition",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "after-acquisition",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "rejected-before-effect"
+      },
       "failure": "enforcement-authority-revoked",
       "family": "authority-revocation",
       "id": "revoke-enforcement-after-acquisition",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "before-external-effect",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "rejected-before-effect"
+      },
       "failure": "enforcement-authority-revoked",
       "family": "authority-revocation",
       "id": "revoke-enforcement-before-external-effect",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "before-acquisition",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "rejected-before-effect"
+      },
       "failure": "assignment-authority-revoked",
       "family": "authority-revocation",
       "id": "revoke-assignment-before-acquisition",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "after-acquisition",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "rejected-before-effect"
+      },
       "failure": "assignment-authority-revoked",
       "family": "authority-revocation",
       "id": "revoke-assignment-after-acquisition",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "before-external-effect",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "rejected-before-effect"
+      },
       "failure": "assignment-authority-revoked",
       "family": "authority-revocation",
       "id": "revoke-assignment-before-external-effect",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "recovery",
       "candidate": "new-executor-incarnation",
+      "disposition": {
+        "kind": "exact",
+        "value": "stale-executor-rejected"
+      },
       "failure": "stale-executor-rejected",
       "family": "incarnation-replacement",
       "id": "replace-executor-incarnation",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "in-flight"
     },
     {
       "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "recovery",
       "candidate": "new-provider-incarnation",
+      "disposition": {
+        "kind": "exact",
+        "value": "stale-provider-rejected"
+      },
       "failure": "stale-provider-rejected",
       "family": "incarnation-replacement",
       "id": "replace-provider-incarnation",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "in-flight"
     },
     {
@@ -235,11 +522,24 @@
         "compatible-state-adopted",
         "exactly-one-resource-owner"
       ],
+      "applicability": {
+        "required_resource_lifetimes": [
+          "persistent"
+        ],
+        "requires_state_format": true
+      },
       "boundary": "recovery",
       "candidate": "compatible-replacement",
+      "disposition": {
+        "kind": "exact",
+        "value": "compatible-state-adopted"
+      },
       "failure": "none",
       "family": "provider-state-transfer",
       "id": "adopt-compatible-state",
+      "postcondition_groups": [
+        "baseline"
+      ],
       "predecessor": "in-flight-compatible"
     },
     {
@@ -248,11 +548,23 @@
         "transfer-rejected-before-candidate-effect",
         "predecessor-remains-sole-owner"
       ],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "recovery",
       "candidate": "unsupported-replacement",
+      "disposition": {
+        "kind": "exact",
+        "value": "transfer-rejected-before-effect"
+      },
       "failure": "transfer-rejected",
       "family": "provider-state-transfer",
       "id": "reject-unsupported-transfer",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "in-flight-incompatible"
     },
     {
@@ -261,33 +573,68 @@
         "retained-target-identity-preserved",
         "exactly-one-resource-owner"
       ],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "retained-target-activation",
       "candidate": "current-authority",
+      "disposition": {
+        "kind": "exact",
+        "value": "retained-target-activated"
+      },
       "failure": "none",
       "family": "provider-state-transfer",
       "id": "activate-retained-target",
+      "postcondition_groups": [
+        "baseline"
+      ],
       "predecessor": "retained"
     },
     {
       "additional_postconditions": [
         "prerequisite-failure-recorded"
       ],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "prerequisite",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "dependent-effect-blocked"
+      },
       "failure": "prerequisite-failed",
       "family": "dependent-effect",
       "id": "block-dependent-effect",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     },
     {
       "additional_postconditions": [
         "foreign-attempt-rejected-before-mutation"
       ],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
       "boundary": "foreign-resource",
       "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "foreign-mutation-rejected"
+      },
       "failure": "foreign-authority-rejected",
       "family": "foreign-resource",
       "id": "reject-foreign-resource-mutation",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
       "predecessor": "same"
     }
   ],

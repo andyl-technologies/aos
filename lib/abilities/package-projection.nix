@@ -211,6 +211,7 @@
         name = localName name;
         value = {
           inherit (qualification) adapter scope;
+          observation_kind = qualification.observationKind;
           conformance_families = builtins.sort builtins.lessThan qualification.conformanceFamilies;
           observer = projectedHandler "qualification observer" qualification.observer;
         };

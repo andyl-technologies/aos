@@ -836,46 +836,46 @@ mod tests {
         let surface = serde_json::from_value::<NativeAdapterSurfaceSpec>(serde_json::json!({
             "adapters": [{
                 "adapter": "fixture",
-                "cancellation_oracle": "fixture-state",
                 "conformance_families": ["durability-recovery"],
-                "harness": "fixture",
                 "interface_abi": 1,
                 "interface_descriptor": Sha256Digest::of_bytes(b"interface descriptor"),
                 "interface_name": "aos.fixture-effects",
                 "methods": [{
-                    "cancel": null,
-                    "effect_class": "mutation",
+                    "required_target_access": "exclusive-write",
                     "method": "apply",
-                    "reconcile": "apply",
                 }],
-                "oracle": "fixture-state",
+                "observation_kind": "fixture-state",
                 "provider_contract": {
-                    "resource_lifetime": "persistent",
+                    "lifecycle": {
+                        "stable_resource_identity": true,
+                        "releases_ephemeral_on_disable": true,
+                        "retains_persistent_by_default": true,
+                        "persistent_delete_method": null,
+                    },
+                    "resource_lifetimes": ["persistent"],
                     "state_format": Sha256Digest::of_bytes(b"state format"),
                 },
                 "provider_implementation": {
-                    "package": "fixture-package",
-                    "name": "fixture-implementation",
-                    "artifact": {
-                        "_type": "aos-package-output-selector",
-                        "package": "fixture-package",
-                        "output": "out",
-                    },
-                    "dispatch": "fixture-dispatch",
-                    "handler": {
+                    "contract": "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-fixture-abilities",
+                    "implementation": "fixture-implementation",
+                    "observer": {
                         "artifact": {
-                            "_type": "aos-package-output-selector",
-                            "package": "fixture-runtime",
-                            "output": "out",
+                            "path": "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-fixture-observer",
+                            "selector": {
+                                "_type": "aos-package-output-selector",
+                                "package": "fixture-observer",
+                                "output": "out",
+                            },
                         },
                         "entry_point": "libexec/fixture-handler",
+                        "arguments": {"kind": "record"},
+                        "result": {"kind": "record"},
                     },
-                    "required_features": [],
                 },
                 "scope": "host-resource",
             }],
             "families": ["durability-recovery"],
-            "implementation_claims_digest": Sha256Digest::of_bytes(b"fixture implementation claims"),
+            "invalidation_dimensions": ["subject", "policy", "executor", "environment"],
             "limits": {
                 "max_adapters": 1,
                 "max_methods": 1,
@@ -883,11 +883,23 @@ mod tests {
             },
             "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
             "scenarios": [{
+                "applicability": {
+                    "required_resource_lifetimes": [],
+                    "requires_state_format": false,
+                },
                 "boundary": "before-external-effect",
                 "candidate": "same",
+                "disposition": {
+                    "kind": "exact",
+                    "value": "rejected-before-acquisition",
+                },
                 "failure": "injected-interruption",
                 "family": "durability-recovery",
                 "id": "interruption",
+                "postconditions": [{
+                    "name": "dependent-effects-not-executed",
+                    "evidence_kind": "dependency-barrier",
+                }],
                 "predecessor": "same",
             }],
             "schema": "aos.qualification.native-adapter-surface/v1",
@@ -909,7 +921,6 @@ mod tests {
                 "adapter_count": 1,
                 "method_count": 1,
                 "scenario_count": 1,
-                "interfaces": [interface.clone()],
             },
             "cells": [{
                 "id": "fixture/aos.fixture-effects/abi-1/apply/interruption",
@@ -917,19 +928,26 @@ mod tests {
                 "adapter": "fixture",
                 "interface": interface,
                 "method": "apply",
-                "effect_class": "mutation",
+                "required_target_access": "exclusive-write",
                 "scope": "host-resource",
                 "boundary": "before-external-effect",
                 "failure": "injected-interruption",
                 "predecessor": "same",
                 "candidate": "same",
+                "disposition": {
+                    "kind": "exact",
+                    "value": "rejected-before-acquisition",
+                },
+                "applicability": {
+                    "required_resource_lifetimes": [],
+                    "requires_state_format": false,
+                },
                 "postconditions": [
-                    "durable-attempt-state-classified",
-                    "at-most-one-resource-owner",
-                    "foreign-resources-unchanged",
                     "dependent-effects-not-executed",
                 ],
-                "recovery": {"reconcile": "apply", "cancel": null},
+                "postcondition_kinds": {
+                    "dependent-effects-not-executed": "dependency-barrier",
+                },
                 "invalidated_by": ["subject", "policy", "executor", "environment"],
             }],
         }))?)

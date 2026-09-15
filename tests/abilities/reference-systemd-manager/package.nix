@@ -194,6 +194,7 @@
       }) (lib.optionalAttrs (qualificationSupport != null) {
         implementations.systemd-manager.qualification = {
           adapter = "systemd-manager";
+          observationKind = "systemd";
           scope = "host-manager";
           conformanceFamilies = [
             "authority-revocation"

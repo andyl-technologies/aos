@@ -815,6 +815,8 @@ pub struct ProviderQualification {
     pub adapter: LocalKey,
     /// Names the native execution scope containing the implementation's effects.
     pub scope: LocalKey,
+    /// Names the typed observation record emitted by the package-owned observer.
+    pub observation_kind: LocalKey,
     /// Lists the semantic conformance families claimed by the implementation.
     pub conformance_families: Vec<LocalKey>,
     /// Defines the package-owned observer used to collect independent evidence.

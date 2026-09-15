@@ -25,7 +25,6 @@ from native_adapter_evidence_common import (
     PROBE_SCHEMA,
     TOKEN,
     _bound_cohort_subject,
-    _cell_scenario,
     _expected_disposition,
     _matches,
     _postcondition_kind,
@@ -43,7 +42,6 @@ QUALIFICATION_SUBJECT_SCHEMA = (
 MATRIX_APPLICABILITY_SCHEMA = (
     "aos.qualification.native-adapter-matrix-applicability/v1"
 )
-RESOURCE_LIFETIMES = {"attempt", "transaction", "instance", "persistent"}
 
 
 def _inapplicable_reason(
@@ -51,11 +49,16 @@ def _inapplicable_reason(
 ) -> str | None:
     """Returns the exact provider-contract reason that excludes one cell."""
 
-    if _cell_scenario(cell) != "adopt-compatible-state":
-        return None
-    if contract["resource_lifetime"] != "persistent":
-        return "non-persistent-lifetime"
-    if contract["state_format"] is None:
+    applicability = cell.get("applicability")
+    if not isinstance(applicability, dict):
+        raise RuntimeError("matrix cell has no typed applicability declaration")
+    required_lifetimes = applicability.get("required_resource_lifetimes")
+    requires_state_format = applicability.get("requires_state_format")
+    if not isinstance(required_lifetimes, list) or not isinstance(requires_state_format, bool):
+        raise RuntimeError("matrix cell applicability is malformed")
+    if any(lifetime not in contract["resource_lifetimes"] for lifetime in required_lifetimes):
+        return "required-resource-lifetime-unavailable"
+    if requires_state_format and contract["state_format"] is None:
         return "missing-authenticated-state-format"
     return None
 
@@ -75,8 +78,14 @@ def _applicable_specification_cells(spec: dict[str, Any]) -> list[dict[str, Any]
         contract = adapter.get("provider_contract")
         if (
             not isinstance(contract, dict)
-            or set(contract) != {"resource_lifetime", "state_format"}
-            or contract.get("resource_lifetime") not in RESOURCE_LIFETIMES
+            or not isinstance(contract.get("lifecycle"), dict)
+            or not isinstance(contract.get("resource_lifetimes"), list)
+            or len(contract["resource_lifetimes"])
+            != len(set(contract["resource_lifetimes"]))
+            or not all(
+                isinstance(value, str) and value
+                for value in contract["resource_lifetimes"]
+            )
             or (
                 contract.get("state_format") is not None
                 and (

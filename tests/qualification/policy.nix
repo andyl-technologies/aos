@@ -360,8 +360,14 @@ in
   assert nativeAdapterMatrix.spec.applicability == nativeAdapterMatrix.applicability;
   assert (providerContract "image-rollout")
   == {
-    resource_lifetime = "persistent";
-    state_format = rolloutPackageContract.abilities.config.aos.abilities.implementations.rollout.definition.state_format;
+    lifecycle = {
+      persistent_delete_method = null;
+      releases_ephemeral_on_disable = false;
+      retains_persistent_by_default = true;
+      stable_resource_identity = true;
+    };
+    resource_lifetimes = ["attempt" "persistent"];
+    state_format = null;
   };
   assert rolloutPackageContract.abilities.config.aos.abilities.implementations.rollout.definition.outputs.machine.lifetime == "persistent";
   assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) nativeRoleRevocationCells;

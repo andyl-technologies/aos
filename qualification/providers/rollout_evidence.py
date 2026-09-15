@@ -101,7 +101,7 @@ def validate_provider_negative_cell(
     mutation_methods = {
         method["method"]
         for method in adapter_claim["methods"]
-        if method.get("effect_class") == "mutation"
+        if method.get("required_target_access") != "read"
     }
     expected_subject = {
         "schema": policy["subject-schema"],
@@ -153,7 +153,7 @@ def validate_provider_negative_cell(
     same_machine = foreign.get("resource") == dependent.get("resource")
     if same_machine != (mode == "rollout-dependency"):
         raise RuntimeError("rollout resource relationship differs from its scenario")
-    if cell["effect_class"] == "observation":
+    if cell["required_target_access"] == "read":
         if (
             not isinstance(witness, dict)
             or not _provider_negative_operation(witness)

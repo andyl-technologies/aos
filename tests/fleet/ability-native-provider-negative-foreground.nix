@@ -116,8 +116,8 @@ in
                   provider_key="shared-service",
                   resource_key="nginx-main-service",
                   label=label,
-                  observation=matrix_cells[foreign_cell]["effect_class"]
-                  == "observation",
+                  observation=matrix_cells[foreign_cell]["required_target_access"]
+                  == "read",
                   mapping=resource_map(baseline, selected),
               ),
               candidate,

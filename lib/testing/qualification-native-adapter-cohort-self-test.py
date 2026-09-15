@@ -90,18 +90,23 @@ def cell() -> dict[str, Any]:
         "id": "fixture/aos.fixture/abi-1/apply/adopt-compatible-state",
         "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
         "adapter": "fixture",
+        "applicability": {
+            "required_resource_lifetimes": ["persistent"],
+            "requires_state_format": True,
+        },
         "interface": {
             "name": "aos.fixture",
             "abi": 1,
             "descriptor": DIGESTS["interface"],
         },
         "method": "apply",
-        "effect_class": "mutation",
+        "required_target_access": "exclusive-write",
         "scope": "fixture-resource",
         "boundary": "recovery",
         "failure": "none",
         "predecessor": "compatible",
         "candidate": "same",
+        "disposition": {"kind": "exact", "value": "compatible-state-adopted"},
         "postconditions": ["compatible-state-adopted"],
         "postcondition_kinds": {"compatible-state-adopted": "state-adoption"},
         "invalidated_by": ["subject", "policy", "executor", "environment"],
@@ -117,12 +122,14 @@ def specification(matrix_cell: dict[str, Any]) -> dict[str, Any]:
             "adapters": [
                 {
                     "adapter": "fixture",
+                    "observation_kind": "fixture-state",
                     "interface_name": "aos.fixture",
                     "interface_abi": 1,
                     "interface_descriptor": DIGESTS["interface"],
-                    "methods": [{"method": "apply", "effect_class": "mutation"}],
+                    "methods": [{"method": "apply", "required_target_access": "exclusive-write"}],
                     "provider_contract": {
-                        "resource_lifetime": "persistent",
+                        "lifecycle": {},
+                        "resource_lifetimes": ["persistent"],
                         "state_format": DIGESTS["state"],
                     },
                 }

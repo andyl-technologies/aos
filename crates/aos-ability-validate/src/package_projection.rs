@@ -302,6 +302,8 @@ pub struct QualificationProjection {
     pub adapter: LocalKey,
     /// Native execution scope containing the implementation's effects.
     pub scope: LocalKey,
+    /// Typed observation record emitted by the package-owned observer.
+    pub observation_kind: LocalKey,
     /// Semantic conformance families claimed by the implementation.
     pub conformance_families: Vec<LocalKey>,
     /// Package-owned observer used to collect independent qualification evidence.
@@ -711,6 +713,7 @@ pub fn resolve_package_projection(
                 ProviderQualification {
                     adapter: qualification.adapter,
                     scope: qualification.scope,
+                    observation_kind: qualification.observation_kind,
                     conformance_families: qualification.conformance_families,
                     observer: HandlerDescriptor {
                         artifact: resolver.select(&qualification.observer.artifact)?,
@@ -1522,6 +1525,7 @@ mod tests {
             aos_ability_model::ProviderQualification {
                 adapter: LocalKey::new("fixture-adapter").unwrap(),
                 scope: LocalKey::new("fixture-scope").unwrap(),
+                observation_kind: LocalKey::new("fixture-observation").unwrap(),
                 conformance_families: vec![LocalKey::new("lifecycle").unwrap()],
                 observer: aos_ability_model::HandlerDescriptor {
                     artifact: observer,

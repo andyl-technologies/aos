@@ -134,8 +134,8 @@ in
                   provider_key=provider_key,
                   resource_key=resource_key,
                   label=label,
-                  observation=matrix_cells[foreign_cell]["effect_class"]
-                  == "observation",
+                  observation=matrix_cells[foreign_cell]["required_target_access"]
+                  == "read",
                   mapping=mappings,
               ),
               candidate,
