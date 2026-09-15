@@ -173,6 +173,7 @@ use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use aos_ability_model::VersionedDocument;
 use clap::{Args, Subcommand, ValueEnum};
 
 use aos_core::error::AosError;
@@ -4441,7 +4442,7 @@ struct GenerationVerifierPolicyFile {
     #[serde(default)]
     allow_local_root_runtime_modules: bool,
     #[serde(default)]
-    image_config_modules: Vec<attestation::VerifiedConfigModuleMember>,
+    image_package_modules: Vec<attestation::VerifiedPackageModule>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -4795,11 +4796,11 @@ fn verify_generation_attestation_cli_with<F>(
 ) -> Result<GenerationVerificationSummary>
 where
     F: FnOnce(
-        &attestation::ConfigModulesAttInput,
+        &attestation::PackageModulesAttInput,
     ) -> Result<(
         Vec<String>,
         Vec<String>,
-        Option<attestation::VerifiedConfigModuleRelease>,
+        Option<attestation::VerifiedPackageModuleRelease>,
     )>,
 {
     if !matches!(quote_trust, AttestationQuoteTrust::IdentityPinned { .. }) {
@@ -4846,7 +4847,7 @@ where
         })?
         .clone();
 
-    let (roster, revoked, release) = verify_release(&record.inputs.config_modules)?;
+    let (roster, revoked, release) = verify_release(&record.inputs.package_modules)?;
     let rederived_hash = rederived_manifest
         .map(hash_rederived_manifest)
         .transpose()?;
@@ -4867,7 +4868,7 @@ where
         roster_fingerprints: roster,
         revoked_roster_fingerprints: revoked,
         valid_release_tags: release.into_iter().collect(),
-        image_config_modules: policy_file.image_config_modules,
+        image_package_modules: policy_file.image_package_modules,
     };
     attestation::verify_gen_attestation(
         &record,
@@ -4884,10 +4885,10 @@ where
         activation_id: record.activation_id,
         generation_id: record.generation_id,
         manifest_hash: record.manifest_hash,
-        registry: record.inputs.config_modules.registry,
-        release_tag: record.inputs.config_modules.release_tag,
-        tag_signer_key: record.inputs.config_modules.tag_signer_key,
-        realization: record.inputs.config_modules.realization,
+        registry: record.inputs.package_modules.registry,
+        release_tag: record.inputs.package_modules.release_tag,
+        tag_signer_key: record.inputs.package_modules.tag_signer_key,
+        realization: record.inputs.package_modules.realization,
         rederived: rederived_hash.is_some(),
     })
 }
@@ -4973,11 +4974,11 @@ fn verify_local_boot_commit(
 
 fn verified_generation_release(
     config: &config::ApmConfig,
-    modules: &attestation::ConfigModulesAttInput,
+    modules: &attestation::PackageModulesAttInput,
 ) -> Result<(
     Vec<String>,
     Vec<String>,
-    Option<attestation::VerifiedConfigModuleRelease>,
+    Option<attestation::VerifiedPackageModuleRelease>,
 )> {
     verified_generation_release_from_paths(
         &config.cache_path(),
@@ -4989,19 +4990,19 @@ fn verified_generation_release(
 fn verified_generation_release_from_paths(
     cache_path: &Path,
     trusted_keys_dirs: Vec<PathBuf>,
-    modules: &attestation::ConfigModulesAttInput,
+    modules: &attestation::PackageModulesAttInput,
 ) -> Result<(
     Vec<String>,
     Vec<String>,
-    Option<attestation::VerifiedConfigModuleRelease>,
+    Option<attestation::VerifiedPackageModuleRelease>,
 )> {
-    let Some(registry_modules) = registry_config_module_subset(modules)? else {
+    let Some(registry_modules) = registry_package_module_subset(modules)? else {
         return Ok((Vec::new(), Vec::new(), None));
     };
     let registry_name = registry_modules
         .registry
         .as_deref()
-        .context("generation config modules have no registry")?;
+        .context("generation package modules have no registry")?;
     let repo = cache_path.join(registry_name).join("repo.git");
     if !repo.is_dir() {
         bail!(
@@ -5021,75 +5022,28 @@ fn verified_generation_release_from_paths(
     verify_generation_release_snapshot(&repo, &keys, revoked, &receipt, &registry_modules)
 }
 
-/// Selects the registry-authenticated portion of mixed config-module evidence.
+/// Selects the registry-authenticated portion of mixed package-module evidence.
 ///
 /// Image-origin modules are authenticated by the generation's verified-boot
 /// binding, so the public verifier must not demand a registry release for
 /// them. Registry-origin modules remain subject to the full signed-tag and
 /// store-graph verification below. Records that predate explicit `origins`
 /// are interpreted as registry-only for compatibility.
-fn registry_config_module_subset(
-    modules: &attestation::ConfigModulesAttInput,
-) -> Result<Option<attestation::ConfigModulesAttInput>> {
-    if modules.count == 0 {
-        return Ok(None);
-    }
-    if modules.count != modules.package_names.len()
-        || modules.count != modules.store_paths.len()
-        || modules.count != modules.nar_hashes.len()
-    {
-        bail!("generation config-module membership vectors are inconsistent");
-    }
-
-    let origins = match modules.provenance.get("origins") {
-        Some(value) => serde_json::from_value::<Vec<String>>(value.clone())
-            .context("generation config-module origins are malformed")?,
-        None => vec!["registry".to_string(); modules.count],
-    };
-    if origins.len() != modules.count
-        || origins
-            .iter()
-            .any(|origin| origin != "registry" && origin != "image")
-    {
-        bail!("generation config-module origins are inconsistent");
-    }
-    let indexes = origins
+fn registry_package_module_subset(
+    modules: &attestation::PackageModulesAttInput,
+) -> Result<Option<attestation::PackageModulesAttInput>> {
+    let registry_modules = modules
+        .modules
         .iter()
-        .enumerate()
-        .filter_map(|(index, origin)| (origin == "registry").then_some(index))
+        .filter(|module| module.origin == config_eval::materialize::PackageModuleOrigin::Registry)
+        .cloned()
         .collect::<Vec<_>>();
-    if indexes.is_empty() {
+    if registry_modules.is_empty() {
         return Ok(None);
     }
 
     let mut subset = modules.clone();
-    subset.count = indexes.len();
-    subset.package_names = indexes
-        .iter()
-        .map(|index| modules.package_names[*index].clone())
-        .collect();
-    subset.store_paths = indexes
-        .iter()
-        .map(|index| modules.store_paths[*index].clone())
-        .collect();
-    subset.nar_hashes = indexes
-        .iter()
-        .map(|index| modules.nar_hashes[*index].clone())
-        .collect();
-    let mut closure_members = subset
-        .store_paths
-        .iter()
-        .zip(&subset.nar_hashes)
-        .map(|(path, nar_hash)| serde_json::json!([path, nar_hash]))
-        .collect::<Vec<_>>();
-    closure_members.sort_by(|left, right| {
-        left[0]
-            .as_str()
-            .unwrap_or_default()
-            .cmp(right[0].as_str().unwrap_or_default())
-    });
-    subset.closure_hash =
-        graph_compile::reproject::hash_cjson(&serde_json::Value::Array(closure_members));
+    subset.modules = registry_modules;
     Ok(Some(subset))
 }
 
@@ -5098,31 +5052,27 @@ fn verify_generation_release_snapshot(
     keys: &[security::TrustedKey],
     revoked: Vec<String>,
     receipt: &registry::ReleaseTrustReceipt,
-    modules: &attestation::ConfigModulesAttInput,
+    modules: &attestation::PackageModulesAttInput,
 ) -> Result<(
     Vec<String>,
     Vec<String>,
-    Option<attestation::VerifiedConfigModuleRelease>,
+    Option<attestation::VerifiedPackageModuleRelease>,
 )> {
-    if modules.count == 0
-        || modules.count != modules.package_names.len()
-        || modules.count != modules.store_paths.len()
-        || modules.count != modules.nar_hashes.len()
-    {
-        bail!("generation config-module membership vectors are inconsistent");
+    if modules.modules.is_empty() {
+        bail!("generation package-module membership is empty");
     }
     let registry_name = modules
         .registry
         .as_deref()
-        .context("generation config modules have no registry")?;
+        .context("generation package modules have no registry")?;
     let release_tag = modules
         .release_tag
         .as_deref()
-        .context("generation config modules have no release tag")?;
+        .context("generation package modules have no release tag")?;
     let signer = modules
         .tag_signer_key
         .as_deref()
-        .context("generation config modules have no tag signer")?;
+        .context("generation package modules have no tag signer")?;
     if revoked
         .iter()
         .any(|fingerprint| fingerprint.eq_ignore_ascii_case(signer))
@@ -5154,29 +5104,19 @@ fn verify_generation_release_snapshot(
         .with_context(|| format!("release tag '{release_tag}' is not semver"))?;
     ensure_release_receipt_matches(receipt, registry_name, release_tag, &tag.object, signer)?;
 
-    let mut members = Vec::with_capacity(modules.count);
-    let mut realization_members = Vec::with_capacity(modules.count);
-    for ((package_name, store_path), nar_hash) in modules
-        .package_names
-        .iter()
-        .zip(&modules.store_paths)
-        .zip(&modules.nar_hashes)
-    {
-        let module_abi_compat = verify_signed_config_module_member(
-            &repo,
-            &tag.object,
-            package_name,
-            store_path,
-            nar_hash,
-        )?;
-        let root = registry::store_path_hash(store_path);
+    let mut members = Vec::with_capacity(modules.modules.len());
+    let mut realization_members = Vec::with_capacity(modules.modules.len());
+    for module in &modules.modules {
+        verify_signed_package_module_member(&repo, &tag.object, module)?;
+        let root = registry::store_path_hash(&module.store_path);
         let subset = signed_store_subset_hash(&repo, &tag.object, root)?;
-        realization_members.push(serde_json::json!([store_path, subset]));
-        members.push(attestation::VerifiedConfigModuleMember {
-            package_name: package_name.clone(),
-            store_path: store_path.clone(),
-            nar_hash: nar_hash.clone(),
-            module_abi_compat,
+        realization_members.push(serde_json::json!([module.store_path, subset]));
+        members.push(attestation::VerifiedPackageModule {
+            package_name: module.package.clone(),
+            document_digest: module.document_digest.clone(),
+            store_path: module.store_path.clone(),
+            nar_hash: module.nar_hash.clone(),
+            entrypoint: module.entrypoint.clone(),
         });
     }
     realization_members.sort_by(|left, right| {
@@ -5190,12 +5130,12 @@ fn verify_generation_release_snapshot(
     Ok((
         roster,
         revoked,
-        Some(attestation::VerifiedConfigModuleRelease {
+        Some(attestation::VerifiedPackageModuleRelease {
             registry: registry_name.to_string(),
             release_tag: release_tag.to_string(),
             signer_fingerprints: vec![signer.to_string()],
             realization,
-            config_modules: members,
+            package_modules: members,
         }),
     ))
 }
@@ -5217,45 +5157,61 @@ fn ensure_release_receipt_matches(
     Ok(())
 }
 
-fn verify_signed_config_module_member(
+fn verify_signed_package_module_member(
     repo: &Path,
     commit: &str,
-    package_name: &str,
-    store_path: &str,
-    nar_hash: &str,
-) -> Result<types::ModuleAbiCompat> {
-    types::validate_package_name(package_name)?;
+    module: &attestation::PackageModuleAttInput,
+) -> Result<()> {
+    types::validate_package_name(&module.package)?;
     let path = format!(
         "packages/{}/{}.toml",
-        types::package_name_bucket(package_name),
-        package_name
+        types::package_name_bucket(&module.package),
+        module.package
     );
     let bytes = registry::repo::read_blob_at_blocking(repo, commit, &path)?
         .with_context(|| format!("signed release has no package catalog entry {path}"))?;
     let text = std::str::from_utf8(&bytes)
         .with_context(|| format!("signed package catalog entry {path} is not UTF-8"))?;
     let package = registry::parse::parse_package_file(text)?;
-    if package.package.name != package_name {
+    if package.package.name != module.package {
         bail!("signed package catalog entry {path} has the wrong package identity");
     }
-    let canonical_nar = registry::store::NarBytes::from_hash(nar_hash, 0)?.nar_hash();
+    let canonical_nar = registry::store::NarBytes::from_hash(&module.nar_hash, 0)?.nar_hash();
     let matching = package
         .versions
         .iter()
         .flat_map(|version| version.platforms.values())
-        .filter_map(|platform| platform.config_module.as_ref())
-        .filter(|module| {
-            module.config_output.store_path == store_path
-                && registry::store::NarBytes::from_hash(&module.config_output.nar_hash, 0)
-                    .is_ok_and(|nar| nar.nar_hash() == canonical_nar)
+        .filter_map(|platform| platform.ability.as_ref())
+        .filter(|contract| {
+            contract.package_digest == module.document_digest
+                && contract.artifacts.iter().any(|artifact| {
+                    artifact.store_path == module.store_path
+                        && registry::store::NarBytes::from_hash(&artifact.nar_hash, 0)
+                            .is_ok_and(|nar| nar.nar_hash() == canonical_nar)
+                })
         })
         .collect::<Vec<_>>();
-    let [module] = matching.as_slice() else {
+    let [contract] = matching.as_slice() else {
         bail!(
-            "signed release catalog must authenticate config output {store_path} exactly once for package {package_name}"
+            "signed release catalog must authenticate package module {} exactly once for package {}",
+            module.store_path,
+            module.package
         );
     };
-    Ok(module.module_abi_compat)
+    let bytes = ability_package::read_package_manifest(&contract.store_path)?;
+    let document = ability_package::decode_package_manifest(&bytes)?;
+    let locator = document
+        .package_module
+        .as_ref()
+        .context("authenticated package document has no module locator")?;
+    anyhow::ensure!(
+        document.content_digest()?.to_string() == module.document_digest
+            && locator.artifact.store_path == module.store_path
+            && locator.artifact.nar_hash.to_string() == module.nar_hash
+            && locator.path.as_str() == module.entrypoint,
+        "signed package document disagrees with the attested module locator"
+    );
+    Ok(())
 }
 
 fn signed_store_subset_hash(repo: &Path, commit: &str, root: &str) -> Result<String> {
@@ -7174,7 +7130,7 @@ mod tests {
             requires_features: vec!["attestation-v1".into()],
             expose: None,
             expose_artifact: None,
-            config_module: None,
+            package_module: None,
             documentation: None,
             ability: None,
             permissions: PermissionsMeta::default(),
@@ -7313,20 +7269,20 @@ closure_size = 1
 source_drv = "/nix/store/22222222222222222222222222222222-firewall.drv"
 source_nar_hash = "sha256:{nar_digest}"
 references = []
-requires-features = ["config-module-v1", "attestation-v1"]
+requires-features = ["package-module-v1", "attestation-v1"]
 provenance = "provenance/firewall.jsonl"
 
-[versions.platforms.x86_64-linux.config_module.config_output]
+[versions.platforms.x86_64-linux.package_module.config_output]
 store_path = "{store_path}"
 nar_hash = "sha256:{nar_digest}"
 nar_size = 7
 references = []
 
-[versions.platforms.x86_64-linux.config_module.module_abi_compat]
+[versions.platforms.x86_64-linux.package_module.module_abi_compat]
 min = 1
 max = 1
 
-[[versions.platforms.x86_64-linux.config_module.owns_roots]]
+[[versions.platforms.x86_64-linux.package_module.owns_roots]]
 root = "firewall"
 interface_abi = 1
 contributable = ["allowedTCPPorts"]
@@ -7375,7 +7331,7 @@ contributable = ["allowedTCPPorts"]
             commit,
             tag_signer_key: fingerprint.clone(),
         };
-        let modules = attestation::ConfigModulesAttInput {
+        let modules = attestation::PackageModulesAttInput {
             closure_hash: format!("sha256:{}", "1".repeat(64)),
             count: 1,
             store_paths: vec![store_path.clone()],
@@ -7399,9 +7355,9 @@ contributable = ["allowedTCPPorts"]
         let release = release.expect("non-empty release");
         assert_eq!(release.registry, "aos-core");
         assert_eq!(release.release_tag, "1.0.0");
-        assert_eq!(release.config_modules[0].store_path, store_path);
+        assert_eq!(release.package_modules[0].store_path, store_path);
         assert_eq!(
-            release.config_modules[0].module_abi_compat,
+            release.package_modules[0].module_abi_compat,
             types::ModuleAbiCompat { min: 1, max: 1 }
         );
         assert!(
@@ -7454,7 +7410,7 @@ contributable = ["allowedTCPPorts"]
                     store_path: "/nix/store/44444444444444444444444444444444-aos-eval".to_string(),
                     store_hash: "44444444444444444444444444444444".to_string(),
                 },
-                config_modules: verified_modules,
+                package_modules: verified_modules,
                 host_nix: attestation::HostNixAttInput {
                     content_hash: format!("sha256:{}", "66".repeat(32)),
                     store_path: "/nix/store/55555555555555555555555555555555-host-nix".to_string(),
@@ -7582,7 +7538,7 @@ contributable = ["allowedTCPPorts"]
 
         let mut wrong_realization = base_record.clone();
         wrong_realization.activation_id = format!("sha256:{}", "a2".repeat(32));
-        wrong_realization.inputs.config_modules.realization =
+        wrong_realization.inputs.package_modules.realization =
             Some(format!("sha256:{}", "88".repeat(32)));
         let (wrong_realization_path, wrong_realization_checker, wrong_realization_cel) =
             generation_verifier_evidence(tmp.path(), "wrong-realization", wrong_realization);
@@ -7608,11 +7564,11 @@ contributable = ["allowedTCPPorts"]
 
         let mut wrong_catalog = base_record;
         wrong_catalog.activation_id = format!("sha256:{}", "a3".repeat(32));
-        wrong_catalog.inputs.config_modules.nar_hashes[0] = format!("sha256:{}", "1".repeat(52));
-        wrong_catalog.inputs.config_modules.closure_hash =
+        wrong_catalog.inputs.package_modules.nar_hashes[0] = format!("sha256:{}", "1".repeat(52));
+        wrong_catalog.inputs.package_modules.closure_hash =
             graph_compile::reproject::hash_cjson(&serde_json::json!([[
                 &store_path,
-                &wrong_catalog.inputs.config_modules.nar_hashes[0]
+                &wrong_catalog.inputs.package_modules.nar_hashes[0]
             ]]));
         let (wrong_catalog_path, wrong_catalog_checker, wrong_catalog_cel) =
             generation_verifier_evidence(tmp.path(), "wrong-catalog", wrong_catalog);
@@ -7652,7 +7608,7 @@ contributable = ["allowedTCPPorts"]
 
     #[test]
     fn generation_release_selection_filters_image_origins() {
-        let mut modules = attestation::ConfigModulesAttInput {
+        let mut modules = attestation::PackageModulesAttInput {
             registry: Some("aos-core".to_string()),
             release_tag: Some("1.0.0".to_string()),
             tag_signer_key: Some("1234abcd".to_string()),
@@ -7677,7 +7633,7 @@ contributable = ["allowedTCPPorts"]
             }),
         };
 
-        let subset = registry_config_module_subset(&modules)
+        let subset = registry_package_module_subset(&modules)
             .expect("select registry subset")
             .expect("mixed evidence has a registry subset");
         assert_eq!(subset.count, 1);
@@ -7691,13 +7647,13 @@ contributable = ["allowedTCPPorts"]
         modules.realization = None;
         modules.provenance["origins"] = serde_json::json!(["image", "image"]);
         assert!(
-            registry_config_module_subset(&modules)
+            registry_package_module_subset(&modules)
                 .expect("accept image-only origins")
                 .is_none()
         );
 
         modules.provenance["origins"] = serde_json::json!(["image"]);
-        assert!(registry_config_module_subset(&modules).is_err());
+        assert!(registry_package_module_subset(&modules).is_err());
     }
 
     #[test]

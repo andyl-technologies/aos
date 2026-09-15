@@ -248,44 +248,6 @@ pub fn classify_failure(err: &FixpointError) -> EvalDiagnostic {
                 "config eval failed: '{path}' is still missing after fetching '{provider}' (read cycle)"
             ),
         ),
-        FixpointError::AmbiguousProvider {
-            root,
-            owner_a,
-            owner_b,
-        } => (
-            EvalFailureClass::AmbiguousProvider,
-            format!(
-                "config eval failed: root '{root}' is owned by both '{owner_a}' and '{owner_b}' (owned roots are exclusive per system)"
-            ),
-        ),
-        FixpointError::ShadowedRoot { root, owner } => (
-            EvalFailureClass::ShadowedRoot,
-            format!(
-                "config eval failed: owned root '{root}' (owned by '{owner}') collides with a different installed package named '{root}'"
-            ),
-        ),
-        FixpointError::Contributable {
-            contributor,
-            root,
-            path,
-            reason,
-        } => (
-            EvalFailureClass::Contributable,
-            match reason {
-                super::system_roots::ContributableError::NoOwner => format!(
-                    "config eval failed: package '{contributor}' contributes to root '{root}' but no installed package owns it"
-                ),
-                super::system_roots::ContributableError::NotContributable => format!(
-                    "config eval failed: package '{contributor}' contributes '{root}.{path}' but '{path}' is not in the owner's contributable set"
-                ),
-                super::system_roots::ContributableError::InterfaceAbiMismatch {
-                    expected,
-                    actual,
-                } => format!(
-                    "config eval failed: package '{contributor}' expects root '{root}' interface ABI {expected}, but the installed owner exports ABI {actual}; republish the contributor"
-                ),
-            },
-        ),
         FixpointError::Fetch { provider, .. } => (
             EvalFailureClass::Fetch,
             format!("config eval failed: fetching config output for '{provider}' failed"),
