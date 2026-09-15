@@ -7,9 +7,7 @@ use aos_ability_model::{AccessMode, LifecycleSemantics, ResourceLifetime};
 
 use crate::digest::Sha256Digest;
 use crate::evidence::GateResult;
-use crate::qualification::{
-    QualificationMethod, QualificationPhase, QualificationRequirement, QualificationScope,
-};
+use crate::qualification::{QualificationMethod, QualificationPhase};
 use crate::qualification_evidence::{
     CheckObservation, NATIVE_ADAPTER_MATRIX_OBSERVATION_V1, NATIVE_ADAPTER_MATRIX_REQUIREMENT,
     NativeAdapterCellObservation, NativeAdapterClaimHandler, NativeAdapterDispositionPolicy,
@@ -1038,25 +1036,13 @@ fn central_phase_rejects_failed_cells_and_prepared_environment_mutation() -> Res
         .qualification
         .as_mut()
         .context("fixture plan lacks its qualification contract")?;
-    contract.requirements.push(QualificationRequirement {
-        id: NATIVE_ADAPTER_MATRIX_REQUIREMENT.into(),
-        phase: QualificationPhase::Staging,
-        scope: QualificationScope::Release,
-        method: QualificationMethod::Automated,
-        production_only: true,
-        checks: vec![format!(
-            "native-adapter-matrix-v1-sha256-{}",
-            matrix_digest.hex()
-        )],
-        regressions: Vec::new(),
-        invalidated_by: ["subject", "policy", "executor", "environment"]
-            .map(str::to_owned)
-            .to_vec(),
-        measurements: BTreeMap::new(),
-    });
-    contract
+    let matrix_check = format!("native-adapter-matrix-v1-sha256-{}", matrix_digest.hex());
+    let matrix_requirement = contract
         .requirements
-        .sort_by(|left, right| left.id.cmp(&right.id));
+        .iter_mut()
+        .find(|requirement| requirement.id == NATIVE_ADAPTER_MATRIX_REQUIREMENT)
+        .context("fixture contract lacks the native-adapter matrix")?;
+    matrix_requirement.checks = vec![matrix_check];
     let gates = contract.gates(&plan.registry, plan.release_class)?;
     let policy_digest = contract.digest()?;
     plan.gates = gates;

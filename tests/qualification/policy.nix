@@ -13,21 +13,6 @@
   packageFunctionRequirement = builtins.head (
     builtins.filter (requirement: requirement.id == "package-function") contract.requirements
   );
-  fixture = import ../../qualification {
-    inherit lib;
-    inherit nativeAdapterMatrix;
-    packageNames = ["aos" "nginx" "containerd" "runc"];
-  };
-  fixtureWithoutNativeAdapterMatrix =
-    fixture
-    // {
-      requirements =
-        builtins.filter (
-          requirement: requirement.id != "ability-native-adapter-matrix"
-        )
-        fixture.requirements;
-    };
-  capturedFixture = builtins.fromJSON (builtins.readFile ../../crates/aos-release/tests/fixtures/qualification-contract.json);
   sourceTree = builtins.path {
     path = ../../qualification;
     name = "qualification-source-fixture";
@@ -266,7 +251,6 @@
       true))
     .success;
 in
-  assert fixtureWithoutNativeAdapterMatrix == capturedFixture;
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" (builtins.toString sourceRoot) != null;
   assert builtins.readFile (sourceRoot + "/server.nix") == builtins.readFile (nestedSource + "/server.nix");
   assert names == builtins.sort builtins.lessThan packageNames;

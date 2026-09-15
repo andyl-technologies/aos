@@ -706,10 +706,24 @@ pub(crate) mod tests {
         let envelope: ManifestEnvelopeV1 =
             canonical::from_slice(&fixture.envelope, "fixture manifest")?;
         let mut manifest = envelope.payload;
-        let mut policy: crate::qualification::QualificationContract = canonical::from_slice(
-            include_bytes!("../tests/fixtures/qualification-contract.json"),
-            "contract",
-        )?;
+        let mut policy = crate::qualification_fixture::contract()?;
+        let native_matrix_spec =
+            crate::qualification_evidence::native_adapter_matrix_spec_from_surface(
+                crate::native_adapter_matrix_tests::fixture_surface(),
+            )?;
+        let native_matrix_digest = Sha256Digest::of_bytes(canonical::to_vec(&native_matrix_spec)?);
+        let native_matrix_check = format!(
+            "native-adapter-matrix-v1-sha256-{}",
+            native_matrix_digest.hex()
+        );
+        let native_matrix_requirement = policy
+            .requirements
+            .iter_mut()
+            .find(|requirement| {
+                requirement.id == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_REQUIREMENT
+            })
+            .context("fixture contract lacks the native-adapter matrix")?;
+        native_matrix_requirement.checks = vec![native_matrix_check];
         policy.package_rules = plan
             .packages
             .iter()

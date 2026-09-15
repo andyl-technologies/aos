@@ -8,12 +8,11 @@ use aos_release::{
     },
 };
 
+#[path = "support/qualification_contract.rs"]
+mod qualification_fixture;
+
 fn contract() -> QualificationContract {
-    canonical::from_slice(
-        include_bytes!("fixtures/qualification-contract.json"),
-        "qualification fixture",
-    )
-    .unwrap()
+    qualification_fixture::contract().unwrap()
 }
 
 #[test]

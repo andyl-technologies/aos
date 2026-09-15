@@ -418,10 +418,7 @@ fn release_plan(
         public_evidence_policy_digest: digest("fleet-public-evidence-policy"),
         restricted_operator_policy_digest: digest("fleet-restricted-operator-policy"),
     };
-    let mut contract: aos_release::qualification::QualificationContract = canonical::from_slice(
-        include_bytes!("../../../aos-release/tests/fixtures/qualification-contract.json"),
-        "fixture contract",
-    )?;
+    let mut contract = qualification_fixture::contract()?;
     contract.package_rules = vec![aos_release::qualification::PackageRule {
         name: "fleet-package".into(),
         role: aos_release::qualification::PackageRole::GeneralCatalog,
