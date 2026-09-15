@@ -10,7 +10,7 @@
 #      is pre-staged there via extraClosures and registered by
 #      aos-nix-db.service), generates a static cache of the FULL closure
 #      (`apr cache generate`) into /var/lib/sysreg-cache (served by the
-#      static-cache exposed package on :8000), and pushes the registry repo to the
+#      static-cache package service on :8000), and pushes the registry repo to the
 #      gitd-served bare origin on :9418.
 #   2. target VM stages the registry in SYSTEM scope (/etc/apm/
 #      registries.d + git clone into /var/lib/apm/registries; `apm

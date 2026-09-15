@@ -160,7 +160,7 @@
   abilities =
     abilityCore
     // {
-      projectPackage = import ./abilities/package-projection.nix {
+      projectPackage = abilityCore.packageProjectionFor {
         lib = finalLib;
         inherit abilities;
       };

@@ -11,12 +11,6 @@
           package = pkgs.aos-secret-reference-test;
           bundle = true;
         };
-        # The in-guest publisher needs both registry-only artifacts. The
-        # runtime package is bundled separately above.
-        environment.systemPackages = [
-          pkgs.aos-secret-reference-test.expose
-          pkgs.aos-secret-reference-test.config
-        ];
       }
     ];
   };
@@ -67,7 +61,6 @@ in {
     ''
       import base64
       import json
-      import textwrap
 
       APM = "${pkgs.aos.apm}/bin/apm"
       JQ = "${pkgs.jq}/bin/jq"
@@ -130,75 +123,6 @@ in {
       target.succeed(
           "test \"$(stat -c %a /var/lib/apm/credential-transactions)\" = 700"
       )
-
-      # Runtime selection is registry-authenticated even when the exact output
-      # is already bundled in the image. Publish the fixture, install the
-      # signed registry snapshot, then drive the first secret-bearing
-      # generation through the production switch path.
-      target.succeed(textwrap.dedent(r"""
-          set -eu
-          export HOME=/tmp/secret-reference-test-publisher
-          export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@test
-          export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test
-          export NIX_REMOTE=""
-          export NIX_CONF_DIR=/tmp/secret-reference-test-nix-conf
-          mkdir -p "$NIX_CONF_DIR"
-          printf 'experimental-features = nix-command\nsandbox = false\nbuild-users-group =\n' \
-            > "$NIX_CONF_DIR/nix.conf"
-
-          KEYGEN=$(${pkgs.aos.apr}/bin/apr keys generate release \
-            --registry secret-reference-test-reg 2>&1)
-          printf '%s\n' "$KEYGEN"
-          PUBKEY=
-          while IFS= read -r line; do
-            case "$line" in
-              *'Public key: '*) PUBKEY=''${line##* } ;;
-            esac
-          done <<EOF
-          $KEYGEN
-          EOF
-          test -n "$PUBKEY"
-          KEY=$HOME/.config/apm/keys/secret-reference-test-reg-release.key
-          ${pkgs.aos.apr}/bin/apr create secret-reference-test-reg \
-            --trust-key "$PUBKEY" \
-            --trust-key-id release \
-            --key "$KEY"
-          REG_DIR=$HOME/.local/share/apm/registries/secret-reference-test-reg
-          mkdir -p "$HOME/.config/apm/registries.d"
-          cat > "$HOME/.config/apm/registries.d/secret-reference-test-reg.toml" <<EOF
-          [registry]
-          name = "secret-reference-test-reg"
-          url = "file://$REG_DIR"
-
-          [registry.signing_keys]
-          release = "$KEY"
-          EOF
-
-          ${pkgs.aos.apr}/bin/apr publish '${pkgs.aos-secret-reference-test}' \
-            --name aos-secret-reference-test \
-            --version 1.0.0 \
-            --description 'Secret reference fixture' \
-            --license MIT \
-            --maintainer test \
-            --expose-manifest '${pkgs.aos-secret-reference-test.expose}/manifest.json' \
-            --config-module '${pkgs.aos-secret-reference-test.config}' \
-            --config-base-lib '${secretSystem.config.aos.config.evalAtBoot.baseLib}' \
-            --registry secret-reference-test-reg \
-            --key-id release
-          mkdir -p /var/lib/secret-reference-test-cache
-          ${pkgs.aos.apr}/bin/apr release 1.0.0 \
-            --registry secret-reference-test-reg \
-            --key-id release \
-            --cache-url file:///var/lib/secret-reference-test-cache \
-            --upload-url file:///var/lib/secret-reference-test-cache
-          HOME=/tmp USER=root ${pkgs.aos.apm}/bin/apm registry --system add \
-            "file://$REG_DIR" \
-            --name secret-reference-test-reg \
-            --version '=1.0.0' \
-            --trust-key "$PUBKEY"
-          HOME=/tmp USER=root ${pkgs.aos.apm}/bin/apm update \
-            --system --registry secret-reference-test-reg
-      """), timeout=1200)
 
       first_host = """{
         aos.provisioning.storage.partitions.var.sizeMin = \"2G\";

@@ -237,7 +237,7 @@
       # only fall back to vsock when no virtio port shows up after a
       # short wait (Firecracker's transport).
       # The script body lives in agent/aos-test-agent.sh — shared with
-      # the aos-test-agent exposed package
+      # the aos-test-agent package service
       # (pkgs/tests/aos-test-agent.nix), which bakes the same bytes
       # into image-boot fleet machines.
       # One source of truth for the agent protocol.
