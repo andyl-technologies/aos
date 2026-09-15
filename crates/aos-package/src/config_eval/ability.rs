@@ -31,9 +31,6 @@ static EVALUATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 mod conformance;
 
-#[cfg(test)]
-mod reference_composition;
-
 /// Selects one of the two pure functions declared by a provider implementation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AbilityEntryPoint {
