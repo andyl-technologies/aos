@@ -220,10 +220,10 @@ fn direct_children<'a>(
     path: &'a [DocumentPathSegment],
     nodes: &'a BTreeMap<Vec<DocumentPathSegment>, DocumentNode>,
 ) -> impl Iterator<Item = (&'a DocumentPathSegment, &'a Vec<DocumentPathSegment>)> {
-    nodes.keys().filter_map(move |candidate| {
-        (candidate.len() == path.len() + 1 && candidate.starts_with(path))
-            .then(|| (&candidate[path.len()], candidate))
-    })
+    nodes
+        .keys()
+        .filter(move |candidate| candidate.len() == path.len() + 1 && candidate.starts_with(path))
+        .map(move |candidate| (&candidate[path.len()], candidate))
 }
 
 fn build_object(

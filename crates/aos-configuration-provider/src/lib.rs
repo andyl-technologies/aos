@@ -24,7 +24,8 @@ use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
     AdmissionResult, AdmissionRevision, HANDLER_ABI_ARGUMENT, INVOCATION_SCHEMA, Invocation,
     InvocationDisposition, InvocationPurpose, InvocationResult, RESULT_SCHEMA, ResourceContext,
-    SupportedPurposes, native_context_digest, resource_set_digest,
+    SupportedPurposes, resource_set_digest, validate_admission_resource,
+    validate_resource_contexts,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -124,6 +125,8 @@ struct ConfigurationRealization {
 struct MaterializationMarker {
     schema: String,
     provider_version: String,
+    resource: ResourceId,
+    revision: RevisionId,
     input_digest: Sha256Digest,
     resource_revisions: Vec<ResourceRevisionBinding>,
     content_digest: Sha256Digest,
@@ -176,12 +179,13 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult, ConfigurationProv
     if request.schema != ADMISSION_REQUEST_SCHEMA {
         return Err(invalid("admission schema differs from the selected ABI"));
     }
+    validate_admission_resource(&request).map_err(|error| invalid(error.to_string()))?;
     validate_method(
         request.method.interface.name.as_str(),
         request.method.method.as_str(),
         &request.semantics,
     )?;
-    validate_resource_contexts(&request.resources)?;
+    validate_resource_contexts(&request.resources).map_err(|error| invalid(error.to_string()))?;
 
     let desired: ConfigurationRequest = decode_value(&request.resource_spec.value)?;
     let realization: ConfigurationRealization = decode_value(&request.resource_spec.realization)?;
@@ -195,6 +199,8 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult, ConfigurationProv
         Some(marker)
             if marker.schema == MARKER_SCHEMA
                 && marker.provider_version == MATERIALIZER_VERSION
+                && marker.resource == request.resource_spec.resource
+                && marker.revision == request.resource_spec.revision
                 && marker.input_digest == expected_digest
                 && marker.mode == expected_mode =>
         {
@@ -202,6 +208,23 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult, ConfigurationProv
         }
         _ => false,
     };
+    let path_exists = match fs::symlink_metadata(&realization.path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    if !present && (marker.is_some() || path_exists) {
+        return Ok(AdmissionResult {
+            schema: ADMISSION_SCHEMA.into(),
+            disposition: AdmissionDisposition::Rejected,
+            revision: AdmissionRevision::Unknown,
+            incarnation: None,
+            observation: observation(&desired, None, "unknown")?,
+            native_context: ability_value(serde_json::json!({"rejected": true}))?,
+            supported_purposes: SupportedPurposes::from_ordered(Vec::new())
+                .ok_or_else(|| invalid("empty configuration purpose set is not canonical"))?,
+        });
+    }
     let observation = observation(
         &desired,
         present.then(|| realization.path.clone()),
@@ -245,7 +268,8 @@ fn invoke(
             "invocation method is not bound to the durable recovery contract",
         ));
     }
-    validate_resource_contexts(&invocation.request.resources)?;
+    validate_resource_contexts(&invocation.request.resources)
+        .map_err(|error| invalid(error.to_string()))?;
     let resources_digest = resource_set_digest(&invocation.request.resources)
         .map_err(|error| invalid(error.to_string()))?;
     if resources_digest != invocation.request.native_context_digest {
@@ -270,12 +294,42 @@ fn invoke(
         );
     }
 
+    let target = invocation
+        .request
+        .resources
+        .iter()
+        .find(|context| context.reference == invocation.request.target)
+        .ok_or_else(|| invalid("target resource has no exact runtime context"))?;
+    let bound = aos_provider_protocol::validate_resource_context(target)
+        .map_err(|error| invalid(error.to_string()))?;
     let realization = target_realization(&invocation)?;
     let output_path = PathBuf::from(&realization.path);
     match invocation.purpose {
+        InvocationPurpose::Effect if invocation.method.method.as_str() == "release" => {
+            release_materialization(
+                &output_path,
+                &desired,
+                &bound.resource_spec.resource,
+                bound.resource_spec.revision,
+            )?;
+            result(
+                &invocation,
+                &desired,
+                None,
+                InvocationDisposition::Completed,
+                false,
+            )
+        }
         InvocationPurpose::Effect if invocation.method.method.as_str() == "materialize" => {
             let (content, resource_revisions) = render(&desired, &invocation.request.resources)?;
-            materialize(&output_path, &desired, &content, resource_revisions)?;
+            materialize(
+                &output_path,
+                &desired,
+                &content,
+                resource_revisions,
+                bound.resource_spec.resource.clone(),
+                bound.resource_spec.revision,
+            )?;
             result(
                 &invocation,
                 &desired,
@@ -285,7 +339,12 @@ fn invoke(
             )
         }
         InvocationPurpose::Effect => {
-            let present = observed_current(&output_path, &desired)?;
+            let present = observed_current(
+                &output_path,
+                &desired,
+                &bound.resource_spec.resource,
+                bound.resource_spec.revision,
+            )?;
             result(
                 &invocation,
                 &desired,
@@ -295,12 +354,32 @@ fn invoke(
             )
         }
         InvocationPurpose::Reconcile => {
-            let present = observed_current(&output_path, &desired)?;
+            let present = observed_current(
+                &output_path,
+                &desired,
+                &bound.resource_spec.resource,
+                bound.resource_spec.revision,
+            )?;
+            if invocation.method.method.as_str() == "release" && present {
+                release_materialization(
+                    &output_path,
+                    &desired,
+                    &bound.resource_spec.resource,
+                    bound.resource_spec.revision,
+                )?;
+                return result(
+                    &invocation,
+                    &desired,
+                    None,
+                    InvocationDisposition::Completed,
+                    false,
+                );
+            }
             result(
                 &invocation,
                 &desired,
                 present.then_some(output_path.as_path()),
-                if present {
+                if invocation.method.method.as_str() == "release" || present {
                     InvocationDisposition::Completed
                 } else {
                     InvocationDisposition::SafeToRetry
@@ -326,35 +405,21 @@ fn validate_method(
     method: &str,
     semantics: &MethodSemantics,
 ) -> Result<(), ConfigurationProviderError> {
-    if interface != INTERFACE_NAME || !matches!(method, "materialize" | "observe") {
+    if interface != INTERFACE_NAME || !matches!(method, "materialize" | "observe" | "release") {
         return Err(invalid(
             "method does not belong to configuration materialization",
         ));
     }
-    let access = if method == "materialize" {
-        AccessMode::ExclusiveWrite
-    } else {
-        AccessMode::Read
+    let expected = match method {
+        "materialize" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+        "observe" => MethodSemantics::ordinary(AccessMode::Read),
+        "release" => MethodSemantics::provider_stop(),
+        _ => return Err(invalid("unsupported configuration method")),
     };
-    if *semantics != MethodSemantics::ordinary(access) {
+    if *semantics != expected {
         return Err(invalid(
             "method semantics differ from configuration materialization",
         ));
-    }
-    Ok(())
-}
-
-fn validate_resource_contexts(
-    resources: &[ResourceContext],
-) -> Result<(), ConfigurationProviderError> {
-    for context in resources {
-        let digest = native_context_digest(&context.native_context)
-            .map_err(|error| invalid(error.to_string()))?;
-        if digest != context.native_context_digest {
-            return Err(invalid(
-                "resource native context differs from its authenticated digest",
-            ));
-        }
     }
     Ok(())
 }
@@ -625,6 +690,8 @@ fn materialize(
     request: &ConfigurationRequest,
     content: &[u8],
     resource_revisions: BTreeMap<ResourceId, RevisionId>,
+    resource: ResourceId,
+    revision: RevisionId,
 ) -> Result<(), ConfigurationProviderError> {
     let mode = parse_mode(&request.mode)?;
     let parent = path
@@ -636,6 +703,8 @@ fn materialize(
     let marker = MaterializationMarker {
         schema: MARKER_SCHEMA.into(),
         provider_version: MATERIALIZER_VERSION.into(),
+        resource,
+        revision,
         input_digest: input_digest(request)?,
         resource_revisions: resource_revisions
             .into_iter()
@@ -649,6 +718,50 @@ fn materialize(
         aos_contract::canonical::to_vec(&marker).map_err(|error| invalid(error.to_string()))?;
     atomic_write(&marker_path(path), &marker_bytes, 0o600, None)?;
     Ok(())
+}
+
+fn release_materialization(
+    path: &Path,
+    request: &ConfigurationRequest,
+    resource: &ResourceId,
+    revision: RevisionId,
+) -> Result<(), ConfigurationProviderError> {
+    let marker_path = marker_path(path);
+    let Some(marker) = read_marker(&marker_path)? else {
+        match fs::symlink_metadata(path) {
+            Ok(_) => {
+                return Err(invalid(
+                    "configuration release found an unclaimed materialized path",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+    };
+    if marker.schema != MARKER_SCHEMA
+        || marker.provider_version != MATERIALIZER_VERSION
+        || marker.resource != *resource
+        || marker.revision != revision
+        || marker.input_digest != input_digest(request)?
+    {
+        return Err(invalid(
+            "configuration release claim differs from the checked resource revision",
+        ));
+    }
+    match fs::symlink_metadata(path) {
+        Ok(_) => {
+            if !file_matches(path, &marker)? {
+                return Err(invalid(
+                    "configuration release content differs from its durable claim",
+                ));
+            }
+            fs::remove_file(path)?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    fs::remove_file(&marker_path)?;
+    sync_parent(path)
 }
 
 fn atomic_write(
@@ -680,21 +793,34 @@ fn atomic_write(
         rustix::fs::chown(&temporary, Some(resolve_uid(owner)?), None).map_err(io::Error::from)?;
     }
     fs::rename(&temporary, path)?;
+    sync_parent(path)?;
     Ok(())
 }
 
 fn observed_current(
     path: &Path,
     request: &ConfigurationRequest,
+    resource: &ResourceId,
+    revision: RevisionId,
 ) -> Result<bool, ConfigurationProviderError> {
     let Some(marker) = read_marker(&marker_path(path))? else {
         return Ok(false);
     };
     Ok(marker.schema == MARKER_SCHEMA
         && marker.provider_version == MATERIALIZER_VERSION
+        && marker.resource == *resource
+        && marker.revision == revision
         && marker.input_digest == input_digest(request)?
         && marker.mode == parse_mode(&request.mode)?
         && file_matches(path, &marker)?)
+}
+
+fn sync_parent(path: &Path) -> Result<(), ConfigurationProviderError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| invalid("configuration path has no parent"))?;
+    fs::File::open(parent)?.sync_all()?;
+    Ok(())
 }
 
 fn file_matches(
@@ -890,10 +1016,50 @@ mod tests {
         .expect("resource-reference fixture is valid")
     }
 
+    fn assignment(reference: &ResourceReference) -> aos_ability_model::ProviderAssignment {
+        serde_json::from_value(serde_json::json!({
+            "provider": reference.resource.provider,
+            "interface": reference.interface,
+            "implementation": {
+                "descriptor": format!("sha256:{}", "4".repeat(64)),
+                "artifact": {
+                    "content": format!("sha256:{}", "5".repeat(64)),
+                    "store_path": "/nix/store/00000000000000000000000000000000-fixture",
+                    "nar_hash": format!("sha256:{}", "6".repeat(64)),
+                    "closure": format!("sha256:{}", "7".repeat(64)),
+                },
+                "handler": "fixture",
+            },
+            "incarnation": "fixture-incarnation",
+        }))
+        .expect("provider assignment fixture is valid")
+    }
+
     fn context(reference: ResourceReference, path: &Path) -> ResourceContext {
+        let revision = RevisionId(digest('2'));
+        let native_context = ability_value(
+            serde_json::to_value(aos_provider_protocol::BoundNativeContext {
+                schema: aos_provider_protocol::RESOURCE_CONTEXT_SCHEMA.into(),
+                resource_spec: aos_provider_protocol::ResourceSpec {
+                    resource: reference.resource.clone(),
+                    kind: reference.interface.name.clone(),
+                    lifetime: reference.lifetime,
+                    value: ability_value(serde_json::json!({"name":"root-password"}))
+                        .expect("desired value fixture is bounded"),
+                    realization: ability_value(serde_json::json!({"path":path}))
+                        .expect("realization fixture is bounded"),
+                    revision,
+                },
+                provider_context: ability_value(serde_json::json!({"fixture":true}))
+                    .expect("provider context fixture is bounded"),
+            })
+            .expect("bound context fixture serializes"),
+        )
+        .expect("bound context fixture is bounded");
         ResourceContext {
+            assignment: assignment(&reference),
             reference,
-            revision: RevisionId(digest('2')),
+            revision,
             observation: ability_value(serde_json::json!({
                 "schema": "aos.ability.credential-delivery-observation/v1",
                 "expected": {
@@ -905,9 +1071,9 @@ mod tests {
                 "state": "ready",
             }))
             .expect("observation fixture is bounded"),
-            native_context: ability_value(serde_json::json!({"fixture": true}))
-                .expect("native context fixture is bounded"),
-            native_context_digest: digest('3'),
+            native_context_digest: aos_provider_protocol::native_context_digest(&native_context)
+                .expect("native context digest computes"),
+            native_context,
         }
     }
 
@@ -921,6 +1087,8 @@ mod tests {
             "schema": aos_provider_protocol::RESOURCE_CONTEXT_SCHEMA,
             "resource_spec": {
                 "resource": reference.resource,
+                "kind": reference.interface.name,
+                "lifetime": reference.lifetime,
                 "value": inputs,
                 "realization": {
                     "schema": REALIZATION_SCHEMA,
@@ -934,10 +1102,11 @@ mod tests {
             },
         }))
         .expect("target native context is bounded");
-        let native_context_digest = native_context_digest(&native_context)
+        let native_context_digest = aos_provider_protocol::native_context_digest(&native_context)
             .expect("target native context digest is canonical");
 
         ResourceContext {
+            assignment: assignment(&reference),
             reference,
             revision,
             observation: ability_value(serde_json::json!({
@@ -1138,14 +1307,64 @@ mod tests {
         let reference = resource_reference();
         let revisions = BTreeMap::from([(reference.resource, RevisionId(digest('4')))]);
 
-        materialize(&output, &request, b"rootpw private-value\n", revisions)
-            .expect("configuration is materialized");
-        assert!(observed_current(&output, &request).expect("configuration can be observed"));
+        let resource = resource_reference().resource;
+        let revision = RevisionId(digest('8'));
+        materialize(
+            &output,
+            &request,
+            b"rootpw private-value\n",
+            revisions,
+            resource.clone(),
+            revision,
+        )
+        .expect("configuration is materialized");
+        assert!(
+            observed_current(&output, &request, &resource, revision)
+                .expect("configuration can be observed")
+        );
 
         let marker = fs::read(marker_path(&output)).expect("marker is readable");
         let marker_text = String::from_utf8(marker).expect("marker is UTF-8 JSON");
         assert!(!marker_text.contains("private-value"));
         assert!(marker_text.contains(MATERIALIZER_VERSION));
+    }
+
+    #[test]
+    fn release_removes_only_the_exact_claimed_revision_and_reconciles_partial_cleanup() {
+        let directory = tempfile::tempdir().expect("temporary directory is created");
+        let output = directory.path().join("service.conf");
+        let request = ConfigurationRequest {
+            name: "service".into(),
+            source: ConfigurationSource::InlineText {
+                content: "enabled=true\n".into(),
+            },
+            mode: "0600".into(),
+            owner: None,
+        };
+        let resource = resource_reference().resource;
+        let revision = RevisionId(digest('8'));
+        materialize(
+            &output,
+            &request,
+            b"enabled=true\n",
+            BTreeMap::new(),
+            resource.clone(),
+            revision,
+        )
+        .expect("configuration is materialized");
+
+        let error = release_materialization(&output, &request, &resource, RevisionId(digest('9')))
+            .expect_err("a foreign revision must not release the configuration");
+        assert!(error.to_string().contains("checked resource revision"));
+        assert!(output.is_file());
+
+        fs::remove_file(&output).expect("fixture simulates a crash after content cleanup");
+        release_materialization(&output, &request, &resource, revision)
+            .expect("release finishes exact partial cleanup");
+        assert!(!output.exists());
+        assert!(!marker_path(&output).exists());
+        release_materialization(&output, &request, &resource, revision)
+            .expect("released absence is idempotent");
     }
 
     #[test]
