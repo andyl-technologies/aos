@@ -195,6 +195,8 @@
     package:
       package
       // {
+        pname = package.pname or packageName;
+        version = package.version or version;
         contract = probeOnlyPackageContract {
           inherit packageName version packageProbe;
         };
