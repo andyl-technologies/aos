@@ -22,6 +22,29 @@
     readableKey = checkedLocalKey "systemd service resource key" normalized.key;
   in "aos-${readableKey}-${hash normalized}.service";
 
+  unitIdentityForResource = resource: {
+    kind = "unit";
+    unit_name = unitNameForResource resource;
+  };
+
+  templateUnitIdentityForResource = resource: template: let
+    normalized = normalizedResourceId resource;
+    readableTemplate = checkedLocalKey "systemd service template key" template;
+    identity = {
+      resource = normalized;
+      inherit template;
+    };
+  in {
+    kind = "unit";
+    unit_name = "aos-${readableTemplate}-${hash identity}@.service";
+  };
+
+  templateInstanceIdentity = templateUnit: instance: {
+    kind = "template-instance";
+    template_unit_name = templateUnit.unit_name;
+    inherit instance;
+  };
+
   socketUnitNameForResource = resource: socketKey: let
     normalized = normalizedResourceId resource;
     readableKey = checkedLocalKey "systemd socket key" socketKey;
@@ -31,5 +54,12 @@
     };
   in "aos-${readableKey}-${hash identity}.socket";
 in {
-  inherit normalizedResourceId socketUnitNameForResource unitNameForResource;
+  inherit
+    normalizedResourceId
+    socketUnitNameForResource
+    templateInstanceIdentity
+    templateUnitIdentityForResource
+    unitIdentityForResource
+    unitNameForResource
+    ;
 }

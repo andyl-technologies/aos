@@ -5,6 +5,8 @@
   handlerArtifact = lib.abilities.packageOutput {
     package = "aos-systemd-provider";
   };
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
+  serviceInterfaces = serviceManagement.interfaces;
 
   resourceReferenceList = types.list {
     element = types.deferredResult types.resourceReference;
@@ -63,11 +65,142 @@
       unit_file = types.relativePath;
     };
   };
+  systemdUnitName = types.refined {
+    name = "systemd unit name";
+    description = "a bounded systemd unit name with one supported unit suffix";
+    type = types.string {
+      maxLength = 255;
+      syntax = null;
+    };
+    predicate = name:
+      builtins.match "[A-Za-z0-9_.@:-]+\\.(service|socket|target|timer|path|mount|automount|swap|device)" name != null;
+  };
   systemdUnitIdentity = types.record {
     fields = {
-      unit_name = types.string {
-        maxLength = 255;
+      unit_name = systemdUnitName;
+    };
+  };
+  serviceUnitIdentity = types.taggedUnion {
+    tag = "kind";
+    variants = {
+      unit = types.record {
+        fields = {
+          kind = types.enum ["unit"];
+          unit_name = systemdUnitName;
+        };
+      };
+      template-instance = types.record {
+        fields = {
+          kind = types.enum ["template-instance"];
+          template_unit_name = systemdUnitName;
+          instance = types.string {
+            maxLength = 1024;
+            syntax = null;
+          };
+        };
+      };
+    };
+  };
+  semanticSubstitutionSource = types.taggedUnion {
+    tag = "kind";
+    variants = {
+      artifact-path = types.record {
+        fields = {
+          kind = types.enum ["artifact-path"];
+          artifact = types.artifactSelector;
+          relative_path = types.relativePath;
+        };
+      };
+      execution-path = types.record {
+        fields = {
+          kind = types.enum ["execution-path"];
+          value = types.deferredResult types.executionPath;
+        };
+      };
+      group-name = types.record {
+        fields = {
+          kind = types.enum ["group-name"];
+          value = types.deferredResult serviceManagement.types.groupName;
+        };
+      };
+      principal-name = types.record {
+        fields = {
+          kind = types.enum ["principal-name"];
+          value = types.deferredResult serviceManagement.types.principalName;
+        };
+      };
+      runtime-string = types.record {
+        fields = {
+          kind = types.enum ["runtime-string"];
+          value = types.deferredResult types.runtimeString;
+        };
+      };
+      systemd-unit-name = types.record {
+        fields = {
+          kind = types.enum ["systemd-unit-name"];
+          identity = serviceUnitIdentity;
+        };
+      };
+    };
+  };
+  semanticSubstitution = types.record {
+    fields = {
+      prefix = types.string {
+        maxLength = 4096;
         syntax = null;
+      };
+      suffix = types.string {
+        maxLength = 4096;
+        syntax = null;
+      };
+      encoding = types.enum ["escaped" "quoted" "raw"];
+      source = semanticSubstitutionSource;
+    };
+  };
+  semanticUnitText = types.record {
+    fields = {
+      template = types.string {
+        maxLength = 1048576;
+        syntax = null;
+      };
+      substitutions = types.map {
+        keyMaxLength = 255;
+        keySyntax = "local-key-v1";
+        maxEntries = 4096;
+        value = semanticSubstitution;
+      };
+    };
+  };
+  systemdDirectiveName = types.refined {
+    name = "systemd directive name";
+    description = "a bounded systemd directive name";
+    type = types.string {
+      maxLength = 255;
+      syntax = null;
+    };
+    predicate = name: builtins.match "[A-Za-z][A-Za-z0-9-]*" name != null;
+  };
+  systemdDirective = types.record {
+    fields = {
+      name = systemdDirectiveName;
+      value = semanticUnitText;
+    };
+  };
+  systemdSection = types.record {
+    fields = {
+      name = types.enum ["Install" "Service" "Socket" "Unit"];
+      directives = types.list {
+        element = systemdDirective;
+        maxItems = 4096;
+      };
+    };
+  };
+  systemdUnitDocument = types.record {
+    fields = {
+      systemd_unit = systemdUnitIdentity;
+      sections = types.list {
+        element = systemdSection;
+        maxItems = 4;
       };
     };
   };
@@ -107,10 +240,52 @@
       source = realizedPackagedUnitSource;
       systemd_unit = systemdUnitIdentity;
       activation = types.enum ["enabled" "reference"];
-      drop_in_text = types.string {
-        maxLength = 1048576;
+      drop_in = types.list {
+        element = systemdSection;
+        maxItems = 2;
+      };
+    };
+  };
+  realizedServiceLink = types.record {
+    fields = {
+      parent = serviceUnitIdentity;
+      child = serviceUnitIdentity;
+      relationship = types.enum ["requires" "wants"];
+    };
+  };
+  serviceFacetIdentity = types.record {
+    fields = {
+      interface = types.interfaceKey;
+      facet = types.localKey;
+      observation_schema = types.string {
+        maxLength = 255;
         syntax = null;
       };
+    };
+  };
+  serviceRealizationType = types.record {
+    fields = {
+      schema = types.enum ["aos.systemd.service-realization/v2"];
+      systemd_unit = serviceUnitIdentity;
+      units = types.list {
+        element = systemdUnitDocument;
+        maxItems = 128;
+        unique = true;
+        canonicalOrder = true;
+      };
+      facets = types.list {
+        element = serviceFacetIdentity;
+        maxItems = 64;
+        unique = true;
+        canonicalOrder = true;
+      };
+      links = types.list {
+        element = realizedServiceLink;
+        maxItems = 512;
+        unique = true;
+        canonicalOrder = true;
+      };
+      enabled = types.boolean;
     };
   };
 
@@ -207,16 +382,31 @@
     configurationType = null;
     guarantees = [];
   };
-in {
-  config.aos.abilities = {
-    interfaces.systemd-packaged-unit = packagedUnitDeclaration;
-
-    implementations.systemd-packaged-unit = {
-      description = "Activates authenticated packaged units and materializes bounded systemd drop-ins.";
-      interface = "systemd-packaged-unit";
+  serviceFeatureNames = builtins.filter (featureName: let
+    selected = serviceInterfaces.${featureName};
+    aggregation = selected.document.interface.aggregation;
+  in
+    selected.methods
+    != []
+    && aggregation.controller_group == "service"
+    && aggregation.merge_contract != null)
+  (builtins.attrNames serviceInterfaces);
+  serviceImplementation = featureName: let
+    selected = serviceInterfaces.${featureName};
+    controlsService = builtins.any (methodName:
+      selected.declaration.methods.${methodName}.semantics.requiredTargetAccess == "exclusive-write")
+    selected.methods;
+    guarantees = builtins.filter
+      (guarantee: guarantee.name != "aos.guarantee.service-condition.mandatory-access-control")
+      selected.declaration.guarantees;
+  in {
+    name = selected.alias;
+    value = {
+      description = "Realizes ${selected.document.interface.name} through the selected systemd service controller.";
+      interface = selected.alias;
       inherit artifact;
-      methods = ["apply" "observe" "remove"];
-      guarantees = [];
+      inherit (selected) methods;
+      inherit guarantees;
       providerModule = {
         inherit artifact;
         path = "share/aos/providers/systemd.nix";
@@ -224,11 +414,75 @@ in {
       handlerDescriptor = {
         artifact = handlerArtifact;
         entryPoint = "bin/aos-systemd-provider";
-        arguments = packagedUnitRequest;
-        result = packagedUnitObservation;
+        arguments = selected.requestType;
+        result = selected.observationType;
       };
-      desiredType = realizationType;
+      desiredType =
+        if controlsService
+        then serviceRealizationType
+        else null;
       requiredFeatures = [];
     };
+  };
+  serviceImplementations = builtins.listToAttrs (
+    builtins.map serviceImplementation serviceFeatureNames
+  );
+  readinessImplementations = builtins.listToAttrs (builtins.map (selected: {
+      name = selected.alias;
+      value = {
+        description = "Observes ${selected.document.interface.name} through systemd manager readiness targets.";
+        interface = selected.alias;
+        inherit artifact;
+        inherit (selected) methods;
+        guarantees = [];
+        providerModule = {
+          inherit artifact;
+          path = "share/aos/providers/systemd.nix";
+        };
+        handlerDescriptor = {
+          artifact = handlerArtifact;
+          entryPoint = "bin/aos-systemd-provider";
+          arguments = selected.requestType;
+          result = selected.observationType;
+        };
+        desiredType = null;
+        requiredFeatures = [];
+      };
+    }) [
+      serviceInterfaces.networkReadiness
+      serviceInterfaces.filesystemReadiness
+    ]);
+in {
+  config.aos.abilities = {
+    interfaces =
+      serviceManagement.declarations
+      // {
+        systemd-packaged-unit = packagedUnitDeclaration;
+      };
+
+    implementations =
+      serviceImplementations
+      // readinessImplementations
+      // {
+        systemd-packaged-unit = {
+          description = "Activates authenticated packaged units and materializes bounded systemd drop-ins.";
+          interface = "systemd-packaged-unit";
+          inherit artifact;
+          methods = ["apply" "observe" "remove"];
+          guarantees = [];
+          providerModule = {
+            inherit artifact;
+            path = "share/aos/providers/systemd.nix";
+          };
+          handlerDescriptor = {
+            artifact = handlerArtifact;
+            entryPoint = "bin/aos-systemd-provider";
+            arguments = packagedUnitRequest;
+            result = packagedUnitObservation;
+          };
+          desiredType = realizationType;
+          requiredFeatures = [];
+        };
+      };
   };
 }

@@ -142,7 +142,7 @@
   };
   composeFor = resolvedResources: compositionOutputs: resource: let
     provider = import providerModule {
-      inherit lib artifactLocatorFor;
+      inherit lib pkgs artifactLocatorFor;
       packageName = "systemd";
       config.aos.abilities = {
         inherit resolvedResources compositionOutputs;
@@ -153,9 +153,9 @@
       resources.test = resource;
     };
   in
-    composition.realizations.test.drop_in_text;
-  validDependencyText = composeFor abilities.resolvedResources abilities.compositionOutputs targetResource;
-  prerequisiteText = composeFor abilities.resolvedResources abilities.compositionOutputs prerequisiteResource;
+    composition.realizations.test;
+  validDependency = composeFor abilities.resolvedResources abilities.compositionOutputs targetResource;
+  prerequisite = composeFor abilities.resolvedResources abilities.compositionOutputs prerequisiteResource;
   missingReference = dependencyReference // {
     resource = dependencyReference.resource // {key = "missing";};
   };
@@ -219,16 +219,24 @@
       )
     )
     true);
-  unit = evaluation.config.systemd.units."example.service";
-  source = builtins.head evaluation.config.systemd.packagedUnitSources;
-  rendered = evaluation.config.system.build.systemdUnitBodies."example.service";
+  directiveFor = realization: sectionName: directiveName: let
+    sections = builtins.filter (section: section.name == sectionName) realization.drop_in;
+    directives =
+      if builtins.length sections != 1
+      then []
+      else builtins.filter (directive: directive.name == directiveName) (builtins.head sections).directives;
+  in
+    if builtins.length directives == 1
+    then (builtins.head directives).value
+    else null;
+  after = directiveFor validDependency "Unit" "After";
+  prerequisiteAfter = directiveFor prerequisite "Unit" "After";
+  successStatus = directiveFor desired.realization "Service" "SuccessExitStatus";
+  searchPath = directiveFor desired.realization "Service" "Environment";
   requestSchema = declaration.requestType._abilitySchema;
 in
   assert desired.realization.systemd_unit.unit_name == "example.service";
   assert desired.realization.source.artifact.store_path == "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
-  assert source.artifactRoot == "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
-  assert source.unitFile == "lib/systemd/system/example.service";
-  assert source.unitName == "example.service";
   assert requestSchema.fields.dependencies.fields.after.unique;
   assert requestSchema.fields.dependencies.fields.after.canonical_order;
   assert requestSchema.fields.prerequisites.unique;
@@ -243,19 +251,31 @@ in
   assert declaration.methods.remove.semantics.requiredTargetAccess == "exclusive-write";
   assert declaration.methods.remove.semantics.stopsProvider;
   assert !(declaration.methods.remove.outputs ? retained-resource);
-  assert lib.hasInfix "After=example.service" validDependencyText;
-  assert !(lib.hasInfix "After=example.service" prerequisiteText);
+  assert lib.hasInfix "@@AOS_SYSTEMD_SUBSTITUTION:" after.template;
+  assert builtins.attrValues after.substitutions == [
+    {
+      prefix = "";
+      suffix = "";
+      encoding = "raw";
+      source = {
+        kind = "systemd-unit-name";
+        identity = {
+          kind = "unit";
+          unit_name = "example.service";
+        };
+      };
+    }
+  ];
+  assert prerequisiteAfter == null;
   assert !missingResource.success;
   assert !duplicateResource.success;
   assert !missingUnitIdentity.success;
   assert !mismatchedAuthority.success;
   assert !missingReadAuthority.success;
-  assert unit.overrideStrategy == "asDropin";
-  assert unit.wantedBy == ["multi-user.target"];
-  assert unit.text == desired.realization.drop_in_text;
-  assert !(lib.hasInfix "Documentation=" unit.text);
+  assert builtins.length evaluation.config.systemd.providerUnitArtifacts == 1;
   assert !(desired.realization ? revision_receipt);
-  assert lib.hasInfix "SuccessExitStatus=0 2" desired.realization.drop_in_text;
-  assert lib.hasInfix "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example/bin" unit.text;
-  assert lib.hasInfix "SuccessExitStatus=0 2" rendered.text;
+  assert successStatus.template == "0 2";
+  assert searchPath.template != "";
+  assert !(lib.hasInfix "/nix/store/" searchPath.template);
+  assert builtins.length (builtins.attrNames searchPath.substitutions) == 2;
   assert !invalidUnitName.success; true

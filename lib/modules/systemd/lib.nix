@@ -512,7 +512,6 @@ in rec {
     upstreamUnits ? [],
     upstreamWants ? [],
     packages ? [],
-    packagedUnitSources ? [],
     package ? null,
     packageOwners ? {},
   }: let
@@ -597,38 +596,6 @@ in rec {
     in
       filter (entry: elem entry.root normalRoots) (entriesFor pkg owner))
     uniquePackages);
-    normalizePackagedUnitSource = item: let
-      path = item.unitFile;
-      components = splitString "/" path;
-      rootMatches = filter (root: hasPrefix root path) normalRoots;
-      root =
-        if length rootMatches == 1
-        then head rootMatches
-        else throw "generateUnits: invalid provider-owned unit path '${path}'";
-      sourceName = lib.removePrefix root path;
-      safe =
-        path
-        != ""
-        && !(hasPrefix "/" path)
-        && !(lib.hasSuffix "/" path)
-        && !(elem "" components)
-        && !(elem "." components)
-        && !(elem ".." components)
-        && sourceName != ""
-        && !(lib.hasInfix "/" item.unitName)
-        && item.unitName != "";
-    in
-      if !safe
-      then throw "generateUnits: unsafe or mismatched provider-owned unit path '${path}'"
-      else {
-        inherit path root;
-        logicalPath = item.unitName;
-        owner = item.owner;
-        source = "${builtins.toString item.artifactRoot}/${path}";
-        upstreamTarget = "${builtins.toString item.artifactRoot}/${path}";
-      };
-    providerOwnedEntries = builtins.map normalizePackagedUnitSource packagedUnitSources;
-
     upstreamInventory =
       if upstreamUnits == [] && upstreamWants == []
       then []
@@ -657,7 +624,7 @@ in rec {
       upstreamWants
     );
 
-    allExternalEntries = normalPackageEntries ++ providerOwnedEntries ++ requestedUpstreamEntries;
+    allExternalEntries = normalPackageEntries ++ requestedUpstreamEntries;
     externalNames = builtins.map (entry: entry.logicalPath) allExternalEntries;
     duplicateExternalNames =
       filter
