@@ -169,3 +169,57 @@ fn resource_root_retains_and_reobserves_exact_artifact_identity() {
         Inspection::Absent
     ));
 }
+
+#[test]
+fn semantic_revision_and_recovery_track_resolved_blob_content() {
+    let temporary = tempdir().expect("temporary directory exists");
+    let store_directory = temporary.path().join("store");
+    let root_directory = temporary.path().join("gcroots");
+    fs::create_dir(&store_directory).expect("store directory is created");
+    fs::create_dir(&root_directory).expect("root directory is created");
+    let first_path = store_directory.join(format!("{}-authorized-input", "0".repeat(32)));
+    let second_path = store_directory.join(format!("{}-authorized-input", "1".repeat(32)));
+    fs::write(&first_path, b"first canonical input").expect("first store object is written");
+    fs::write(&second_path, b"second canonical input").expect("second store object is written");
+    let provider = ContentArtifactProvider::test(
+        root_directory,
+        store_directory,
+        Box::new(FakeArtifactCommands),
+    );
+    let expected = request("application/vnd.aos.provisioning-input+json");
+    let first = provider
+        .describe_artifact(Path::new("/test/nix-store"), &first_path, 1_000)
+        .expect("first artifact identity is derived");
+    let second = provider
+        .describe_artifact(Path::new("/test/nix-store"), &second_path, 1_000)
+        .expect("second artifact identity is derived");
+
+    let first_inspection = Inspection::Ready(first.clone());
+    let second_inspection = Inspection::Ready(second.clone());
+    let first_observation =
+        observation(&expected, &first_inspection).expect("first observation is encoded");
+    let second_observation =
+        observation(&expected, &second_inspection).expect("second observation is encoded");
+    let first_revision =
+        admission_revision(&first_inspection, &first_observation).expect("first revision exists");
+    let second_revision = admission_revision(&second_inspection, &second_observation)
+        .expect("second revision exists");
+
+    assert_ne!(first_revision, second_revision);
+
+    let requested_blob = TransactionBlobReference {
+        kind: TRANSACTION_BLOB_REFERENCE_TYPE.into(),
+        transaction: TransactionId(local_key("transaction")),
+        handle: local_key("authorized-input"),
+        content_sha256: second.content_sha256,
+        size_bytes: b"second canonical input".len() as u64,
+    };
+    assert_eq!(
+        reconciliation_disposition("commit", &first_inspection, Some(&requested_blob)),
+        InvocationDisposition::SafeToRetry
+    );
+    assert_eq!(
+        reconciliation_disposition("commit", &second_inspection, Some(&requested_blob)),
+        InvocationDisposition::Completed
+    );
+}
