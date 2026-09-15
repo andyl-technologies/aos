@@ -133,23 +133,12 @@
                   name = "first-boot";
                   enabled = true;
                   root_device = "/dev/disk/by-partlabel/root-a";
-                  prerequisites = [];
-                  plan = {
-                    schema = "aos.storage.provisioning-plan/v1";
-                    source = "operator";
-                    marker_uuid = "01234567-89ab-cdef-8123-456789abcdef";
-                    measured_boot = false;
-                    partitions.var = {
-                      target.kind = "root-disk";
-                      label = "var";
-                      partition_type = "linux-generic";
-                      size_min = "1G";
-                      weight = 1;
-                      grow = true;
-                      grow_fs = true;
-                      priority = 1;
-                    };
+                  measured_boot = false;
+                  policy = {
+                    initialize = "if-unprovisioned";
+                    committed_divergence = "require-factory-reset";
                   };
+                  prerequisites = [];
                 };
               })
               (serviceManagement.forProducer {
