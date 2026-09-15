@@ -903,7 +903,7 @@ mod instance_configuration_tests {
 
     use aos_ability_model::{
         AccessMode, DiagnosticCode, InterfaceDocument, InterfaceName, LocalKey, StringConstraint,
-        ValueSchema, builtin::service_management_interface,
+        ValueSchema,
     };
 
     use super::{ValidationContext, instance_configuration_schema_is_literal};
@@ -932,8 +932,8 @@ mod instance_configuration_tests {
 
     #[test]
     fn method_target_may_name_another_declared_interface() {
-        let mut controller = service_management_interface().expect("service interface");
-        let mut resource = service_management_interface().expect("resource interface template");
+        let mut controller = crate::test_support::test_lifecycle_interface();
+        let mut resource = crate::test_support::test_lifecycle_interface();
         let resource_name = InterfaceName::new("test.declarative-object").expect("resource name");
         resource.interface.name = resource_name.clone();
         for method in resource.interface.methods.values_mut() {
@@ -952,7 +952,7 @@ mod instance_configuration_tests {
 
     #[test]
     fn method_target_must_name_a_declared_interface() {
-        let mut document = service_management_interface().expect("service interface");
+        let mut document = crate::test_support::test_lifecycle_interface();
         document
             .interface
             .methods
@@ -974,7 +974,7 @@ mod instance_configuration_tests {
 
     #[test]
     fn stopping_provider_requires_exclusive_target_access() {
-        let mut document = service_management_interface().expect("service interface");
+        let mut document = crate::test_support::test_lifecycle_interface();
         let stop = document
             .interface
             .methods
@@ -995,7 +995,7 @@ mod instance_configuration_tests {
 
     #[test]
     fn observation_only_interface_cannot_promise_ephemeral_release() {
-        let mut document = service_management_interface().expect("service interface");
+        let mut document = crate::test_support::test_lifecycle_interface();
         document
             .interface
             .methods
@@ -1014,7 +1014,7 @@ mod instance_configuration_tests {
 
     #[test]
     fn ephemeral_release_requires_provider_stopping_semantics() {
-        let mut document = service_management_interface().expect("service interface");
+        let mut document = crate::test_support::test_lifecycle_interface();
         document
             .interface
             .methods
@@ -1036,7 +1036,7 @@ mod instance_configuration_tests {
 
     #[test]
     fn persistent_delete_method_must_exist_and_stop_the_provider() {
-        let mut absent = service_management_interface().expect("service interface");
+        let mut absent = crate::test_support::test_lifecycle_interface();
         absent.interface.lifecycle.persistent_delete_method = Some(key("delete"));
 
         let absent_errors = ValidationContext::new(BTreeSet::new(), [absent])
@@ -1050,7 +1050,7 @@ mod instance_configuration_tests {
                     .is_some_and(|field| field == "persistent_delete_method")
         }));
 
-        let mut non_stopping = service_management_interface().expect("service interface");
+        let mut non_stopping = crate::test_support::test_lifecycle_interface();
         non_stopping.interface.lifecycle.persistent_delete_method = Some(key("start"));
 
         let semantic_errors = ValidationContext::new(BTreeSet::new(), [non_stopping])

@@ -1,16 +1,17 @@
 //! Executable resolver and fixed-point composition regressions.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 
 use aos_ability_model::document::{DesiredInstance, PackageSubject};
 use aos_ability_model::{
     AbilityActivationMode, AbilityValue, AccessMode, AggregationContract, AggregationScope,
     ArtifactReference, AuthorityGrant, BindingRequest, DeploymentObligation, DesiredStateDocument,
-    ExportDeclaration, HandlerDescriptor, InstanceId, LocalKey, ModuleLocator, ObligationKind,
-    PackageDocument, PackageImplementation, ProviderImplementation,
-    ProviderImplementationReference, RelativePath, RequestId, RequirementDeclaration,
-    RequirementFallback, RequirementStrength, ResourceLifetime, ResourcePermission, ScopePath,
-    ValueSchema, VersionedDocument,
+    ExportDeclaration, GuaranteeDeclaration, HandlerDescriptor, InstanceId, InterfaceName,
+    LocalKey, ModuleLocator, ObligationKind, PackageDocument, PackageImplementation,
+    ProviderImplementation, ProviderImplementationReference, RelativePath, RequestId,
+    RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceLifetime,
+    ResourcePermission, ScopePath, ValueSchema, VersionedDocument,
 };
 use aos_ability_validate::ValidationContext;
 use aos_contract::Sha256Digest;
@@ -601,8 +602,7 @@ fn failed_candidate_work_stops_at_the_search_bound() {
 
 #[test]
 fn service_features_allow_interchangeable_manager_implementations() {
-    let guarantees = aos_ability_model::builtin::service_feature_guarantees()
-        .expect("service feature identities must construct");
+    let guarantees = test_feature_guarantees();
     let mut fixture = planner_fixture_with_guarantees(1, guarantees);
     let request = fixture.desired.child_requests[0].id.clone();
     let integrated_provider = sibling_instance(&fixture.provider, "integrated-manager");
@@ -663,16 +663,12 @@ fn service_features_allow_interchangeable_manager_implementations() {
 
 #[test]
 fn service_provider_missing_one_requested_feature_is_rejected() {
-    let guarantees = aos_ability_model::builtin::service_feature_guarantees()
-        .expect("service feature identities must construct");
+    let guarantees = test_feature_guarantees();
     let mut fixture = planner_fixture_with_guarantees(1, guarantees);
     let supervision = fixture.desired.child_requests[0]
         .guarantees
         .iter()
-        .find(|guarantee| {
-            guarantee.name.as_str()
-                == aos_ability_model::builtin::SERVICE_SUPERVISION_GUARANTEE_NAME
-        })
+        .find(|guarantee| guarantee.name.as_str() == "test.feature.supervision")
         .expect("service contract includes supervision")
         .clone();
 
@@ -1457,4 +1453,26 @@ fn two_obligations(request: &RequestId) -> Vec<DeploymentObligation> {
 
 fn key(value: &str) -> LocalKey {
     LocalKey::new(value).expect("valid static planner-test key")
+}
+
+fn test_feature_guarantees() -> Vec<aos_ability_model::GuaranteeKey> {
+    [
+        ("test.feature.reload", "the test provider supports reload"),
+        (
+            "test.feature.supervision",
+            "the test provider continuously supervises its resource",
+        ),
+    ]
+    .into_iter()
+    .map(|(name, semantics)| {
+        GuaranteeDeclaration {
+            name: InterfaceName::new(name).expect("valid test guarantee name"),
+            version: NonZeroU32::new(1).expect("positive guarantee version"),
+            semantics: semantics.to_string(),
+            description: "Describes a test-only provider feature.".to_string(),
+        }
+        .key()
+        .expect("test guarantee must digest")
+    })
+    .collect()
 }

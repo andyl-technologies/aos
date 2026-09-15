@@ -10,9 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail, ensure};
-use aos_ability_model::{
-    LocalKey, RequiredFeature, RevisionId, TransactionId,
-};
+use aos_ability_model::{LocalKey, RequiredFeature, RevisionId, TransactionId};
 use aos_ability_plan::{ResolutionPolicyDocument, TransitionReconciliation};
 use aos_ability_runtime::execution::TerminalResult;
 use aos_ability_runtime::journal::JournalLimits;
@@ -28,12 +26,12 @@ use super::ability_policy::{
     validate_independent_binding_authority,
 };
 use super::ability_policy_authority::OperatorPolicyAuthorityStore;
-use super::transaction_store::{AbilityTransactionSession, RetainedAbilityDiagnosticSource};
 use super::activation::{ActivateConfigParams, ActivationFailure};
+use super::execution_observer::AbilityExecutionBoundaryObserver;
 use super::handler_dispatch::HandlerDispatcher;
 use super::materialize::ConfigManifest;
-use super::execution_observer::AbilityExecutionBoundaryObserver;
 use super::rollout_boot::authenticate_single_image_rollout_fragment;
+use super::transaction_store::{AbilityTransactionSession, RetainedAbilityDiagnosticSource};
 use crate::config::ApmConfig;
 use crate::types::ProfileScope;
 
@@ -794,7 +792,6 @@ fn production_evaluator() -> Result<RestrictedAbilityEvaluator> {
 /// identity contract.
 pub fn supported_native_ability_features() -> Result<std::collections::BTreeSet<RequiredFeature>> {
     [
-        aos_ability_model::builtin::AB_IMAGE_ROLLOUT_FEATURE,
         crate::types::FEATURE_ABILITIES_V1,
         crate::types::FEATURE_ABILITY_EFFECTS_V1,
         "native-platform-policy-v1",
