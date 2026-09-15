@@ -176,6 +176,17 @@ impl Desired {
             Self::Swap(_) => SWAP_OBSERVATION_SCHEMA,
         }
     }
+
+    fn desired_active_state(&self) -> Option<bool> {
+        match self {
+            // Activation groups are passive coordination resources. Their
+            // active state is controlled by consumers after realization.
+            Self::ActivationGroup(_) => None,
+            Self::Mount(desired) => Some(desired.enabled),
+            Self::ScheduledActivation(desired) => Some(desired.enabled),
+            Self::Swap(desired) => Some(desired.enabled),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -746,25 +757,27 @@ async fn apply(
         .active_state_exact(&rendered.primary_unit, &identity)
         .await?
         .is_active();
-    if desired.enabled() && !active {
-        let outcome = manager
-            .start_unit_exact_current(&rendered.primary_unit, &identity)
-            .await?;
-        if !outcome.result.is_done() {
-            bail!(
-                "systemd native-resource start completed as {}",
-                outcome.result.label()
-            );
-        }
-    } else if !desired.enabled() && active {
-        let outcome = manager
-            .stop_unit_exact(&rendered.primary_unit, &identity)
-            .await?;
-        if !outcome.result.is_done() {
-            bail!(
-                "systemd native-resource stop completed as {}",
-                outcome.result.label()
-            );
+    if let Some(desired_active) = desired.desired_active_state() {
+        if desired_active && !active {
+            let outcome = manager
+                .start_unit_exact_current(&rendered.primary_unit, &identity)
+                .await?;
+            if !outcome.result.is_done() {
+                bail!(
+                    "systemd native-resource start completed as {}",
+                    outcome.result.label()
+                );
+            }
+        } else if !desired_active && active {
+            let outcome = manager
+                .stop_unit_exact(&rendered.primary_unit, &identity)
+                .await?;
+            if !outcome.result.is_done() {
+                bail!(
+                    "systemd native-resource stop completed as {}",
+                    outcome.result.label()
+                );
+            }
         }
     }
     if !service_matches(paths, rendered, resource, revision)? {
@@ -857,7 +870,9 @@ async fn inspect(
         .as_ref()
         .is_some_and(UnitActiveState::is_active);
     let failed = matches!(active_state, Some(UnitActiveState::Failed));
-    let state_matches = active == desired.enabled();
+    let state_matches = desired
+        .desired_active_state()
+        .is_none_or(|desired_active| active == desired_active);
     let complete = match goal {
         Goal::Desired => files_match && manager_current && state_matches,
         Goal::Absent => files_absent && !active,
@@ -1164,6 +1179,8 @@ mod tests {
                 unit_name: "aos-activate.service".to_string(),
             }],
         };
+
+        assert_eq!(group.desired_active_state(), None);
 
         let rendered = render(&group, &realization).expect("activation group renders");
         assert_eq!(rendered.primary_unit, "aos-config.target");
