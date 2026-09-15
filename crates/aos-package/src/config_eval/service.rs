@@ -15,6 +15,7 @@ use super::materialize::ConfigManifest;
 use super::{EvalCommand, current_config_generation_number, run_eval_command};
 
 const IMAGE_REEVALUATION_MARKER: &str = "/run/aos/image-reeval-required";
+const IMAGE_PROFILE: &str = "/var/lib/profiles/image";
 const SYSTEM_PROFILE: &str = "/var/lib/profiles/system";
 const SYSTEM_STATE: &str = "/var/lib/profiles/system/state.json";
 const ACTIVE_MANIFEST: &str = "/var/lib/profiles/system/current/manifest.json";
@@ -56,6 +57,11 @@ pub fn run(command: &ServiceCommand) -> Result<()> {
     remove_stale_output(&command.out)?;
     remove_stale_output(Path::new(RUNTIME_GRAPH))?;
     prepare_provisioning_input(command)?;
+    crate::sysroot::reconcile_image_boot_for_config_evaluation(
+        Path::new(IMAGE_PROFILE),
+        Path::new(SYSTEM_PROFILE),
+        Path::new(IMAGE_REEVALUATION_MARKER),
+    )?;
 
     if retained_reevaluation_is_required() {
         let result = crate::sysroot::reeval_active_config_for_boot(
@@ -134,7 +140,10 @@ fn verify_missing_host_is_image_authored(command: &ServiceCommand) -> Result<()>
     )
     .with_context(|| format!("parsing {}", manifest_path.display()))?;
     manifest.validate()?;
-    if matches!(manifest.inputs.host_nix.trust_mode.as_str(), "image" | "image-default") {
+    if matches!(
+        manifest.inputs.host_nix.trust_mode.as_str(),
+        "image" | "image-default"
+    ) {
         Ok(())
     } else {
         bail!(
