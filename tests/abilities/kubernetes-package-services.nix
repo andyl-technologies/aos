@@ -332,12 +332,26 @@ in
   assert builtins.attrNames k3sPackageAbilities.interfaces
   == [
     "k3s-configuration"
+    "k3s-configuration-effects"
     "k3s-integration"
+    "kubernetes-object-effects"
   ];
   assert k3sPackageAbilities.implementations.kubernetes-object-set.interface
   == lib.abilities.interfaces.kubernetesObjectManagement.controller.identity;
   assert k3sPackageAbilities.implementations.kubernetes-objects.interface
   == lib.abilities.interfaces.kubernetesObjectManagement.contribution.identity;
+  assert k3sPackageAbilities.implementations.kubernetes-object-set ? provider_module;
+  assert !(k3sPackageAbilities.implementations.kubernetes-object-set ? handler);
+  assert k3sPackageAbilities.implementations.kubernetes-objects ? provider_module;
+  assert !(k3sPackageAbilities.implementations.kubernetes-objects ? handler);
+  assert !(k3sPackageAbilities.implementations.kubernetes-object-effects ? provider_module);
+  assert k3sPackageAbilities.implementations.kubernetes-object-effects ? handler;
+  assert k3sPackageAbilities.implementations.k3s-configuration ? provider_module;
+  assert !(k3sPackageAbilities.implementations.k3s-configuration ? handler);
+  assert k3sPackageAbilities.implementations.k3s-integration ? provider_module;
+  assert !(k3sPackageAbilities.implementations.k3s-integration ? handler);
+  assert !(k3sPackageAbilities.implementations.k3s-configuration-effects ? provider_module);
+  assert k3sPackageAbilities.implementations.k3s-configuration-effects ? handler;
   assert (requests kubelet)."kubelet:kubelet-supervision".parameters.startup_protocol == "notification";
   assert let
     configuration = builtins.fromJSON (

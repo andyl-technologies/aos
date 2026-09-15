@@ -22,8 +22,7 @@ use super::{
     read_bounded, require_resource,
 };
 
-const INTERFACE_NAME: &str = "aos.k3s.configuration";
-const CONTRIBUTION_INTERFACE_NAME: &str = "aos.k3s.integration";
+const EFFECTS_INTERFACE_NAME: &str = "aos.k3s.configuration-effects";
 const OBSERVATION_SCHEMA: &str = "aos.ability.k3s-configuration-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.k3s.configuration-context/v1";
 const REALIZATION_SCHEMA: &str = "aos.k3s.configuration-realization/v1";
@@ -81,7 +80,7 @@ struct K3sConfigurationObservation<'a> {
 }
 
 pub(super) fn handles_interface(interface: &str) -> bool {
-    matches!(interface, INTERFACE_NAME | CONTRIBUTION_INTERFACE_NAME)
+    interface == EFFECTS_INTERFACE_NAME
 }
 
 pub(super) fn admit(request: AdmissionRequest) -> Result<AdmissionResult, KubernetesProviderError> {
@@ -239,11 +238,8 @@ fn validate_configuration_method(
     method: &str,
     semantics: &MethodSemantics,
 ) -> Result<(), KubernetesProviderError> {
-    let method_allowed = match interface {
-        INTERFACE_NAME => matches!(method, "apply" | "observe" | "release"),
-        CONTRIBUTION_INTERFACE_NAME => method == "observe",
-        _ => false,
-    };
+    let method_allowed =
+        interface == EFFECTS_INTERFACE_NAME && matches!(method, "apply" | "observe" | "release");
     if !method_allowed {
         return Err(invalid("method does not belong to K3s configuration"));
     }
@@ -289,29 +285,15 @@ fn validate_configuration_prerequisites(
 }
 
 fn validate_selected_inputs(
-    interface: &str,
+    _interface: &str,
     inputs: &AbilityValue,
     desired: &K3sConfiguration,
 ) -> Result<(), KubernetesProviderError> {
-    if interface == INTERFACE_NAME {
-        let selected: K3sConfiguration = decode(inputs)?;
-        if selected != *desired {
-            return Err(invalid(
-                "configuration controller inputs differ from the retained aggregate resource",
-            ));
-        }
-    }
-    if interface == CONTRIBUTION_INTERFACE_NAME {
-        let contribution: K3sIntegration = decode(inputs)?;
-        if !desired
-            .contributions
-            .values()
-            .any(|value| value == &contribution)
-        {
-            return Err(invalid(
-                "K3s integration is absent from its retained aggregate",
-            ));
-        }
+    let selected: K3sConfiguration = decode(inputs)?;
+    if selected != *desired {
+        return Err(invalid(
+            "configuration terminal inputs differ from the retained aggregate resource",
+        ));
     }
     Ok(())
 }
@@ -484,6 +466,15 @@ fn configuration_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handler_accepts_only_the_package_owned_terminal_interface() {
+        let apply = MethodSemantics::ordinary(AccessMode::ExclusiveWrite);
+
+        assert!(validate_configuration_method(EFFECTS_INTERFACE_NAME, "apply", &apply).is_ok());
+        assert!(validate_configuration_method("aos.k3s.configuration", "apply", &apply).is_err());
+        assert!(validate_configuration_method("aos.k3s.integration", "apply", &apply).is_err());
+    }
 
     #[test]
     fn configuration_composes_flags_and_labels_canonically() {

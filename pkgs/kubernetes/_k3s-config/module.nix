@@ -103,6 +103,47 @@
   serviceTypes = serviceManagement.types;
   resultOf = lib.abilities.resultOf;
   objectArtifact = lib.abilities.packageOutput {};
+  terminalContract = {
+    alias,
+    name,
+    description,
+    controller,
+  }: let
+    declaration = lib.abilities.declareInterface {
+      inherit name description;
+      inherit (controller.identity) abi;
+      inherit (controller) requestType;
+      inherit (controller.declaration) methods lifecycle;
+      outputs = {};
+      guarantees = [];
+      aggregation = controller.declaration.aggregation // {controllerGroup = alias;};
+    };
+  in {
+    inherit alias declaration;
+    identity = lib.abilities.interfaceIdentity (
+      lib.abilities.interfaceDocumentFromDeclaration declaration
+    );
+  };
+  objectEffects = terminalContract {
+    alias = "kubernetes-object-effects";
+    name = "aos.k3s.kubernetes-object-effects";
+    description = "Executes admitted Kubernetes object operations for one K3s controller-owned resource.";
+    controller = objectContract.controller;
+  };
+  configurationEffects = terminalContract {
+    alias = "k3s-configuration-effects";
+    name = "aos.k3s.configuration-effects";
+    description = "Executes admitted K3s configuration operations for one controller-owned resource.";
+    controller = configurationContract.controller;
+  };
+  implementationRequirement = description: contract: methods: {
+    alias = "effects";
+    inherit description methods;
+    accepted_interfaces = [contract.identity];
+    guarantees = [];
+    strength = "required";
+    fallback = null;
+  };
   objectImplementations = lib.optionalAttrs serverRole {
     ${objectContract.controller.alias} = {
       description = "Converges exact authorized Kubernetes objects through the packaged K3s API client.";
@@ -110,15 +151,14 @@
       artifact = objectArtifact;
       methods = objectContract.controller.methods;
       guarantees = [];
+      requirements.effects =
+        implementationRequirement
+        "Invokes the K3s-owned terminal Kubernetes object handler."
+        objectEffects
+        objectContract.controller.methods;
       providerModule = {
         artifact = objectArtifact;
         path = "share/${packageName}/object-provider.nix";
-      };
-      handlerDescriptor = {
-        artifact = objectArtifact;
-        entryPoint = "libexec/aos-kubernetes-provider";
-        arguments = objectContract.controller.requestType;
-        result = objectContract.controller.observationType;
       };
       desiredType = objectContract.controller.realizationType;
       requiredFeatures = [];
@@ -133,20 +173,34 @@
         artifact = objectArtifact;
         path = "share/${packageName}/object-provider.nix";
       };
+      desiredType = null;
+      requiredFeatures = [];
+    };
+    ${objectEffects.alias} = {
+      description = "Executes authorized Kubernetes object operations through the packaged K3s API client.";
+      interface = objectEffects.alias;
+      artifact = objectArtifact;
+      methods = objectContract.controller.methods;
+      guarantees = [];
       handlerDescriptor = {
         artifact = objectArtifact;
         entryPoint = "libexec/aos-kubernetes-provider";
-        arguments = objectContract.contribution.requestType;
-        result = objectContract.contribution.observationType;
+        arguments = objectContract.controller.requestType;
+        result = objectContract.controller.observationType;
       };
-      desiredType = objectContract.controller.realizationType;
+      desiredType = null;
       requiredFeatures = [];
     };
   };
-  configurationInterfaces = {
-    ${configurationContract.controller.alias} = configurationContract.controller.declaration;
-    ${configurationContract.contribution.alias} = configurationContract.contribution.declaration;
-  };
+  configurationInterfaces =
+    {
+      ${configurationContract.controller.alias} = configurationContract.controller.declaration;
+      ${configurationContract.contribution.alias} = configurationContract.contribution.declaration;
+      ${configurationEffects.alias} = configurationEffects.declaration;
+    }
+    // lib.optionalAttrs serverRole {
+      ${objectEffects.alias} = objectEffects.declaration;
+    };
   configurationImplementations = {
     ${configurationContract.controller.alias} = {
       description = "Materializes one exact K3s configuration assembled from authorized contributions.";
@@ -154,15 +208,14 @@
       artifact = objectArtifact;
       methods = configurationContract.controller.methods;
       guarantees = [];
+      requirements.effects =
+        implementationRequirement
+        "Invokes the K3s-owned terminal configuration handler."
+        configurationEffects
+        configurationContract.controller.methods;
       providerModule = {
         artifact = objectArtifact;
         path = "share/${packageName}/configuration-provider.nix";
-      };
-      handlerDescriptor = {
-        artifact = objectArtifact;
-        entryPoint = "libexec/aos-kubernetes-provider";
-        arguments = configurationContract.controller.requestType;
-        result = configurationContract.controller.observationType;
       };
       desiredType = configurationContract.controller.realizationType;
       requiredFeatures = [];
@@ -177,13 +230,22 @@
         artifact = objectArtifact;
         path = "share/${packageName}/configuration-provider.nix";
       };
+      desiredType = null;
+      requiredFeatures = [];
+    };
+    ${configurationEffects.alias} = {
+      description = "Executes authorized K3s configuration operations through the package-owned handler.";
+      interface = configurationEffects.alias;
+      artifact = objectArtifact;
+      methods = configurationContract.controller.methods;
+      guarantees = [];
       handlerDescriptor = {
         artifact = objectArtifact;
         entryPoint = "libexec/aos-kubernetes-provider";
-        arguments = configurationContract.contribution.requestType;
-        result = configurationContract.contribution.observationType;
+        arguments = configurationContract.controller.requestType;
+        result = configurationContract.controller.observationType;
       };
-      desiredType = configurationContract.controller.realizationType;
+      desiredType = null;
       requiredFeatures = [];
     };
   };
