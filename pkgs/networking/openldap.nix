@@ -228,12 +228,13 @@ in
       testing,
       self,
       pkgs,
+      mkSystem,
       ...
     }: let
       serviceManagement = lib.abilities.interfaces.serviceManagement;
       environmentId = lib.abilities.environmentId {
-        authority = "deployment";
-        key = "openldap-test";
+        authority = "system-image";
+        key = "openldap-package-check";
         stage = "host";
       };
       credentialProvider = lib.abilities.instanceId {
@@ -251,24 +252,12 @@ in
           lifetime = "persistent";
         };
       evaluate = openldapConfig:
-        lib.evalModules {
-          inherit lib;
+        mkSystem {
+          systemName = "openldap-package-check";
           modules = [
-            ../../modules/abilities/default.nix
             {
-              options.assertions = lib.mkOption {
-                type = lib.types.listOf lib.types.attrs;
-                default = [];
-                contributable = true;
-              };
-              aos.abilities.environment = builtins.removeAttrs environmentId ["_type"];
+              environment.systemPackages = [self];
               openldap = openldapConfig;
-            }
-          ];
-          packageModules = [
-            {
-              name = "openldap";
-              module.imports = [./_openldap/module.nix];
             }
           ];
         };

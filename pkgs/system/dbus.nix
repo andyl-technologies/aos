@@ -244,24 +244,15 @@ in
     checks = {
       self,
       pkgs,
+      mkSystem,
       ...
     }: let
-      evaluated = lib.evalModules {
-        inherit lib;
+      evaluated = mkSystem {
+        systemName = "dbus-package-check";
         modules = [
-          lib.abilities.module
           {
-            aos.abilities.environment = {
-              authority = "deployment";
-              key = "dbus-test";
-              stage = "host";
-            };
-          }
-        ];
-        packageModules = [
-          {
-            name = "dbus";
-            module.imports = [./_dbus/module.nix];
+            environment.systemPackages = [self];
+            aos.services.dbus.enable = true;
           }
         ];
       };

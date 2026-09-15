@@ -150,6 +150,7 @@ in
       testing,
       self,
       pkgs,
+      mkSystem,
     }: {
       version = testing.mkToolCheck {
         pname = "tool-containerd";
@@ -157,7 +158,7 @@ in
         command = "containerd --version";
       };
       config-module-contract = import ./_containerd-tests/contract.nix {
-        inherit pkgs lib self;
+        inherit pkgs lib self mkSystem;
       };
       runtime-contract = import ./_containerd-tests/lifecycle.nix {
         inherit testing self;

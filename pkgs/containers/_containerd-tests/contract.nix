@@ -3,14 +3,14 @@
   pkgs,
   lib,
   self,
+  mkSystem,
 }: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   environmentId = lib.abilities.environmentId {
-    authority = "deployment";
-    key = "containerd-test";
+    authority = "system-image";
+    key = "containerd-package-check";
     stage = "host";
   };
-  environment = builtins.removeAttrs environmentId ["_type"];
   filesystemProvider = lib.abilities.instanceId {
     environment = environmentId;
     key = "filesystem-provider";
@@ -25,26 +25,14 @@
     lifetime = "persistent";
   };
   evaluate = containerdConfig:
-    lib.evalModules {
+    mkSystem {
+      systemName = "containerd-package-check";
       modules = [
-        ../../../modules/abilities/default.nix
         {
-          options.assertions = lib.mkOption {
-            type = lib.types.listOf lib.types.attrs;
-            default = [];
-            contributable = true;
-          };
-          aos.abilities.environment = environment;
+          environment.systemPackages = [self];
           containerd = containerdConfig;
         }
       ];
-      packageModules = [
-        {
-          name = "containerd";
-          module.imports = [../_containerd-config/module.nix];
-        }
-      ];
-      inherit lib;
     };
   assertionsHold = result:
     builtins.all (assertion: assertion.assertion) result.config.assertions;

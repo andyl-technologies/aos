@@ -125,34 +125,19 @@ in
       testing,
       self,
       pkgs,
+      mkSystem,
       ...
     }: let
-      evaluated = lib.evalModules {
-        inherit lib;
+      evaluated = mkSystem {
+        systemName = "dnsmasq-package-check";
         modules = [
-          lib.abilities.module
           {
-            options.assertions = lib.mkOption {
-              type = lib.types.listOf lib.types.attrs;
-              default = [];
-              contributable = true;
-            };
-            aos.abilities.environment = {
-              authority = "deployment";
-              key = "dnsmasq-test";
-              stage = "host";
-            };
+            environment.systemPackages = [self];
             aos.services.dnsmasq = {
               enable = true;
               port = 5353;
               dhcpRanges = ["192.0.2.10,192.0.2.20,12h"];
             };
-          }
-        ];
-        packageModules = [
-          {
-            name = "dnsmasq";
-            module.imports = [./_dnsmasq/module.nix];
           }
         ];
       };

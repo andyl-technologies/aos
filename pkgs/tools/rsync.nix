@@ -148,11 +148,12 @@ in
       testing,
       self,
       pkgs,
+      mkSystem,
     }: let
       serviceManagement = lib.abilities.interfaces.serviceManagement;
       environmentId = lib.abilities.environmentId {
-        authority = "deployment";
-        key = "rsyncd-test";
+        authority = "system-image";
+        key = "rsync-package-check";
         stage = "host";
       };
       credentialProvider = lib.abilities.instanceId {
@@ -169,24 +170,12 @@ in
         lifetime = "persistent";
       };
       evaluate = rsyncd:
-        lib.evalModules {
-          inherit lib;
+        mkSystem {
+          systemName = "rsync-package-check";
           modules = [
-            ../../modules/abilities/default.nix
             {
-              options.assertions = lib.mkOption {
-                type = lib.types.listOf lib.types.attrs;
-                default = [];
-                contributable = true;
-              };
-              aos.abilities.environment = builtins.removeAttrs environmentId ["_type"];
+              environment.systemPackages = [self];
               inherit rsyncd;
-            }
-          ];
-          packageModules = [
-            {
-              name = "rsync";
-              module.imports = [./_rsyncd/module.nix];
             }
           ];
         };

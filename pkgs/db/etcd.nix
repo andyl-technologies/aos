@@ -155,11 +155,12 @@ in
       testing,
       self,
       pkgs,
+      mkSystem,
     }: let
       serviceManagement = lib.abilities.interfaces.serviceManagement;
       environmentId = lib.abilities.environmentId {
-        authority = "deployment";
-        key = "etcd-test";
+        authority = "system-image";
+        key = "etcd-package-check";
         stage = "host";
       };
       credentialProvider = lib.abilities.instanceId {
@@ -183,33 +184,18 @@ in
         trustedCa.resource = credential "${prefix}-trusted-ca";
       };
       evalConfig = etcdConfig:
-        lib.evalModules {
+        mkSystem {
+          systemName = "etcd-package-check";
           modules = [
-            ../../modules/abilities/default.nix
             {
-              options.assertions = lib.mkOption {
-                type = lib.types.listOf lib.types.attrs;
-                default = [];
-                contributable = true;
-              };
-              aos.abilities.environment = {
-                authority = "deployment";
-                key = "etcd-test";
-                stage = "host";
-              };
+              environment.systemPackages = [self];
               etcd = etcdConfig;
             }
           ];
-          packageModules = [
-            {
-              name = "etcd";
-              module.imports = [./_etcd-config/module.nix];
-            }
-          ];
-          inherit lib;
         };
       assertionsHold = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
+      ownedValues = lib.filterAttrs (name: _: lib.hasPrefix "etcd:" name);
       evaluated = evalConfig {
         enable = true;
         name = "node-a";
@@ -312,8 +298,8 @@ in
         && !assertionsHold invalidMember
         && !assertionsHold invalidTls
         && !assertionsHold invalidDuplicate
-        && disabledAbilities.instances == {}
-        && disabledAbilities.requests == {}
+        && ownedValues disabledAbilities.instances == {}
+        && ownedValues disabledAbilities.requests == {}
         && builtins.elem "etcd:credential-delivery" disabledRequirements
         && builtins.elem "etcd:service-lifecycle" disabledRequirements
         && builtins.elem "etcd:main-lifecycle" requests
