@@ -39,7 +39,7 @@
     then abilities
     else
       lib.recursiveUpdate abilities {
-        config.aos.abilities.implementations.${name}.qualification = qualificationFor provider kind scope;
+        config.aos.abilities.qualification.implementations.${name} = qualificationFor provider kind scope;
       };
 
   k3sArtifact = ../../../pkgs/kubernetes/_k3s-ability-provider;

@@ -696,8 +696,10 @@ pub fn validate_package_source(manifest: &Path, interface_directory: &Path) -> R
     let crate::CheckedAbilityContract::PackageSource(contract) = checked else {
         bail!("package-source validation returned the wrong checked contract family");
     };
-    validate_module_locator_target(&contract.package().package_module)
-        .context("validating package ability module locator")?;
+    if let Some(module) = &contract.package().package_module {
+        validate_module_locator_target(module)
+            .context("validating package ability module locator")?;
+    }
     validate_option_source_targets(contract.package())?;
     for provider in &contract.package().implementation.providers {
         if let Some(locator) = &provider.provider_module {
@@ -709,7 +711,14 @@ pub fn validate_package_source(manifest: &Path, interface_directory: &Path) -> R
 }
 
 fn validate_option_source_targets(package: &aos_ability_model::PackageDocument) -> Result<()> {
-    let module_root = Path::new(&package.package_module.artifact.store_path);
+    let Some(module) = &package.package_module else {
+        ensure!(
+            package.option_declarations.is_empty(),
+            "package without an ability module declares package options"
+        );
+        return Ok(());
+    };
+    let module_root = Path::new(&module.artifact.store_path);
     for declaration in &package.option_declarations {
         let target = module_root.join(declaration.source.path.as_str());
         ensure!(
@@ -929,7 +938,12 @@ mod tests {
 
         let mut fixture = crate::test_support::stateful_owner_plan_fixture();
         let mut package = fixture.binding_inputs.packages.remove(0);
-        package.package_module.artifact.store_path = root.display().to_string();
+        package
+            .package_module
+            .as_mut()
+            .expect("fixture package has a module")
+            .artifact
+            .store_path = root.display().to_string();
         package.option_declarations = vec![aos_ability_model::PackageOptionDeclaration {
             path: vec!["service".to_string(), "enable".to_string()],
             type_signature: "boolean".to_string(),

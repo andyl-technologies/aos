@@ -381,11 +381,11 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
             (key("owner"), owner_interface_key.clone()),
         ]),
         guarantees: Default::default(),
-        package_module: aos_ability_model::ModuleLocator {
+        package_module: Some(aos_ability_model::ModuleLocator {
             artifact: artifact.clone(),
             path: aos_ability_model::RelativePath::new("module.nix")
                 .expect("fixture package module path is valid"),
-        },
+        }),
         option_declarations: Vec::new(),
         exports: vec![
             ExportDeclaration {
@@ -413,8 +413,8 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
                     result: ValueSchema::Boolean,
                 },
             )]),
-            qualification: BTreeMap::new(),
         },
+        qualification: aos_ability_model::PackageQualification::default(),
     };
     let package_digest = package.content_digest().expect("stateful package digest");
 

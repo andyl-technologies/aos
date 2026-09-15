@@ -2304,7 +2304,9 @@ fn retained_contribution_artifacts(inputs: &BindingValidationInputs) -> Artifact
         for artifact in &package.artifacts {
             insert_artifact(&mut artifacts, artifact);
         }
-        insert_artifact(&mut artifacts, &package.package_module.artifact);
+        if let Some(module) = &package.package_module {
+            insert_artifact(&mut artifacts, &module.artifact);
+        }
         for provider in &package.implementation.providers {
             insert_artifact(&mut artifacts, &provider.artifact);
             if let Some(module) = &provider.provider_module {
@@ -2317,7 +2319,7 @@ fn retained_contribution_artifacts(inputs: &BindingValidationInputs) -> Artifact
         for handler in package.implementation.handlers.values() {
             insert_artifact(&mut artifacts, &handler.artifact);
         }
-        for qualification in package.implementation.qualification.values() {
+        for qualification in package.qualification.implementations.values() {
             insert_artifact(&mut artifacts, &qualification.observer.artifact);
         }
     }

@@ -154,6 +154,15 @@
       (output: builtins.elem output reservedAbilityOutputs)
       existingOutputs;
     authoredAbilities = args.abilities or null;
+    authoredQualification = args.qualification or null;
+    authoredPackageProbe =
+      if authoredQualification == null
+      then null
+      else if !builtins.isAttrs authoredQualification
+      then throw "mkDerivation qualification for package '${packageName}' must be an attribute set"
+      else if builtins.attrNames authoredQualification != ["packageProbe"]
+      then throw "mkDerivation qualification for package '${packageName}' supports only packageProbe"
+      else lib.qualification.normalizePackageProbe authoredQualification.packageProbe;
     abilityModuleSource =
       if authoredAbilities == null
       then null
@@ -255,6 +264,16 @@
       if abilityEvaluation == null
       then null
       else abilityEvaluation.config.aos.abilities;
+    projectedAbilities =
+      if evaluatedAbilities != null
+      then evaluatedAbilities
+      else {
+        guarantees = {};
+        implementations = {};
+        interfaces = {};
+        qualification.implementations = {};
+        requirementTemplates = {};
+      };
     projectLocalAbilityMap = values:
       builtins.listToAttrs (lib.concatMap (name:
         lib.optional (lib.hasPrefix "${packageName}:" name) {
@@ -308,33 +327,68 @@
           // lib.optionalAttrs (declaration.replacement != null) {inherit (declaration) replacement;}) (builtins.filter
           (declaration: declaration.owner == packageName)
           abilityEvaluation._optionDecls);
-    abilityProjectionResult =
-      if localAbilityProjection == null
+    packageProjectionResult =
+      if localAbilityProjection == null && authoredPackageProbe == null
       then null
+      else if builtins.elem "contract" existingOutputs
+      then throw "mkDerivation package contract for '${packageName}' reserves the 'contract' output name"
       else
         projectPackageAbilities {
           inherit packageName;
           version = args.version or "0";
-          evaluated = evaluatedAbilities;
+          evaluated = projectedAbilities;
           packageModuleLocator = symbolicAbilityModuleLocator;
           optionDeclarations = abilityOptionDeclarations;
+          packageProbe = authoredPackageProbe;
         };
-    abilityProjection =
-      if abilityProjectionResult == null
+    packageProjection =
+      if packageProjectionResult == null
       then null
-      else abilityProjectionResult.value;
-    abilityProjectionSource =
-      if abilityProjection == null
+      else packageProjectionResult.value;
+    packageAbilityProjection =
+      if localAbilityProjection == null
+      then null
+      else {
+        inherit (packageProjection) guarantees interfaces;
+        implementations = builtins.listToAttrs (map (implementation: {
+            name = implementation.name;
+            value = implementation;
+          })
+          packageProjection.implementation.providers);
+        requirementTemplates = builtins.listToAttrs (map (requirement: {
+            name = requirement.alias;
+            value = requirement;
+          })
+          packageProjection.requirements);
+      };
+    packageProjectionSource =
+      if packageProjection == null
       then null
       else let
-        projectionJson = builtins.unsafeDiscardStringContext (builtins.toJSON abilityProjection);
+        projectionJson = builtins.unsafeDiscardStringContext (builtins.toJSON packageProjection);
       in
         if builtins.hasContext projectionJson || lib.hasInfix "/nix/store/" projectionJson
         then throw "ability projection for package '${packageName}' contains a store locator"
-        else
-          builtins.toFile
-          "${packageName}-ability-projection.json"
-          projectionJson;
+        else let
+          source = builtins.toFile "${packageName}-package-projection.json" projectionJson;
+        in
+          rawMkDerivation {
+            pname = "${packageName}-package-contract";
+            version = args.version or "0";
+            src = null;
+            phases = [
+              {
+                name = "install";
+                script = ''
+                  ${stdenv.coreutils}/bin/rm -rf "$out"
+                  ${stdenv.coreutils}/bin/cp ${source} "$out"
+                '';
+              }
+            ];
+            outputChecks.out.allowedReferences = [];
+            preferLocalBuild = true;
+            allowSubstitutes = false;
+          };
     crossFixupPhase =
       if stdenv.hostPlatform.objectFormat == "macho"
       then phases.darwinCrossFixupPhase
@@ -351,7 +405,7 @@
     lowerArgs =
       # Package integration modules are evaluated by this wrapper and never
       # become low-level derivation attributes.
-      (builtins.removeAttrs args ["abilities"])
+      (builtins.removeAttrs args ["abilities" "qualification"])
       // {
         meta =
           (args.meta or {})
@@ -374,24 +428,23 @@
         phases = crossPhases;
       };
     drv = rawMkDerivation lowerArgs;
-    abilityAttrs = lib.optionalAttrs (abilityProjection != null) {
-      abilities =
-        localAbilityProjection
-        // {
-          # These handles are derived from the same authored module path as
-          # the checked package-local tree. Publication strips underscore
-          # fields and derives the signed wire projection separately.
-          _module = retainedAbilityModule;
-          _artifact_outputs =
-            (lib.optionalAttrs (abilityModuleArtifact != null) {
-              module = abilityModuleArtifact.module;
-            })
-            // (lib.optionalAttrs (abilityProjectionSource != null) {
-              projection = abilityProjectionSource;
-              selectors = abilityProjectionResult.selectors;
-            });
+    abilityAttrs =
+      if packageProjection == null
+      then {}
+      else
+        {
+          contract = {
+            value = packageProjection;
+            document = packageProjectionSource;
+            selectors = packageProjectionResult.selectors;
+          };
+        }
+        // lib.optionalAttrs (localAbilityProjection != null) {
+          abilities = packageAbilityProjection;
+          # Module selection and artifact binding use the package's real
+          # module output. The static ability view contains semantic data only.
+          module = abilityModuleArtifact.module;
         };
-    };
     secondaryOutputAttrs = builtins.listToAttrs (
       builtins.map (outputName: {
         name = outputName;

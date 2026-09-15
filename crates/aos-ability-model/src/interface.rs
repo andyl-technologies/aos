@@ -14,7 +14,7 @@ use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
 use crate::document::ModuleLocator;
-use crate::identity::{InterfaceKey, InterfaceName, InterfaceSelector, LocalKey};
+use crate::identity::{InterfaceKey, InterfaceName, InterfaceSelector, LocalKey, RelativePath};
 use crate::plan::AccessMode;
 use crate::schema::ValueSchema;
 use crate::value::{AbilityValue, ArtifactIdentity, ArtifactReference, ResourceLifetime};
@@ -670,9 +670,136 @@ pub struct PackageImplementation {
     pub providers: Vec<ProviderImplementation>,
     /// Maps handler names to exact constrained handler artifacts.
     pub handlers: BTreeMap<LocalKey, HandlerDescriptor>,
+}
+
+/// Collects every package-owned qualification declaration in one signed section.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageQualification {
+    /// Defines the package's functional probe, when one is published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_probe: Option<PackageProbe>,
     /// Maps exact implementation descriptors to package-owned qualification claims.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub qualification: BTreeMap<Sha256Digest, ProviderQualification>,
+    pub implementations: BTreeMap<Sha256Digest, ProviderQualification>,
+}
+
+/// Defines the required success and rejected-input operations for one package.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageProbe {
+    /// Exercises one representative successful package operation.
+    pub primary: PackageProbeOperation,
+    /// Exercises one malformed or unsupported input that must be rejected.
+    pub bad_input: PackageProbeOperation,
+}
+
+/// Defines one bounded package operation and its exact observations.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageProbeOperation {
+    /// Describes the input supplied by this operation.
+    pub input: String,
+    /// Describes the operation under test.
+    pub operation: String,
+    /// Describes the expected semantic result.
+    pub expected: String,
+    /// Maps confined work paths to exact input contents.
+    pub files: BTreeMap<RelativePath, PackageProbeTemplate>,
+    /// Lists commands in their required execution order.
+    pub steps: Vec<PackageProbeStep>,
+    /// Lists exact artifacts observed after the commands finish.
+    pub artifacts: Vec<PackageProbeArtifact>,
+}
+
+/// Defines one command and its exact process observations.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageProbeStep {
+    /// Supplies the executable and arguments as typed templates.
+    pub argv: Vec<PackageProbeTemplate>,
+    /// Supplies standard input, when required.
+    pub stdin: Option<PackageProbeTemplate>,
+    /// Checks exact standard output, when present.
+    pub stdout: Option<PackageProbeTemplate>,
+    /// Checks exact standard error, when present.
+    pub stderr: Option<PackageProbeTemplate>,
+    /// Selects the exact expected process status.
+    pub exit_code: u8,
+    /// Bounds command execution time in seconds.
+    pub timeout_seconds: Option<u16>,
+    /// Records whether this step independently demonstrates rejection.
+    pub observes_rejection: bool,
+}
+
+/// Builds one string from explicit literals and authenticated path references.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageProbeTemplate {
+    /// Lists the fragments concatenated to form the final string.
+    pub fragments: Vec<PackageProbeTemplateFragment>,
+}
+
+/// Selects one explicit source for a package-probe template fragment.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum PackageProbeTemplateFragment {
+    /// Emits exact package-authored text.
+    Literal {
+        /// Supplies the literal text.
+        text: String,
+    },
+    /// Emits a path beneath one exact authenticated package artifact.
+    ArtifactPath {
+        /// Identifies the exact package artifact.
+        artifact: ArtifactReference,
+        /// Selects a path beneath the artifact root.
+        path: RelativePath,
+    },
+    /// Emits a path beneath the operation's confined work directory.
+    WorkPath {
+        /// Selects a path beneath the work root.
+        path: RelativePath,
+    },
+    /// Emits the exact executable path for one qualification harness tool.
+    Harness {
+        /// Selects the bounded harness tool.
+        tool: PackageProbeHarness,
+    },
+}
+
+/// Selects a hermetic tool supplied by the qualification harness.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PackageProbeHarness {
+    /// Selects the AOS Bash executable.
+    Bash,
+    /// Selects the AOS C compiler.
+    CCompiler,
+    /// Selects the AOS C++ compiler.
+    CxxCompiler,
+    /// Selects the AOS Python interpreter.
+    Python,
+}
+
+/// Defines one exact regular-file observation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum PackageProbeArtifact {
+    /// Checks exact UTF-8 bytes.
+    Text {
+        /// Selects the file below the operation work root.
+        path: RelativePath,
+        /// Supplies the exact expected text.
+        text: String,
+    },
+    /// Checks the exact SHA-256 digest.
+    Sha256 {
+        /// Selects the file below the operation work root.
+        path: RelativePath,
+        /// Supplies the exact expected digest.
+        digest: Sha256Digest,
+    },
 }
 
 /// Declares package-owned native qualification evidence for one implementation.

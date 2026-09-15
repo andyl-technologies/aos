@@ -574,10 +574,10 @@ in
       pkgs,
       ...
     }: let
-      requirements = self.abilities.requirements;
+      requirements = self.abilities.requirementTemplates;
       requirementMethods = alias: requirements.${alias}.methods;
       contractHolds =
-        builtins.deepSeq self.abilities.optionSurface true
+        builtins.deepSeq self.contract.value.option_declarations true
         && self.abilities.interfaces == {}
         && self.abilities.implementations == {}
         && builtins.elem "configuration-materialization" (builtins.attrNames requirements)

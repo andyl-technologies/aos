@@ -715,7 +715,7 @@ in {
   nginx = mkPackage "ability-reference-nginx" nginxArtifact ([nginxRuntimeDependency hostResourceRuntimeDependency] ++ qualificationDependencies) nginxAbilityModule;
 
   managed-configuration = mkPackage "ability-reference-managed-configuration" managedConfigurationArtifact ([managedConfigurationRuntimeDependency] ++ qualificationDependencies) {
-    config.aos.abilities = lib.abilities.projectDefinitions {
+    config.aos.abilities = lib.recursiveUpdate (lib.abilities.projectDefinitions {
       managed-configuration = {
         definition = lib.abilities.define {
           interface = managedConfiguration.name;
@@ -757,7 +757,6 @@ in {
         };
       };
       managed-configuration-effects = {
-        qualification = qualificationFor "managed-configuration" "filesystem" "host-filesystem";
         artifact = selectorFor managedConfigurationRuntimeDependency;
         definition = terminalExport {
           name = managedConfigurationEffects.name;
@@ -777,11 +776,14 @@ in {
           result = types.boolean;
         };
       };
-    };
+    }) (lib.optionalAttrs (qualificationSupport != null) {
+      qualification.implementations.managed-configuration-effects =
+        qualificationFor "managed-configuration" "filesystem" "host-filesystem";
+    });
   };
 
   credential = mkPackage "ability-reference-credential" credentialArtifact ([credentialRuntimeDependency] ++ qualificationDependencies) {
-    config.aos.abilities = lib.abilities.projectDefinitions {
+    config.aos.abilities = lib.recursiveUpdate (lib.abilities.projectDefinitions {
       credential-delivery = {
         definition = lib.abilities.define {
           interface = credentialDelivery.name;
@@ -819,7 +821,6 @@ in {
         };
       };
       credential-delivery-effects = {
-        qualification = qualificationFor "credential-delivery" "filesystem" "host-resource";
         artifact = selectorFor credentialRuntimeDependency;
         definition = terminalExport {
           name = credentialDeliveryEffects.name;
@@ -844,13 +845,15 @@ in {
           result = credentialObservation;
         };
       };
-    };
+    }) (lib.optionalAttrs (qualificationSupport != null) {
+      qualification.implementations.credential-delivery-effects =
+        qualificationFor "credential-delivery" "filesystem" "host-resource";
+    });
   };
 
   service = mkPackage "ability-reference-service" serviceArtifact ([serviceRuntimeDependency] ++ qualificationDependencies) {
-    config.aos.abilities = lib.abilities.projectDefinitions {
+    config.aos.abilities = lib.recursiveUpdate (lib.abilities.projectDefinitions {
       foreground-process = {
-        qualification = qualificationFor "foreground-process" "foreground-process" "application-container-process";
         artifact = packageRuntimeSelector;
         definition = terminalExport {
           name = foregroundProcess.name;
@@ -903,7 +906,6 @@ in {
         };
       };
       service-management = {
-        qualification = qualificationFor "service-management" "systemd" "host-manager";
         artifact = packageRuntimeSelector;
         definition = terminalExport {
           name = serviceManagement.name;
@@ -926,6 +928,12 @@ in {
           result = types.boolean;
         };
       };
-    };
+    }) (lib.optionalAttrs (qualificationSupport != null) {
+      qualification.implementations = {
+        foreground-process =
+          qualificationFor "foreground-process" "foreground-process" "application-container-process";
+        service-management = qualificationFor "service-management" "systemd" "host-manager";
+      };
+    });
   };
 }

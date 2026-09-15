@@ -36,7 +36,7 @@
   ];
   packageRoots = [
     package
-    package.abilities.contract
+    package.contract.document
     incompatiblePackage
     incompatiblePackage.abilityContract
   ];
@@ -73,7 +73,7 @@
     {
       name = "ability-reference-image-rollout";
       primary = package;
-      abilities = package.abilities.contract;
+      abilities = package.contract.document;
       originalRuntime = pkgs.aos.packageRuntime;
     }
     {
@@ -143,7 +143,7 @@ in {
       }${builtins.toJSON (map (entry: {
           inherit (entry) name;
           package = builtins.toString entry.package;
-          abilities = builtins.toString entry.package.abilities.contract;
+          abilities = builtins.toString entry.package.contract.document;
         })
         orderedPackages)}${
         if guestTools

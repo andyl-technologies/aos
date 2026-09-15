@@ -166,10 +166,10 @@ fn install_package_with_feature(
         artifacts: vec![artifact.clone()],
         interfaces: Default::default(),
         guarantees: Default::default(),
-        package_module: aos_ability_model::ModuleLocator {
+        package_module: Some(aos_ability_model::ModuleLocator {
             artifact: artifact.clone(),
             path: aos_ability_model::RelativePath::new("module.nix")?,
-        },
+        }),
         option_declarations: Vec::new(),
         exports,
         requirements: Vec::new(),
@@ -184,8 +184,8 @@ fn install_package_with_feature(
                     result: ValueSchema::Boolean,
                 },
             )]),
-            qualification: BTreeMap::new(),
         },
+        qualification: aos_ability_model::PackageQualification::default(),
     };
     binding.provider_package = Some(package.content_digest()?);
     for request in &mut fixture.binding_plan.requests {

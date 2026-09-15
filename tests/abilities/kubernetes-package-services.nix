@@ -208,10 +208,10 @@ in
   (requests edgecore)."edgecore:edgecore-dependencies".parameters.requires;
   assert let
     requirement = edgecorePackageAbilities.requirementTemplates.kernel-tunables;
+    interface = builtins.head requirement.accepted_interfaces;
   in
     {
-      name = requirement.interface;
-      inherit (requirement) abi descriptor;
+      inherit (interface) name abi descriptor;
     }
     == lib.abilities.interfaces.kernelTunables.interface.identity;
   assert (requests edgecore)."edgecore:edgecore-linux_device_policy".parameters.baseline_access
@@ -276,10 +276,10 @@ in
   (requests k3sWorker)."k3s-worker:k3s-dependencies".parameters.requires;
   assert let
     requirement = k3sWorkerPackageAbilities.requirementTemplates.kernel-tunables;
+    interface = builtins.head requirement.accepted_interfaces;
   in
     {
-      name = requirement.interface;
-      inherit (requirement) abi descriptor;
+      inherit (interface) name abi descriptor;
     }
     == lib.abilities.interfaces.kernelTunables.interface.identity;
   assert (requests k3sWorker)."k3s-worker:ingress-policy".parameters.endpoints

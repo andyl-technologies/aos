@@ -33,20 +33,26 @@
     if artifactClass == "container"
     then "application/vnd.aos.container.static-abilities.v1+json"
     else "application/vnd.aos.boot.static-abilities.v1+json";
-  abilityPackageRoots = builtins.filter (
-    package: builtins.isAttrs package && package ? abilities
+  contractPackageRoots = builtins.filter (
+    package: builtins.isAttrs package && package ? contract
   ) packageRoots;
-  selectedPackages = map (package: let
-    artifactOutputs = package.abilities._artifact_outputs or {};
-  in
-    if artifactOutputs ? projection && artifactOutputs ? selectors
+  selectedPackages = map (package:
+    if package ? contract
     then {
       payload = package;
-      inherit (artifactOutputs) projection selectors;
+      inherit (package) contract;
     }
-    else common.fail "static ability contract package roots must expose one complete native ability projection")
-  abilityPackageRoots;
+    else common.fail "static ability contract package roots must expose one package contract")
+  contractPackageRoots;
   payloadPaths = map (entry: builtins.toString entry.payload) selectedPackages;
+  validPackageContract = contract:
+    builtins.isAttrs contract
+    && builtins.attrNames contract == ["document" "selectors" "value"]
+    && builtins.isAttrs contract.document
+    && contract.document ? outPath
+    && builtins.isList contract.selectors
+    && builtins.isAttrs contract.value
+    && contract.selectors == contract.value.artifacts;
   resolvePackageOutput = payload: selector: let
     package =
       if selector.package == "self"
@@ -54,22 +60,16 @@
       else if builtins.isAttrs packageRegistry && builtins.hasAttr selector.package packageRegistry
       then builtins.getAttr selector.package packageRegistry
       else common.fail "ability selector names unknown package '${selector.package}'";
-    artifactOutputs =
-      if package ? abilities
-      then package.abilities._artifact_outputs or {}
-      else {};
-    selectableArtifactOutputs = builtins.removeAttrs artifactOutputs ["projection" "selectors"];
-    selectedArtifact = selectableArtifactOutputs.${selector.output} or null;
-    outputs =
-      lib.unique (
-        (package.outputs or ["out"])
-        ++ builtins.attrNames selectableArtifactOutputs
-      );
+    moduleOutput =
+      if selector.output == "module" && package ? module
+      then package.module
+      else null;
+    outputs = lib.unique ((package.outputs or ["out"]) ++ lib.optional (moduleOutput != null) "module");
   in
     if !(builtins.elem selector.output outputs)
     then common.fail "ability selector names missing output '${selector.output}' on package '${selector.package}'"
-    else if selectedArtifact != null
-    then selectedArtifact
+    else if moduleOutput != null
+    then moduleOutput
     else if selector.output == "out"
     then package.out or package
     else builtins.getAttr selector.output package;
@@ -94,24 +94,31 @@
     if !platformMode
     then []
     else if
-      builtins.isAttrs packageRegistry
+      lib.all (entry:
+        validPackageContract entry.contract
+        && entry.contract.value.package.name == entry.payload.pname
+        && entry.contract.value.package.version == entry.payload.version)
+      selectedPackages
+      && builtins.isAttrs packageRegistry
       && lib.all (path: builtins.elem path runtimeRootPaths) payloadPaths
       && builtins.length payloadPaths == builtins.length (lib.unique payloadPaths)
+      && builtins.length selectedPackages
+      == builtins.length (lib.unique (map (entry: builtins.toString entry.contract.document) selectedPackages))
     then selectedPackages
-    else common.fail "static ability contract package roots must be unique runtime roots resolved through a package registry";
+    else common.fail "static ability contract package roots must carry unique canonical contracts and runtime roots";
   packageResolutions = builtins.genList (packageIndex: let
     entry = builtins.elemAt selectedPackages packageIndex;
     selectorArtifacts = builtins.genList (selectorIndex: let
-      selector = builtins.elemAt entry.selectors selectorIndex;
+      selector = builtins.elemAt entry.contract.selectors selectorIndex;
       selected = resolvePackageOutput entry.payload selector;
     in {
       inherit (selector) package output;
       path = builtins.toString selected;
       graph = "abilityResolution${toString packageIndex}Selector${toString selectorIndex}";
       graphPath = selected;
-    }) (builtins.length entry.selectors);
+    }) (builtins.length entry.contract.selectors);
   in {
-    projection = builtins.toString entry.projection;
+    document = builtins.toString entry.contract.document;
     resolution = {
       payload = {
         path = builtins.toString entry.payload;
@@ -163,7 +170,7 @@
           script = ''
             ${abilityContractValidator}/bin/aos-ability-contract-validator \
               resolve-package-projection \
-              ${lib.escapeShellArg (builtins.toString entry.projection)} \
+              ${lib.escapeShellArg (builtins.toString entry.contract.document)} \
               ${lib.escapeShellArg (builtins.toString resolutionSpec)} \
               "$NIX_ATTRS_JSON_FILE" \
               "$out"

@@ -34,6 +34,7 @@ async fn ability_publication_accepts_a_transitive_self_referencing_closure() {
     let projection =
         aos_ability_validate::decode_package_projection(&fs::read(&companion_path).unwrap())
             .unwrap();
+    assert!(projection.qualification.package_probe.is_some());
 
     let registry = TempDir::new().unwrap();
     init_authoring_clone(registry.path());
@@ -108,6 +109,7 @@ async fn ability_publication_accepts_a_transitive_self_referencing_closure() {
     );
     let manifest = read_package_manifest(&ability.store_path).unwrap();
     let package = decode_package_manifest(&manifest).unwrap();
+    assert!(package.qualification.package_probe.is_some());
     let mut fixture_artifacts = collect_distinct_artifacts(&package)
         .unwrap()
         .into_iter()

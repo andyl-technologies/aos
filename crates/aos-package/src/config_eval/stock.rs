@@ -690,13 +690,14 @@ where
                 member.package
             );
         }
-        let module = member.ability.as_ref().map(|document| {
-            let locator = &document.package_module;
-            (
-                locator.artifact.store_path.as_str(),
-                locator.artifact.nar_hash.to_string(),
-                locator.path.as_str(),
-            )
+        let module = member.ability.as_ref().and_then(|document| {
+            document.package_module.as_ref().map(|locator| {
+                (
+                    locator.artifact.store_path.as_str(),
+                    locator.artifact.nar_hash.to_string(),
+                    locator.path.as_str(),
+                )
+            })
         });
         let legacy_module = member.config_output.as_deref().map(|path| {
             (
@@ -1304,7 +1305,11 @@ fn resolved_registry_ability_module(
     let Some(document) = crate::ability_package::resolve_package_document(package)? else {
         return Ok(None);
     };
-    let root = crate::registry::store_path_hash(&document.package_module.artifact.store_path);
+    let module = document
+        .package_module
+        .as_ref()
+        .context("resolved ability package is missing its module locator")?;
+    let root = crate::registry::store_path_hash(&module.artifact.store_path);
 
     Ok(Some(ResolvedAbilityModule {
         registry: registry.config.name.clone(),
@@ -1657,15 +1662,15 @@ mod tests {
             artifacts: vec![artifact],
             interfaces: BTreeMap::new(),
             guarantees: BTreeMap::new(),
-            package_module,
+            package_module: Some(package_module),
             option_declarations: Vec::new(),
             exports: Vec::new(),
             requirements: Vec::new(),
             implementation: PackageImplementation {
                 providers: Vec::new(),
                 handlers: BTreeMap::new(),
-                qualification: BTreeMap::new(),
             },
+            qualification: Default::default(),
         }
     }
 

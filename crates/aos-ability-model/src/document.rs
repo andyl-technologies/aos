@@ -25,7 +25,8 @@ use crate::identity::{
 };
 use crate::interface::{
     ExportDeclaration, GuaranteeDeclaration, GuaranteeKey, InterfaceDescriptor,
-    PackageImplementation, ProviderImplementationReference, RequirementDeclaration,
+    PackageImplementation, PackageQualification, ProviderImplementationReference,
+    RequirementDeclaration,
 };
 use crate::limits::{ABILITY_LIMITS_V1, LimitProfile};
 use crate::option::{PackageOptionDeclaration, validate_package_option_declarations};
@@ -378,7 +379,7 @@ pub struct PackageDocument {
     /// Maps package-local guarantee aliases to their semantic declarations and prose.
     pub guarantees: BTreeMap<LocalKey, GuaranteeDeclaration>,
     /// Locates the package's executable ability/configuration module.
-    pub package_module: ModuleLocator,
+    pub package_module: Option<ModuleLocator>,
     /// Retains the mechanically derived package-owned module option declarations.
     pub option_declarations: Vec<PackageOptionDeclaration>,
     /// Lists public exports in canonical name order.
@@ -387,6 +388,8 @@ pub struct PackageDocument {
     pub requirements: Vec<RequirementDeclaration>,
     /// Contains provider-specific implementations and handler declarations.
     pub implementation: PackageImplementation,
+    /// Contains the package's signed qualification declarations.
+    pub qualification: PackageQualification,
 }
 
 /// Locates one Nix provider module below an authenticated artifact root.
@@ -967,7 +970,7 @@ impl VersionedDocument for PackageDocument {
             ensure_schema_depth(&handler.arguments, limits)?;
             ensure_schema_depth(&handler.result, limits)?;
         }
-        for qualification in self.implementation.qualification.values() {
+        for qualification in self.qualification.implementations.values() {
             if qualification.conformance_families.is_empty()
                 || qualification
                     .conformance_families
@@ -983,6 +986,9 @@ impl VersionedDocument for PackageDocument {
             }
             ensure_schema_depth(&qualification.observer.arguments, limits)?;
             ensure_schema_depth(&qualification.observer.result, limits)?;
+        }
+        if let Some(probe) = &self.qualification.package_probe {
+            validate_package_probe(probe, &self.artifacts, limits)?;
         }
         Ok(())
     }
@@ -1021,7 +1027,62 @@ impl VersionedDocument for PackageDocument {
         struct SemanticPackageImplementation<'a> {
             providers: Vec<Sha256Digest>,
             handlers: BTreeMap<&'a LocalKey, SemanticHandler<'a>>,
-            qualification: BTreeMap<&'a Sha256Digest, SemanticQualification<'a>>,
+        }
+
+        #[derive(Serialize)]
+        struct SemanticPackageQualification<'a> {
+            package_probe: Option<SemanticPackageProbe<'a>>,
+            implementations: BTreeMap<&'a Sha256Digest, SemanticQualification<'a>>,
+        }
+
+        #[derive(Serialize)]
+        struct SemanticPackageProbe<'a> {
+            primary: SemanticPackageProbeOperation<'a>,
+            bad_input: SemanticPackageProbeOperation<'a>,
+        }
+
+        #[derive(Serialize)]
+        struct SemanticPackageProbeOperation<'a> {
+            input: &'a str,
+            operation: &'a str,
+            expected: &'a str,
+            files: BTreeMap<&'a RelativePath, SemanticPackageProbeTemplate<'a>>,
+            steps: Vec<SemanticPackageProbeStep<'a>>,
+            artifacts: &'a [crate::PackageProbeArtifact],
+        }
+
+        #[derive(Serialize)]
+        struct SemanticPackageProbeStep<'a> {
+            argv: Vec<SemanticPackageProbeTemplate<'a>>,
+            stdin: Option<SemanticPackageProbeTemplate<'a>>,
+            stdout: Option<SemanticPackageProbeTemplate<'a>>,
+            stderr: Option<SemanticPackageProbeTemplate<'a>>,
+            exit_code: u8,
+            timeout_seconds: Option<u16>,
+            observes_rejection: bool,
+        }
+
+        #[derive(Serialize)]
+        struct SemanticPackageProbeTemplate<'a> {
+            fragments: Vec<SemanticPackageProbeTemplateFragment<'a>>,
+        }
+
+        #[derive(Serialize)]
+        #[serde(tag = "kind", rename_all = "kebab-case")]
+        enum SemanticPackageProbeTemplateFragment<'a> {
+            Literal {
+                text: &'a str,
+            },
+            ArtifactPath {
+                artifact: crate::ArtifactIdentity,
+                path: &'a RelativePath,
+            },
+            WorkPath {
+                path: &'a RelativePath,
+            },
+            Harness {
+                tool: crate::PackageProbeHarness,
+            },
         }
 
         #[derive(Serialize)]
@@ -1066,11 +1127,12 @@ impl VersionedDocument for PackageDocument {
             artifacts: Vec<crate::ArtifactIdentity>,
             interfaces: &'a BTreeMap<LocalKey, InterfaceKey>,
             guarantees: BTreeMap<LocalKey, SemanticGuarantee<'a>>,
-            package_module: SemanticModuleLocator<'a>,
+            package_module: Option<SemanticModuleLocator<'a>>,
             option_declarations: Vec<SemanticOptionDeclaration<'a>>,
             exports: Vec<SemanticExport<'a>>,
             requirements: Vec<SemanticRequirement<'a>>,
             implementation: SemanticPackageImplementation<'a>,
+            qualification: SemanticPackageQualification<'a>,
         }
 
         let guarantees = self
@@ -1114,8 +1176,8 @@ impl VersionedDocument for PackageDocument {
             })
             .collect();
         let qualification = self
-            .implementation
             .qualification
+            .implementations
             .iter()
             .map(|(implementation, qualification)| {
                 (
@@ -1132,6 +1194,70 @@ impl VersionedDocument for PackageDocument {
                 )
             })
             .collect();
+        fn semantic_template(
+            template: &crate::PackageProbeTemplate,
+        ) -> SemanticPackageProbeTemplate<'_> {
+            SemanticPackageProbeTemplate {
+                fragments: template
+                    .fragments
+                    .iter()
+                    .map(|fragment| match fragment {
+                        crate::PackageProbeTemplateFragment::Literal { text } => {
+                            SemanticPackageProbeTemplateFragment::Literal { text }
+                        }
+                        crate::PackageProbeTemplateFragment::ArtifactPath { artifact, path } => {
+                            SemanticPackageProbeTemplateFragment::ArtifactPath {
+                                artifact: artifact.identity(),
+                                path,
+                            }
+                        }
+                        crate::PackageProbeTemplateFragment::WorkPath { path } => {
+                            SemanticPackageProbeTemplateFragment::WorkPath { path }
+                        }
+                        crate::PackageProbeTemplateFragment::Harness { tool } => {
+                            SemanticPackageProbeTemplateFragment::Harness { tool: *tool }
+                        }
+                    })
+                    .collect(),
+            }
+        }
+
+        fn semantic_operation(
+            operation: &crate::PackageProbeOperation,
+        ) -> SemanticPackageProbeOperation<'_> {
+            SemanticPackageProbeOperation {
+                input: &operation.input,
+                operation: &operation.operation,
+                expected: &operation.expected,
+                files: operation
+                    .files
+                    .iter()
+                    .map(|(path, template)| (path, semantic_template(template)))
+                    .collect(),
+                steps: operation
+                    .steps
+                    .iter()
+                    .map(|step| SemanticPackageProbeStep {
+                        argv: step.argv.iter().map(semantic_template).collect(),
+                        stdin: step.stdin.as_ref().map(semantic_template),
+                        stdout: step.stdout.as_ref().map(semantic_template),
+                        stderr: step.stderr.as_ref().map(semantic_template),
+                        exit_code: step.exit_code,
+                        timeout_seconds: step.timeout_seconds,
+                        observes_rejection: step.observes_rejection,
+                    })
+                    .collect(),
+                artifacts: &operation.artifacts,
+            }
+        }
+        let package_probe =
+            self.qualification
+                .package_probe
+                .as_ref()
+                .map(|probe| SemanticPackageProbe {
+                    primary: semantic_operation(&probe.primary),
+                    bad_input: semantic_operation(&probe.bad_input),
+                });
         let semantic = SemanticPackage {
             schema: &self.schema,
             required_features: &self.required_features,
@@ -1149,10 +1275,13 @@ impl VersionedDocument for PackageDocument {
                 .collect(),
             interfaces: &self.interfaces,
             guarantees,
-            package_module: SemanticModuleLocator {
-                artifact: self.package_module.artifact.identity(),
-                path: &self.package_module.path,
-            },
+            package_module: self
+                .package_module
+                .as_ref()
+                .map(|module| SemanticModuleLocator {
+                    artifact: module.artifact.identity(),
+                    path: &module.path,
+                }),
             option_declarations: self
                 .option_declarations
                 .iter()
@@ -1192,7 +1321,10 @@ impl VersionedDocument for PackageDocument {
             implementation: SemanticPackageImplementation {
                 providers,
                 handlers,
-                qualification,
+            },
+            qualification: SemanticPackageQualification {
+                package_probe,
+                implementations: qualification,
             },
         };
 
@@ -1307,6 +1439,113 @@ fn validate_documentation_text(
             source: anyhow::anyhow!(
                 "{label} must be nonempty, control-free, and within the string limit"
             ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_package_probe(
+    probe: &crate::PackageProbe,
+    retained_artifacts: &[ArtifactReference],
+    limits: &LimitProfile,
+) -> Result<(), DocumentError> {
+    fn validate_template(
+        template: &crate::PackageProbeTemplate,
+        retained_artifacts: &[ArtifactReference],
+        limits: &LimitProfile,
+    ) -> Result<(), DocumentError> {
+        if template.fragments.is_empty() || template.fragments.len() > 64 {
+            return Err(DocumentError::Decode {
+                label: PackageDocument::SCHEMA.to_string(),
+                source: anyhow::anyhow!("package probe template has an invalid fragment count"),
+            });
+        }
+        for fragment in &template.fragments {
+            match fragment {
+                crate::PackageProbeTemplateFragment::Literal { text } => {
+                    if text.len() as u64 > limits.max_string_bytes {
+                        return Err(DocumentError::Decode {
+                            label: PackageDocument::SCHEMA.to_string(),
+                            source: anyhow::anyhow!("package probe literal exceeds its size bound"),
+                        });
+                    }
+                }
+                crate::PackageProbeTemplateFragment::ArtifactPath { artifact, .. } => {
+                    if !retained_artifacts.contains(artifact) {
+                        return Err(DocumentError::Decode {
+                            label: PackageDocument::SCHEMA.to_string(),
+                            source: anyhow::anyhow!(
+                                "package probe references an artifact outside the retained package set"
+                            ),
+                        });
+                    }
+                }
+                crate::PackageProbeTemplateFragment::WorkPath { .. }
+                | crate::PackageProbeTemplateFragment::Harness { .. } => {}
+            }
+        }
+        Ok(())
+    }
+
+    for (name, operation) in [("primary", &probe.primary), ("bad input", &probe.bad_input)] {
+        validate_documentation_text("package probe input", &operation.input, limits)?;
+        validate_documentation_text("package probe operation", &operation.operation, limits)?;
+        validate_documentation_text("package probe expectation", &operation.expected, limits)?;
+        if operation.files.len() > 32
+            || operation.steps.is_empty()
+            || operation.steps.len() > 16
+            || operation.artifacts.len() > 32
+        {
+            return Err(DocumentError::Decode {
+                label: PackageDocument::SCHEMA.to_string(),
+                source: anyhow::anyhow!(
+                    "package probe {name} operation exceeds its collection bounds"
+                ),
+            });
+        }
+        for template in operation.files.values() {
+            validate_template(template, retained_artifacts, limits)?;
+        }
+        for step in &operation.steps {
+            if step.argv.is_empty()
+                || step.argv.len() > 64
+                || step
+                    .timeout_seconds
+                    .is_some_and(|seconds| !(1..=300).contains(&seconds))
+            {
+                return Err(DocumentError::Decode {
+                    label: PackageDocument::SCHEMA.to_string(),
+                    source: anyhow::anyhow!(
+                        "package probe {name} step has invalid execution bounds"
+                    ),
+                });
+            }
+            for template in &step.argv {
+                validate_template(template, retained_artifacts, limits)?;
+            }
+            for template in [&step.stdin, &step.stdout, &step.stderr]
+                .into_iter()
+                .flatten()
+            {
+                validate_template(template, retained_artifacts, limits)?;
+            }
+        }
+    }
+    if probe.primary.steps.iter().any(|step| step.exit_code != 0) {
+        return Err(DocumentError::Decode {
+            label: PackageDocument::SCHEMA.to_string(),
+            source: anyhow::anyhow!("package probe primary operation expects a failing status"),
+        });
+    }
+    if !probe
+        .bad_input
+        .steps
+        .iter()
+        .any(|step| step.observes_rejection || step.exit_code != 0)
+    {
+        return Err(DocumentError::Decode {
+            label: PackageDocument::SCHEMA.to_string(),
+            source: anyhow::anyhow!("package probe bad input has no observable rejection"),
         });
     }
     Ok(())

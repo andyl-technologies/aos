@@ -159,14 +159,64 @@
         maintainers = ["AOS test"];
         aos.platformSupport = {disposition = "target";};
       };
-      abilities = {
-        _artifact_outputs.module = {
+      module = {
+        type = "derivation";
+        outputName = "module";
+        drvPath = "/nix/store/44444444444444444444444444444444-example-module.drv";
+        outPath = "/nix/store/55555555555555555555555555555555-example-module";
+        __toString = value: value.outPath;
+      };
+      contract = {
+        value = {};
+        document = {
           type = "derivation";
-          outputName = "module";
-          drvPath = "/nix/store/44444444444444444444444444444444-example-module.drv";
-          outPath = "/nix/store/55555555555555555555555555555555-example-module";
+          drvPath = "/nix/store/66666666666666666666666666666666-example-contract.drv";
+          outPath = "/nix/store/77777777777777777777777777777777-example-contract";
           __toString = value: value.outPath;
         };
+        selectors = [
+          {
+            package = "aos";
+            output = "module";
+          }
+          {
+            package = "aos";
+            output = "out";
+          }
+        ];
+      };
+    };
+  } ["aos"];
+  probeOnlyContractProbe = support.releaseDerivations "x86_64-linux" {
+    aos = {
+      type = "derivation";
+      drvPath = "/nix/store/88888888888888888888888888888888-probe-only.drv";
+      outPath = "/nix/store/99999999999999999999999999999999-probe-only";
+      out = "/nix/store/99999999999999999999999999999999-probe-only";
+      outputs = ["out"];
+      src = nestedSource;
+      pname = "aos";
+      version = "1";
+      meta = {
+        description = "probe-only fixture";
+        license = "MIT";
+        maintainers = ["AOS test"];
+        aos.platformSupport = {disposition = "target";};
+      };
+      contract = {
+        value = {};
+        document = {
+          type = "derivation";
+          drvPath = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-probe-contract.drv";
+          outPath = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-probe-contract";
+          __toString = value: value.outPath;
+        };
+        selectors = [
+          {
+            package = "self";
+            output = "out";
+          }
+        ];
       };
     };
   } ["aos"];
@@ -189,10 +239,10 @@
   fileModulePayload = abilityModulePayload ./fixtures/ability-module-file.nix;
   directoryModulePayload = abilityModulePayload ./fixtures/ability-module-directory;
   missingEntryRejected = !(builtins.tryEval (abilityModulePayload ./fixtures)).success;
-  fileModuleArtifact = fileModulePayload.abilities._artifact_outputs.module;
-  directoryModuleArtifact = directoryModulePayload.abilities._artifact_outputs.module;
-  fileProjectionArtifact = fileModulePayload.abilities._artifact_outputs.projection;
-  directoryProjectionArtifact = directoryModulePayload.abilities._artifact_outputs.projection;
+  fileModuleArtifact = fileModulePayload.module;
+  directoryModuleArtifact = directoryModulePayload.module;
+  fileProjectionArtifact = fileModulePayload.contract.document;
+  directoryProjectionArtifact = directoryModulePayload.contract.document;
   sourceRoots = (builtins.head derivationProbe.packages).source_store_paths;
   nestedSourceRoot = builtins.unsafeDiscardStringContext (toString (builtins.path {
     path = nestedSource;
@@ -247,6 +297,40 @@ in
       name = "module";
       derivation = "/nix/store/44444444444444444444444444444444-example-module.drv";
       store_path = "/nix/store/55555555555555555555555555555555-example-module";
+    }
+  ];
+  assert (builtins.head companionProbe.packages).contract
+  == {
+    document = {
+      derivation = "/nix/store/66666666666666666666666666666666-example-contract.drv";
+      store_path = "/nix/store/77777777777777777777777777777777-example-contract";
+    };
+    selectors = [
+      {
+        package = "aos";
+        output = "module";
+        store_path = "/nix/store/55555555555555555555555555555555-example-module";
+      }
+      {
+        package = "aos";
+        output = "out";
+        store_path = "/nix/store/33333333333333333333333333333333-example";
+      }
+    ];
+  };
+  assert (builtins.head probeOnlyContractProbe.packages).contract.selectors
+  == [
+    {
+      package = "self";
+      output = "out";
+      store_path = "/nix/store/99999999999999999999999999999999-probe-only";
+    }
+  ];
+  assert (builtins.head probeOnlyContractProbe.packages).outputs
+  == [
+    {
+      name = "out";
+      store_path = "/nix/store/99999999999999999999999999999999-probe-only";
     }
   ];
   assert fileModulePayload.drvPath == directoryModulePayload.drvPath;

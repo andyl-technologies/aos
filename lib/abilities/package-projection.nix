@@ -8,6 +8,7 @@
   evaluated,
   packageModuleLocator ? null,
   optionDeclarations ? [],
+  packageProbe ? null,
 }: let
   packagePrefix = "${packageName}:";
   localName = name:
@@ -52,6 +53,14 @@
       requirements = builtins.mapAttrs (_: semanticRequirement) implementation.requirements;
     };
   semanticImplementations = builtins.mapAttrs (_: semanticImplementation) evaluated.implementations;
+  projectedPackageProbe =
+    if packageProbe == null
+    then null
+    else
+      lib.qualification.projectPackageProbe {
+        owner = packageName;
+        probe = packageProbe;
+      };
 
   interfaceDocuments = builtins.mapAttrs (_: declaration:
     abilities.interfaceDocumentFromDeclaration (semanticInterface declaration))
@@ -190,24 +199,22 @@
         (implementation.handlerDescriptor != null)
         (selector implementation.handlerDescriptor.artifact)
         ++ lib.optional
-        (implementation.qualification != null)
-        (selector implementation.qualification.observer.artifact))
+        (builtins.hasAttr name evaluated.qualification.implementations)
+        (selector evaluated.qualification.implementations.${name}.observer.artifact))
       implementationNames
+      ++ lib.optionals (projectedPackageProbe != null) projectedPackageProbe.selectors
     );
-  qualification = builtins.listToAttrs (lib.concatMap (name: let
-    implementation = semanticImplementations.${name};
-  in
-    lib.optional (implementation.qualification != null) {
-      name = localName name;
-      value = {
-        conformance_families = builtins.sort builtins.lessThan implementation.qualification.conformanceFamilies;
-        observer =
-          projectedHandler
-          "qualification observer"
-          implementation.qualification.observer;
-      };
-    })
-  implementationNames);
+  implementationQualification = builtins.listToAttrs (lib.concatMap (name:
+      lib.optional (builtins.hasAttr name evaluated.qualification.implementations) {
+        name = localName name;
+        value = let
+          qualification = evaluated.qualification.implementations.${name};
+        in {
+          conformance_families = builtins.sort builtins.lessThan qualification.conformanceFamilies;
+          observer = projectedHandler "qualification observer" qualification.observer;
+        };
+      })
+    implementationNames);
   interfaceAliases = map (name: let
     document = interfaceDocuments.${name};
     identity = abilities.interfaceIdentity document;
@@ -277,7 +284,11 @@
       inherit providers;
       handlers = builtins.listToAttrs handlerPairs;
     };
-    inherit qualification;
+    qualification =
+      {implementations = implementationQualification;}
+      // lib.optionalAttrs (projectedPackageProbe != null) {
+        package_probe = projectedPackageProbe.value;
+      };
   };
 in {
   value = projectionValue;

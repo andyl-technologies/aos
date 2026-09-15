@@ -5,14 +5,14 @@ use std::collections::BTreeSet;
 use anyhow::{Context, Result};
 use aos_ability_model::VersionedDocument as _;
 use aos_ability_validate::{
-    validate_ability_contract, AbilityContractData, CheckedAbilityContract,
+    AbilityContractData, CheckedAbilityContract, validate_ability_contract,
 };
 use sha2::{Digest, Sha256};
 
 use crate::db::IndexedPackageAbilityReference;
 use crate::fetch::SurfaceFetch;
 
-use super::{parse_documentation_narinfo, MAX_IMAGE_NARINFO_BYTES};
+use super::{MAX_IMAGE_NARINFO_BYTES, parse_documentation_narinfo};
 
 /// Fetches and verifies one ability companion and derives its public reference.
 ///
@@ -213,9 +213,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use aos_ability_model::{
-        decode_canonical, encode_canonical, AbilityActivationMode, ArtifactReference,
-        ExportDeclaration, ModuleLocator, PackageDocument, PackageImplementation,
-        ProviderImplementation, RelativePath, RequiredFeature, VersionedDocument,
+        AbilityActivationMode, ArtifactReference, ExportDeclaration, ModuleLocator,
+        PackageDocument, PackageImplementation, ProviderImplementation, RelativePath,
+        RequiredFeature, VersionedDocument, decode_canonical, encode_canonical,
     };
     use aos_contract::Sha256Digest;
 
@@ -345,11 +345,11 @@ mod tests {
                 interface_key.clone(),
             )]),
             guarantees: Default::default(),
-            package_module: aos_ability_model::ModuleLocator {
+            package_module: Some(aos_ability_model::ModuleLocator {
                 artifact: artifact.clone(),
                 path: aos_ability_model::RelativePath::new("module.nix")
                     .expect("fixture package module path is valid"),
-            },
+            }),
             option_declarations: Vec::new(),
             exports: vec![
                 ExportDeclaration {
@@ -372,8 +372,8 @@ mod tests {
             implementation: PackageImplementation {
                 providers: vec![provider],
                 handlers: BTreeMap::new(),
-                qualification: BTreeMap::new(),
             },
+            qualification: aos_ability_model::PackageQualification::default(),
         };
         let package_bytes = encode_canonical(&package).expect("encode package");
         let interface_name = format!("{}.json", interface_key.descriptor.hex());
@@ -443,17 +443,19 @@ mod tests {
         let (fetch, mut ability, _) = signed_fixture();
         ability.manifest_sha256 = Sha256Digest::from_bytes([9; 32]).to_string();
 
-        assert!(fetch_package_ability_reference(
-            &fetch,
-            "demo",
-            "1.0.0",
-            "x86_64-linux",
-            "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-demo",
-            &Sha256Digest::from_bytes([2; 32]).to_string(),
-            &ability,
-        )
-        .await
-        .is_err());
+        assert!(
+            fetch_package_ability_reference(
+                &fetch,
+                "demo",
+                "1.0.0",
+                "x86_64-linux",
+                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-demo",
+                &Sha256Digest::from_bytes([2; 32]).to_string(),
+                &ability,
+            )
+            .await
+            .is_err()
+        );
     }
 
     #[tokio::test]

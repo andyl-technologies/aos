@@ -21,7 +21,7 @@
         {
           name = "aos";
           version = pkgs.aos.version;
-          module = pkgs.aos.abilities._module;
+          module = pkgs.aos.module + "/module.nix";
         }
       ];
     };

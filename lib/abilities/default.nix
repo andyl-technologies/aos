@@ -1589,6 +1589,7 @@ in rec {
     interfaceDeclarationFromDocument
     interfaceSelectorMatches
     canonicalizePackageOutputSelectors
+    normalizePackageOutputSelectors
     ;
   types = abilityTypes;
   interfaces = rec {

@@ -42,7 +42,7 @@
     }
   ];
 
-  packageRoots = lib.concatMap (entry: [entry.package entry.package.abilities.contract]) orderedPackages;
+  packageRoots = lib.concatMap (entry: [entry.package entry.package.contract.document]) orderedPackages;
   runtimeModule = {
     aos.packages.k3s-combined = {
       package = pkgs.k3s-combined;
@@ -133,7 +133,7 @@
   in {
     inherit (entry) name;
     primary = entry.package;
-    abilities = entry.package.abilities.contract;
+    abilities = entry.package.contract.document;
     originalRuntime = pkgs.aos.packageRuntime;
   }) ["ability-reference-systemd-bootstrap"];
 in {
@@ -195,7 +195,7 @@ in {
       }${builtins.toJSON (map (entry: {
           inherit (entry) name;
           package = builtins.toString entry.package;
-          abilities = builtins.toString entry.package.abilities.contract;
+          abilities = builtins.toString entry.package.contract.document;
         })
         orderedPackages)}${
         if guestTools
