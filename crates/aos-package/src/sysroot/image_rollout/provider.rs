@@ -24,7 +24,7 @@ use super::NativeAbRolloutBackend;
 use super::ability::{AbilityRolloutOutcome, AbilityRolloutPhase, AbilityRolloutState};
 use super::process::run_bounded_command;
 
-const INTERFACE_NAME: &str = "aos.ab-image-rollout-effects";
+const INTERFACE_NAME: &str = "aos.apm.ab-image-rollout-terminal";
 const OBSERVATION_SCHEMA: &str = "aos.ability.ab-image-rollout-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.image-rollout.provider-context/v1";
 const IMAGE_PROFILE: &str = "/var/lib/profiles/image";
