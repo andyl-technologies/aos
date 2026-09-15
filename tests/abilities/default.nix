@@ -425,6 +425,9 @@
   dockerService = import ./docker-service.nix {
     inherit pkgs lib;
   };
+  containerdStaticProjection = import ./containerd-static-projection.nix {
+    inherit pkgs lib;
+  };
   kernelModules = import ./kernel-modules.nix {
     inherit lib;
   };
@@ -860,6 +863,7 @@ in
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
   assert builtins.attrNames smokeAbilityProjection.requirements == ["canonical-edge"];
   assert dockerService;
+  assert containerdStaticProjection;
   assert kernelModules;
   assert (builtins.head smokePublishedInterfaces).document == smokeAbilityProjection.interfaces.default;
   assert fails (lib.abilities.effects.normalize [] effectFixture.missingReference);

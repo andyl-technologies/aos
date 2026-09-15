@@ -367,6 +367,7 @@
     configuration
     service
   ];
+  contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
   options.containerd = {
     enable = mkOption {
@@ -436,33 +437,31 @@ in {
     };
   };
 
-  config = lib.mkMerge (
-    [
-      {
-        assertions = [
-          {
-            assertion = !(lib.elem "io.containerd.cri.v1.runtime" cfg.disabledPlugins);
-            message = "containerd.disabledPlugins cannot disable the configured CRI runtime plugin";
-          }
-          {
-            assertion = builtins.length cfg.disabledPlugins == builtins.length (lib.unique cfg.disabledPlugins);
-            message = "containerd.disabledPlugins must not contain duplicates";
-          }
-          {
-            assertion = builtins.length cfg.requiredPlugins == builtins.length (lib.unique cfg.requiredPlugins);
-            message = "containerd.requiredPlugins must not contain duplicates";
-          }
-        ];
-      }
-      (lib.mkIf cfg.enable {aos.abilities.instances.containerd = {};})
-    ]
-    ++ builtins.map
-    (registry:
-      lib.mkIf
-      (cfg.enable && (cfg.registryConfigResource != null) == registry)
-      (lib.mkMerge (builtins.map
-        (fragment: {aos.abilities = fragment;})
-        fragments)))
-    [false true]
-  );
+  config = lib.mkMerge [
+    {
+      assertions = [
+        {
+          assertion = !(lib.elem "io.containerd.cri.v1.runtime" cfg.disabledPlugins);
+          message = "containerd.disabledPlugins cannot disable the configured CRI runtime plugin";
+        }
+        {
+          assertion = builtins.length cfg.disabledPlugins == builtins.length (lib.unique cfg.disabledPlugins);
+          message = "containerd.disabledPlugins must not contain duplicates";
+        }
+        {
+          assertion = builtins.length cfg.requiredPlugins == builtins.length (lib.unique cfg.requiredPlugins);
+          message = "containerd.requiredPlugins must not contain duplicates";
+        }
+      ];
+    }
+    (lib.mkMerge (
+      builtins.map (contribution: {aos.abilities = contribution.declarations;}) contributions
+    ))
+    (lib.mkIf cfg.enable (
+      lib.mkMerge (
+        [{aos.abilities.instances.containerd = {};}]
+        ++ builtins.map (contribution: {aos.abilities = contribution.configured;}) contributions
+      )
+    ))
+  ];
 }
