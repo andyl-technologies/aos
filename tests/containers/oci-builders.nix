@@ -120,9 +120,7 @@
     maxDevelopmentPayloadMiB = 1;
     allowTestArtifacts = true;
   };
-  abilityPackageSmokeProvider = import ../../pkgs/tests/_ability-package-smoke-provider.nix {
-    inherit (pkgs) mkDerivation;
-  };
+  abilityPackageSmokeProvider = pkgs.ability-package-smoke-provider;
   abilityPackageRegistry = {
     ability-package-smoke = pkgs.ability-package-smoke;
     ability-package-smoke-provider = abilityPackageSmokeProvider;

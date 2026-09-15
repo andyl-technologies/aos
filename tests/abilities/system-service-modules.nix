@@ -1,47 +1,90 @@
 ##! Checks the package-owned firewall module at its typed ability boundary.
-{lib}: let
-  systemdProvider = import ../../pkgs/system/_systemd-service-provider-lib.nix {inherit lib;};
-  nftables = builtins.toFile "nftables-test" "";
+{
+  lib,
+  pkgs,
+}: let
+  selectedSystemdProvider = import ./_selected-package-provider.nix {
+    inherit lib;
+    package = pkgs.systemd;
+    implementation = "service-lifecycle";
+  };
+  serviceEffectsRequest = lib.abilities.compositionRequestKey {
+    implementation = "systemd:service-lifecycle";
+    providerInstance = "systemd:manager";
+    key = "nftables";
+  };
+  nftables = pkgs.nftables;
   evaluate = {
     allowedTCP,
     allowedUDP,
+    realizeService ? false,
   }:
     lib.evalModules {
       specialArgs = {
-        inherit lib;
-        pkgs.nftables = nftables;
+        inherit lib pkgs;
       };
-      modules = [
-        ../../modules/abilities/default.nix
-        ({lib, ...}: {
-          options.environment.systemPackages = lib.mkOption {
-            type = lib.types.listOf lib.types.anything;
-            default = [];
-          };
-          options.system.checks = lib.mkOption {
-            type = lib.types.attrsOf lib.types.anything;
-            default = {};
-          };
-          config.aos.abilities.environment = {
-            authority = "deployment";
-            key = "module-test";
-            stage = "host";
-          };
-        })
-        ../../modules/security/firewall.nix
-        {
-          aos.firewall = {
-            enable = true;
-            inherit allowedTCP allowedUDP;
-          };
-        }
-      ];
-      packageModules = [
-        {
-          name = "nftables";
-          module.imports = [../../pkgs/networking/_nftables/module.nix];
-        }
-      ];
+      modules =
+        [
+          ../../modules/abilities/default.nix
+          ({lib, ...}: {
+            options.environment.systemPackages = lib.mkOption {
+              type = lib.types.listOf lib.types.anything;
+              default = [];
+            };
+            options.system.checks = lib.mkOption {
+              type = lib.types.attrsOf lib.types.anything;
+              default = {};
+            };
+            config.aos.abilities.environment = {
+              authority = "deployment";
+              key = "module-test";
+              stage = "host";
+            };
+          })
+          ../../modules/security/firewall.nix
+          {
+            aos.firewall = {
+              enable = true;
+              inherit allowedTCP allowedUDP;
+            };
+          }
+        ]
+        ++ lib.optionals realizeService [
+          ../../modules/systemd/system.nix
+          {
+            aos.abilities = {
+              instances."systemd:manager" = {};
+              bindings = {
+                "test:lifecycle" = {
+                  request = "nftables:nftables-lifecycle";
+                  implementation = "systemd:service-lifecycle";
+                  providerInstance = "systemd:manager";
+                  slot = "nftables";
+                };
+                "test:service-effects" = {
+                  request = serviceEffectsRequest;
+                  implementation = "systemd:systemd-service-effects";
+                  providerInstance = "systemd:manager";
+                  slot = "nftables";
+                };
+              };
+            };
+          }
+        ];
+      packageModules =
+        [
+          {
+            name = "nftables";
+            inherit (pkgs.nftables) version;
+            module = pkgs.nftables.module + "/module.nix";
+          }
+        ]
+        ++ lib.optional realizeService {
+          name = "systemd";
+          inherit (pkgs.systemd) version;
+          module = pkgs.systemd.module + "/module.nix";
+        };
+      selectedProviderModules = lib.optional realizeService selectedSystemdProvider;
     };
   baseline = evaluate {
     allowedTCP = [22 443];
@@ -50,6 +93,16 @@
   changed = evaluate {
     allowedTCP = [22 443 8443];
     allowedUDP = [53];
+  };
+  realizedBaseline = evaluate {
+    allowedTCP = [22 443];
+    allowedUDP = [53];
+    realizeService = true;
+  };
+  realizedChanged = evaluate {
+    allowedTCP = [22 443 8443];
+    allowedUDP = [53];
+    realizeService = true;
   };
   requestNames = [
     "nftables:ruleset"
@@ -67,17 +120,15 @@
         value = requests.${name};
       })
       requestNames);
-  resourceIdFor = evaluated: let
-    config = evaluated.config;
-    lifecycle = (requestsFor evaluated)."nftables:nftables-lifecycle".parameters;
+  serviceResourceFor = evaluated: let
+    resources =
+      builtins.filter
+      (resource: resource.controller == "test:lifecycle")
+      (builtins.attrValues evaluated.config.aos.abilities.desiredResources);
   in
-    systemdProvider.normalizedResourceId {
-      provider = {
-        environment = config.aos.abilities.environment;
-        key = "systemd";
-      };
-      key = lifecycle.service;
-    };
+    if builtins.length resources != 1
+    then throw "nftables lifecycle did not resolve to one public service resource"
+    else builtins.head resources;
   inherit (baseline) config;
   requests = requestsFor baseline;
   lifecycle = requests."nftables:nftables-lifecycle".parameters;
@@ -141,4 +192,4 @@ in
   assert requests."nftables:network-readiness".parameters.scope == "stack-prepared";
   assert materialization.source.content != (requestsFor changed)."nftables:ruleset".parameters.source.content;
   assert serviceProjectionFor baseline != serviceProjectionFor changed;
-  assert resourceIdFor baseline == resourceIdFor changed; true
+  assert (serviceResourceFor realizedBaseline).resource == (serviceResourceFor realizedChanged).resource; true

@@ -3,7 +3,12 @@
   lib,
   pkgs,
 }: let
-  evaluatePackages = consumerModules: configuration:
+  packageModule = package: {
+    name = package.pname;
+    inherit (package) version;
+    module = package.module + "/module.nix";
+  };
+  evaluatePackages = consumerPackages: configuration:
     lib.evalModules {
       inherit lib;
       modules = [
@@ -17,30 +22,16 @@
         }
         configuration
       ];
-      packageModules =
-        [
-          {
-            name = "aos-kernel-tunable-provider";
-            version = pkgs.aos-kernel-tunable-provider.version;
-            module = ../../pkgs/tools/_aos-kernel-tunable-provider-module.nix;
-          }
-        ]
-        ++ consumerModules;
+      packageModules = builtins.map packageModule (
+        [pkgs.aos-kernel-tunable-provider] ++ consumerPackages
+      );
     };
-  evaluate = name: version: module: configuration:
-    evaluatePackages [{inherit name version module;}] configuration;
-  evaluateIntegration = name: version: module: configuration:
-    evaluatePackages [
-      {
-        name = "k3s-combined";
-        version = pkgs.k3s-combined.version;
-        module = ../../pkgs/kubernetes/_k3s-config/module.nix;
-      }
-      {inherit name version module;}
-    ]
-    configuration;
+  evaluate = package: configuration:
+    evaluatePackages [package] configuration;
+  evaluateIntegration = package: configuration:
+    evaluatePackages [pkgs.k3s-combined package] configuration;
   requests = evaluated: evaluated.config.aos.abilities.requests;
-  cloudcore = evaluate "cloudcore" pkgs.cloudcore.version ../../pkgs/kubernetes/_cloudcore-config/module.nix {
+  cloudcore = evaluate pkgs.cloudcore {
     cloudcore = {
       enable = true;
       advertiseAddresses = ["192.0.2.20"];
@@ -53,7 +44,7 @@
       };
     };
   };
-  edgecore = evaluate "edgecore" pkgs.edgecore.version ../../pkgs/kubernetes/_edgecore-config/module.nix {
+  edgecore = evaluate pkgs.edgecore {
     edgecore = {
       enable = true;
       nodeName = "edge-01";
@@ -68,7 +59,7 @@
       };
     };
   };
-  kubelet = evaluate "kubelet" pkgs.kubelet.version ../../pkgs/kubernetes/_kubelet-config/module.nix {
+  kubelet = evaluate pkgs.kubelet {
     kubelet = {
       enable = true;
       nodeName = "worker-a";
@@ -77,28 +68,28 @@
       kubeconfig.ref = "system-credential:kubelet";
     };
   };
-  disabledCloudcore = evaluate "cloudcore" pkgs.cloudcore.version ../../pkgs/kubernetes/_cloudcore-config/module.nix {};
-  disabledEdgecore = evaluate "edgecore" pkgs.edgecore.version ../../pkgs/kubernetes/_edgecore-config/module.nix {
+  disabledCloudcore = evaluate pkgs.cloudcore {};
+  disabledEdgecore = evaluate pkgs.edgecore {
     edgecore.cloudHub = {
       httpServer = "https://cloud.example.test";
       server = "cloud.example.test:10000";
     };
   };
-  disabledKubelet = evaluate "kubelet" pkgs.kubelet.version ../../pkgs/kubernetes/_kubelet-config/module.nix {};
-  k3sWorker = evaluate "k3s-worker" pkgs.k3s-worker.version ../../pkgs/kubernetes/_k3s-config/module.nix {
+  disabledKubelet = evaluate pkgs.kubelet {};
+  k3sWorker = evaluate pkgs.k3s-worker {
     k3s = {
       enable = true;
       serverUrl = "https://control.example.test:6443";
       token.ref = "system-credential:k3s-token";
     };
   };
-  disabledK3sWorker = evaluate "k3s-worker" pkgs.k3s-worker.version ../../pkgs/kubernetes/_k3s-config/module.nix {
+  disabledK3sWorker = evaluate pkgs.k3s-worker {
     k3s = {
       serverUrl = "https://control.example.test:6443";
       token.ref = "system-credential:k3s-token";
     };
   };
-  k3sCombined = evaluate "k3s-combined" pkgs.k3s-combined.version ../../pkgs/kubernetes/_k3s-config/module.nix {
+  k3sCombined = evaluate pkgs.k3s-combined {
     k3s = {
       enable = true;
       token.ref = "system-credential:k3s-token";
@@ -112,22 +103,22 @@
     );
   objectControllerIdentity = identityOf objectControllerDeclaration;
   objectContributionIdentity = identityOf objectContributionDeclaration;
-  cilium = evaluateIntegration "cilium" pkgs.cilium.version ../../pkgs/kubernetes/_cilium-abilities/module.nix {
+  cilium = evaluateIntegration pkgs.cilium {
     cilium = {
       enable = true;
       kubeProxyReplacement = true;
       operatorReplicas = 2;
     };
   };
-  disabledCilium = evaluateIntegration "cilium" pkgs.cilium.version ../../pkgs/kubernetes/_cilium-abilities/module.nix {};
-  longhorn = evaluateIntegration "longhorn-manager" pkgs.longhorn-manager.version ../../pkgs/storage/_longhorn-config/module.nix {
+  disabledCilium = evaluateIntegration pkgs.cilium {};
+  longhorn = evaluateIntegration pkgs.longhorn-manager {
     longhorn = {
       enable = true;
       defaultReplicaCount = 2;
       nodeLabel = "true";
     };
   };
-  disabledLonghorn = evaluateIntegration "longhorn-manager" pkgs.longhorn-manager.version ../../pkgs/storage/_longhorn-config/module.nix {};
+  disabledLonghorn = evaluateIntegration pkgs.longhorn-manager {};
   k3sPackageAbilities = pkgs.k3s-combined.abilities;
   k3sWorkerPackageAbilities = pkgs.k3s-worker.abilities;
   edgecorePackageAbilities = pkgs.edgecore.abilities;
