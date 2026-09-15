@@ -178,7 +178,9 @@ in
           # libraries, commands, and service integration.
           mkdir -p "$dev/lib"
           mv "$out/include" "$dev/include"
-          mv "$out/src" "$dev/src"
+          if [ -d "$out/src" ]; then
+            mv "$out/src" "$dev/src"
+          fi
           mv "$out/lib/pkgconfig" "$dev/lib/pkgconfig"
           for libtool_archive in "$out/lib/"*.la; do
             if [ -f "$libtool_archive" ]; then
