@@ -84,6 +84,8 @@ in
       ln -s ${nix}/bin/nix-store "$out/libexec/nix-store"
       cp ${./_nix-store-provider.nix} \
         "$out/share/aos/providers/nix-store-database.nix"
+      cp ${./_content-object-provider.nix} \
+        "$out/share/aos/providers/content-addressed-object.nix"
       test -x "$out/bin/aos-nix-store-provider"
       if patchelf --print-interpreter "$out/bin/aos-nix-store-provider" \
           > "$TMPDIR/aos-nix-store-provider.interpreter" 2>/dev/null; then

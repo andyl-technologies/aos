@@ -33,7 +33,8 @@ use serde_json::json;
 use crate::handler::{ability_value, decode_value, remaining};
 use crate::process::ProcessStoreCommands;
 
-pub(super) const INTERFACE_NAME: &str = "aos.artifact.content-addressed-object";
+pub(super) const INTERFACE_NAME: &str = "aos.artifact.content-addressed-object-operations";
+const RESOURCE_INTERFACE_NAME: &str = "aos.artifact.content-addressed-object";
 const REALIZATION_SCHEMA: &str = "aos.artifact.content-addressed-object-realization/v1";
 const OBSERVATION_SCHEMA: &str = "aos.artifact.content-addressed-object-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.artifact.content-addressed-object-context/v1";
@@ -76,7 +77,7 @@ impl ContentArtifactProvider {
         let desired: ContentObjectRequest = decode_value(&request.resource_spec.value)?;
         validate_request(&desired)?;
         validate_prerequisites(&desired.prerequisites, &request.resources)?;
-        validate_target(&request.target)?;
+        validate_target(&request.target, request.method.method.as_str())?;
         let realization: ContentObjectRealization =
             decode_value(&request.resource_spec.realization)?;
         validate_realization(&realization)?;
@@ -88,8 +89,7 @@ impl ContentArtifactProvider {
             request.control.attempt_remaining_millis,
         );
         let observation = observation(&desired, &inspection)?;
-        let revision =
-            admission_revision(&inspection, &observation, request.resource_spec.revision)?;
+        let revision = admission_revision(&inspection, &observation)?;
         let native_context = ability_value(json!({
             "schema": PROVIDER_CONTEXT_SCHEMA,
             "executable": executable,
@@ -146,17 +146,10 @@ impl ContentArtifactProvider {
 
         let target = require_resource(&invocation.request.resources, &invocation.request.target)?;
         let bound: BoundNativeContext = validate_resource_context(target)?;
-        ensure!(
-            invocation.method.interface == invocation.request.target.interface
-                && invocation
-                    .request
-                    .target
-                    .operations
-                    .binary_search(&invocation.method.method)
-                    .is_ok(),
-            "invocation method is outside the target resource authority"
-        );
-        validate_target(&invocation.request.target)?;
+        validate_target(
+            &invocation.request.target,
+            invocation.method.method.as_str(),
+        )?;
 
         let desired: ContentObjectRequest = decode_value(&bound.resource_spec.value)?;
         validate_request(&desired)?;
@@ -217,11 +210,19 @@ impl ContentArtifactProvider {
                 (completion_disposition(primary_method, &current), current)
             }
             InvocationPurpose::Reconcile => (
-                reconciliation_disposition(primary_method, &observation_before),
+                reconciliation_disposition(
+                    primary_method,
+                    &observation_before,
+                    parameters.blob.as_ref(),
+                ),
                 observation_before,
             ),
             InvocationPurpose::Cancel => (
-                cancellation_disposition(primary_method, &observation_before),
+                cancellation_disposition(
+                    primary_method,
+                    &observation_before,
+                    parameters.blob.as_ref(),
+                ),
                 observation_before,
             ),
             InvocationPurpose::Compensate => (
@@ -234,12 +235,17 @@ impl ContentArtifactProvider {
             ),
         };
         let evidence = observation(&desired, &inspection)?;
-        let outputs =
-            if disposition == InvocationDisposition::Completed && primary_method == "commit" {
-                successful_outputs(&invocation.request.target, &inspection)?
-            } else {
-                BTreeMap::new()
-            };
+        let outputs = if disposition == InvocationDisposition::Completed
+            && matches!(primary_method, "commit" | "observe")
+        {
+            successful_outputs(
+                &invocation.request.target,
+                &inspection,
+                primary_method == "commit",
+            )?
+        } else {
+            BTreeMap::new()
+        };
 
         Ok(InvocationResult {
             schema: RESULT_SCHEMA.into(),
@@ -657,12 +663,21 @@ fn validate_method(interface: &str, method: &str, semantics: &MethodSemantics) -
     Ok(())
 }
 
-fn validate_target(target: &ResourceReference) -> Result<()> {
-    let expected = ["commit", "observe", "remove"];
+fn validate_target(target: &ResourceReference, method: &str) -> Result<()> {
     ensure!(
-        target.operations.len() == expected.len()
-            && target.operations.iter().map(LocalKey::as_str).eq(expected),
-        "content object target does not retain its complete lifecycle authority"
+        target.interface.name.as_str() == RESOURCE_INTERFACE_NAME,
+        "content object operation does not target the public resource interface"
+    );
+    ensure!(
+        target
+            .operations
+            .binary_search_by_key(&method, LocalKey::as_str)
+            .is_ok(),
+        "content object method is outside the target resource authority"
+    );
+    ensure!(
+        target.lifetime == aos_ability_model::ResourceLifetime::Persistent,
+        "content object target is not persistent"
     );
     Ok(())
 }
@@ -784,17 +799,15 @@ fn observation(desired: &ContentObjectRequest, inspection: &Inspection) -> Resul
 fn admission_revision(
     inspection: &Inspection,
     observation: &AbilityValue,
-    desired: RevisionId,
 ) -> Result<AdmissionRevision> {
     match inspection {
-        Inspection::Ready(_) => Ok(AdmissionRevision::Present { revision: desired }),
-        Inspection::Absent => Ok(AdmissionRevision::Absent),
-        Inspection::Drifted => Ok(AdmissionRevision::Present {
+        Inspection::Ready(_) | Inspection::Drifted => Ok(AdmissionRevision::Present {
             revision: RevisionId(Sha256Digest::of_canonical(
                 "aos.artifact.content-addressed-object-observed/v1",
                 observation,
             )?),
         }),
+        Inspection::Absent => Ok(AdmissionRevision::Absent),
         Inspection::Unknown => Ok(AdmissionRevision::Unknown),
     }
 }
@@ -809,12 +822,20 @@ fn completion_disposition(method: &str, inspection: &Inspection) -> InvocationDi
     }
 }
 
-fn reconciliation_disposition(method: &str, inspection: &Inspection) -> InvocationDisposition {
+fn reconciliation_disposition(
+    method: &str,
+    inspection: &Inspection,
+    blob: Option<&TransactionBlobReference>,
+) -> InvocationDisposition {
     match (method, inspection) {
-        ("commit", Inspection::Ready(_)) | ("remove", Inspection::Absent) => {
+        ("commit", Inspection::Ready(stored))
+            if blob.is_some_and(|blob| blob.content_sha256 == stored.content_sha256) =>
+        {
             InvocationDisposition::Completed
         }
-        ("commit", Inspection::Absent | Inspection::Drifted)
+        ("observe", Inspection::Ready(_)) => InvocationDisposition::Completed,
+        ("remove", Inspection::Absent) => InvocationDisposition::Completed,
+        ("commit", Inspection::Absent | Inspection::Ready(_) | Inspection::Drifted)
         | ("remove", Inspection::Ready(_) | Inspection::Drifted) => {
             InvocationDisposition::SafeToRetry
         }
@@ -822,14 +843,21 @@ fn reconciliation_disposition(method: &str, inspection: &Inspection) -> Invocati
     }
 }
 
-fn cancellation_disposition(method: &str, inspection: &Inspection) -> InvocationDisposition {
+fn cancellation_disposition(
+    method: &str,
+    inspection: &Inspection,
+    blob: Option<&TransactionBlobReference>,
+) -> InvocationDisposition {
     match (method, inspection) {
-        ("commit", Inspection::Ready(_)) | ("remove", Inspection::Absent) => {
+        ("commit", Inspection::Ready(stored))
+            if blob.is_some_and(|blob| blob.content_sha256 == stored.content_sha256) =>
+        {
             InvocationDisposition::Completed
         }
-        ("commit", Inspection::Absent) | ("remove", Inspection::Ready(_)) => {
-            InvocationDisposition::RejectedBeforeEffect
-        }
+        ("observe", Inspection::Ready(_)) => InvocationDisposition::Completed,
+        ("remove", Inspection::Absent) => InvocationDisposition::Completed,
+        ("commit", Inspection::Absent | Inspection::Ready(_))
+        | ("remove", Inspection::Ready(_)) => InvocationDisposition::RejectedBeforeEffect,
         _ => InvocationDisposition::Indeterminate,
     }
 }
@@ -837,19 +865,27 @@ fn cancellation_disposition(method: &str, inspection: &Inspection) -> Invocation
 fn successful_outputs(
     target: &ResourceReference,
     inspection: &Inspection,
+    include_resource: bool,
 ) -> Result<BTreeMap<LocalKey, AbilityValue>> {
     let Inspection::Ready(stored) = inspection else {
-        bail!("completed content object commit lacks a ready observation");
+        bail!("completed content object operation lacks a ready observation");
     };
     let mut outputs = BTreeMap::new();
     outputs.insert(
         LocalKey::new("artifact-reference")?,
         ability_value(serde_json::to_value(&stored.artifact)?)?,
     );
-    outputs.insert(
-        LocalKey::new("artifact-resource")?,
-        ability_value(serde_json::to_value(target)?)?,
-    );
+    if include_resource {
+        let mut retained = target.clone();
+        retained.operations = ["observe", "remove"]
+            .into_iter()
+            .map(LocalKey::new)
+            .collect::<Result<Vec<_>, _>>()?;
+        outputs.insert(
+            LocalKey::new("artifact-resource")?,
+            ability_value(serde_json::to_value(retained)?)?,
+        );
+    }
     outputs.insert(
         LocalKey::new("content-sha256")?,
         ability_value(serde_json::to_value(stored.content_sha256)?)?,

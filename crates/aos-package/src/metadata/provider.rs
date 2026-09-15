@@ -22,8 +22,9 @@ use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
     AdmissionResult, AdmissionRevision, HANDLER_ABI_ARGUMENT, INVOCATION_SCHEMA, Invocation,
     InvocationDisposition, InvocationPurpose, InvocationResult, RESULT_SCHEMA, ResourceContext,
-    SupportedPurposes, TRANSACTION_BLOB_OUTPUT_DIRECTORY_ENV, resource_set_digest,
-    validate_admission_resource, validate_resource_context, validate_resource_contexts,
+    SupportedPurposes, TRANSACTION_BLOB_OUTPUT_DIRECTORY_ENV, TRANSACTION_BLOB_OUTPUT_TYPE,
+    TransactionBlobOutput, resource_set_digest, validate_admission_resource,
+    validate_resource_context, validate_resource_contexts,
 };
 use aos_storage_provisioning::{
     AuthorizedProvisioningInput, BaseLibraryIdentity, CanonicalProvisioningPlan,
@@ -51,6 +52,7 @@ const EVALUATION_OBSERVATION: &str = "aos.configuration.provisioning-evaluation-
 const PROVIDER_CONTEXT: &str = "aos.metadata.provisioning-provider-context/v1";
 const STORAGE_VIEW_OBSERVATION: &str = "aos.ability.storage-view-observation/v1";
 const MAX_NETWORK_SEED_BYTES: usize = 32 * 1024;
+const AUTHORIZED_INPUT_SLOT: &str = "authorized-provisioning-input";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -396,13 +398,24 @@ async fn invoke(
             let outputs = authorize(&parameters.configuration, &parameters.platform).await?;
             let evidence =
                 authorization_observation(Some(outputs.authorized_input.source), "authorized")?;
+            let authorized_input = serde_json::to_value(&outputs.authorized_input)?;
+            let authorized_input_bytes =
+                aos_contract::canonical::canonical_json(&authorized_input)?;
+            publish_blob_output(AUTHORIZED_INPUT_SLOT, &authorized_input_bytes)?;
             completed_result(
                 &invocation,
                 evidence,
                 method_outputs([
                     (
                         "authorized-provisioning-input",
-                        ability_value(serde_json::to_value(outputs.authorized_input)?)?,
+                        ability_value(authorized_input)?,
+                    ),
+                    (
+                        "authorized-input-blob",
+                        ability_value(serde_json::to_value(TransactionBlobOutput {
+                            kind: TRANSACTION_BLOB_OUTPUT_TYPE.into(),
+                            slot: LocalKey::new(AUTHORIZED_INPUT_SLOT)?,
+                        })?)?,
                     ),
                     (
                         "network-seed",

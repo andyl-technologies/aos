@@ -189,10 +189,28 @@
       authorized_input = abilityTypes.deferredResult authorizedInput;
     };
   };
+  authorizedInputSource = abilityTypes.taggedUnion {
+    tag = "kind";
+    variants = {
+      direct-result = abilityTypes.record {
+        fields = {
+          kind = abilityTypes.enum ["direct-result"];
+          input = abilityTypes.deferredResult authorizedInput;
+        };
+      };
+      retained-artifact = abilityTypes.record {
+        fields = {
+          kind = abilityTypes.enum ["retained-artifact"];
+          artifact = abilityTypes.deferredResult abilityTypes.artifactReference;
+          content_sha256 = abilityTypes.deferredResult abilityTypes.digest;
+        };
+      };
+    };
+  };
   evaluationParameters = abilityTypes.record {
     fields = {
       request = storage.requestType;
-      authorized_input = abilityTypes.deferredResult authorizedInput;
+      authorized_input = authorizedInputSource;
       registry_snapshot = abilityTypes.deferredResult registrySnapshot;
     };
   };
@@ -317,6 +335,7 @@
     parameters = authorizationParameters;
     evidence = authorizationObservation;
     outputs.authorized-provisioning-input = output authorizedInput "Returns the exact authenticated host module and base-library identity.";
+    outputs.authorized-input-blob = output abilityTypes.transactionBlobReference "Carries the same canonical authorized input bytes into persistent artifact commitment.";
     outputs.network-seed = output (abilityTypes.optional networkSeed) "Returns the optional metadata-derived network seed for the post-provisioning storage view.";
   };
   authorizationDeclaration = lib.abilities.declareInterface {
