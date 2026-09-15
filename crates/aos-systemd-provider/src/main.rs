@@ -40,8 +40,9 @@ use crate::materialize::{
     UnitPaths, is_absent, matches, materialize, paths_for, remove, validate_removal,
 };
 use crate::model::{
-    Activation, INTERFACE_NAME, OBSERVATION_SCHEMA, PackagedUnitObservation,
-    PackagedUnitRealization, PackagedUnitRequest, ProviderContext, UnitState, empty_outputs,
+    Activation, OBSERVATION_SCHEMA, PACKAGED_UNIT_EFFECTS_INTERFACE_NAME,
+    PackagedUnitEffectsRequest, PackagedUnitObservation, PackagedUnitRealization,
+    PackagedUnitRequest, ProviderContext, UnitState, empty_outputs,
 };
 use crate::render::{RenderedUnit, render};
 
@@ -96,7 +97,7 @@ async fn run() -> Result<()> {
 }
 
 async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
-    if request.method.interface.name.as_str() == INTERFACE_NAME {
+    if request.method.interface.name.as_str() == PACKAGED_UNIT_EFFECTS_INTERFACE_NAME {
         admit_packaged_unit(request).await
     } else if identity::supports(&request.method) {
         identity::admit(request).await
@@ -163,14 +164,14 @@ async fn admit_packaged_unit(request: AdmissionRequest) -> Result<AdmissionResul
             AdmissionRevision::Absent
         },
         incarnation: Some(request.assignment.incarnation),
-        observation: value(&inspection.observation)?,
+        observation: packaged_effect_observation(&inspection.observation)?,
         native_context: provider_context,
         supported_purposes,
     })
 }
 
 async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
-    if invocation.method.interface.name.as_str() == INTERFACE_NAME {
+    if invocation.method.interface.name.as_str() == PACKAGED_UNIT_EFFECTS_INTERFACE_NAME {
         invoke_packaged_unit(invocation).await
     } else if identity::supports(&invocation.method) {
         identity::invoke(invocation).await
@@ -208,8 +209,8 @@ async fn invoke_packaged_unit(invocation: Invocation) -> Result<InvocationResult
         &packaged_resource_references(&expected),
         &invocation.request.resources,
     )?;
-    let method_inputs: PackagedUnitRequest = decode_value(&invocation.request.inputs)?;
-    if method_inputs != expected {
+    let method_inputs: PackagedUnitEffectsRequest = decode_value(&invocation.request.inputs)?;
+    if method_inputs.desired() != &expected {
         bail!("invocation inputs differ from the checked target value");
     }
     let realization: PackagedUnitRealization = decode_value(&bound.resource_spec.realization)?;
@@ -235,7 +236,9 @@ async fn invoke_packaged_unit(invocation: Invocation) -> Result<InvocationResult
     let primary_method = invocation.request.method.method.as_str();
     let selected_method = invocation.method.method.as_str();
     let inspection = match invocation.purpose {
-        InvocationPurpose::Effect if selected_method == "apply" => {
+        InvocationPurpose::Effect
+            if matches!(selected_method, "create" | "reconcile" | "update") =>
+        {
             materialize(
                 Path::new(ETC_ROOT),
                 &realization.systemd_unit.unit_name,
@@ -336,7 +339,11 @@ async fn invoke_packaged_unit(invocation: Invocation) -> Result<InvocationResult
     };
 
     let completed = match invocation.purpose {
-        InvocationPurpose::Effect if selected_method == "apply" => inspection.complete,
+        InvocationPurpose::Effect
+            if matches!(selected_method, "create" | "reconcile" | "update") =>
+        {
+            inspection.complete
+        }
         InvocationPurpose::Effect if selected_method == "observe" => true,
         InvocationPurpose::Effect if selected_method == "remove" => inspection.complete,
         InvocationPurpose::Reconcile if selected_method == "observe" => {
@@ -350,14 +357,14 @@ async fn invoke_packaged_unit(invocation: Invocation) -> Result<InvocationResult
         InvocationDisposition::SafeToRetry
     };
     let outputs = if completed {
-        outputs_for(primary_method, &inspection.observation, &invocation)?
+        outputs_for(&inspection.observation)?
     } else {
         empty_outputs()
     };
     Ok(InvocationResult {
         schema: RESULT_SCHEMA.to_string(),
         disposition,
-        evidence: value(&inspection.observation)?,
+        evidence: packaged_effect_observation(&inspection.observation)?,
         outputs,
         native_context_digest: invocation.request.native_context_digest,
     })
@@ -507,19 +514,12 @@ fn provider_context(
     })
 }
 
-fn outputs_for(
-    method: &str,
-    observation: &PackagedUnitObservation,
-    invocation: &Invocation,
-) -> Result<BTreeMap<LocalKey, AbilityValue>> {
+fn outputs_for(observation: &PackagedUnitObservation) -> Result<BTreeMap<LocalKey, AbilityValue>> {
     let mut outputs = BTreeMap::new();
-    outputs.insert(LocalKey::new("observation")?, value(observation)?);
-    if method == "apply" {
-        outputs.insert(
-            LocalKey::new("retained-resource")?,
-            value(&invocation.request.target)?,
-        );
-    }
+    outputs.insert(
+        LocalKey::new("observation")?,
+        packaged_effect_observation(observation)?,
+    );
     Ok(outputs)
 }
 
@@ -573,11 +573,11 @@ fn require_method(
     method: &aos_ability_model::MethodReference,
     semantics: &MethodSemantics,
 ) -> Result<()> {
-    if method.interface.name.as_str() != INTERFACE_NAME {
+    if method.interface.name.as_str() != PACKAGED_UNIT_EFFECTS_INTERFACE_NAME {
         bail!("handler invocation selects another interface");
     }
     let expected = match method.method.as_str() {
-        "apply" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+        "create" | "reconcile" | "update" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
         "observe" => MethodSemantics::ordinary(AccessMode::Read),
         "remove" => MethodSemantics::provider_stop(),
         _ => bail!("handler invocation selects an unsupported method"),
@@ -586,6 +586,13 @@ fn require_method(
         bail!("handler invocation carries mismatched method semantics");
     }
     Ok(())
+}
+
+fn packaged_effect_observation(observation: &PackagedUnitObservation) -> Result<AbilityValue> {
+    value(&serde_json::json!({
+        "kind": "packaged-unit",
+        "observation": observation,
+    }))
 }
 
 fn require_matching_request(

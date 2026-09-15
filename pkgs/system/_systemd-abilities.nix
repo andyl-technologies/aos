@@ -297,7 +297,7 @@
   };
   serviceRealizationType = types.record {
     fields = {
-      schema = types.enum ["aos.systemd.service-realization/v2"];
+      schema = types.enum ["aos.systemd.service-realization/v1"];
       systemd_unit = serviceUnitIdentity;
       units = types.list {
         element = systemdUnitDocument;
@@ -420,6 +420,74 @@
     inherit lifecycle aggregation;
     configurationType = null;
     guarantees = [];
+  };
+  packagedUnitEffectsRequest = types.taggedUnion {
+    tag = "kind";
+    variants.packaged-unit = types.record {
+      fields = {
+        kind = types.enum ["packaged-unit"];
+        desired = packagedUnitRequest;
+      };
+    };
+  };
+  packagedUnitEffectsObservation = types.record {
+    fields = {
+      kind = types.enum ["packaged-unit"];
+      observation = packagedUnitObservation;
+    };
+  };
+  packagedUnitEffectMethod = name: description: access: stopsProvider: {
+    inherit description;
+    semantics = {
+      requiredTargetAccess = access;
+      inherit stopsProvider;
+    };
+    parameters = packagedUnitEffectsRequest;
+    targetResource = "aos.systemd.packaged-unit";
+    outputs.observation =
+      output
+      (if name == "observe" then "observation" else "runtime")
+      "attempt"
+      "Reports the exact terminal packaged-unit effect state."
+      packagedUnitEffectsObservation;
+    permittedOperations = [name];
+    guarantees = [];
+    outcome = {
+      completionEvidence = packagedUnitEffectsObservation;
+      observationEvidence = packagedUnitEffectsObservation;
+      supportsRejectedBeforeEffect = true;
+      indeterminate = "reconcile";
+    };
+  };
+  packagedUnitEffectsDeclaration = lib.abilities.declareInterface {
+    name = "aos.systemd.packaged-unit-effects";
+    description = "Executes checked terminal effects for one systemd packaged-unit controller.";
+    abi = 1;
+    requestType = packagedUnitEffectsRequest;
+    outputs = {};
+    methods = {
+      create = packagedUnitEffectMethod "create" "Creates exact packaged-unit state." "exclusive-write" false;
+      observe = packagedUnitEffectMethod "observe" "Observes exact packaged-unit state." "read" false;
+      reconcile = packagedUnitEffectMethod "reconcile" "Repairs divergent packaged-unit state." "exclusive-write" false;
+      remove = packagedUnitEffectMethod "remove" "Removes exact packaged-unit state." "exclusive-write" true;
+      update = packagedUnitEffectMethod "update" "Updates exact packaged-unit state." "exclusive-write" false;
+    };
+    inherit lifecycle;
+    aggregation = aggregation // {controllerGroup = "systemd-packaged-unit-effects";};
+    configurationType = null;
+    guarantees = [];
+  };
+  packagedUnitEffectsIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration packagedUnitEffectsDeclaration
+  );
+  packagedUnitEffectsRequirement = {
+    alias = "packaged-unit-effects";
+    description = "Selects the checked lower systemd packaged-unit effect handler.";
+    accepted_interfaces = [packagedUnitEffectsIdentity];
+    methods = ["create" "observe" "reconcile" "remove" "update"];
+    guarantees = [];
+    strength = "required";
+    fallback = null;
   };
   managerWatchdogFields = {
     enabled = types.boolean;
@@ -1057,6 +1125,7 @@ in {
   config.aos.abilities = {
     interfaces = {
       systemd-packaged-unit = packagedUnitDeclaration;
+      systemd-packaged-unit-effects = packagedUnitEffectsDeclaration;
       systemd-manager-watchdog = managerWatchdogDeclaration;
       systemd-manager-watchdog-effects = managerWatchdogEffectsDeclaration;
       systemd-service-effects = serviceEffectsDeclaration;
@@ -1129,17 +1198,27 @@ in {
           inherit artifact;
           methods = ["apply" "observe" "remove"];
           guarantees = [];
+          requirements.packaged-unit-effects = packagedUnitEffectsRequirement;
           providerModule = {
             inherit artifact;
             path = "share/aos/providers/systemd.nix";
           };
+          desiredType = realizationType;
+          requiredFeatures = [];
+        };
+        systemd-packaged-unit-effects = {
+          description = "Executes checked terminal systemd packaged-unit effects.";
+          interface = "systemd-packaged-unit-effects";
+          artifact = handlerArtifact;
+          methods = ["create" "observe" "reconcile" "remove" "update"];
+          guarantees = [];
           handlerDescriptor = {
             artifact = handlerArtifact;
             entryPoint = "bin/aos-systemd-provider";
-            arguments = packagedUnitRequest;
-            result = packagedUnitObservation;
+            arguments = packagedUnitEffectsRequest;
+            result = packagedUnitEffectsObservation;
           };
-          desiredType = realizationType;
+          desiredType = null;
           requiredFeatures = [];
         };
       };

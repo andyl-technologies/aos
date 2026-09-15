@@ -9,6 +9,12 @@
 }: let
   implementationAlias = "systemd-packaged-unit";
   implementationName = "${packageName}:${implementationAlias}";
+  packagedUnitEffectsInterface = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration config.aos.abilities.interfaces."${packageName}:systemd-packaged-unit-effects"
+  );
+  packagedUnitTransition = import ./_systemd-packaged-unit-transition.nix {
+    effectsInterface = packagedUnitEffectsInterface;
+  };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceInterfaces = serviceManagement.interfaces;
   serviceEffectsInterface = lib.abilities.interfaceIdentity (
@@ -137,6 +143,15 @@
   compose = {resources, ...}:
     emptyResult
     // {
+      requests = builtins.mapAttrs (key: resource: {
+        requirement = "packaged-unit-effects";
+        scope = ["packaged-unit-effects"];
+        slot = resource.resource.key;
+        parameters = {
+          kind = "packaged-unit";
+          desired = resource.value;
+        };
+      }) resources;
       realizations = builtins.mapAttrs (_: realizationFor) resources;
     };
 
@@ -386,7 +401,7 @@
         kind = "unit";
         unit_name = realization.systemd_unit.unit_name or null;
       }
-      else if (realization.schema or null) == "aos.systemd.service-realization/v2"
+      else if (realization.schema or null) == "aos.systemd.service-realization/v1"
       then realization.systemd_unit or null
       else null;
   in
@@ -737,6 +752,7 @@ in {
       };
       ${implementationAlias} = {
         inherit provide compose;
+        transition = packagedUnitTransition;
       };
     };
 
