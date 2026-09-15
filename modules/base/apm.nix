@@ -372,26 +372,6 @@ in {
         '';
       };
 
-    systemd.services.aos-credential-recovery = {
-      description = "Recover interrupted AOS credential publication";
-      requiredBy = ["sysinit.target"];
-      before = [
-        "sysinit.target"
-        "aos-eval.service"
-        "multi-user.target"
-      ];
-      requires = ["local-fs.target"];
-      after = ["local-fs.target"];
-      unitConfig.DefaultDependencies = "no";
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-      };
-      script = ''
-        ${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped recover-credential-transactions
-      '';
-    };
-
     system.checks.apm = {
       description = "apm base-image smoke checks";
       checks = [
