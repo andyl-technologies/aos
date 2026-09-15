@@ -13,35 +13,83 @@ use std::fmt;
 
 use anyhow::Result;
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, ArtifactReference, LocalKey, ModuleLocator,
-    RequirementDeclaration,
+    ABILITY_LIMITS_V1, AbilityValue, ArtifactReference, Binding, BindingId, LocalKey,
+    ModuleLocator, PlanId, RequestId, RequirementDeclaration, ResourceLifetime, ResourceReference,
+    ResourceRevision,
 };
+use aos_ability_plan::VerifiedPlanningSnapshot;
 use aos_ability_validate::PackageOutputSelector;
 use aos_contract::{Sha256Digest, canonical};
 use serde::{Deserialize, Serialize};
 
 use super::PackageOutputs;
 
-/// Carries one provider-derived child request awaiting an outer binding round.
+/// Carries one authored or provider-derived request awaiting an outer binding round.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PendingAbilityRequest {
-    /// Identifies the exact selected implementation/provider-instance group.
-    pub origin_group: String,
-    /// Names the request within its provider module.
-    pub local_request_key: String,
-    /// Names the selected implementation that emitted the request.
-    pub implementation: String,
-    /// Names the selected provider instance that emitted the request.
-    pub provider_instance: String,
-    /// Names the emitting implementation's nested requirement alias.
-    pub requirement: String,
-    /// Names the package-authored aggregation slot for the child request.
-    pub slot: String,
-    /// Carries the deterministic globally qualified request key.
-    pub request: String,
-    /// Retains the exact internally derived request declaration.
-    pub declaration: AbilityValue,
+#[serde(
+    tag = "origin",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum PendingAbilityRequest {
+    /// Retains an unbound package-authored root request and its exact identity.
+    Authored {
+        /// Carries the globally qualified module request key.
+        request: String,
+        /// Carries the exact request identity committed by the checked plan.
+        identity: RequestId,
+        /// Retains the package-authored request declaration.
+        declaration: AbilityValue,
+    },
+    /// Retains a child request emitted by an authenticated controller module.
+    Provider {
+        /// Identifies the exact selected implementation/provider-instance group.
+        origin_group: String,
+        /// Names the request within its provider module.
+        local_request_key: String,
+        /// Names the selected implementation that emitted the request.
+        implementation: String,
+        /// Names the selected provider instance that emitted the request.
+        provider_instance: String,
+        /// Names the emitting implementation's nested requirement alias.
+        requirement: String,
+        /// Carries the exact request identity committed by the checked plan.
+        identity: RequestId,
+        /// Names the package-authored aggregation slot for the child request.
+        slot: String,
+        /// Carries the deterministic globally qualified request key.
+        request: String,
+        /// Retains the exact internally derived request declaration.
+        declaration: AbilityValue,
+    },
+}
+
+impl PendingAbilityRequest {
+    pub(super) fn request(&self) -> &str {
+        match self {
+            Self::Authored { request, .. } | Self::Provider { request, .. } => request,
+        }
+    }
+
+    pub(super) fn expected_slot(&self) -> Option<&str> {
+        match self {
+            Self::Authored { .. } => None,
+            Self::Provider { slot, .. } => Some(slot),
+        }
+    }
+
+    pub(super) fn identity(&self) -> &RequestId {
+        match self {
+            Self::Authored { identity, .. } | Self::Provider { identity, .. } => identity,
+        }
+    }
+
+    pub(super) fn declaration(&self) -> &AbilityValue {
+        match self {
+            Self::Authored { declaration, .. } | Self::Provider { declaration, .. } => declaration,
+        }
+    }
 }
 
 /// Retains one exact nested requirement activated by provider composition.
@@ -74,6 +122,8 @@ pub struct PendingAbilityProjection {
 pub struct PendingProviderInstance {
     /// Names the exact implementation instantiated by this provider.
     pub implementation: Option<String>,
+    /// Carries the canonical deployment identity of this provider instance.
+    pub identity: aos_ability_model::InstanceId,
 }
 
 /// Carries the activation authority emitted by the final module fixed point.
@@ -84,10 +134,31 @@ pub struct AbilityFixedPointProjection {
     pub bindings: BTreeMap<String, AbilityValue>,
     /// Retains exact desired and published resource projections.
     pub resolved_resources: BTreeMap<String, AbilityValue>,
+    /// Selects the protected package-provided execution observation channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_observer: Option<AbilityExecutionObserverProjection>,
+    /// Identifies the exact checked binding plan from which selections were resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_plan: Option<PlanId>,
+    /// Retains every checked binding selected by the complete module fixed point.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checked_bindings: Vec<Binding>,
+}
+
+/// Retains one observer resource and socket published by the same bound request.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AbilityExecutionObserverProjection {
+    /// Names the exact fixed-point request that published both outputs.
+    pub request: String,
+    /// Carries the protected retained observer resource.
+    pub resource: ResourceReference,
+    /// Carries the resolved canonical Unix socket path.
+    pub socket: String,
 }
 
 impl AbilityFixedPointProjection {
-    fn validate(&self) -> Result<(), AbilityRoundError> {
+    pub(super) fn validate(&self) -> Result<(), AbilityRoundError> {
         if self.bindings.len() as u64 > ABILITY_LIMITS_V1.max_collection_items
             || self.resolved_resources.len() as u64 > ABILITY_LIMITS_V1.max_collection_items
         {
@@ -105,8 +176,253 @@ impl AbilityFixedPointProjection {
                 reason: "final fixed-point key is empty or exceeds its bound".to_string(),
             });
         }
+        if let Some(observer) = &self.execution_observer {
+            observer.validate(self)?;
+        }
 
         encoded_digest("aos.ability.fixed-point-projection/v1", self).map(|_| ())
+    }
+
+    /// Binds the module projection to the exact replayed planning authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the final module selections or resources differ
+    /// from the replayed checked binding plan and desired state.
+    pub(super) fn bind_checked_planning(
+        &mut self,
+        planning: &VerifiedPlanningSnapshot,
+        selections: &AbilityRoundSelections,
+    ) -> Result<(), AbilityRoundError> {
+        let checked = planning.checked_binding();
+        if self.bindings.len() != selections.bindings.len()
+            || selections.bindings.len() != checked.bindings().len()
+        {
+            return Err(AbilityRoundError::InvalidProjection {
+                reason: "final module selections do not cover the complete checked binding plan"
+                    .to_string(),
+            });
+        }
+
+        for (key, selection) in &selections.bindings {
+            let binding_key = LocalKey::new(key.clone()).map_err(|source| {
+                AbilityRoundError::InvalidProjection {
+                    reason: format!("final binding key is invalid: {source}"),
+                }
+            })?;
+            let checked_binding = checked.binding(&BindingId(binding_key)).ok_or_else(|| {
+                AbilityRoundError::InvalidProjection {
+                    reason: format!("final binding {key:?} is absent from the checked plan"),
+                }
+            })?;
+            let projection =
+                self.bindings
+                    .get(key)
+                    .ok_or_else(|| AbilityRoundError::InvalidProjection {
+                        reason: format!(
+                            "final binding {key:?} is absent from the module projection"
+                        ),
+                    })?;
+            let value = projection.as_json();
+            let matches_selection = value.get("request").and_then(serde_json::Value::as_str)
+                == Some(selection.request.as_str())
+                && value
+                    .get("implementation")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(selection.implementation.as_str())
+                && value
+                    .get("providerInstance")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(selection.provider_instance.as_str())
+                && value.get("slot").and_then(serde_json::Value::as_str)
+                    == Some(selection.slot.as_str());
+            if !matches_selection || checked_binding.id.0.as_str() != key {
+                return Err(AbilityRoundError::InvalidProjection {
+                    reason: format!(
+                        "final binding {key:?} differs from its checked resolver selection"
+                    ),
+                });
+            }
+        }
+
+        let mut projected_resources = self
+            .resolved_resources
+            .values()
+            .map(|value| {
+                serde_json::from_value::<ResourceRevision>(value.as_json().clone()).map_err(
+                    |source| AbilityRoundError::InvalidProjection {
+                        reason: format!("final resolved resource is invalid: {source}"),
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        projected_resources.sort_by(|left, right| left.resource.cmp(&right.resource));
+        let mut checked_resources = planning.outcome().desired_state.resources.clone();
+        checked_resources.sort_by(|left, right| left.resource.cmp(&right.resource));
+        if projected_resources != checked_resources {
+            return Err(AbilityRoundError::InvalidProjection {
+                reason: "final resolved resources differ from the checked desired state"
+                    .to_string(),
+            });
+        }
+
+        self.binding_plan = Some(checked.id());
+        self.checked_bindings = checked.bindings().to_vec();
+        self.validate()
+    }
+
+    /// Validates that a retained projection carries structurally complete checked bindings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the plan identity is absent or checked binding
+    /// identities do not cover the final module binding map exactly.
+    pub(super) fn validate_checked_planning(&self) -> Result<(), AbilityRoundError> {
+        if self.binding_plan.is_none() {
+            return Err(AbilityRoundError::InvalidProjection {
+                reason: "final fixed point has no checked binding-plan identity".to_string(),
+            });
+        }
+        if self.checked_bindings.len() != self.bindings.len()
+            || self
+                .checked_bindings
+                .iter()
+                .any(|binding| !self.bindings.contains_key(binding.id.0.as_str()))
+        {
+            return Err(AbilityRoundError::InvalidProjection {
+                reason: "retained checked bindings differ from the final module bindings"
+                    .to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Compares retained activation authority with a freshly replayed planning snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the plan identity, checked bindings, or desired
+    /// resources differ from the freshly authenticated planning result.
+    pub(super) fn validate_replayed_planning(
+        &self,
+        planning: &VerifiedPlanningSnapshot,
+    ) -> Result<(), AbilityRoundError> {
+        self.validate_checked_planning()?;
+        let checked = planning.checked_binding();
+        if self.binding_plan != Some(checked.id()) || self.checked_bindings != checked.bindings() {
+            return Err(AbilityRoundError::InvalidProjection {
+                reason: "retained checked bindings differ from the replayed binding plan"
+                    .to_string(),
+            });
+        }
+
+        let mut projected_resources = self
+            .resolved_resources
+            .values()
+            .map(|value| {
+                serde_json::from_value::<ResourceRevision>(value.as_json().clone()).map_err(
+                    |source| AbilityRoundError::InvalidProjection {
+                        reason: format!("final resolved resource is invalid: {source}"),
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        projected_resources.sort_by(|left, right| left.resource.cmp(&right.resource));
+        let mut checked_resources = planning.outcome().desired_state.resources.clone();
+        checked_resources.sort_by(|left, right| left.resource.cmp(&right.resource));
+        if projected_resources != checked_resources {
+            return Err(AbilityRoundError::InvalidProjection {
+                reason: "retained resolved resources differ from the replayed desired state"
+                    .to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl AbilityExecutionObserverProjection {
+    fn validate(&self, fixed_point: &AbilityFixedPointProjection) -> Result<(), AbilityRoundError> {
+        let socket = self.socket.as_str();
+        let canonical_socket = socket.starts_with('/')
+            && socket != "/"
+            && !socket.ends_with('/')
+            && !socket.contains("//")
+            && !socket
+                .split('/')
+                .any(|component| matches!(component, "." | ".."));
+        let observes_only = self.resource.operations.as_slice()
+            == [LocalKey::new("observe").map_err(|source| {
+                AbilityRoundError::InvalidProjection {
+                    reason: format!("observer operation identity is invalid: {source}"),
+                }
+            })?];
+        let retained = !matches!(self.resource.lifetime, ResourceLifetime::Attempt);
+        let request_bindings = fixed_point
+            .bindings
+            .iter()
+            .filter(|(_, binding)| {
+                binding
+                    .as_json()
+                    .get("request")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(self.request.as_str())
+            })
+            .collect::<Vec<_>>();
+        let resource_value = serde_json::to_value(&self.resource.resource).map_err(|source| {
+            AbilityRoundError::InvalidProjection {
+                reason: format!("observer resource identity cannot be encoded: {source}"),
+            }
+        })?;
+        let resource_matches = fixed_point
+            .resolved_resources
+            .values()
+            .filter(|resource| {
+                resource.as_json().get("resource") == Some(&resource_value)
+                    && resource
+                        .as_json()
+                        .get("kind")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(self.resource.interface.name.as_str())
+            })
+            .count();
+        if self.request.is_empty()
+            || self.request.len() as u64 > ABILITY_LIMITS_V1.max_string_bytes
+            || !canonical_socket
+            || !observes_only
+            || !retained
+            || request_bindings.len() != 1
+            || resource_matches != 1
+        {
+            return Err(AbilityRoundError::InvalidProjection {
+                reason:
+                    "execution observer differs from its exact bound request or retained resource"
+                        .to_string(),
+            });
+        }
+        if !fixed_point.checked_bindings.is_empty() {
+            let binding_key = request_bindings[0].0;
+            let authorized = fixed_point.checked_bindings.iter().any(|binding| {
+                binding.id.0.as_str() == binding_key
+                    && binding.caller_grant.resources.iter().any(|permission| {
+                        permission.resource == self.resource.resource
+                            && permission
+                                .access
+                                .permits(aos_ability_model::AccessMode::Read)
+                            && self
+                                .resource
+                                .operations
+                                .iter()
+                                .all(|operation| permission.operations.contains(operation))
+                    })
+            });
+            if !authorized {
+                return Err(AbilityRoundError::InvalidProjection {
+                    reason: "execution observer is absent from its checked binding resource grant"
+                        .to_string(),
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -151,19 +467,71 @@ impl PendingAbilityProjection {
         }
 
         for (key, request) in &self.requests {
-            if key != &request.request {
+            if key != request.request() {
                 return Err(AbilityRoundError::InvalidProjection {
                     reason: format!(
                         "pending child request map key {key:?} differs from its request identity {:?}",
-                        request.request
+                        request.request()
                     ),
                 });
             }
+            if request.request().is_empty()
+                || request.request().len() as u64 > ABILITY_LIMITS_V1.max_string_bytes
+            {
+                return Err(AbilityRoundError::InvalidProjection {
+                    reason: "pending request identity is empty or exceeds its bound".to_string(),
+                });
+            }
+            let declaration = request.declaration().as_json();
+            let consumer = declaration.get("consumer").and_then(|value| value.as_str());
+            let consumer_identity = consumer.and_then(|name| self.provider_instances.get(name));
+            let scope = serde_json::to_value(&request.identity().scope).map_err(|source| {
+                AbilityRoundError::InvalidProjection {
+                    reason: format!("pending request scope cannot be encoded: {source}"),
+                }
+            })?;
+            let local_key = request
+                .request()
+                .rsplit_once(':')
+                .map_or(request.request(), |(_, local)| local);
+            let package = declaration.get("package").and_then(|value| value.as_str());
+            let package_matches = package.is_none_or(|expected| {
+                request
+                    .request()
+                    .split_once(':')
+                    .is_some_and(|(actual, _)| actual == expected)
+            });
+            if consumer_identity.map(|instance| &instance.identity)
+                != Some(&request.identity().consumer)
+                || declaration.get("scope") != Some(&scope)
+                || local_key != request.identity().key.as_str()
+                || !package_matches
+            {
+                return Err(AbilityRoundError::InvalidProjection {
+                    reason: format!(
+                        "pending request {:?} differs from its canonical module identity",
+                        request.request()
+                    ),
+                });
+            }
+            let PendingAbilityRequest::Provider {
+                origin_group,
+                local_request_key,
+                implementation,
+                provider_instance,
+                requirement: requirement_alias,
+                identity: _,
+                slot,
+                declaration,
+                ..
+            } = request
+            else {
+                continue;
+            };
             for (field, value) in [
-                ("origin group", request.origin_group.as_str()),
-                ("implementation", request.implementation.as_str()),
-                ("provider instance", request.provider_instance.as_str()),
-                ("request", request.request.as_str()),
+                ("origin group", origin_group.as_str()),
+                ("implementation", implementation.as_str()),
+                ("provider instance", provider_instance.as_str()),
             ] {
                 if value.is_empty() || value.len() as u64 > ABILITY_LIMITS_V1.max_string_bytes {
                     return Err(AbilityRoundError::InvalidProjection {
@@ -172,9 +540,9 @@ impl PendingAbilityProjection {
                 }
             }
             for (field, value) in [
-                ("local request key", request.local_request_key.as_str()),
-                ("requirement", request.requirement.as_str()),
-                ("slot", request.slot.as_str()),
+                ("local request key", local_request_key.as_str()),
+                ("requirement", requirement_alias.as_str()),
+                ("slot", slot.as_str()),
             ] {
                 if LocalKey::new(value.to_string()).is_err() {
                     return Err(AbilityRoundError::InvalidProjection {
@@ -182,29 +550,30 @@ impl PendingAbilityProjection {
                     });
                 }
             }
-            let declaration = request.declaration.as_json();
+            let declaration = declaration.as_json();
             let requirement_key = declaration
                 .get("requirement")
                 .and_then(|value| value.as_str());
             let consumer = declaration.get("consumer").and_then(|value| value.as_str());
-            let Some(requirement) = requirement_key.and_then(|key| self.requirements.get(key))
+            let Some(requirement_declaration) =
+                requirement_key.and_then(|key| self.requirements.get(key))
             else {
                 return Err(AbilityRoundError::InvalidProjection {
                     reason: format!(
                         "pending child request {:?} names an absent nested requirement",
-                        request.request
+                        request.request()
                     ),
                 });
             };
-            if requirement.implementation != request.implementation
-                || requirement.alias != request.requirement
-                || requirement.requirement.alias.as_str() != request.requirement
-                || consumer != Some(request.provider_instance.as_str())
+            if requirement_declaration.implementation != *implementation
+                || requirement_declaration.alias != *requirement_alias
+                || requirement_declaration.requirement.alias.as_str() != requirement_alias
+                || consumer != Some(provider_instance.as_str())
             {
                 return Err(AbilityRoundError::InvalidProjection {
                     reason: format!(
                         "pending child request {:?} disagrees with its exact origin or requirement",
-                        request.request
+                        request.request()
                     ),
                 });
             }
@@ -536,11 +905,38 @@ fn validate_and_extend(
                 reason: "a selected binding contains an empty identity component".to_string(),
             });
         }
-        if binding.slot != pending_request.slot {
+        if pending_request
+            .expected_slot()
+            .is_some_and(|slot| binding.slot != slot)
+        {
             return Err(AbilityRoundError::InvalidSelection {
                 reason: format!(
                     "binding {:?} changes the package-authored slot for pending request {:?}",
                     binding.key, binding.request
+                ),
+            });
+        }
+        let Some(provider) = pending.provider_instances.get(&binding.provider_instance) else {
+            return Err(AbilityRoundError::InvalidSelection {
+                reason: format!(
+                    "binding {:?} selects an instance outside the final module fixed point",
+                    binding.key
+                ),
+            });
+        };
+        if provider.implementation.as_deref() != Some(binding.implementation.as_str()) {
+            return Err(AbilityRoundError::InvalidSelection {
+                reason: format!(
+                    "binding {:?} changes the selected provider implementation",
+                    binding.key
+                ),
+            });
+        }
+        if provider.identity == pending_request.identity().consumer {
+            return Err(AbilityRoundError::InvalidSelection {
+                reason: format!(
+                    "binding {:?} self-binds its request consumer as the terminal provider",
+                    binding.key
                 ),
             });
         }
@@ -701,7 +1097,9 @@ mod tests {
             Ok(pending
                 .requests
                 .values()
-                .map(|request| selected(&request.request, &request.slot))
+                .map(|request| {
+                    selected(request.request(), request.expected_slot().unwrap_or("root"))
+                })
                 .collect())
         }
     }
@@ -770,6 +1168,9 @@ mod tests {
                 AbilityValue::new(serde_json::json!({"kind": "aos.storage.instance"}))
                     .expect("test resource is bounded"),
             )]),
+            execution_observer: None,
+            binding_plan: None,
+            checked_bindings: Vec::new(),
         };
         let evaluator = ScriptedEvaluation::new(vec![complete_with_fixed_point(
             "{\"manifest\":true}",
@@ -790,6 +1191,9 @@ mod tests {
                 AbilityValue::new(serde_json::json!(true)).expect("test value is bounded"),
             )]),
             resolved_resources: BTreeMap::new(),
+            execution_observer: None,
+            binding_plan: None,
+            checked_bindings: Vec::new(),
         };
         let evaluator = ScriptedEvaluation::new(vec![complete_with_fixed_point("{}", projection)]);
 
@@ -797,6 +1201,133 @@ mod tests {
             .expect_err("invalid final authority must fail before activation");
 
         assert!(matches!(error, AbilityRoundError::InvalidProjection { .. }));
+    }
+
+    #[test]
+    fn final_projection_retains_the_complete_checked_plan() {
+        let (planning, _) = aos_ability_plan::test_support::verified_planning_effect_plan();
+        let checked = planning.checked_binding();
+        let [binding] = checked.bindings() else {
+            panic!("planning fixture must carry one checked binding");
+        };
+        let selection = SelectedAbilityBinding {
+            key: binding.id.0.as_str().to_string(),
+            request: "consumer:request".to_string(),
+            implementation: "provider:implementation".to_string(),
+            provider_instance: "provider:instance".to_string(),
+            slot: "main".to_string(),
+            provider_module: None,
+        };
+        let selections = AbilityRoundSelections {
+            bindings: BTreeMap::from([(selection.key.clone(), selection.clone())]),
+            provider_modules: BTreeMap::new(),
+        };
+        let bindings = BTreeMap::from([(
+            selection.key.clone(),
+            AbilityValue::new(serde_json::json!({
+                "request": selection.request,
+                "implementation": selection.implementation,
+                "providerInstance": selection.provider_instance,
+                "slot": selection.slot,
+            }))
+            .expect("selected binding projection is bounded"),
+        )]);
+        let resolved_resources = planning
+            .outcome()
+            .desired_state
+            .resources
+            .iter()
+            .enumerate()
+            .map(|(index, resource)| {
+                (
+                    format!("resource-{index}"),
+                    AbilityValue::new(
+                        serde_json::to_value(resource).expect("resource must serialize"),
+                    )
+                    .expect("resource projection is bounded"),
+                )
+            })
+            .collect();
+        let mut projection = AbilityFixedPointProjection {
+            bindings,
+            resolved_resources,
+            ..Default::default()
+        };
+
+        projection
+            .bind_checked_planning(&planning, &selections)
+            .expect("exact fixed-point authority must bind");
+
+        assert_eq!(projection.binding_plan, Some(checked.id()));
+        assert_eq!(projection.checked_bindings, checked.bindings());
+        projection
+            .validate_replayed_planning(&planning)
+            .expect("retained authority must replay exactly");
+    }
+
+    #[test]
+    fn final_projection_rejects_an_empty_selection_for_a_checked_binding() {
+        let (planning, _) = aos_ability_plan::test_support::verified_planning_effect_plan();
+        let mut projection = AbilityFixedPointProjection::default();
+
+        let error = projection
+            .bind_checked_planning(&planning, &AbilityRoundSelections::default())
+            .expect_err("a checked binding cannot disappear from the module fixed point");
+
+        assert!(error.to_string().contains("complete checked binding plan"));
+    }
+
+    #[test]
+    fn final_fixed_point_binds_observer_to_one_request_and_resource() {
+        let observer: AbilityExecutionObserverProjection =
+            serde_json::from_value(observer_json("/run/aos-observer/control.sock"))
+                .expect("observer projection is typed");
+        let projection = observer_fixed_point(observer);
+
+        projection
+            .validate()
+            .expect("exact bound observer outputs are retained");
+    }
+
+    #[test]
+    fn final_fixed_point_rejects_unbound_or_noncanonical_observer() {
+        let mut observer: AbilityExecutionObserverProjection =
+            serde_json::from_value(observer_json("/run/aos-observer/../control.sock"))
+                .expect("observer projection is typed");
+        assert!(observer_fixed_point(observer.clone()).validate().is_err());
+
+        observer.socket = "/run/aos-observer/control.sock".to_string();
+        let mut projection = observer_fixed_point(observer);
+        projection.bindings.clear();
+        assert!(projection.validate().is_err());
+    }
+
+    #[test]
+    fn final_fixed_point_requires_checked_observer_resource_authority() {
+        let observer: AbilityExecutionObserverProjection =
+            serde_json::from_value(observer_json("/run/aos-observer/control.sock"))
+                .expect("observer projection is typed");
+        let mut projection = observer_fixed_point(observer.clone());
+        let (planning, _) = aos_ability_plan::test_support::verified_planning_effect_plan();
+        let mut checked = planning.checked_binding().bindings()[0].clone();
+        checked.id = BindingId(LocalKey::new("observer-binding").expect("binding key is valid"));
+        checked.caller_grant.resources = vec![aos_ability_model::ResourcePermission {
+            resource: observer.resource.resource.clone(),
+            access: aos_ability_model::AccessMode::Read,
+            operations: vec![LocalKey::new("observe").expect("operation key is valid")],
+        }];
+        projection.checked_bindings = vec![checked.clone()];
+
+        projection
+            .validate()
+            .expect("checked observer read authority must be accepted");
+
+        checked.caller_grant.resources.clear();
+        projection.checked_bindings = vec![checked];
+        let error = projection
+            .validate()
+            .expect_err("observer without checked resource authority must fail");
+        assert!(error.to_string().contains("resource grant"));
     }
 
     #[test]
@@ -824,6 +1355,50 @@ mod tests {
 
         let error = resolve_ability_rounds(&evaluator, &MissingResolver, 4)
             .expect_err("an incomplete selection must fail closed");
+
+        assert!(matches!(error, AbilityRoundError::InvalidSelection { .. }));
+    }
+
+    #[test]
+    fn authored_root_cannot_converge_without_a_checked_binding() {
+        let evaluator =
+            ScriptedEvaluation::new(vec![AbilityRoundEvaluation::Pending(authored_pending())]);
+
+        let error = resolve_ability_rounds(&evaluator, &MissingResolver, 4)
+            .expect_err("an unbound authored root must remain pending");
+
+        assert!(matches!(error, AbilityRoundError::InvalidSelection { .. }));
+    }
+
+    #[test]
+    fn request_consumer_cannot_select_itself_as_terminal_provider() {
+        struct SelfBindingResolver;
+
+        impl AbilityRoundResolver for SelfBindingResolver {
+            fn select(
+                &self,
+                pending: &PendingAbilityProjection,
+            ) -> Result<Vec<SelectedAbilityBinding>> {
+                Ok(pending
+                    .requests
+                    .values()
+                    .map(|request| SelectedAbilityBinding {
+                        key: format!("binding-{}", request.request()),
+                        request: request.request().to_string(),
+                        implementation: "provider:recursive".to_string(),
+                        provider_instance: "provider:instance".to_string(),
+                        slot: request.expected_slot().unwrap_or("root").to_string(),
+                        provider_module: None,
+                    })
+                    .collect())
+            }
+        }
+
+        let evaluator =
+            ScriptedEvaluation::new(vec![AbilityRoundEvaluation::Pending(pending(&["child-a"]))]);
+
+        let error = resolve_ability_rounds(&evaluator, &SelfBindingResolver, 4)
+            .expect_err("a request consumer must not invoke itself as its terminal provider");
 
         assert!(matches!(error, AbilityRoundError::InvalidSelection { .. }));
     }
@@ -942,12 +1517,25 @@ mod tests {
                 .map(|request| {
                     (
                         (*request).to_string(),
-                        PendingAbilityRequest {
+                        PendingAbilityRequest::Provider {
                             origin_group: "origin".to_string(),
                             local_request_key: (*request).to_string(),
                             implementation: "provider:recursive".to_string(),
                             provider_instance: "provider:instance".to_string(),
                             requirement: "lower".to_string(),
+                            identity: serde_json::from_value(serde_json::json!({
+                                "consumer": {
+                                    "environment": {
+                                        "authority": "test",
+                                        "key": "host",
+                                        "stage": "host"
+                                    },
+                                    "key": "provider"
+                                },
+                                "scope": [],
+                                "key": *request
+                            }))
+                            .expect("request identity is valid"),
                             slot: "main".to_string(),
                             request: (*request).to_string(),
                             declaration: AbilityValue::new(serde_json::json!({
@@ -978,12 +1566,131 @@ mod tests {
                     },
                 },
             )]),
-            provider_instances: BTreeMap::from([(
-                "provider:instance".to_string(),
-                PendingProviderInstance {
-                    implementation: Some("provider:recursive".to_string()),
+            provider_instances: BTreeMap::from([
+                (
+                    "provider:instance".to_string(),
+                    PendingProviderInstance {
+                        implementation: Some("provider:recursive".to_string()),
+                        identity: serde_json::from_value(serde_json::json!({
+                            "environment": {
+                                "authority": "test",
+                                "key": "host",
+                                "stage": "host"
+                            },
+                            "key": "provider"
+                        }))
+                        .expect("provider identity is valid"),
+                    },
+                ),
+                (
+                    "lower:instance".to_string(),
+                    PendingProviderInstance {
+                        implementation: Some("lower:implementation".to_string()),
+                        identity: serde_json::from_value(serde_json::json!({
+                            "environment": {
+                                "authority": "test",
+                                "key": "host",
+                                "stage": "host"
+                            },
+                            "key": "terminal"
+                        }))
+                        .expect("terminal identity is valid"),
+                    },
+                ),
+            ]),
+        }
+    }
+
+    fn authored_pending() -> PendingAbilityProjection {
+        let identity: RequestId = serde_json::from_value(serde_json::json!({
+            "consumer": {
+                "environment": {
+                    "authority": "test",
+                    "key": "host",
+                    "stage": "host"
+                },
+                "key": "consumer"
+            },
+            "scope": [],
+            "key": "root"
+        }))
+        .expect("root request identity is valid");
+        let consumer = identity.consumer.clone();
+
+        PendingAbilityProjection {
+            requests: BTreeMap::from([(
+                "consumer:root".to_string(),
+                PendingAbilityRequest::Authored {
+                    request: "consumer:root".to_string(),
+                    identity,
+                    declaration: AbilityValue::new(serde_json::json!({
+                        "package": "consumer",
+                        "requirement": "consumer:service",
+                        "consumer": "consumer:instance",
+                        "scope": [],
+                        "parameters": {"enabled": true},
+                    }))
+                    .expect("root request declaration is bounded"),
                 },
             )]),
+            requirements: BTreeMap::new(),
+            provider_instances: BTreeMap::from([(
+                "consumer:instance".to_string(),
+                PendingProviderInstance {
+                    implementation: None,
+                    identity: consumer,
+                },
+            )]),
+        }
+    }
+
+    fn observer_json(socket: &str) -> serde_json::Value {
+        serde_json::json!({
+            "request": "crucible:observer",
+            "resource": {
+                "interface": {
+                    "name": "aos.execution.observer",
+                    "abi": 1,
+                    "descriptor": Sha256Digest::of_bytes(b"observer-interface")
+                },
+                "resource": {
+                    "provider": {
+                        "environment": {
+                            "authority": "test",
+                            "key": "host",
+                            "stage": "host"
+                        },
+                        "key": "observer"
+                    },
+                    "key": "channel"
+                },
+                "operations": ["observe"],
+                "lifetime": "instance"
+            },
+            "socket": socket
+        })
+    }
+
+    fn observer_fixed_point(
+        observer: AbilityExecutionObserverProjection,
+    ) -> AbilityFixedPointProjection {
+        AbilityFixedPointProjection {
+            bindings: BTreeMap::from([(
+                "observer-binding".to_string(),
+                AbilityValue::new(serde_json::json!({"request": "crucible:observer"}))
+                    .expect("observer binding is bounded"),
+            )]),
+            resolved_resources: BTreeMap::from([(
+                "observer-resource".to_string(),
+                AbilityValue::new(serde_json::json!({
+                    "resource": observer.resource.resource.clone(),
+                    "kind": "aos.execution.observer"
+                }))
+                .expect("observer resource is bounded"),
+            )]),
+            execution_observer: Some(observer),
+            binding_plan: None,
+            checked_bindings: Vec::new(),
         }
     }
 

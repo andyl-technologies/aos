@@ -2538,6 +2538,14 @@ mod tests {
             desired_state: sidecar("desired-state"),
             authenticated_policy_set: sidecar("policy-set"),
             packages: Vec::new(),
+            fixed_point: Some(
+                crate::config_eval::ability_rounds::AbilityFixedPointProjection {
+                    binding_plan: Some(aos_ability_model::PlanId(
+                        aos_contract::Sha256Digest::of_bytes("empty-test-binding-plan"),
+                    )),
+                    ..Default::default()
+                },
+            ),
         });
 
         manifest.validate().unwrap();
@@ -2595,6 +2603,14 @@ mod tests {
             desired_state: sidecar("desired-state"),
             authenticated_policy_set: sidecar("policy-set"),
             packages: Vec::new(),
+            fixed_point: Some(
+                crate::config_eval::ability_rounds::AbilityFixedPointProjection {
+                    binding_plan: Some(aos_ability_model::PlanId(
+                        aos_contract::Sha256Digest::of_bytes("empty-test-binding-plan"),
+                    )),
+                    ..Default::default()
+                },
+            ),
         });
         manifest.validate().unwrap();
         std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();

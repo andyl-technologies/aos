@@ -1,17 +1,11 @@
 //! Optional protected observation of native execution boundaries.
 //!
-//! The production observer is disabled when its fixed root-owned configuration
-//! file is absent. When enabled, it connects to one protected Unix socket and
+//! The production observer is disabled when the checked ability fixed point
+//! does not retain an observer input. When enabled, it connects to one protected Unix socket and
 //! exchanges canonical, length-framed boundary events for digest-bound continue
 //! acknowledgements. The protocol carries execution identity and live budget,
 //! never adapter requests, evidence, outputs, or commands that can select a
 //! transaction result.
-//!
-//! The root-owned opt-in configuration is canonical JSON:
-//!
-//! ```json
-//! {"schema":"aos.ability-execution-observer/v1","socket":"/run/aos-instrumentation/controller.sock"}
-//! ```
 //!
 //! Each message is a four-byte big-endian length followed by canonical JSON.
 //! Events identify the exact transaction, plan-qualified operation, attempt,
@@ -27,7 +21,7 @@ use std::io::{self, Read, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail, ensure};
@@ -40,13 +34,9 @@ use serde::{Deserialize, Serialize};
 
 use super::protected_fs::RootedDirectory;
 
-const CONFIG_PATH: &str = "/etc/aos/ability-execution-observer.json";
-const CONFIG_SCHEMA: &str = "aos.ability-execution-observer/v1";
 const EVENT_SCHEMA: &str = "aos.ability-execution-boundary-event/v1";
 const ACK_SCHEMA: &str = "aos.ability-execution-boundary-ack/v1";
 const EVENT_DIGEST_DOMAIN: &str = "aos.ability-execution-boundary-event/v1";
-const SOCKET_ROOT: &str = "/run/aos-instrumentation";
-const CONFIG_MAX_BYTES: u64 = 4 * 1024;
 const FRAME_MAX_BYTES: usize = 16 * 1024;
 const POLL_MILLIS: u64 = 50;
 const SETUP_TIMEOUT: Duration = Duration::from_secs(2);
@@ -59,88 +49,37 @@ pub(super) enum AbilityExecutionBoundaryObserver {
 }
 
 impl AbilityExecutionBoundaryObserver {
-    /// Loads the fixed protected observer configuration when it exists.
+    /// Connects to the protected socket retained by the checked ability fixed point.
     ///
     /// # Errors
     ///
-    /// Returns an error when an existing configuration or socket violates the
-    /// protected path contract, cannot connect, or has a non-root peer.
-    pub(super) fn load() -> Result<Self> {
-        let config_path = Path::new(CONFIG_PATH);
-        let present = match fs::symlink_metadata(config_path) {
-            Ok(_) => true,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-            Err(error) => {
-                return Err(error).with_context(|| format!("inspecting {}", config_path.display()));
-            }
-        };
-        if !present {
+    /// Returns an error when the selected socket violates the protected path
+    /// contract, cannot connect, or has a non-root peer.
+    pub(super) fn load(
+        input: Option<&super::ability_rounds::AbilityExecutionObserverProjection>,
+    ) -> Result<Self> {
+        let Some(input) = input else {
             return Ok(Self::Disabled);
-        }
+        };
         ensure!(
             rustix::process::geteuid().as_raw() == 0,
             "native execution observation requires UID 0"
         );
-        Self::load_optional_from(config_path, 0, 0, Path::new(SOCKET_ROOT))
+        Self::load_socket(Path::new(&input.socket), 0, 0)
     }
 
-    fn load_optional_from(
-        config_path: &Path,
-        trusted_owner: u32,
-        peer_owner: u32,
-        socket_root: &Path,
-    ) -> Result<Self> {
-        match fs::symlink_metadata(config_path) {
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(Self::Disabled);
-            }
-            Err(error) => {
-                return Err(error).with_context(|| format!("inspecting {}", config_path.display()));
-            }
-        }
-        Self::load_from(config_path, trusted_owner, peer_owner, socket_root)
-    }
-
-    fn load_from(
-        config_path: &Path,
-        trusted_owner: u32,
-        peer_owner: u32,
-        socket_root: &Path,
-    ) -> Result<Self> {
-        let parent_path = config_path
-            .parent()
-            .context("native execution observer configuration has no parent")?;
-        let file_name = config_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .context("native execution observer configuration has no UTF-8 file name")?;
-        let parent = RootedDirectory::open(
-            parent_path,
-            trusted_owner,
-            "native execution observer configuration parent",
-        )
-        .context("opening native execution observer configuration parent")?;
-        let bytes = parent
-            .resolve(Path::new(file_name))
-            .context("resolving native execution observer configuration")?
-            .read(CONFIG_MAX_BYTES)
-            .context("reading native execution observer configuration")?;
-        let config: ObserverConfig =
-            aos_contract::canonical::from_slice(&bytes, "native execution observer configuration")
-                .context("decoding native execution observer configuration")?;
+    fn load_socket(socket: &Path, trusted_owner: u32, peer_owner: u32) -> Result<Self> {
+        let socket_text = socket
+            .to_str()
+            .context("native execution observer socket path is not UTF-8")?;
         ensure!(
-            aos_contract::canonical::to_vec(&config)? == bytes,
-            "native execution observer configuration is not canonical"
+            is_canonical_absolute(socket_text),
+            "native execution observer socket is not a canonical absolute path"
         );
-        config.validate(socket_root)?;
 
-        validate_socket_path(&config.socket, trusted_owner)?;
-        let stream = connect_with_timeout(&config.socket, SETUP_TIMEOUT).with_context(|| {
-            format!(
-                "connecting native execution observer {}",
-                config.socket.display()
-            )
+        validate_socket_path(socket, trusted_owner)?;
+        let stream = connect_with_timeout(socket, SETUP_TIMEOUT).with_context(|| {
+            format!("connecting native execution observer {}", socket.display())
         })?;
         validate_peer(&stream, peer_owner)?;
 
@@ -158,42 +97,6 @@ impl ExecutionBoundaryObserver for AbilityExecutionBoundaryObserver {
             Self::Disabled => Ok(ExecutionBoundaryControl::Continue),
             Self::Socket(observer) => observer.observe(observation, control),
         }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ObserverConfig {
-    schema: String,
-    socket: PathBuf,
-}
-
-impl ObserverConfig {
-    fn validate(&self, socket_root: &Path) -> Result<()> {
-        ensure!(self.schema == CONFIG_SCHEMA, "unsupported observer schema");
-        let socket_text = self
-            .socket
-            .to_str()
-            .context("native execution observer socket path is not UTF-8")?;
-        ensure!(
-            is_canonical_absolute(socket_text),
-            "native execution observer socket is not a canonical absolute path"
-        );
-        ensure!(
-            self.socket.parent() == Some(socket_root),
-            "native execution observer socket must be a direct child of {}",
-            socket_root.display()
-        );
-        let name = self
-            .socket
-            .file_name()
-            .and_then(|name| name.to_str())
-            .context("native execution observer socket has no UTF-8 file name")?;
-        ensure!(
-            !name.is_empty() && name != "." && name != ".." && !name.contains('/'),
-            "native execution observer socket has an invalid name"
-        );
-        Ok(())
     }
 }
 
@@ -564,6 +467,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::{PermissionsExt as _, symlink};
     use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
@@ -577,48 +481,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn absent_configuration_has_no_socket_side_effect() -> Result<()> {
-        let temporary = TempDir::new()?;
-        let missing = temporary.path().join("missing/config.json");
-        let observer = AbilityExecutionBoundaryObserver::load_optional_from(
-            &missing,
-            current_uid(),
-            current_uid(),
-            &temporary.path().join("socket-root"),
-        )?;
+    fn absent_checked_input_has_no_socket_side_effect() -> Result<()> {
+        let observer = AbilityExecutionBoundaryObserver::load(None)?;
 
         assert!(matches!(
             observer,
             AbilityExecutionBoundaryObserver::Disabled
         ));
-        assert!(!temporary.path().join("missing").exists());
-        assert!(!temporary.path().join("socket-root").exists());
         Ok(())
     }
 
     #[test]
-    fn configuration_rejects_normalized_socket_spellings() {
+    fn checked_input_rejects_noncanonical_socket_spellings() {
         for socket in [
             "/run/aos-instrumentation/./observer.sock",
             "/run/aos-instrumentation//observer.sock",
             "/run/aos-instrumentation/../observer.sock",
         ] {
-            let config = ObserverConfig {
-                schema: CONFIG_SCHEMA.to_string(),
-                socket: PathBuf::from(socket),
-            };
-            assert!(config.validate(Path::new(SOCKET_ROOT)).is_err(), "{socket}");
+            assert!(
+                AbilityExecutionBoundaryObserver::load_socket(
+                    Path::new(socket),
+                    current_uid(),
+                    current_uid(),
+                )
+                .is_err(),
+                "{socket}"
+            );
         }
     }
 
     #[test]
     fn protected_configuration_connects_to_the_exact_owner() -> Result<()> {
         let fixture = LoaderFixture::new()?;
-        let observer = AbilityExecutionBoundaryObserver::load_from(
-            &fixture.config,
+        let observer = AbilityExecutionBoundaryObserver::load_socket(
+            &fixture.socket,
             current_uid(),
             current_uid(),
-            &fixture.socket_root,
         )?;
 
         assert!(matches!(
@@ -631,11 +529,10 @@ mod tests {
     #[test]
     fn protected_configuration_rejects_wrong_peer_credentials() -> Result<()> {
         let fixture = LoaderFixture::new()?;
-        let error = AbilityExecutionBoundaryObserver::load_from(
-            &fixture.config,
+        let error = AbilityExecutionBoundaryObserver::load_socket(
+            &fixture.socket,
             current_uid(),
             current_uid().saturating_add(1),
-            &fixture.socket_root,
         )
         .expect_err("a peer with another UID must be rejected");
 
@@ -644,43 +541,30 @@ mod tests {
     }
 
     #[test]
-    fn protected_configuration_rejects_symlink_and_writable_parent() -> Result<()> {
+    fn checked_socket_rejects_symlink_and_writable_parent() -> Result<()> {
         let temporary = TempDir::new()?;
         let socket_root = temporary.path().join("sockets");
         fs::create_dir(&socket_root)?;
         fs::set_permissions(&socket_root, fs::Permissions::from_mode(0o700))?;
         let socket = socket_root.join("observer.sock");
         let _listener = UnixListener::bind(&socket)?;
-        let bytes = config_bytes(&socket)?;
-
-        let safe_parent = temporary.path().join("safe");
-        fs::create_dir(&safe_parent)?;
-        fs::set_permissions(&safe_parent, fs::Permissions::from_mode(0o700))?;
-        let target = safe_parent.join("target.json");
-        fs::write(&target, &bytes)?;
-        let linked = safe_parent.join("linked.json");
-        symlink(&target, &linked)?;
+        let linked = socket_root.join("linked.sock");
+        symlink(&socket, &linked)?;
         assert!(
-            AbilityExecutionBoundaryObserver::load_from(
-                &linked,
-                current_uid(),
-                current_uid(),
-                &socket_root,
-            )
-            .is_err()
+            AbilityExecutionBoundaryObserver::load_socket(&linked, current_uid(), current_uid(),)
+                .is_err()
         );
 
         let writable_parent = temporary.path().join("writable");
         fs::create_dir(&writable_parent)?;
         fs::set_permissions(&writable_parent, fs::Permissions::from_mode(0o777))?;
-        let config = writable_parent.join("config.json");
-        fs::write(&config, bytes)?;
+        let writable_socket = writable_parent.join("observer.sock");
+        let _writable_listener = UnixListener::bind(&writable_socket)?;
         assert!(
-            AbilityExecutionBoundaryObserver::load_from(
-                &config,
+            AbilityExecutionBoundaryObserver::load_socket(
+                &writable_socket,
                 current_uid(),
                 current_uid(),
-                &socket_root,
             )
             .is_err()
         );
@@ -869,37 +753,23 @@ mod tests {
     struct LoaderFixture {
         _temporary: TempDir,
         _listener: UnixListener,
-        config: PathBuf,
-        socket_root: PathBuf,
+        socket: PathBuf,
     }
 
     impl LoaderFixture {
         fn new() -> Result<Self> {
             let temporary = TempDir::new()?;
-            let config_root = temporary.path().join("config");
             let socket_root = temporary.path().join("sockets");
-            fs::create_dir(&config_root)?;
             fs::create_dir(&socket_root)?;
-            fs::set_permissions(&config_root, fs::Permissions::from_mode(0o700))?;
             fs::set_permissions(&socket_root, fs::Permissions::from_mode(0o700))?;
             let socket = socket_root.join("observer.sock");
             let listener = UnixListener::bind(&socket)?;
-            let config = config_root.join("observer.json");
-            fs::write(&config, config_bytes(&socket)?)?;
             Ok(Self {
                 _temporary: temporary,
                 _listener: listener,
-                config,
-                socket_root,
+                socket,
             })
         }
-    }
-
-    fn config_bytes(socket: &Path) -> Result<Vec<u8>> {
-        aos_contract::canonical::to_vec(&ObserverConfig {
-            schema: CONFIG_SCHEMA.to_string(),
-            socket: socket.to_path_buf(),
-        })
     }
 
     struct TestIdentity {

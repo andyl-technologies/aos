@@ -1342,6 +1342,53 @@
     visibility = mkOption {type = moduleTypes.enum ["public" "protected"];};
     lifetime = mkOption {type = lifetimeType;};
   };
+  executionObserverSelectionType = strictSubmodule {
+    request = mkOption {
+      type = declarationKeyType;
+      description = "Bound request whose provider publishes the observer inputs.";
+    };
+    resourceOutput = mkOption {
+      type = localKeyType;
+      description = "Protected retained-resource output from the observer provider.";
+    };
+    socketOutput = mkOption {
+      type = localKeyType;
+      description = "Protected planning-phase execution-path output for the observer socket.";
+    };
+  };
+  resolvedExecutionObserver = let
+    selected = config.aos.abilities.executionObserver;
+    outputs =
+      if selected == null
+      then null
+      else config.aos.abilities.compositionOutputs.${selected.request} or null;
+    resource =
+      if outputs == null
+      then null
+      else outputs.${selected.resourceOutput} or null;
+    socket =
+      if outputs == null
+      then null
+      else outputs.${selected.socketOutput} or null;
+    protectedPlanningOutput = output:
+      output != null
+      && output.phase == "planning"
+      && output.visibility == "protected";
+  in
+    if selected == null
+    then null
+    else if
+      protectedPlanningOutput resource
+      && protectedPlanningOutput socket
+      && abilityTypes.resourceReference.check resource.value
+      && abilityTypes.executionPath.check socket.value
+      && builtins.elem resource.value.lifetime ["transaction" "instance" "persistent"]
+    then {
+      inherit (selected) request;
+      resource = resource.value;
+      socket = socket.value;
+    }
+    else throw "Execution observer selection must name protected planning outputs from one bound request.";
   compositionRequirementType = strictSubmodule {
     implementation = mkOption {type = declarationKeyType;};
     alias = mkOption {type = localKeyType;};
@@ -1472,6 +1519,22 @@ in {
       readOnly = true;
       internal = true;
       description = "Typed provider outputs derived for exact bound requests.";
+    };
+    executionObserver = mkOption {
+      type = moduleTypes.nullOr executionObserverSelectionType;
+      default = null;
+      description = ''
+        Selects the protected retained resource and socket path published by one
+        package-owned observer provider. The final fixed point retains only the
+        resolved typed outputs, never a path convention.
+      '';
+    };
+    resolvedExecutionObserver = mkOption {
+      type = moduleTypes.nullOr moduleTypes.attrs;
+      default = resolvedExecutionObserver;
+      readOnly = true;
+      internal = true;
+      description = "Checked execution observer inputs retained by native activation.";
     };
     compositionRequests = mkOption {
       type = moduleTypes.attrsOf requestBaseType;

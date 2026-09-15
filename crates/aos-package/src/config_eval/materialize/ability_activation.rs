@@ -30,22 +30,22 @@ pub struct AbilityActivationInput {
     pub authenticated_policy_set: PinnedAbilitySidecar,
     /// Exact selected package coordinates whose ability companions form the catalog.
     pub packages: Vec<AbilityPackageCoordinate>,
+    /// Retains exact bindings, resources, and observer inputs from the final module fixed point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_point: Option<crate::config_eval::ability_rounds::AbilityFixedPointProjection>,
 }
 
 impl AbilityActivationInput {
     /// Current immutable activation-input descriptor schema.
     pub const SCHEMA: &'static str = "aos.ability.activation-input/v1";
 
-    /// Validates immutable sidecars and package activation coordinates.
+    /// Validates the activation descriptor independently of package enrichment.
     ///
     /// # Errors
     ///
-    /// Returns an error when schemas, features, sidecars, coordinates, or
-    /// derived activation revisions are invalid or inconsistent.
-    pub(crate) fn validate(
-        &self,
-        package_outputs: &BTreeMap<String, RuntimePackagePin>,
-    ) -> Result<()> {
+    /// Returns an error when the schema, feature sequence, sidecar descriptor,
+    /// package-coordinate order, or retained fixed point is invalid.
+    pub(crate) fn validate_descriptor(&self) -> Result<()> {
         use crate::types::{FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1};
 
         if self.schema != Self::SCHEMA {
@@ -80,6 +80,12 @@ impl AbilityActivationInput {
         self.desired_state.validate("desired state")?;
         self.authenticated_policy_set
             .validate("authenticated policy set")?;
+        if let Some(fixed_point) = &self.fixed_point {
+            fixed_point
+                .validate()
+                .map_err(anyhow::Error::new)
+                .context("validating retained ability fixed point")?;
+        }
 
         if self
             .packages
@@ -88,6 +94,27 @@ impl AbilityActivationInput {
         {
             bail!("ability activation package coordinates are not strictly canonical");
         }
+        Ok(())
+    }
+
+    /// Validates immutable sidecars and package activation coordinates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when sidecars, package coordinates, or the final
+    /// checked binding authority are invalid or inconsistent.
+    pub(crate) fn validate(
+        &self,
+        package_outputs: &BTreeMap<String, RuntimePackagePin>,
+    ) -> Result<()> {
+        self.validate_descriptor()?;
+        self.fixed_point
+            .as_ref()
+            .context("native ability activation has no retained final fixed point")?
+            .validate_checked_planning()
+            .map_err(anyhow::Error::new)
+            .context("validating retained checked binding authority")?;
+
         let expected = package_outputs
             .iter()
             .filter_map(|(name, package)| {

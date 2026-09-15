@@ -98,6 +98,8 @@ pub struct WorkingSetMember {
     pub version: Option<String>,
     /// Canonical signed ability document, when the package publishes one.
     pub ability: Option<aos_ability_model::PackageDocument>,
+    /// Authenticated companion output containing the package and interface documents.
+    pub ability_store_path: Option<String>,
     /// Resolver-authenticated runtime outputs exposed to this module.
     pub outputs: PackageOutputs,
 }
@@ -125,6 +127,7 @@ impl WorkingSetMember {
             package: package.into(),
             version: None,
             ability: None,
+            ability_store_path: None,
             outputs: PackageOutputs::default(),
         }
     }
@@ -461,6 +464,7 @@ where
         seed.version = Some(resolved.version);
         seed.outputs.self_output = Some(resolved.runtime_output);
         seed.ability = Some(resolved.document);
+        seed.ability_store_path = Some(resolved.ability_store_path);
     }
     Ok(())
 }
@@ -703,6 +707,8 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
             seed_set,
         };
         let mut candidate = run_fixpoint(&inputs, &evaluator).map_err(eval_command_failure)?;
+        let planning = replay_candidate_ability_plan(&candidate)
+            .context("replaying authenticated ability plan for the module fixed point")?;
         let ability_evaluator = stock::StockAbilityRoundEvaluator::new(
             &evaluator,
             EvalAttempt {
@@ -714,13 +720,27 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
                 iteration: candidate.iterations,
             },
         );
-        let ability_resolver = stock::StockAbilityRoundResolver::new(&candidate.working_set);
-        let ability = ability_rounds::resolve_ability_rounds(
+        let ability_resolver =
+            stock::StockAbilityRoundResolver::new(&candidate.working_set, planning.as_ref());
+        let mut ability = ability_rounds::resolve_ability_rounds(
             &ability_evaluator,
             &ability_resolver,
             aos_ability_model::ABILITY_LIMITS_V1.max_resolver_rounds,
         )
         .context("resolving the final ability module fixed point")?;
+        match planning.as_ref() {
+            Some(planning) => ability
+                .fixed_point
+                .bind_checked_planning(planning, &ability.selections)
+                .context("binding final module selections to the authenticated ability plan")?,
+            None => anyhow::ensure!(
+                ability.selections.bindings().is_empty()
+                    && ability.fixed_point.bindings.is_empty()
+                    && ability.fixed_point.resolved_resources.is_empty()
+                    && ability.fixed_point.execution_observer.is_none(),
+                "an ability fixed point without authenticated activation authority is not empty"
+            ),
+        }
         candidate.manifest = ability.manifest;
         candidate.ability_fixed_point = ability.fixed_point;
         let selected: Vec<String> = candidate
@@ -771,6 +791,44 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
     Ok(EvalCommandReport {
         resolution_trace: outcome.trace.iter().map(render_iter_record).collect(),
     })
+}
+
+fn replay_candidate_ability_plan(
+    candidate: &FixpointOutcome,
+) -> Result<Option<aos_ability_plan::VerifiedPlanningSnapshot>> {
+    let manifest: materialize::ConfigManifest =
+        serde_json::from_str(&candidate.manifest).context("decoding candidate config manifest")?;
+    let Some(activation) = manifest.inputs.ability_activation.as_ref() else {
+        return Ok(None);
+    };
+
+    let operator_authority = ability_policy_authority::OperatorPolicyAuthorityStore::open()
+        .context("opening operator ability-policy authority")?;
+    let inputs = ability_activation::VerifiedAbilityActivationInputs::load_for_planning(
+        activation,
+        &operator_authority,
+    )?;
+    let documents = candidate
+        .working_set
+        .iter()
+        .filter_map(|member| {
+            member.ability.as_ref().map(|document| {
+                let store_path = member.ability_store_path.as_ref().with_context(|| {
+                    format!(
+                        "authenticated ability package {:?} has no retained companion path",
+                        member.package
+                    )
+                })?;
+                Ok((document.clone(), PathBuf::from(store_path)))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let catalog =
+        crate::ability_package::VerifiedAbilityPlanningCatalog::from_authenticated_documents(
+            documents,
+        )?;
+    let mut evaluator = native_activation::production_evaluator()?;
+    ability_activation::specialize_planning(&inputs, &catalog, &mut evaluator).map(Some)
 }
 
 /// Renders one provider-discovery step for the dry-run JSON contract.
@@ -1001,7 +1059,8 @@ fn enrich_manifest(
         .and_then(|inputs| inputs.remove("ability_activation"));
 
     enrich_runtime_projection(object, runtime)?;
-    let ability_activation = enrich_ability_activation(ability_activation, runtime)?;
+    let ability_activation =
+        enrich_ability_activation(ability_activation, runtime, &outcome.ability_fixed_point)?;
     if let Some(activation) = &ability_activation {
         retain_ability_sidecar_roots(object, activation)?;
     }
@@ -1177,6 +1236,7 @@ fn enrich_manifest(
 fn enrich_ability_activation(
     input: Option<serde_json::Value>,
     runtime: &runtime::RuntimeResolution,
+    fixed_point: &ability_rounds::AbilityFixedPointProjection,
 ) -> Result<Option<serde_json::Value>> {
     let structured_packages = runtime
         .packages
@@ -1220,6 +1280,10 @@ fn enrich_ability_activation(
         })
         .collect::<Result<Vec<_>>>()?;
     object.insert("packages".to_string(), serde_json::Value::Array(packages));
+    object.insert(
+        "fixed_point".to_string(),
+        serde_json::to_value(fixed_point).context("serializing final ability fixed point")?,
+    );
     Ok(Some(input))
 }
 
@@ -1936,6 +2000,7 @@ fn retained_cross_abi_working_set(
                 package: module.package.clone(),
                 version: Some(pin.version.clone()),
                 ability: Some(document),
+                ability_store_path: Some(contract.store_path.clone()),
                 outputs: PackageOutputs {
                     self_output: Some(pin.store_path.clone()),
                     dependencies: source

@@ -37,8 +37,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use anyhow::{Context, Result, bail, ensure};
-use aos_ability_model::{ProviderImplementation, RequirementDeclaration};
-use aos_contract::Sha256Digest;
+use aos_ability_model::{
+    Binding, ProviderImplementation, ProviderImplementationReference, VersionedDocument,
+};
+use aos_ability_plan::VerifiedPlanningSnapshot;
 use base64::Engine as _;
 use serde::Deserialize;
 
@@ -85,64 +87,144 @@ pub struct StockAbilityRoundEvaluator<'a> {
 /// Selects child providers only from authenticated packages in one working set.
 pub(super) struct StockAbilityRoundResolver<'a> {
     working_set: &'a [WorkingSetMember],
+    planning: Option<&'a VerifiedPlanningSnapshot>,
 }
 
 impl<'a> StockAbilityRoundResolver<'a> {
-    /// Creates a resolver over the exact package set admitted to this evaluation.
-    pub(super) const fn new(working_set: &'a [WorkingSetMember]) -> Self {
-        Self { working_set }
+    /// Creates a resolver over one replayed checked plan and its exact package set.
+    pub(super) const fn new(
+        working_set: &'a [WorkingSetMember],
+        planning: Option<&'a VerifiedPlanningSnapshot>,
+    ) -> Self {
+        Self {
+            working_set,
+            planning,
+        }
     }
 
-    fn implementation(
+    fn checked_binding(
         &self,
-        qualified: &str,
-    ) -> Result<(&'a WorkingSetMember, &'a ProviderImplementation)> {
-        let matches = self
-            .working_set
+        request: &super::ability_rounds::PendingAbilityRequest,
+    ) -> Result<&Binding> {
+        let planning = self
+            .planning
+            .context("pending ability request has no authenticated activation plan")?;
+        let matches = planning
+            .checked_binding()
+            .bindings()
             .iter()
-            .flat_map(|member| {
-                member
-                    .ability
-                    .as_ref()
-                    .into_iter()
-                    .flat_map(move |package| {
-                        package
-                            .implementation
-                            .providers
-                            .iter()
-                            .filter(move |provider| {
-                                format!("{}:{}", member.package, provider.name.as_str())
-                                    == qualified
-                            })
-                            .map(move |provider| (member, provider))
-                    })
-            })
+            .filter(|binding| binding.request == *request.identity())
             .collect::<Vec<_>>();
         match matches.as_slice() {
-            [selected] => Ok(*selected),
+            [selected] => Ok(selected),
             [] => bail!(
-                "selected ability implementation {qualified:?} is absent from the authenticated working set"
+                "pending ability request {:?} has no binding in the replayed checked plan",
+                request.request()
             ),
             _ => bail!(
-                "selected ability implementation {qualified:?} is ambiguous in the authenticated working set"
+                "pending ability request {:?} has several bindings in the replayed checked plan",
+                request.request()
             ),
         }
     }
 
-    fn authenticate_requirement(
+    fn implementation(
         &self,
-        implementation: &str,
-        requirement: &RequirementDeclaration,
-    ) -> Result<()> {
-        let (_, provider) = self.implementation(implementation)?;
+        binding: &Binding,
+    ) -> Result<(&'a WorkingSetMember, &'a ProviderImplementation, String)> {
+        let package_digest = binding
+            .provider_package
+            .context("checked package-backed binding has no provider package digest")?;
+        let mut matches = Vec::new();
+        for member in self.working_set {
+            let Some(package) = &member.ability else {
+                continue;
+            };
+            if package.content_digest()? != package_digest {
+                continue;
+            }
+            for provider in &package.implementation.providers {
+                let reference = ProviderImplementationReference {
+                    descriptor: provider.descriptor_digest()?,
+                    artifact: provider.artifact.clone(),
+                    handler: provider.handler.clone(),
+                };
+                if reference == binding.implementation && provider.interface == binding.interface {
+                    matches.push((
+                        member,
+                        provider,
+                        format!("{}:{}", member.package, provider.name.as_str()),
+                    ));
+                }
+            }
+        }
+        let [(member, provider, implementation)] = matches.as_slice() else {
+            bail!(
+                "checked binding {:?} resolves to {} exact authenticated implementations",
+                binding.id.0.as_str(),
+                matches.len()
+            );
+        };
+
         ensure!(
-            provider
-                .requirements
-                .iter()
-                .any(|declared| declared == requirement),
-            "pending child requirement is absent from its authenticated implementation"
+            member.package
+                == member
+                    .ability
+                    .as_ref()
+                    .map_or("", |package| package.package.name.as_str()),
+            "checked implementation package identity differs from its working-set declaration"
         );
-        Ok(())
+        Ok((*member, *provider, implementation.clone()))
+    }
+
+    fn provider_instance(
+        pending: &PendingAbilityProjection,
+        binding: &Binding,
+        implementation: &str,
+    ) -> Result<String> {
+        let matches = pending
+            .provider_instances
+            .iter()
+            .filter(|(_, instance)| {
+                instance.identity == binding.provider
+                    && instance.implementation.as_deref() == Some(implementation)
+            })
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        let [name] = matches.as_slice() else {
+            bail!(
+                "checked binding {:?} resolves to {} exact provider instances in the module fixed point",
+                binding.id.0.as_str(),
+                matches.len()
+            );
+        };
+        Ok(name.clone())
+    }
+
+    fn contribution_slot(
+        binding: &Binding,
+        request: &super::ability_rounds::PendingAbilityRequest,
+    ) -> Result<String> {
+        let contributions = binding
+            .caller_grant
+            .contributions
+            .iter()
+            .filter(|permission| permission.aggregate.provider == binding.provider)
+            .collect::<Vec<_>>();
+        match contributions.as_slice() {
+            [permission] => Ok(permission.slot.as_str().to_string()),
+            [] => request.expected_slot().map(str::to_string).with_context(|| {
+                format!(
+                    "checked root binding {:?} has no exact contribution slot",
+                    binding.id.0.as_str()
+                )
+            }),
+            _ => bail!(
+                "checked binding {:?} grants {} exact contribution slots",
+                binding.id.0.as_str(),
+                contributions.len()
+            ),
+        }
     }
 
     fn selected_module(
@@ -181,87 +263,42 @@ impl AbilityRoundResolver for StockAbilityRoundResolver<'_> {
     fn select(&self, pending: &PendingAbilityProjection) -> Result<Vec<SelectedAbilityBinding>> {
         let mut selections = Vec::with_capacity(pending.requests.len());
         for request in pending.requests.values() {
-            let requirement_key = request
-                .declaration
-                .as_json()
-                .get("requirement")
-                .and_then(serde_json::Value::as_str)
-                .context("pending child request has no exact requirement key")?;
-            let requirement = pending
-                .requirements
-                .get(requirement_key)
-                .context("pending child request names an absent exact requirement")?;
-            self.authenticate_requirement(&requirement.implementation, &requirement.requirement)?;
-
-            let candidates = self
-                .working_set
+            let binding = self.checked_binding(request)?;
+            let planning = self
+                .planning
+                .context("pending ability request has no authenticated activation plan")?;
+            let checked_request = planning
+                .checked_binding()
+                .document()
+                .requests
                 .iter()
-                .flat_map(|member| {
-                    member
-                        .ability
-                        .as_ref()
-                        .into_iter()
-                        .flat_map(move |package| {
-                            package
-                                .implementation
-                                .providers
-                                .iter()
-                                .filter_map(move |provider| {
-                                    let implementation =
-                                        format!("{}:{}", member.package, provider.name.as_str());
-                                    let matches_contract = requirement
-                                        .requirement
-                                        .accepted_interfaces
-                                        .iter()
-                                        .any(|selector| selector.matches(&provider.interface))
-                                        && requirement.requirement.guarantees.iter().all(
-                                            |guarantee| provider.guarantees.contains(guarantee),
-                                        );
-                                    matches_contract.then_some((member, provider, implementation))
-                                })
-                        })
-                })
-                .flat_map(|(member, provider, implementation)| {
-                    pending.provider_instances.iter().filter_map(
-                        move |(provider_instance, selected)| {
-                            let local_instance = provider_instance
-                                .strip_prefix(member.package.as_str())?
-                                .strip_prefix(':')?;
-                            let implementation_matches = selected
-                                .implementation
-                                .as_deref()
-                                .is_none_or(|selected| selected == implementation);
-
-                            (!local_instance.is_empty() && implementation_matches).then(|| {
-                                (provider_instance, implementation.clone(), member, provider)
-                            })
-                        },
-                    )
-                })
-                .collect::<Vec<_>>();
-            let [(provider_instance, implementation, member, provider)] = candidates.as_slice()
-            else {
-                bail!(
-                    "pending child request {:?} resolves to {} authenticated provider candidates",
-                    request.request,
-                    candidates.len()
+                .find(|candidate| candidate.id == binding.request)
+                .context("checked binding names an absent request")?;
+            let parameters = request
+                .declaration()
+                .as_json()
+                .get("parameters")
+                .context("module request has no typed parameters")?;
+            ensure!(
+                checked_request.parameters.as_json() == parameters,
+                "module request differs from the replayed checked request value"
+            );
+            let (member, provider, implementation) = self.implementation(binding)?;
+            let provider_instance = Self::provider_instance(pending, binding, &implementation)?;
+            let slot = Self::contribution_slot(binding, request)?;
+            if let Some(expected) = request.expected_slot() {
+                ensure!(
+                    slot == expected,
+                    "checked binding changes the provider-authored child contribution slot"
                 );
-            };
-            let key = Sha256Digest::of_canonical(
-                "aos.ability.child-binding/v1",
-                &(
-                    request.request.as_str(),
-                    implementation.as_str(),
-                    provider_instance.as_str(),
-                    request.slot.as_str(),
-                ),
-            )?;
+            }
+
             selections.push(SelectedAbilityBinding {
-                key: format!("binding-{}", key.hex()),
-                request: request.request.clone(),
-                implementation: implementation.clone(),
-                provider_instance: (*provider_instance).clone(),
-                slot: request.slot.clone(),
+                key: binding.id.0.as_str().to_string(),
+                request: request.request().to_string(),
+                implementation,
+                provider_instance,
+                slot,
                 provider_module: Self::selected_module(member, provider)?,
             });
         }
@@ -1061,6 +1098,12 @@ fn resolved_registry_package_module(
     let Some(document) = crate::ability_package::resolve_package_document(package)? else {
         return Ok(None);
     };
+    let ability_store_path = package
+        .ability
+        .as_ref()
+        .context("resolved package document has no authenticated companion")?
+        .store_path
+        .clone();
     let Some(module) = document.package_module.as_ref() else {
         return Ok(None);
     };
@@ -1077,6 +1120,7 @@ fn resolved_registry_package_module(
         version: package.version.clone(),
         platform: package.platform.clone(),
         runtime_output: package.store_path.clone(),
+        ability_store_path,
         document,
     }))
 }
@@ -1088,7 +1132,8 @@ fn resolved_image_package_module(
     let Some(ability) = package.ability.clone() else {
         return Ok(None);
     };
-    let manifest = crate::ability_package::read_package_manifest(&ability.store_path)?;
+    let ability_store_path = ability.store_path.clone();
+    let manifest = crate::ability_package::read_package_manifest(&ability_store_path)?;
     let decoded = crate::ability_package::decode_package_manifest(&manifest)?;
     if decoded.package_module.is_none() {
         return Ok(None);
@@ -1132,6 +1177,7 @@ fn resolved_image_package_module(
         version: package.version.clone(),
         platform: "image".to_string(),
         runtime_output: package.store_path.clone(),
+        ability_store_path: ability_store_path.clone(),
         document,
     }))
 }
@@ -1286,7 +1332,9 @@ mod tests {
 
     use super::*;
     use crate::config_eval::PackageOutputs;
-    use crate::config_eval::ability_rounds::{SelectedAbilityBinding, SelectedProviderModule};
+    use crate::config_eval::ability_rounds::{
+        PendingAbilityRequest, SelectedAbilityBinding, SelectedProviderModule,
+    };
     use crate::types::{ApmMeta, ConfigModuleMeta, ConfigOutputMeta, ModuleAbiCompat};
 
     fn member(pkg: &str, module_artifact: Option<&str>) -> WorkingSetMember {
@@ -1297,6 +1345,7 @@ mod tests {
             package: pkg.to_string(),
             version: Some("1.0.0".to_string()),
             ability: None,
+            ability_store_path: None,
             module_artifact: module_artifact.map(str::to_string),
             module_artifact_nar_hash: module_artifact.map(|_| "sha256:test".to_string()),
             module_abi_compat: Some(ModuleAbiCompat { min: 1, max: 2 }),

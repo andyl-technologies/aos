@@ -23,6 +23,13 @@ args @ {lib, ...}: let
           visibility = "protected";
           lifetime = "instance";
         };
+        observer-socket = {
+          description = "Publishes the protected execution observer socket for the fixture.";
+          schema = lib.abilities.types.executionPath;
+          phase = "planning";
+          visibility = "protected";
+          lifetime = "instance";
+        };
       };
     };
   lifecycleModuleDeclaration =
@@ -120,6 +127,7 @@ args @ {lib, ...}: let
               operations = ["observe"];
               lifetime = "instance";
             };
+            observer-socket = "/run/aos-observer/control.sock";
           })
           requests;
       resourceFragments = builtins.listToAttrs (builtins.map (request: {
@@ -324,6 +332,15 @@ args @ {lib, ...}: let
   controlledResource = builtins.head (builtins.filter (resource: resource.controller != null) resolved);
   publishedResource = builtins.head (builtins.filter (resource: resource.controller == null) resolved);
   networkOutput = abilities.compositionOutputs."consumer:network".readiness-resource;
+  observerSelection = evaluate {
+    roundAdditions = [{
+      config.aos.abilities.executionObserver = {
+        request = "consumer:lifecycle";
+        resourceOutput = "service-resource";
+        socketOutput = "observer-socket";
+      };
+    }];
+  };
   rejects = value: !(builtins.tryEval (builtins.deepSeq value true)).success;
 
   duplicateDependency = evaluate {
@@ -625,10 +642,24 @@ args @ {lib, ...}: let
 in
   if returnPending
   then {
-    requests = pendingChildRequest.config.aos.abilities.compositionPendingRequests;
+    requests = builtins.mapAttrs
+      (_: request:
+        request
+        // {
+          origin = "provider";
+          identity = {
+            consumer = pendingChildRequest.config.aos.abilities.instanceIdentities.${request.providerInstance};
+            inherit (request.declaration) scope;
+            key = request.localRequestKey;
+          };
+        })
+      pendingChildRequest.config.aos.abilities.compositionPendingRequests;
     requirements = pendingChildRequest.config.aos.abilities.compositionRequirements;
     providerInstances = builtins.mapAttrs
-      (_: instance: {inherit (instance) implementation;})
+      (name: instance: {
+        inherit (instance) implementation;
+        identity = pendingChildRequest.config.aos.abilities.instanceIdentities.${name};
+      })
       pendingChildRequest.config.aos.abilities.instances;
   }
   else
@@ -656,6 +687,11 @@ in
     assert networkOutput.lifetime == "instance";
     assert networkOutput.value.resource.provider == abilities.instanceIdentities."provider:manager";
     assert networkOutput.value.resource.key == "network-online";
+    assert observerSelection.config.aos.abilities.resolvedExecutionObserver == {
+      request = "consumer:lifecycle";
+      resource = observerSelection.config.aos.abilities.compositionOutputs."consumer:lifecycle".service-resource.value;
+      socket = "/run/aos-observer/control.sock";
+    };
     assert abilities.compositionOutputs."consumer:lifecycle".marker.value;
     assert rejects duplicateDependency.config.aos.abilities.desiredResources;
     assert rejects ambiguousController.config.aos.abilities.desiredResources;

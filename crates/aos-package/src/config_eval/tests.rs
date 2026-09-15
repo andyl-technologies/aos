@@ -20,6 +20,15 @@ use crate::types::{
     ConfigModuleMeta, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot, RootContribution,
 };
 
+fn empty_checked_fixed_point() -> ability_rounds::AbilityFixedPointProjection {
+    ability_rounds::AbilityFixedPointProjection {
+        binding_plan: Some(aos_ability_model::PlanId(
+            aos_contract::Sha256Digest::of_bytes("empty-test-binding-plan"),
+        )),
+        ..Default::default()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
@@ -223,6 +232,7 @@ fn loaded(package: &str) -> WorkingSetMember {
         package: package.to_string(),
         version: Some("1".to_string()),
         ability: None,
+        ability_store_path: None,
         config_output: Some(format!("/nix/store/h-{package}-config")),
         config_output_nar_hash: Some("sha256:test".to_string()),
         module_abi_compat: Some(compat(1, 2)),
@@ -246,6 +256,7 @@ fn signed_release_identity_flows_from_resolver_members_into_manifest_input() {
         package: "web".to_string(),
         version: Some("1.0.0".to_string()),
         ability: None,
+        ability_store_path: None,
         config_output: Some("/nix/store/cccccccccccccccccccccccccccccccc-web-config".to_string()),
         config_output_nar_hash: Some(format!("sha256:{}", "bb".repeat(32))),
         module_abi_compat: Some(compat(1, 2)),
@@ -877,6 +888,7 @@ fn structured_runtime_retains_config_bytes_without_legacy_unit_actions() {
         })),
         &runtime,
         &config_projections,
+        &empty_checked_fixed_point(),
     )
     .unwrap()
     .unwrap();
@@ -1018,6 +1030,7 @@ fn ability_activation_input_survives_removal_of_the_last_structured_package() {
         Some(input),
         &super::runtime::RuntimeResolution::default(),
         &BTreeMap::new(),
+        &empty_checked_fixed_point(),
     )
     .expect("retained activation input must authorize native teardown planning")
     .expect("activation input remains selected");
@@ -1065,8 +1078,9 @@ fn legacy_host_selection_cannot_activate_a_structured_package_without_owned_inpu
         edges: BTreeMap::new(),
     };
 
-    let error = super::enrich_ability_activation(None, &runtime, &BTreeMap::new())
-        .expect_err("a legacy host selection does not own structured activation input");
+    let error =
+        super::enrich_ability_activation(None, &runtime, &BTreeMap::new(), &Default::default())
+            .expect_err("a legacy host selection does not own structured activation input");
 
     assert_eq!(
         error.to_string(),
@@ -1187,19 +1201,31 @@ fn documentation_prose_changes_only_document_identity_not_activation_inputs() {
     });
 
     let projection_before = projection("enabled=true\n");
-    let activation_before =
-        super::enrich_ability_activation(Some(input.clone()), &runtime('3'), &projection_before)
-            .unwrap()
-            .unwrap();
-    let activation_after =
-        super::enrich_ability_activation(Some(input.clone()), &runtime('4'), &projection_before)
-            .unwrap()
-            .unwrap();
+    let activation_before = super::enrich_ability_activation(
+        Some(input.clone()),
+        &runtime('3'),
+        &projection_before,
+        &empty_checked_fixed_point(),
+    )
+    .unwrap()
+    .unwrap();
+    let activation_after = super::enrich_ability_activation(
+        Some(input.clone()),
+        &runtime('4'),
+        &projection_before,
+        &empty_checked_fixed_point(),
+    )
+    .unwrap()
+    .unwrap();
     let changed_projection = projection("enabled=false\n");
-    let activation_changed =
-        super::enrich_ability_activation(Some(input), &runtime('4'), &changed_projection)
-            .unwrap()
-            .unwrap();
+    let activation_changed = super::enrich_ability_activation(
+        Some(input),
+        &runtime('4'),
+        &changed_projection,
+        &empty_checked_fixed_point(),
+    )
+    .unwrap()
+    .unwrap();
 
     assert_eq!(activation_before, activation_after);
     assert_ne!(
@@ -1401,6 +1427,7 @@ fn seed_abi_gate_rejects_before_any_eval() {
         package: "firewall".into(),
         version: Some("9.9.9".into()),
         ability: None,
+        ability_store_path: None,
         config_output: Some("/nix/store/h-firewall-config".into()),
         config_output_nar_hash: Some("sha256:test".into()),
         module_abi_compat: Some(compat(2, 4)),
