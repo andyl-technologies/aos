@@ -99,7 +99,7 @@ in
     abilities = ./_aos-registry-server-config/module.nix;
 
     meta = {
-      description = "AOS exposed registry and binary cache server package";
+      description = "AOS registry and binary cache server test package";
       license = "Apache-2.0";
     };
   }

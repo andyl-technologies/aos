@@ -46,7 +46,7 @@ mkDerivation {
   abilities = ./_test-http-server/module.nix;
 
   meta = {
-    description = "AOS exposed test HTTP server package";
+    description = "AOS test HTTP server package";
     license = "Apache-2.0";
   };
 }

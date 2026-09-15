@@ -47,7 +47,7 @@ mkDerivation {
   abilities = ./_test-static-cache-server/module.nix;
 
   meta = {
-    description = "AOS exposed static cache test HTTP server package";
+    description = "AOS static cache test HTTP server package";
     license = "Apache-2.0";
   };
 }

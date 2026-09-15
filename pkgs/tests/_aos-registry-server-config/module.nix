@@ -10,11 +10,11 @@
   serviceTypes = serviceManagement.types;
   inherit (lib.abilities) pathWithin resultOf;
 
-  nonEmpty = abilityTypes.refined {
-    name = "non-empty registry setting";
-    description = "a non-empty value without whitespace";
+  listenAddress = abilityTypes.refined {
+    name = "registry listen address";
+    description = "a hostname or numeric address accepted by the registry test services";
     type = abilityTypes.runtimeString;
-    predicate = value: builtins.match "[^[:space:]]+" value != null;
+    predicate = value: builtins.match "[A-Za-z0-9:._-]+" value != null;
   };
   port = abilityTypes.integer {
     minimum = 1;
@@ -301,9 +301,15 @@
     cacheService
   ];
   enabledFragments =
-    [registryStorage cacheStorage storeStorage runtimeStorage]
-    ++ lib.optionals cfg.git.enable [gitConfiguration gitService]
-    ++ lib.optionals cfg.cache.enable [cacheConfiguration serveConfiguration cacheService];
+    lib.optionals cfg.git.enable [registryStorage gitConfiguration gitService]
+    ++ lib.optionals cfg.cache.enable [
+      cacheStorage
+      storeStorage
+      runtimeStorage
+      cacheConfiguration
+      serveConfiguration
+      cacheService
+    ];
 in {
   options.aos-registry-server = {
     enable = lib.mkOption {
@@ -323,7 +329,7 @@ in {
         description = "Serve registry Git repositories.";
       };
       listenAddress = lib.mkOption {
-        type = nonEmpty;
+        type = listenAddress;
         default = "0.0.0.0";
         description = "Address passed to the Git daemon.";
       };
@@ -350,7 +356,7 @@ in {
         description = "Run the AOS binary-cache server.";
       };
       listenAddress = lib.mkOption {
-        type = nonEmpty;
+        type = listenAddress;
         default = "0.0.0.0";
         description = "Binary-cache listen address.";
       };
