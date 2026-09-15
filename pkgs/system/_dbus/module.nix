@@ -11,9 +11,13 @@
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
   abilityTypes = lib.abilities.types;
-  registrationContract = import ./registration-interface.nix {inherit lib;};
+  controllerAlias = "system-registration";
+  controllerDeclaration = config.aos.abilities.interfaces."${packageName}:${controllerAlias}";
+  controllerDocument = lib.abilities.interfaceDocumentFromDeclaration controllerDeclaration;
+  controllerIdentity = lib.abilities.interfaceIdentity controllerDocument;
+  controllerMethods = builtins.attrNames controllerDeclaration.methods;
   packageArtifact = lib.abilities.packageOutput {};
-  registrationImplementation = "${packageName}:${registrationContract.controller.alias}";
+  registrationImplementation = "${packageName}:${controllerAlias}";
   registrationProviderInstance = "${packageName}:registration";
   registrationConfigurationRequest = lib.abilities.compositionRequestKey {
     implementation = registrationImplementation;
@@ -62,9 +66,9 @@
   };
   registrationRequirement = {
     description = "Selects the D-Bus-owned registration aggregate.";
-    inherit (registrationContract.controller.identity) abi descriptor;
-    interface = registrationContract.controller.identity.name;
-    methods = registrationContract.controller.methods;
+    inherit (controllerIdentity) abi descriptor;
+    interface = controllerIdentity.name;
+    methods = controllerMethods;
     guarantees = [];
     strength = "required";
     fallback = null;
@@ -265,6 +269,8 @@
   ];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
+  imports = [./registration-interface.nix];
+
   options.aos.services.dbus = {
     enable = lib.mkOption {
       type = abilityTypes.boolean;
@@ -284,65 +290,7 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (
-        [
-          {
-            interfaces = {
-              ${registrationContract.controller.alias} = registrationContract.controller.declaration;
-              ${registrationContract.contribution.alias} = registrationContract.contribution.declaration;
-            };
-            implementations = {
-              ${registrationContract.controller.alias} = {
-                description = "Materializes one system-bus configuration assembled from authorized registrations.";
-                interface = registrationContract.controller.alias;
-                artifact = packageArtifact;
-                methods = registrationContract.controller.methods;
-                guarantees = [];
-                requirements = {
-                  configuration-materialization = {
-                    alias = "configuration-materialization";
-                    description = "Materializes the assembled system-bus configuration.";
-                    accepted_interfaces = [serviceManagement.interfaces.managedConfiguration.identity];
-                    methods = ["materialize" "observe" "release"];
-                    guarantees = [];
-                    strength = "required";
-                    fallback = null;
-                  };
-                  service-reload = {
-                    alias = "service-reload";
-                    description = "Reloads the system bus after registration changes.";
-                    accepted_interfaces = [serviceManagement.interfaces.reload.identity];
-                    methods = ["observe" "reload"];
-                    guarantees = [];
-                    strength = "required";
-                    fallback = null;
-                  };
-                };
-                providerModule = {
-                  artifact = packageArtifact;
-                  path = "share/aos/providers/dbus-registration.nix";
-                };
-                desiredType = registrationContract.controller.realizationType;
-                requiredFeatures = [];
-              };
-              ${registrationContract.contribution.alias} = {
-                description = "Merges one authenticated package registration into the system-bus configuration.";
-                interface = registrationContract.contribution.alias;
-                artifact = packageArtifact;
-                methods = registrationContract.contribution.methods;
-                guarantees = [];
-                providerModule = {
-                  artifact = packageArtifact;
-                  path = "share/aos/providers/dbus-registration.nix";
-                };
-                desiredType = registrationContract.controller.realizationType;
-                requiredFeatures = [];
-              };
-            };
-          }
-        ]
-        ++ builtins.map (contribution: contribution.declarations) contributions
-      );
+      aos.abilities = lib.mkMerge (builtins.map (contribution: contribution.declarations) contributions);
     }
     (lib.mkIf cfg.enable {
       aos.abilities = lib.mkMerge (

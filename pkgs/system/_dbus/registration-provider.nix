@@ -5,10 +5,12 @@
   packageName,
   ...
 }: let
-  contract = import ./registration-interface.nix {inherit lib;};
-  controllerAlias = contract.controller.alias;
-  contributionAlias = contract.contribution.alias;
-  controllerIdentity = contract.controller.identity;
+  controllerAlias = "system-registration";
+  contributionAlias = "system-registration-contribution";
+  controllerDeclaration = config.aos.abilities.interfaces."${packageName}:${controllerAlias}";
+  controllerIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration controllerDeclaration
+  );
   emptyResult = {
     requests = {};
     outputs = {};

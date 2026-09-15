@@ -233,8 +233,6 @@ in
           mkdir -p "$out/share/aos/providers"
           cp ${./_dbus/registration-provider.nix} \
             "$out/share/aos/providers/dbus-registration.nix"
-          cp ${./_dbus/registration-interface.nix} \
-            "$out/share/aos/providers/registration-interface.nix"
           cp ${./_dbus/registration-transition.nix} \
             "$out/share/aos/providers/registration-transition.nix"
         '';
