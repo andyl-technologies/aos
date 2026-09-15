@@ -2105,7 +2105,7 @@ in {
           integration.conntrack-tools-config
           integration.containerd-config-module-contract
           integration.edgecore-config
-          integration.etcd-config-module-contract
+          integration.etcd-ability-module-contract
           integration.garage-config-module-contract
           integration.krb5-config
           integration.mariadb-config-module-contract
