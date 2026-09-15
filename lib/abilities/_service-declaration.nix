@@ -285,7 +285,18 @@
       declaration
       // {
         lifecycle = {configuration_change_action = "restart";} // declaration.lifecycle;
-      };
+      }
+      // (
+        if storage == null
+        then {}
+        else {
+          storage =
+            storage
+            // {
+              mounts = builtins.map (mount: {ownership = "provider";} // mount) storage.mounts;
+            };
+        }
+      );
 
   requirementFor = interface: methods: {
     description = interface.declaration.description;
