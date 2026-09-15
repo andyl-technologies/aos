@@ -149,6 +149,10 @@
     path = ../../../tests/abilities/evaluator-provider;
     name = "aos-ability-evaluator-fixture";
   };
+  abilityAuthoringConformanceCorpus =
+    builtins.toFile
+    "aos-ability-authoring-conformance-v1.json"
+    (builtins.toJSON (import ../../../tests/abilities/conformance/corpus.nix));
   abilityAuthoringConformanceFixture = buildPackages.mkDerivation {
     pname = "aos-ability-authoring-conformance-fixture";
     version = "1";
@@ -162,10 +166,7 @@
           ${buildPackages.sed}/bin/sed \
             ${lib.escapeShellArg "s|@aosBuildSystem@|${stdenv.buildPlatform.system}|g"} \
             ${../../../tests/abilities/conformance/provider.nix} > "$out/default.nix"
-          cp ${../../../tests/abilities/conformance/runner.nix} "$out/runner.nix"
-          cp ${../../../tests/abilities/conformance/v1.json} "$out/corpus.json"
-          cp ${../../../tests/abilities/composition.nix} "$out/composition.nix"
-          cp ${../../../tests/abilities/effects.nix} "$out/effects.nix"
+          cp ${abilityAuthoringConformanceCorpus} "$out/corpus.json"
         '';
       }
     ];

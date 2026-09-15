@@ -40,20 +40,17 @@
     then fail "${context} has unsupported fields: ${builtins.concatStringsSep ", " unexpected}"
     else value;
 
-  isLocalKey = value:
-    builtins.isString value
-    && builtins.stringLength value > 0
-    && builtins.stringLength value <= 128
-    && builtins.match "[A-Za-z0-9._-]+" value != null;
+  isLocalKey = abilityTypes.localKey.check;
 
   isAsciiString = value:
     builtins.isString value
     && builtins.match "[[:cntrl:][:print:]]*" value != null;
 
-  maxSafeInteger = 9007199254740991;
-  maxStringLength = 1048576;
-  maxCollectionItems = 2000000;
-  maxDocumentBytes = 32 * 1024 * 1024;
+  inherit (abilityTypes.limits) maxSafeInteger maxStringLength maxCollectionItems maxDocumentBytes;
+  positiveU32Type = abilityTypes.integer {
+    minimum = 1;
+    maximum = abilityTypes.limits.maxU32;
+  };
 
   requireLocalKey = context: value:
     if isLocalKey value
@@ -61,15 +58,12 @@
     else fail "${context} must match [A-Za-z0-9._-]+ and contain at most 128 bytes";
 
   requireQualifiedName = context: value:
-    if
-      builtins.isString value
-      && builtins.stringLength value <= 128
-      && builtins.match "[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+" value != null
+    if abilityTypes.qualifiedName.check value
     then value
     else fail "${context} must be a namespace-qualified name";
 
   requireDigest = context: value:
-    if builtins.isString value && builtins.match "sha256:[0-9a-f]{64}" value != null
+    if abilityTypes.digest.check value
     then value
     else fail "${context} must be a sha256 digest";
 
@@ -301,7 +295,7 @@
   };
 
   requireU32Positive = context: value:
-    if builtins.isInt value && value > 0 && value <= 4294967295
+    if positiveU32Type.check value
     then value
     else fail "${context} must be a positive 32-bit integer";
 
@@ -924,7 +918,8 @@
       system-container = 3;
       user = 4;
       application-container = 5;
-    }.${
+    }
+    .${
       stage
     };
 
@@ -960,7 +955,7 @@
 
   canonicalContributions = export: values: let
     checked =
-      if builtins.isList values && builtins.length values <= 2000000
+      if builtins.isList values && builtins.length values <= maxCollectionItems
       then builtins.map (normalizeContribution export) values
       else fail "contributions must fit the bounded profile";
     sorted = builtins.sort contributionLessThan checked;
@@ -982,7 +977,8 @@
           duplicate = null;
         }
         sorted
-      ).duplicate;
+      )
+      .duplicate;
   in
     if export.aggregation.reject_slot_collisions && duplicateSlot != null
     then fail "exclusive contribution slot collision: ${duplicateSlot}"
@@ -1054,8 +1050,7 @@
           || (
             schema.key.syntax
             == "qualified-name-v1"
-            && builtins.match "[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+" name != null
-            && builtins.stringLength name <= 128
+            && abilityTypes.qualifiedName.check name
           )
         );
     in
@@ -1438,8 +1433,8 @@
       then fail "composition did not converge within 64 rounds"
       else if builtins.length (builtins.attrNames pending) > 100000
       then failLimit "composition exceeds 100000 provider aggregates"
-      else if countPending pending > 2000000
-      then failLimit "composition exceeds 2000000 contributions"
+      else if countPending pending > maxCollectionItems
+      then failLimit "composition exceeds ${builtins.toString maxCollectionItems} contributions"
       else let
         nodes = composeRound pending;
         following = nextPending nodes;

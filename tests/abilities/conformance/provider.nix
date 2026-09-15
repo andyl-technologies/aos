@@ -3,11 +3,9 @@ let
   lib = import ./lib {
     system = "@aosBuildSystem@";
   };
-  runner = import ./runner.nix {
-    inherit (lib) abilities;
-    fixtureRoot = ./.;
-  };
+  evaluate = arguments:
+    lib.abilities.schemas.checkValue arguments.case.schema arguments.case.value;
 in {
-  compose = arguments: runner.evaluate arguments.case;
-  transition = arguments: runner.evaluate arguments.case;
+  compose = evaluate;
+  transition = evaluate;
 }

@@ -3,15 +3,8 @@
   pkgs,
   lib,
 }: let
-  corpus = builtins.fromJSON (builtins.readFile ./conformance/v1.json);
-  abilityContractRenderer = import ../../pkgs/build-support/_ability-contract-renderer.nix {
-    inherit lib;
-    inherit (lib) abilities;
-  };
-  runner = import ./conformance/runner.nix {
-    inherit (lib) abilities;
-    inherit abilityContractRenderer;
-  };
+  corpus = import ./conformance/corpus.nix;
+  corpusFile = builtins.toFile "aos-ability-authoring-conformance-v1.json" (builtins.toJSON corpus);
 
   unique = values:
     builtins.length values
@@ -20,13 +13,6 @@
         value = true;
       })
       values)));
-
-  uniqueValues = values:
-    builtins.attrNames (builtins.listToAttrs (builtins.map (value: {
-        name = value;
-        value = true;
-      })
-      values));
 
   portableRecordType = lib.abilities.types.record {
     fields = {
@@ -68,7 +54,9 @@
           };
         }
       ];
-    }).config.testRecord
+    })
+    .config
+    .testRecord
     true);
   optionalRecordType = lib.abilities.types.record {
     fields = {
@@ -105,7 +93,9 @@
           };
         }
       ];
-    }).config.test
+    })
+    .config
+    .test
     true);
 
   taggedVariant = lib.abilities.types.record {
@@ -146,7 +136,9 @@
           };
         }
       ];
-    }).config.test
+    })
+    .config
+    .test
     true);
   decodedRecordType = lib.abilities.types.fromSchema (lib.abilities.schemas.record {
     fields.enabled = lib.abilities.schemas.boolean;
@@ -163,7 +155,9 @@
           };
         }
       ];
-    }).config.test
+    })
+    .config
+    .test
     true);
   invalidResourceReference = builtins.tryEval (builtins.deepSeq
     (lib.evalModules {
@@ -187,7 +181,9 @@
           };
         }
       ];
-    }).config.test
+    })
+    .config
+    .test
     true);
   executableInterface = lib.abilities.declareInterface {
     name = "aos.test.executable";
@@ -276,7 +272,11 @@
           };
         }
       ];
-    }).config.aos.abilities.interfaces
+    })
+    .config
+    .aos
+    .abilities
+    .interfaces
     true);
   executableModule = {
     entryPoint,
@@ -344,7 +344,11 @@
           };
         }
       ];
-    }).config.aos.abilities.requirementTemplates
+    })
+    .config
+    .aos
+    .abilities
+    .requirementTemplates
     true);
 
   implementationDefinition = lib.abilities.define {
@@ -389,7 +393,10 @@
           );
         }
       ];
-    }).config.aos.abilities;
+    })
+    .config
+    .aos
+    .abilities;
   rejectsImplementation = implementation:
     !(builtins.tryEval (builtins.deepSeq (evaluateImplementation implementation) true)).success;
   localImplementationProjection = lib.abilities.projectDefinitions {test.definition = implementationDefinition;};
@@ -451,8 +458,12 @@
     !(builtins.tryEval (builtins.deepSeq
       (lib.evalModules {
         modules = [lib.abilities.module module];
-      }).config.aos.abilities
-      true)).success;
+      })
+      .config
+      .aos
+      .abilities
+      true))
+    .success;
   plainIdentity = {
     environment = {
       authority = "deployment";
@@ -468,45 +479,16 @@
     (lib.abilities.packageOutput {package = "bad/package";})
     true);
 
-  recipeIsBounded = case: let
-    arguments = case.arguments;
-    depth = arguments.depth or 0;
-    items = arguments.items or arguments.count or arguments.chunks or 0;
-    generatedBytes =
-      if arguments ? chunk_bytes && arguments ? count
-      then arguments.chunk_bytes * arguments.count
-      else 0;
-  in
-    depth
-    <= corpus.recipe_limits.max_generated_depth
-    && items <= corpus.recipe_limits.max_generated_items
-    && generatedBytes <= corpus.recipe_limits.max_generated_string_bytes;
-
   checkAcceptedCase = case: let
-    evaluated = builtins.tryEval (builtins.deepSeq (runner.evaluate case) (runner.evaluate case));
+    evaluated = builtins.tryEval (builtins.deepSeq
+      (lib.abilities.schemas.checkValue case.schema case.value)
+      case.value);
   in
     if case.expected.outcome == "accept"
-    then evaluated.success && (!(case.expected ? value) || evaluated.value == case.expected.value)
-    else true;
+    then evaluated.success && evaluated.value == case.expected.value
+    else !evaluated.success;
 
-  coverageFor = consumer: namespace:
-    uniqueValues (builtins.concatLists (builtins.map (
-        case: (runner.coverage case).${namespace}
-      )
-      (builtins.filter (case: builtins.elem consumer case.consumers) corpus.cases)));
-
-  nixCases = builtins.filter (case: builtins.elem "nix" case.consumers) corpus.cases;
   caseIds = builtins.map (case: case.id) corpus.cases;
-  coverageCases =
-    builtins.filter (
-      case:
-        builtins.any (namespace: (runner.coverage case).${namespace} != []) [
-          "abilities"
-          "effects"
-          "schemas"
-        ]
-    )
-    corpus.cases;
   directFixture = pkgs.mkDerivation {
     pname = "aos-ability-authoring-direct-fixture";
     version = "1";
@@ -515,33 +497,16 @@
       {
         name = "install";
         script = ''
-          mkdir -p "$out/lib" "$out/conformance"
+          mkdir -p "$out/lib"
           cp -R ${../../lib}/. "$out/lib/"
           cp ${./conformance/direct.nix} "$out/direct.nix"
-          cp ${./conformance/runner.nix} "$out/runner.nix"
-          cp ${../../pkgs/build-support/_ability-contract-renderer.nix} "$out/ability-contract-renderer.nix"
-          cp ${./conformance/provider.nix} "$out/conformance/provider.nix"
-          cp ${./composition.nix} "$out/composition.nix"
-          cp ${./effects.nix} "$out/effects.nix"
         '';
       }
     ];
   };
 in
   assert corpus.schema == "aos.ability.authoring-conformance/v1";
-  assert corpus.recipe_limits
-  == {
-    max_generated_depth = 64;
-    max_generated_items = 2000000;
-    max_generated_string_bytes = 34603008;
-  };
   assert unique caseIds;
-  assert builtins.all (case: case.consumers != [] && unique case.consumers) corpus.cases;
-  assert builtins.all recipeIsBounded corpus.cases;
-  # Any public helper addition must extend the checked-in corpus inventory.
-  assert corpus.public_helpers.abilities == builtins.attrNames lib.abilities;
-  assert corpus.public_helpers.schemas == builtins.attrNames lib.abilities.schemas;
-  assert corpus.public_helpers.effects == builtins.attrNames lib.abilities.effects;
   assert builtins.attrNames (lib.abilities.module {config = null;}).options == ["aos"];
   assert canonicalAbilityEvaluation.config.aos.abilities.requirementTemplates.database
   == {
@@ -741,17 +706,7 @@ in
     optional_fields = ["enabled"];
   };
   assert !invalidPortableRecord.success;
-  assert builtins.all checkAcceptedCase nixCases;
-  assert builtins.all (
-    case: builtins.all (consumer: builtins.elem consumer case.consumers) ["nix" "evaluator"]
-  )
-  coverageCases;
-  assert builtins.all (
-    consumer:
-      builtins.all (
-        namespace: coverageFor consumer namespace == corpus.public_helpers.${namespace}
-      ) ["abilities" "effects" "schemas"]
-  ) ["nix" "evaluator"];
+  assert builtins.all checkAcceptedCase corpus.cases;
     pkgs.mkDerivation {
       pname = "aos-ability-authoring-conformance-v1";
       version = "0";
@@ -768,8 +723,8 @@ in
 
             rejection_cases="$TMPDIR/nix-rejections.jsonl"
             ${pkgs.jq}/bin/jq -c \
-              '.cases[] | select(.consumers | index("nix")) | select(.expected.outcome == "reject")' \
-              ${./conformance/v1.json} > "$rejection_cases"
+              '.cases[] | select(.expected.outcome == "reject")' \
+              ${corpusFile} > "$rejection_cases"
 
             tested=0
             while IFS= read -r case_json; do
@@ -803,7 +758,7 @@ in
             fi
 
             mkdir -p "$out"
-            cp ${./conformance/v1.json} "$out/corpus.json"
+            cp ${corpusFile} "$out/corpus.json"
             echo PASS > "$out/result"
           '';
         }

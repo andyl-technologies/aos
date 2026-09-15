@@ -203,7 +203,8 @@
       _aosDocType = {
         kind = "submodule";
         fields = builtins.mapAttrs (_: type:
-          type._aosDocType or {
+          type._aosDocType
+          or {
             kind = type.name or "opaque";
           })
         fields;
@@ -216,6 +217,16 @@
     output = localKeyType;
   };
 in rec {
+  ## Publishes the closed version-1 value bounds used by authoring and wire validation.
+  limits = {
+    maxSafeInteger = 9007199254740991;
+    maxStringLength = 1048576;
+    maxCollectionItems = 2000000;
+    maxDocumentBytes = 32 * 1024 * 1024;
+    maxStructuralDepth = 64;
+    maxU32 = 4294967295;
+  };
+
   ## Returns the canonical portable schema carried by an ability option type.
   schemaOf = context: abilityType:
     if moduleTypes.optionType.check abilityType && abilityType ? _abilitySchema
