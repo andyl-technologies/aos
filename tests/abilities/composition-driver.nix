@@ -166,6 +166,7 @@ args @ {lib, ...}: let
           methods = lifecycleInterface.methods;
           guarantees = [];
           requirements.network = {
+            description = "Selects readiness for the composed fixture service.";
             alias = "network";
             accepted_interfaces = [interfaces.networkReadiness.identity];
             methods = ["observe"];
@@ -626,7 +627,9 @@ in
   then {
     requests = pendingChildRequest.config.aos.abilities.compositionPendingRequests;
     requirements = pendingChildRequest.config.aos.abilities.compositionRequirements;
-    providerInstances = builtins.attrNames pendingChildRequest.config.aos.abilities.instances;
+    providerInstances = builtins.mapAttrs
+      (_: instance: {inherit (instance) implementation;})
+      pendingChildRequest.config.aos.abilities.instances;
   }
   else
     assert builtins.length (builtins.attrNames abilities.desiredResources) == 1;

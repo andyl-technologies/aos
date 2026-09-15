@@ -39,12 +39,16 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use anyhow::{Context, Result, bail, ensure};
+use aos_ability_model::{ProviderImplementation, RequirementDeclaration};
+use aos_contract::Sha256Digest;
 use base64::Engine as _;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use super::ability_rounds::{
-    AbilityRoundEvaluation, AbilityRoundEvaluator, AbilityRoundSelections, PendingAbilityProjection,
+    AbilityFixedPointProjection, AbilityRoundEvaluation, AbilityRoundEvaluator,
+    AbilityRoundResolver, AbilityRoundSelections, CompleteAbilityRound, PendingAbilityProjection,
+    SelectedAbilityBinding, SelectedProviderModule,
 };
 use super::classify::{EvalClass, KillReason, classify};
 use super::system_roots::{ConfigModuleResolver, ResolvedAbilityModule, ResolvedConfigModule};
@@ -80,6 +84,193 @@ pub struct StockNixEvaluator {
 pub struct StockAbilityRoundEvaluator<'a> {
     evaluator: &'a StockNixEvaluator,
     attempt: EvalAttempt<'a>,
+}
+
+/// Selects child providers only from authenticated packages in one working set.
+pub(super) struct StockAbilityRoundResolver<'a> {
+    working_set: &'a [WorkingSetMember],
+}
+
+impl<'a> StockAbilityRoundResolver<'a> {
+    /// Creates a resolver over the exact package set admitted to this evaluation.
+    pub(super) const fn new(working_set: &'a [WorkingSetMember]) -> Self {
+        Self { working_set }
+    }
+
+    fn implementation(
+        &self,
+        qualified: &str,
+    ) -> Result<(&'a WorkingSetMember, &'a ProviderImplementation)> {
+        let matches = self
+            .working_set
+            .iter()
+            .flat_map(|member| {
+                member
+                    .ability
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(move |package| {
+                        package
+                            .implementation
+                            .providers
+                            .iter()
+                            .filter(move |provider| {
+                                format!("{}:{}", member.package, provider.name.as_str())
+                                    == qualified
+                            })
+                            .map(move |provider| (member, provider))
+                    })
+            })
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [selected] => Ok(*selected),
+            [] => bail!(
+                "selected ability implementation {qualified:?} is absent from the authenticated working set"
+            ),
+            _ => bail!(
+                "selected ability implementation {qualified:?} is ambiguous in the authenticated working set"
+            ),
+        }
+    }
+
+    fn authenticate_requirement(
+        &self,
+        implementation: &str,
+        requirement: &RequirementDeclaration,
+    ) -> Result<()> {
+        let (_, provider) = self.implementation(implementation)?;
+        ensure!(
+            provider
+                .requirements
+                .iter()
+                .any(|declared| declared == requirement),
+            "pending child requirement is absent from its authenticated implementation"
+        );
+        Ok(())
+    }
+
+    fn selected_module(
+        member: &WorkingSetMember,
+        provider: &ProviderImplementation,
+    ) -> Result<Option<SelectedProviderModule>> {
+        let Some(locator) = provider.provider_module.clone() else {
+            return Ok(None);
+        };
+        let version = member.version.clone().with_context(|| {
+            format!(
+                "selected provider package {} has no authenticated version",
+                member.package
+            )
+        })?;
+        ensure!(
+            member.outputs.self_output.is_some(),
+            "selected provider package {} has no authenticated runtime output",
+            member.package
+        );
+
+        Ok(Some(SelectedProviderModule {
+            package: member.package.clone(),
+            version,
+            locator,
+            outputs: member.outputs.clone(),
+            // Current provider modules consume exact values and resource
+            // references from the fixed point. They do not resolve additional
+            // package-output selectors during an outer round.
+            artifact_locators: BTreeMap::new(),
+        }))
+    }
+}
+
+impl AbilityRoundResolver for StockAbilityRoundResolver<'_> {
+    fn select(&self, pending: &PendingAbilityProjection) -> Result<Vec<SelectedAbilityBinding>> {
+        let mut selections = Vec::with_capacity(pending.requests.len());
+        for request in pending.requests.values() {
+            let requirement_key = request
+                .declaration
+                .as_json()
+                .get("requirement")
+                .and_then(serde_json::Value::as_str)
+                .context("pending child request has no exact requirement key")?;
+            let requirement = pending
+                .requirements
+                .get(requirement_key)
+                .context("pending child request names an absent exact requirement")?;
+            self.authenticate_requirement(&requirement.implementation, &requirement.requirement)?;
+
+            let candidates = self
+                .working_set
+                .iter()
+                .flat_map(|member| {
+                    member
+                        .ability
+                        .as_ref()
+                        .into_iter()
+                        .flat_map(move |package| {
+                            package
+                                .implementation
+                                .providers
+                                .iter()
+                                .filter_map(move |provider| {
+                                    let implementation =
+                                        format!("{}:{}", member.package, provider.name.as_str());
+                                    let matches_contract = requirement
+                                        .requirement
+                                        .accepted_interfaces
+                                        .iter()
+                                        .any(|selector| selector.matches(&provider.interface))
+                                        && requirement.requirement.guarantees.iter().all(
+                                            |guarantee| provider.guarantees.contains(guarantee),
+                                        );
+                                    matches_contract.then_some((member, provider, implementation))
+                                })
+                        })
+                })
+                .flat_map(|(member, provider, implementation)| {
+                    pending.provider_instances.iter().filter_map(
+                        move |(provider_instance, selected)| {
+                            let local_instance = provider_instance
+                                .strip_prefix(member.package.as_str())?
+                                .strip_prefix(':')?;
+                            let implementation_matches = selected
+                                .implementation
+                                .as_deref()
+                                .is_none_or(|selected| selected == implementation);
+
+                            (!local_instance.is_empty() && implementation_matches).then(|| {
+                                (provider_instance, implementation.clone(), member, provider)
+                            })
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+            let [(provider_instance, implementation, member, provider)] = candidates.as_slice()
+            else {
+                bail!(
+                    "pending child request {:?} resolves to {} authenticated provider candidates",
+                    request.request,
+                    candidates.len()
+                );
+            };
+            let key = Sha256Digest::of_canonical(
+                "aos.ability.child-binding/v1",
+                &(
+                    request.request.as_str(),
+                    implementation.as_str(),
+                    provider_instance.as_str(),
+                    request.slot.as_str(),
+                ),
+            )?;
+            selections.push(SelectedAbilityBinding {
+                key: format!("binding-{}", key.hex()),
+                request: request.request.clone(),
+                implementation: implementation.clone(),
+                provider_instance: (*provider_instance).clone(),
+                slot: request.slot.clone(),
+                provider_module: Self::selected_module(member, provider)?,
+            });
+        }
+        Ok(selections)
+    }
 }
 
 impl<'a> StockAbilityRoundEvaluator<'a> {
@@ -232,13 +423,21 @@ impl StockNixEvaluator {
             \x20 manifest = finalManifest;\n\
             \x20 abilityRound =\n\
             \x20   if pendingAbilityRequests == {{}}\n\
-            \x20   then {{ status = \"complete\"; manifest = finalManifest; }}\n\
+            \x20   then {{\n\
+            \x20     status = \"complete\";\n\
+            \x20     manifest = finalManifest;\n\
+            \x20     fixedPoint = {{\n\
+            \x20       inherit (system.config.aos.abilities) bindings resolvedResources;\n\
+            \x20     }};\n\
+            \x20   }}\n\
             \x20   else {{\n\
             \x20     status = \"pending\";\n\
             \x20     pending = {{\n\
             \x20       requests = pendingAbilityRequests;\n\
             \x20       requirements = system.config.aos.abilities.compositionRequirements;\n\
-            \x20       providerInstances = builtins.attrNames system.config.aos.abilities.instances;\n\
+            \x20       providerInstances = builtins.mapAttrs\n\
+            \x20         (_: instance: {{ inherit (instance) implementation; }})\n\
+            \x20         system.config.aos.abilities.instances;\n\
             \x20     }};\n\
             \x20   }};\n\
              }}\n",
@@ -309,8 +508,14 @@ impl NixEvaluator for StockNixEvaluator {
 #[derive(Deserialize)]
 #[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
 enum StockAbilityRoundResult {
-    Complete { manifest: serde_json::Value },
-    Pending { pending: PendingAbilityProjection },
+    Complete {
+        manifest: serde_json::Value,
+        #[serde(rename = "fixedPoint")]
+        fixed_point: AbilityFixedPointProjection,
+    },
+    Pending {
+        pending: PendingAbilityProjection,
+    },
 }
 
 impl AbilityRoundEvaluator for StockAbilityRoundEvaluator<'_> {
@@ -343,9 +548,13 @@ impl AbilityRoundEvaluator for StockAbilityRoundEvaluator<'_> {
         let result: StockAbilityRoundResult = serde_json::from_slice(&output.stdout)
             .context("decoding complete ability-round module result")?;
         match result {
-            StockAbilityRoundResult::Complete { manifest } => Ok(AbilityRoundEvaluation::Complete(
-                serde_json::to_string(&manifest)?,
-            )),
+            StockAbilityRoundResult::Complete {
+                manifest,
+                fixed_point,
+            } => Ok(AbilityRoundEvaluation::Complete(CompleteAbilityRound {
+                manifest: serde_json::to_string(&manifest)?,
+                fixed_point,
+            })),
             StockAbilityRoundResult::Pending { pending } => {
                 Ok(AbilityRoundEvaluation::Pending(pending))
             }
