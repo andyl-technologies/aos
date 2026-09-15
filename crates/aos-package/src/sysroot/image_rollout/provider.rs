@@ -23,7 +23,6 @@ use super::ability::{AbilityRolloutOutcome, AbilityRolloutPhase, AbilityRolloutS
 use super::process::run_bounded_command;
 use super::{AbRolloutRequest, NativeAbRolloutBackend};
 
-const INTERFACE_NAME: &str = "aos.apm.ab-image-rollout-terminal";
 const OBSERVATION_SCHEMA: &str = "aos.ability.ab-image-rollout-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.image-rollout.provider-context/v1";
 const IMAGE_PROFILE: &str = "/var/lib/profiles/image";
@@ -127,6 +126,7 @@ fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResult> {
         "invocation envelope differs from the selected ABI"
     );
     validate_method(&invocation.method)?;
+    validate_method(&invocation.request.method)?;
     validate_resource_contexts(&invocation.request.resources)?;
     ensure!(
         resource_set_digest(&invocation.request.resources)?
@@ -146,7 +146,15 @@ fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResult> {
         "rollout inputs differ from the admitted resource value"
     );
     ensure!(
-        target.reference == invocation.request.target,
+        target.reference == invocation.request.target
+            && invocation.method.interface == invocation.request.method.interface
+            && invocation.method.interface == invocation.request.target.interface
+            && invocation
+                .request
+                .target
+                .operations
+                .binary_search(&invocation.method.method)
+                .is_ok(),
         "rollout target authority differs from its admitted context"
     );
     let desired: AbRolloutRequest = decode_value(&invocation.request.inputs)?;
@@ -397,20 +405,19 @@ fn observe_health(
 
 fn validate_method(method: &aos_ability_model::MethodReference) -> Result<()> {
     ensure!(
-        method.interface.name.as_str() == INTERFACE_NAME
-            && matches!(
-                method.method.as_str(),
-                "retain"
-                    | "prepare"
-                    | "drain"
-                    | "select"
-                    | "observe-boot"
-                    | "observe-health"
-                    | "withdraw"
-                    | "hold"
-                    | "retire"
-            ),
-        "unsupported image-rollout interface or method"
+        matches!(
+            method.method.as_str(),
+            "retain"
+                | "prepare"
+                | "drain"
+                | "select"
+                | "observe-boot"
+                | "observe-health"
+                | "withdraw"
+                | "hold"
+                | "retire"
+        ),
+        "unsupported image-rollout method"
     );
     Ok(())
 }

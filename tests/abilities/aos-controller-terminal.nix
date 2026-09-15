@@ -136,6 +136,7 @@
     )
     true);
   rolloutImplementation = abilities.implementations."aos:image-rollout-effects";
+  rolloutTerminalImplementation = abilities.implementations."aos:image-rollout-terminal";
   rolloutRequestName = "consumer:rollout";
   rolloutParameters = {
     candidate = {
@@ -275,6 +276,8 @@ in
   assert !wrongTerminalBinding.success;
   assert builtins.all hasExactlyOneExecutor signedProviders;
   assert builtins.attrNames rolloutProvision.requests == ["terminal-machine"];
+  assert rolloutTerminalImplementation.handlerDescriptor.entryPoint
+  == "libexec/aos-image-rollout-provider";
   assert builtins.length rolloutTransition.decisions == 1;
   assert builtins.length rolloutTransition.merges == 1;
   assert builtins.all (operation:
