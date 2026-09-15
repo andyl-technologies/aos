@@ -424,20 +424,39 @@
     };
   };
 
-  forProducer = {
+  forProducers = {
     consumerInstance,
-    key,
     interface,
-    parameters,
-  }: {
-    requirementTemplates.${interface.alias} = requirementFor interface interface.methods;
-    requests.${key} = {
-      requirement = interface.alias;
-      consumer = consumerInstance;
-      scope = [key];
-      inherit parameters;
+    producers,
+  }:
+    if !uniqueBy "key" producers
+    then throw "producer request keys must be unique"
+    else {
+      requirementTemplates =
+        if producers == []
+        then {}
+        else {${interface.alias} = requirementFor interface interface.methods;};
+      requests = builtins.listToAttrs (builtins.map (producer: {
+          name = producer.key;
+          value = {
+            requirement = interface.alias;
+            consumer = consumerInstance;
+            scope = [producer.key];
+            inherit (producer) parameters;
+          };
+        })
+        producers);
     };
-  };
+
+  forProducer = args:
+    forProducers {
+      inherit (args) consumerInstance interface;
+      producers = [
+        {
+          inherit (args) key parameters;
+        }
+      ];
+    };
 in {
-  inherit featureInterfaces forConfiguration forProducer forService structuredSource validate;
+  inherit featureInterfaces forConfiguration forProducer forProducers forService structuredSource validate;
 }

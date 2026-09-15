@@ -293,6 +293,35 @@
     options = ["nodev" "nosuid"];
     timeout_millis = 30000;
   };
+  credentialBatch = serviceManagement.forProducers {
+    consumerInstance = "consumer";
+    interface = interfaces.credentialDelivery;
+    producers =
+      builtins.genList (index: {
+        key = "credential-${builtins.toString index}";
+        parameters = {
+          name = "credential-${builtins.toString index}";
+          source = lib.abilities.resourceReference {
+            interface = interfaces.credentialDelivery.identity;
+            resource = {
+              provider = lib.abilities.instanceId {
+                environment = lib.abilities.environmentId {
+                  authority = "deployment";
+                  key = "service-test";
+                  stage = "host";
+                };
+                key = "credential-provider";
+              };
+              key = "credential-${builtins.toString index}";
+            };
+            operations = ["observe"];
+            lifetime = "persistent";
+          };
+          encrypted = false;
+        };
+      })
+      6;
+  };
   structuredConfiguration = {
     name = "structured";
     source = {
@@ -530,6 +559,8 @@ in
         };
     });
   assert expanded.requests.main-lifecycle.consumer == "consumer";
+  assert builtins.attrNames credentialBatch.requirementTemplates == ["credential-delivery"];
+  assert builtins.length (builtins.attrNames credentialBatch.requests) == 6;
   assert succeedsAs serviceTypes.configurationMaterialization structuredConfiguration;
   assert succeedsAs serviceTypes.configurationMaterialization projectedStructuredConfiguration;
   assert builtins.elem "boolean" (builtins.map (node: node.kind) projectedStructuredConfiguration.source.document);
