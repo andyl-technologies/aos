@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any, Protocol
 
+import native_adapter_operation_evidence
+import native_adapter_provider_state_evidence
 import reference_evidence
 import rollout_evidence
 
@@ -27,6 +29,7 @@ class SubjectValidator(Protocol):
         subject: Any,
         evidence_bytes: Any,
         matrix_spec: dict[str, Any] | None,
+        routes: list[dict[str, Any]],
     ) -> None: ...
 
     @staticmethod
@@ -35,6 +38,7 @@ class SubjectValidator(Protocol):
         observations: dict[str, Any],
         subject: dict[str, Any],
         cell: dict[str, Any],
+        matrix_spec: dict[str, Any] | None,
     ) -> None: ...
 
 
@@ -81,11 +85,12 @@ class EvidenceValidatorRegistry:
         subject: Any,
         evidence_bytes: Any,
         matrix_spec: dict[str, Any] | None,
+        routes: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """Validates a subject through its one accepting implementation."""
 
         validator = self._subject_validator(subject)
-        validator.validate_subject(cell, subject, evidence_bytes, matrix_spec)
+        validator.validate_subject(cell, subject, evidence_bytes, matrix_spec, routes)
         return _validation_result(cell, "subject")
 
     def validate_probe(
@@ -94,11 +99,14 @@ class EvidenceValidatorRegistry:
         observations: dict[str, Any],
         cohort_subject: dict[str, Any],
         cell: dict[str, Any],
+        matrix_spec: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """Validates observations through the subject's implementation."""
 
         validator = self._subject_validator(cohort_subject)
-        validator.validate_probe(postcondition, observations, cohort_subject, cell)
+        validator.validate_probe(
+            postcondition, observations, cohort_subject, cell, matrix_spec
+        )
         return _validation_result(cell, "postcondition", postcondition)
 
     def validate_specialized_cell(
@@ -149,7 +157,11 @@ class EvidenceValidatorRegistry:
 
 
 DEFAULT_REGISTRY = EvidenceValidatorRegistry(
-    subjects=(reference_evidence,),
+    subjects=(
+        native_adapter_operation_evidence,
+        native_adapter_provider_state_evidence,
+        reference_evidence,
+    ),
     specialized_cells=(rollout_evidence,),
     snapshots=(rollout_evidence,),
 )
@@ -160,10 +172,13 @@ def validate_subject(
     subject: Any,
     evidence_bytes: Any,
     matrix_spec: dict[str, Any] | None,
+    routes: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Validates a provider subject and returns its normalized result."""
 
-    return DEFAULT_REGISTRY.validate_subject(cell, subject, evidence_bytes, matrix_spec)
+    return DEFAULT_REGISTRY.validate_subject(
+        cell, subject, evidence_bytes, matrix_spec, routes
+    )
 
 
 def validate_probe(
@@ -171,11 +186,12 @@ def validate_probe(
     observations: dict[str, Any],
     cohort_subject: dict[str, Any],
     cell: dict[str, Any],
+    matrix_spec: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Validates provider observations and returns their normalized result."""
 
     return DEFAULT_REGISTRY.validate_probe(
-        postcondition, observations, cohort_subject, cell
+        postcondition, observations, cohort_subject, cell, matrix_spec
     )
 
 

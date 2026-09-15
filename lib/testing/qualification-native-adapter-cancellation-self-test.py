@@ -308,11 +308,11 @@ def validate_image_rollout_case(
     records = probes[cell_id]
     routes = package_routes(cell, subject)
 
-    cohort._validate_cancellation_subject(
+    cohort._validate_cohort_subject(
         cell, subject, bundles[cell_id], matrix_spec, routes
     )
     for postcondition, record in records.items():
-        cohort._validate_cancellation_probe_facts(
+        cohort._validate_probe_facts(
             postcondition, record["observations"], subject, cell, matrix_spec
         )
     probe_digests = {
@@ -346,21 +346,21 @@ def validate_image_rollout_case(
         mutation = copy.deepcopy(subject)
         mutation[field] = digest("9")
         rejected(
-            lambda mutation=mutation: cohort._validate_cancellation_subject(
+            lambda mutation=mutation: cohort._validate_cohort_subject(
                 cell, mutation, bundles[cell_id], matrix_spec, routes
             )
         )
     wrong_handler = copy.deepcopy(subject)
     wrong_handler["provider-implementation"]["handler"] = "foreign-handler"
     rejected(
-        lambda: cohort._validate_cancellation_subject(
+        lambda: cohort._validate_cohort_subject(
             cell, wrong_handler, bundles[cell_id], matrix_spec, routes
         )
     )
     wrong_route = copy.deepcopy(subject)
     wrong_route["cancel-route"]["method"] = "hold"
     rejected(
-        lambda: cohort._validate_cancellation_subject(
+        lambda: cohort._validate_cohort_subject(
             cell, wrong_route, bundles[cell_id], matrix_spec, routes
         )
     )
@@ -373,7 +373,7 @@ def validate_image_rollout_case(
         else:
             wrong_live["live-after"]["filesystem"]["entries"] = []
         rejected(
-            lambda wrong_live=wrong_live: cohort._validate_cancellation_probe_facts(
+            lambda wrong_live=wrong_live: cohort._validate_probe_facts(
                 "durable-attempt-state-classified", wrong_live, subject, cell, matrix_spec
             )
         )
@@ -385,7 +385,7 @@ def validate_image_rollout_case(
         records["durable-attempt-state-classified"]["observations"]
     )
     rejected(
-        lambda: cohort._validate_cancellation_probe_facts(
+        lambda: cohort._validate_probe_facts(
             "foreign-resources-unchanged", duplicate_probe, subject, cell, matrix_spec
         )
     )
@@ -570,25 +570,25 @@ def main() -> None:
     subject = subjects[cell_id]
     routes = package_routes(cell, subject)
 
-    cohort._validate_cancellation_subject(
+    cohort._validate_cohort_subject(
         cell, subject, bundles[cell_id], matrix_spec, routes
     )
     for postcondition, record in probes[cell_id].items():
-        cohort._validate_cancellation_probe_facts(
+        cohort._validate_probe_facts(
             postcondition, record["observations"], subject, cell, matrix_spec
         )
 
     wrong_handler = copy.deepcopy(subject)
     wrong_handler["provider-implementation"]["handler"] = "foreign-handler"
     rejected(
-        lambda: cohort._validate_cancellation_subject(
+        lambda: cohort._validate_cohort_subject(
             cell, wrong_handler, bundles[cell_id], matrix_spec, routes
         )
     )
     wrong_matrix = copy.deepcopy(subject)
     wrong_matrix["matrix-spec-digest"] = digest("f")
     rejected(
-        lambda: cohort._validate_cancellation_subject(
+        lambda: cohort._validate_cohort_subject(
             cell, wrong_matrix, bundles[cell_id], matrix_spec, routes
         )
     )
@@ -597,7 +597,7 @@ def main() -> None:
     )
     wrong_boundary["boundary-timeline"][2]["boundary"] = "effect-returned"
     rejected(
-        lambda: cohort._validate_cancellation_probe_facts(
+        lambda: cohort._validate_probe_facts(
             "durable-attempt-state-classified", wrong_boundary, subject, cell, matrix_spec
         )
     )
@@ -606,7 +606,7 @@ def main() -> None:
     )
     wrong_owner["owner-after"]["count"] = 2
     rejected(
-        lambda: cohort._validate_cancellation_probe_facts(
+        lambda: cohort._validate_probe_facts(
             "at-most-one-resource-owner", wrong_owner, subject, cell, matrix_spec
         )
     )
@@ -616,7 +616,7 @@ def main() -> None:
     wrong_foreign["foreign-after"] = copy.deepcopy(wrong_foreign["foreign-after"])
     wrong_foreign["foreign-after"]["observation"]["entries"] = []
     rejected(
-        lambda: cohort._validate_cancellation_probe_facts(
+        lambda: cohort._validate_probe_facts(
             "foreign-resources-unchanged", wrong_foreign, subject, cell, matrix_spec
         )
     )
@@ -625,7 +625,7 @@ def main() -> None:
     )
     wrong_dependency["dependent-effect-count"] = 1
     rejected(
-        lambda: cohort._validate_cancellation_probe_facts(
+        lambda: cohort._validate_probe_facts(
             "dependent-effects-not-executed", wrong_dependency, subject, cell, matrix_spec
         )
     )

@@ -238,24 +238,24 @@ def main() -> None:
         ).retain(cell_id, bundle_bytes, authority, authority, observation)
     )
 
-    cohort._validate_effect_boundary_subject(cell, subject, bundles[cell_id])
+    cohort._validate_cohort_subject(cell, subject, bundles[cell_id], matrix)
     for postcondition, record in probes[cell_id].items():
-        cohort._validate_effect_boundary_probe_facts(
-            postcondition, record["observations"], subject, cell
+        cohort._validate_probe_facts(
+            postcondition, record["observations"], subject, cell, matrix
         )
 
     wrong_handler = copy.deepcopy(subject)
     wrong_handler["provider-implementation"]["handler"] = "other"
     rejected(
-        lambda: cohort._validate_effect_boundary_subject(
-            cell, wrong_handler, bundles[cell_id]
+        lambda: cohort._validate_cohort_subject(
+            cell, wrong_handler, bundles[cell_id], matrix
         )
     )
     wrong_route = copy.deepcopy(subject)
     wrong_route["native-route"]["mapping"]["revision"] = digest("b")
     rejected(
-        lambda: cohort._validate_effect_boundary_subject(
-            cell, wrong_route, bundles[cell_id]
+        lambda: cohort._validate_cohort_subject(
+            cell, wrong_route, bundles[cell_id], matrix
         )
     )
     wrong_foreign = copy.deepcopy(
@@ -263,8 +263,8 @@ def main() -> None:
     )
     wrong_foreign["snapshot-after"] = {"revision": "mutated"}
     rejected(
-        lambda: cohort._validate_effect_boundary_probe_facts(
-            "foreign-resources-unchanged", wrong_foreign, subject, cell
+        lambda: cohort._validate_probe_facts(
+            "foreign-resources-unchanged", wrong_foreign, subject, cell, matrix
         )
     )
     wrong_dependency = copy.deepcopy(
@@ -274,8 +274,8 @@ def main() -> None:
         "timeline-after-settlement"
     ]
     rejected(
-        lambda: cohort._validate_effect_boundary_probe_facts(
-            "dependent-effects-not-executed", wrong_dependency, subject, cell
+        lambda: cohort._validate_probe_facts(
+            "dependent-effects-not-executed", wrong_dependency, subject, cell, matrix
         )
     )
 
