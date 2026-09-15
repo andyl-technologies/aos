@@ -4706,7 +4706,10 @@ fn clear_attestation_result(path: &Path) -> Result<()> {
             }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error).with_context(|| {
-            format!("invalidating prior package attestation result {}", path.display())
+            format!(
+                "invalidating prior package attestation result {}",
+                path.display()
+            )
         }),
     }
 }
