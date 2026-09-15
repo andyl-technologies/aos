@@ -38,8 +38,8 @@
             enable = true;
             poolName = "tank";
             datasets.data = {
-              mountpoint = "/tank/data";
-              properties.compression = "zstd";
+              mountPoint = "/tank/data";
+              compression = "zstd";
             };
           };
           aos.services.zfsAutoSnapshot = {
