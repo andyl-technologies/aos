@@ -234,7 +234,13 @@
         };
         parameters = lib.abilities.types.boolean;
         targetResource = crossTargetInterface.name;
-        outputs = {};
+        outputs.observed = {
+          description = "Carries evidence captured during observation.";
+          schema = lib.abilities.types.boolean;
+          phase = "observation";
+          visibility = "protected";
+          lifetime = "attempt";
+        };
         permittedOperations = ["invoke"];
         guarantees = [];
         outcome = {
@@ -697,6 +703,7 @@ in
   assert !invalidResourceReference.success;
   assert validExecutableRequest.config.aos.abilities.requests."authoring:executable".parameters.executable.entry_point == "bin/server";
   assert crossTargetEvaluation.config.aos.abilities.interfaces."authoring:source".methods.invoke.targetResource == crossTargetInterface.name;
+  assert crossTargetEvaluation.config.aos.abilities.interfaces."authoring:source".methods.invoke.outputs.observed.phase == "observation";
   assert !missingCrossTarget.success;
   assert rejectsAbilityModule (executableModule {
     entryPoint = "/bin/server";
