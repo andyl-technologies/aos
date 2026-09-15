@@ -71,10 +71,6 @@
       == null
       || !identity.ephemeral
       || ((identity.principal or null) == null && (identity.primary_group or null) == null);
-    identityMaskValid =
-      identity
-      == null
-      || builtins.match "[0-7][0-7][0-7]([0-7])?" identity.file_creation_mask != null;
     credentialsValid =
       credentials
       == null
@@ -100,10 +96,6 @@
           value = true;
         })
         logging.directories)));
-    loggingModeValid =
-      logging
-      == null
-      || builtins.match "[0-7][0-7][0-7]([0-7])?" logging.directory_mode != null;
     linuxIsolationValid =
       linuxIsolation
       == null
@@ -152,8 +144,6 @@
     then throw "service '${declaration.service}' socket readiness requires at least one socket activation declaration"
     else if !identityValid
     then throw "service '${declaration.service}' ephemeral identity cannot also declare a principal or primary group"
-    else if !identityMaskValid
-    then throw "service '${declaration.service}' file creation mask must be three or four octal digits"
     else if !credentialsValid
     then throw "service '${declaration.service}' has duplicate credential view names"
     else if !configurationValid
@@ -164,8 +154,6 @@
     then throw "service '${declaration.service}' has duplicate socket names"
     else if !loggingValid
     then throw "service '${declaration.service}' has duplicate log directory names"
-    else if !loggingModeValid
-    then throw "service '${declaration.service}' log directory mode must be three or four octal digits"
     else if !linuxIsolationValid
     then throw "service '${declaration.service}' Linux isolation lists must not contain duplicate namespace or address-family entries"
     else if !capabilityBoundsValid
@@ -192,9 +180,12 @@
     }
     // featureValue;
 
-  pathPrefix = length: path:
-    builtins.genList (index: builtins.elemAt path index) length;
-  structuredSource = format: value: let
+  structuredSource = {
+    format,
+    valueType,
+    value,
+  }: let
+    rootSchema = valueType._abilitySchema or (throw "structured configuration valueType must be a portable ability type");
     keySegment = name: {
       kind = "key";
       value = name;
@@ -203,15 +194,39 @@
       kind = "index";
       value = index;
     };
-    nodesAt = path: current:
-      if current == null
+    unwrapOptional = schema:
+      if schema.kind == "optional"
+      then schema.value
+      else schema;
+    scalarKind = schema: let
+      concrete = unwrapOptional schema;
+    in
+      if concrete.kind == "boolean"
+      then "boolean"
+      else if concrete.kind == "integer"
+      then "integer"
+      else if builtins.elem concrete.kind ["string" "string-enum"]
+      then "string"
+      else throw "deferred structured configuration leaves must have Boolean, integer, or string schemas";
+    nodesAt = path: schema: current: let
+      concrete = unwrapOptional schema;
+    in
+      if current == null && schema.kind == "optional"
       then [
         {
           kind = "null";
           inherit path;
         }
       ]
-      else if builtins.isBool current
+      else if builtins.isAttrs current && (current._type or null) == "aos-request-output-reference"
+      then [
+        {
+          kind = scalarKind concrete;
+          inherit path;
+          value = current;
+        }
+      ]
+      else if concrete.kind == "boolean"
       then [
         {
           kind = "boolean";
@@ -219,7 +234,7 @@
           value = current;
         }
       ]
-      else if builtins.isInt current
+      else if concrete.kind == "integer"
       then [
         {
           kind = "integer";
@@ -227,7 +242,7 @@
           value = current;
         }
       ]
-      else if builtins.isString current
+      else if builtins.elem concrete.kind ["string" "string-enum"]
       then [
         {
           kind = "string";
@@ -235,7 +250,7 @@
           value = current;
         }
       ]
-      else if builtins.isList current
+      else if concrete.kind == "list"
       then
         [
           {
@@ -244,17 +259,9 @@
           }
         ]
         ++ builtins.concatLists (builtins.genList
-          (index: nodesAt (path ++ [(indexSegment index)]) (builtins.elemAt current index))
+          (index: nodesAt (path ++ [(indexSegment index)]) concrete.element (builtins.elemAt current index))
           (builtins.length current))
-      else if builtins.isAttrs current && (current._type or null) == "aos-request-output-reference"
-      then [
-        {
-          kind = "string";
-          inherit path;
-          value = current;
-        }
-      ]
-      else if builtins.isAttrs current
+      else if concrete.kind == "map"
       then
         [
           {
@@ -263,52 +270,27 @@
           }
         ]
         ++ builtins.concatLists (builtins.map
-          (name: nodesAt (path ++ [(keySegment name)]) current.${name})
+          (name: nodesAt (path ++ [(keySegment name)]) concrete.value current.${name})
           (builtins.attrNames current))
-      else throw "structured configuration values must contain only null, Boolean, integer, string, list, record, or deferred string leaves";
+      else if concrete.kind == "record"
+      then
+        [
+          {
+            kind = "object";
+            inherit path;
+          }
+        ]
+        ++ builtins.concatLists (builtins.map
+          (name: nodesAt (path ++ [(keySegment name)]) concrete.fields.${name} current.${name})
+          (builtins.attrNames current))
+      else if concrete.kind == "tagged-union"
+      then nodesAt path concrete.variants.${current.${concrete.tag}} current
+      else throw "structured configuration values require Boolean, integer, string, list, map, record, tagged-union, or optional schemas";
   in {
     kind = "structured-value";
     inherit format;
-    document = nodesAt [] value;
+    document = nodesAt [] rootSchema value;
   };
-  structuredDocumentValid = source: let
-    nodes = source.document;
-    entries =
-      builtins.map (node: {
-        name = builtins.toJSON node.path;
-        value = node;
-      })
-      nodes;
-    nodesByPath = builtins.listToAttrs entries;
-    root = nodesByPath.${builtins.toJSON []} or null;
-    parentsValid = builtins.all (node: let
-      length = builtins.length node.path;
-    in
-      length
-      == 0
-      || (let
-        parentPath = pathPrefix (length - 1) node.path;
-        parent = nodesByPath.${builtins.toJSON parentPath} or null;
-        segment = builtins.elemAt node.path (length - 1);
-      in
-        parent
-        != null
-        && (
-          (segment.kind == "key" && parent.kind == "object")
-          || (segment.kind == "index" && parent.kind == "array")
-        )))
-    nodes;
-    formatValid =
-      source.format
-      != "toml"
-      || (root != null && root.kind == "object" && builtins.all (node: node.kind != "null") nodes);
-  in
-    nodes
-    != []
-    && builtins.length nodes == builtins.length (builtins.attrNames nodesByPath)
-    && root != null
-    && parentsValid
-    && formatValid;
 
   forService = {
     serviceTypes,
@@ -344,12 +326,13 @@
     declaration,
   }: let
     source = declaration.source or {};
-    structuredValid = (source.kind or null) != "structured-value" || structuredDocumentValid source;
+    structuredValid =
+      (source.kind or null)
+      != "structured-value"
+      || serviceTypes.structuredDocumentValid source;
     checked =
       if !serviceTypes.configurationMaterialization.check declaration
       then throw "managed configuration does not match the canonical materialization type"
-      else if builtins.match "[0-7][0-7][0-7]([0-7])?" declaration.mode == null
-      then throw "managed configuration '${declaration.name}' mode must be three or four octal digits"
       else if !structuredValid
       then throw "managed configuration '${declaration.name}' has an invalid structured document tree"
       else declaration;

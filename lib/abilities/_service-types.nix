@@ -436,7 +436,67 @@
       };
     };
   };
-  structuredConfigurationSource = types.record {
+  pathPrefix = length: path:
+    builtins.genList (index: builtins.elemAt path index) length;
+  structuredDocumentValid = source: let
+    nodes = source.document;
+    entries =
+      builtins.map (node: {
+        name = builtins.toJSON node.path;
+        value = node;
+      })
+      nodes;
+    nodesByPath = builtins.listToAttrs entries;
+    root = nodesByPath.${builtins.toJSON []} or null;
+    immediateChildren = parentPath:
+      builtins.filter (node: let
+        length = builtins.length node.path;
+      in
+        length
+        == builtins.length parentPath + 1
+        && pathPrefix (length - 1) node.path == parentPath)
+      nodes;
+    parentsValid = builtins.all (node: let
+      length = builtins.length node.path;
+    in
+      length
+      == 0
+      || (let
+        parentPath = pathPrefix (length - 1) node.path;
+        parent = nodesByPath.${builtins.toJSON parentPath} or null;
+        segment = builtins.elemAt node.path (length - 1);
+      in
+        parent
+        != null
+        && (
+          (segment.kind == "key" && parent.kind == "object")
+          || (segment.kind == "index" && parent.kind == "array")
+        )))
+    nodes;
+    arraysContiguous = builtins.all (node:
+      node.kind
+      != "array"
+      || (let
+        children = immediateChildren node.path;
+        indices = builtins.sort (left: right: left < right) (builtins.map
+          (child: (builtins.elemAt child.path (builtins.length child.path - 1)).value)
+          children);
+      in
+        indices == builtins.genList (index: index) (builtins.length indices)))
+    nodes;
+    formatValid =
+      source.format
+      != "toml"
+      || (root != null && root.kind == "object" && builtins.all (node: node.kind != "null") nodes);
+  in
+    nodes
+    != []
+    && builtins.length nodes == builtins.length (builtins.attrNames nodesByPath)
+    && root != null
+    && parentsValid
+    && arraysContiguous
+    && formatValid;
+  structuredConfigurationSourceBase = types.record {
     fields = {
       kind = types.enum ["structured-value"];
       format = types.enum ["json" "toml" "yaml"];
@@ -445,6 +505,12 @@
         maxItems = 65536;
       };
     };
+  };
+  structuredConfigurationSource = types.refined {
+    name = "structured configuration source";
+    description = "a canonical rooted document tree with contiguous arrays";
+    type = structuredConfigurationSourceBase;
+    predicate = structuredDocumentValid;
   };
   configurationMaterializationSource = types.taggedUnion {
     tag = "kind";
@@ -471,6 +537,23 @@
         optional = true;
       };
       state = configurationMaterializationState;
+    };
+  };
+
+  networkReadiness = types.record {
+    fields = {
+      scope = types.enum ["configured-connectivity" "default-route" "local-connectivity"];
+      address_families = types.list {
+        element = types.enum ["ipv4" "ipv6"];
+        maxItems = 2;
+      };
+    };
+  };
+  networkReadinessObservation = types.record {
+    fields = {
+      schema = types.enum ["aos.ability.network-readiness-observation/v1"];
+      expected = networkReadiness;
+      state = types.enum ["configuring" "degraded" "failed" "ready" "unknown"];
     };
   };
 
@@ -687,6 +770,8 @@ in {
     groupName
     configurationMaterialization
     configurationMaterializationObservation
+    networkReadiness
+    networkReadinessObservation
     credentialDelivery
     storageView
     storageAllocation
@@ -696,6 +781,8 @@ in {
     principalResolution
     groupResolution
     producerObservations
+    structuredConfigurationSource
+    structuredDocumentValid
     lifecycle
     dependencies
     readiness
