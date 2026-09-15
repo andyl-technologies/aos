@@ -806,7 +806,6 @@ let
     "kubernetes/_cilium-abilities/module.nix" = "linux-only-config-source";
     "kubernetes/_cloudcore-config/module.nix" = "linux-only-config-source";
     "kubernetes/_edgecore-config/module.nix" = "linux-only-config-source";
-    "kubernetes/_k3s-ability-provider/default.nix" = "target-independent-source";
     "kubernetes/_k3s-config/module.nix" = "linux-only-config-source";
     "kubernetes/_k3s-config/configuration-interface.nix" = "target-independent-source";
     "kubernetes/_k3s-config/configuration-provider.nix" = "linux-only-config-source";
