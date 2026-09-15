@@ -1,4 +1,4 @@
-##! Canonical provider-neutral encrypted mapping and storage formatting resources.
+##! Canonical provider-neutral block-storage resources.
 {
   types,
   declareInterface,
@@ -173,12 +173,117 @@
     resultDescription = "Returns the exact path whose requested format was observed.";
     lifecycle = ephemeralLifecycle;
   };
+
+  poolName = types.refined {
+    name = "storage pool name";
+    description = "a bounded storage-pool identity";
+    type = types.string {
+      maxLength = 255;
+      syntax = null;
+    };
+    predicate = value: builtins.match "[A-Za-z][A-Za-z0-9_.:-]*" value != null;
+  };
+  poolRequest = types.record {
+    fields = {
+      name = types.localKey;
+      enabled = types.boolean;
+      pool = poolName;
+      import_policy = types.enum ["force"];
+      inherit prerequisites;
+    };
+  };
+  poolObservation = types.record {
+    fields = {
+      schema = types.enum ["aos.ability.storage-pool-observation/v1"];
+      expected = poolRequest;
+      realized = {
+        type = types.optional poolName;
+        optional = true;
+      };
+      state = types.enum ["absent" "ready" "drifted" "unmanaged" "unknown"];
+    };
+  };
+  pool = resource {
+    alias = "storage-pool";
+    name = "aos.storage.pool";
+    description = "Imports and retains one provider-neutral storage pool.";
+    requestType = poolRequest;
+    observationType = poolObservation;
+    action = "import";
+    actionDescription = "Imports the exact requested storage pool without mounting its datasets.";
+    releaseDescription = "Exports only the storage pool owned by this resource.";
+    resultName = "pool-name";
+    resultType = poolName;
+    resultDescription = "Returns the exact imported storage-pool identity.";
+    lifecycle = ephemeralLifecycle;
+  };
+
+  datasetName = types.refined {
+    name = "storage dataset name";
+    description = "a bounded relative hierarchical dataset identity";
+    type = types.string {
+      maxLength = 1024;
+      syntax = null;
+    };
+    predicate = value:
+      builtins.match "[A-Za-z0-9_.:-]+(/[A-Za-z0-9_.:-]+)*" value != null;
+  };
+  datasetProperties = types.map {
+    keyMaxLength = 255;
+    keySyntax = null;
+    maxEntries = 256;
+    value = types.string {
+      maxLength = 4096;
+      syntax = null;
+    };
+  };
+  datasetRequest = types.record {
+    fields = {
+      name = types.localKey;
+      enabled = types.boolean;
+      pool = types.deferredResult poolName;
+      dataset = datasetName;
+      mountpoint = types.executionPath;
+      properties = datasetProperties;
+      inherit prerequisites;
+    };
+  };
+  datasetObservation = types.record {
+    fields = {
+      schema = types.enum ["aos.ability.storage-dataset-observation/v1"];
+      expected = datasetRequest;
+      realized = {
+        type = types.optional types.executionPath;
+        optional = true;
+      };
+      state = types.enum ["absent" "ready" "drifted" "unmanaged" "unknown"];
+    };
+  };
+  dataset = resource {
+    alias = "storage-dataset";
+    name = "aos.storage.dataset";
+    description = "Creates, configures, and mounts one provider-neutral storage dataset.";
+    requestType = datasetRequest;
+    observationType = datasetObservation;
+    action = "mount";
+    actionDescription = "Converges and mounts the exact requested storage dataset.";
+    releaseDescription = "Unmounts only the storage dataset owned by this resource without destroying data.";
+    resultName = "mountpoint";
+    resultType = types.executionPath;
+    resultDescription = "Returns the exact mounted dataset path.";
+    lifecycle = ephemeralLifecycle;
+  };
 in {
+  types = {
+    inherit poolName datasetName datasetProperties;
+  };
   interfaces = {
-    inherit encryptedMapping storageFormat;
+    inherit encryptedMapping storageFormat pool dataset;
   };
   declarations = {
     ${encryptedMapping.alias} = encryptedMapping.declaration;
     ${storageFormat.alias} = storageFormat.declaration;
+    ${pool.alias} = pool.declaration;
+    ${dataset.alias} = dataset.declaration;
   };
 }

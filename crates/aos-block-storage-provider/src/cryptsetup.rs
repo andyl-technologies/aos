@@ -1,19 +1,17 @@
 //! Cryptsetup-backed ephemeral encrypted block mappings.
 
 use std::fs;
-use std::io::{self, Read as _, Write as _};
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{AbilityValue, ResourceReference, RevisionId};
-use aos_contract::Sha256Digest;
 use aos_provider_protocol::ResourceContext;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::engine::{Backend, BackendObservation, ability_value};
 use crate::process::{Executable, ExecutableReference};
+use crate::state;
 
 const INTERFACE: &str = "aos.cryptsetup.encrypted-block-mapping-effects";
 const REALIZATION_SCHEMA: &str = "aos.storage.encrypted-block-mapping-realization/v1";
@@ -355,25 +353,15 @@ fn validate_path(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn marker_path(target: &ResourceReference) -> Result<PathBuf> {
-    let digest = Sha256Digest::of_canonical(
-        "aos.storage.encrypted-block-mapping-resource/v1",
-        &target.resource,
-    )?;
-    Ok(Path::new(STATE_ROOT).join(digest.hex()))
-}
-
 fn read_marker(target: &ResourceReference) -> Result<Option<Marker>> {
-    let path = marker_path(target)?;
-    let file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error).context("opening encrypted mapping marker"),
+    let marker: Marker = match state::read(
+        Path::new(STATE_ROOT),
+        "aos.storage.encrypted-block-mapping-resource/v1",
+        target,
+    )? {
+        Some(marker) => marker,
+        None => return Ok(None),
     };
-    let mut bytes = Vec::new();
-    file.take(64 * 1024 + 1).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() <= 64 * 1024, "encrypted mapping marker is oversized");
-    let marker: Marker = aos_contract::canonical::from_slice(&bytes, "encrypted mapping marker")?;
     ensure!(
         marker.schema == MARKER_SCHEMA,
         "unsupported encrypted mapping marker"
@@ -407,29 +395,20 @@ fn read_marker(target: &ResourceReference) -> Result<Option<Marker>> {
 }
 
 fn write_marker(target: &ResourceReference, marker: &Marker) -> Result<()> {
-    fs::create_dir_all(STATE_ROOT)?;
-    fs::set_permissions(STATE_ROOT, fs::Permissions::from_mode(0o700))?;
-    let path = marker_path(target)?;
-    let temporary = path.with_extension("tmp");
-    let bytes = aos_contract::canonical::canonical_json(&serde_json::to_value(marker)?)?;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(&temporary)?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    fs::rename(temporary, path)?;
-    Ok(())
+    state::write(
+        Path::new(STATE_ROOT),
+        "aos.storage.encrypted-block-mapping-resource/v1",
+        target,
+        marker,
+    )
 }
 
 fn remove_marker(target: &ResourceReference) -> Result<()> {
-    match fs::remove_file(marker_path(target)?) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).context("removing encrypted mapping marker"),
-    }
+    state::remove(
+        Path::new(STATE_ROOT),
+        "aos.storage.encrypted-block-mapping-resource/v1",
+        target,
+    )
 }
 
 fn run_success(executable: &Executable, arguments: &[&str], remaining_millis: u64) -> Result<()> {

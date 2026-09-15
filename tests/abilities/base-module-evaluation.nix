@@ -6,6 +6,7 @@
   name,
   module,
   packages,
+  extraModules ? [],
 }: let
   packageModule = package: {
     inherit (package) version;
@@ -43,6 +44,6 @@ in
           stage = "host";
         };
       }
-    ];
+    ] ++ extraModules;
     packageModules = builtins.map packageModule packages;
   }

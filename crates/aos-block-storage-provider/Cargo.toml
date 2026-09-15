@@ -19,3 +19,11 @@ path = "src/bin/cryptsetup.rs"
 [[bin]]
 name = "aos-storage-format-provider"
 path = "src/bin/storage_format.rs"
+
+[[bin]]
+name = "aos-zfs-pool-provider"
+path = "src/bin/zfs_pool.rs"
+
+[[bin]]
+name = "aos-zfs-dataset-provider"
+path = "src/bin/zfs_dataset.rs"

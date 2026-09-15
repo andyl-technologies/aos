@@ -12,7 +12,9 @@
       pkgs.cryptsetup
       pkgs.aos-cryptsetup-provider
       pkgs.aos-storage-format-provider
+      pkgs.aos-zfs-provider
     ];
+    extraModules = [{aos.filesystems.zfs.enable = true;}];
   };
   config = evaluated.config;
   requests = config.aos.abilities.requests;
@@ -29,4 +31,7 @@ in
   == resultOf "cryptsetup:encrypted-swap-mapping" "mapped-device";
   assert requests."cryptsetup:encrypted-swap".parameters.source
   == resultOf "cryptsetup:encrypted-swap-format" "formatted-path";
-  assert !(config.systemd.services ? cryptswap); true
+  assert !(config.systemd.services ? cryptswap);
+  assert requests ? "aos-zfs-provider:pool";
+  assert !(config.systemd.services ? "zfs-import");
+  assert !(config.systemd.services ? "zfs-mount"); true
