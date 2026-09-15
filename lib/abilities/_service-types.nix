@@ -684,6 +684,12 @@
           value = types.deferredResult executionPath;
         };
       };
+      artifact-path = types.record {
+        fields = {
+          kind = types.enum ["artifact-path"];
+          reference = types.artifactFileReference;
+        };
+      };
       credential-content = types.record {
         fields = {
           kind = types.enum ["credential-content"];
