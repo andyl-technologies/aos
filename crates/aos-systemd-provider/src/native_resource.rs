@@ -116,6 +116,7 @@ struct DeviceDesired {
 enum NativeRealization {
     ActivationGroupTarget {
         schema: String,
+        systemd_unit: ServiceUnitIdentity,
         after_units: Vec<ServiceUnitIdentity>,
         member_units: Vec<ServiceUnitIdentity>,
         required_member_units: Vec<ServiceUnitIdentity>,
@@ -587,6 +588,7 @@ fn render(desired: &Desired, realization: &NativeRealization) -> Result<Rendered
             let unit_name = format!("{}.target", group.name);
             validate_unit_name(&unit_name)?;
             let NativeRealization::ActivationGroupTarget {
+                systemd_unit,
                 after_units,
                 member_units,
                 required_member_units,
@@ -595,6 +597,15 @@ fn render(desired: &Desired, realization: &NativeRealization) -> Result<Rendered
             else {
                 bail!("activation group requires an activation-group-target realization");
             };
+            let ServiceUnitIdentity::Unit {
+                unit_name: realized_unit_name,
+            } = systemd_unit
+            else {
+                bail!("activation group requires an exact target-unit identity");
+            };
+            if realized_unit_name != &unit_name {
+                bail!("activation group realization names another target unit");
+            }
             let members = realized_unit_names(member_units)?;
             let ordered_after = realized_unit_names(after_units)?;
             let required_members = realized_unit_names(required_member_units)?;
@@ -1169,6 +1180,9 @@ mod tests {
         });
         let realization = NativeRealization::ActivationGroupTarget {
             schema: REALIZATION_SCHEMA.to_string(),
+            systemd_unit: ServiceUnitIdentity::Unit {
+                unit_name: "aos-config.target".to_string(),
+            },
             after_units: vec![ServiceUnitIdentity::Unit {
                 unit_name: "aos-fetch.target".to_string(),
             }],
@@ -1189,5 +1203,15 @@ mod tests {
             String::from_utf8(rendered.units[0].bytes.clone()).expect("unit is utf-8"),
             "[Unit]\nDescription=AOS on-host config applied\nAfter=aos-activate.service aos-config-render.target aos-fetch.target\nWants=aos-config-render.target\nRequires=aos-activate.service\n"
         );
+
+        let mut mismatched_realization = realization.clone();
+        if let NativeRealization::ActivationGroupTarget { systemd_unit, .. } =
+            &mut mismatched_realization
+        {
+            *systemd_unit = ServiceUnitIdentity::Unit {
+                unit_name: "another.target".to_string(),
+            };
+        }
+        assert!(render(&group, &mismatched_realization).is_err());
     }
 }

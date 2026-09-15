@@ -492,10 +492,16 @@
       else if builtins.elem resource.kind (builtins.map (selected: selected.identity.name) readinessControllers)
       then {
         kind = "unit";
-        unit_name = readinessUnitFor
+        unit_name =
+          readinessUnitFor
           (builtins.head (builtins.filter (selected: selected.identity.name == resource.kind) readinessControllers))
           resource.value;
       }
+      else if
+        (realization.schema or null)
+        == "aos.systemd.native-resource-realization/v1"
+        && (realization.backend or null) == "activation-group-target"
+      then realization.systemd_unit or null
       else null;
   in
     if resource.resource != reference.resource
@@ -534,11 +540,58 @@
         observation_schema = observationSchemaFor selected;
       })
       serviceImplementationNames);
-
-  serviceRenderer = import ./_systemd-service-document.nix {
-    inherit lib serviceFacets;
-    unitNameForReference = unitIdentityForReference;
-  };
+  serviceRendererFor = resolver:
+    import ./_systemd-service-document.nix {
+      inherit lib serviceFacets;
+      unitNameForReference = resolver;
+    };
+  unitIdentityForPlannedResource = allResources: resource:
+    if resource.kind == "aos.service.instance"
+    then
+      (serviceRendererFor (unitIdentityForPlannedReference allResources))
+      .serviceIdentityFor
+      (builtins.removeAttrs resource ["controller"])
+    else if resource.kind == "aos.systemd.packaged-unit"
+    then {
+      kind = "unit";
+      unit_name = (normalize resource.value).source.unit_name;
+    }
+    else if resource.kind == "aos.activation.group"
+    then {
+      kind = "unit";
+      unit_name = "${resource.value.name}.target";
+    }
+    else if builtins.elem resource.kind (builtins.map (selected: selected.identity.name) readinessControllers)
+    then {
+      kind = "unit";
+      unit_name =
+        readinessUnitFor
+        (builtins.head (builtins.filter (selected: selected.identity.name == resource.kind) readinessControllers))
+        resource.value;
+    }
+    else null;
+  unitIdentityForPlannedReference = allResources: deferred: let
+    reference = resolveReference deferred;
+    matches =
+      builtins.filter (
+        resource: resource.resource == reference.resource
+      )
+      allResources;
+    resource =
+      if builtins.length matches == 1
+      then builtins.head matches
+      else throw "systemd dependency must resolve to exactly one planned resource";
+    unitIdentity = unitIdentityForPlannedResource allResources resource;
+  in
+    if resource.resource != reference.resource
+    then throw "systemd dependency resolved to another planned ResourceId"
+    else if resource.lifetime != reference.lifetime
+    then throw "systemd dependency planning does not match its ResourceReference authority"
+    else if !requireReferenceAuthority reference resource
+    then throw "systemd dependency has invalid planned ResourceReference authority"
+    else if !validServiceUnitIdentity unitIdentity
+    then throw "systemd dependency has no valid planned systemd unit identity"
+    else unitIdentity;
   directoryRoot = {
     cache = "/var/cache";
     configuration = "/etc";
@@ -625,6 +678,7 @@
     then throw "systemd directory preparation omitted an exact planning ResourceReference"
     else entryResource.value;
   composeServices = featureName: {
+    allResources,
     bindings,
     resources,
     ...
@@ -641,6 +695,7 @@
     destinations = builtins.map (preparation: preparation.destination) preparations;
     referencesFor = resourceName:
       builtins.map (preparationReference implementation providerInstance) preparationsByResource.${resourceName};
+    serviceRenderer = serviceRendererFor (unitIdentityForPlannedReference allResources);
   in
     if !builtins.all (binding: binding.providerInstance == providerInstance) selectedBindings
     then throw "systemd service controller received several provider instances"
@@ -844,26 +899,27 @@
           else "readiness-resource"
         );
         transition = _: {
-        schema = "aos.ability.transition-fragment/v1";
-        operations = [];
-        decisions = [];
-        merges = [];
-        edges = [];
-        exports = [];
-        imports = [];
-        links = [];
-        handoffs = [];
-        provider_readiness = [];
-        obligations = [];
+          schema = "aos.ability.transition-fragment/v1";
+          operations = [];
+          decisions = [];
+          merges = [];
+          edges = [];
+          exports = [];
+          imports = [];
+          links = [];
+          handoffs = [];
+          provider_readiness = [];
+          obligations = [];
         };
       };
-    }) readinessControllers);
+    })
+    readinessControllers);
   identityProviderImplementations = import ./_systemd-identity-provider.nix {
     inherit config lib packageName;
   };
   nativeResourceProviderImplementations = import ./_systemd-native-resource-provider.nix {
     inherit config lib packageName;
-    unitIdentityForReference = unitIdentityForReference;
+    unitIdentityForReference = unitIdentityForPlannedReference;
   };
 in {
   config.aos.abilities.implementations =

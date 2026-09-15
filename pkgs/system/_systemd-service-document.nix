@@ -872,7 +872,7 @@
     ];
   };
 
-  realizationFor = controllerInterface: resource: let
+  serviceIdentityFor = resource: let
     value = resource.value;
     selection = (value.instantiation or {selection.kind = "singleton";}).selection;
     templateIdentity =
@@ -885,14 +885,20 @@
       then unitNameForReference selection.template_resource
       else null;
     managerIdentity = value.manager_identity or null;
-    serviceIdentity =
-      if selection.kind == "template"
-      then templateIdentity
-      else if selection.kind == "instance"
-      then providerLib.templateInstanceIdentity templateIdentity selection.instance
-      else if managerIdentity != null
-      then providerLib.publicUnitIdentity managerIdentity.name
-      else providerLib.unitIdentityForResource resource.resource;
+  in
+    if selection.kind == "template"
+    then templateIdentity
+    else if selection.kind == "instance"
+    then providerLib.templateInstanceIdentity templateIdentity selection.instance
+    else if managerIdentity != null
+    then providerLib.publicUnitIdentity managerIdentity.name
+    else providerLib.unitIdentityForResource resource.resource;
+
+  realizationFor = controllerInterface: resource: let
+    value = resource.value;
+    selection = (value.instantiation or {selection.kind = "singleton";}).selection;
+    managerIdentity = value.manager_identity or null;
+    serviceIdentity = serviceIdentityFor resource;
     serviceUnitName =
       if serviceIdentity.kind == "unit"
       then serviceIdentity.unit_name
@@ -979,5 +985,5 @@
     enabled = value.enabled;
   };
 in {
-  inherit realizationFor;
+  inherit realizationFor serviceIdentityFor;
 }

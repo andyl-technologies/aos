@@ -108,7 +108,7 @@
             };
           }) entries);
       };
-    realizationFor = resource:
+    realizationFor = allResources: resource:
       {
         schema = "aos.systemd.native-resource-realization/v1";
         inherit (specification) backend;
@@ -120,11 +120,19 @@
         target = trigger.realization.systemd_unit;
       })
       // lib.optionalAttrs (kind == "activation-group") {
-        after_units = builtins.map unitIdentityForReference resource.value.after;
-        member_units = builtins.map unitIdentityForReference resource.value.members;
-        required_member_units = builtins.map unitIdentityForReference resource.value.required_members;
+        systemd_unit = {
+          kind = "unit";
+          unit_name = "${resource.value.name}.target";
+        };
+        after_units = builtins.map (unitIdentityForReference allResources) resource.value.after;
+        member_units = builtins.map (unitIdentityForReference allResources) resource.value.members;
+        required_member_units = builtins.map (unitIdentityForReference allResources) resource.value.required_members;
       };
-    compose = {resources, ...}: {
+    compose = {
+      allResources,
+      resources,
+      ...
+    }: {
       outputs = {};
       requests = builtins.mapAttrs (key: resource: {
         requirement = "native-effects";
@@ -132,7 +140,7 @@
         slot = key;
         parameters.desired = resource.value;
       }) resources;
-      realizations = builtins.mapAttrs (_: realizationFor) resources;
+      realizations = builtins.mapAttrs (_: realizationFor allResources) resources;
     };
     transition = import ./_systemd-native-resource-transition.nix {
       inherit effectsInterface;
