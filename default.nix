@@ -215,6 +215,7 @@
     nativeAbilityPackageModules =
       builtins.map (package: {
         name = package.pname or package.name;
+        version = package.version or "0";
         module =
           if package ? abilities && package.abilities ? module
           then package.abilities.module
