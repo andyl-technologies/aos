@@ -17,7 +17,6 @@
   resourceRevision,
   coreInterfaces,
   normalizePackageOutputSelectors,
-  coreInterfaces,
 }: let
   strictSubmodule = options: let
     submoduleType = moduleTypes.submodule {
