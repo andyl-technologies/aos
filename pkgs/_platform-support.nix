@@ -804,6 +804,7 @@ let
     "security/_krb5-kdc/module.nix" = "linux-only-config-source";
     "storage/_garage-config/module.nix" = "linux-only-config-source";
     "tools/_rsyncd/module.nix" = "linux-only-config-source";
+    "tools/aos/_abilities/attestation-verifier.nix" = "target-independent-source";
     "storage/_garage-tests/lifecycle.nix" = "linux-only-test-source";
     "storage/_longhorn-config/module.nix" = "linux-only-config-source";
     "storage/_mariadb/module.nix" = "linux-only-config-source";

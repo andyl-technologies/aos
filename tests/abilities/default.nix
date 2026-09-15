@@ -429,6 +429,9 @@
   kubernetesPackageServices = import ./kubernetes-package-services.nix {
     inherit lib pkgs;
   };
+  attestationVerifierService = import ./attestation-verifier-service.nix {
+    inherit lib pkgs;
+  };
   kubernetesObjectManagementCore = import ./kubernetes-object-management-core.nix {
     inherit lib;
   };
@@ -889,6 +892,7 @@ in
   assert !(builtins.head effectFixture.kubernetes.operations ? semantics);
   assert effectFixture.omitted == emptyEffects;
   assert kubernetesPackageServices;
+  assert attestationVerifierService;
   assert kubernetesObjectManagementCore;
   assert serviceManagement;
   assert managedIdentityAllocation;
