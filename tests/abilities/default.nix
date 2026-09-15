@@ -129,6 +129,11 @@
   documentRecordSchema = lib.abilities.types.schemaOf "document record test" documentRecordType;
 
   deferredExecutionPath = lib.abilities.types.deferredResult lib.abilities.types.executionPath;
+  qualifiedDeferredExecutionPath = {
+    _type = "aos-request-output-reference";
+    request = "system:runtime-directory";
+    output = "execution-path";
+  };
   pathWithin = lib.abilities.pathWithin {
     base = lib.abilities.resultOf "runtime-directory" "execution-path";
     relativePath = "krb5/service.pid";
@@ -511,6 +516,8 @@ in
   assert builtins.attrNames documentRecordType._aosDocType.fields == ["@type" "enabled"];
   assert !documentRecordType._aosDocType.open;
   assert deferredExecutionPath.check pathWithin;
+  assert deferredExecutionPath.check qualifiedDeferredExecutionPath;
+  assert !deferredExecutionPath.check (qualifiedDeferredExecutionPath // {request = "nested:invalid:key";});
   assert pathWithin.relative_path == "krb5/service.pid";
   assert !invalidPathWithin.success;
   assert !nonPathDeferred.check forgedIntegerPathWithin;
