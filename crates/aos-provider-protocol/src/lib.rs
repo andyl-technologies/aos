@@ -194,7 +194,7 @@ pub struct InvocationControl {
 }
 
 /// Selects the externally visible purpose of one command-handler invocation.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum InvocationPurpose {
     /// Performs the declared effect.
@@ -207,6 +207,43 @@ pub enum InvocationPurpose {
     Compensate,
     /// Observes and resolves an ambiguous compensation effect.
     ReconcileCompensation,
+}
+
+/// Holds a bounded, strictly ordered set of supported invocation purposes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct SupportedPurposes(Vec<InvocationPurpose>);
+
+impl SupportedPurposes {
+    /// Constructs a set only from strict canonical enum order.
+    #[must_use]
+    pub fn from_ordered(purposes: Vec<InvocationPurpose>) -> Option<Self> {
+        let canonical = purposes.len() <= 5 && purposes.windows(2).all(|pair| pair[0] < pair[1]);
+        canonical.then_some(Self(purposes))
+    }
+
+    /// Reports whether admission explicitly supports one invocation purpose.
+    #[must_use]
+    pub fn contains(&self, purpose: InvocationPurpose) -> bool {
+        self.0.binary_search(&purpose).is_ok()
+    }
+
+    /// Iterates over purposes in canonical order.
+    pub fn iter(&self) -> impl Iterator<Item = InvocationPurpose> + '_ {
+        self.0.iter().copied()
+    }
+}
+
+impl<'de> Deserialize<'de> for SupportedPurposes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let purposes = Vec::<InvocationPurpose>::deserialize(deserializer)?;
+        Self::from_ordered(purposes).ok_or_else(|| {
+            serde::de::Error::custom("supported purposes are not in strict canonical order")
+        })
+    }
 }
 
 /// Reports an effect-free native resource admission.
@@ -226,14 +263,14 @@ pub struct AdmissionResult {
     /// Carries provider-owned native identity and drift context.
     pub native_context: AbilityValue,
     /// Lists every invocation purpose this admission can execute safely.
-    pub supported_purposes: Vec<InvocationPurpose>,
+    pub supported_purposes: SupportedPurposes,
 }
 
 impl AdmissionResult {
     /// Reports whether admission explicitly supports one invocation purpose.
     #[must_use]
     pub fn supports(&self, purpose: InvocationPurpose) -> bool {
-        self.supported_purposes.contains(&purpose)
+        self.supported_purposes.contains(purpose)
     }
 }
 
@@ -305,7 +342,7 @@ mod tests {
 
     use super::{
         AdmissionDisposition, AdmissionRevision, InvocationDisposition, InvocationPurpose,
-        RecoveryMethods,
+        RecoveryMethods, SupportedPurposes,
     };
 
     #[test]
@@ -380,6 +417,25 @@ mod tests {
         assert_eq!(
             recovery.method_for(&effect, InvocationPurpose::Cancel),
             None
+        );
+    }
+
+    #[test]
+    fn supported_purposes_reject_duplicates_and_noncanonical_order() {
+        assert!(serde_json::from_str::<SupportedPurposes>(r#"["effect","effect"]"#).is_err());
+        assert!(serde_json::from_str::<SupportedPurposes>(r#"["cancel","effect"]"#).is_err());
+
+        let purposes = SupportedPurposes::from_ordered(vec![
+            InvocationPurpose::Effect,
+            InvocationPurpose::Reconcile,
+            InvocationPurpose::Cancel,
+            InvocationPurpose::Compensate,
+            InvocationPurpose::ReconcileCompensation,
+        ])
+        .expect("canonical purpose order is accepted");
+        assert_eq!(
+            serde_json::to_string(&purposes).expect("purpose set serializes"),
+            r#"["effect","reconcile","cancel","compensate","reconcile-compensation"]"#
         );
     }
 
