@@ -1,75 +1,114 @@
 ##! modules/security/wrappers.nix — Runtime privilege wrappers
 ##!
-##! Materializes explicitly declared privileged executables in the volatile
-##! `/run/wrappers/bin` directory. Package outputs remain immutable and never
-##! carry setuid bits; ownership and mode are applied by PID 1 at boot and
-##! whenever a configuration generation activates.
+##! Requests exact package executables as typed runtime filesystem entries.
+##! Package outputs remain immutable and never carry privileged mode bits;
+##! the selected filesystem provider owns materialization and observation.
 {
   config,
   lib,
-  pkgs,
   ...
 }: let
   cfg = config.aos.security.wrappers;
   names = builtins.attrNames cfg;
-  render = name: let
+
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
+  filesystemEntry = serviceManagement.interfaces.filesystemEntry;
+
+  wrapperRoot = "/run/wrappers";
+  wrapperBin = "${wrapperRoot}/bin";
+  consumerInstance = "system:security-wrappers";
+
+  wrapperRootRequest = "security-wrappers";
+  wrapperBinRequest = "security-wrapper-bin";
+  retainedBy = request: lib.abilities.resultOf request "retained-resource";
+  directory = key: name: destination: prerequisites: {
+    inherit key;
+    parameters = {
+      inherit name destination prerequisites;
+      entry.kind = "directory";
+      owner = "root";
+      group = "root";
+      mode = "0755";
+    };
+  };
+  wrapperRequest = name: let
     wrapper = cfg.${name};
-  in "C+ /run/wrappers/bin/${name} ${wrapper.mode} ${wrapper.owner} ${wrapper.group} - ${wrapper.source}";
+  in {
+    key = "security-wrapper-${name}";
+    parameters = {
+      inherit name;
+      entry = {
+        kind = "copied-file";
+        source = {
+          kind = "artifact-file";
+          reference = wrapper.source;
+        };
+        maximum_size_bytes = wrapper.maximumSizeBytes;
+      };
+      destination = "${wrapperBin}/${name}";
+      prerequisites = [(retainedBy wrapperBinRequest)];
+      inherit (wrapper) owner group mode;
+    };
+  };
+  filesystemRequests = serviceManagement.forProducers {
+    inherit consumerInstance;
+    interface = filesystemEntry;
+    methods = ["materialize" "observe" "release"];
+    producers =
+      [
+        (directory wrapperRootRequest "wrappers" wrapperRoot [])
+        (directory wrapperBinRequest "wrapper-bin" wrapperBin [(retainedBy wrapperRootRequest)])
+      ]
+      ++ builtins.map wrapperRequest names;
+  };
 in {
   options.aos.security.wrappers = lib.mkOption {
     type = lib.types.attrsOf (lib.types.submodule {
       options = {
         source = lib.mkOption {
-          type = lib.types.strMatching "/nix/store/[A-Za-z0-9+._?=/-]+";
-          description = "Absolute package executable copied into the runtime wrapper directory.";
+          type = lib.abilities.types.artifactPathReference;
+          description = "Exact package artifact and relative executable path copied into the runtime wrapper directory.";
         };
         owner = lib.mkOption {
-          type = lib.types.strMatching "[A-Za-z_][A-Za-z0-9_-]*";
+          type = lib.abilities.types.deferredResult lib.abilities.types.principalName;
           default = "root";
           description = "Owner of the runtime wrapper.";
         };
         group = lib.mkOption {
-          type = lib.types.strMatching "[A-Za-z_][A-Za-z0-9_-]*";
+          type = lib.abilities.types.deferredResult lib.abilities.types.groupName;
           default = "root";
           description = "Group of the runtime wrapper.";
         };
         mode = lib.mkOption {
-          type = lib.types.strMatching "[0-7]{4}";
+          type = lib.abilities.types.fileMode;
           default = "4755";
           description = "Four-digit octal mode applied to the runtime wrapper.";
+        };
+        maximumSizeBytes = lib.mkOption {
+          type = lib.types.addCheck lib.types.int (
+            value: value >= 1 && value <= lib.abilities.types.limits.maxSafeInteger
+          );
+          default = lib.abilities.types.limits.maxSafeInteger;
+          description = "Maximum source file size accepted while materializing the runtime wrapper.";
         };
       };
     });
     default = {};
-    description = "Privileged executables materialized under /run/wrappers/bin.";
+    description = "Privileged executables materialized under ${wrapperBin}.";
   };
 
-  config = lib.mkIf (names != []) {
-    assertions =
-      map (name: {
-        assertion = builtins.match "[A-Za-z0-9._+-]+" name != null;
-        message = "aos.security.wrappers names may contain only letters, digits, '.', '_', '+', and '-'";
-      })
-      names;
+  config = lib.mkIf (names != []) (lib.mkMerge [
+    {
+      assertions =
+        builtins.map
+        (name: {
+          assertion = builtins.match "[A-Za-z0-9._+-]+" name != null;
+          message = "aos.security.wrappers names may contain only letters, digits, '.', '_', '+', and '-'";
+        })
+        names;
 
-    environment.etc."tmpfiles.d/aos-security-wrappers.conf" = {
-      text = ''
-        # Generated by modules/security/wrappers.nix.
-        d /run/wrappers     0755 root root - -
-        d /run/wrappers/bin 0755 root root - -
-        ${builtins.concatStringsSep "\n" (map render names)}
-      '';
-    };
-
-    systemd.services.aos-security-wrappers = {
-      description = "Materialize runtime privilege wrappers";
-      wantedBy = ["sysinit.target"];
-      before = ["systemd-user-sessions.service"];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = "yes";
-        ExecStart = "${pkgs.systemd}/bin/systemd-tmpfiles --create /etc/tmpfiles.d/aos-security-wrappers.conf";
-      };
-    };
-  };
+      aos.abilities.instances.${consumerInstance} = {};
+    }
+    {aos.abilities = filesystemRequests;}
+  ]);
 }

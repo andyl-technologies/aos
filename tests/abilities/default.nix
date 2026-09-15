@@ -450,6 +450,9 @@
   networkPolicyCore = import ./network-policy-core.nix {
     inherit lib;
   };
+  securityWrappers = import ./security-wrappers.nix {
+    inherit lib;
+  };
   compositionDriver = import ./composition-driver.nix {
     inherit lib;
   };
@@ -866,6 +869,7 @@ in
   assert kernelModules;
   assert bootPreparationCore;
   assert postgresqlService;
+  assert securityWrappers;
   assert networkPolicyCore;
   assert fails (normalizeBounded [true false null true false]);
   assert fails (normalizeBounded {oversized-member-name = true;});
