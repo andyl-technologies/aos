@@ -504,6 +504,9 @@
   baseNixDbNative = import ./base-nix-db-native.nix {
     inherit pkgs lib;
   };
+  baseNetworkingNative = import ./base-networking-native.nix {
+    inherit pkgs lib;
+  };
   smokeAbilityProjection = pkgs.ability-package-smoke.abilities;
   smokeArtifactSelectors = pkgs.ability-package-smoke.contract.selectors;
   oversizedFallback = builtins.tryEval (builtins.deepSeq (
@@ -916,6 +919,7 @@ in
   assert systemdReadiness;
   assert baseKernelNative;
   assert baseNixDbNative;
+  assert baseNetworkingNative;
   assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
   assert builtins.length (builtins.attrNames smokeAbilityProjection.requirementTemplates) == 1;
