@@ -1,8 +1,8 @@
 //! Immutable app-random campaign-branch replay plans.
 //!
-//! The host sends one node-local plan as the third descriptor attached to the
-//! control-protocol v2 `Setup` frame. The descriptor contains exactly this
-//! bounded, language-neutral byte format:
+//! The host nests one node-local plan in the third descriptor attached to the
+//! control-protocol v3 `Setup` frame. The nested body has this bounded,
+//! language-neutral byte format:
 //!
 //! ```text
 //! offset  size  field

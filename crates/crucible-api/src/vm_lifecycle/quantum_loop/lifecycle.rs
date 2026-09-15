@@ -128,8 +128,6 @@ impl ProductionVmLifecycleLoop {
                 current_generation,
                 next_generation,
                 scheduler_checkpoint,
-                nodes.len(),
-                limits,
             )?;
             let current_process = self.inner.backend().process_identity(&intent.node)?;
             let journal_node = try_lifecycle_string(&intent.node.name, nodes.len(), limits)?;

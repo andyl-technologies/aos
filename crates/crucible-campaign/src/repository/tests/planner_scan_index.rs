@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn indexed_pages_match_legacy_order_across_request_schemas_and_restart() {
+fn indexed_pages_match_canonical_order_across_request_shapes_and_restart() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     repository
         .create("scan-order", &lineage, &policy, &BTreeMap::new())
@@ -17,29 +17,27 @@ fn indexed_pages_match_legacy_order_across_request_schemas_and_restart() {
             lineage.genesis(),
             &format!("scan-branch-{branch}"),
         );
-        // Insert versions and causes in reverse order, not in scan order.
-        for schema in (1_u32..=4).rev() {
+        // Insert distinct causes in reverse order, not in scan order.
+        for variant in (2_u32..=4).rev() {
             for cause in (0..3).rev() {
                 let request = BranchRequest::new(
-                    template.branch_point(),
-                    template.parent(),
-                    template.opportunity(),
-                    template.domain(),
+                    BranchRequest::identity(
+                        template.branch_point(),
+                        template.parent(),
+                        template.opportunity(),
+                        template.domain(),
+                    ),
                     template.source().clone(),
                     BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(
                         CampaignHash::derive(
                             "scan-order",
-                            format!("{branch}-{schema}-{cause}").as_bytes(),
+                            format!("{branch}-{variant}-{cause}").as_bytes(),
                         ),
                     )),
                     template.budget(),
                     template.stop().clone(),
                 )
                 .expect("request");
-                let mut bytes = request.canonical_bytes();
-                bytes[..4].copy_from_slice(&schema.to_be_bytes());
-                let request =
-                    BranchRequest::from_canonical_bytes(&bytes).expect("retained request schema");
                 let head = repository.head("scan-order").expect("head");
                 repository
                     .submit_known_branch_request("scan-order", head.snapshot_id(), &request)
@@ -54,10 +52,12 @@ fn indexed_pages_match_legacy_order_across_request_schemas_and_restart() {
             .load_choice_opportunity(template.opportunity())
             .expect("scenario-default opportunity");
         let scenario_default = BranchRequest::new(
-            template.branch_point(),
-            template.parent(),
-            template.opportunity(),
-            template.domain(),
+            BranchRequest::identity(
+                template.branch_point(),
+                template.parent(),
+                template.opportunity(),
+                template.domain(),
+            ),
             CandidateSource::finite(BTreeSet::from([opportunity.default().clone()]))
                 .expect("scenario-default source"),
             BranchRequestCause::ScenarioDefault(policy.id().expect("policy id")),
@@ -71,7 +71,7 @@ fn indexed_pages_match_legacy_order_across_request_schemas_and_restart() {
                 .expect("scenario-default request id")
                 .content_id()
                 .schema_version(),
-            crate::exploration::SCENARIO_DEFAULT_BRANCH_REQUEST_SCHEMA_VERSION
+            crate::exploration::BRANCH_REQUEST_SCHEMA_VERSION
         );
         let head = repository.head("scan-order").expect("head");
         repository
@@ -92,17 +92,8 @@ fn indexed_pages_match_legacy_order_across_request_schemas_and_restart() {
             let page = cold
                 .planner_scan_page(&view, after, limit)
                 .expect("indexed page");
-            let mut legacy = cold
-                .legacy_planner_scan_positions(&view, after, limit as usize + 1)
-                .expect("legacy order");
-            let complete = legacy.len() <= limit as usize;
-            if !complete {
-                legacy.pop_last();
-            }
-            assert_eq!(page.positions(), legacy.keys().copied().collect::<Vec<_>>());
-            assert_eq!(page.complete(), complete);
             seen.extend_from_slice(page.positions());
-            if complete {
+            if page.complete() {
                 break;
             }
             after = page.positions().last().copied();
@@ -126,9 +117,9 @@ fn indexed_pages_match_legacy_order_across_request_schemas_and_restart() {
         head.snapshot().active_policy(),
         roots,
         head.snapshot().transition().expect("transition"),
+        head.snapshot().budget_ledger(),
     )
-    .expect("forged snapshot")
-    .with_budget_ledger(head.snapshot().budget_ledger().expect("ledger"));
+    .expect("forged snapshot");
     let forged_id = repository
         .put_snapshot(&forged)
         .expect("publish forged snapshot");

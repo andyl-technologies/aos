@@ -3,17 +3,17 @@
   lib,
   qemuPackage ? pkgs.qemu-crucible,
   referenceQemu ? pkgs.qemu-crucible-reference,
-  patchName ? "0053-crucible-interrupt-faults.patch",
   attrPath ? "checks.crucible.phase2.qemuInterruptFaults",
   taskIds ? ["T-QEMU-0053"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
-  patchSource = builtins.readFile (patchDir + "/${patchName}");
+  atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
+  patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
 
   failures =
-    failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
+    failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
       {
         label = "realized interrupt manifest";
         needle = "qemu_plugin_crucible_fault_interrupt_manifest";
@@ -39,7 +39,7 @@
         needle = "crucible_interrupt_storm_cb";
       }
     ]
-    ++ forbiddenFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
+    ++ forbiddenFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
       {
         label = "test-double interrupt backend";
         needle = "CRUCIBLE_TEST_DOUBLE";
@@ -172,7 +172,7 @@ in
             {
               printf 'PASS\n'
               printf 'gate=gate:patch-microtests\n'
-              printf 'patch=%s\n' '${patchName}'
+              printf 'atomic_patch=%s\n' '${atomicPatch.file}'
               printf 'patched_fixture_exercised=true\n'
               printf 'stock_negative_control=true\n'
               printf 'qemu_package=%s\n' '${qemuPackage}'

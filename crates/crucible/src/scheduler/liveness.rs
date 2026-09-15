@@ -22,9 +22,9 @@ impl ConcurrentQuantumLoop for SingleScheduler {
     fn drive_concurrent_quantum(
         &mut self,
         request: QuantumRequest,
-        max_host_workers: usize,
+        _max_host_workers: usize,
     ) -> Result<SchedulerConcurrentQuantumOutcome, SchedulerError> {
-        self.drive_concurrent_authoritative_quantum(request, max_host_workers)
+        self.drive_concurrent_authoritative_quantum(request)
     }
 }
 
@@ -478,11 +478,6 @@ pub enum SchedulerOperationalFailureClass {
 /// An error produced by the scheduler boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SchedulerError {
-    /// The scheduler behavior has not landed yet.
-    NotImplemented {
-        /// The deferred operation.
-        operation: &'static str,
-    },
     /// A backend operation failed while driven by the scheduler.
     Backend(BackendError),
     /// A component attempted to bypass the scheduler boundary.
@@ -530,9 +525,6 @@ pub enum SchedulerError {
 impl fmt::Display for SchedulerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotImplemented { operation } => {
-                write!(f, "scheduler operation {operation} is not implemented yet")
-            }
             Self::Backend(error) => write!(f, "backend failed under scheduler control: {error}"),
             Self::BoundaryViolation { message } => f.write_str(message),
             Self::OperationalBoundary { message, .. } => f.write_str(message),

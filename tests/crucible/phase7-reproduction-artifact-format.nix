@@ -8,6 +8,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   harnessManifest = builtins.readFile ../../crates/crucible-harness/Cargo.toml;
+  harnessRuntimeDependencies = (builtins.fromTOML harnessManifest).dependencies or {};
   cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
   harnessLib = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
   reproduction = builtins.readFile ../../crates/crucible-harness/src/reproduction.rs;
@@ -31,20 +32,12 @@
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
     ]
-    ++ forbiddenFor "crates/crucible-harness/Cargo.toml" harnessManifest [
-      {
-        label = "runtime BLAKE3 dependency";
-        needle = "blake3 = { workspace = true }";
-      }
-      {
-        label = "runtime serde dependency";
-        needle = "serde = { workspace = true }";
-      }
-      {
-        label = "runtime serde_json dependency";
-        needle = "serde_json = { workspace = true }";
-      }
-    ]
+    ++ lib.concatMap
+    (dependency:
+      lib.optional
+      (builtins.hasAttr dependency harnessRuntimeDependencies)
+      "crates/crucible-harness/Cargo.toml: forbidden runtime dependency `${dependency}`")
+    ["blake3" "serde" "serde_json"]
     ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
       {
         label = "CLI test-only harness dependency";
@@ -70,7 +63,7 @@
     ++ failuresFor "crates/crucible-harness/src/reproduction.rs" reproduction [
       {
         label = "artifact schema constant";
-        needle = "pub const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v3\";";
+        needle = "pub const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v4\";";
       }
       {
         label = "artifact type";
@@ -85,8 +78,8 @@
         needle = "pub qemu_build_id: String";
       }
       {
-        label = "QEMU patch series identity";
-        needle = "pub qemu_patch_series_hash: String";
+        label = "QEMU atomic patch identity";
+        needle = "pub qemu_atomic_patch_hash: String";
       }
       {
         label = "shmem ABI version identity";
@@ -197,12 +190,12 @@
         needle = "fn replay_reproduction_artifact";
       }
       {
-        label = "CLI v3 artifact schema";
-        needle = "const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v3\";";
+        label = "CLI v4 artifact schema";
+        needle = "const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v4\";";
       }
       {
-        label = "CLI patch-series identity";
-        needle = "qemu_patch_series_hash: String";
+        label = "CLI atomic-patch identity";
+        needle = "qemu_atomic_patch_hash: String";
       }
       {
         label = "CLI guest-host identity";
@@ -213,12 +206,12 @@
         needle = "rpc_abi_build: String";
       }
       {
-        label = "CLI failure artifact writer";
-        needle = "fn write_failure_reproduction_artifact";
+        label = "CLI reproduction artifact writer";
+        needle = "pub(in super::super) fn write_reproduction_artifact(";
       }
       {
         label = "CLI replay command footer";
-        needle = "crucible replay {}";
+        needle = ''replay_command: format!("crucible replay {artifact_argument}")'';
       }
       {
         label = "CLI debug command footer";
@@ -316,11 +309,11 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
-            schema=crucible.reproduction-artifact.v3
+            schema=crucible.reproduction-artifact.v4
             tuple=seed,scenario-def-ref,schedule
             component_addressing=cas-crucible-hash
             inline_payloads=small-components
-            pinned_identities=engine,artifact-abi,qemu-build,qemu-patch-series,shmem-abi,guest-host-protocol,rpc-abi,plugin-abi
+            pinned_identities=engine,artifact-abi,qemu-build,qemu-atomic-patch,shmem-abi,guest-host-protocol,rpc-abi,plugin-abi
             cli_replay=validates-artifact-format
             cli_failure_artifact=emits-replay-and-debug-commands
             machine_independent_reproduction=checks.crucible.phase7.machineIndependentReproduction

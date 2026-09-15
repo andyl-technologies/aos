@@ -11,6 +11,118 @@ fn sample(index: u64, node: &str) -> VerifyFingerprintSample {
     }
 }
 
+fn report_without_final_snapshot(
+    terminal: crucible::Configuration,
+    execution_owner: RunExecutionOwner,
+) -> RunWorkflowReport {
+    RunWorkflowReport {
+        status: BackendCommandStatus::Passed,
+        execution_owner,
+        campaign_replay_closure: (execution_owner == RunExecutionOwner::Campaign)
+            .then(|| b"authenticated campaign closure".to_vec()),
+        created_state: String::from("paused"),
+        final_state: String::from("stopped"),
+        outcome: Some(OutcomeKind::Stopped),
+        terminal_savepoint: None,
+        terminal_configuration: Some(terminal),
+        final_snapshot: None,
+        final_frontier_ticks: 0,
+        final_quanta: 0,
+        budget_timed_out: false,
+        state_updates: vec![String::from("stopped")],
+        streamed_events: Vec::new(),
+        streamed_event_frames: Vec::new(),
+        coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&[]),
+        execution_fingerprints: Vec::new(),
+        resolved_effect_trace: None,
+        acknowledged_commands: Vec::new(),
+        reproduction_commands: Vec::new(),
+        watch_statuses: Vec::new(),
+    }
+}
+
+#[test]
+fn live_qemu_capture_rejects_missing_authoritative_final_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let scenario = crucible::happy_path_scenario()?.scenario;
+    let terminal = crucible::Configuration::genesis(scenario.scenario_def());
+    let report = report_without_final_snapshot(terminal, RunExecutionOwner::Session);
+    let error = live_qemu_artifact_evidence_from_run(
+        LiveQemuArtifactRecipe {
+            producer: "run",
+            terminal_condition: RunTerminalCondition::Stopped,
+            max_virtual_time_ticks: None,
+            max_quanta: None,
+            coverage: false,
+            execution_mode: RunExecutionMode::Interactive,
+            startup_commands: &[],
+            initial_control_commands: &[],
+            branch: LiveQemuReplayBranch::None,
+        },
+        &scenario,
+        &report,
+    )
+    .err()
+    .ok_or_else(|| {
+        std::io::Error::other("capture must reject a report without its retained final snapshot")
+    })?;
+
+    assert!(
+        error
+            .to_string()
+            .contains("authoritative retained final snapshot")
+    );
+    Ok(())
+}
+
+#[test]
+fn batch_campaign_capture_uses_its_distinct_terminal_boundary()
+-> Result<(), Box<dyn std::error::Error>> {
+    let scenario = crucible::happy_path_scenario()?.scenario;
+    let terminal = crucible::Configuration::genesis(scenario.scenario_def());
+    let mut report = report_without_final_snapshot(terminal, RunExecutionOwner::Campaign);
+    report.outcome = Some(OutcomeKind::Passed);
+    report.execution_fingerprints = scenario
+        .world()
+        .vm_nodes()
+        .iter()
+        .map(|node| crucible::FingerprintSample {
+            node: node.id.clone(),
+            at: crucible::VirtualTime::default(),
+            fingerprint: crucible::ExecutionFingerprint {
+                hash: crucible::ContentHash::from_bytes(node.id.name.as_bytes()),
+            },
+        })
+        .collect();
+
+    let evidence = live_qemu_artifact_evidence_from_run(
+        LiveQemuArtifactRecipe {
+            producer: "campaign-run",
+            terminal_condition: RunTerminalCondition::Quiescence,
+            max_virtual_time_ticks: None,
+            max_quanta: None,
+            coverage: false,
+            execution_mode: RunExecutionMode::ToCompletion,
+            startup_commands: &[],
+            initial_control_commands: &[],
+            branch: LiveQemuReplayBranch::None,
+        },
+        &scenario,
+        &report,
+    )?;
+
+    assert_eq!(
+        evidence.contract.execution_owner,
+        RunExecutionOwner::Campaign
+    );
+    assert_eq!(
+        evidence.contract.execution_mode,
+        RunExecutionMode::ToCompletion
+    );
+    assert!(evidence.contract.terminal_savepoint.is_none());
+    Ok(())
+}
+
 #[test]
 fn terminal_fingerprint_capture_selects_the_last_epoch_after_multiple_quanta()
 -> Result<(), Box<dyn std::error::Error>> {

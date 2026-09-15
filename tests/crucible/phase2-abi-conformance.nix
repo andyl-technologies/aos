@@ -4,7 +4,24 @@
   attrPath ? "checks.crucible.phase2.abiConformance",
   taskIds ? ["T-HARN-17" "T-API-11" "T-API-12" "T-PAT-8"],
   dependencies ? [],
+  campaignComposition ? null,
 }: let
+  campaignMode =
+    if campaignComposition == null
+    then null
+    else campaignComposition.mode;
+  campaignSystem =
+    if campaignComposition == null
+    then null
+    else campaignComposition.system;
+  campaignToplevel =
+    if campaignSystem == null
+    then null
+    else campaignSystem.config.system.build.toplevel;
+  campaignRuntimeIdentity =
+    if campaignSystem == null
+    then null
+    else campaignSystem.config.aos.services.crucibleCampaign._runtimeIdentity;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
@@ -50,8 +67,7 @@
           gate: "gate:abi-conformance",
                   package: "crucible-harness",
                   test_target: "gate_abi_conformance",
-                  required_features: &[],
-                  placeholder: false,'';
+                  required_features: &[],'';
       }
       {
         label = "protocol ABI target implemented";
@@ -59,8 +75,7 @@
           gate: "gate:abi-conformance",
                   package: "crucible-protocol",
                   test_target: "gate_abi_conformance",
-                  required_features: &[],
-                  placeholder: false,'';
+                  required_features: &[],'';
       }
       {
         label = "API ABI target implemented";
@@ -68,8 +83,7 @@
           gate: "gate:abi-conformance",
                   package: "crucible-api",
                   test_target: "gate_abi_conformance",
-                  required_features: &[],
-                  placeholder: false,'';
+                  required_features: &[],'';
       }
       {
         label = "qemu plugin ABI target implemented";
@@ -77,8 +91,7 @@
           gate: "gate:abi-conformance",
                   package: "crucible-qemu-plugin",
                   test_target: "gate_abi_conformance",
-                  required_features: &[],
-                  placeholder: false,'';
+                  required_features: &[],'';
       }
       {
         label = "guest ABI target implemented";
@@ -86,8 +99,7 @@
           gate: "gate:abi-conformance",
                   package: "crucible-guest",
                   test_target: "gate_abi_conformance",
-                  required_features: &[],
-                  placeholder: false,'';
+                  required_features: &[],'';
       }
       {
         label = "engine ABI target implemented";
@@ -95,8 +107,7 @@
           gate: "gate:abi-conformance",
                   package: "crucible",
                   test_target: "gate_abi_conformance",
-                  required_features: &["test-double"],
-                  placeholder: false,'';
+                  required_features: &["test-double"],'';
       }
     ]
     ++ failuresFor "crates/crucible-harness/tests/gate_abi_conformance.rs" harnessGateTest [
@@ -230,11 +241,11 @@
     ++ failuresFor "crates/crucible-api/src/rpc_abi module tree" (apiRpcAbi + apiRpcGolden) [
       {
         label = "explicit major version";
-        needle = "pub const RPC_PROTOCOL_MAJOR: u16 = 5;";
+        needle = "pub const RPC_PROTOCOL_MAJOR: u16 = 6;";
       }
       {
         label = "explicit minor version";
-        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 1;";
+        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 0;";
       }
       {
         label = "explicit patch version";
@@ -242,7 +253,7 @@
       }
       {
         label = "build identifier";
-        needle = "pub const RPC_PROTOCOL_BUILD: &str = \"crucible-rpc-abi-v5\";";
+        needle = "pub const RPC_PROTOCOL_BUILD: &str = \"crucible-rpc-abi-v6\";";
       }
       {
         label = "golden vector protocol version";
@@ -265,12 +276,12 @@
         needle = "pub enum RpcGoldenVectorMessage";
       }
       {
-        label = "major mismatch typed error";
-        needle = "MajorVersionMismatch";
+        label = "exact version mismatch typed error";
+        needle = "ExactVersionMismatch";
       }
       {
-        label = "major mismatch negotiation";
-        needle = "peer.major != RPC_PROTOCOL_VERSION.major";
+        label = "exact version negotiation";
+        needle = "peer != RPC_PROTOCOL_VERSION";
       }
       {
         label = "RPC golden corpus";
@@ -323,8 +334,8 @@
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_abi_conformance.rs" apiGateTest [
       {
-        label = "major mismatch test";
-        needle = "rpc_protocol_version_is_explicit_and_rejects_major_mismatch";
+        label = "exact version mismatch test";
+        needle = "rpc_protocol_version_is_exact_and_rejects_all_drift";
       }
       {
         label = "request response event coverage test";
@@ -374,9 +385,11 @@ in
           pkgs.rust
           pkgs.sed
         ]
-        ++ dependencies;
+        ++ dependencies
+        ++ lib.optionals (campaignComposition != null) [pkgs.nix campaignToplevel];
 
-      phases = [
+      phases =
+        [
         {
           name = "unpack";
           script = ''
@@ -518,7 +531,7 @@ in
               -p crucible-qemu-plugin \
               --lib io_wire_fuzz \
               -- --test-threads=1
-            require_test_set 56 plugin-doorbell \
+            require_test_set 54 plugin-doorbell \
               whitebox_doorbell::tests::whitebox_registration_off_mode_installs_no_trap_and_preserves_black_box \
               -p crucible-qemu-plugin --lib whitebox_doorbell
             cargo test \
@@ -585,10 +598,37 @@ in
             engine_abi_aggregate=true
             zero_test_guards=exact-count-and-canonical-owner
             version_bump_rule=shmem+protocol+rpc-golden-corpora
-            rpc_major_mismatch_rejection=true
+            rpc_exact_version_rejection=true
             reference_client_scope=implemented-T-API-13
             RESULT
           '';
         }
-      ];
+        ]
+        ++ lib.optional (campaignComposition != null) {
+          name = "bind-campaign-composition";
+          script = ''
+            set -eu
+            test ${lib.escapeShellArg campaignMode} = enabled \
+              -o ${lib.escapeShellArg campaignMode} = disabled
+            nix-store --query --requisites ${campaignToplevel} \
+              > "$out/campaign-system-closure"
+            grep -Fxq ${lib.escapeShellArg (toString campaignToplevel)} \
+              "$out/campaign-system-closure"
+            if test ${lib.escapeShellArg campaignMode} = enabled; then
+              grep -Fxq ${lib.escapeShellArg (toString pkgs.crucible)} \
+                "$out/campaign-system-closure"
+            elif grep -Fxq ${lib.escapeShellArg (toString pkgs.crucible)} \
+                "$out/campaign-system-closure"; then
+              echo "campaign-disabled system closure contains the Crucible suite" >&2
+              exit 1
+            fi
+            cat >> "$out/result" <<RESULT
+            campaign_mode=${campaignMode}
+            campaign_configuration_identity=${campaignRuntimeIdentity}
+            campaign_toplevel=${campaignToplevel}
+            executor_derivation=$out
+            campaign_closure_authenticated=true
+            RESULT
+          '';
+        };
     }

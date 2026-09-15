@@ -11,6 +11,8 @@ use crucible_cas::content_store::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod schema_registry;
+
 macro_rules! stored_id {
     ($type:ty, $kind:expr, $schema:expr, $label:expr) => {
         <$type>::from_content_id(ContentId::for_bytes($kind, $schema, $label.as_bytes()))
@@ -138,581 +140,23 @@ fn campaign_hashes_are_domain_separated_and_text_is_canonical() {
 }
 
 #[test]
-fn schema_registry_is_unique_complete_and_names_real_gates() {
-    let registry = include_str!("../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
-    let implementation_plan =
-        include_str!("../../../docs/rfcs/0020-crucible-campaigns/11-implementation-plan.md");
-    let mut rows = BTreeMap::<&str, Vec<&str>>::new();
-    for (line_number, line) in registry.lines().enumerate() {
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let fields = line.split('\t').collect::<Vec<_>>();
-        assert_eq!(
-            fields.len(),
-            5,
-            "registry line {} must contain five tab-separated fields",
-            line_number + 1
-        );
-        assert!(
-            fields[1].parse::<u32>().is_ok_and(|version| version > 0),
-            "{} has an invalid version",
-            fields[0]
-        );
-        assert!(!fields[2].is_empty(), "{} has no schema owner", fields[0]);
-        for gate in fields[4].split(',') {
-            assert!(
-                gate.starts_with("gate:") && implementation_plan.contains(gate),
-                "{} names unknown compatibility gate {gate}",
-                fields[0]
-            );
-        }
-        assert!(
-            rows.insert(fields[0], fields).is_none(),
-            "duplicate schema registry entry {line}"
-        );
-    }
+fn exact_checkpoint_identity_admits_only_the_current_schema() {
+    let current = ContentId::for_bytes(ObjectKind::ExactManifest, 4, b"current exact root");
+    assert!(ExactCheckpointId::try_from(current).is_ok());
 
-    for kind in CampaignRecordKind::ALL {
-        let row = rows
-            .get(kind.schema_name())
-            .unwrap_or_else(|| panic!("missing campaign schema {}", kind.schema_name()));
-        assert_eq!(
-            row[1].parse::<u32>().expect("validated schema version"),
-            kind.schema_version()
+    for retired_schema in [2, 3] {
+        let retired = ContentId::for_bytes(
+            ObjectKind::ExactManifest,
+            retired_schema,
+            b"retired exact root",
         );
-        let expected_owner = match kind {
-            CampaignRecordKind::MerkleNode => "crucible-campaign::merkle",
-            CampaignRecordKind::ScenarioArtifact | CampaignRecordKind::ConfigurationArtifact => {
-                "crucible-campaign::artifact"
-            }
-            CampaignRecordKind::BranchRequest
-            | CampaignRecordKind::Proposal
-            | CampaignRecordKind::BranchPath
-            | CampaignRecordKind::Attempt
-            | CampaignRecordKind::AttemptAdmission
-            | CampaignRecordKind::PlannerStep
-            | CampaignRecordKind::ExpansionState
-            | CampaignRecordKind::ContinuationProjection
-            | CampaignRecordKind::ExpansionCredit => "crucible-campaign::exploration",
-            CampaignRecordKind::MeasurementSet
-            | CampaignRecordKind::PropertyVerdictSet
-            | CampaignRecordKind::CoverageProjection
-            | CampaignRecordKind::Observation => "crucible-campaign::observation",
-            CampaignRecordKind::ObjectiveEvaluation
-            | CampaignRecordKind::RankingExplanation
-            | CampaignRecordKind::SurvivorSelection => "crucible-campaign::objective",
-            CampaignRecordKind::ReproductionArtifact | CampaignRecordKind::Finding => {
-                "crucible-campaign::finding"
-            }
-            CampaignRecordKind::FindingCandidateBundle => "crucible-campaign::finding_candidate",
-            CampaignRecordKind::FindingTriageReplayEvidence => {
-                "crucible-campaign::finding_triage_evidence"
-            }
-            CampaignRecordKind::ArchiveManifest | CampaignRecordKind::ArchiveInventoryPage => {
-                "crucible-campaign::archive"
-            }
-            _ => "crucible-campaign::object",
-        };
-        assert_eq!(row[2], expected_owner);
-        assert_eq!(row[3], kind.object_kind().as_str());
+        assert!(ExactCheckpointId::try_from(retired).is_err());
     }
-    assert_eq!(
-        rows.get("crucible.campaign.fact")
-            .expect("missing campaign fact schema")[1],
-        "14"
-    );
-    let mut owned_campaign_schemas = CampaignRecordKind::ALL
-        .into_iter()
-        .map(CampaignRecordKind::schema_name)
-        .collect::<BTreeSet<_>>();
-    let planner_result = rows
-        .get("crucible.campaign.planner-step-proposal")
-        .expect("missing planner result component schema");
-    assert_eq!(planner_result[1], "1");
-    assert_eq!(planner_result[2], "crucible-campaign::exploration");
-    assert_eq!(planner_result[3], "component-message");
-    owned_campaign_schemas.insert("crucible.campaign.planner-step-proposal");
-    for schema in [
-        "crucible.campaign.planner-request",
-        "crucible.campaign.planner-response",
-    ] {
-        let message = rows
-            .get(schema)
-            .unwrap_or_else(|| panic!("missing planner service schema {schema}"));
-        assert_eq!(message[1], "1");
-        assert_eq!(message[2], "crucible-campaign::planner_service");
-        assert_eq!(message[3], "component-message");
-        owned_campaign_schemas.insert(schema);
-    }
-    for schema in [
-        "crucible.campaign.planner-submission",
-        "crucible.campaign.debugger-submission",
-    ] {
-        let submission = rows
-            .get(schema)
-            .unwrap_or_else(|| panic!("missing component schema {schema}"));
-        assert_eq!(submission[1], "1");
-        assert_eq!(submission[2], "crucible-campaign::authority");
-        assert_eq!(submission[3], "component-message");
-        owned_campaign_schemas.insert(schema);
-    }
-    for schema in [
-        "crucible.campaign.attempt-execution-scope",
-        "crucible.campaign.submit-attempt-request",
-        "crucible.campaign.submit-attempt-response",
-        "crucible.campaign.get-attempt-execution-request",
-        "crucible.campaign.get-attempt-execution-response",
-        "crucible.campaign.resume-attempt-execution-request",
-        "crucible.campaign.resume-attempt-execution-response",
-        "crucible.campaign.cancel-attempt-execution-request",
-        "crucible.campaign.cancel-attempt-execution-response",
-        "crucible.campaign.checkpoint-attempt-execution-request",
-        "crucible.campaign.checkpoint-attempt-execution-response",
-    ] {
-        let message = rows
-            .get(schema)
-            .unwrap_or_else(|| panic!("missing executor component schema {schema}"));
-        let expected_version = match schema {
-            "crucible.campaign.attempt-execution-scope" => "1",
-            "crucible.campaign.submit-attempt-request" => "5",
-            "crucible.campaign.resume-attempt-execution-request" => "4",
-            "crucible.campaign.get-attempt-execution-request"
-            | "crucible.campaign.cancel-attempt-execution-request"
-            | "crucible.campaign.checkpoint-attempt-execution-request" => "3",
-            _ => "4",
-        };
-        assert_eq!(message[1], expected_version);
-        assert_eq!(message[2], "crucible-campaign::execution");
-        assert_eq!(message[3], "component-message");
-        owned_campaign_schemas.insert(schema);
-    }
-    for schema in [
-        "crucible.campaign.describe-executor-request",
-        "crucible.campaign.executor-description",
-        "crucible.campaign.watch-executor-capacity-request",
-        "crucible.campaign.executor-capacity-report",
-    ] {
-        let message = rows
-            .get(schema)
-            .unwrap_or_else(|| panic!("missing executor capability schema {schema}"));
-        assert_eq!(message[1], "1");
-        assert_eq!(message[2], "crucible-campaign::executor_capability");
-        assert_eq!(message[3], "component-message");
-        owned_campaign_schemas.insert(schema);
-    }
-    for schema in [
-        "crucible.campaign.create-campaign-request",
-        "crucible.campaign.create-campaign-response",
-        "crucible.campaign.derive-campaign-request",
-        "crucible.campaign.derive-campaign-response",
-        "crucible.campaign.get-campaign-request",
-        "crucible.campaign.get-campaign-response",
-        "crucible.campaign.get-campaign-status-request",
-        "crucible.campaign.get-campaign-status-response",
-        "crucible.campaign.list-campaigns-request",
-        "crucible.campaign.list-campaigns-response",
-        "crucible.campaign.get-campaign-snapshot-request",
-        "crucible.campaign.get-campaign-snapshot-response",
-        "crucible.campaign.watch-campaign-request",
-        "crucible.campaign.watch-campaign-response",
-        "crucible.campaign.query-campaign-graph-request",
-        "crucible.campaign.query-campaign-graph-response",
-        "crucible.campaign.query-campaign-findings-request",
-        "crucible.campaign.query-campaign-findings-response",
-        "crucible.campaign.query-campaign-finding-occurrences-request",
-        "crucible.campaign.query-campaign-finding-occurrences-response",
-        "crucible.campaign.get-campaign-finding-occurrence-object-request",
-        "crucible.campaign.get-campaign-finding-occurrence-object-response",
-        "crucible.campaign.get-campaign-finding-object-request",
-        "crucible.campaign.get-campaign-finding-object-response",
-        "crucible.campaign.explain-campaign-attempt-request",
-        "crucible.campaign.explain-campaign-attempt-response",
-        "crucible.campaign.get-campaign-planner-rankings-request",
-        "crucible.campaign.get-campaign-planner-rankings-response",
-        "crucible.campaign.get-campaign-graph-object-request",
-        "crucible.campaign.get-campaign-graph-object-response",
-        "crucible.campaign.query-campaign-choices-request",
-        "crucible.campaign.query-campaign-choices-response",
-        "crucible.campaign.query-campaign-frontier-request",
-        "crucible.campaign.query-campaign-frontier-response",
-        "crucible.campaign.get-campaign-frontier-object-request",
-        "crucible.campaign.get-campaign-frontier-object-response",
-        "crucible.campaign.get-campaign-choice-object-request",
-        "crucible.campaign.get-campaign-choice-object-response",
-        "crucible.campaign.apply-campaign-command-request",
-        "crucible.campaign.apply-campaign-command-response",
-        "crucible.campaign.pin-campaign-request",
-        "crucible.campaign.pin-campaign-response",
-        "crucible.campaign.submit-campaign-discovery-request",
-        "crucible.campaign.submit-campaign-discovery-response",
-        "crucible.campaign.submit-campaign-branch-request",
-        "crucible.campaign.submit-campaign-branch-response",
-        "crucible.campaign.service-error-response",
-    ] {
-        let message = rows
-            .get(schema)
-            .unwrap_or_else(|| panic!("missing campaign service schema {schema}"));
-        let expected_version = match schema {
-            "crucible.campaign.explain-campaign-attempt-response"
-            | "crucible.campaign.submit-campaign-discovery-request" => "2",
-            _ => "1",
-        };
-        assert_eq!(message[1], expected_version);
-        assert_eq!(message[2], "crucible-campaign::campaign_service");
-        assert_eq!(message[3], "component-message");
-        owned_campaign_schemas.insert(schema);
-    }
-    for (schema, version, kind) in [
-        (
-            "crucible.executor.assignment-record",
-            "1",
-            "operational-record",
-        ),
-        (
-            "crucible.executor.attempt-state-record",
-            "11",
-            "operational-record",
-        ),
-        (
-            "crucible.executor.assignment-retention-state",
-            "1",
-            "administrative-record",
-        ),
-        (
-            "crucible.executor.exact-pin-materialization-selection",
-            "1",
-            "administrative-record",
-        ),
-    ] {
-        let record = rows
-            .get(schema)
-            .unwrap_or_else(|| panic!("missing executor ledger schema {schema}"));
-        assert_eq!(record[1], version);
-        let expected_owner = if schema == "crucible.executor.exact-pin-materialization-selection" {
-            "crucible-daemon::exact_pin_retention"
-        } else {
-            "crucible-daemon::assignment_ledger"
-        };
-        assert_eq!(record[2], expected_owner);
-        assert_eq!(record[3], kind);
-    }
-    let hot_fallback = rows
-        .get("crucible.executor.hot-checkpoint-fallback")
-        .unwrap_or_else(|| panic!("missing hot-checkpoint fallback schema"));
-    assert_eq!(hot_fallback[1], "1");
-    assert_eq!(hot_fallback[2], "crucible-daemon::hot_checkpoint_retention");
-    assert_eq!(hot_fallback[3], "operational-record");
-    for (schema, owner) in [
-        (
-            "crucible.executor.prepared-semantic-attempt-result",
-            "crucible-daemon::crucible_artifact::prepared_result",
-        ),
-        (
-            "crucible.executor.prepared-result-journal-state",
-            "crucible-daemon::prepared_result_journal",
-        ),
-    ] {
-        let record = rows
-            .get(schema)
-            .unwrap_or_else(|| panic!("missing prepared-result schema {schema}"));
-        assert_eq!(record[1], "2");
-        assert_eq!(record[2], owner);
-        assert_eq!(record[3], "operational-record");
-    }
-    for (schema, version, owner, kind) in [
-        (
-            "crucible.qemu.vm-snapshot",
-            "2",
-            "crucible-qemu::realization",
-            "device-state",
-        ),
-        (
-            "crucible.qemu.vmstate",
-            "1",
-            "crucible-daemon::exact_checkpoint_store",
-            "device-state",
-        ),
-        (
-            "crucible.executor.scheduler-continuation",
-            "3",
-            "crucible-daemon::exact_checkpoint_store",
-            "device-state",
-        ),
-        (
-            "crucible.production-exact-closure",
-            "8",
-            "crucible-api::vm_lifecycle",
-            "device-state",
-        ),
-        (
-            "crucible.executor.production-checkpoint-object",
-            "5",
-            "crucible-daemon::exact_checkpoint_store",
-            "device-state",
-        ),
-        (
-            "crucible.executor.production-checkpoint-index",
-            "1",
-            "crucible-daemon::exact_checkpoint_store",
-            "exact-manifest",
-        ),
-        (
-            "crucible.executor.exact-checkpoint-root",
-            "4",
-            "crucible-daemon::exact_checkpoint_store",
-            "exact-manifest",
-        ),
-    ] {
-        let record = rows
-            .get(schema)
-            .unwrap_or_else(|| panic!("missing exact-checkpoint schema {schema}"));
-        assert_eq!(record[1], version);
-        assert_eq!(record[2], owner);
-        assert_eq!(record[3], kind);
-    }
-    let loopback = rows
-        .get("crucible.executor.loopback-frame")
-        .unwrap_or_else(|| panic!("missing executor loopback frame schema"));
-    assert_eq!(loopback[1], "5");
-    assert_eq!(loopback[2], "crucible-daemon::executor_loopback");
-    assert_eq!(loopback[3], "component-message");
-    let planner_loopback = rows
-        .get("crucible.planner.loopback-frame")
-        .unwrap_or_else(|| panic!("missing planner loopback frame schema"));
-    assert_eq!(planner_loopback[1], "1");
-    assert_eq!(planner_loopback[2], "crucible-daemon::planner_loopback");
-    assert_eq!(planner_loopback[3], "component-message");
-    let planner_process = rows
-        .get("crucible.planner.process-frame")
-        .unwrap_or_else(|| panic!("missing planner process frame schema"));
-    assert_eq!(planner_process[1], "1");
-    assert_eq!(planner_process[2], "crucible-daemon::planner_process");
-    assert_eq!(planner_process[3], "component-message");
-    let campaign_loopback = rows
-        .get("crucible.campaign.loopback-frame")
-        .unwrap_or_else(|| panic!("missing campaign loopback frame schema"));
-    assert_eq!(campaign_loopback[1], "20");
-    assert_eq!(campaign_loopback[2], "crucible-daemon::campaign_loopback");
-    assert_eq!(campaign_loopback[3], "component-message");
-    owned_campaign_schemas.insert("crucible.campaign.loopback-frame");
-    for schema in [
-        "crucible.campaign.attach-runtime-request",
-        "crucible.campaign.attach-runtime-response",
-    ] {
-        let message = rows
-            .get(schema)
-            .unwrap_or_else(|| panic!("missing campaign runtime control schema {schema}"));
-        assert_eq!(message[1], "1");
-        assert_eq!(message[2], "crucible-daemon::campaign_runtime_control");
-        assert_eq!(message[3], "component-message");
-        owned_campaign_schemas.insert(schema);
-    }
-    let campaign_policy = rows
-        .get("crucible.campaign-local-policy")
-        .unwrap_or_else(|| panic!("missing local campaign policy schema"));
-    assert_eq!(campaign_policy[1], "1");
-    assert_eq!(campaign_policy[2], "crucible-daemon::campaign_policy");
-    assert_eq!(campaign_policy[3], "deployment-config");
-    let component_authorities = rows
-        .get("crucible.campaign-component-authorities")
-        .unwrap_or_else(|| panic!("missing campaign component-authority schema"));
-    assert_eq!(component_authorities[1], "1");
-    assert_eq!(
-        component_authorities[2],
-        "crucible-daemon::campaign_bootstrap"
-    );
-    assert_eq!(component_authorities[3], "deployment-secret");
-    let campaign_import = rows
-        .get("crucible.campaign-import")
-        .unwrap_or_else(|| panic!("missing local campaign import schema"));
-    assert_eq!(campaign_import[1], "1");
-    assert_eq!(campaign_import[2], "crucible-cli::campaign_import");
-    assert_eq!(campaign_import[3], "deployment-config");
-    let campaign_store = rows
-        .get("crucible.campaign-repository-store")
-        .unwrap_or_else(|| panic!("missing campaign repository-store deployment schema"));
-    assert_eq!(campaign_store[1], "2");
-    assert_eq!(campaign_store[2], "crucible-cli::campaign_store");
-    assert_eq!(campaign_store[3], "deployment-config");
-    let campaign_s3_credentials = rows
-        .get("crucible.campaign-s3-credentials")
-        .unwrap_or_else(|| panic!("missing campaign S3 credential schema"));
-    assert_eq!(campaign_s3_credentials[1], "1");
-    assert_eq!(campaign_s3_credentials[2], "crucible-cli::campaign_store");
-    assert_eq!(campaign_s3_credentials[3], "deployment-secret");
-    for (schema, version, owner) in [
-        (
-            "crucible.executor.crucible-scenario-payload",
-            "3",
-            "crucible-daemon::crucible_artifact",
-        ),
-        (
-            "crucible.executor.crucible-reproduction-payload",
-            "3",
-            "crucible-daemon::crucible_artifact",
-        ),
-        ("crucible.execution.scenario-form", "7", "crucible::model"),
-        (
-            "crucible.execution.measurement-definitions",
-            "1",
-            "crucible::model",
-        ),
-        (
-            "crucible.execution.measurement-evaluation",
-            "1",
-            "crucible::model",
-        ),
-        (
-            "crucible.execution.reproduction-artifact",
-            "7",
-            "crucible::model",
-        ),
-    ] {
-        let record = rows
-            .get(schema)
-            .unwrap_or_else(|| panic!("missing execution-model schema {schema}"));
-        assert_eq!(record[1], version);
-        assert_eq!(record[2], owner);
-        assert_eq!(record[3], "execution-model-payload");
-    }
-    for (schema, version) in [
-        ("crucible.campaign.gc-plan", "2"),
-        ("crucible.campaign.gc-root-manifest", "1"),
-        ("crucible.campaign.gc-candidate-manifest", "2"),
-        ("crucible.campaign.gc-journal-state", "1"),
-    ] {
-        let record = rows
-            .get(schema)
-            .unwrap_or_else(|| panic!("missing campaign GC administrative schema {schema}"));
-        assert_eq!(record[1], version);
-        assert_eq!(record[2], "crucible-daemon::campaign_gc");
-        assert_eq!(record[3], "administrative-record");
-        owned_campaign_schemas.insert(schema);
-    }
-    let scan_index_schema = "crucible.campaign.planner-scan-index";
-    let scan_index = rows
-        .get(scan_index_schema)
-        .unwrap_or_else(|| panic!("missing ordered planner scan index schema"));
-    assert_eq!(scan_index[1], "1");
-    assert_eq!(
-        scan_index[2],
-        "crucible-campaign::repository::planner_scan_index"
-    );
-    assert_eq!(scan_index[3], "merkle-node");
-    owned_campaign_schemas.insert(scan_index_schema);
-    for schema in rows.keys() {
-        if schema.starts_with("crucible.campaign.") {
-            assert!(
-                owned_campaign_schemas.contains(schema),
-                "registry contains an unowned campaign schema {schema}"
-            );
-        }
-    }
-    for (schema, owner, kind) in [
-        (
-            "crucible.content-envelope",
-            "crucible-cas::content_envelope",
-            "envelope",
-        ),
-        (
-            "crucible.content-id-text",
-            "crucible-cas::content_store",
-            "identity",
-        ),
-        (
-            "crucible.content-store.graph-configuration",
-            "crucible-cas::content_store",
-            "administrative-record",
-        ),
-        (
-            "crucible.directory-ref",
-            "crucible-cas::content_store",
-            "mutable-ref",
-        ),
-        (
-            "crucible.content-store.directory-inventory-state",
-            "crucible-cas::content_store",
-            "administrative-record",
-        ),
-        (
-            "crucible.content-store.directory-ref-inventory-state",
-            "crucible-cas::content_store",
-            "administrative-record",
-        ),
-        (
-            "crucible.content-store.s3-ref",
-            "crucible-cas::content_store",
-            "physical-record",
-        ),
-        (
-            "crucible.content-store.s3-ref-inventory-state",
-            "crucible-cas::content_store",
-            "administrative-record",
-        ),
-        (
-            "crucible.content-store.s3-object-inventory-state",
-            "crucible-cas::content_store",
-            "administrative-record",
-        ),
-        (
-            "crucible.content-store.write-back-transfer-journal",
-            "crucible-cas::content_store",
-            "administrative-record",
-        ),
-        (
-            "crucible.content-store.compressed-object",
-            "crucible-cas::content_store",
-            "physical-record",
-        ),
-        (
-            "crucible.content-store.encrypted-object",
-            "crucible-cas::content_store",
-            "physical-record",
-        ),
-        (
-            "crucible.content-store.compressed-encrypted-object",
-            "crucible-cas::content_store",
-            "physical-record",
-        ),
-        (
-            "crucible.content-store.encryption-key-state",
-            "crucible-cas::content_store",
-            "administrative-record",
-        ),
-        (
-            "crucible.content-store.logical-quota-state",
-            "crucible-cas::content_store",
-            "administrative-record",
-        ),
-        (
-            "crucible.content-store.pack",
-            "crucible-cas::content_store",
-            "physical-record",
-        ),
-        (
-            "crucible.content-store.pack-index",
-            "crucible-cas::content_store",
-            "administrative-record",
-        ),
-        (
-            "crucible.content-store.pack-repack-plan",
-            "crucible-cas::content_store",
-            "administrative-record",
-        ),
-    ] {
-        let row = rows
-            .get(schema)
-            .unwrap_or_else(|| panic!("missing lower schema {schema}"));
-        let expected_version = if schema == "crucible.content-store.graph-configuration" {
-            "10"
-        } else {
-            "1"
-        };
-        assert_eq!(row[1], expected_version);
-        assert_eq!(row[2], owner);
-        assert_eq!(row[3], kind);
-    }
+}
+
+#[test]
+fn schema_registry_is_unique_complete_and_names_real_gates() {
+    schema_registry::schema_registry_is_unique_complete_and_names_real_gates();
 }
 
 #[test]
@@ -723,29 +167,33 @@ fn campaign_policy_identity_is_order_independent_and_strictly_decoded() {
         .expect("objective");
     let guidance = GuidanceWeight::new("coverage", 250_000).expect("guidance");
     let policy = CampaignPolicy::new(
-        ScenarioDefId::from_hash(hash("scenario")),
-        CampaignSeed::from_bytes([0x5d; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            puct: PuctPolicy::new(1_250_000, 250_000, 100_000),
-            widening: Some(
-                ProgressiveWideningPolicy::new(
-                    ExactRational::new(2, 1).expect("k"),
-                    ExactRational::new(1, 2).expect("alpha"),
-                    3,
-                    64,
-                    1,
-                )
-                .expect("widening"),
-            ),
-        },
-        BTreeMap::from([("product.recovery".to_owned(), choice)]),
-        BTreeMap::from([("recovery.latency-ns".to_owned(), objective)]),
-        BTreeMap::from([("coverage".to_owned(), guidance)]),
-        BTreeSet::from(["measurement.recovery".to_owned()]),
-        FairnessPolicy::new(10, 8).expect("fairness"),
-        RetentionPolicy::new(true, 64, true, true),
-        false,
+        CampaignPolicy::identity(
+            ScenarioDefId::from_hash(hash("scenario")),
+            CampaignSeed::from_bytes([0x5d; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                puct: PuctPolicy::new(1_250_000, 250_000, 100_000),
+                widening: Some(
+                    ProgressiveWideningPolicy::new(
+                        ExactRational::new(2, 1).expect("k"),
+                        ExactRational::new(1, 2).expect("alpha"),
+                        3,
+                        64,
+                        1,
+                    )
+                    .expect("widening"),
+                ),
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::from([("product.recovery".to_owned(), choice)]),
+            BTreeMap::from([("recovery.latency-ns".to_owned(), objective)]),
+            BTreeMap::from([("coverage".to_owned(), guidance)]),
+            BTreeSet::from(["measurement.recovery".to_owned()]),
+            FairnessPolicy::new(10, 8).expect("fairness"),
+            RetentionPolicy::new(true, 64, true, true),
+            false,
+        ),
     )
     .expect("campaign policy");
     assert_eq!(
@@ -855,13 +303,18 @@ fn snapshot_planning_view_excludes_pins_and_coordination_but_snapshot_identity_d
         stored_id!(CampaignLineageId, ObjectKind::CampaignFact, "lineage"),
         stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("genesis snapshot");
     let mut changed_roots = roots;
     changed_roots.pins = content("pins-b");
-    let changed =
-        CampaignSnapshot::genesis(snapshot.lineage(), snapshot.active_policy(), changed_roots)
-            .expect("changed genesis snapshot");
+    let changed = CampaignSnapshot::genesis(
+        snapshot.lineage(),
+        snapshot.active_policy(),
+        changed_roots,
+        crate::test_budget_ledger_id(),
+    )
+    .expect("changed genesis snapshot");
 
     assert_ne!(
         snapshot.id().expect("snapshot id"),
@@ -877,6 +330,7 @@ fn snapshot_planning_view_excludes_pins_and_coordination_but_snapshot_identity_d
         snapshot.lineage(),
         snapshot.active_policy(),
         coordinated_roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("coordinated genesis snapshot");
     assert_ne!(
@@ -898,33 +352,38 @@ fn snapshot_planning_view_excludes_pins_and_coordination_but_snapshot_identity_d
 }
 
 #[test]
-fn planner_candidate_guidance_v2_retains_objective_reward_and_v1_identity() {
+fn planner_candidate_guidance_retains_objective_reward() {
     let input_view = stored_id!(CampaignViewId, ObjectKind::CampaignFact, "guidance-view");
     let policy_value = CampaignPolicy::new(
-        ScenarioDefId::from_hash(hash("guidance-scenario")),
-        CampaignSeed::from_bytes([0x37; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            puct: PuctPolicy::new(0, 0, 0),
-            widening: None,
-        },
-        BTreeMap::new(),
-        BTreeMap::from([(
-            "guidance-objective".to_owned(),
-            Objective::new("guidance-objective", ObjectiveGoal::Maximize, 1_000_000)
-                .expect("guidance objective"),
-        )]),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(1, 1).expect("guidance fairness"),
-        RetentionPolicy::new(false, 1, false, false),
-        false,
+        CampaignPolicy::identity(
+            ScenarioDefId::from_hash(hash("guidance-scenario")),
+            CampaignSeed::from_bytes([0x37; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                puct: PuctPolicy::new(0, 0, 0),
+                widening: None,
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::from([(
+                "guidance-objective".to_owned(),
+                Objective::new("guidance-objective", ObjectiveGoal::Maximize, 1_000_000)
+                    .expect("guidance objective"),
+            )]),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(1, 1).expect("guidance fairness"),
+            RetentionPolicy::new(false, 1, false, false),
+            false,
+        ),
     )
     .expect("guidance policy");
     let policy = policy_value.id().expect("guidance policy ID");
     let request = stored_id!(
         BranchRequestId,
         ObjectKind::CampaignFact,
+        9,
         "guidance-request"
     );
     let branch_point = BranchPointId::from_hash(hash("guidance-branch-point"));
@@ -971,48 +430,6 @@ fn planner_candidate_guidance_v2_retains_objective_reward_and_v1_identity() {
             .schema_version(),
         2
     );
-
-    let legacy_statistics =
-        PuctEdgeStatistics::new(1, 1, 0, 1_000_000, false, true).expect("legacy statistics");
-    let mut legacy_encoder = Encoder::new();
-    1_u32.encode(&mut legacy_encoder);
-    input_view.encode(&mut legacy_encoder);
-    policy.encode(&mut legacy_encoder);
-    position.encode(&mut legacy_encoder);
-    domain.encode(&mut legacy_encoder);
-    domain_semantics.encode(&mut legacy_encoder);
-    value.encode(&mut legacy_encoder);
-    1_u64.encode(&mut legacy_encoder);
-    edge.encode(&mut legacy_encoder);
-    legacy_statistics.encode(&mut legacy_encoder);
-    0_u64.encode(&mut legacy_encoder);
-    BTreeMap::<FindingKind, u64>::new().encode(&mut legacy_encoder);
-    let legacy_bytes = legacy_encoder.finish();
-    let legacy = PlannerCandidateGuidance::from_canonical_bytes(&legacy_bytes)
-        .expect("legacy guidance remains readable");
-    assert_eq!(legacy.canonical_bytes(), legacy_bytes);
-    assert_eq!(legacy.objective_reward_micros(), 0);
-    assert_eq!(
-        legacy
-            .score_for_policy(&policy_value, input_view)
-            .expect("legacy neutral guidance score")
-            .mean_reward_micros(),
-        0
-    );
-    let legacy_envelope = ObjectEnvelope::for_record_versioned(
-        CampaignRecordKind::PlannerCandidateGuidance,
-        1,
-        super::object::content_children(legacy.content_children())
-            .expect("legacy guidance children"),
-        legacy_bytes,
-    )
-    .expect("legacy guidance envelope");
-    assert_eq!(
-        legacy.id().expect("legacy guidance identity").content_id(),
-        legacy_envelope.content_id()
-    );
-    ObjectEnvelope::from_canonical_bytes(&legacy_envelope.canonical_bytes())
-        .expect("legacy guidance envelope remains readable");
 }
 
 #[test]
@@ -1043,7 +460,7 @@ fn lineage_and_invocation_identities_name_every_compatibility_input() {
         genesis,
         genesis_artifact,
         "1.2.3",
-        "qemu-10.0-series-a",
+        "qemu-11.1.1-profile-a",
         protocols.clone(),
         1,
         2,
@@ -1055,7 +472,7 @@ fn lineage_and_invocation_identities_name_every_compatibility_input() {
         lineage.genesis(),
         lineage.genesis_content(),
         "1.2.3",
-        "qemu-10.0-series-b",
+        "qemu-11.1.1-profile-b",
         protocols,
         1,
         2,
@@ -1110,10 +527,11 @@ fn lineage_and_invocation_identities_name_every_compatibility_input() {
 #[test]
 fn command_and_fact_identities_bind_payload_and_admission_order() {
     let command = CampaignCommandId::from_hash(hash("command"));
+    let policy = stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy");
     let expected_snapshot = stored_id!(
         CampaignSnapshotId,
         ObjectKind::CampaignSnapshot,
-        2,
+        3,
         "snapshot"
     );
     let request = ControlRequest {
@@ -1137,6 +555,7 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
                 cause: BranchRequestCause::Operator(command),
                 admission_ordinal: AdmissionOrdinal::new(7),
             },
+            policy,
         )
         .id()
         .expect("first admission id"),
@@ -1149,6 +568,7 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
                 cause: BranchRequestCause::Operator(command),
                 admission_ordinal: AdmissionOrdinal::new(8),
             },
+            policy,
         )
         .id()
         .expect("second admission id"),
@@ -1263,7 +683,7 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
         request: stored_id!(
             BranchRequestId,
             ObjectKind::CampaignFact,
-            4,
+            9,
             "accepted-branch-request"
         ),
         summary: BranchAcceptanceSummary::new(
@@ -1701,13 +1121,6 @@ fn opportunities_and_selections_fail_closed_on_domain_drift() {
         None,
     )
     .expect("choice opportunity");
-    let opportunity_envelope =
-        ObjectEnvelope::for_choice_opportunity(&opportunity).expect("choice opportunity envelope");
-    assert_eq!(
-        ChoiceOpportunity::from_canonical_bytes(opportunity_envelope.body())
-            .expect("canonical choice opportunity"),
-        opportunity
-    );
     let selection = Selection::new(
         &opportunity,
         &narrowed,
@@ -1773,10 +1186,12 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
     let branch_point = opportunity.branch_point_id(parent_configuration);
     let cause = BranchRequestCause::Operator(CampaignCommandId::from_hash(hash("command")));
     let request = BranchRequest::new(
-        branch_point,
-        parent.id().expect("parent id"),
-        opportunity.id().expect("opportunity id"),
-        domain.id().expect("domain id"),
+        BranchRequest::identity(
+            branch_point,
+            parent.id().expect("parent id"),
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
         CandidateSource::finite(BTreeSet::from([
             ChoiceValue::Integer(IntegerValue::Unsigned(0)),
             ChoiceValue::Integer(IntegerValue::Unsigned(10)),
@@ -1822,22 +1237,25 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         })
     ));
     let legacy_body = encode_request_body(1, request.source());
-    let legacy_request = BranchRequest::from_canonical_bytes(&legacy_body)
-        .expect("selection-free branch-request v1 remains readable");
-    assert_eq!(legacy_request.schema_version(), 1);
-    assert_eq!(legacy_request.canonical_bytes(), legacy_body);
+    assert!(matches!(
+        BranchRequest::from_canonical_bytes(&legacy_body),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported branch-request schema or source"
+        })
+    ));
     let legacy_envelope = ObjectEnvelope::for_record_versioned(
         CampaignRecordKind::BranchRequest,
         1,
-        super::object::content_children(legacy_request.content_children())
-            .expect("legacy request children"),
+        request_envelope.children().clone(),
         legacy_body,
     )
     .expect("legacy request envelope");
-    assert_eq!(
-        legacy_request.id().expect("legacy request ID").content_id(),
-        legacy_envelope.content_id()
-    );
+    assert!(matches!(
+        ObjectEnvelope::from_canonical_bytes(&legacy_envelope.canonical_bytes()),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported campaign record schema version"
+        })
+    ));
 
     let weighted_source = CandidateSource::weighted_finite(BTreeMap::from([
         (ChoiceValue::Integer(IntegerValue::Unsigned(0)), 1),
@@ -1860,26 +1278,12 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
             reason: "unsupported branch-request schema or source"
         })
     ));
-    let weighted_v2_body = encode_request_body(2, &weighted_source);
-    let weighted_v2 = BranchRequest::from_canonical_bytes(&weighted_v2_body)
-        .expect("weighted branch-request v2 remains readable");
-    assert_eq!(weighted_v2.schema_version(), 2);
-    assert_eq!(weighted_v2.canonical_bytes(), weighted_v2_body);
-    let weighted_v2_envelope = ObjectEnvelope::for_record_versioned(
-        CampaignRecordKind::BranchRequest,
-        2,
-        super::object::content_children(weighted_v2.content_children())
-            .expect("weighted v2 request children"),
-        weighted_v2_body,
-    )
-    .expect("weighted v2 request envelope");
-    assert_eq!(
-        weighted_v2
-            .id()
-            .expect("weighted v2 request ID")
-            .content_id(),
-        weighted_v2_envelope.content_id()
-    );
+    assert!(matches!(
+        BranchRequest::from_canonical_bytes(&encode_request_body(2, &weighted_source)),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported branch-request schema or source"
+        })
+    ));
 
     let model = ProbabilityModelId::from_hash(hash("retry-delay-model"));
     let modeled_source = CandidateSource::modeled_finite(
@@ -1920,10 +1324,12 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
     )
     .expect("modeled opportunity");
     let explicit_override = BranchRequest::new(
-        modeled_opportunity.branch_point_id(parent_configuration),
-        parent.id().expect("parent id"),
-        modeled_opportunity.id().expect("modeled opportunity id"),
-        domain.id().expect("domain id"),
+        BranchRequest::identity(
+            modeled_opportunity.branch_point_id(parent_configuration),
+            parent.id().expect("parent id"),
+            modeled_opportunity.id().expect("modeled opportunity id"),
+            domain.id().expect("domain id"),
+        ),
         weighted_source,
         cause,
         BranchBudget::new(2, 2).expect("explicit override budget"),
@@ -1934,20 +1340,22 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         .validate_resolved(&parent, &modeled_opportunity, &domain)
         .expect("explicit source takes precedence over an available model");
     let modeled_request = BranchRequest::new(
-        modeled_opportunity.branch_point_id(parent_configuration),
-        parent.id().expect("parent id"),
-        modeled_opportunity.id().expect("modeled opportunity id"),
-        domain.id().expect("domain id"),
+        BranchRequest::identity(
+            modeled_opportunity.branch_point_id(parent_configuration),
+            parent.id().expect("parent id"),
+            modeled_opportunity.id().expect("modeled opportunity id"),
+            domain.id().expect("domain id"),
+        ),
         modeled_source,
         cause,
         BranchBudget::new(2, 2).expect("modeled budget"),
         StopCondition::NextChoice,
     )
     .expect("modeled request");
-    assert_eq!(modeled_request.schema_version(), 3);
+    assert_eq!(modeled_request.schema_version(), 9);
     assert_eq!(
         BranchRequest::from_canonical_bytes(&modeled_request.canonical_bytes())
-            .expect("modeled branch-request v3 round trip"),
+            .expect("current modeled branch-request round trip"),
         modeled_request
     );
     modeled_request
@@ -1977,20 +1385,22 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         })
     ));
     let modeled_generated_request = BranchRequest::new(
-        modeled_opportunity.branch_point_id(parent_configuration),
-        parent.id().expect("parent id"),
-        modeled_opportunity.id().expect("modeled opportunity id"),
-        domain.id().expect("domain id"),
+        BranchRequest::identity(
+            modeled_opportunity.branch_point_id(parent_configuration),
+            parent.id().expect("parent id"),
+            modeled_opportunity.id().expect("modeled opportunity id"),
+            domain.id().expect("domain id"),
+        ),
         modeled_generated_source,
         cause,
         BranchBudget::new(2, 2).expect("modeled generated budget"),
         StopCondition::NextChoice,
     )
     .expect("modeled generated request");
-    assert_eq!(modeled_generated_request.schema_version(), 4);
+    assert_eq!(modeled_generated_request.schema_version(), 9);
     assert_eq!(
         BranchRequest::from_canonical_bytes(&modeled_generated_request.canonical_bytes())
-            .expect("modeled generated branch-request v4 round trip"),
+            .expect("current modeled generated branch-request round trip"),
         modeled_generated_request
     );
     assert!(
@@ -2004,10 +1414,12 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
 
     let wrong_model = ProbabilityModelId::from_hash(hash("wrong-retry-delay-model"));
     let mismatched_request = BranchRequest::new(
-        modeled_opportunity.branch_point_id(parent_configuration),
-        parent.id().expect("parent id"),
-        modeled_opportunity.id().expect("modeled opportunity id"),
-        domain.id().expect("domain id"),
+        BranchRequest::identity(
+            modeled_opportunity.branch_point_id(parent_configuration),
+            parent.id().expect("parent id"),
+            modeled_opportunity.id().expect("modeled opportunity id"),
+            domain.id().expect("domain id"),
+        ),
         CandidateSource::modeled_finite(
             wrong_model,
             BTreeMap::from([
@@ -2081,7 +1493,7 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
     let path = BranchPath::new(vec![BranchPathSegment::new(branch_point, edge)]).expect("path");
     assert_eq!(
         path.segments(),
-        Some([BranchPathSegment::new(branch_point, edge)].as_slice())
+        [BranchPathSegment::new(branch_point, edge)].as_slice()
     );
     assert_eq!(
         BranchPath::from_canonical_bytes(&path.canonical_bytes()).expect("canonical path"),
@@ -2090,595 +1502,6 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
     let path_envelope = super::object::ObjectEnvelope::for_branch_path(&path)
         .expect("current branch path envelope");
     assert_eq!(path_envelope.content_id().schema_version(), 2);
-
-    let mut legacy_path_encoder = Encoder::new();
-    1_u32.encode(&mut legacy_path_encoder);
-    vec![edge].encode(&mut legacy_path_encoder);
-    let legacy_path_bytes = legacy_path_encoder.finish();
-    let legacy_path = BranchPath::from_canonical_bytes(&legacy_path_bytes)
-        .expect("legacy branch path remains readable");
-    assert_eq!(legacy_path.edges(), [edge]);
-    assert_eq!(legacy_path.segments(), None);
-    assert_eq!(legacy_path.canonical_bytes(), legacy_path_bytes);
-    let legacy_path_envelope = crucible_cas::content_envelope::ContentEnvelope::new(
-        CampaignRecordKind::BranchPath.schema_name(),
-        1,
-        BTreeSet::new(),
-        legacy_path_bytes,
-    )
-    .expect("legacy branch path envelope");
-    ObjectEnvelope::from_canonical_bytes(&legacy_path_envelope.canonical_bytes())
-        .expect("legacy branch path envelope remains readable");
-    assert_eq!(
-        legacy_path.id().expect("legacy branch path identity"),
-        BranchPathId::from_content_id(legacy_path_envelope.content_id(ObjectKind::CampaignFact))
-            .expect("legacy branch path id")
-    );
-    let mut trailing_path = path.canonical_bytes();
-    trailing_path.push(0);
-    assert_eq!(
-        BranchPath::from_canonical_bytes(&trailing_path),
-        Err(CampaignCodecError::TrailingBytes)
-    );
-
-    let attempt = Attempt::new(
-        AttemptStart::Branch {
-            edge,
-            parent: parent.id().expect("parent id"),
-            selection: selection.id().expect("selection id"),
-        },
-        path.id().expect("path id"),
-        StopCondition::NextChoice,
-    )
-    .expect("attempt");
-    assert_eq!(
-        Attempt::from_canonical_bytes(&attempt.canonical_bytes()).expect("canonical attempt"),
-        attempt
-    );
-
-    let basis = AttemptAdmission::new(
-        attempt.id().expect("attempt id"),
-        AttemptAdmissionRole::ExecutionBasis {
-            proposal: Some(proposal.id().expect("proposal id")),
-            cause,
-            admission_ordinal: AdmissionOrdinal::new(1),
-        },
-    );
-    let additional = AttemptAdmission::new(
-        attempt.id().expect("attempt id"),
-        AttemptAdmissionRole::AdditionalCause {
-            proposal: proposal.id().expect("proposal id"),
-        },
-    );
-    assert_ne!(basis.id(), additional.id());
-    assert_eq!(
-        AttemptAdmission::from_canonical_bytes(&basis.canonical_bytes())
-            .expect("canonical attempt admission"),
-        basis
-    );
-
-    let planner_view = stored_id!(CampaignViewId, ObjectKind::CampaignFact, "planner-view");
-    let planner_step = PlannerStep::new(
-        None,
-        stored_id!(
-            PlannerInvocationId,
-            ObjectKind::Policy,
-            2,
-            "planner-invocation"
-        ),
-        stored_id!(
-            RetainedPlannerRequestId,
-            ObjectKind::Policy,
-            "retained-planner-request"
-        ),
-        CampaignHash::derive("crucible.test.planner-request-digest.v1", b"planner-step"),
-        stored_id!(CampaignPolicyId, ObjectKind::Policy, "planner-step-policy"),
-        stored_id!(PlannerEngineId, ObjectKind::Policy, "planner-engine"),
-        stored_id!(PolicyArtifactId, ObjectKind::Policy, "policy-artifact"),
-        planner_view,
-        PlannerDisposition::Issue {
-            selected: PlanningScanPosition::new(branch_point, request.id().expect("request id")),
-            issued_branch_requests: Vec::new(),
-            issued_proposals: vec![proposal.id().expect("proposal id")],
-        },
-        stored_id!(PlannerStateId, ObjectKind::Policy, "next-planner-state"),
-        PlanningUsage {
-            branch_requests: 0,
-            proposals: 1,
-            input_objects: 8,
-            input_bytes: 4096,
-            fuel: 1,
-        },
-        PlanningAccounting {
-            branch_requests: 0,
-            proposals: 1,
-            attempts: 1,
-            deduplicated: 0,
-            input_objects: 8,
-            input_bytes: 4096,
-            fuel: 1,
-        },
-        GuidanceEvidence::new(BTreeMap::new()).expect("guidance evidence"),
-    )
-    .expect("planner step");
-    assert_eq!(
-        PlannerStep::from_canonical_bytes(&planner_step.canonical_bytes())
-            .expect("canonical planner step"),
-        planner_step
-    );
-    assert_eq!(
-        &planner_step.canonical_bytes()[..std::mem::size_of::<u32>()],
-        &4_u32.to_be_bytes()
-    );
-    let planner_step_children =
-        super::object::content_children(planner_step.content_children()).expect("step children");
-    let planner_step_envelope = ObjectEnvelope::for_record(
-        CampaignRecordKind::PlannerStep,
-        planner_step_children.clone(),
-        planner_step.canonical_bytes(),
-    )
-    .expect("planner step envelope");
-    let stored_planner_step =
-        crucible_cas::content_envelope::ContentEnvelope::from_canonical_bytes(
-            &planner_step_envelope.canonical_bytes(),
-        )
-        .expect("stored planner step envelope");
-    assert_eq!(stored_planner_step.schema_version(), 4);
-    let prior_envelope = crucible_cas::content_envelope::ContentEnvelope::new(
-        CampaignRecordKind::PlannerStep.schema_name(),
-        3,
-        planner_step_children,
-        planner_step.canonical_bytes(),
-    )
-    .expect("prior planner step envelope");
-    assert!(ObjectEnvelope::from_canonical_bytes(&prior_envelope.canonical_bytes()).is_err());
-    let legacy_step_id = PlannerStepId::from_content_id(ContentId::for_bytes(
-        ObjectKind::CampaignFact,
-        3,
-        b"legacy planner step",
-    ))
-    .expect("legacy planner step id");
-    let legacy_fact = CampaignFact::PlannerAdvanced(legacy_step_id);
-    let mut legacy_fact_encoder = Encoder::new();
-    2_u32.encode(&mut legacy_fact_encoder);
-    legacy_fact.encode(&mut legacy_fact_encoder);
-    let legacy_fact_bytes = legacy_fact_encoder.finish();
-    assert_eq!(
-        CampaignFact::from_canonical_bytes(&legacy_fact_bytes)
-            .expect("legacy planner fact remains readable"),
-        legacy_fact
-    );
-    let legacy_fact_children = BTreeSet::from([crucible_cas::content_envelope::ContentChild::new(
-        "planner-step",
-        legacy_step_id.content_id(),
-    )
-    .expect("legacy fact child")]);
-    let legacy_fact_envelope = crucible_cas::content_envelope::ContentEnvelope::new(
-        CampaignRecordKind::Fact.schema_name(),
-        2,
-        legacy_fact_children.clone(),
-        legacy_fact_bytes.clone(),
-    )
-    .expect("legacy fact envelope");
-    ObjectEnvelope::from_canonical_bytes(&legacy_fact_envelope.canonical_bytes())
-        .expect("legacy fact envelope remains readable");
-    let legacy_fact_id =
-        CampaignFactId::from_content_id(legacy_fact_envelope.content_id(ObjectKind::CampaignFact));
-    assert_eq!(legacy_fact.canonical_bytes(), legacy_fact_bytes);
-    assert_eq!(
-        legacy_fact.id().expect("legacy fact identity"),
-        legacy_fact_id.expect("legacy fact id remains readable")
-    );
-    let current_envelope_with_prior_body = crucible_cas::content_envelope::ContentEnvelope::new(
-        CampaignRecordKind::Fact.schema_name(),
-        CampaignRecordKind::Fact.schema_version(),
-        legacy_fact_children,
-        legacy_fact_bytes,
-    )
-    .expect("mismatched current fact envelope");
-    assert!(
-        ObjectEnvelope::from_canonical_bytes(&current_envelope_with_prior_body.canonical_bytes())
-            .is_err()
-    );
-
-    let derivation = CampaignFact::CampaignDerived(CampaignDerivation::new(
-        stored_id!(
-            CampaignSnapshotId,
-            ObjectKind::CampaignSnapshot,
-            2,
-            "derivation-source"
-        ),
-        stored_id!(CampaignPolicyId, ObjectKind::Policy, "derivation-policy"),
-    ));
-    assert_eq!(
-        &derivation.canonical_bytes()[..std::mem::size_of::<u32>()],
-        &3_u32.to_be_bytes()
-    );
-    let derivation_envelope = ObjectEnvelope::for_fact(&derivation).expect("derivation envelope");
-    ObjectEnvelope::from_canonical_bytes(&derivation_envelope.canonical_bytes())
-        .expect("version 3 derivation envelope remains readable");
-    let prior_envelope_with_derivation_body = crucible_cas::content_envelope::ContentEnvelope::new(
-        CampaignRecordKind::Fact.schema_name(),
-        2,
-        derivation_envelope.children().clone(),
-        derivation.canonical_bytes(),
-    )
-    .expect("mismatched derivation envelope");
-    assert!(
-        ObjectEnvelope::from_canonical_bytes(
-            &prior_envelope_with_derivation_body.canonical_bytes()
-        )
-        .is_err()
-    );
-
-    let continue_scan = PlannerStep::new(
-        Some(planner_step.id().expect("parent planner step")),
-        planner_step.invocation(),
-        planner_step.request(),
-        planner_step.request_digest(),
-        planner_step.policy(),
-        planner_step.engine(),
-        planner_step.policy_artifact(),
-        planner_view,
-        PlannerDisposition::ContinueScan {
-            cursor: PlanningScanCursor::new(
-                planner_view,
-                Some(PlanningScanPosition::new(
-                    branch_point,
-                    request.id().expect("request id"),
-                )),
-            ),
-        },
-        planner_step.next_state(),
-        PlanningUsage {
-            branch_requests: 0,
-            proposals: 0,
-            input_objects: 8,
-            input_bytes: 4096,
-            fuel: 4,
-        },
-        PlanningAccounting {
-            branch_requests: 0,
-            proposals: 0,
-            attempts: 0,
-            deduplicated: 0,
-            input_objects: 8,
-            input_bytes: 4096,
-            fuel: 4,
-        },
-        GuidanceEvidence::new(BTreeMap::new()).expect("scan evidence"),
-    )
-    .expect("continue scan");
-    assert!(continue_scan.selected_source().is_none());
-    assert!(continue_scan.issued_proposals().is_empty());
-    assert_eq!(
-        PlannerStep::from_canonical_bytes(&continue_scan.canonical_bytes())
-            .expect("canonical continue scan"),
-        continue_scan
-    );
-    let no_work = PlannerStep::new(
-        Some(continue_scan.id().expect("continue-scan step id")),
-        planner_step.invocation(),
-        planner_step.request(),
-        planner_step.request_digest(),
-        planner_step.policy(),
-        planner_step.engine(),
-        planner_step.policy_artifact(),
-        planner_view,
-        PlannerDisposition::NoWork,
-        planner_step.next_state(),
-        PlanningUsage {
-            branch_requests: 0,
-            proposals: 0,
-            input_objects: 1,
-            input_bytes: 64,
-            fuel: 1,
-        },
-        PlanningAccounting {
-            branch_requests: 0,
-            proposals: 0,
-            attempts: 0,
-            deduplicated: 0,
-            input_objects: 1,
-            input_bytes: 64,
-            fuel: 1,
-        },
-        GuidanceEvidence::new(BTreeMap::new()).expect("no-work evidence"),
-    )
-    .expect("no-work step");
-    assert!(no_work.selected_branch_point().is_none());
-    assert_eq!(
-        PlannerStep::from_canonical_bytes(&no_work.canonical_bytes())
-            .expect("canonical no-work step"),
-        no_work
-    );
-
-    assert!(
-        continue_scan
-            .content_children()
-            .iter()
-            .any(|(role, id)| role == "scan-after-source"
-                && *id == request.id().expect("request id").content_id())
-    );
-
-    assert!(
-        PlannerStep::new(
-            None,
-            planner_step.invocation(),
-            planner_step.request(),
-            planner_step.request_digest(),
-            planner_step.policy(),
-            planner_step.engine(),
-            planner_step.policy_artifact(),
-            planner_view,
-            PlannerDisposition::ContinueScan {
-                cursor: PlanningScanCursor::new(
-                    stored_id!(CampaignViewId, ObjectKind::CampaignFact, "another-view"),
-                    None,
-                ),
-            },
-            planner_step.next_state(),
-            PlanningUsage {
-                branch_requests: 0,
-                proposals: 0,
-                input_objects: 1,
-                input_bytes: 64,
-                fuel: 1,
-            },
-            PlanningAccounting {
-                branch_requests: 0,
-                proposals: 0,
-                attempts: 0,
-                deduplicated: 0,
-                input_objects: 1,
-                input_bytes: 64,
-                fuel: 1,
-            },
-            GuidanceEvidence::new(BTreeMap::new()).expect("invalid scan evidence"),
-        )
-        .is_err()
-    );
-
-    let planner_request = BranchRequest::new(
-        branch_point,
-        parent.id().expect("parent id"),
-        opportunity.id().expect("opportunity id"),
-        domain.id().expect("domain id"),
-        CandidateSource::finite(BTreeSet::from([ChoiceValue::Integer(
-            IntegerValue::Unsigned(10),
-        )]))
-        .expect("planner finite source"),
-        BranchRequestCause::Planner(planner_step.invocation()),
-        BranchBudget::new(1, 1).expect("planner branch budget"),
-        StopCondition::NextChoice,
-    )
-    .expect("planner request");
-    let planner_proposal = Proposal::new(
-        branch_point,
-        planner_request.id().expect("planner request id"),
-        domain.id().expect("domain id"),
-        ChoiceValue::Integer(IntegerValue::Unsigned(10)),
-        planner_step.policy(),
-        Some(planner_step.invocation()),
-        1,
-        planner_view,
-    )
-    .expect("planner proposal");
-    let proposed_step = PlannerStepProposal::new(
-        planner_step.invocation(),
-        PlannerState::new(planner_step.engine(), "scan-state", 1, vec![1, 2, 3])
-            .expect("next planner state"),
-        PlanningUsage {
-            branch_requests: 1,
-            proposals: 1,
-            input_objects: 8,
-            input_bytes: 4096,
-            fuel: 4,
-        },
-        GuidanceEvidence::new(BTreeMap::from([("score".to_owned(), 1_000)]))
-            .expect("proposal evidence"),
-        PlannerProposalDisposition::Issue {
-            selected: PlanningScanPosition::new(
-                branch_point,
-                planner_request.id().expect("planner request id"),
-            ),
-            branch_requests: vec![planner_request.clone()],
-            proposals: vec![planner_proposal.clone()],
-        },
-    )
-    .expect("pure planner result");
-    assert_eq!(
-        PlannerStepProposal::from_canonical_bytes(&proposed_step.canonical_bytes())
-            .expect("canonical pure planner result"),
-        proposed_step
-    );
-    assert!(matches!(
-        PlannerStepProposal::new_with_encoded_limit(
-            planner_step.invocation(),
-            PlannerState::new(planner_step.engine(), "scan-state", 1, Vec::new())
-                .expect("bounded result state"),
-            PlanningUsage {
-                branch_requests: 0,
-                proposals: 0,
-                input_objects: 1,
-                input_bytes: 1,
-                fuel: 1,
-            },
-            GuidanceEvidence::new(BTreeMap::new()).expect("bounded result evidence"),
-            PlannerProposalDisposition::NoWork,
-            1,
-        ),
-        Err(CampaignCodecError::LimitExceeded {
-            limit: "planner-step-proposal-encoded-bytes"
-        })
-    ));
-
-    let proposed_no_work = PlannerStepProposal::new(
-        planner_step.invocation(),
-        PlannerState::new(planner_step.engine(), "scan-state", 1, Vec::new())
-            .expect("no-work result state"),
-        PlanningUsage {
-            branch_requests: 0,
-            proposals: 0,
-            input_objects: 8,
-            input_bytes: 4096,
-            fuel: 1,
-        },
-        GuidanceEvidence::new(BTreeMap::new()).expect("no-work result evidence"),
-        PlannerProposalDisposition::NoWork,
-    )
-    .expect("pure no-work result");
-    assert_eq!(
-        PlannerStepProposal::from_canonical_bytes(&proposed_no_work.canonical_bytes())
-            .expect("canonical pure no-work result"),
-        proposed_no_work
-    );
-
-    assert!(
-        PlannerStepProposal::new(
-            planner_step.invocation(),
-            PlannerState::new(planner_step.engine(), "scan-state", 1, Vec::new())
-                .expect("duplicate result state"),
-            PlanningUsage {
-                branch_requests: 1,
-                proposals: 2,
-                input_objects: 8,
-                input_bytes: 4096,
-                fuel: 4,
-            },
-            GuidanceEvidence::new(BTreeMap::new()).expect("duplicate result evidence"),
-            PlannerProposalDisposition::Issue {
-                selected: PlanningScanPosition::new(
-                    branch_point,
-                    planner_request.id().expect("planner request id"),
-                ),
-                branch_requests: vec![planner_request],
-                proposals: vec![planner_proposal.clone(), planner_proposal],
-            },
-        )
-        .is_err()
-    );
-
-    let illegal = BranchRequest::new(
-        branch_point,
-        parent.id().expect("parent id"),
-        opportunity.id().expect("opportunity id"),
-        domain.id().expect("domain id"),
-        CandidateSource::finite(BTreeSet::from([ChoiceValue::Integer(
-            IntegerValue::Unsigned(11),
-        )]))
-        .expect("bounded source"),
-        cause,
-        BranchBudget::new(1, 1).expect("budget"),
-        StopCondition::NextChoice,
-    )
-    .expect("structural request");
-    assert!(
-        illegal
-            .validate_resolved(&parent, &opportunity, &domain)
-            .is_err()
-    );
-
-    let credit_observation = stored_id!(
-        ObservationId,
-        ObjectKind::Observation,
-        "expansion-credit-observation"
-    );
-    let credit = ExpansionCredit::new(credit_observation, branch_point);
-    assert_eq!(
-        ExpansionCredit::from_canonical_bytes(&credit.canonical_bytes())
-            .expect("canonical expansion credit"),
-        credit
-    );
-    let credit_envelope = ObjectEnvelope::for_record(
-        CampaignRecordKind::ExpansionCredit,
-        super::object::content_children(credit.content_children()).expect("credit children"),
-        credit.canonical_bytes(),
-    )
-    .expect("credit envelope");
-    assert_eq!(
-        credit_envelope.content_id(),
-        credit.content_id().expect("credit content id")
-    );
-    assert_eq!(
-        credit_envelope
-            .children()
-            .iter()
-            .map(crate::ChildReference::id)
-            .collect::<Vec<_>>(),
-        vec![credit_observation.content_id()]
-    );
-
-    let wait = FeedbackWait::new(2, 3).expect("pending feedback");
-    assert_eq!(wait.completed_visits(), 2);
-    assert_eq!(wait.required_visits(), 3);
-    assert!(FeedbackWait::new(3, 3).is_err());
-    assert!(FeedbackWait::new(4, 3).is_err());
-
-    let request_id = request.id().expect("request id");
-    let source_snapshot = stored_id!(
-        CampaignSnapshotId,
-        ObjectKind::CampaignSnapshot,
-        2,
-        "expansion-source-snapshot"
-    );
-    let input_view = stored_id!(CampaignViewId, ObjectKind::CampaignFact, "expansion-view");
-    let expansion = ExpansionState::new(
-        source_snapshot,
-        input_view,
-        branch_point,
-        content("request-root"),
-        content("proposal-root"),
-        content("admission-root"),
-        content("observation-root"),
-        ExpansionStatistics::default(),
-        None,
-        1,
-        None,
-        BTreeMap::from([(request_id, ContinuationState::WaitingForFeedback(wait))]),
-    )
-    .expect("expansion state");
-    assert_eq!(
-        ExpansionState::from_canonical_bytes(&expansion.canonical_bytes())
-            .expect("canonical expansion state"),
-        expansion
-    );
-    let mut invalid_wait = expansion.canonical_bytes();
-    let required_offset = invalid_wait.len() - std::mem::size_of::<u64>();
-    invalid_wait[required_offset..].copy_from_slice(&2_u64.to_be_bytes());
-    assert!(matches!(
-        ExpansionState::from_canonical_bytes(&invalid_wait),
-        Err(CampaignCodecError::InvalidValue { .. })
-    ));
-    let expansion_envelope = ObjectEnvelope::for_record(
-        CampaignRecordKind::ExpansionState,
-        super::object::content_children(expansion.content_children()).expect("expansion children"),
-        expansion.canonical_bytes(),
-    )
-    .expect("expansion envelope");
-    assert_eq!(
-        &expansion.canonical_bytes()[..std::mem::size_of::<u32>()],
-        &2_u32.to_be_bytes()
-    );
-    let mut legacy_body = expansion.canonical_bytes();
-    legacy_body[..std::mem::size_of::<u32>()].copy_from_slice(&1_u32.to_be_bytes());
-    assert!(ExpansionState::from_canonical_bytes(&legacy_body).is_err());
-    assert_eq!(expansion_envelope.content_id().schema_version(), 2);
-    let legacy_expansion = crucible_cas::content_envelope::ContentEnvelope::new(
-        CampaignRecordKind::ExpansionState.schema_name(),
-        1,
-        expansion_envelope.children().clone(),
-        expansion.canonical_bytes(),
-    )
-    .expect("legacy expansion envelope");
-    assert!(ObjectEnvelope::from_canonical_bytes(&legacy_expansion.canonical_bytes()).is_err());
-    assert!(
-        expansion_envelope
-            .children()
-            .iter()
-            .any(|child| child.role() == "continuation.00000000"
-                && child.id() == request_id.content_id())
-    );
 }
 
 #[test]
@@ -2696,6 +1519,7 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
     let path = stored_id!(
         BranchPathId,
         ObjectKind::CampaignFact,
+        2,
         "continuation-input-path"
     );
     let source_observation = stored_id!(
@@ -2934,7 +1758,7 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
 }
 
 #[test]
-fn scenario_default_records_have_frozen_versioned_vectors() {
+fn branch_request_variants_use_one_current_schema() {
     let branch_point = BranchPointId::from_hash(hash("scenario-default-branch-point"));
     let parent = stored_id!(
         ConfigurationArtifactId,
@@ -2989,147 +1813,87 @@ fn scenario_default_records_have_frozen_versioned_vectors() {
             "scenario-default-vector-generator"
         ),
     );
-    let request_bodies = [
-        encode_request(1, &finite, operator),
-        encode_request(2, &finite, operator),
-        encode_request(3, &modeled_finite, operator),
-        encode_request(4, &modeled_generated, operator),
-    ];
-    let historical_vectors = [
-        (
-            "3afb6e7cec8c9591128825b6e8977eae491246fe398665dcf9ba918512f07441",
-            "crucible.campaign.branch-request@campaign-fact.1.806e7621b0bd3fe0f7de82ffaf2ca574f99a01a99f2639b5b8d68ccaebf3c8a8",
-        ),
-        (
-            "c469dcd133fd7f21e96e164d029aab8ca22bc69ad529b2aa1d7353d26ad295e6",
-            "crucible.campaign.branch-request@campaign-fact.2.e8e6f6351d3453132d4e6585e4afa7c3a235c0dee4b753e72d7df08d8e743aa2",
-        ),
-        (
-            "329c565701c73d8434cba0e49b61b89bf18f97a074a73c448930623cc53167fe",
-            "crucible.campaign.branch-request@campaign-fact.3.622b4a8e4f4a4755726aaa798f6e4b25ee20421c3c82335b2761ce552f337506",
-        ),
-        (
-            "232ec37538f0e31a429dc088a646f175ca30719d1a9da527523a88a654834045",
-            "crucible.campaign.branch-request@campaign-fact.4.380c8fe90cb736cb0e598c2e7cbf99770aa461befb52a9d59e7441c57569b8a2",
-        ),
-    ];
-    for (bytes, (expected_digest, expected_id)) in request_bodies.iter().zip(historical_vectors) {
-        let request = BranchRequest::from_canonical_bytes(bytes).expect("historical request");
-        assert_eq!(blake3::hash(bytes).to_hex().to_string(), expected_digest);
-        assert_eq!(
-            request.id().expect("historical request id").to_text(),
-            expected_id
-        );
+    for old_version in 2..9 {
+        for source in [&finite, &modeled_finite, &modeled_generated] {
+            assert!(
+                BranchRequest::from_canonical_bytes(
+                    &encode_request(old_version, source, operator,)
+                )
+                .is_err()
+            );
+        }
     }
 
     let request = BranchRequest::new(
-        branch_point,
-        parent,
-        opportunity,
-        domain,
+        BranchRequest::identity(branch_point, parent, opportunity, domain),
         finite,
         BranchRequestCause::ScenarioDefault(policy),
         BranchBudget::new(1, 1).expect("scenario-default vector budget"),
         StopCondition::NextChoice,
     )
     .expect("scenario-default vector request");
-    assert_eq!(request.schema_version(), 5);
+    assert_eq!(request.schema_version(), 9);
     assert_eq!(
-        blake3::hash(&request.canonical_bytes())
-            .to_hex()
-            .to_string(),
-        "0af469efcf6616309dec82715369e5856801b5801f70aa1e328699b5d1a74b77"
-    );
-    assert_eq!(
-        request.id().expect("request v5 id").to_text(),
-        "crucible.campaign.branch-request@campaign-fact.5.4a8ddd462a022341d775e64866313c45ededfff34db7daefe8eb6a6e5e43330f"
-    );
-
-    let admission = AttemptAdmission::new(
-        stored_id!(
-            AttemptId,
-            ObjectKind::CampaignFact,
-            "scenario-default-attempt"
-        ),
-        AttemptAdmissionRole::ExecutionBasis {
-            proposal: Some(stored_id!(
-                ProposalId,
-                ObjectKind::CampaignFact,
-                "scenario-default-proposal"
-            )),
-            cause: BranchRequestCause::ScenarioDefault(policy),
-            admission_ordinal: AdmissionOrdinal::new(7),
-        },
-    );
-    let historical_execution_basis = AttemptAdmission::new(
-        admission.attempt(),
-        AttemptAdmissionRole::ExecutionBasis {
-            proposal: Some(stored_id!(
-                ProposalId,
-                ObjectKind::CampaignFact,
-                "scenario-default-proposal"
-            )),
-            cause: operator,
-            admission_ordinal: AdmissionOrdinal::new(7),
-        },
-    );
-    assert_eq!(historical_execution_basis.schema_version(), 1);
-    assert_eq!(
-        blake3::hash(&historical_execution_basis.canonical_bytes())
-            .to_hex()
-            .to_string(),
-        "7d18eab10837d432f6daf2e714b9e8bd82c6eded18323ad1400fec92e551679d"
-    );
-    assert_eq!(
-        historical_execution_basis
-            .id()
-            .expect("admission v1 id")
-            .to_text(),
-        "crucible.campaign.attempt-admission@campaign-fact.1.43960bc8f2e8b7bc63ad58584a0cd552233a909c460f94ffb0f303ef66e78dfe"
-    );
-    assert_eq!(admission.schema_version(), 2);
-    assert_eq!(
-        blake3::hash(&admission.canonical_bytes())
-            .to_hex()
-            .to_string(),
-        "f054656caaf6b6eda5093072d40d0470f210bc63be7e3b2cd0498addd9de50e7"
-    );
-    assert_eq!(
-        admission.id().expect("admission v2 id").to_text(),
-        "crucible.campaign.attempt-admission@campaign-fact.2.739e2679ffa2b57d6b8ba13f35f3dc214a97bf3fde7a53f71369fe8237ddc79d"
+        BranchRequest::from_canonical_bytes(&request.canonical_bytes())
+            .expect("current scenario-default request"),
+        request
     );
 
     let mut wrong_request_version = request.canonical_bytes();
     wrong_request_version[..4].copy_from_slice(&1_u32.to_be_bytes());
     assert!(BranchRequest::from_canonical_bytes(&wrong_request_version).is_err());
-
-    let mut wrong_admission_version = admission.canonical_bytes();
-    wrong_admission_version[..4].copy_from_slice(&1_u32.to_be_bytes());
-    assert!(AttemptAdmission::from_canonical_bytes(&wrong_admission_version).is_err());
-    let mismatched_admission_envelope = ObjectEnvelope::for_record_versioned(
-        CampaignRecordKind::AttemptAdmission,
-        1,
-        super::object::content_children(admission.content_children()).expect("admission children"),
-        admission.canonical_bytes(),
-    )
-    .expect("structural mismatched admission envelope");
-    assert!(
-        ObjectEnvelope::from_canonical_bytes(&mismatched_admission_envelope.canonical_bytes())
-            .is_err()
+    let attempt = stored_id!(
+        AttemptId,
+        ObjectKind::CampaignFact,
+        "scenario-default-attempt"
     );
-    let historical_admission = AttemptAdmission::new(
-        admission.attempt(),
-        AttemptAdmissionRole::AdditionalCause {
-            proposal: stored_id!(
-                ProposalId,
-                ObjectKind::CampaignFact,
-                "scenario-default-proposal"
-            ),
-        },
+    let proposal = stored_id!(
+        ProposalId,
+        ObjectKind::CampaignFact,
+        2,
+        "policy-bound-admission-proposal"
     );
-    let mut future_without_new_cause = historical_admission.canonical_bytes();
-    future_without_new_cause[..4].copy_from_slice(&2_u32.to_be_bytes());
-    assert!(AttemptAdmission::from_canonical_bytes(&future_without_new_cause).is_err());
+    let causes = [
+        BranchRequestCause::Planner(stored_id!(
+            PlannerInvocationId,
+            ObjectKind::Policy,
+            2,
+            "policy-bound-admission-planner"
+        )),
+        BranchRequestCause::Operator(CampaignCommandId::from_hash(hash(
+            "policy-bound-admission-operator",
+        ))),
+        BranchRequestCause::Debugger(DebugSessionId::from_hash(hash(
+            "policy-bound-admission-debugger",
+        ))),
+        BranchRequestCause::ExhaustivePolicy(policy),
+        BranchRequestCause::ScenarioDefault(policy),
+    ];
+    for cause in causes {
+        let bound = AttemptAdmission::new(
+            attempt,
+            AttemptAdmissionRole::ExecutionBasis {
+                proposal: Some(proposal),
+                cause,
+                admission_ordinal: AdmissionOrdinal::new(7),
+            },
+            policy,
+        );
+        assert_eq!(bound.schema_version(), 3);
+        assert_eq!(bound.retention_policy(), policy);
+        assert_eq!(
+            AttemptAdmission::from_canonical_bytes(&bound.canonical_bytes())
+                .expect("policy-bound admission"),
+            bound
+        );
+        let child_names = bound
+            .content_children()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<BTreeSet<_>>();
+        assert!(child_names.contains("retention-policy"));
+        assert!(!child_names.contains("source-snapshot"));
+    }
 }
 
 struct ParityModel {
@@ -3404,7 +2168,7 @@ fn snapshot_envelope_exposes_every_child_and_authenticates_logical_identity() {
     let parent = stored_id!(
         CampaignSnapshotId,
         ObjectKind::CampaignSnapshot,
-        2,
+        3,
         "parent-snapshot"
     );
     let transition = stored_id!(CampaignFactId, ObjectKind::CampaignFact, 2, "transition");
@@ -3414,12 +2178,13 @@ fn snapshot_envelope_exposes_every_child_and_authenticates_logical_identity() {
         stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy"),
         roots,
         transition,
+        crate::test_budget_ledger_id(),
     )
     .expect("successor snapshot");
     let envelope = ObjectEnvelope::for_snapshot(&snapshot).expect("snapshot envelope");
 
     assert_eq!(envelope.record_kind(), CampaignRecordKind::Snapshot);
-    assert_eq!(envelope.children().len(), 13);
+    assert_eq!(envelope.children().len(), 14);
     assert!(
         envelope
             .children()
@@ -3443,7 +2208,7 @@ fn snapshot_envelope_exposes_every_child_and_authenticates_logical_identity() {
     );
     let extra = crucible_cas::content_envelope::ContentEnvelope::new(
         "crucible.campaign.snapshot",
-        2,
+        3,
         extra_children,
         snapshot.canonical_bytes(),
     )
@@ -3479,45 +2244,29 @@ fn generic_public_object_decode_rejects_owner_validated_merkle_records() {
 #[test]
 fn observation_records_are_canonical_bounded_and_child_bearing() {
     let evidence = content_kind("measurement evidence", ObjectKind::Trace);
-    let measurements = MeasurementSet::new(BTreeMap::from([(
-        "latency".to_owned(),
-        MeasurementSeries::new(
-            vec![MetricValue::Unsigned(5), MetricValue::Unsigned(8)],
-            MetricValue::Unsigned(13),
-            BTreeSet::from([evidence]),
-        )
-        .expect("measurement series"),
-    )]))
-    .expect("measurement set");
+    let measurements = MeasurementSet::test_evaluation(b"latency-13", BTreeSet::from([evidence]))
+        .expect("measurement set");
     assert_eq!(
         MeasurementSet::from_canonical_bytes(&measurements.canonical_bytes())
             .expect("canonical measurements"),
         measurements
     );
-    assert_eq!(measurements.schema_version(), 1);
+    assert_eq!(measurements.schema_version(), 2);
     assert_eq!(
         measurements
             .id()
-            .expect("legacy measurement id")
+            .expect("measurement id")
             .content_id()
             .schema_version(),
-        1
+        2
     );
-    let legacy_measurement_envelope =
-        ObjectEnvelope::for_measurement_set(&measurements).expect("legacy measurement envelope");
-    assert_eq!(legacy_measurement_envelope.content_id().schema_version(), 1);
+    let measurement_envelope =
+        ObjectEnvelope::for_measurement_set(&measurements).expect("measurement envelope");
+    assert_eq!(measurement_envelope.content_id().schema_version(), 2);
     assert_eq!(
-        ObjectEnvelope::from_canonical_bytes(&legacy_measurement_envelope.canonical_bytes())
-            .expect("canonical legacy measurement envelope"),
-        legacy_measurement_envelope
-    );
-    assert!(
-        MeasurementSeries::new(
-            vec![MetricValue::Unsigned(1)],
-            MetricValue::Signed(1),
-            BTreeSet::new(),
-        )
-        .is_err()
+        ObjectEnvelope::from_canonical_bytes(&measurement_envelope.canonical_bytes())
+            .expect("canonical measurement envelope"),
+        measurement_envelope
     );
 
     let properties = PropertyVerdictSet::new(BTreeMap::from([(
@@ -3541,17 +2290,24 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
 
     let observation = Observation::new(
         stored_id!(AttemptId, ObjectKind::CampaignFact, "observation attempt"),
-        ConfigurationId::from_hash(hash("observation child")),
-        stored_id!(
-            ConfigurationArtifactId,
-            ObjectKind::Configuration,
-            "observation child artifact"
+        Observation::outcome(
+            ConfigurationId::from_hash(hash("observation child")),
+            stored_id!(
+                ConfigurationArtifactId,
+                ObjectKind::Configuration,
+                "observation child artifact"
+            ),
+            stored_id!(
+                BranchPathId,
+                ObjectKind::CampaignFact,
+                2,
+                "observation path"
+            ),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurements.id().expect("measurement id"),
+            properties.id().expect("property id"),
+            coverage.id().expect("coverage id"),
         ),
-        stored_id!(BranchPathId, ObjectKind::CampaignFact, "observation path"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements.id().expect("measurement id"),
-        properties.id().expect("property id"),
-        coverage.id().expect("coverage id"),
         BTreeSet::from([stored_id!(
             ChoiceOpportunityId,
             ObjectKind::CampaignFact,
@@ -3619,16 +2375,18 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
 
     let scenario_failure = Observation::new(
         observation.attempt(),
-        observation.child(),
-        observation.child_content(),
-        observation.path(),
-        StopOutcome::ScenarioFailure(vec![
-            "first declared failure".to_owned(),
-            "second declared failure".to_owned(),
-        ]),
-        observation.measurements(),
-        observation.properties(),
-        observation.coverage(),
+        Observation::outcome(
+            observation.child(),
+            observation.child_content(),
+            observation.path(),
+            StopOutcome::ScenarioFailure(vec![
+                "first declared failure".to_owned(),
+                "second declared failure".to_owned(),
+            ]),
+            observation.measurements(),
+            observation.properties(),
+            observation.coverage(),
+        ),
         BTreeSet::new(),
     )
     .expect("scenario failure observation");
@@ -3680,13 +2438,15 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
     assert!(
         Observation::new(
             observation.attempt(),
-            observation.child(),
-            observation.child_content(),
-            observation.path(),
-            StopOutcome::ScenarioFailure(Vec::new()),
-            observation.measurements(),
-            observation.properties(),
-            observation.coverage(),
+            Observation::outcome(
+                observation.child(),
+                observation.child_content(),
+                observation.path(),
+                StopOutcome::ScenarioFailure(Vec::new()),
+                observation.measurements(),
+                observation.properties(),
+                observation.coverage(),
+            ),
             BTreeSet::new(),
         )
         .is_err()
@@ -3696,13 +2456,15 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
     assert!(
         Observation::new(
             observation.attempt(),
-            observation.child(),
-            observation.child_content(),
-            observation.path(),
-            StopOutcome::ScenarioFailure(aggregate_oversize_failure),
-            observation.measurements(),
-            observation.properties(),
-            observation.coverage(),
+            Observation::outcome(
+                observation.child(),
+                observation.child_content(),
+                observation.path(),
+                StopOutcome::ScenarioFailure(aggregate_oversize_failure),
+                observation.measurements(),
+                observation.properties(),
+                observation.coverage(),
+            ),
             BTreeSet::new(),
         )
         .is_err()
@@ -3718,21 +2480,6 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
     let maximum_series_evidence = (0_u32..4096)
         .map(|ordinal| ContentId::for_bytes(ObjectKind::Trace, 1, &ordinal.to_be_bytes()))
         .collect::<BTreeSet<_>>();
-    let evidence_heavy_series = MeasurementSeries::new(
-        vec![MetricValue::Unsigned(1)],
-        MetricValue::Unsigned(1),
-        maximum_series_evidence.clone(),
-    )
-    .expect("maximum series evidence");
-    let excessive_measurements = (0..17)
-        .map(|ordinal| (format!("metric-{ordinal}"), evidence_heavy_series.clone()))
-        .collect::<BTreeMap<_, _>>();
-    assert!(matches!(
-        MeasurementSet::new(excessive_measurements),
-        Err(CampaignCodecError::LimitExceeded {
-            limit: "measurement-evidence-child-count"
-        })
-    ));
     let evidence_heavy_property =
         PropertyEvidence::new(PropertyVerdict::Passed, maximum_series_evidence)
             .expect("maximum property evidence");
@@ -3764,13 +2511,15 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
     assert!(matches!(
         Observation::new(
             observation.attempt(),
-            observation.child(),
-            observation.child_content(),
-            observation.path(),
-            observation.stop().clone(),
-            observation.measurements(),
-            observation.properties(),
-            observation.coverage(),
+            Observation::outcome(
+                observation.child(),
+                observation.child_content(),
+                observation.path(),
+                observation.stop().clone(),
+                observation.measurements(),
+                observation.properties(),
+                observation.coverage(),
+            ),
             excessive_choices,
         ),
         Err(CampaignCodecError::LimitExceeded {
@@ -3797,8 +2546,7 @@ fn verified_measurement_payload_is_v2_and_retains_exact_children() {
 
     assert_eq!(decoded, measurements);
     assert_eq!(measurements.schema_version(), 2);
-    assert!(measurements.legacy_measurements().is_none());
-    let retained = measurements.evaluation().expect("evaluation payload");
+    let retained = measurements.evaluation();
     assert_eq!(retained.definitions(), definitions);
     assert_eq!(retained.payload_schema(), 1);
     assert_eq!(retained.evaluation(), evaluation);
@@ -3885,11 +2633,13 @@ fn finding_and_reproduction_records_round_trip_with_exact_children() {
         .expect("configuration artifact id");
     let fingerprint = hash("finding-fingerprint");
     let reproduction = ReproductionArtifact::new(
-        scenario,
-        scenario_artifact_id,
-        configuration,
-        configuration_artifact_id,
-        fingerprint,
+        crate::ReproductionArtifactBasis::new(
+            scenario,
+            scenario_artifact_id,
+            configuration,
+            configuration_artifact_id,
+            fingerprint,
+        ),
         1,
         b"self-contained reproduction".to_vec(),
     )
@@ -3919,23 +2669,25 @@ fn finding_and_reproduction_records_round_trip_with_exact_children() {
     .expect("observation id");
     let first_seen = CampaignSnapshotId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignSnapshot,
-        2,
+        3,
         b"finding-parent-snapshot",
     ))
     .expect("snapshot id");
-    let finding = Finding::new(
-        signature.clone(),
-        observation,
-        reproduction_id,
-        first_seen,
-        FindingOccurrenceSet::new(
-            ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"finding occurrences"),
-            1,
+    let finding = Finding::new_current_for_test(
+        Finding::basis(
+            signature.clone(),
             observation,
-        )
-        .expect("occurrences"),
+            reproduction_id,
+            first_seen,
+            FindingOccurrenceSet::new(
+                ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"finding occurrences"),
+                1,
+                observation,
+            )
+            .expect("occurrences"),
+        ),
         None,
-        BTreeSet::new(),
+        FindingExactPins::default(),
     )
     .expect("finding");
     assert_eq!(
@@ -3970,7 +2722,7 @@ fn finding_and_reproduction_records_round_trip_with_exact_children() {
 }
 
 #[test]
-fn finding_v2_retains_minimization_trace_and_role_tagged_exact_pins() {
+fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
     let scenario = ScenarioDefId::from_hash(hash("finding-v2-scenario"));
     let scenario_artifact =
         ScenarioArtifact::new(scenario, 1, b"scenario-v2".to_vec()).expect("scenario artifact");
@@ -3989,16 +2741,20 @@ fn finding_v2_retains_minimization_trace_and_role_tagged_exact_pins() {
         .expect("original configuration artifact id");
     let fingerprint = hash("finding-v2-fingerprint");
     let original = ReproductionArtifact::new(
-        scenario,
-        scenario_artifact_id,
-        original_configuration,
-        original_configuration_artifact_id,
-        fingerprint,
+        crate::ReproductionArtifactBasis::new(
+            scenario,
+            scenario_artifact_id,
+            original_configuration,
+            original_configuration_artifact_id,
+            fingerprint,
+        ),
         1,
         b"original reproduction".to_vec(),
     )
     .expect("original reproduction");
     let original_id = original.id().expect("original reproduction id");
+    assert_eq!(original.schema_version(), 2);
+    assert!(original.minimization().is_none());
 
     let minimized_configuration = ConfigurationId::from_hash(hash("finding-v2-minimized"));
     let minimized_configuration_artifact = ConfigurationArtifact::new(
@@ -4020,12 +2776,24 @@ fn finding_v2_retains_minimization_trace_and_role_tagged_exact_pins() {
         Some(fingerprint),
         true,
     );
-    let legacy_policy = b"crucible.finding-minimization-policy.v1\0legacy-limits".to_vec();
+    let current_policy = b"crucible.finding-minimization-policy.v3\0current-limits".to_vec();
     assert!(matches!(
         FindingMinimizationEvidence::new(
             original_id,
-            1,
-            legacy_policy.clone(),
+            2,
+            current_policy.clone(),
+            vec![attempt],
+            hash("candidate state"),
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "finding minimization policy is empty or not current schema"
+        })
+    ));
+    assert!(matches!(
+        FindingMinimizationEvidence::new(
+            original_id,
+            3,
+            current_policy.clone(),
             vec![attempt],
             hash("different final state"),
         ),
@@ -4035,18 +2803,20 @@ fn finding_v2_retains_minimization_trace_and_role_tagged_exact_pins() {
     ));
     let minimization = FindingMinimizationEvidence::new(
         original_id,
-        1,
-        legacy_policy.clone(),
+        3,
+        current_policy.clone(),
         vec![attempt],
         hash("candidate state"),
     )
     .expect("minimization evidence");
     let minimized = ReproductionArtifact::new_minimized(
-        scenario,
-        scenario_artifact_id,
-        minimized_configuration,
-        minimized_configuration_artifact_id,
-        fingerprint,
+        crate::ReproductionArtifactBasis::new(
+            scenario,
+            scenario_artifact_id,
+            minimized_configuration,
+            minimized_configuration_artifact_id,
+            fingerprint,
+        ),
         1,
         b"minimized reproduction".to_vec(),
         minimization,
@@ -4055,29 +2825,17 @@ fn finding_v2_retains_minimization_trace_and_role_tagged_exact_pins() {
     let minimized_id = minimized.id().expect("minimized reproduction id");
     assert_eq!(minimized.schema_version(), 2);
     assert_eq!(minimized_id.content_id().schema_version(), 2);
-    assert!(matches!(
-        FindingMinimizationEvidence::new(
-            minimized_id,
-            1,
-            b"invalid chained minimization".to_vec(),
-            Vec::new(),
-            hash("candidate state"),
-        ),
-        Err(CampaignCodecError::InvalidValue {
-            reason: "finding minimization original is not schema v1"
-        })
-    ));
     let decoded = ReproductionArtifact::from_canonical_bytes(&minimized.canonical_bytes())
         .expect("decode minimized reproduction");
     assert_eq!(decoded, minimized);
     let decoded_minimization = decoded
         .minimization()
-        .expect("decode legacy minimization evidence");
-    assert_eq!(decoded_minimization.policy_schema(), 1);
-    assert_eq!(decoded_minimization.policy(), legacy_policy);
+        .expect("decode current minimization evidence");
+    assert_eq!(decoded_minimization.policy_schema(), 3);
+    assert_eq!(decoded_minimization.policy(), current_policy);
 
     let checkpoint = |name: &[u8]| {
-        ExactCheckpointId::from_content_id(ContentId::for_bytes(ObjectKind::ExactManifest, 3, name))
+        ExactCheckpointId::from_content_id(ContentId::for_bytes(ObjectKind::ExactManifest, 4, name))
             .expect("exact checkpoint id")
     };
     let pre = checkpoint(b"pre-failure");
@@ -4107,53 +2865,36 @@ fn finding_v2_retains_minimization_trace_and_role_tagged_exact_pins() {
         BTreeSet::new(),
     )
     .expect("finding signature");
-    let finding = Finding::new_with_retention(
-        signature,
-        observation,
-        original_id,
-        CampaignSnapshotId::from_content_id(ContentId::for_bytes(
-            ObjectKind::CampaignSnapshot,
-            2,
-            b"finding-v2-parent",
-        ))
-        .expect("snapshot id"),
-        FindingOccurrenceSet::new(
-            ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"finding-v2-occurrences"),
-            1,
+    let finding = Finding::new_current_for_test(
+        Finding::basis(
+            signature,
             observation,
-        )
-        .expect("occurrences"),
+            original_id,
+            CampaignSnapshotId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignSnapshot,
+                3,
+                b"finding-v2-parent",
+            ))
+            .expect("snapshot id"),
+            FindingOccurrenceSet::new(
+                ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"finding-v2-occurrences"),
+                1,
+                observation,
+            )
+            .expect("occurrences"),
+        ),
         Some(minimized_id),
         pins,
     )
     .expect("finding v2");
-    assert_eq!(finding.schema_version(), 2);
-    assert!(matches!(
-        Finding::new(
-            finding.signature().clone(),
-            observation,
-            minimized_id,
-            finding.first_seen_snapshot(),
-            FindingOccurrenceSet::new(
-                finding.occurrences(),
-                finding.occurrence_count(),
-                finding.latest_occurrence(),
-            )
-            .expect("legacy occurrence set"),
-            None,
-            BTreeSet::new(),
-        ),
-        Err(CampaignCodecError::InvalidValue {
-            reason: "finding schema disagrees with reproduction versions"
-        })
-    ));
+    assert_eq!(finding.schema_version(), 4);
     assert_eq!(
         finding
             .id()
             .expect("finding id")
             .content_id()
             .schema_version(),
-        2
+        4
     );
     assert_eq!(
         finding.exact_pin_retention().pre_failure(),
@@ -4185,49 +2926,7 @@ fn finding_v2_retains_minimization_trace_and_role_tagged_exact_pins() {
     );
 }
 
-#[test]
-fn finding_signature_and_membership_invariants_fail_closed() {
-    assert!(matches!(
-        FindingSignature::new(
-            FindingKind::PropertyViolation,
-            hash("missing-property"),
-            None,
-            "guest.assertion".to_owned(),
-            None,
-            BTreeSet::new(),
-        ),
-        Err(CampaignCodecError::InvalidValue {
-            reason: "finding property identity disagrees with failure kind"
-        })
-    ));
-
-    let observation = ObservationId::from_content_id(ContentId::for_bytes(
-        ObjectKind::Observation,
-        1,
-        b"omitted-observation",
-    ))
-    .expect("observation id");
-    assert!(matches!(
-        FindingOccurrenceSet::new(
-            ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"empty occurrences"),
-            0,
-            observation,
-        ),
-        Err(CampaignCodecError::LimitExceeded {
-            limit: "finding-occurrence-count"
-        })
-    ));
-    assert!(matches!(
-        FindingOccurrenceSet::new(
-            ContentId::for_bytes(ObjectKind::Trace, 1, b"not a merkle root"),
-            1,
-            observation,
-        ),
-        Err(CampaignCodecError::InvalidValue {
-            reason: "finding occurrence root is not a Merkle node"
-        })
-    ));
-}
+mod finding_signature;
 
 fn hash(label: &str) -> CampaignHash {
     CampaignHash::derive("crucible.campaign.test-fixture.v1", label.as_bytes())

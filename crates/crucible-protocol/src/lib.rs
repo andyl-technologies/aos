@@ -11,7 +11,7 @@
 //! Module map: the crate root owns the frame-format constants, closed tag
 //! registry, message bodies, pure codec, frame I/O helpers, handshake
 //! orchestration, setup descriptor passing, and control/data split contract.
-//! `app_random_branch_plan` owns the legacy sealed branch-plan body;
+//! `app_random_branch_plan` owns the sealed branch-sequence body;
 //! `app_random_transport` owns the app-random observation transport;
 //! `choice` owns the portable typed choice values carried by selectable
 //! registration and reply bodies;
@@ -142,7 +142,7 @@ pub const FRAME_LENGTH_INCLUDES_TAG: bool = true;
 /// Whether all multi-byte integers in frame payloads use big-endian order.
 pub const FRAME_INTEGERS_ARE_BIG_ENDIAN: bool = true;
 /// Lowest control-protocol version this crate can negotiate.
-pub const CONTROL_PROTOCOL_MIN_VERSION: u32 = 2;
+pub const CONTROL_PROTOCOL_MIN_VERSION: u32 = 3;
 /// Highest control-protocol version this crate can negotiate.
 pub const CONTROL_PROTOCOL_VERSION: u32 = include!("control_protocol_version.in");
 /// Byte length of plugin-to-host per-vCPU register digests.
@@ -652,7 +652,7 @@ pub struct SetupDescriptorFds {
     pub shmem_fd: RawFd,
     /// Wake descriptor, sent second in the `SCM_RIGHTS` list.
     pub wake_fd: RawFd,
-    /// Sealed v2 app-random or v3 composite plugin-plan descriptor, sent third.
+    /// Sealed v3 composite plugin-plan descriptor, sent third.
     pub plugin_setup_plan_fd: RawFd,
 }
 
@@ -664,7 +664,7 @@ pub struct ReceivedSetupDescriptors {
     pub shmem_fd: OwnedFd,
     /// Wake descriptor received second in the `SCM_RIGHTS` list.
     pub wake_fd: OwnedFd,
-    /// Sealed v2 app-random or v3 composite plugin-plan descriptor received third.
+    /// Sealed v3 composite plugin-plan descriptor received third.
     pub plugin_setup_plan_fd: OwnedFd,
 }
 
@@ -2729,9 +2729,7 @@ fn send_flags() -> libc::c_int {
 
 #[cfg(unix)]
 fn last_errno_value() -> i32 {
-    std::io::Error::last_os_error()
-        .raw_os_error()
-        .map_or(0, |errno| errno)
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 fn validate_slot_assignment(slot_index: u32, node_count: u32) -> Result<(), HandshakeError> {

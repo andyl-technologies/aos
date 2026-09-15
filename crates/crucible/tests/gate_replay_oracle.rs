@@ -4,23 +4,29 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use std::error::Error;
 use std::io::{Error as IoError, ErrorKind};
 
 use crucible::{
-    AppRandomDecision, AssertionDef, AssertionId, AssertionQuantifierKind,
-    AssertionViolationArtifactReplay, AssertionViolationReplayError, Checkpoint, CheckpointKind,
-    Configuration, ContentHash, Decision, DeliveryOrderDecision, EngineError,
-    EventDiagnosticPayload, EventKey, EventLevel, FramePredicate, FrontierReductionPolicy,
-    GenesisCheckpoint, Icount, MaterializationPolicy, MaterializationTrigger, MaterializedState,
-    MemoryDagStore, NodeBlobRef, NodeId, NodeTemplate, ObservableEvent, OfflineAssertionChecker,
-    Plan, Predicate, Properties, Property, ReadyPoint, RecordedAssertionLog, ReproductionArtifact,
-    RngDecision, RngStreamId, ScenarioDef, ScenarioDefForm, Schedule,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    SchedulerNodeId, SchedulerState, SchedulingNodeKind, SearchFrontierChoices,
-    SearchReplayOracleSamplingConfig, Seed, State, TemporalGraph, VirtualTime, WhiteBoxPolicy,
-    World, WorldNode, bake, check_assertion_violation_reproduction, compare_event_log_determinism,
-    instantiate, reduce, step,
+    AssertionDef, AssertionId, AssertionQuantifierKind, AssertionViolationArtifactReplay,
+    AssertionViolationReplayError, Checkpoint, CheckpointKind, Configuration, ContentHash,
+    Decision, DeliveryOrderDecision, EngineError, EventDiagnosticPayload, EventKey, EventLevel,
+    FramePredicate, FrontierReductionPolicy, GenesisCheckpoint, Icount, MaterializationPolicy,
+    MaterializationTrigger, MaterializedState, MemoryDagStore, NodeBlobRef, NodeId, NodeTemplate,
+    ObservableEvent, OfflineAssertionChecker, Plan, Predicate, Properties, Property, ReadyPoint,
+    RecordedAssertionLog, ReproductionArtifact, RngDecision, RngStreamId, ScenarioDef,
+    ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, SchedulerNodeId, SchedulerState, SchedulingNodeKind,
+    SearchFrontierChoices, SearchReplayOracleSamplingConfig, Seed, State, TemporalGraph,
+    VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, check_assertion_violation_reproduction,
+    compare_event_log_determinism, instantiate, reduce,
 };
 use crucible_harness::replay_oracle::{
     ReplayOracleArtifactRun, ReplayOracleBuildIdentity, ReplayOracleCheckpointKind,
@@ -176,7 +182,7 @@ fn gate_replay_oracle_rejects_corrupt_materialized_checkpoint() -> Result<(), Bo
 }
 
 #[test]
-fn gate_replay_oracle_materialized_state_loadvm_branch_captures_resume_components()
+fn gate_replay_oracle_materialized_state_captures_exact_resume_components()
 -> Result<(), Box<dyn Error>> {
     let node = oracle_node_id();
     let world = World::from_nodes(vec![WorldNode {
@@ -248,7 +254,7 @@ fn gate_replay_oracle_saved_descendant_fat_checkpoint_carries_vm_snapshot_refs()
     let genesis = Configuration::genesis(scenario.clone());
     let baked = bake(&world)?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
-    let target = step(
+    let target = accepted_step!(
         &genesis,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("save/descendant"),
@@ -309,7 +315,7 @@ fn gate_replay_oracle_temporal_graph_user_operations_share_instantiate_path()
         baked_with_search_frontier_choices(&world, vec![rng_decision("operation/search", 9)])?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let store = MemoryDagStore::new();
-    let saved = step(&genesis, rng_decision("operation/save", 7));
+    let saved = accepted_step!(&genesis, rng_decision("operation/save", 7));
     let save = graph.save(&store, &saved)?;
 
     assert_eq!(save.configuration, saved.id());
@@ -357,7 +363,7 @@ fn gate_replay_oracle_temporal_graph_user_operations_share_instantiate_path()
 }
 
 #[test]
-fn gate_replay_oracle_loadvm_rejects_incomplete_materialized_state() -> Result<(), Box<dyn Error>> {
+fn gate_replay_oracle_rejects_incomplete_materialized_state() -> Result<(), Box<dyn Error>> {
     let node = oracle_node_id();
     let world = World::from_nodes(vec![WorldNode {
         id: node.clone(),
@@ -628,7 +634,7 @@ fn gate_replay_oracle_search_sampling_mismatch_requests_bisection() -> Result<()
     let decision = rng_decision("search-oracle/corrupt", 4);
     let baked = baked_with_search_frontier_choices(&world, vec![decision.clone()])?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
-    let child = step(&genesis, decision.clone());
+    let child = accepted_step!(&genesis, decision.clone());
     let corrupt_checkpoint = Checkpoint::from_recorded_configuration(
         &child,
         Some(&genesis),
@@ -948,29 +954,24 @@ fn assert_replay_oracle_fixed_checkpoint_corpus()
     let scenario =
         ScenarioDef::from_canonical_material("crucible.test.replay-oracle", "nodes=a,b\nseed=42");
     let genesis = Configuration::genesis(scenario.clone());
-    let first = step(
+    let first = accepted_step!(
         &genesis,
         Decision::DeliveryOrder(DeliveryOrderDecision {
             at: VirtualTime { ticks: 5 },
             order: vec![event_key(5, 1), event_key(5, 2)],
         }),
     );
-    let second = step(
+    let second = accepted_step!(
         &first,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::for_link("link-a-b/drop"),
             value: 1,
         }),
     );
-    let third = step(
+    let third = accepted_step!(
         &second,
-        Decision::AppRandom(AppRandomDecision {
-            node: NodeId {
-                name: String::from("node-a"),
-            },
+        Decision::RngDraw(RngDecision {
             stream: RngStreamId::for_node("whitebox/request"),
-            request_id: 9,
-            width: 32,
             value: 0xabcd,
         }),
     );
@@ -1178,13 +1179,8 @@ fn representative_replay_oracle_reproduction_artifact()
             stream: RngStreamId::for_link("artifact/link-drop"),
             value: 1,
         }))
-        .appended(Decision::AppRandom(AppRandomDecision {
-            node: NodeId {
-                name: String::from("artifact-a"),
-            },
+        .appended(Decision::RngDraw(RngDecision {
             stream: RngStreamId::for_node("artifact/request"),
-            request_id: 27,
-            width: 64,
             value: 0xfeed_0010_0027,
         }));
     let configuration = Configuration {
@@ -1240,13 +1236,13 @@ fn simdouble_replay_build_identity() -> ReplayOracleBuildIdentity {
         harness_abi: String::from("crucible-replay-oracle-artifact-v1"),
         backend: String::from("SimDouble"),
         backend_build_id: String::from("crucible-model-test-double-v1"),
-        qemu_patch_series_hash: String::from(
+        qemu_atomic_patch_hash: String::from(
             "crucible-hash:9aa30c89f10ee512ab3ec9fb12f9b22a95d6d2859f7b1e9581678a113d0fbcf3",
         ),
         shmem_abi_version: crucible_shmem::ABI_VERSION.to_string(),
         guest_host_protocol_version: crucible_protocol::CONTROL_PROTOCOL_VERSION.to_string(),
-        rpc_abi_version: String::from("5.1.0"),
-        rpc_abi_build: String::from("crucible-rpc-abi-v5"),
+        rpc_abi_version: String::from("6.0.0"),
+        rpc_abi_build: String::from("crucible-rpc-abi-v6"),
         plugin_abi: String::from("simdouble-mock-plugin-abi"),
     }
 }

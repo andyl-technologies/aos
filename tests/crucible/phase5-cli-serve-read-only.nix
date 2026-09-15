@@ -17,6 +17,10 @@
     entry = ../../crates/crucible-api/src/server.rs;
   };
   cliMain = import ./_cli-source.nix {inherit lib;};
+  cliVerifyServe = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-cli/src/cli/verify_serve.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -84,16 +88,18 @@
         needle = "read_only: bool";
       }
       {
-        label = "serve uses mode-aware daemon";
-        needle = "serve_lifecycle_http2_mtls_with_mode_until_shutdown(";
-      }
-      {
         label = "serve help advertises read-only";
         needle = "--read-only";
       }
       {
         label = "serve help advertises max-sessions";
         needle = "--max-sessions <n>";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/src/cli/verify_serve.rs" cliVerifyServe [
+      {
+        label = "serve uses shared mode-aware daemon";
+        needle = "serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown(";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

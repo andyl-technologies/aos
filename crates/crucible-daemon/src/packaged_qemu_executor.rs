@@ -3,7 +3,7 @@
 //! This module joins the durable assignment ledger, repository-backed
 //! admission, fixed semantic worker pool, guarded fresh-QEMU runner, and
 //! managed executor endpoint behind one owner. Each worker routes a durable
-//! version-four root exclusively through the guarded production-resume path;
+//! version-nine root exclusively through the guarded production-resume path;
 //! fresh execution never substitutes for an invalid root. The advertised
 //! public production preparation captures an authenticated native baked
 //! genesis for every scenario in its closed catalog, installs one concrete
@@ -18,7 +18,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
 use crucible::ScenarioDefForm;
-use crucible_api::{ProductionVmHotForkSourceWorld, ProductionVmLifecycleConfig};
+use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::{
     AttemptId, AttemptResourceLimits, CampaignCodecError, CampaignExecutorStore, CampaignHash,
     CampaignLineageId, CampaignName, CampaignOperationalStatusProvider, CampaignRepository,
@@ -49,17 +49,20 @@ use crate::qemu_campaign_lifecycle::{
     QemuTerminalEvidenceExecutionRunner,
 };
 use crate::qemu_hot_fork_world_factory::AttemptWorkerFailureExt;
+use crate::qemu_hot_fork_world_factory::QemuHotForkSourceWorldProvider;
+use crate::qemu_resource_guard::QemuAttemptSelectedHostResourceFactory;
 use crate::{
     AssignmentLedgerError, AttemptAdmissionValidator, AttemptExecutionContext,
     AuthenticatedHotCheckpointDemotionError, AuthenticatedHotCheckpointDemotionSink,
     AuthenticatedQemuHotForkSourceBasis, AuthenticatedQemuHotForkSourceBasisError,
-    CompletionValidationFailure, ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError,
-    CrucibleAttemptExecution, CrucibleExecutionModel, DirectoryAssignmentLedger,
+    AutomaticFindingExecutionRunner, CampaignLoopbackEndpointError, CompletionValidationFailure,
+    ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError, CrucibleAttemptExecution,
+    CrucibleExecutionModel, DirectoryAssignmentLedger,
     DirectoryHotCheckpointFallbackRetentionStore, ExactCheckpointStore, ExactCheckpointStoreError,
     ExecutionCancellation, ExecutionCheckpointRequest, ExecutorCapacity, ExecutorLocalService,
     ExecutorLocalServiceError, ExecutorLocalServiceReport, ExecutorLocalServiceShutdown,
-    ExecutorLoopbackEndpointConfig, ExecutorLoopbackEndpointError, ExecutorLoopbackListenerError,
-    ExecutorLoopbackServerConfig, GuestSelectableBoundaryDiagnosticConfig, HotCheckpointFallback,
+    ExecutorLoopbackEndpointConfig, ExecutorLoopbackListenerError, ExecutorLoopbackServerConfig,
+    GuestSelectableBoundaryDiagnosticConfig, HotCheckpointFallback,
     HotCheckpointFallbackRetentionError, HotCheckpointHotnessSignals, HotCheckpointLimits,
     LinuxQemuAttemptHostResourceFactory, LocalCheckpointPromotionWorker,
     LocalExecutorCapabilityService, LocalExecutorPoolConfigError, LocalExecutorSupervisor,
@@ -76,7 +79,8 @@ use crate::{
     QemuFreshExecutionRunner, QemuFreshModeledDriver, QemuHotCheckpointFallbackAuthenticationError,
     QemuHotCheckpointFallbackAuthenticator, QemuHotForkSourceWorldBoundary,
     QemuHotForkSourceWorldDemoter, QemuHotForkSourceWorldDemotionError, QemuHotForkSourceWorldKey,
-    QemuHotForkSourceWorldProvider, QemuHotForkWorldExecutionRunner,
+    QemuHotForkSourceWorldLease, QemuHotForkWorldAuxiliaryResourceBroker,
+    QemuHotForkWorldAuxiliaryResourceFactory, QemuHotForkWorldExecutionRunner,
     QemuProductionExactResumeExecutionRunner, QemuProductionHotForkWorldLifecycleFactory,
     RepositoryAttemptWorker, SharedManagedQemuHotForkSourceWorldPool,
     SharedManagedQemuHotForkSourceWorldShutdownError, SharedQemuAttemptHostResourceFactory,
@@ -276,6 +280,7 @@ pub struct PackagedQemuExecutorConfig {
     host: LinuxQemuAttemptHostConfig,
     hot_fork: Option<PackagedQemuHotForkConfig>,
     guest_selectable_boundary_diagnostics: Option<GuestSelectableBoundaryDiagnosticConfig>,
+    verify_determinism_findings: bool,
 }
 
 impl PackagedQemuExecutorConfig {
@@ -337,6 +342,7 @@ impl PackagedQemuExecutorConfig {
             host,
             hot_fork: None,
             guest_selectable_boundary_diagnostics: None,
+            verify_determinism_findings: false,
         })
     }
 
@@ -354,6 +360,13 @@ impl PackagedQemuExecutorConfig {
         diagnostics: GuestSelectableBoundaryDiagnosticConfig,
     ) -> Self {
         self.guest_selectable_boundary_diagnostics = Some(diagnostics);
+        self
+    }
+
+    /// Enables paired private replay for automatic determinism findings.
+    #[must_use]
+    pub const fn with_determinism_finding_verification(mut self) -> Self {
+        self.verify_determinism_findings = true;
         self
     }
 
@@ -405,6 +418,12 @@ impl PackagedQemuExecutorConfig {
     ) -> Option<GuestSelectableBoundaryDiagnosticConfig> {
         self.guest_selectable_boundary_diagnostics
     }
+
+    /// Returns whether ordinary attempts receive paired determinism verification.
+    #[must_use]
+    pub const fn verifies_determinism_findings(&self) -> bool {
+        self.verify_determinism_findings
+    }
 }
 
 /// Invalid packaged-executor deployment configuration.
@@ -437,6 +456,7 @@ pub struct PackagedQemuExecutor {
     operational_status: Arc<dyn CampaignOperationalStatusProvider>,
     hot_fork_owner: Option<Box<dyn PackagedQemuHotForkSourceOwner>>,
     hot_fork_retention: Option<Arc<dyn crate::HotCheckpointFallbackRetentionAdmin>>,
+    campaign_debug: Arc<crate::CampaignDebugQemuCapability>,
 }
 
 impl PackagedQemuExecutor {
@@ -456,6 +476,7 @@ pub struct AttachedPackagedQemuExecutor {
     endpoint: PathBuf,
     operational_status: Arc<dyn CampaignOperationalStatusProvider>,
     hot_fork_retention: Option<Arc<dyn crate::HotCheckpointFallbackRetentionAdmin>>,
+    campaign_debug: Arc<crate::CampaignDebugQemuCapability>,
     shutdown: ExecutorLocalServiceShutdown<DirectoryAssignmentLedger, PackagedAttemptAdmission>,
     completion: Arc<(Mutex<bool>, Condvar)>,
     thread: Option<JoinHandle<Result<ExecutorLocalServiceReport, PackagedQemuExecutorJoinError>>>,
@@ -478,6 +499,7 @@ impl AttachedPackagedQemuExecutor {
             operational_status,
             hot_fork_owner,
             hot_fork_retention,
+            campaign_debug,
         } = service;
         let shutdown = service.shutdown_handle();
         let completion = Arc::new((Mutex::new(false), Condvar::new()));
@@ -506,6 +528,7 @@ impl AttachedPackagedQemuExecutor {
             endpoint,
             operational_status,
             hot_fork_retention,
+            campaign_debug,
             shutdown,
             completion,
             thread: Some(thread),
@@ -537,6 +560,12 @@ impl AttachedPackagedQemuExecutor {
     /// Returns generation-bound operational status for the packaged pool.
     pub(crate) fn operational_status_provider(&self) -> Arc<dyn CampaignOperationalStatusProvider> {
         Arc::clone(&self.operational_status)
+    }
+
+    /// Returns owner-only exact-restore authority for campaign debug sessions.
+    #[must_use]
+    pub fn campaign_debug_capability(&self) -> Arc<crate::CampaignDebugQemuCapability> {
+        Arc::clone(&self.campaign_debug)
     }
 
     /// Returns the durable hot-fallback root catalog for campaign GC.
@@ -753,6 +782,7 @@ pub(crate) fn prepare_packaged_qemu_executor(
         ExecutionRetentionIntent::Discard,
         ExecutionCancellation::default(),
         ExecutionCheckpointRequest::default(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     );
     let mut baked = BTreeMap::new();
     for (scenario_id, scenario) in scenarios {
@@ -775,9 +805,9 @@ pub(crate) fn prepare_packaged_qemu_executor(
                 })?;
         baked.insert(scenario_id, checkpoint);
     }
+    let storage = PackagedQemuExecutorStorage::new(repository, checkpoint_backend);
     compose_packaged_qemu_executor_with_baked_genesis(
-        repository,
-        checkpoint_backend,
+        storage,
         hot_fork_retention,
         basis,
         config,
@@ -830,6 +860,26 @@ struct PackagedCampaignBasis {
     profile: ExecutorCompatibilityProfile,
     scenarios: BTreeSet<ScenarioArtifactId>,
     sources: BTreeMap<CampaignLineageId, AuthenticatedQemuHotForkSourceBasis>,
+}
+
+#[derive(Clone)]
+/// Groups durable stores used by one packaged executor.
+pub(crate) struct PackagedQemuExecutorStorage {
+    repository: Arc<CampaignRepository>,
+    checkpoint_backend: Arc<dyn ImmutableBlobBackend>,
+}
+
+impl PackagedQemuExecutorStorage {
+    /// Groups the authenticated repository and checkpoint store.
+    pub(crate) fn new(
+        repository: Arc<CampaignRepository>,
+        checkpoint_backend: Arc<dyn ImmutableBlobBackend>,
+    ) -> Self {
+        Self {
+            repository,
+            checkpoint_backend,
+        }
+    }
 }
 
 fn authenticate_packaged_campaigns(
@@ -891,22 +941,20 @@ fn admit_packaged_hot_fork_source_basis(
 
 #[cfg(test)]
 pub(crate) fn compose_packaged_qemu_executor<H>(
-    repository: Arc<CampaignRepository>,
-    checkpoint_backend: Arc<dyn ImmutableBlobBackend>,
+    storage: PackagedQemuExecutorStorage,
     profile: ExecutorCompatibilityProfile,
     scenario: ScenarioArtifactId,
     config: PackagedQemuExecutorConfig,
     host: H,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
 where
-    H: QemuAttemptHostResourceFactory + Send + 'static,
+    H: QemuAttemptHostResourceFactory + QemuAttemptSelectedHostResourceFactory + Send + 'static,
     H::Owner: QemuAttemptHostResourceOwner + Send + 'static,
     crate::ComposedQemuAttemptResourceGuard<H::Owner>:
         QemuAttemptProcessResourceGuard + Send + 'static,
 {
     compose_packaged_qemu_executor_for_scenarios(
-        repository,
-        checkpoint_backend,
+        storage,
         profile,
         BTreeSet::from([scenario]),
         config,
@@ -916,22 +964,20 @@ where
 
 #[cfg(test)]
 pub(crate) fn compose_packaged_qemu_executor_for_scenarios<H>(
-    repository: Arc<CampaignRepository>,
-    checkpoint_backend: Arc<dyn ImmutableBlobBackend>,
+    storage: PackagedQemuExecutorStorage,
     profile: ExecutorCompatibilityProfile,
     scenarios: BTreeSet<ScenarioArtifactId>,
     config: PackagedQemuExecutorConfig,
     host: H,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
 where
-    H: QemuAttemptHostResourceFactory + Send + 'static,
+    H: QemuAttemptHostResourceFactory + QemuAttemptSelectedHostResourceFactory + Send + 'static,
     H::Owner: QemuAttemptHostResourceOwner + Send + 'static,
     crate::ComposedQemuAttemptResourceGuard<H::Owner>:
         QemuAttemptProcessResourceGuard + Send + 'static,
 {
     compose_packaged_qemu_executor_with_checkpoint_promotions(
-        repository,
-        checkpoint_backend,
+        storage,
         PackagedCampaignBasis {
             profile,
             scenarios,
@@ -952,7 +998,7 @@ impl LocalCheckpointPromotionWorker for DisabledPackagedCheckpointPromotionWorke
 
     fn prepare(
         &mut self,
-        _work: crate::CheckpointPromotionRestartWork,
+        _work: &mut crate::CheckpointPromotionRestartWork,
         _cancellation: crate::ExecutionCancellation,
     ) -> Result<crate::PreparedPausedCheckpointPromotionRestart, crate::AttemptWorkerFailure<()>>
     {
@@ -962,15 +1008,14 @@ impl LocalCheckpointPromotionWorker for DisabledPackagedCheckpointPromotionWorke
 
 #[cfg(test)]
 fn compose_packaged_qemu_executor_with_checkpoint_promotions<H, P>(
-    repository: Arc<CampaignRepository>,
-    checkpoint_backend: Arc<dyn ImmutableBlobBackend>,
+    storage: PackagedQemuExecutorStorage,
     basis: PackagedCampaignBasis,
     config: PackagedQemuExecutorConfig,
     host: H,
     promotion_workers: Vec<P>,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
 where
-    H: QemuAttemptHostResourceFactory + Send + 'static,
+    H: QemuAttemptHostResourceFactory + QemuAttemptSelectedHostResourceFactory + Send + 'static,
     H::Owner: QemuAttemptHostResourceOwner + Send + 'static,
     crate::ComposedQemuAttemptResourceGuard<H::Owner>:
         QemuAttemptProcessResourceGuard + Send + 'static,
@@ -978,8 +1023,7 @@ where
 {
     let shared = SharedQemuAttemptHostResourceFactory::new(host);
     compose_packaged_qemu_executor_with_promotion_builder(
-        repository,
-        checkpoint_backend,
+        storage,
         basis,
         config,
         shared,
@@ -989,15 +1033,14 @@ where
 
 #[cfg(test)]
 fn compose_packaged_qemu_executor_with_promotion_builder<H, P, B>(
-    repository: Arc<CampaignRepository>,
-    checkpoint_backend: Arc<dyn ImmutableBlobBackend>,
+    storage: PackagedQemuExecutorStorage,
     basis: PackagedCampaignBasis,
     config: PackagedQemuExecutorConfig,
     shared: SharedQemuAttemptHostResourceFactory<H>,
     build_promotions: B,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
 where
-    H: QemuAttemptHostResourceFactory + Send + 'static,
+    H: QemuAttemptHostResourceFactory + QemuAttemptSelectedHostResourceFactory + Send + 'static,
     H::Owner: QemuAttemptHostResourceOwner + Send + 'static,
     crate::ComposedQemuAttemptResourceGuard<H::Owner>:
         QemuAttemptProcessResourceGuard + Send + 'static,
@@ -1011,8 +1054,7 @@ where
     ) -> Vec<P>,
 {
     compose_packaged_qemu_executor_with_builders(
-        repository,
-        checkpoint_backend,
+        storage,
         basis,
         config,
         shared,
@@ -1023,6 +1065,7 @@ where
          worker_state_root,
          worker_count,
          lifecycles,
+         _finding_replay_brokers,
          lifecycle_config,
          _resource_ceiling| {
             Ok(PackagedQemuInitialRunnerBuild::fresh(
@@ -1054,8 +1097,7 @@ where
 }
 
 fn compose_packaged_qemu_executor_with_builders<H, P, B, I, R>(
-    repository: Arc<CampaignRepository>,
-    checkpoint_backend: Arc<dyn ImmutableBlobBackend>,
+    storage: PackagedQemuExecutorStorage,
     basis: PackagedCampaignBasis,
     config: PackagedQemuExecutorConfig,
     shared: SharedQemuAttemptHostResourceFactory<H>,
@@ -1063,7 +1105,7 @@ fn compose_packaged_qemu_executor_with_builders<H, P, B, I, R>(
     build_initial_runners: I,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
 where
-    H: QemuAttemptHostResourceFactory + Send + 'static,
+    H: QemuAttemptHostResourceFactory + QemuAttemptSelectedHostResourceFactory + Send + 'static,
     H::Owner: QemuAttemptHostResourceOwner + Send + 'static,
     crate::ComposedQemuAttemptResourceGuard<H::Owner>:
         QemuAttemptProcessResourceGuard + Send + 'static,
@@ -1082,12 +1124,19 @@ where
         &Path,
         usize,
         &PackagedWorldLifecycleTracker,
+        &[QemuHotForkWorldAuxiliaryResourceBroker<
+            crate::ComposedQemuAttemptResourceGuard<H::Owner>,
+        >],
         &ProductionVmLifecycleConfig,
         AttemptResourceLimits,
     ) -> Result<PackagedQemuInitialRunnerBuild<R>, PackagedQemuExecutorError>,
     R: crate::QemuAttemptStartVerifier + crate::QemuSelectedOriginVerifier + Send + 'static,
     R::Error: std::error::Error + 'static,
 {
+    let PackagedQemuExecutorStorage {
+        repository,
+        checkpoint_backend,
+    } = storage;
     let campaigns = config.campaigns.clone();
     let ledger_root = config.ledger_root.clone();
     let admission = PackagedAttemptAdmission::new(
@@ -1141,9 +1190,23 @@ where
         &ledger,
         &exact_pin_root,
     )?;
+    let finding_exact_retention = prepared_exact_pins.finding_retention_source();
     let resource_ceiling = packaged_resource_ceiling(&config)?;
+    let campaign_debug = Arc::new(crate::CampaignDebugQemuCapability::new(
+        Arc::clone(&checkpoints),
+        config
+            .lifecycle
+            .clone()
+            .with_run_state_root(config.lifecycle.run_state_root().join("campaign-debug")),
+        shared.clone(),
+        resource_ceiling,
+    ));
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
     let worker_state_root = config.lifecycle.run_state_root().join("campaign-workers");
+    let finding_replay_state_root = config
+        .lifecycle
+        .run_state_root()
+        .join("campaign-finding-replays");
     let promotion_state_root = config
         .lifecycle
         .run_state_root()
@@ -1156,6 +1219,9 @@ where
         config.worker_count,
     );
     let lifecycles = PackagedWorldLifecycleTracker::new();
+    let finding_replay_brokers = (0..config.worker_count)
+        .map(|_| QemuHotForkWorldAuxiliaryResourceBroker::new())
+        .collect::<Vec<_>>();
     let initial_runner_build = build_initial_runners(
         &store,
         &checkpoints,
@@ -1163,6 +1229,7 @@ where
         &worker_state_root,
         config.worker_count,
         &lifecycles,
+        &finding_replay_brokers,
         &config.lifecycle,
         resource_ceiling,
     )?;
@@ -1209,8 +1276,24 @@ where
     let workers = initial_runner_build
         .runners
         .into_iter()
+        .zip(finding_replay_brokers)
         .enumerate()
-        .map(|(slot, (fresh, evidence))| {
+        .map(|(slot, ((fresh, evidence), finding_replay_broker))| {
+            let finding_replay_lifecycle = config
+                .lifecycle
+                .clone()
+                .with_run_state_root(finding_replay_state_root.join(format!("worker-{slot:03}")));
+            let finding_replay_resources = QemuHotForkWorldAuxiliaryResourceFactory::new(
+                finding_replay_broker,
+                ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
+            );
+            let finding_replay_lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
+                finding_replay_lifecycle,
+                finding_replay_resources,
+            );
+            let finding_replay =
+                QemuFreshExecutionRunner::new(finding_replay_lifecycles, QemuFreshModeledDriver);
+
             let lifecycle = config
                 .lifecycle
                 .clone()
@@ -1233,6 +1316,15 @@ where
             );
             let runner = QemuAttemptExecutionRouter::new(fresh, resume);
             let runner = QemuTerminalEvidenceExecutionRunner::new(runner, evidence);
+            let mut runner = AutomaticFindingExecutionRunner::new(
+                store.clone(),
+                Arc::clone(&finding_exact_retention),
+                runner,
+                finding_replay,
+            );
+            if config.verify_determinism_findings {
+                runner = runner.with_determinism_finding_verification();
+            }
             let model = CrucibleExecutionModel::new(store.clone(), runner);
             PackagedStatusAttemptWorker {
                 inner: RepositoryAttemptWorker::new(store.clone(), model)
@@ -1295,11 +1387,17 @@ where
         operational_status,
         hot_fork_owner,
         hot_fork_retention,
+        campaign_debug,
     })
 }
 
-const PACKAGED_NATIVE_NAMESPACES: [&str; 2] =
-    ["campaign-workers", "campaign-checkpoint-promotions"];
+const PACKAGED_NATIVE_NAMESPACES: [&str; 5] = [
+    "campaign-workers",
+    "campaign-finding-replays",
+    "campaign-checkpoint-promotions",
+    "campaign-baked-genesis",
+    "campaign-debug",
+];
 const PACKAGED_PREPARED_RESULT_NAMESPACE: &str = "campaign-prepared-results";
 
 fn prepare_packaged_prepared_result_namespace(
@@ -1712,7 +1810,7 @@ pub enum PackagedQemuExecutorError {
     },
     /// Managed endpoint acquisition failed.
     #[error(transparent)]
-    Endpoint(#[from] ExecutorLoopbackEndpointError),
+    Endpoint(#[from] CampaignLoopbackEndpointError),
     /// Fixed listener construction failed.
     #[error(transparent)]
     Listener(#[from] ExecutorLoopbackListenerError),

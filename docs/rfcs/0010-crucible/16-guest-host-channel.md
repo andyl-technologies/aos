@@ -35,7 +35,7 @@ authoritative statement is always the prose requirement.
 ## 16.1 The principle: zero guest cooperation is the default and the floor
 
 Crucible's guest is a sealed box. Determinism is established by pinning the
-entire entropy boundary from *outside* the VM (the QEMU patch series, the
+entire entropy boundary from *outside* the VM (the atomic QEMU patch, the
 launch configuration, and the in-VM plugin), so the *same* unmodified image
 that runs in production runs deterministically here. Nothing inside the guest is
 load-bearing for any core function. That is the floor below which the channel
@@ -555,7 +555,7 @@ Doorbell protocol version 3 kind table (closed, versioned set):
   Adding the RFC-0020 measurement vocabulary (kinds 6-9) bumps the doorbell
   protocol version from 2 to 3 ([GHC-21]); all nine bodies are golden-vectored.
   Unlike every observational kind, kind 5 is guest->host only,
-  produces a Decision::AppRandom (05), and elicits a host->guest reply (§16.5.3).
+  produces a BackendRngEvidence (05), and elicits a host->guest reply (§16.5.3).
 ```
 
 Implementation note: `crucible-protocol::doorbell_marker` owns the closed marker
@@ -624,7 +624,7 @@ one marker kind that is *in-band* rather than purely descriptive.
   from the **single seeded decision source** of the contract
   ([`04-determinism-contract.md`](04-determinism-contract.md)), **forked per
   `(node, stream)` by name-hash of `stream_tag`** so distinct streams are
-  independent and reproducible, MUST record it as a `Decision::AppRandom` (decision
+  independent and reproducible, MUST record it as a `BackendRngEvidence` (decision
   kind 05) in the schedule, and MUST write the value back **at the doorbell trap
   icount** as a host→guest reply that obeys the injection contract ([GHC-31],
   [DET-11]): delivered at an explicit delivery icount, never "as soon as computed,"
@@ -1071,7 +1071,7 @@ the transport layer by construction.
 - [x] **T-GHC-16** Implement the OPTIONAL app-controlled-randomness `random_request`
   doorbell kind (kind=5, bumps the protocol version, golden-vectored): serve from
   the single seeded decision source forked per `(node, stream_tag)` by name-hash,
-  record a `Decision::AppRandom` (05), and write the value back at the trap icount
+  record a `BackendRngEvidence` (05), and write the value back at the trap icount
   as a host→guest reply obeying the injection contract; bounds-check `width` ≤8;
   malformed → decode diagnostic + drop. Reuse the spike-S5 guest-memory path (second
   client, no new spike). — satisfies [GHC-37]; spec §16.5.3, §16.7.
@@ -1086,7 +1086,7 @@ the transport layer by construction.
   `RngStreamId::from_name(...)` so requests are served from scenario-seed
   name-hashed decision streams that are isolated across nodes with the same tag,
   preserving the guest request id and recording `RngDraw` followed by
-  `Decision::AppRandom` before writing the little-endian reply at the trap
+  `BackendRngEvidence` before writing the little-endian reply at the trap
   icount. The gate also consumes the T-GHC-13 S5 result, reruns the app-random
   reply-range client of that guest-memory path, and reruns the random-request
   doorbell-frame and marker-payload golden-vector tests.
@@ -1095,7 +1095,7 @@ the transport layer by construction.
   request `0x01020304` for three bytes on tag `live-rng`, the production plugin
   returns the scenario-seeded value through patched QEMU at the trap icount,
   and the host consumes the typed shmem record as an authoritative
-  `Decision::AppRandom` only after independently deriving the same value.
+  `BackendRngEvidence` only after independently deriving the same value.
 - [x] **T-GHC-17** Enforce the app-random per-scenario draw cap (part of the scenario
   hash; exceeding fails loud) and prove the engine functions with zero app-random
   requests (fingerprint-identical with app-random compiled in vs out); add the
@@ -1108,7 +1108,7 @@ the transport layer by construction.
   enforce the cap through typed `AppRandomDrawCapExceeded` errors for live
   requests, explorer overrides, direct configuration stepping, and manually
   supplied schedules, including resumed schedules whose prior
-  `Decision::AppRandom` entries already consume draw budget. The
+  `BackendRngEvidence` entries already consume draw budget. The
   `guest_host_channel_determinism` test adds a zero-request compiled-in-unused
   run fingerprint-identical to the white-box-disabled run, while the gate keeps
   binding the phase2 no-decisions/no-replies byte identity proof. The guest ABI

@@ -59,14 +59,8 @@ impl ClientControlStream {
         &mut self,
     ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
         match self {
-            Self::InProcess(stream) => stream
-                .recv_state_update()
-                .await
-                .map_err(ControlClientError::from),
-            Self::InProcessLifecycle(stream) => stream
-                .recv_state_update()
-                .await
-                .map_err(ControlClientError::from),
+            Self::InProcess(stream) => Ok(stream.recv_state_update().await),
+            Self::InProcessLifecycle(stream) => Ok(stream.recv_state_update().await),
             Self::Rpc(stream) => stream.recv_state_update().await,
         }
     }
@@ -134,9 +128,7 @@ impl InProcessLifecycleControlStream {
         self.stream.recv_event().await
     }
 
-    async fn recv_state_update(
-        &mut self,
-    ) -> Result<Option<StreamingStateUpdateFrame>, StreamingApiError> {
+    async fn recv_state_update(&mut self) -> Option<StreamingStateUpdateFrame> {
         self.stream.recv_state_update().await
     }
 
@@ -192,10 +184,7 @@ impl ClientWatchStream {
         &mut self,
     ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
         match self {
-            Self::InProcess(stream) => stream
-                .recv_state_update()
-                .await
-                .map_err(ControlClientError::from),
+            Self::InProcess(stream) => Ok(stream.recv_state_update().await),
             Self::Rpc(stream) => stream.recv_state_update().await,
         }
     }

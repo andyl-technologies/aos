@@ -7,7 +7,9 @@ use super::*;
 /// The returned choices come from the same [`SingleScheduler`] construction
 /// used by live QEMU execution. Backend processes are not launched by this
 /// policy-only query; callers must execute every selected branch through
-/// [`build_production_vm_lifecycle_loop`] to obtain runtime evidence.
+/// the production lifecycle coordinator to obtain runtime evidence. Exact
+/// checkpoint continuations enter through
+/// [`build_production_vm_exact_resume_lifecycle`].
 ///
 /// # Errors
 ///

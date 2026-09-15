@@ -76,13 +76,15 @@ fn observation_evidence_preflight_rejects_nested_invalid_records_without_writes(
         .expect("empty path id");
     let nested = Observation::new(
         observation.attempt(),
-        observation.child(),
-        observation.child_content(),
-        invalid_path,
-        observation.stop().clone(),
-        observation.measurements(),
-        observation.properties(),
-        observation.coverage(),
+        Observation::outcome(
+            observation.child(),
+            observation.child_content(),
+            invalid_path,
+            observation.stop().clone(),
+            observation.measurements(),
+            observation.properties(),
+            observation.coverage(),
+        ),
         observation.discovered_choices().clone(),
     )
     .expect("structurally valid nested observation");
@@ -90,15 +92,10 @@ fn observation_evidence_preflight_rejects_nested_invalid_records_without_writes(
     repository
         .put_observation(&nested)
         .expect("store incomplete nested observation fixture");
-    let evidence = MeasurementSet::new(BTreeMap::from([(
-        "nested-observation".to_owned(),
-        MeasurementSeries::new(
-            vec![MetricValue::Unsigned(1)],
-            MetricValue::Unsigned(1),
-            BTreeSet::from([nested_id.content_id()]),
-        )
-        .expect("nested evidence series"),
-    )]))
+    let evidence = MeasurementSet::test_evaluation(
+        b"nested-observation",
+        BTreeSet::from([nested_id.content_id()]),
+    )
     .expect("nested evidence set");
     let objects_before = blobs.object_count().expect("objects before rejection");
 
@@ -268,13 +265,15 @@ fn strict_observations_commit_in_global_admission_order() {
         .expect("second admission");
     let second_observation = Observation::new(
         second_admitted.attempt,
-        first_observation.child(),
-        first_observation.child_content(),
-        second_path.id().expect("second path id"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        first_observation.measurements(),
-        first_observation.properties(),
-        first_observation.coverage(),
+        Observation::outcome(
+            first_observation.child(),
+            first_observation.child_content(),
+            second_path.id().expect("second path id"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            first_observation.measurements(),
+            first_observation.properties(),
+            first_observation.coverage(),
+        ),
         BTreeSet::from([second_request.opportunity()]),
     )
     .expect("second observation");

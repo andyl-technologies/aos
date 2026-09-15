@@ -45,11 +45,14 @@ fn verifier_backed_store_replays_finding_before_reproduction_publication() {
         finding.replay
     );
 
+    let minimization_config = MinimizationConfig::automatic_interesting_suffix(
+        crucible::Seed::from_u64(0x5151),
+        finding.artifact.schedule(),
+    );
     let run = finding
-        .minimize(
-            MinimizationConfig::new(crucible::Seed::from_u64(0x5151)),
-            |_| Ok(Some(finding.finding_fingerprint)),
-        )
+        .minimize(minimization_config, |_| {
+            Ok(Some(finding.finding_fingerprint))
+        })
         .expect("verify deterministic minimization");
     let mislabeled = repository
         .publish_reproduction_artifact(
@@ -83,12 +86,16 @@ fn verifier_backed_store_replays_finding_before_reproduction_publication() {
     assert_eq!(minimization.original(), id);
     assert_eq!(
         minimization.policy_schema(),
-        CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V2
+        CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V3
     );
     assert!(
         minimization
             .policy()
-            .starts_with(CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V2)
+            .starts_with(CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V3)
+    );
+    assert_eq!(
+        minimization.policy(),
+        encode_crucible_minimization_policy(minimization_config)
     );
 }
 
@@ -274,7 +281,7 @@ fn finding_replay_retains_nonempty_configuration_target_and_causal_evidence() {
                 Ok(CrucibleFindingReplayEvidence::new(
                     Some(candidate_signature),
                     candidate_configuration,
-                    MeasurementSet::new(BTreeMap::new()).expect("measurements"),
+                    crate::crucible_measurement::empty_test_measurement_set(),
                     properties.clone(),
                     CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage"),
                     Vec::new(),

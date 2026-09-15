@@ -7,9 +7,14 @@ use crate::qmp::{QmpCommandKind, QmpError};
 /// QMP command that queries or releases one parent-owned child record.
 pub const QMP_HOT_FORK_CHILD_PROCESS_COMMAND: &str = "crucible-hot-fork-child-process";
 /// Version of the parent-owned child-process status contract.
-pub const QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION: u32 = 1;
+///
+/// Version 2 keys records by the one-shot child process-contract generation
+/// and requires the version in every request before QEMU performs a lookup or
+/// release. A plugin process generation identifies the child runtime inside a
+/// fork, but remains the same for every sibling forked from one source.
+pub const QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION: u32 = 2;
 
-/// Parent-owned lifecycle phase for one exact hot-fork child generation.
+/// Parent-owned lifecycle phase for one exact hot-fork child record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QmpHotForkChildProcessPhase {
     /// The source QEMU has not observed a final child wait status.
@@ -50,7 +55,7 @@ impl QmpHotForkChildProcessState {
         }
     }
 
-    /// Returns the exact child-process generation from the fork request.
+    /// Returns the exact one-shot process-contract generation from the fork request.
     #[must_use]
     pub const fn generation(self) -> u64 {
         self.generation
@@ -184,7 +189,7 @@ mod tests {
     #[test]
     fn child_process_state_binds_generation_phase_and_retention() {
         let running = json!({
-            "schema-version": 1,
+            "schema-version": QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
             "generation": 17,
             "child-pid": 321,
             "phase": "running",
@@ -197,6 +202,12 @@ mod tests {
         );
         assert!(
             parse_hot_fork_child_process_state(&running, 18, HotForkChildProcessAction::Query,)
+                .is_err()
+        );
+        let mut old_schema = running.clone();
+        old_schema["schema-version"] = json!(1);
+        assert!(
+            parse_hot_fork_child_process_state(&old_schema, 17, HotForkChildProcessAction::Query,)
                 .is_err()
         );
 

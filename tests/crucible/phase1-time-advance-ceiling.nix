@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeAdvanceCeiling",
-  taskIds ? ["T-TIME-7"],
+  taskIds ? [],
   openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -196,8 +196,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
       {
-        label = "T-TIME-7 live completion evidence";
-        needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";
+        label = "T-TIME-7 production-flight completion";
+        needle = "Completed by `checks.crucible.phase1.timeAdvanceCeiling`";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

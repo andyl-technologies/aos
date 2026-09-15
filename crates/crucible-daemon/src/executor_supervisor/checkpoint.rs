@@ -265,6 +265,7 @@ where
                             queued.request.resources(),
                             queued.request.retention(),
                             queued.request.start_mode(),
+                            queued.request.retention_policy(),
                         ),
                     ),
                 };

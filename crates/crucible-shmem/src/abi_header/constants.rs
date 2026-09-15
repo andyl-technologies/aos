@@ -224,6 +224,52 @@ pub(super) fn emit_constants(out: &mut String) {
                 "LOGICAL_TIME_RESTORE_ACK",
                 NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET,
             ),
+            (
+                "CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER",
+                NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET,
+            ),
+            (
+                "CONTROL_BOUNDARY_CAPTURE_REQUEST",
+                NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET,
+            ),
+            ("PAD3", NODE_SLOT_PAD3_OFFSET),
+            (
+                "TIMER_WITNESS_GENERATION",
+                NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_DEADLINE_NS",
+                NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_DEADLINE_ICOUNT",
+                NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_ARMED_RAW_ICOUNT",
+                NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_FIRED_EXPIRE_NS",
+                NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_FIRED_VIRTUAL_NS",
+                NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_FIRED_RAW_ICOUNT",
+                NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_COMPLETED",
+                NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_RESERVED",
+                NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET,
+            ),
+            ("PAD4", NODE_SLOT_PAD4_OFFSET),
         ],
     );
     out.push('\n');
@@ -338,7 +384,6 @@ pub(super) fn emit_constants(out: &mut String) {
                 "CAPTURE_REQUEST",
                 FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET,
             ),
-            ("RESERVED", FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET),
             ("WORDS", FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET),
         ],
     );

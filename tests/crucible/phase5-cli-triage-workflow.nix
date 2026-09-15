@@ -56,7 +56,7 @@
       }
       {
         label = "signed findings parser";
-        needle = "fn parse_failure_findings_ledger_v2_bytes";
+        needle = "fn parse_reproduction_findings_ledger_bytes";
       }
       {
         label = "triage minimization";
@@ -79,14 +79,6 @@
         needle = "fn proves_t_tri_7";
       }
       {
-        label = "CLI sidecar signature blocker";
-        needle = "engine-owned discovery artifacts";
-      }
-      {
-        label = "artifact-only ledger blocker";
-        needle = "discovery-time signature evidence is not available";
-      }
-      {
         label = "triage help test";
         needle = "cli_triage_help_surface_lists_required_flags_and_exit_code_contract";
       }
@@ -95,12 +87,12 @@
         needle = "cli_triage_surface_parses_full_t_tri_7_flags_and_pipeline";
       }
       {
-        label = "triage sidecar blocker test";
-        needle = "cli_triage_rejects_cli_sidecar_signature_evidence";
+        label = "triage directory blocker test";
+        needle = "cli_triage_rejects_directory_inputs";
       }
       {
-        label = "triage artifact-only blocker test";
-        needle = "cli_triage_rejects_artifact_only_findings_without_engine_evidence";
+        label = "retired ledger schema blocker test";
+        needle = "cli_triage_rejects_retired_findings_ledger_schema";
       }
       {
         label = "triage signature mismatch test";
@@ -114,7 +106,7 @@
     ++ failuresFor "crates/crucible-cli/src/portable_artifact_constants.rs" portableArtifacts [
       {
         label = "signed findings schema";
-        needle = "crucible.failure-triage.findings-ledger.v2";
+        needle = "crucible.failure-triage.findings-ledger.v4";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

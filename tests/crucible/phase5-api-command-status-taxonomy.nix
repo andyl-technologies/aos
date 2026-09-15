@@ -164,8 +164,8 @@
         needle = "rpc_status_code_from_wire_name";
       }
       {
-        label = "RPC minor bumped";
-        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 1;";
+        label = "current RPC minor version";
+        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 0;";
       }
       {
         label = "rejected command golden vector";

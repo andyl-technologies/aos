@@ -177,11 +177,7 @@ pub(super) fn lifecycle_control_plane() -> TestLifecyclePlane {
         }
     })
     .with_resume_observation_loop_factory(|request, _configuration, _context| {
-        let source = request.observation_source.as_ref().ok_or_else(|| {
-            LifecycleApiError::ResumeObservationSource {
-                message: String::from("test observation source disappeared"),
-            }
-        })?;
+        let source = &request.observation_source;
         if source.schema_version() == 1
             && source.proof() == b"rpc-observation-proof"
             && source.evidence() == b"rpc-observation-evidence"
@@ -704,402 +700,10 @@ pub(super) async fn read_rpc_body(
         .map(|body| body.to_vec())
 }
 
-pub(super) fn encode_list_scenarios_response(response: &ListScenariosResponse) -> String {
-    let mut output = String::from("crucible.rpc/list-scenarios-response\n");
-    for scenario in &response.scenarios {
-        output.push_str("scenario=");
-        output.push_str(&scenario.name);
-        output.push('|');
-        output.push_str(&scenario.description);
-        output.push('|');
-        output.push_str(&scenario.source_id);
-        output.push('\n');
-    }
-    output
-}
+#[path = "http2_fixture/response_wire.rs"]
+mod response_wire;
 
-pub(super) fn encode_create_session_response(response: &CreateSessionResponse) -> String {
-    let mut output = String::from("crucible.rpc/create-session-response\n");
-    push_session_ref(&mut output, response.session);
-    push_wire_line(&mut output, "state", state_wire_name(response.state));
-    output
-}
-
-pub(super) fn encode_resume_session_response(response: &ResumeSessionResponse) -> String {
-    let mut output = String::from("crucible.rpc/resume-session-response\n");
-    push_session_ref(&mut output, response.session);
-    push_wire_line(&mut output, "state", state_wire_name(response.state));
-    push_wire_line(&mut output, "checkpoint", &response.checkpoint.to_hex());
-    push_wire_line(
-        &mut output,
-        "configuration",
-        &response.configuration.to_hex(),
-    );
-    output
-}
-
-pub(super) fn encode_list_sessions_response(response: &ListSessionsResponse) -> String {
-    let mut output = String::from("crucible.rpc/list-sessions-response\n");
-    for session in &response.sessions {
-        output.push_str("session=");
-        output.push_str(&session.session.id.value.to_string());
-        output.push('|');
-        output.push_str(&session.session.epoch.to_string());
-        output.push('|');
-        output.push_str(&session.session.seed.to_hex());
-        output.push('|');
-        output.push_str(state_wire_name(session.state));
-        output.push('|');
-        output.push_str(&session.event_log_len.to_string());
-        output.push('|');
-        output.push_str(&session.frontier.ticks.to_string());
-        output.push('|');
-        output.push_str(&session.quanta_stepped.to_string());
-        output.push('|');
-        output.push_str(outcome_wire_name(session.outcome));
-        output.push('|');
-        output.push_str(&content_hash_option_wire(session.terminal_savepoint));
-        output.push('\n');
-    }
-    output
-}
-
-pub(super) fn encode_destroy_session_response(response: &DestroySessionResponse) -> String {
-    let mut output = String::from("crucible.rpc/destroy-session-response\n");
-    push_session_ref(&mut output, response.session);
-    push_wire_line(
-        &mut output,
-        "already-absent",
-        if response.already_absent {
-            "true"
-        } else {
-            "false"
-        },
-    );
-    push_wire_line(
-        &mut output,
-        "stopped",
-        if response.stopped { "true" } else { "false" },
-    );
-    output
-}
-
-pub(super) fn encode_get_reproduction_response(response: &GetReproductionResponse) -> String {
-    let mut output = String::from("crucible.rpc/get-reproduction-response\n");
-    push_session_ref(&mut output, response.session);
-    for command in &response.commands {
-        push_wire_line(&mut output, "command", &reproduction_record_wire(command));
-    }
-    output
-}
-
-pub(super) fn lifecycle_error_response(error: LifecycleApiError) -> axum::response::Response {
-    match error {
-        LifecycleApiError::EpochMismatch {
-            session_id,
-            expected,
-            actual,
-        } => lifecycle_epoch_mismatch_response(session_id, expected, actual),
-        LifecycleApiError::ScenarioNotFound { name } => {
-            let mut output = String::from("crucible.rpc/error\n");
-            push_wire_line(&mut output, "status", "not-found");
-            push_wire_line(&mut output, "reason", "scenario-not-found");
-            push_wire_line(&mut output, "name", &hex_encode(name.as_bytes()));
-            http2_response(axum::http::StatusCode::NOT_FOUND, output)
-        }
-        LifecycleApiError::SessionNotFound { session } => {
-            lifecycle_session_not_found_response(session)
-        }
-        LifecycleApiError::SessionLimitReached { .. } => typed_rpc_status_response(
-            axum::http::StatusCode::TOO_MANY_REQUESTS,
-            crucible_api::RpcStatusCode::InvalidState,
-            "session-limit",
-            &error.to_string(),
-        ),
-        LifecycleApiError::ScenarioSeedMismatch { .. }
-        | LifecycleApiError::InlineScenarioIdentityMismatch { .. } => typed_rpc_status_response(
-            axum::http::StatusCode::BAD_REQUEST,
-            crucible_api::RpcStatusCode::InvalidArgument,
-            "invalid-argument",
-            &error.to_string(),
-        ),
-        LifecycleApiError::ResumeCheckpoint { .. } => typed_rpc_status_response(
-            axum::http::StatusCode::BAD_REQUEST,
-            crucible_api::RpcStatusCode::InvalidArgument,
-            "invalid-argument",
-            &error.to_string(),
-        ),
-        LifecycleApiError::ResumeReplayClosure { .. } => typed_rpc_status_response(
-            axum::http::StatusCode::BAD_REQUEST,
-            crucible_api::RpcStatusCode::InvalidArgument,
-            "resume-replay-closure",
-            &error.to_string(),
-        ),
-        LifecycleApiError::ResumeObservationSource { .. } => typed_rpc_status_response(
-            axum::http::StatusCode::BAD_REQUEST,
-            crucible_api::RpcStatusCode::InvalidArgument,
-            "resume-observation-source",
-            &error.to_string(),
-        ),
-        LifecycleApiError::DebugAccess { .. } | LifecycleApiError::DebugEndpointUnavailable => {
-            typed_rpc_status_response(
-                axum::http::StatusCode::FORBIDDEN,
-                crucible_api::RpcStatusCode::InvalidState,
-                "debug-access-denied",
-                &error.to_string(),
-            )
-        }
-        LifecycleApiError::SessionCommandRejected { .. } => typed_rpc_status_response(
-            axum::http::StatusCode::CONFLICT,
-            crucible_api::RpcStatusCode::InvalidState,
-            "session-command-rejected",
-            &error.to_string(),
-        ),
-        LifecycleApiError::RpcAbi { .. }
-        | LifecycleApiError::GenesisGraph { .. }
-        | LifecycleApiError::ResourceLimit(..)
-        | LifecycleApiError::CommandChannelClosed { .. }
-        | LifecycleApiError::StateDidNotAdvance { .. }
-        | LifecycleApiError::ActorJoin { .. }
-        | LifecycleApiError::ActorFailed { .. }
-        | LifecycleApiError::LoopFactory { .. }
-        | LifecycleApiError::AttemptOperational { .. } => typed_rpc_status_response(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            crucible_api::RpcStatusCode::Internal,
-            "internal",
-            &error.to_string(),
-        ),
-    }
-}
-
-pub(super) fn streaming_error_response(error: StreamingApiError) -> axum::response::Response {
-    match error {
-        StreamingApiError::EpochMismatch { expected, actual } => {
-            streaming_epoch_mismatch_response(expected, actual)
-        }
-        StreamingApiError::SessionNotFound { session } => {
-            streaming_session_not_found_response(session)
-        }
-        StreamingApiError::SessionMismatch { .. } => typed_rpc_status_response(
-            axum::http::StatusCode::BAD_REQUEST,
-            crucible_api::RpcStatusCode::InvalidArgument,
-            "invalid-argument",
-            &error.to_string(),
-        ),
-        StreamingApiError::CommandChannelClosed { .. }
-        | StreamingApiError::StateDidNotAdvance { .. }
-        | StreamingApiError::EventStreamLagged { .. }
-        | StreamingApiError::StateUpdateStreamLagged { .. } => typed_rpc_status_response(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            crucible_api::RpcStatusCode::Internal,
-            "internal",
-            &error.to_string(),
-        ),
-    }
-}
-
-pub(super) fn lifecycle_epoch_mismatch_response(
-    session_id: SessionId,
-    expected: u64,
-    actual: u64,
-) -> axum::response::Response {
-    let mut output = String::from("crucible.rpc/error\n");
-    push_wire_line(&mut output, "status", "invalid-state");
-    push_wire_line(&mut output, "reason", "epoch-mismatch");
-    push_wire_line(&mut output, "session-id", &session_id.value.to_string());
-    push_wire_line(&mut output, "expected", &expected.to_string());
-    push_wire_line(&mut output, "actual", &actual.to_string());
-    http2_response(axum::http::StatusCode::PRECONDITION_FAILED, output)
-}
-
-pub(super) fn lifecycle_session_not_found_response(
-    session: SessionRef,
-) -> axum::response::Response {
-    let mut output = String::from("crucible.rpc/error\n");
-    push_wire_line(&mut output, "status", "not-found");
-    push_wire_line(&mut output, "reason", "lifecycle-session-not-found");
-    push_session_ref(&mut output, session);
-    http2_response(axum::http::StatusCode::NOT_FOUND, output)
-}
-
-pub(super) fn streaming_session_not_found_response(
-    session: SessionRef,
-) -> axum::response::Response {
-    let mut output = String::from("crucible.rpc/error\n");
-    push_wire_line(&mut output, "status", "not-found");
-    push_wire_line(&mut output, "reason", "streaming-session-not-found");
-    push_session_ref(&mut output, session);
-    http2_response(axum::http::StatusCode::NOT_FOUND, output)
-}
-
-pub(super) fn streaming_epoch_mismatch_response(
-    expected: u64,
-    actual: u64,
-) -> axum::response::Response {
-    let mut output = String::from("crucible.rpc/error\n");
-    push_wire_line(&mut output, "status", "invalid-state");
-    push_wire_line(&mut output, "reason", "streaming-epoch-mismatch");
-    push_wire_line(&mut output, "expected", &expected.to_string());
-    push_wire_line(&mut output, "actual", &actual.to_string());
-    http2_response(axum::http::StatusCode::PRECONDITION_FAILED, output)
-}
-
-pub(super) fn typed_rpc_status_response(
-    http_status: axum::http::StatusCode,
-    status: crucible_api::RpcStatusCode,
-    reason: &'static str,
-    message: &str,
-) -> axum::response::Response {
-    let mut output = String::from("crucible.rpc/error\n");
-    push_wire_line(&mut output, "status", rpc_status_code_wire_name(status));
-    push_wire_line(&mut output, "reason", reason);
-    push_wire_line(&mut output, "message", &hex_encode(message.as_bytes()));
-    http2_response(http_status, output)
-}
-
-pub(super) fn encode_attached_response(attached: &Attached) -> String {
-    let mut output = String::from("crucible.rpc/attached-response\n");
-    push_session_ref(&mut output, attached.session);
-    push_wire_line(
-        &mut output,
-        "event-log-len",
-        &attached.event_log_len.to_string(),
-    );
-    push_wire_line(&mut output, "state", state_wire_name(attached.state));
-    push_wire_line(
-        &mut output,
-        "version",
-        &format!(
-            "{}.{}.{}+{}",
-            attached.version.major,
-            attached.version.minor,
-            attached.version.patch,
-            attached.version.build
-        ),
-    );
-    let commands = attached
-        .capabilities
-        .commands
-        .iter()
-        .map(|capability| {
-            open_set_command_kind(capability.command_kind)
-                .unwrap_or_else(|| format!("crucible.cmd.{}", capability.command_name))
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    push_wire_line(&mut output, "commands", &commands);
-    push_wire_line(&mut output, "snapshot", &snapshot_wire(attached));
-    let reproduction = attached
-        .snapshot
-        .as_ref()
-        .map(|snapshot| reproduction_records_wire(&snapshot.reproduction))
-        .unwrap_or_else(|| String::from("none"));
-    push_wire_line(&mut output, "reproduction", &reproduction);
-    output
-}
-
-pub(super) fn snapshot_wire(attached: &Attached) -> String {
-    let Some(snapshot) = &attached.snapshot else {
-        return String::from("none");
-    };
-    let last = snapshot
-        .last_sequence
-        .map(|sequence| sequence.to_string())
-        .unwrap_or_else(|| String::from("none"));
-    format!(
-        "{}|{}|{}|{}|{}",
-        snapshot.through.next_sequence,
-        snapshot.event_count,
-        snapshot.causal_event_count,
-        snapshot.observational_event_count,
-        last,
-    )
-}
-
-pub(super) fn reproduction_records_wire(commands: &[ReproductionCommandRecord]) -> String {
-    if commands.is_empty() {
-        return String::from("none");
-    }
-    commands
-        .iter()
-        .map(reproduction_record_wire)
-        .collect::<Vec<_>>()
-        .join(";")
-}
-
-pub(super) fn reproduction_record_wire(command: &ReproductionCommandRecord) -> String {
-    format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-        command.sequence,
-        command_name(command.payload.command),
-        command.virtual_time.ticks,
-        command.quanta,
-        command.at_sequence,
-        match command.result {
-            ReproductionCommandResult::Accepted => "accepted",
-        },
-        command.observational_order,
-        command.payload.scheduler_batch,
-        scheduler_control_wire(command.payload.scheduler_control.as_ref()),
-        command_payload_material_wire(&command.payload.command_payload),
-    )
-}
-
-pub(super) fn command_payload_material_wire(material: &str) -> String {
-    hex_encode(material.as_bytes())
-}
-
-pub(super) fn scheduler_control_wire(control: Option<&String>) -> String {
-    control
-        .map(|material| hex_encode(material.as_bytes()))
-        .unwrap_or_else(|| String::from("none"))
-}
-
-pub(super) fn encode_send_response(response: &SendResponse) -> String {
-    let mut output = String::from("crucible.rpc/send-response\n");
-    push_wire_line(
-        &mut output,
-        "command-id",
-        &response.result.command_id.to_string(),
-    );
-    push_wire_line(
-        &mut output,
-        "command",
-        &command_name(response.result.command_kind),
-    );
-    push_wire_line(
-        &mut output,
-        "status",
-        &command_status_wire(response.result.status),
-    );
-    match response.state_update {
-        Some(update) => push_wire_line(&mut output, "state-update", &state_update_wire(update)),
-        None => push_wire_line(&mut output, "state-update", "none"),
-    }
-    push_wire_line(&mut output, "query-result", "none");
-    push_wire_line(
-        &mut output,
-        "breakpoint-id",
-        &response
-            .breakpoint_id
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| String::from("none")),
-    );
-    push_wire_line(&mut output, "savepoint-info", "none");
-    output
-}
-
-pub(super) fn command_status_wire(status: CommandResultStatus) -> String {
-    match status {
-        CommandResultStatus::Accepted => String::from("accepted"),
-        CommandResultStatus::Rejected { reason } => {
-            format!(
-                "rejected:{}",
-                rpc_status_code_wire_name(reason.rpc_status())
-            )
-        }
-    }
-}
+pub(super) use response_wire::*;
 
 pub(super) fn parse_create_session_request(body: &[u8]) -> Result<CreateSessionRequest, String> {
     let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
@@ -1117,53 +721,33 @@ pub(super) fn parse_create_session_request(body: &[u8]) -> Result<CreateSessionR
             let id = parse_content_hash_line(lines.next(), "scenario-id=")?;
             let scenario_seed = parse_seed_line(lines.next(), "scenario-seed=")?;
             let app_random_draw_cap = parse_u64_line(lines.next(), "app-random-draw-cap=")?;
-            let next = lines.next();
-            let (scenario_form, seed_line) = if let Some(line) = next {
-                if line.starts_with("scenario-payload=") {
-                    let scenario = parse_scenario_form_line(Some(line), "scenario-payload=")?;
-                    let scenario_def = scenario.scenario_def();
-                    if scenario_def.id() != id {
-                        return Err(format!(
-                            "scenario payload id {} did not match request scenario id {}",
-                            scenario_def.id().to_hex(),
-                            id.to_hex()
-                        ));
-                    }
-                    if scenario.seed() != scenario_seed {
-                        return Err(format!(
-                            "scenario payload seed {} did not match request scenario seed {}",
-                            scenario.seed().to_hex(),
-                            scenario_seed.to_hex()
-                        ));
-                    }
-                    if scenario.app_random_draw_cap() != app_random_draw_cap {
-                        return Err(format!(
-                            "scenario payload app-random draw cap {} did not match request cap {}",
-                            scenario.app_random_draw_cap(),
-                            app_random_draw_cap
-                        ));
-                    }
-                    (Some(scenario), lines.next())
-                } else {
-                    (None, Some(line))
-                }
-            } else {
-                (None, None)
-            };
-            let seed = parse_seed_line(seed_line, "seed=")?;
+            let scenario = parse_scenario_form_line(lines.next(), "scenario-payload=")?;
+            let scenario_def = scenario.scenario_def();
+            if scenario_def.id() != id {
+                return Err(format!(
+                    "scenario payload id {} did not match request scenario id {}",
+                    scenario_def.id().to_hex(),
+                    id.to_hex()
+                ));
+            }
+            if scenario.seed() != scenario_seed {
+                return Err(format!(
+                    "scenario payload seed {} did not match request scenario seed {}",
+                    scenario.seed().to_hex(),
+                    scenario_seed.to_hex()
+                ));
+            }
+            if scenario.app_random_draw_cap() != app_random_draw_cap {
+                return Err(format!(
+                    "scenario payload app-random draw cap {} did not match request cap {}",
+                    scenario.app_random_draw_cap(),
+                    app_random_draw_cap
+                ));
+            }
+            let seed = parse_seed_line(lines.next(), "seed=")?;
             let start_paused = parse_bool_line(lines.next(), "start-paused=")?;
             reject_extra_line(lines.next())?;
-            let scenario = ScenarioDef::from_content_hash_seed_and_app_random_draw_cap(
-                id,
-                scenario_seed,
-                app_random_draw_cap,
-            );
-            let request = if let Some(scenario_form) = scenario_form {
-                CreateSessionRequest::inline_form(scenario_form, seed)
-            } else {
-                CreateSessionRequest::inline(scenario, seed)
-            };
-            Ok(request.with_start_paused(start_paused))
+            Ok(CreateSessionRequest::inline(scenario, seed).with_start_paused(start_paused))
         }
         source => Err(format!("unexpected create-session source `{source}`")),
     }
@@ -1209,19 +793,17 @@ pub(super) fn parse_resume_session_request(body: &[u8]) -> Result<ResumeSessionR
         lines.next(),
         &mut lines,
     )?;
-    let observation_source = parse_optional_resume_observation_source(
+    let observation_source = parse_resume_observation_source(
         &scenario,
         &schedule,
         &checkpoint,
         first_observation_line,
         &mut lines,
     )?;
-    let mut request = ResumeSessionRequest::new(scenario, schedule, checkpoint, seed);
+    let mut request =
+        ResumeSessionRequest::new(scenario, schedule, checkpoint, seed, observation_source);
     if let Some(replay_closure) = replay_closure {
         request = request.with_replay_closure(replay_closure);
-    }
-    if let Some(observation_source) = observation_source {
-        request = request.with_observation_source(observation_source);
     }
     Ok(request)
 }
@@ -1283,16 +865,16 @@ fn parse_optional_resume_replay_closure<'a>(
     Ok((Some(closure), lines.next()))
 }
 
-fn parse_optional_resume_observation_source<'a>(
+fn parse_resume_observation_source<'a>(
     scenario: &ScenarioDefForm,
     schedule: &Schedule,
     checkpoint: &Checkpoint,
     first: Option<&'a str>,
     lines: &mut impl Iterator<Item = &'a str>,
-) -> Result<Option<ResumeObservationSource>, String> {
-    let Some(first) = first else {
-        return Ok(None);
-    };
+) -> Result<ResumeObservationSource, String> {
+    let first = first.ok_or_else(|| {
+        String::from("resume request is missing an authenticated campaign observation source")
+    })?;
     let version = parse_u64_line(Some(first), "campaign-observation-source-version=")?;
     let version = u32::try_from(version)
         .map_err(|_| String::from("campaign observation source version exceeds u32"))?;
@@ -1331,7 +913,7 @@ fn parse_optional_resume_observation_source<'a>(
             expected_identity.to_hex(),
         ));
     }
-    Ok(Some(source))
+    Ok(source)
 }
 
 fn parse_sized_hex_payload(
@@ -2133,6 +1715,7 @@ pub(super) fn http2_response(
 
 pub(super) fn in_process_client_fixture() -> (InProcessControlClient, SessionActor<NoopLoop>) {
     let scenario = generated_scenario(1);
+    let scenario = scenario.scenario_def();
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
     let engine = Engine::new(config, graph, NoopLoop);
@@ -2152,8 +1735,9 @@ where
     L: QuantumLoop + Send + 'static,
 {
     let scenario = generated_scenario(seed);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
+    let scenario_def = scenario.scenario_def();
+    let config = Configuration::genesis(scenario_def.clone());
+    let graph = graph_with_baked_genesis(&scenario_def);
     let engine = Engine::new(config, graph, quantum_loop);
     let (sender, receiver) = mpsc::channel::<SessionCommand>(16);
     let actor = SessionActor::new(engine, receiver);
@@ -2549,12 +2133,11 @@ pub(super) fn genesis_checkpoint(configuration: &Configuration) -> GenesisCheckp
     GenesisCheckpoint { checkpoint }
 }
 
-pub(super) fn generated_scenario(seed: u64) -> ScenarioDef {
-    ScenarioDef::from_canonical_material_with_seed(
-        "crucible.api.gate-control-client.scenario",
-        &format!("seed={seed}"),
-        Seed::from_u64(seed),
-    )
+pub(super) fn generated_scenario(seed: u64) -> ScenarioDefForm {
+    let scenario = crucible::happy_path_scenario()
+        .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
+        .scenario;
+    scenario_with_seed(&scenario, Seed::from_u64(seed))
 }
 
 #[path = "http2_fixture/scenario.rs"]

@@ -43,6 +43,7 @@ impl QemuHotForkChildProcessContractStageProof {
 pub(super) struct QemuHotForkChildProcessContractStage {
     names: crate::QmpHotForkChildProcessContractNames,
     proof: QemuHotForkChildProcessContractStageProof,
+    checkpoint_cancellation: std::os::fd::OwnedFd,
 }
 
 impl QemuHotForkChildProcessContractStage {
@@ -52,6 +53,28 @@ impl QemuHotForkChildProcessContractStage {
 
     pub(super) fn mark_consumed(&mut self) {
         self.proof.consumed = true;
+    }
+
+    pub(super) fn clone_checkpoint_cancellation(
+        &self,
+    ) -> Result<std::os::fd::OwnedFd, QemuNodeChannelError> {
+        self.checkpoint_cancellation.try_clone().map_err(|source| {
+            QemuNodeChannelError::new(
+                "retain hot-fork checkpoint cancellation",
+                source.to_string(),
+            )
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn checkpoint_cancellation_eventfd_id(&self) -> Result<u64, QemuNodeChannelError> {
+        super::hot_fork_plugin_endpoints::eventfd_id(self.checkpoint_cancellation.as_raw_fd())
+            .map_err(|source| {
+                QemuNodeChannelError::new(
+                    "inspect hot-fork checkpoint cancellation",
+                    source.to_string(),
+                )
+            })
     }
 
     pub(super) fn matches_state(&self, state: &crate::QmpHotForkChildProcessContractState) -> bool {
@@ -74,6 +97,13 @@ impl QemuNode {
     ) -> Result<(), QemuNodeChannelError> {
         let identity = crate::QmpHotForkChildProcessContractIdentity::new(1, 2, 9, 3, 4)
             .map_err(QemuNodeChannelError::from)?;
+        let checkpoint_cancellation =
+            super::hot_fork_plugin_endpoints::create_nonblocking_eventfd().map_err(|source| {
+                QemuNodeChannelError::new(
+                    "install test hot-fork checkpoint cancellation",
+                    source.to_string(),
+                )
+            })?;
         self.hot_fork_child_process_contract_stage = Some(QemuHotForkChildProcessContractStage {
             names: crate::QmpHotForkChildProcessContractNames::new(
                 crate::QmpDescriptorName::new("test-hot-fork-cgroup")
@@ -90,6 +120,7 @@ impl QemuNode {
                 identity,
                 consumed: false,
             },
+            checkpoint_cancellation,
         });
         Ok(())
     }
@@ -199,6 +230,12 @@ impl QemuNode {
         )
         .map_err(QemuNodeChannelError::from)?;
 
+        let checkpoint_cancellation = cancellation.try_clone().map_err(|source| {
+            QemuNodeChannelError::new(
+                "retain hot-fork checkpoint cancellation",
+                source.to_string(),
+            )
+        })?;
         let state = self
             .channels
             .qmp_machine_control
@@ -222,6 +259,7 @@ impl QemuNode {
         self.hot_fork_child_process_contract_stage = Some(QemuHotForkChildProcessContractStage {
             names,
             proof: proof.clone(),
+            checkpoint_cancellation,
         });
         Ok(proof)
     }

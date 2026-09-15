@@ -9,9 +9,12 @@
   mkDerivation,
 }: let
   generatedDirectory = name:
-    builtins.elem name [".git" ".direnv" ".worktrees" "result" "target"]
+    builtins.elem name [".git" ".direnv" ".worktrees" "target"]
     || lib.hasPrefix "result-" name
     || lib.hasPrefix "target-" name;
+
+  excludedDirectory = relative: name:
+    generatedDirectory name || (relative == "" && name == "result");
 
   collectRustTargets = root: relative: let
     directory =
@@ -28,7 +31,7 @@
         then name
         else "${relative}/${name}";
     in
-      if kind == "directory" && !generatedDirectory name
+      if kind == "directory" && !excludedDirectory relative name
       then collectRustTargets root child
       else if kind == "regular" && lib.hasSuffix ".rs" name
       then [child]
@@ -48,7 +51,7 @@ in {
         base = baseNameOf path;
       in
         if type == "directory"
-        then !generatedDirectory base
+        then !generatedDirectory base && toString path != "${toString srcRoot}/result"
         else
           builtins.elem base [
             "Cargo.toml"

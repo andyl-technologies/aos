@@ -93,12 +93,6 @@ enum ChannelCall {
     },
     QmpStop,
     QmpContinue,
-    QmpHotForkReadiness,
-    QmpHotForkThreadInventory,
-    QmpHotForkRcuInventory,
-    QmpHotForkAioInventory,
-    QmpHotForkAioHandlerInventory,
-    QmpHotForkBlockBackendInventory,
     QmpHotForkPluginResourceInventory,
     QmpHotForkPluginBarrier,
     QmpHotForkInstallDescriptor(String, crucible_shmem::SetupRegionBackingIdentity),
@@ -141,10 +135,6 @@ enum ChannelCall {
         wake_name: String,
         identity: crate::QmpHotForkPluginEndpointIdentity,
     },
-    QmpHotForkBottomHalfInventory,
-    QmpHotForkMutexInventory,
-    QmpHotForkTimerInventory,
-    QmpHotForkMonitorInventory,
     QmpHotForkTemplate,
     QmpHotForkInstallProcessContract,
     QmpHotForkReleaseProcessContract,
@@ -161,6 +151,11 @@ enum ChannelCall {
     },
     QmpExactSave(ContentHash),
     QmpExactDelete(ContentHash),
+    QmpExactInstallDescriptor(String),
+    QmpExactCapture(crate::QmpCheckpointIdentity),
+    QmpExactCommit(crate::QmpCheckpointIdentity),
+    QmpExactAbort(crate::QmpCheckpointIdentity),
+    QmpExactQueryEpoch,
     QmpActivateDebugGuest,
     QmpRetireProcessScopedEndpoints,
     PluginQuit,
@@ -204,7 +199,6 @@ struct ScriptedHostIoRuntime {
 #[derive(Clone)]
 struct ScriptedQmpMachineControl {
     log: SharedLog,
-    process_id: u32,
     track_process_endpoint_retirement: bool,
     fail_stop: bool,
     fail_snapshot: bool,
@@ -593,6 +587,12 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
         })
     }
 
+    fn virtual_timer_fire_witness(
+        &mut self,
+    ) -> Result<Option<QemuVirtualTimerFireWitness>, QemuNodeChannelError> {
+        Ok(None)
+    }
+
     fn start_quantum(
         &mut self,
         horizon: ExecutionHorizon,
@@ -719,6 +719,14 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
             payload: input.payload,
         });
         Ok(())
+    }
+
+    fn deliver_frame_at(
+        &mut self,
+        input: BackendInput,
+        _delivery_icount: Icount,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.deliver_frame(input)
     }
 
     fn emit_frame(&mut self) -> Result<Option<QemuNodeEmittedFrame>, QemuNodeChannelError> {
@@ -1272,11 +1280,6 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
     );
     assert_eq!(child_console.console_generation(), 1);
     assert!(!child_console.resource_plan_bound());
-    let diagnostic_drain = node.drain_hot_fork_child_diagnostics()?;
-    assert_eq!(diagnostic_drain.bytes_read(), 26);
-    assert_eq!(diagnostic_drain.total_retained(), 26);
-    assert!(!diagnostic_drain.eof());
-
     let proof = node.stage_hot_fork_plugin_endpoints()?;
     assert_eq!(
         proof.state(),
@@ -1768,7 +1771,6 @@ fn scripted_hot_fork_capture_node(
     descriptor_script: DescriptorScript,
 ) -> Result<QemuNode, Box<dyn Error>> {
     let child = Command::new("sleep").arg("60").spawn()?;
-    let process_id = child.id();
     let channels = QemuNodeChannels::new(
         ScriptedPluginControl {
             log: Arc::clone(&log),
@@ -1789,7 +1791,6 @@ fn scripted_hot_fork_capture_node(
         },
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
-            process_id,
             track_process_endpoint_retirement: false,
             fail_stop: false,
             fail_snapshot: false,
@@ -1936,7 +1937,6 @@ fn scripted_node_with_fault_events(
     let mut events = events.into_iter();
     let staged_fault_events = events.next().into_iter().collect();
     let child = Command::new("sleep").arg("60").spawn()?;
-    let process_id = child.id();
     let channels = QemuNodeChannels::new(
         ScriptedPluginControl {
             log: Arc::clone(&log),
@@ -1957,7 +1957,6 @@ fn scripted_node_with_fault_events(
         },
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
-            process_id,
             track_process_endpoint_retirement: false,
             fail_stop: false,
             fail_snapshot: false,
@@ -2042,7 +2041,6 @@ fn scripted_node_with_coverage(
     let teardown_coverage = teardown_coverage.into_iter().collect::<Vec<_>>();
     let coverage_enabled = !quantum_coverage.is_empty() || !teardown_coverage.is_empty();
     let child = Command::new("sleep").arg("60").spawn()?;
-    let process_id = child.id();
     let channels = QemuNodeChannels::new(
         ScriptedPluginControl {
             log: Arc::clone(&log),
@@ -2063,7 +2061,6 @@ fn scripted_node_with_coverage(
         },
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
-            process_id,
             track_process_endpoint_retirement: options.track_process_endpoint_retirement,
             fail_stop: options.fail_qmp_stop,
             fail_snapshot: options.fail_qmp_snapshot,

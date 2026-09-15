@@ -25,6 +25,10 @@ pub struct NodeSlotSnapshot {
     pub publish_gen: u32,
     /// Plugin acknowledgement count for drained QEMU control boundaries.
     pub control_boundary_ack: u32,
+    /// Fault-command producer index bound to the acknowledged control request.
+    pub control_boundary_fault_command_frontier: u64,
+    /// Fingerprint request generation bound to the acknowledged control request.
+    pub control_boundary_capture_request: u32,
     /// QEMU's raw retired-instruction count paired with the published logical time.
     pub logical_time_raw_icount: u64,
     /// Logical target carried by the most recent restore request.
@@ -33,6 +37,31 @@ pub struct NodeSlotSnapshot {
     pub logical_time_restore_request: u32,
     /// Plugin-published logical-time restore acknowledgement generation.
     pub logical_time_restore_ack: u32,
+    /// Most recent plugin-validated actual virtual-timer callback witness.
+    pub virtual_timer_witness: Option<VirtualTimerFireWitness>,
+}
+
+/// Exact native evidence for one completed `QEMU_CLOCK_VIRTUAL` callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VirtualTimerFireWitness {
+    /// QEMU witness generation.
+    pub generation: u64,
+    /// Armed exact timer expiry in virtual nanoseconds.
+    pub deadline_ns: u64,
+    /// Published logical idle-wake icount.
+    pub deadline_icount: u64,
+    /// Raw QEMU icount at arm.
+    pub armed_raw_icount: u64,
+    /// Saved expiry of the timer whose callback ran.
+    pub fired_expire_ns: u64,
+    /// Virtual time at actual callback invocation.
+    pub fired_virtual_ns: u64,
+    /// Raw QEMU icount at actual callback invocation.
+    pub fired_raw_icount: u64,
+    /// Actual-callback completion flag.
+    pub completed: u32,
+    /// Reserved field, zero in the current ABI.
+    pub reserved: u32,
 }
 
 /// One host-published logical-time restore request.

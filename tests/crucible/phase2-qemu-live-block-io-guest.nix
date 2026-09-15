@@ -1,8 +1,12 @@
-{pkgs}:
+{
+  pkgs,
+  initialDelayNanoseconds ? null,
+}:
 # A diskless Linux initramfs that waits for the crucible-shmem virtio-blk
 # device, completes one sector write, then remains in a deterministic
-# nanosleep loop. The completed write is the live consumer of patch 0017's
-# nonzero pending sentinel: a successful write poll returns zero bytes.
+# nanosleep loop. The completed write is the live consumer of the atomic
+# integration's nonzero pending sentinel: a successful write poll returns zero
+# bytes.
 pkgs.mkDerivation {
   pname = "crucible-live-block-io-write-initramfs";
   version = "0";
@@ -32,9 +36,19 @@ pkgs.mkDerivation {
         {
           const struct timespec retry = {0, 10000000};
           const struct timespec idle = {0, 20000000};
+        ${
+            if initialDelayNanoseconds == null
+            then ""
+            else "          const struct timespec initial_delay = {0, ${toString initialDelayNanoseconds}};"
+          }
           uint8_t sector[512];
           int fd = -1;
 
+        ${
+            if initialDelayNanoseconds == null
+            then ""
+            else "          if (nanosleep(&initial_delay, NULL) != 0) { return 1; }"
+          }
           mkdir("/dev", 0755);
           if (mount("devtmpfs", "/dev", "devtmpfs", 0, "") != 0) {
             return 1;

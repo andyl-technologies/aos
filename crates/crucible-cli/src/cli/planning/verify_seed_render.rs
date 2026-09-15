@@ -57,7 +57,7 @@ pub(crate) fn plan_verify_invocation(
         bisection_on_divergence: true,
         print_bisection_state_dump: args.bisect,
         writes_side_artifacts_on_divergence: true,
-        applies_observer_perturbation_matrix: args.adversarial,
+        applies_hostile_condition_matrix: args.adversarial,
         outcome_exit_codes: vec![
             (
                 BackendCommandStatus::Passed,
@@ -105,7 +105,7 @@ pub(crate) fn verify_reduction_plans(
         ];
     }
     let profiles = if adversarial {
-        VERIFY_OBSERVER_PROFILES
+        VERIFY_HOSTILE_PROFILES
     } else {
         &[VERIFY_BASELINE_PROFILE]
     };
@@ -115,7 +115,7 @@ pub(crate) fn verify_reduction_plans(
             reductions.push(VerifyReductionPlan {
                 index: reductions.len(),
                 run_index,
-                host_profile: *host_profile,
+                host_profile: host_profile.for_run(run_index),
             });
         }
     }
@@ -249,10 +249,7 @@ pub(crate) fn resolve_builtin_example_scenario(
             scenario,
         }));
     }
-    if matches!(
-        name,
-        crucible::FAULT_CAMPAIGN_FAMILY_NAME | "fault-campaign"
-    ) {
+    if value == crucible::FAULT_CAMPAIGN_FAMILY_NAME {
         let family = crucible::fault_campaign_family().map_err(|error| {
             invalid_scenario(format!(
                 "built-in example family `{value}` failed validation: {error}"
@@ -448,11 +445,7 @@ pub(crate) fn plan_determinism_ergonomics(
     entropy: &mut impl SeedEntropySource,
 ) -> Result<Option<DeterminismErgonomicsPlan>, CliError> {
     validate_canonical_trace_format(cli)?;
-    let explicit_fork_seed = matches!(cli.command, Commands::Fork(_)) && cli.seed.is_some();
-    if matches!(cli.command, Commands::Fork(_)) && !explicit_fork_seed {
-        return Ok(None);
-    }
-    if !explicit_fork_seed && !subcommand_uses_seed_resolution(&cli.command) {
+    if !subcommand_uses_seed_resolution(&cli.command) {
         return Ok(None);
     }
     let seed = resolve_seed(cli, environment, entropy)?;
@@ -466,7 +459,6 @@ pub(crate) fn plan_determinism_ergonomics(
         failure_artifact_rule: FailureArtifactRule {
             self_contained_artifact: true,
             replay_command_copy_pasteable: true,
-            debug_command_copy_pasteable: true,
         },
         trace_formats: vec![OutputFormat::Jsonl, OutputFormat::Json, OutputFormat::Table],
         jsonl_streams_entries: true,
@@ -544,9 +536,7 @@ pub(crate) fn seed_resolution_mode(command: &Commands) -> SeedResolutionMode {
         | Commands::Save(_)
         | Commands::Search(_)
         | Commands::Fuzz(_) => SeedResolutionMode::FreshRunIdentity,
-        Commands::Resume(_) | Commands::Fork(_) | Commands::Replay(_) => {
-            SeedResolutionMode::ArtifactOrSavepointOwned
-        }
+        Commands::Resume(_) | Commands::Replay(_) => SeedResolutionMode::ArtifactOrSavepointOwned,
         Commands::Selftest(_)
         | Commands::Triage(_)
         | Commands::Debug(_)
@@ -579,7 +569,6 @@ pub(crate) fn command_uses_event_trace(command: &Commands) -> bool {
             | Commands::Verify(_)
             | Commands::Save(_)
             | Commands::Resume(_)
-            | Commands::Fork(_)
             | Commands::Replay(_)
             | Commands::Search(_)
             | Commands::Fuzz(_)
@@ -693,7 +682,11 @@ pub(crate) fn render_canonical_event_log(
             false,
         ),
         OutputFormat::Table => (table_for_canonical_log_entries(entries).into_bytes(), false),
-        OutputFormat::Markdown => unreachable!("markdown rejected above"),
+        OutputFormat::Markdown => {
+            return Err(usage_error(
+                "--format markdown is reserved for triage reports, not canonical event-log traces",
+            ));
+        }
     };
     Ok(RenderedCanonicalLog {
         format,
@@ -802,10 +795,7 @@ pub(crate) fn canonical_state_wall_clock_guard() -> bool {
         ),
         ("crucible-cli-backend", include_str!("../backend.rs")),
         ("crucible-cli-run-save", include_str!("../run_save.rs")),
-        (
-            "crucible-cli-resume-fork",
-            include_str!("../resume_fork.rs"),
-        ),
+        ("crucible-cli-resume", include_str!("../resume.rs")),
         (
             "crucible-cli-verify-serve",
             include_str!("../verify_serve.rs"),
@@ -854,13 +844,11 @@ pub(crate) struct ReproductionFooter {
 }
 
 pub(crate) fn reproduction_footer(path: PathBuf) -> ReproductionFooter {
-    let artifact = path.display().to_string();
+    let artifact_argument = shell_quote_command_argument(&path.display().to_string());
+
     ReproductionFooter {
-        replay_command: format!(
-            "crucible replay {}",
-            shell_quote_command_argument(&artifact)
-        ),
-        debug_command: crucible::DebugFailureFooterCommand::new(artifact).debug_command,
+        replay_command: format!("crucible replay {artifact_argument}"),
+        debug_command: format!("crucible debug {artifact_argument} --at-failure"),
         artifact_path: path,
         self_contained_artifact: true,
     }

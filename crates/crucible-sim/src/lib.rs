@@ -4,16 +4,13 @@
 //!
 //! This L0 crate owns seeded decision streams, ordered collections,
 //! deterministic selection, virtual-time arithmetic, and the content-addressing
-//! seam described by the indexed RFC-0010 files.
-//! The current content-addressing primitives are intentionally local to this
-//! crate; [`FUTURE_RATCHET_INTEGRATION_SEAM`] marks the only candidate boundary
-//! for any later RFC-0007 integration.
+//! primitives described by the indexed RFC-0010 files.
 //! It intentionally has no QEMU, transport, scheduler-policy, or wall-clock
 //! surface.
 //!
 //! Module map: [`contract_a`] owns the isolated single-VM Contract A driver; the
 //! crate root owns [`StableHasher`], [`StableDigest`], [`DecisionRng`],
-//! [`DecisionStream`], and the named content-addressing integration boundary;
+//! [`DecisionStream`], and the content-addressing primitives;
 //! future modules will split ordered selection and virtual-time arithmetic.
 
 #![forbid(unsafe_code)]
@@ -35,14 +32,6 @@ pub const DECISION_RNG_NODE_STREAM_DOMAIN: &str = "crucible.decision-rng.node-st
 
 /// The stable domain used for link-scoped decision streams.
 pub const DECISION_RNG_LINK_STREAM_DOMAIN: &str = "crucible.decision-rng.link-stream.v1";
-
-/// Marks the future RFC-0007 integration boundary for content-addressing code.
-///
-/// Crucible ships standalone today: the stable hashing primitives below are
-/// owned here, and no Crucible crate may depend on `ratchet-*` or `aos-nix-*`.
-/// A later ratchet merge must adapt behind this named seam instead of adding a
-/// direct dependency to the current crate graph.
-pub const FUTURE_RATCHET_INTEGRATION_SEAM: &str = "crucible-sim::content-addressing";
 
 /// A deterministic 256-bit digest produced by [`StableHasher`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -242,14 +231,11 @@ impl StableHasher {
     pub fn write_bytes(&mut self, bytes: &[u8]) {
         self.write_u64(bytes.len() as u64);
 
-        let mut chunks = bytes.chunks_exact(8);
-        for chunk in &mut chunks {
-            let mut word = [0; 8];
-            word.copy_from_slice(chunk);
-            self.mix_word(u64::from_le_bytes(word));
+        let (chunks, remainder) = bytes.as_chunks::<8>();
+        for chunk in chunks {
+            self.mix_word(u64::from_le_bytes(*chunk));
         }
 
-        let remainder = chunks.remainder();
         if !remainder.is_empty() {
             let mut word = [0; 8];
             for (index, byte) in remainder.iter().enumerate() {

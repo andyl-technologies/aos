@@ -416,6 +416,7 @@ mod tests {
             .expect("attempt"),
             AttemptResourceLimits::new(1, 1024, 2048, 32).expect("resources"),
             ExecutionRetentionIntent::Discard,
+            crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
         )
         .expect("request")
     }

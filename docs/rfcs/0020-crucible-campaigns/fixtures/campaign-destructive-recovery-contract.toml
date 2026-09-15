@@ -26,6 +26,22 @@ required = true
 records_exit_status = true
 records_structured_output = true
 redacts_secrets = true
+required_operations = [
+  "kill-running-child",
+  "kill-coordinator-before-observation-commit",
+  "kill-local-executor",
+  "kill-daemon-during-snapshot-publication",
+  "reboot-exact-paused-and-archived",
+  "enospc-during-exact-capture",
+  "remove-archival-leaf-during-multipart",
+  "expire-store-credentials",
+  "corrupt-tier-copy",
+  "interrupt-pack-index-publication",
+  "fail-vm-during-atomic-world-fork",
+  "alias-child-ring-or-overlay",
+  "exceed-host-resource-budget",
+  "cancel-during-child-creation",
+]
 
 [sign_offs]
 required_roles = ["driver", "independent_reviewer", "release_owner"]
@@ -115,13 +131,13 @@ backend_scope = "constrained-host-and-each-targeted-backend"
 prerequisites = ["daemon-snapshot-publication-crash", "publication-ledger-conditionality", "publishing-restart-recovery"]
 
 [[injections]]
-id = "reboot-paused-or-hibernating"
-title = "Reboot with a paused or hibernating campaign"
+id = "reboot-exact-paused-and-archived"
+title = "Reboot with an exactly paused and durably archived campaign"
 failure_class = "host-reboot"
 surface = "operator-command"
 implementation_state = "operator-command-available"
 action = "systemctl reboot"
-prior_state = "The pause or hibernation snapshot and every required cold fallback are durable and authenticated."
+prior_state = "The exact-pause snapshot and every required cold fallback are durable and authenticated in the transferred archive."
 symptom = "The restarted service identifies exact resumable attempts and reports former live templates as non-live."
 automatic_response = "Startup reconstructs durable catalog state without claiming that an ephemeral process survived."
 recovery_commands = ["crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} status {campaign}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} resume {campaign} --expected {snapshot} --command {command_id}"]
@@ -136,10 +152,9 @@ id = "enospc-during-exact-capture"
 title = "Exhaust campaign-store space during exact capture"
 failure_class = "storage-capacity"
 surface = "fault-build-trigger"
-implementation_state = "fault-build-hook-available"
+implementation_state = "fault-build-hook-required"
 external_command_bindings = ["fault_build_command"]
 trigger = "crucible.destructive-recovery.exact-capture-enospc"
-fault_build_feature = "destructive-recovery-faults"
 production_artifact_state = "absent"
 action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.exact-capture-enospc {fault_build_command}"
 prior_state = "The prior campaign ref, finding, and capture source are authenticated before any exact-capture write."
@@ -165,7 +180,7 @@ action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.mu
 prior_state = "The source snapshot and archive transfer journal authenticate all selected closure leaves."
 symptom = "Archive inspection fails closed and durability remains unsatisfied while a required leaf is absent."
 automatic_response = "Multipart state resumes from authenticated parts or aborts idempotently without publishing the archive ref."
-recovery_commands = ["crucible --format jsonl campaign archive inspect --state {destination_state} --policy {destination_policy} --store {destination_store} --archive {archive}", "crucible --format jsonl store verify {destination_store}", "crucible --format jsonl campaign archive plan --source-state {source_state} --source-policy {source_policy} --source-store {source_store} --source-campaign {campaign} --snapshot {snapshot} --mode {archive_mode} --destination-state {destination_state} --destination-policy {destination_policy} --destination-store {destination_store} --archive {archive}", "crucible --format jsonl campaign archive transfer --source-state {source_state} --source-policy {source_policy} --source-store {source_store} --source-campaign {campaign} --snapshot {snapshot} --mode {archive_mode} --destination-state {destination_state} --destination-policy {destination_policy} --destination-store {destination_store} --archive {archive} --reviewed-operation {reviewed_operation}"]
+recovery_commands = ["crucible --format jsonl campaign archive inspect --state {destination_state} --policy {destination_policy} --store {destination_store} --archive {archive}", "crucible --format jsonl store verify {destination_store}", "crucible --format jsonl campaign archive transfer --source-state {source_state} --source-policy {source_policy} --source-store {source_store} --source-campaign {campaign} --snapshot {snapshot} --mode {archive_mode} --destination-state {destination_state} --destination-policy {destination_policy} --destination-store {destination_store} --archive {archive}"]
 observables = ["transfer journal", "multipart upload identity", "selected leaf identity", "archive ref absence", "durability count"]
 post_recovery_invariant = "No incomplete closure is published or counted as durable and abandoned multipart resources are explained."
 backend_scope = "constrained-host-and-each-targeted-backend"
@@ -185,8 +200,7 @@ action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.st
 prior_state = "Credential references, authenticated objects, and the current campaign ref are retained without embedding secret material."
 symptom = "Store ensure reports authorization failure distinctly from object absence and authenticated corruption."
 automatic_response = "Reads and writes fail closed without changing refs, object identity, or retry accounting."
-recovery_commands = ["crucible --format jsonl store status {store_deployment}", "crucible --format jsonl store ensure {content_id} --in {store_deployment}"]
-recovery_gap = "Credential refresh is deployment-specific and has no repository-owned command; CMAN-16 remains release blocking."
+recovery_commands = ["crucible --format jsonl store status {store_deployment}", "crucible --format jsonl store credentials refresh {store_deployment}", "crucible --format jsonl store ensure {content_id} --in {store_deployment}"]
 observables = ["authorization classification", "credential reference", "content identity", "ref identity", "retry state"]
 post_recovery_invariant = "Credential recovery exposes the same authenticated state and never treats denied access as missing data."
 backend_scope = "constrained-host-and-each-targeted-backend"
@@ -206,8 +220,7 @@ action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.co
 prior_state = "At least two independently named placements authenticate the same content identity."
 symptom = "Store ensure or verify reports corruption distinctly from a miss and refuses bytes from the corrupt placement."
 automatic_response = "The configured graph follows only its declared authenticated fallback or repair policy."
-recovery_commands = ["crucible --format jsonl store ensure {content_id} --in {store_deployment}", "crucible --format jsonl store verify {store_deployment}"]
-recovery_gap = "No public store repair command is exposed; CMAN-16 remains release blocking."
+recovery_commands = ["crucible --format jsonl store ensure {content_id} --in {store_deployment}", "crucible --format jsonl store repair --state {campaign_state} --policy {campaign_policy} --store {store_deployment} --source {valid_node} --target {corrupt_node} {content_id}", "crucible --format jsonl store verify {store_deployment}"]
 observables = ["corrupt placement identity", "valid placement identity", "content digest", "fallback route", "repair disposition"]
 post_recovery_invariant = "Only authenticated bytes are returned and repair does not alter the logical content identity."
 backend_scope = "constrained-host-and-each-targeted-backend"
@@ -227,8 +240,7 @@ action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.pa
 prior_state = "The old pack index generation and every object it names are readable and authenticated."
 symptom = "Restart selects the old complete index generation and reports incomplete pack material as unreachable."
 automatic_response = "Publication keeps the old reader generation valid and cleanup reclaims only unindexed complete or partial packs."
-recovery_commands = ["crucible --format jsonl store status {store_deployment}", "crucible --format jsonl store verify {store_deployment}"]
-recovery_gap = "No public repack or incomplete-pack cleanup command is exposed; CMAN-16 remains release blocking."
+recovery_commands = ["crucible --format jsonl store status {store_deployment}", "crucible --format jsonl store cleanup incomplete-packs --state {campaign_state} --policy {campaign_policy} --store {store_deployment} --node {packed_node}", "crucible --format jsonl store transform packed --store {store_deployment} --journal {repack_journal} --node {packed_node} plan", "crucible --format jsonl store transform packed --store {store_deployment} --journal {repack_journal} --node {packed_node} apply", "crucible --format jsonl store verify {store_deployment}"]
 observables = ["old index generation", "new index generation", "reader generation", "unreachable packs", "cleanup disposition"]
 post_recovery_invariant = "The old generation remains readable until a complete new generation is atomically visible."
 backend_scope = "constrained-host-and-each-targeted-backend"
@@ -322,8 +334,9 @@ selector = "repository::tests::destructive_recovery::daemon_fault_during_snapsho
 [[prerequisite_tests]]
 id = "exact-capture-enospc-restart"
 package = "crucible-daemon"
-source = "crates/crucible-daemon/src/exact_checkpoint_store/tests.rs"
-selector = "exact_checkpoint_store::tests::exact_capture_enospc_restart_retries_root_last_publication"
+source = "crates/crucible-daemon/src/exact_checkpoint_store/production.rs"
+selector = "exact_checkpoint_store::production::tests::production_exact_capture_enospc_restart_retries_root_last_publication"
+
 
 [[prerequisite_tests]]
 id = "worker-operational-requeue"
@@ -352,8 +365,9 @@ selector = "executor_supervisor::tests::durable_restart_replaces_stale_running_a
 [[prerequisite_tests]]
 id = "durable-hot-catalog-restart"
 package = "crucible-daemon"
-source = "crates/crucible-daemon/src/durable_managed_hot_checkpoint_pool/tests.rs"
-selector = "durable_managed_hot_checkpoint_pool::tests::restart_reconstructs_all_records_as_cold_without_claiming_live_sources"
+source = "crates/crucible-daemon/src/campaign_bootstrap/tests.rs"
+selector = "campaign_bootstrap::tests::prepared_store_gc_automatically_retains_durable_hot_fallbacks_across_restart"
+
 
 [[prerequisite_tests]]
 id = "paused-root-restart"
@@ -364,104 +378,105 @@ selector = "executor_supervisor::tests::paused_execution_resumes_from_the_exact_
 [[prerequisite_tests]]
 id = "exact-capture-cancel-before-write"
 package = "crucible-daemon"
-source = "crates/crucible-daemon/src/exact_checkpoint_store/tests.rs"
-selector = "exact_checkpoint_store::tests::cancellation_after_preparation_stops_before_the_first_publication_write"
+source = "crates/crucible-daemon/src/exact_checkpoint_store/production.rs"
+selector = "exact_checkpoint_store::production::tests::production_exact_capture_cancellation_after_preparation_stops_before_first_write"
+
 
 [[prerequisite_tests]]
 id = "failed-source-staging-cleanup"
 package = "crucible-cas"
-source = "crates/crucible-cas/src/content_store/tests.rs"
-selector = "content_store::tests::changing_and_failing_sources_leave_no_published_object_or_staging_file"
+source = "crates/crucible-cas/src/content_store/tests/tier.rs"
+selector = "content_store::tests::tier::changing_and_failing_sources_leave_no_published_object_or_staging_file"
 
 [[prerequisite_tests]]
 id = "multipart-remove-leaf-retry"
 package = "crucible-cas"
-source = "crates/crucible-cas/src/content_store/s3.rs"
-selector = "content_store::s3::tests::multipart_remove_leaf_aborts_before_completion_and_retries"
+source = "crates/crucible-cas/src/content_store/s3/tests/behavior.rs"
+selector = "content_store::s3::tests::behavior::multipart_remove_leaf_aborts_before_completion_and_retries"
 
 [[prerequisite_tests]]
 id = "multipart-interruption"
 package = "crucible-cas"
-source = "crates/crucible-cas/src/content_store/s3.rs"
-selector = "content_store::s3::tests::interrupted_upload_aborts_and_failed_abort_is_explicit"
+source = "crates/crucible-cas/src/content_store/s3/tests/behavior.rs"
+selector = "content_store::s3::tests::behavior::interrupted_upload_aborts_and_failed_abort_is_explicit"
 
 [[prerequisite_tests]]
 id = "store-credential-expiry-retry"
 package = "crucible-cas"
-source = "crates/crucible-cas/src/content_store/s3.rs"
-selector = "content_store::s3::tests::credential_expiry_preserves_identity_and_authenticated_retry"
+source = "crates/crucible-cas/src/content_store/s3/tests/behavior.rs"
+selector = "content_store::s3::tests::behavior::credential_expiry_preserves_identity_and_authenticated_retry"
 
 [[prerequisite_tests]]
 id = "store-credential-expiry"
 package = "crucible-cas"
-source = "crates/crucible-cas/src/content_store/s3.rs"
-selector = "content_store::s3::tests::credential_expiry_and_configuration_bounds_fail_closed"
+source = "crates/crucible-cas/src/content_store/s3/tests/behavior.rs"
+selector = "content_store::s3::tests::behavior::credential_expiry_and_configuration_bounds_fail_closed"
 
 [[prerequisite_tests]]
 id = "corrupt-tier-copy-recovery"
 package = "crucible-cas"
-source = "crates/crucible-cas/src/content_store/tests.rs"
-selector = "content_store::tests::corrupt_tier_copy_fails_closed_then_repairs_from_authenticated_lower_tier"
+source = "crates/crucible-cas/src/content_store/tests/tier.rs"
+selector = "content_store::tests::tier::corrupt_tier_copy_fails_closed_then_repairs_from_authenticated_lower_tier"
 
 [[prerequisite_tests]]
 id = "tier-corruption-fallback"
 package = "crucible-cas"
-source = "crates/crucible-cas/src/content_store/tests.rs"
-selector = "content_store::tests::read_through_cache_failure_does_not_hide_authenticated_source_bytes"
+source = "crates/crucible-cas/src/content_store/tests/tier.rs"
+selector = "content_store::tests::tier::read_through_cache_failure_does_not_hide_authenticated_source_bytes"
 
 [[prerequisite_tests]]
 id = "physical-corruption-rejection"
 package = "crucible-cas"
-source = "crates/crucible-cas/src/content_store/tests.rs"
-selector = "content_store::tests::compressed_directory_rejects_oversized_sources_and_corrupt_physical_records"
+source = "crates/crucible-cas/src/content_store/tests/directory.rs"
+selector = "content_store::tests::directory::compressed_directory_rejects_oversized_sources_and_corrupt_physical_records"
 
 [[prerequisite_tests]]
 id = "pack-index-interruption-recovery"
 package = "crucible-cas"
-source = "crates/crucible-cas/src/content_store/tests.rs"
-selector = "content_store::tests::pack_index_interruption_recovers_old_generation_and_retries"
+source = "crates/crucible-cas/src/content_store/tests/packed.rs"
+selector = "content_store::tests::packed::pack_index_interruption_recovers_old_generation_and_retries"
 
 [[prerequisite_tests]]
 id = "pack-staging-lifecycle-exclusion"
 package = "crucible-cas"
-source = "crates/crucible-cas/src/content_store/tests.rs"
-selector = "content_store::tests::packed_initialization_waits_for_in_flight_staging"
+source = "crates/crucible-cas/src/content_store/tests/packed.rs"
+selector = "content_store::tests::packed::packed_initialization_waits_for_in_flight_staging"
 
 [[prerequisite_tests]]
 id = "pack-generation-restart"
 package = "crucible-cas"
-source = "crates/crucible-cas/src/content_store/tests.rs"
-selector = "content_store::tests::packed_backend_restarts_repackages_and_keeps_old_reader_inodes_valid"
+source = "crates/crucible-cas/src/content_store/tests/packed.rs"
+selector = "content_store::tests::packed::packed_backend_restarts_repackages_and_keeps_old_reader_inodes_valid"
 
 [[prerequisite_tests]]
 id = "unindexed-pack-cleanup"
 package = "crucible-cas"
-source = "crates/crucible-cas/src/content_store/tests.rs"
-selector = "content_store::tests::packed_backend_rejects_corruption_and_cleans_unindexed_complete_packs"
+source = "crates/crucible-cas/src/content_store/tests/packed.rs"
+selector = "content_store::tests::packed::packed_backend_rejects_corruption_and_cleans_unindexed_complete_packs"
 
 [[prerequisite_tests]]
 id = "world-fork-one-vm-failure"
 package = "crucible-daemon"
-source = "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests.rs"
-selector = "qemu_hot_fork_world_factory::tests::world_fork_one_vm_failure_quarantines_partial_world"
+source = "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/reconciliation/lifecycle.rs"
+selector = "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::world_fork_one_vm_failure_quarantines_partial_world"
 
 [[prerequisite_tests]]
 id = "partial-world-quarantine"
 package = "crucible-daemon"
-source = "crates/crucible-daemon/src/qemu_hot_fork_world_resource.rs"
+source = "crates/crucible-daemon/src/qemu_hot_fork_world_resource/tests.rs"
 selector = "qemu_hot_fork_world_resource::tests::partial_world_ambiguous_failure_quarantines_the_aggregate"
 
 [[prerequisite_tests]]
 id = "world-resource-preflight"
 package = "crucible-daemon"
-source = "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests.rs"
-selector = "qemu_hot_fork_world_factory::tests::target_world_resource_preflight_rejects_before_source_checkout_or_guard_installation"
+source = "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/reconciliation/publication.rs"
+selector = "qemu_hot_fork_world_factory::tests::reconciliation::publication::target_world_resource_preflight_rejects_before_source_checkout_or_guard_installation"
 
 [[prerequisite_tests]]
 id = "child-resource-alias-readiness"
 package = "crucible-daemon"
-source = "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests.rs"
-selector = "qemu_hot_fork_world_factory::tests::child_resource_alias_rejects_before_fork_and_restores_source_world"
+source = "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/reconciliation/lifecycle.rs"
+selector = "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::child_resource_alias_rejects_before_fork_and_restores_source_world"
 
 [[prerequisite_tests]]
 id = "deterministic-pressure-demotion"

@@ -62,12 +62,10 @@ profile `[A-Za-z0-9._\-/:]+`. Constructors sort measurement IDs, metric IDs,
 cohort nodes, enumeration alternatives, and histogram boundaries before
 content addressing and reject duplicates.
 
-Scenario TOML and compact scenario forms write schema v6. Scenario v5 remains
-readable only as the exact compatibility form with no measurement definitions;
-empty definitions deliberately preserve the prior scenario identity. A
-nonempty component contributes its exact component content hash to scenario
-identity. Reproduction artifacts carrying v6 scenario bytes write outer v6,
-while prior outer v5 artifacts remain readable.
+Scenario TOML and compact scenario forms use schema v7. A nonempty measurement
+component contributes its exact component content hash to scenario identity.
+Earlier scenario or outer reproduction schemas are rejected by ordinary
+runtime admission.
 
 The measurement component's canonical body is whitespace-free UTF-8 JSON over
 the field order shown above; the repeated `metrics` Rust field has wire key
@@ -79,11 +77,12 @@ decimal JSON numbers, and collections use the canonical orders required above.
 No object map with implementation-dependent key order occurs in this body. Its
 identity is
 `H("crucible.model.measurement-definitions.v1", lowercase_hex(body))`, using
-the execution model's canonical-material hash function. Scenario compact v6
+the execution model's canonical-material hash function. Scenario compact v7
 stores that body as one length-prefixed blob and readers must re-encode and
 compare it exactly after semantic validation. Campaign `ScenarioArtifact`
-payload v1 remains the retained scenario-form-v5 profile; new scenario-form-v6
-imports use payload v2.
+record body v1 carries exact scenario-form-v7 bytes under execution-model
+payload schema v3. Ordinary runtime admission rejects every other execution-
+model payload schema.
 
 The closed v1 tags are:
 
@@ -392,10 +391,8 @@ missing or additional evidence edge, stale binding, forged or non-dense log,
 invalid guest message, noncanonical leaf, or replay disagreement fails closed.
 Immutable storage alone does not confer semantic status on either payload.
 
-Legacy measurement-set schema v1 remains readable and preserves its original
-content identity. It contains named `MeasurementSeries` values with a nonempty
-sample vector and claimed same-type aggregate, and is explicitly not a verified
-evaluation or valid new policy input. `PropertyVerdictSet` and
+The current measurement-set schema is v2 and contains replay-verified
+evaluations. `PropertyVerdictSet` and
 `CoverageProjection` remain bounded name/identity maps or sets with generic
 child-bearing envelopes. Model-owned sample production is implemented by
 T-CAM-3.3. Payload schema 2 provides the codec and replay foundation for
@@ -410,12 +407,9 @@ The daemon's local prepared-publication formats use this closed registry:
 | `crucible.executor.prepared-semantic-attempt-result` | 2 | Contains the observation, content-ordered raw measurement replay leaves, and optional finding closure. |
 | `crucible.executor.prepared-result-journal-state` | 2 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, payload limit, length, and hash. |
 
-Readers also support version 1 of both schemas for local journal recovery.
-Prepared-result version 1 contains the observation and optional finding closure
-without raw leaves; a version-1 body containing a Crucible measurement payload
-schema 2 is invalid. Journal-state version 1 omits the raw-leaf count and set
-hash. A state file and its result payload must use the same exact version;
-cross-version pairs fail closed and are never rewritten in place.
+Readers accept only version 2 of both schemas. A state file and its result
+payload must use that same exact version; mismatches fail closed and are never
+rewritten in place.
 
 The prepared-result codec validates raw-leaf closure ownership without claiming
 measurement semantics. It checks each singleton edge and its trace ID, scenario,
@@ -617,8 +611,7 @@ state. Crucible policy v1 contains the deterministic seed, the
 4,096-candidate hard bound, and the 128 MiB conservative candidate-copy work
 bound. The adapter reruns the bounded minimization before publication and the
 repository requires the trace's original to be the finding's original
-reproduction. Schema-v1 bodies remain readable and reproduce their original
-schema-v1 content IDs; they are not silently rewritten as v2.
+reproduction. Earlier reproduction bodies are rejected by ordinary runtime.
 
 The signature includes property/assertion identity, stable guest or QEMU failure
 class, relevant target/opportunity, and canonical causal evidence. It excludes

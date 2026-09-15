@@ -186,19 +186,23 @@ fn finite_static_statistical_report_preserves_exact_p_q_after_restart() -> Resul
         BTreeSet::from([0]),
     )?;
     let policy = CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([0x41; 32]),
-        CampaignMode::Statistical,
-        ExplorerPolicy::Exhaustive {
-            maximum_cardinality: 2,
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0)?,
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([0x41; 32]),
+            CampaignMode::Statistical,
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality: 2,
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0)?,
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )?
     .with_statistical_sampling_design(design)?;
 
@@ -349,21 +353,28 @@ fn finite_static_statistical_report_preserves_exact_p_q_after_restart() -> Resul
         1,
         b"statistical child".to_vec(),
     )?;
-    let measurements =
-        repository.publish_measurement_set(&MeasurementSet::new(BTreeMap::new())?)?;
+    let measurements = repository.publish_measurement_set(&MeasurementSet::from_evaluation(
+        CampaignHash::derive("test.measurement", b"statistics.measurement-definitions"),
+        1,
+        CampaignHash::derive("test.measurement", b"statistics.measurement-evaluation"),
+        b"statistics-measurements".to_vec(),
+        BTreeSet::new(),
+    )?)?;
     let properties =
         repository.publish_property_verdict_set(&PropertyVerdictSet::new(BTreeMap::new())?)?;
     let coverage = repository
         .publish_coverage_projection(&CoverageProjection::new(BTreeSet::new(), BTreeSet::new())?)?;
     let observation = Observation::new(
         attempt.id()?,
-        child,
-        child_content,
-        path.id()?,
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements,
-        properties,
-        coverage,
+        Observation::outcome(
+            child,
+            child_content,
+            path.id()?,
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurements,
+            properties,
+            coverage,
+        ),
         BTreeSet::from([request.opportunity()]),
     )?;
     let observed = repository.publish_observation(campaign, admitted.new_snapshot, &observation)?;
@@ -519,19 +530,23 @@ fn finite_static_policy_rejects_support_drift_and_unmodeled_probability_claims()
         1,
     )?;
     let legacy = CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([0x51; 32]),
-        CampaignMode::Statistical,
-        ExplorerPolicy::Exhaustive {
-            maximum_cardinality: 2,
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0)?,
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([0x51; 32]),
+            CampaignMode::Statistical,
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality: 2,
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0)?,
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )?;
     let created =
         repository.create("unmodeled-statistical", &lineage, &legacy, &BTreeMap::new())?;

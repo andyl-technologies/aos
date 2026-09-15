@@ -38,7 +38,44 @@ impl NodeSlot {
             logical_time_restore_target: AtomicU64::new(0),
             logical_time_restore_request: AtomicU32::new(0),
             logical_time_restore_ack: AtomicU32::new(0),
+            control_boundary_fault_command_frontier: AtomicU64::new(0),
+            control_boundary_capture_request: AtomicU32::new(0),
+            _pad3: [0; 4],
+            timer_witness_generation: AtomicU64::new(0),
+            timer_witness_deadline_ns: AtomicU64::new(0),
+            timer_witness_deadline_icount: AtomicU64::new(0),
+            timer_witness_armed_raw_icount: AtomicU64::new(0),
+            timer_witness_fired_expire_ns: AtomicU64::new(0),
+            timer_witness_fired_virtual_ns: AtomicU64::new(0),
+            timer_witness_fired_raw_icount: AtomicU64::new(0),
+            timer_witness_completed: AtomicU32::new(0),
+            timer_witness_reserved: AtomicU32::new(0),
+            _pad4: [0; 48],
         }
+    }
+
+    /// Publishes one plugin-validated actual virtual-timer callback witness.
+    pub fn publish_virtual_timer_witness(&self, witness: VirtualTimerFireWitness) {
+        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.timer_witness_deadline_ns
+            .store(witness.deadline_ns, Ordering::Release);
+        self.timer_witness_deadline_icount
+            .store(witness.deadline_icount, Ordering::Release);
+        self.timer_witness_armed_raw_icount
+            .store(witness.armed_raw_icount, Ordering::Release);
+        self.timer_witness_fired_expire_ns
+            .store(witness.fired_expire_ns, Ordering::Release);
+        self.timer_witness_fired_virtual_ns
+            .store(witness.fired_virtual_ns, Ordering::Release);
+        self.timer_witness_fired_raw_icount
+            .store(witness.fired_raw_icount, Ordering::Release);
+        self.timer_witness_completed
+            .store(witness.completed, Ordering::Release);
+        self.timer_witness_reserved
+            .store(witness.reserved, Ordering::Release);
+        self.timer_witness_generation
+            .store(witness.generation, Ordering::Release);
+        self.publish_gen.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Publishes a scheduler-computed advance ceiling and returns the wake action.
@@ -416,6 +453,12 @@ impl NodeSlot {
                 device_io_active: self.device_io_active.load(Ordering::Acquire),
                 publish_gen: before,
                 control_boundary_ack,
+                control_boundary_fault_command_frontier: self
+                    .control_boundary_fault_command_frontier
+                    .load(Ordering::Acquire),
+                control_boundary_capture_request: self
+                    .control_boundary_capture_request
+                    .load(Ordering::Acquire),
                 logical_time_raw_icount: self.logical_time_raw_icount.load(Ordering::Acquire),
                 logical_time_restore_target: self
                     .logical_time_restore_target
@@ -424,6 +467,26 @@ impl NodeSlot {
                     .logical_time_restore_request
                     .load(Ordering::Acquire),
                 logical_time_restore_ack: self.logical_time_restore_ack.load(Ordering::Acquire),
+                virtual_timer_witness: match self.timer_witness_generation.load(Ordering::Acquire) {
+                    0 => None,
+                    generation => Some(VirtualTimerFireWitness {
+                        generation,
+                        deadline_ns: self.timer_witness_deadline_ns.load(Ordering::Acquire),
+                        deadline_icount: self.timer_witness_deadline_icount.load(Ordering::Acquire),
+                        armed_raw_icount: self
+                            .timer_witness_armed_raw_icount
+                            .load(Ordering::Acquire),
+                        fired_expire_ns: self.timer_witness_fired_expire_ns.load(Ordering::Acquire),
+                        fired_virtual_ns: self
+                            .timer_witness_fired_virtual_ns
+                            .load(Ordering::Acquire),
+                        fired_raw_icount: self
+                            .timer_witness_fired_raw_icount
+                            .load(Ordering::Acquire),
+                        completed: self.timer_witness_completed.load(Ordering::Acquire),
+                        reserved: self.timer_witness_reserved.load(Ordering::Acquire),
+                    }),
+                },
             };
             let after = self.publish_gen.load(Ordering::Acquire);
             if before == after && after.is_multiple_of(2) {
@@ -435,7 +498,10 @@ impl NodeSlot {
     /// Returns `true` when all forward-compatible reserved slot bytes are zero.
     #[must_use]
     pub fn reserved_bytes_are_zero(&self) -> bool {
-        self._pad0 == 0 && self._pad2.iter().all(|byte| *byte == 0)
+        self._pad0 == 0
+            && self._pad2.iter().all(|byte| *byte == 0)
+            && self._pad3.iter().all(|byte| *byte == 0)
+            && self._pad4.iter().all(|byte| *byte == 0)
     }
 
     /// Requests one QEMU main-loop control boundary and wakes an idle plugin.
@@ -453,17 +519,47 @@ impl NodeSlot {
     ///
     /// Returns [`NodeSlotError::FutexWake`] when the non-private futex wake
     /// syscall fails.
-    pub fn request_control_boundary(&self) -> Result<u32, NodeSlotError> {
+    pub fn request_control_boundary(
+        &self,
+        fault_command_frontier: u64,
+        capture_request: Option<u32>,
+    ) -> Result<u32, NodeSlotError> {
+        let capture_request = capture_request.unwrap_or(0);
+        if capture_request != 0 && capture_request & 1 == 0 {
+            return Err(NodeSlotError::InvalidControlBoundaryCaptureRequest {
+                request: capture_request,
+            });
+        }
         let request = loop {
             let observed = self.control_boundary_ack.load(Ordering::Acquire);
             if observed & 1 == 0 {
+                let observed_frontier = self
+                    .control_boundary_fault_command_frontier
+                    .load(Ordering::Acquire);
+                let observed_capture = self
+                    .control_boundary_capture_request
+                    .load(Ordering::Acquire);
+                if observed_frontier != fault_command_frontier
+                    || observed_capture != capture_request
+                {
+                    return Err(NodeSlotError::ControlBoundaryRequestChanged {
+                        expected_frontier: observed_frontier,
+                        observed_frontier: fault_command_frontier,
+                        expected_capture_request: observed_capture,
+                        observed_capture_request: capture_request,
+                    });
+                }
                 break observed;
             }
             let request = observed.wrapping_add(1);
+            self.control_boundary_fault_command_frontier
+                .store(fault_command_frontier, Ordering::Relaxed);
+            self.control_boundary_capture_request
+                .store(capture_request, Ordering::Relaxed);
             match self.control_boundary_ack.compare_exchange(
                 observed,
                 request,
-                Ordering::AcqRel,
+                Ordering::Release,
                 Ordering::Acquire,
             ) {
                 Ok(_) => break request,
@@ -473,6 +569,22 @@ impl NodeSlot {
         self.wake_after_signal_increment()
             .map_err(|source| NodeSlotError::FutexWake { source })?;
         Ok(request)
+    }
+
+    /// Returns the fault-command frontier bound to the pending control request.
+    #[must_use]
+    pub fn control_boundary_fault_command_frontier(&self) -> u64 {
+        self.control_boundary_fault_command_frontier
+            .load(Ordering::Acquire)
+    }
+
+    /// Returns the fingerprint request generation bound to the control request.
+    #[must_use]
+    pub fn control_boundary_capture_request(&self) -> Option<u32> {
+        let request = self
+            .control_boundary_capture_request
+            .load(Ordering::Acquire);
+        (request != 0).then_some(request)
     }
 
     /// Returns whether the host has published an unacknowledged even request.

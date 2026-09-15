@@ -16,10 +16,9 @@ use crucible_campaign::{
     ChoiceCoordinate, ChoiceDomain, ChoiceOpportunity, ChoicePolicy, ChoiceSource, ChoiceValue,
     ConfigurationId, ControlRequest, CoverageProjection, DaemonEpoch, ExecutionId,
     ExecutionRetentionIntent, ExecutorClient, ExecutorRejection, ExecutorService, ExplorerPolicy,
-    FairnessPolicy, MeasurementSeries, MeasurementSet, MetricValue, Observation,
-    ObservationDisposition, ProgressiveWideningPolicy, PropertyEvidence, PropertyVerdict,
-    PropertyVerdictSet, Proposal, PuctPolicy, RetentionPolicy, ScenarioDefId,
-    SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
+    FairnessPolicy, MeasurementSet, Observation, ObservationDisposition, ProgressiveWideningPolicy,
+    PropertyEvidence, PropertyVerdict, PropertyVerdictSet, Proposal, PuctPolicy, RetentionPolicy,
+    ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
     SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
 };
 use crucible_cas::content_store::{
@@ -194,6 +193,7 @@ fn public_repository_and_executor_seams_cover_the_idempotence_matrix() {
         admitted.attempt,
         resources,
         ExecutionRetentionIntent::RetainOnFailure,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("first assignment request");
     before_publication
@@ -219,6 +219,7 @@ fn public_repository_and_executor_seams_cover_the_idempotence_matrix() {
         first_assignment.attempt(),
         resources,
         ExecutionRetentionIntent::RetainOnFailure,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("retry assignment request");
     let during_execution = executor
@@ -235,6 +236,7 @@ fn public_repository_and_executor_seams_cover_the_idempotence_matrix() {
         first_assignment.attempt(),
         AttemptResourceLimits::new(2, 256 * 1024 * 1024, 0, 10_000).expect("conflicting limits"),
         ExecutionRetentionIntent::RetainOnFailure,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("conflicting assignment request");
     assert_eq!(
@@ -388,20 +390,24 @@ fn fixture() -> (
     )
     .expect("widening");
     let policy = CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([7; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            widening: Some(widening),
-            puct: PuctPolicy::new(1_000_000, 1, 0),
-        },
-        BTreeMap::<String, ChoicePolicy>::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([7; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                widening: Some(widening),
+                puct: PuctPolicy::new(1_000_000, 1, 0),
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::<String, ChoicePolicy>::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("policy");
 
@@ -557,10 +563,12 @@ fn branch_request(
         .publish_choice_opportunity(&opportunity)
         .expect("publish opportunity");
     let request = BranchRequest::new(
-        opportunity.branch_point_id(lineage.genesis()),
-        lineage.genesis_content(),
-        opportunity.id().expect("opportunity id"),
-        domain.id().expect("domain id"),
+        BranchRequest::identity(
+            opportunity.branch_point_id(lineage.genesis()),
+            lineage.genesis_content(),
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
         CandidateSource::finite(BTreeSet::from([
             ChoiceValue::Boolean(false),
             ChoiceValue::Boolean(true),
@@ -599,15 +607,19 @@ fn build_observation(
             format!("child:{latency}").into_bytes(),
         )
         .expect("child artifact");
-    let measurements = MeasurementSet::new(BTreeMap::from([(
-        "latency".to_owned(),
-        MeasurementSeries::new(
-            vec![MetricValue::Unsigned(latency)],
-            MetricValue::Unsigned(latency),
-            BTreeSet::new(),
-        )
-        .expect("measurement series"),
-    )]))
+    let measurements = MeasurementSet::from_evaluation(
+        CampaignHash::derive(
+            "test.measurement",
+            b"attempt-idempotence.measurement-definitions",
+        ),
+        1,
+        CampaignHash::derive(
+            "test.measurement",
+            b"attempt-idempotence.measurement-evaluation",
+        ),
+        latency.to_be_bytes().to_vec(),
+        BTreeSet::new(),
+    )
     .expect("measurement set");
     let measurements = repository
         .publish_measurement_set(&measurements)
@@ -634,13 +646,15 @@ fn build_observation(
 
     Observation::new(
         attempt,
-        child,
-        child_content,
-        path.id().expect("path id"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements,
-        properties,
-        coverage,
+        Observation::outcome(
+            child,
+            child_content,
+            path.id().expect("path id"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurements,
+            properties,
+            coverage,
+        ),
         BTreeSet::from([request.opportunity()]),
     )
     .expect("observation")

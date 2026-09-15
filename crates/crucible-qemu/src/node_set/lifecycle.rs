@@ -82,18 +82,8 @@ impl QemuNodeSet {
     /// the restored guest.
     pub fn resume_restored_generation(&mut self, node: &NodeId) -> Result<(), BackendError> {
         self.node_mut(node)?
-            .boot_powered_off_generation()
+            .resume_after_restore()
             .map_err(BackendError::from)
-    }
-
-    /// Boots one prepared power-off process generation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when the node is absent or QMP cannot resume
-    /// the restored guest.
-    pub fn boot_powered_off_generation(&mut self, node: &NodeId) -> Result<(), BackendError> {
-        self.resume_restored_generation(node)
     }
 
     /// Contains every node named by one owned lifecycle publication batch.
@@ -203,51 +193,87 @@ impl QemuNodeSet {
         plan.retired
     }
 
-    /// Captures one live node's complete exact snapshot at a completed boundary.
+    /// Captures one guarded exact candidate with sticky attempt cancellation.
     ///
     /// # Errors
     ///
-    /// Returns [`BackendError`] when the node is absent or VMState, host-I/O,
-    /// or scheduler-facing continuation capture fails.
-    pub fn capture_exact_snapshot(
+    /// Returns [`BackendError`] when the node is absent, lacks its guarded
+    /// process cancellation event, or QEMU cannot complete capture.
+    #[cfg(target_os = "linux")]
+    pub fn capture_exact_checkpoint_for_publication_guarded(
         &mut self,
         node: &NodeId,
         checkpoint: crucible::Checkpoint,
-    ) -> Result<QemuVmSnapshot, BackendError> {
+        admission: crate::QemuExactCheckpointCaptureAdmission,
+    ) -> Result<crate::QemuExactCheckpointCaptureResult, BackendError> {
         self.node_mut(node)?
-            .capture_exact_snapshot(node, checkpoint)
+            .capture_exact_checkpoint_for_publication_guarded(node, checkpoint, admission)
             .map_err(BackendError::from)
     }
 
-    /// Captures one live node without resuming its intentionally paused process.
+    /// Captures one guarded paused candidate with sticky attempt cancellation.
     ///
     /// # Errors
     ///
-    /// Returns [`BackendError`] when the node is absent or exact continuation
-    /// capture fails.
-    pub fn capture_exact_snapshot_paused(
+    /// Returns [`BackendError`] under the same conditions as
+    /// [`Self::capture_exact_checkpoint_for_publication_guarded`].
+    #[cfg(target_os = "linux")]
+    pub fn capture_exact_checkpoint_paused_guarded(
         &mut self,
         node: &NodeId,
         checkpoint: crucible::Checkpoint,
-    ) -> Result<QemuVmSnapshot, BackendError> {
+        admission: crate::QemuExactCheckpointCaptureAdmission,
+    ) -> Result<crate::QemuExactCheckpointCaptureResult, BackendError> {
         self.node_mut(node)?
-            .capture_exact_snapshot_paused(node, checkpoint)
+            .capture_exact_checkpoint_paused_guarded(node, checkpoint, admission)
             .map_err(BackendError::from)
     }
 
-    /// Captures a running node and leaves successful source artifacts paused.
+    /// Commits one durably published QEMU checkpoint candidate.
     ///
     /// # Errors
     ///
-    /// Returns [`BackendError`] when the node is absent or exact continuation
-    /// capture fails. A determinate pre-save failure resumes the running node.
-    pub fn capture_exact_snapshot_for_publication(
+    /// Returns [`BackendError`] when the node is absent or QEMU cannot advance
+    /// the exact committed epoch.
+    pub fn commit_exact_checkpoint(
         &mut self,
         node: &NodeId,
-        checkpoint: crucible::Checkpoint,
-    ) -> Result<QemuVmSnapshot, BackendError> {
+        identity: crate::QmpCheckpointIdentity,
+    ) -> Result<crate::QmpCheckpointEpochState, BackendError> {
         self.node_mut(node)?
-            .capture_exact_snapshot_for_publication(node, checkpoint)
+            .commit_exact_checkpoint(identity)
+            .map_err(BackendError::from)
+    }
+
+    /// Aborts one unpublished QEMU checkpoint candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or QEMU cannot retain
+    /// the expected committed parent.
+    pub fn abort_exact_checkpoint(
+        &mut self,
+        node: &NodeId,
+        identity: crate::QmpCheckpointIdentity,
+        expected_committed: Option<crate::QmpCheckpointIdentity>,
+    ) -> Result<crate::QmpCheckpointEpochState, BackendError> {
+        self.node_mut(node)?
+            .abort_exact_checkpoint(identity, expected_committed)
+            .map_err(BackendError::from)
+    }
+
+    /// Queries one node's exact QEMU checkpoint epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or its QMP epoch cannot
+    /// be authenticated.
+    pub fn query_exact_checkpoint_epoch(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<crate::QmpCheckpointEpochState, BackendError> {
+        self.node_mut(node)?
+            .query_exact_checkpoint_epoch()
             .map_err(BackendError::from)
     }
 
@@ -263,26 +289,12 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
-    /// Captures one terminal lifecycle transition without resuming QEMU.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when the node is absent or its exact VMState and
-    /// host-I/O continuation cannot be captured at the completed boundary.
-    pub fn capture_terminal_lifecycle_snapshot(
-        &mut self,
-        node: &NodeId,
-        checkpoint: crucible::Checkpoint,
-    ) -> Result<QemuVmSnapshot, BackendError> {
-        self.capture_terminal_lifecycle_snapshot_shared(node, Arc::new(checkpoint))
-    }
-
     /// Captures a terminal transition while sharing immutable scheduler state.
     ///
     /// # Errors
     ///
-    /// Returns [`BackendError`] under the same conditions as
-    /// [`Self::capture_terminal_lifecycle_snapshot`].
+    /// Returns [`BackendError`] when the node is absent or its terminal
+    /// checkpoint cannot be validated and captured.
     pub fn capture_terminal_lifecycle_snapshot_shared(
         &mut self,
         node: &NodeId,

@@ -3,7 +3,7 @@
 //! The versioned envelope records withheld proofs explicitly:
 //!
 //! ```text
-//! { "schema-version": 24, "generation": N, "outcome": "draining",
+//! { "schema-version": 26, "generation": N, "outcome": "draining",
 //!   "acknowledged-proofs": A, "missing-proofs": M, ... }
 //! ```
 //!
@@ -22,7 +22,7 @@ use super::{
 };
 use crate::qmp::hot_fork::{
     QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS, QmpHotForkPluginBarrierState,
-    bh_timer_barrier::parse_hot_fork_bh_timer_barrier_state_for,
+    async_worker_barrier::parse_hot_fork_async_worker_barrier_state_for,
     block_barrier::parse_hot_fork_block_barrier_state_for,
     plugin::parse_hot_fork_plugin_barrier_state_for,
     rcu_barrier::parse_hot_fork_rcu_barrier_state_for,
@@ -47,7 +47,7 @@ pub(crate) fn parse_hot_fork_template_state(
         "missing-proofs",
         "plugin-barrier",
         "rcu-barrier",
-        "bh-timer-barrier",
+        "async-worker-barrier",
         "block-barrier",
         "resource-stage",
         "rollback-complete",
@@ -97,9 +97,9 @@ pub(crate) fn parse_hot_fork_template_state(
         QmpCommandKind::HotForkTemplate,
         object.get("rcu-barrier").ok_or_else(&malformed)?,
     )?;
-    let bh_timer_barrier = parse_hot_fork_bh_timer_barrier_state_for(
+    let async_worker_barrier = parse_hot_fork_async_worker_barrier_state_for(
         QmpCommandKind::HotForkTemplate,
-        object.get("bh-timer-barrier").ok_or_else(&malformed)?,
+        object.get("async-worker-barrier").ok_or_else(&malformed)?,
     )?;
     let block_barrier = parse_hot_fork_block_barrier_state_for(
         QmpCommandKind::HotForkTemplate,
@@ -129,14 +129,14 @@ pub(crate) fn parse_hot_fork_template_state(
         && transaction_active
         && plugin_barrier.quiescent()
         && rcu_barrier.quiescent()
-        && bh_timer_barrier.quiescent()
+        && async_worker_barrier.quiescent()
         && block_barrier.quiescent()
         && block_barrier.snapshot_complete()
         && missing_proofs == 0;
     let expected_rollback = !transaction_active
         && !plugin_barrier.held()
         && !rcu_barrier.held()
-        && !bh_timer_barrier.held()
+        && !async_worker_barrier.held()
         && !block_barrier.held()
         && !block_barrier.snapshot_bound();
     let rcu_proof_valid = (acknowledged_proofs & QMP_HOT_FORK_RCU_PROOF != 0)
@@ -146,7 +146,7 @@ pub(crate) fn parse_hot_fork_template_state(
     // closes. Preserve that draining state; only the complete proof mask can
     // authorize Prepared.
     let aio_proof_valid = acknowledged_proofs & QMP_HOT_FORK_AIO_PROOF == 0
-        || (transaction_active && bh_timer_barrier.quiescent());
+        || (transaction_active && async_worker_barrier.quiescent());
     let block_proof_valid = (acknowledged_proofs & QMP_HOT_FORK_BLOCK_PROOF != 0)
         == (transaction_active
             && block_barrier.snapshot_complete()
@@ -154,11 +154,11 @@ pub(crate) fn parse_hot_fork_template_state(
     let plugin_ring_proof_valid =
         plugin_ring_proof_shape_valid(acknowledged_proofs, resource_stage);
     let ordinary_barriers_unheld =
-        !plugin_barrier.held() && !rcu_barrier.held() && !bh_timer_barrier.held();
+        !plugin_barrier.held() && !rcu_barrier.held() && !async_worker_barrier.held();
     let all_barriers_held = plugin_barrier.held()
         && !plugin_barrier.teardown_closed()
         && rcu_barrier.held()
-        && bh_timer_barrier.held()
+        && async_worker_barrier.held()
         && block_barrier.held()
         && block_barrier.snapshot_complete();
     let shape_valid = match outcome {
@@ -191,7 +191,7 @@ pub(crate) fn parse_hot_fork_template_state(
                 && !rollback_complete
                 && plugin_barrier.quiescent()
                 && rcu_barrier.quiescent()
-                && bh_timer_barrier.quiescent()
+                && async_worker_barrier.quiescent()
                 && block_barrier.quiescent()
                 && block_barrier.snapshot_complete()
                 && ready
@@ -225,7 +225,7 @@ pub(crate) fn parse_hot_fork_template_state(
         missing_proofs,
         plugin_barrier,
         rcu_barrier,
-        bh_timer_barrier,
+        async_worker_barrier,
         block_barrier,
         resource_stage,
         rollback_complete,

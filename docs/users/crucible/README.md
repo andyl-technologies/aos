@@ -33,7 +33,7 @@ State(t) = reduce(ScenarioDef, Schedule[0..t])
 
 This distinction matters operationally. A `Plan` says what may happen; a
 `Schedule` records what did happen. A checkpoint is a position in that recorded
-execution. Save, resume, fork, replay, and search all operate on the same
+execution. Save, resume, replay, and search all operate on the same
 content-addressed execution graph.
 
 ## When to use it
@@ -103,11 +103,11 @@ Other built-in inputs are:
 ```text
 builtin:partition-recovery.scn
 builtin:crash-restart.scn
-builtin:fault-campaign
+fault-campaign.fam
 ```
 
-The first three are scenarios. `builtin:fault-campaign` can also identify the
-built-in family used by `fuzz`.
+The `.scn` names identify built-in scenarios. `fault-campaign.fam` identifies
+the built-in family used by `fuzz`.
 
 ## Operational workflow
 
@@ -118,7 +118,8 @@ The usual progression is:
 3. Inspect the event log and branch on the process exit code.
 4. Use `verify` to compare independent reductions.
 5. Replay any emitted failure artifact before changing the scenario.
-6. Save, resume, or fork when investigating a particular execution prefix.
+6. Save or resume when investigating a particular execution prefix; use
+   `campaign branch` for an authenticated alternate Campaign decision.
 7. Use bounded `search` or `fuzz` only after ordinary runs are deterministic.
 8. Cluster retained findings with `triage`.
 
@@ -173,7 +174,7 @@ For deeper work:
 - [Fault-model migration](fault-model-migration.md) explains the required
   one-way move to the signal-driven schema and why old plans are not translated.
 - [Reproduction and branching](reproduction.md) explains `verify`, artifacts,
-  `replay`, `save`, `resume`, and `fork`.
+  `replay`, `save`, and `resume`.
 - [Exploration](exploration.md) covers bounded search, fuzzing, and triage.
 - [Lazy campaigns](campaigns.md) covers the single-host campaign repository,
   verified import, lifecycle control, authenticated inspection, and current

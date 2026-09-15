@@ -157,7 +157,7 @@ inline control bytes, so they are
 passed as ancillary data on the control socket rather than serialized into a
 payload.
 
-- **[PROTO-8]** Control-protocol v2 and v3 require the host to hand the plugin
+- **[PROTO-8]** Control-protocol v3 requires the host to hand the plugin
   exactly three file descriptors — the
   **shmem fd** (a `memfd` or equivalent mapping the region of
   [`13-shmem-abi.md`](13-shmem-abi.md)) and the node's **wake fd** (an `eventfd`
@@ -232,23 +232,12 @@ reject a truncated region.
   fd for exactly `region_len` bytes, validate the region header/ABI marker per
   [`13-shmem-abi.md`](13-shmem-abi.md), arm the wake fd, and authenticate the
   third descriptor as a regular memfd sealed against write, growth, shrink, and
-  seal changes. Under negotiated v2, the branch-plan body is at most 4 MiB and
-  has the exact grammar
-  `8-byte "CRUCABP1" magic | u32 BE version=1 | u32 BE entry_count | entries`,
-  with no trailing bytes and at most 4,096 entries. Each entry is
-  `u64 BE draw_index | u64 BE expected_raw_value | u64 BE selected_value |
-  32-byte SelectionId digest | u16 BE stream_name_len |
-  UTF-8 canonical_stream_name`; draw indices are strictly increasing and a
-  stream name is 1..=1,024 bytes in the canonical length-framed app-random
-  syntax. Under negotiated v3, the third descriptor instead carries the
-  canonical `CRUCSUP1` version-1 composite defined by RFC-0020 §02.7: its exact
+  seal changes. The third descriptor carries the canonical `CRUCSUP2`
+  version-2 composite defined by RFC-0020 §02.7: its exact
   length fields partition one canonical app-random plan and one canonical
   selectable catalog plan, its total length is at most 36 MiB plus 28 bytes,
-  and no alternate or trailing encoding is accepted. A v2 peer MUST reject the
-  composite body and a v3 peer MUST reject the raw v2 body. Only then may the
-  plugin reply `SetupAck`. A host with any non-default selectable catalog or
-  continuation MUST reject negotiation below v3 rather than silently sending
-  only the app-random subplan. *Gate:*
+  and no alternate or trailing encoding is accepted. Only then may the plugin
+  reply `SetupAck`. *Gate:*
   `gate:abi-conformance`. *Spec:* §3.7, §5.
 
 ### 3.8 `SetupAck` (plugin → host, tag `0x02`)
@@ -475,10 +464,10 @@ The control channel is determinism-neutral by construction.
   and `HostMsg` with typed errors (empty, unknown tag, short/long payload,
   oversize length) and the frame read/write helpers (truncated prefix/payload
   rejected). — satisfies [PROTO-5], [PROTO-6], [PROTO-22]; spec §6.
-- [x] **T-PROTO-3** Implement the control-protocol v2/v3 `SCM_RIGHTS` descriptor
+- [x] **T-PROTO-3** Implement the control-protocol v3 `SCM_RIGHTS` descriptor
   handover on `Setup`: host attaches
-  `[shmem_fd, wake_fd, plugin_setup_plan_fd]` in fixed order; v2 carries raw
-  `CRUCABP1`, v3 carries composite `CRUCSUP1`, and the plugin reads exactly
+  `[shmem_fd, wake_fd, plugin_setup_plan_fd]` in fixed order; the plan fd carries
+  composite `CRUCSUP2`, and the plugin reads exactly
   three fds and fails setup on any other count. — satisfies [PROTO-8],
   [PROTO-9], [PROTO-12]; spec §3.4, §3.7.
 - [x] **T-PROTO-4** Implement the handshake: plugin sends `Hello(proto, abi)`,
@@ -507,7 +496,13 @@ The control channel is determinism-neutral by construction.
 - [x] **T-PROTO-8** Implement clean failure handling for all setup failure modes
   (no version overlap, ABI mismatch, bad slot, wrong fd count, short/invalid
   region, non-zero SetupAck, premature socket close): abort the node, escalate
-  teardown, reap the child. — satisfies [PROTO-21]; spec §5.4.
+  teardown, reap the child. The current
+  `checks.crucible.phase2.qemuProductionSetupFailure` contract exercises
+  descriptor handoff, a non-ready setup acknowledgement, plugin-side validation
+  of a real corrupted mapped region, and the production launch cleanup that
+  reaps real children after both invalid-region and post-descriptor failed-ACK
+  setup before scheduler admission. The shutdown-escalation gate
+  consumes that result. — satisfies [PROTO-21]; spec §5.4.
 - [x] **T-PROTO-9** Freeze the protocol golden-vector corpus (Hello, HelloAck,
   Setup payload, SetupAck, Quit at the current `proto_version`) and wire it into
   `gate:abi-conformance` with the version-bump-regenerates rule. — satisfies

@@ -667,8 +667,8 @@ the one temporal graph (07). This section states the session-level contract;
   the fat form is a cache.
 
 - **resume** is `instantiate` of the configuration the savepoint records (05 §5):
-  `loadvm` of its fat snapshot, or replay-from-nearest-fat-ancestor if it is thin
-  (07 §4). A session created from a savepoint is *not* a special "restored"
+  version-nine descriptor-backed exact restore, or explicit replay from the
+  nearest retained ancestor (07 §4). A session created from a savepoint is *not* a special "restored"
   object — it is a fresh session at the checkpoint's recorded configuration and
   runtime frontier. The configuration may still be genesis when deterministic
   execution advanced without appending a causal schedule decision.
@@ -681,8 +681,9 @@ the one temporal graph (07). This section states the session-level contract;
 The headline (05 §5): **a session is created at genesis OR resumed from any
 checkpoint identically** — both are `instantiate` of a configuration,
 distinguished only by the recorded checkpoint boundary. There is no `boot()`
-distinct from `loadvm()` distinct from `fork()` at the session level any more
-than there is at the model level.
+distinct from `resume()` distinct from `fork()` at the session level any more
+than there is at the model level; realization still selects a bounded backend
+mechanism under that single operation.
 
 - **[SESS-18]** `create_savepoint`, `resume` (instantiate-from-checkpoint), and
   `fork` MUST be implemented purely as operations on the execution model (05) and
@@ -915,8 +916,8 @@ pub trait SimulationBackend {
     /// Returns an error if a node's state cannot be captured.
     fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError>;
 
-    /// Restore the backend to a prior snapshot (the `loadvm` branch of
-    /// `instantiate`, 05 §5).
+    /// Restore the backend to a prior version-nine descriptor-backed snapshot
+    /// (the exact branch of `instantiate`, 05 §5).
     ///
     /// # Errors
     /// Returns an error if the snapshot cannot be restored.
@@ -1116,8 +1117,8 @@ pub enum SessionError {
   - Completed by `checks.crucible.phase5.sessionBoundaryControl`:
     `crucible-session` now records accepted running boundary commands in an
     engine-owned `SessionControlLogEntry` sequence keyed by virtual-time frontier
-    and completed quantum count, including scheduler control payloads for legacy
-    injection and injected/healed faults, plus local boundary effects for
+    and completed quantum count, including scheduler control payloads for
+    injected and healed faults, plus local boundary effects for
     breakpoint mutation, savepoint creation, fork, pause, and stop.
     Focused tests prove the actor applies these commands at nonzero deterministic
     boundary coordinates, applies scheduler-backed controls synchronously so a

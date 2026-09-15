@@ -5,7 +5,7 @@ use std::os::fd::AsFd as _;
 use std::sync::Arc;
 
 use crucible::{
-    AppRandomDecision, Decision, NodeId, ObservableEvent, RngStreamId, SchedulerError,
+    BackendRngEvidence, NodeId, ObservableEvent, RngStreamId, SchedulerError,
     SchedulerSendAuthorization, SchedulerSendAuthorizer, VirtualTime,
 };
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
@@ -72,17 +72,15 @@ fn hot_fork_clone_copies_host_state_onto_an_independent_private_mapping()
             None,
             [1, 2, 3],
         ));
-    source
-        .pending_app_random_decisions
-        .push(Decision::AppRandom(AppRandomDecision {
-            node: NodeId {
-                name: String::from("vm-a"),
-            },
-            stream: RngStreamId::from_name("branch-private"),
-            request_id: 43,
-            width: 8,
-            value: 47,
-        }));
+    source.pending_rng_evidence.push(BackendRngEvidence {
+        node: NodeId {
+            name: String::from("vm-a"),
+        },
+        stream: RngStreamId::from_name("branch-private"),
+        request_id: 43,
+        width: 8,
+        value: 47,
+    });
     source
         .pending_selectable_requests
         .push(SelectablePlanPendingRequest::new(
@@ -118,10 +116,7 @@ fn hot_fork_clone_copies_host_state_onto_an_independent_private_mapping()
     );
     assert_eq!(child.last_marker_icount, source.last_marker_icount);
     assert_eq!(child.pending_marker_events, source.pending_marker_events);
-    assert_eq!(
-        child.pending_app_random_decisions,
-        source.pending_app_random_decisions
-    );
+    assert_eq!(child.pending_rng_evidence, source.pending_rng_evidence);
     assert_eq!(
         child.pending_selectable_requests,
         source.pending_selectable_requests
@@ -135,14 +130,14 @@ fn hot_fork_clone_copies_host_state_onto_an_independent_private_mapping()
     child.next_router_inbound_sequence += 1;
     child.inbound_delivery_ledger.clear();
     child.pending_marker_events.clear();
-    child.pending_app_random_decisions.clear();
+    child.pending_rng_evidence.clear();
     child.pending_selectable_requests.clear();
     child.queued_selectable_reply = None;
 
     assert_eq!(source.next_router_inbound_sequence, 7);
     assert_eq!(source.inbound_delivery_ledger.len(), 1);
     assert_eq!(source.pending_marker_events.len(), 1);
-    assert_eq!(source.pending_app_random_decisions.len(), 1);
+    assert_eq!(source.pending_rng_evidence.len(), 1);
     assert_eq!(source.pending_selectable_requests.len(), 1);
     assert!(source.queued_selectable_reply.is_some());
     Ok(())

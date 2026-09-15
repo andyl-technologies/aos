@@ -1,4 +1,3 @@
-#include <ctype.h>
 #include <glib.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -8,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
@@ -29,13 +29,20 @@ struct traced_insn {
   bool marker;
 };
 
-struct register_set {
-  qemu_plugin_reg_descriptor *registers;
-  size_t count;
-  struct qemu_plugin_register *rdi;
-  struct qemu_plugin_register *rsi;
-  struct qemu_plugin_register *rdx;
-  bool initialized;
+struct canonical_register_values {
+  uint64_t count;
+  uint64_t rdi;
+  uint64_t rsi;
+  uint64_t rdx;
+  bool has_rdi;
+  bool has_rsi;
+  bool has_rdx;
+};
+
+struct canonical_register_reader {
+  const unsigned char *bytes;
+  size_t length;
+  size_t offset;
 };
 
 static FILE *out_file;
@@ -50,10 +57,12 @@ static uint64_t read_successes;
 static uint64_t read_failures;
 static uint64_t bytes_mismatches;
 static uint64_t register_read_failures;
+static unsigned int pending_marker_vcpu;
+static bool marker_pending;
 static bool stop_requested;
+static bool stop_control_requested;
 static bool stop_admitted;
 static bool final_recorded;
-static struct register_set register_sets[MAX_TRACKED_VCPUS];
 
 static uint64_t
 fnv1a_u64(uint64_t hash, uint64_t value)
@@ -75,14 +84,36 @@ fnv1a_bytes(uint64_t hash, const unsigned char *bytes, size_t len)
   return hash;
 }
 
-static uint64_t
-fnv1a_cstr(uint64_t hash, const char *text)
+static int
+sha256_fd(int fd, uint64_t length, unsigned char digest[32])
 {
-  if (text == NULL) {
-    return fnv1a_u64(hash, UINT64_MAX);
+  unsigned char buffer[64 * 1024];
+  GChecksum *checksum = g_checksum_new(G_CHECKSUM_SHA256);
+  uint64_t remaining = length;
+
+  if (fd < 0 || length == 0 || checksum == NULL) {
+    if (checksum != NULL) {
+      g_checksum_free(checksum);
+    }
+    return -1;
   }
-  hash = fnv1a_bytes(hash, (const unsigned char *)text, strlen(text));
-  return fnv1a_u64(hash, 0xffU);
+  while (remaining != 0) {
+    const size_t requested = remaining < sizeof(buffer)
+                                 ? (size_t)remaining
+                                 : sizeof(buffer);
+    const ssize_t received = read(fd, buffer, requested);
+
+    if (received <= 0) {
+      g_checksum_free(checksum);
+      return -1;
+    }
+    g_checksum_update(checksum, buffer, (gssize)received);
+    remaining -= (uint64_t)received;
+  }
+  gsize digest_length = 32;
+  g_checksum_get_digest(checksum, digest, &digest_length);
+  g_checksum_free(checksum);
+  return digest_length == 32 ? 0 : -1;
 }
 
 static const char *
@@ -150,146 +181,191 @@ decode_marker(const struct traced_insn *insn)
 }
 
 static bool
-name_matches(const char *name, const char *target)
+read_canonical_u64(struct canonical_register_reader *reader, uint64_t *value)
 {
-  char lower[128];
-  size_t n = 0;
-
-  if (name == NULL) {
+  if (reader->offset > reader->length ||
+      reader->length - reader->offset < sizeof(*value)) {
     return false;
   }
 
-  for (; name[n] != '\0' && n + 1U < sizeof(lower); n++) {
-    lower[n] = (char)tolower((unsigned char)name[n]);
+  *value = 0;
+  for (size_t index = 0; index < sizeof(*value); index++) {
+    *value |= (uint64_t)reader->bytes[reader->offset + index] << (index * 8);
   }
-  lower[n] = '\0';
+  reader->offset += sizeof(*value);
+  return true;
+}
 
-  if (strcmp(lower, target) == 0) {
-    return true;
-  }
-  if (lower[0] == '%' && strcmp(lower + 1, target) == 0) {
-    return true;
+static bool
+read_canonical_bytes(
+    struct canonical_register_reader *reader,
+    const unsigned char **bytes,
+    size_t *length)
+{
+  uint64_t encoded_length;
+
+  if (!read_canonical_u64(reader, &encoded_length) ||
+      encoded_length > SIZE_MAX || reader->offset > reader->length ||
+      encoded_length > reader->length - reader->offset) {
+    return false;
   }
 
-  const size_t lower_len = strlen(lower);
+  *bytes = reader->bytes + reader->offset;
+  *length = (size_t)encoded_length;
+  reader->offset += *length;
+  return true;
+}
+
+static bool
+register_name_matches(
+    const unsigned char *name,
+    size_t name_len,
+    const char *target)
+{
   const size_t target_len = strlen(target);
-  if (lower_len < target_len) {
-    return false;
-  }
 
-  const size_t offset = lower_len - target_len;
-  if (strcmp(lower + offset, target) != 0) {
-    return false;
-  }
-  return offset == 0 || !isalnum((unsigned char)lower[offset - 1U]);
+  return (name_len == target_len && memcmp(name, target, target_len) == 0) ||
+         (name_len == target_len + 1 && name[0] == '%' &&
+          memcmp(name + 1, target, target_len) == 0);
 }
 
-static bool
-init_register_set(unsigned int vcpu_index)
+static uint64_t
+register_value_u64(const unsigned char *bytes, size_t length)
 {
-  if (vcpu_index >= MAX_TRACKED_VCPUS) {
-    return false;
-  }
-
-  struct register_set *set = &register_sets[vcpu_index];
-  if (set->initialized) {
-    return true;
-  }
-
-  GArray *descriptors = qemu_plugin_get_registers();
-  if (descriptors == NULL || descriptors->len == 0) {
-    if (descriptors != NULL) {
-      g_array_free(descriptors, true);
-    }
-    return false;
-  }
-
-  set->count = descriptors->len;
-  set->registers = calloc(set->count, sizeof(*set->registers));
-  if (set->registers == NULL) {
-    g_array_free(descriptors, true);
-    return false;
-  }
-
-  memcpy(set->registers, descriptors->data, set->count * sizeof(*set->registers));
-  for (size_t i = 0; i < set->count; i++) {
-    const qemu_plugin_reg_descriptor *reg = &set->registers[i];
-    if (name_matches(reg->name, "rdi")) {
-      set->rdi = reg->handle;
-    } else if (name_matches(reg->name, "rsi")) {
-      set->rsi = reg->handle;
-    } else if (name_matches(reg->name, "rdx")) {
-      set->rdx = reg->handle;
-    }
-  }
-
-  set->initialized = true;
-  g_array_free(descriptors, true);
-  return set->rdi != NULL && set->rsi != NULL && set->rdx != NULL;
-}
-
-static bool
-read_register_u64(struct qemu_plugin_register *handle, uint64_t *out)
-{
-  GByteArray *buffer = g_byte_array_new();
-  if (buffer == NULL) {
-    return false;
-  }
-
-  const int size = qemu_plugin_read_register(handle, buffer);
-  if (size <= 0) {
-    g_byte_array_free(buffer, true);
-    return false;
-  }
-
   uint64_t value = 0;
-  const gsize limit = buffer->len < 8U ? buffer->len : 8U;
-  for (gsize i = 0; i < limit; i++) {
-    value |= (uint64_t)buffer->data[i] << (i * 8U);
+  const size_t limit = length < sizeof(value) ? length : sizeof(value);
+
+  for (size_t index = 0; index < limit; index++) {
+    value |= (uint64_t)bytes[index] << (index * 8);
+  }
+  return value;
+}
+
+static bool
+read_canonical_register_file(
+    unsigned int vcpu_index,
+    unsigned char **canonical_registers,
+    size_t *canonical_register_len,
+    struct canonical_register_values *values)
+{
+  static const char format[] = "aos-qemu-vcpu-regs-v1";
+  uint64_t canonical_retired = 0;
+
+  *canonical_registers = NULL;
+  *canonical_register_len = 0;
+  memset(values, 0, sizeof(*values));
+
+  const int size_status = qemu_plugin_read_vcpu_regs(
+      vcpu_index,
+      NULL,
+      0,
+      canonical_register_len,
+      &canonical_retired);
+  if (size_status == 0 || *canonical_register_len == 0) {
+    return false;
   }
 
-  *out = value;
-  g_byte_array_free(buffer, true);
+  *canonical_registers = malloc(*canonical_register_len);
+  if (*canonical_registers == NULL) {
+    return false;
+  }
+  const size_t canonical_register_capacity = *canonical_register_len;
+  const int read_status = qemu_plugin_read_vcpu_regs(
+      vcpu_index,
+      *canonical_registers,
+      canonical_register_capacity,
+      canonical_register_len,
+      &canonical_retired);
+  if (read_status != 0 || *canonical_register_len == 0 ||
+      *canonical_register_len > canonical_register_capacity) {
+    free(*canonical_registers);
+    *canonical_registers = NULL;
+    return false;
+  }
+
+  struct canonical_register_reader reader = {
+      .bytes = *canonical_registers,
+      .length = *canonical_register_len,
+  };
+  const unsigned char *encoded_format;
+  size_t encoded_format_len;
+  uint64_t encoded_vcpu;
+
+  if (!read_canonical_bytes(&reader, &encoded_format, &encoded_format_len) ||
+      encoded_format_len != sizeof(format) - 1 ||
+      memcmp(encoded_format, format, sizeof(format) - 1) != 0 ||
+      !read_canonical_u64(&reader, &encoded_vcpu) ||
+      encoded_vcpu != vcpu_index ||
+      !read_canonical_u64(&reader, &values->count) || values->count == 0 ||
+      values->count > *canonical_register_len / (3 * sizeof(uint64_t))) {
+    free(*canonical_registers);
+    *canonical_registers = NULL;
+    return false;
+  }
+
+  for (uint64_t index = 0; index < values->count; index++) {
+    const unsigned char *name;
+    const unsigned char *feature;
+    const unsigned char *value;
+    size_t name_len;
+    size_t feature_len;
+    size_t value_len;
+
+    if (!read_canonical_bytes(&reader, &name, &name_len) ||
+        !read_canonical_bytes(&reader, &feature, &feature_len) ||
+        !read_canonical_bytes(&reader, &value, &value_len)) {
+      free(*canonical_registers);
+      *canonical_registers = NULL;
+      return false;
+    }
+    (void)feature;
+    (void)feature_len;
+
+    if (register_name_matches(name, name_len, "rdi")) {
+      values->rdi = register_value_u64(value, value_len);
+      values->has_rdi = true;
+    } else if (register_name_matches(name, name_len, "rsi")) {
+      values->rsi = register_value_u64(value, value_len);
+      values->has_rsi = true;
+    } else if (register_name_matches(name, name_len, "rdx")) {
+      values->rdx = register_value_u64(value, value_len);
+      values->has_rdx = true;
+    }
+  }
+
+  if (reader.offset != reader.length) {
+    free(*canonical_registers);
+    *canonical_registers = NULL;
+    return false;
+  }
   return true;
 }
 
 static uint64_t
-hash_registers_for_vcpu(uint64_t hash, unsigned int vcpu_index, uint64_t *failures)
+hash_registers_for_vcpu(
+    uint64_t hash,
+    unsigned int vcpu_index,
+    uint64_t *failures,
+    uint64_t *register_count)
 {
-  if (vcpu_index >= MAX_TRACKED_VCPUS || !register_sets[vcpu_index].initialized) {
+  unsigned char *canonical_registers;
+  size_t canonical_register_len;
+  struct canonical_register_values values;
+
+  if (!read_canonical_register_file(
+          vcpu_index,
+          &canonical_registers,
+          &canonical_register_len,
+          &values)) {
     *failures += 1;
     return fnv1a_u64(hash, UINT64_MAX);
   }
 
-  const struct register_set *set = &register_sets[vcpu_index];
-  GByteArray *buffer = g_byte_array_new();
-  if (buffer == NULL) {
-    *failures += 1;
-    return fnv1a_u64(hash, UINT64_MAX - 1U);
-  }
-
   hash = fnv1a_u64(hash, vcpu_index);
-  hash = fnv1a_u64(hash, set->count);
-
-  for (size_t i = 0; i < set->count; i++) {
-    const qemu_plugin_reg_descriptor *reg = &set->registers[i];
-    g_byte_array_set_size(buffer, 0);
-    const int size =
-        qemu_plugin_crucible_read_vcpu_register(vcpu_index, reg->handle, buffer);
-
-    hash = fnv1a_cstr(hash, reg->name);
-    hash = fnv1a_cstr(hash, reg->feature);
-    if (size < 0) {
-      *failures += 1;
-      hash = fnv1a_u64(hash, UINT64_MAX);
-      continue;
-    }
-
-    hash = fnv1a_u64(hash, (uint64_t)size);
-    hash = fnv1a_bytes(hash, buffer->data, buffer->len);
-  }
-
-  g_byte_array_free(buffer, true);
+  hash = fnv1a_u64(hash, values.count);
+  hash = fnv1a_bytes(hash, canonical_registers, canonical_register_len);
+  *register_count = values.count;
+  free(canonical_registers);
   return hash;
 }
 
@@ -302,10 +378,9 @@ compute_register_hash(uint64_t *sample_failures, uint64_t counts[MAX_TRACKED_VCP
   for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
     uint64_t failures = 0;
     const uint64_t per_vcpu_hash =
-        hash_registers_for_vcpu(FNV1A64_OFFSET, vcpu, &failures);
+        hash_registers_for_vcpu(
+            FNV1A64_OFFSET, vcpu, &failures, &counts[vcpu]);
 
-    counts[vcpu] =
-        register_sets[vcpu].initialized ? register_sets[vcpu].count : 0;
     *sample_failures += failures;
     aggregate = fnv1a_u64(aggregate, vcpu);
     aggregate = fnv1a_u64(aggregate, per_vcpu_hash);
@@ -323,11 +398,28 @@ record_final_sample(bool pause_sample)
   }
 
   uint64_t register_counts[MAX_TRACKED_VCPUS] = {0};
-  uint64_t sample_failures = 0;
+  uint64_t register_sample_failures = 0;
   const uint64_t register_hash =
-      compute_register_hash(&sample_failures, register_counts);
-  uint64_t ram_bytes = 0;
-  const uint64_t ram_hash = qemu_plugin_crucible_ram_hash(&ram_bytes);
+      compute_register_hash(&register_sample_failures, register_counts);
+  unsigned char ram_digest[32] = {0};
+  struct qemu_plugin_crucible_fingerprint_material material = {
+      .ram_fd = -1,
+      .device_fd = -1,
+  };
+  const int capture_status =
+      qemu_plugin_crucible_capture_fingerprint_material(&material);
+  const int digest_status = capture_status == 0
+      ? sha256_fd(material.ram_fd, material.ram_material_length, ram_digest)
+      : capture_status;
+  if (material.ram_fd >= 0) {
+    close(material.ram_fd);
+  }
+  if (material.device_fd >= 0 && material.device_fd != material.ram_fd) {
+    close(material.device_fd);
+  }
+  const uint64_t capture_failures =
+      digest_status != 0 || material.ram_bytes == 0 || material.device_bytes == 0;
+  const uint64_t ram_hash = fnv1a_bytes(FNV1A64_OFFSET, ram_digest, 32);
   uint64_t state_hash = FNV1A64_OFFSET;
 
   state_hash = fnv1a_u64(state_hash, stream_hash);
@@ -349,9 +441,15 @@ record_final_sample(bool pause_sample)
       ",\"stream_hash\":\"%016" PRIx64 "\""
       ",\"register_hash\":\"%016" PRIx64 "\""
       ",\"ram_hash\":\"%016" PRIx64 "\""
+      ",\"capture_status\":%d"
+      ",\"digest_status\":%d"
       ",\"ram_bytes\":%" PRIu64
+      ",\"ram_material_length\":%" PRIu64
+      ",\"device_bytes\":%" PRIu64
+      ",\"device_material_length\":%" PRIu64
       ",\"state_hash\":\"%016" PRIx64 "\""
       ",\"sample_register_failures\":%" PRIu64
+      ",\"sample_capture_failures\":%" PRIu64
       ",\"register_read_failures\":%" PRIu64
       ",\"register_counts\":[",
       pause_sample ? "true" : "false",
@@ -365,9 +463,15 @@ record_final_sample(bool pause_sample)
       stream_hash,
       register_hash,
       ram_hash,
-      ram_bytes,
+      capture_status,
+      digest_status,
+      material.ram_bytes,
+      material.ram_material_length,
+      material.device_bytes,
+      material.device_material_length,
       state_hash,
-      sample_failures,
+      register_sample_failures,
+      capture_failures,
       register_read_failures);
 
   for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
@@ -393,11 +497,24 @@ record_doorbell(unsigned int vcpu_index)
 
   marker_count++;
 
-  if (vcpu_index < MAX_TRACKED_VCPUS && init_register_set(vcpu_index)) {
-    const struct register_set *set = &register_sets[vcpu_index];
-    register_read_ok = read_register_u64(set->rdi, &kind) &&
-                       read_register_u64(set->rsi, &addr) &&
-                       read_register_u64(set->rdx, &len);
+  if (vcpu_index < tracked_vcpus) {
+    unsigned char *canonical_registers;
+    size_t canonical_register_len;
+    struct canonical_register_values values;
+
+    register_read_ok = read_canonical_register_file(
+        vcpu_index,
+        &canonical_registers,
+        &canonical_register_len,
+        &values);
+    if (register_read_ok) {
+      kind = values.rdi;
+      addr = values.rsi;
+      len = values.rdx;
+      register_read_ok =
+          values.has_rdi && values.has_rsi && values.has_rdx;
+      free(canonical_registers);
+    }
   }
 
   if (!register_read_ok || len == 0 || len > 4096U) {
@@ -470,7 +587,9 @@ static uint64_t
 next_pause_boundary(void *userdata)
 {
   (void)userdata;
-  return stop_requested ? qemu_plugin_icount_raw() : UINT64_MAX;
+  return marker_pending || (stop_requested && !stop_admitted)
+      ? qemu_plugin_icount_raw()
+      : UINT64_MAX;
 }
 
 static void
@@ -479,7 +598,32 @@ on_pause_boundary(uint64_t current_icount, void *userdata)
   (void)current_icount;
   (void)userdata;
 
-  if (!stop_requested || stop_admitted) {
+  if (marker_pending) {
+    const unsigned int vcpu_index = pending_marker_vcpu;
+
+    marker_pending = false;
+    record_doorbell(vcpu_index);
+  }
+  if (!stop_requested || stop_control_requested) {
+    return;
+  }
+  stop_control_requested = true;
+  if (qemu_plugin_request_control_boundary() != 0) {
+    qemu_plugin_request_shutdown(1);
+  }
+}
+
+static void
+on_control_boundary(
+    unsigned int vcpu_index,
+    uint64_t current_icount,
+    void *userdata)
+{
+  (void)vcpu_index;
+  (void)current_icount;
+  (void)userdata;
+
+  if (!stop_requested || !stop_control_requested || stop_admitted) {
     return;
   }
   stop_admitted = true;
@@ -501,14 +645,22 @@ on_insn(unsigned int vcpu_index, void *userdata)
   stream_hash = fnv1a_bytes(stream_hash, insn->bytes, insn->size);
 
   if (insn->marker) {
-    record_doorbell(vcpu_index);
+    /* Aggregate register reads are admitted at the next exact boundary. */
+    if (marker_pending) {
+      qemu_plugin_outs(
+          "phase0-s5-virtual-memory-plugin: marker boundary overlapped\n");
+      qemu_plugin_request_shutdown(1);
+      return;
+    }
+    pending_marker_vcpu = vcpu_index;
+    marker_pending = true;
   }
 }
 
 static void
-on_tb_translate(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
+on_tb_translate(struct qemu_plugin_tb *tb, void *userdata)
 {
-  (void)id;
+  (void)userdata;
   const size_t count = qemu_plugin_tb_n_insns(tb);
 
   for (size_t i = 0; i < count; i++) {
@@ -533,18 +685,8 @@ on_tb_translate(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 }
 
 static void
-on_vcpu_init(qemu_plugin_id_t id, unsigned int vcpu_index)
+on_plugin_exit(void *userdata)
 {
-  (void)id;
-  if (vcpu_index < MAX_TRACKED_VCPUS) {
-    (void)init_register_set(vcpu_index);
-  }
-}
-
-static void
-on_plugin_exit(qemu_plugin_id_t id, void *userdata)
-{
-  (void)id;
   (void)userdata;
 
   record_final_sample(false);
@@ -620,10 +762,10 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
     return -1;
   }
 
-  qemu_plugin_register_vcpu_init_cb(id, on_vcpu_init);
-  qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate);
+  qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate, NULL);
   qemu_plugin_register_sim_shmem_observer_cb(
       on_pause_boundary, next_pause_boundary, NULL);
+  qemu_plugin_register_control_boundary_cb(on_control_boundary, NULL);
   qemu_plugin_register_atexit_cb(id, on_plugin_exit, NULL);
   return 0;
 }

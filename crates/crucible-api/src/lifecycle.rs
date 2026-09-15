@@ -7,6 +7,7 @@
 //! session layer.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,12 +28,13 @@ use crucible_session::{
     Engine, LiveSnapshot, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionActor,
     SessionCommand, SessionCommandKind, SessionControlLogEntry, SessionControlPayload,
     SessionControlResult, SessionError, SessionReproductionLog, SessionRunReport,
-    SessionStateTransitionBus, StepMode,
+    SessionStateTransitionBus,
 };
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
+use crate::debug_relay::DebugRelayAccess;
 use crate::{
     AttachRequest, ClientControlStream, ClientWatchStream, CommandResultStatus, ControlClient,
     ControlClientError, ControlClientFuture, ControlPlaneEventLog, ControlTransportKind,
@@ -65,6 +67,30 @@ pub const RESUME_OBSERVATION_PREPARATION_TIMEOUT: Duration = Duration::from_secs
 
 /// Default number of expensive portable observation preparations admitted concurrently.
 pub const RESUME_OBSERVATION_PREPARATION_CAPACITY: usize = 1;
+
+/// Opaque authority retained for the complete lifetime of one admitted session.
+///
+/// Owner-side session composition uses this guard to keep immutable source and
+/// retention capabilities alive until the session is destroyed.
+pub struct SessionLifetimeRetention {
+    _capability: Box<dyn Send + Sync>,
+}
+
+impl SessionLifetimeRetention {
+    /// Wraps one owner-bound capability for session-lifetime retention.
+    #[must_use]
+    pub fn new(capability: impl Send + Sync + 'static) -> Self {
+        Self {
+            _capability: Box::new(capability),
+        }
+    }
+}
+
+impl fmt::Debug for SessionLifetimeRetention {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("SessionLifetimeRetention").finish()
+    }
+}
 
 #[path = "lifecycle/debug_dispatch.rs"]
 mod debug_dispatch;
@@ -221,826 +247,13 @@ impl QuiescentLifecycleLoop {
     }
 }
 
-/// Stable API-level session identifier.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SessionId {
-    /// Monotone control-plane-local identifier.
-    pub value: u64,
-}
-
-impl SessionId {
-    /// Builds a session identifier from a monotone numeric value.
-    #[must_use]
-    pub const fn new(value: u64) -> Self {
-        Self { value }
-    }
-}
-
-/// Epoch-guarded reference to a live or recently-absent session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SessionRef {
-    /// Stable session identifier.
-    pub id: SessionId,
-    /// Monotone epoch used to detect recycled identifiers.
-    pub epoch: u64,
-    /// Seed recorded for the session creation request.
-    pub seed: Seed,
-}
-
-impl SessionRef {
-    /// Builds an epoch-guarded session reference.
-    #[must_use]
-    pub const fn new(id: SessionId, epoch: u64, seed: Seed) -> Self {
-        Self { id, epoch, seed }
-    }
-}
-
-/// Scenario entry advertised by `ListScenarios`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ScenarioCatalogEntry {
-    /// Human-readable registry name used by scenario-reference creation.
-    pub name: String,
-    /// Human-readable description returned by discovery.
-    pub description: String,
-    /// Stable source identifier for the scenario definition.
-    pub source_id: String,
-    /// Executable scenario source.
-    pub source: ScenarioCatalogSource,
-}
-
-/// Scenario source stored in the server-side catalog.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ScenarioCatalogSource {
-    /// A fixed scenario definition that accepts only its embedded seed.
-    Fixed {
-        /// Executable scenario definition.
-        scenario: ScenarioDef,
-    },
-    /// Canonical material that can be re-materialized with the request seed.
-    CanonicalMaterial {
-        /// Canonical domain passed to [`ScenarioDef::from_canonical_material_with_seed`].
-        domain: String,
-        /// Seed-independent canonical scenario material.
-        material: String,
-    },
-}
-
-impl ScenarioCatalogEntry {
-    /// Builds a scenario catalog entry.
-    #[must_use]
-    pub fn new(
-        name: impl Into<String>,
-        description: impl Into<String>,
-        source_id: impl Into<String>,
-        scenario: ScenarioDef,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            description: description.into(),
-            source_id: source_id.into(),
-            source: ScenarioCatalogSource::Fixed { scenario },
-        }
-    }
-
-    /// Builds a seed-parameterized scenario entry from canonical material.
-    #[must_use]
-    pub fn from_canonical_material(
-        name: impl Into<String>,
-        description: impl Into<String>,
-        source_id: impl Into<String>,
-        domain: impl Into<String>,
-        material: impl Into<String>,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            description: description.into(),
-            source_id: source_id.into(),
-            source: ScenarioCatalogSource::CanonicalMaterial {
-                domain: domain.into(),
-                material: material.into(),
-            },
-        }
-    }
-
-    /// Returns the public discovery view for this scenario.
-    #[must_use]
-    pub fn summary(&self) -> ScenarioSummary {
-        ScenarioSummary {
-            name: self.name.clone(),
-            description: self.description.clone(),
-            source_id: self.source_id.clone(),
-        }
-    }
-
-    fn scenario_for_seed(&self, seed: Seed) -> Result<ScenarioDef, LifecycleApiError> {
-        match &self.source {
-            ScenarioCatalogSource::Fixed { scenario } => {
-                if scenario.seed() != seed {
-                    return Err(LifecycleApiError::ScenarioSeedMismatch {
-                        scenario_seed: scenario.seed(),
-                        request_seed: seed,
-                    });
-                }
-                Ok(scenario.clone())
-            }
-            ScenarioCatalogSource::CanonicalMaterial { domain, material } => Ok(
-                ScenarioDef::from_canonical_material_with_seed(domain, material, seed),
-            ),
-        }
-    }
-}
-
-/// Scenario metadata returned by `ListScenarios`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ScenarioSummary {
-    /// Human-readable registry name.
-    pub name: String,
-    /// Human-readable description.
-    pub description: String,
-    /// Stable source identifier.
-    pub source_id: String,
-}
-
-/// Response returned by `ListScenarios`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ListScenariosResponse {
-    /// Scenario entries known by the server.
-    pub scenarios: Vec<ScenarioSummary>,
-}
-
-/// Scenario input accepted by `CreateSession`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
-#[allow(clippy::large_enum_variant)]
-pub enum CreateSessionSource {
-    /// Resolve a named scenario from the server registry.
-    ScenarioRef {
-        /// Registry name to resolve.
-        name: String,
-    },
-    /// Use a self-contained scenario definition.
-    Inline {
-        /// Inline scenario definition.
-        scenario: ScenarioDef,
-        /// Optional full scenario source transferred with the request.
-        scenario_form: Option<ScenarioDefForm>,
-    },
-}
-
-/// Request accepted by `CreateSession`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CreateSessionRequest {
-    /// Scenario source, either by reference or inline.
-    pub source: CreateSessionSource,
-    /// Seed recorded in the returned [`SessionRef`].
-    pub seed: Seed,
-    /// Whether the session should remain paused immediately after `Start`.
-    pub start_paused: bool,
-}
-
-impl CreateSessionRequest {
-    /// Builds a request from a scenario registry name.
-    #[must_use]
-    pub fn scenario_ref(name: impl Into<String>, seed: Seed) -> Self {
-        Self {
-            source: CreateSessionSource::ScenarioRef { name: name.into() },
-            seed,
-            start_paused: true,
-        }
-    }
-
-    /// Builds a request from an inline scenario definition.
-    #[must_use]
-    pub fn inline(scenario: ScenarioDef, seed: Seed) -> Self {
-        Self {
-            source: CreateSessionSource::Inline {
-                scenario,
-                scenario_form: None,
-            },
-            seed,
-            start_paused: true,
-        }
-    }
-
-    /// Builds a request from an inline scenario source form.
-    #[must_use]
-    pub fn inline_form(scenario_form: ScenarioDefForm, seed: Seed) -> Self {
-        let scenario = scenario_form.scenario_def();
-        Self {
-            source: CreateSessionSource::Inline {
-                scenario,
-                scenario_form: Some(scenario_form),
-            },
-            seed,
-            start_paused: true,
-        }
-    }
-
-    /// Sets whether the created session should stay paused after `Start`.
-    #[must_use]
-    pub fn with_start_paused(mut self, start_paused: bool) -> Self {
-        self.start_paused = start_paused;
-        self
-    }
-}
-
-fn inline_scenario_form(request: &CreateSessionRequest) -> Option<&ScenarioDefForm> {
-    let CreateSessionSource::Inline {
-        scenario_form: Some(scenario_form),
-        ..
-    } = &request.source
-    else {
-        return None;
-    };
-    Some(scenario_form)
-}
-
-fn scenario_form_white_box_policies(
-    scenario_form: &ScenarioDefForm,
-) -> BTreeMap<NodeId, WhiteBoxPolicy> {
-    scenario_form
-        .world()
-        .vm_nodes()
-        .iter()
-        .map(|node| (node.id.clone(), node.white_box))
-        .collect()
-}
-
-/// Response returned by `CreateSession`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CreateSessionResponse {
-    /// Epoch-guarded session reference.
-    pub session: SessionRef,
-    /// State observed from the lock-free mirror after startup.
-    pub state: LiveStateKind,
-}
-
-/// Request accepted by `ResumeSession`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResumeSessionRequest {
-    /// Serialized scenario form owning the checkpoint.
-    pub scenario: ScenarioDefForm,
-    /// Recorded schedule for the checkpoint configuration.
-    pub schedule: Schedule,
-    /// Fat checkpoint that materializes the recorded configuration.
-    pub checkpoint: Checkpoint,
-    /// Seed recorded in the returned [`SessionRef`].
-    pub seed: Seed,
-    /// Authenticated campaign choice records required by a typed selection schedule.
-    pub replay_closure: Option<ResumeReplayClosure>,
-    /// Pending portable observation claim that the daemon must reproduce before resume.
-    pub observation_source: Option<ResumeObservationSource>,
-}
-
-impl ResumeSessionRequest {
-    /// Builds a request from a self-contained checkpoint closure.
-    #[must_use]
-    pub fn new(
-        scenario: ScenarioDefForm,
-        schedule: Schedule,
-        checkpoint: Checkpoint,
-        seed: Seed,
-    ) -> Self {
-        Self {
-            scenario,
-            schedule,
-            checkpoint,
-            seed,
-            replay_closure: None,
-            observation_source: None,
-        }
-    }
-
-    /// Returns this request with a versioned campaign replay closure.
-    #[must_use]
-    pub fn with_replay_closure(mut self, replay_closure: ResumeReplayClosure) -> Self {
-        self.replay_closure = Some(replay_closure);
-        self
-    }
-
-    /// Returns this request with a content-bound portable observation source claim.
-    #[must_use]
-    pub fn with_observation_source(mut self, observation_source: ResumeObservationSource) -> Self {
-        self.observation_source = Some(observation_source);
-        self
-    }
-}
-
-/// Versioned portable observation claim supplied to `ResumeSession`.
-///
-/// This envelope provides transport integrity only. A configured campaign
-/// owner must replay the source from genesis and compare newly produced proof
-/// and evidence before the lifecycle control plane can allocate a session.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResumeObservationSource {
-    schema_version: u32,
-    identity: ContentHash,
-    proof: Vec<u8>,
-    evidence: Vec<u8>,
-}
-
-impl ResumeObservationSource {
-    /// Binds canonical proof and evidence bytes to one exact resume source.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError::ResumeObservationSource`] when their
-    /// combined length exceeds [`RESUME_OBSERVATION_SOURCE_MAX_BYTES`].
-    pub fn new(
-        scenario: &ScenarioDefForm,
-        schedule: &Schedule,
-        checkpoint: &Checkpoint,
-        schema_version: u32,
-        proof: Vec<u8>,
-        evidence: Vec<u8>,
-    ) -> Result<Self, LifecycleApiError> {
-        let total = proof.len().checked_add(evidence.len()).ok_or_else(|| {
-            LifecycleApiError::ResumeObservationSource {
-                message: String::from("portable observation source size overflowed"),
-            }
-        })?;
-        if total > RESUME_OBSERVATION_SOURCE_MAX_BYTES {
-            return Err(LifecycleApiError::ResumeObservationSource {
-                message: format!(
-                    "portable observation source has {total} bytes, maximum is {RESUME_OBSERVATION_SOURCE_MAX_BYTES}"
-                ),
-            });
-        }
-        let identity = resume_observation_source_identity(
-            scenario,
-            schedule,
-            checkpoint,
-            schema_version,
-            &proof,
-            &evidence,
-        );
-        Ok(Self {
-            schema_version,
-            identity,
-            proof,
-            evidence,
-        })
-    }
-
-    /// Returns the transport-envelope schema version.
-    #[must_use]
-    pub const fn schema_version(&self) -> u32 {
-        self.schema_version
-    }
-
-    /// Returns the identity binding both payloads to the exact resume source.
-    #[must_use]
-    pub const fn identity(&self) -> ContentHash {
-        self.identity
-    }
-
-    /// Returns the canonical campaign observation-stop proof.
-    #[must_use]
-    pub fn proof(&self) -> &[u8] {
-        &self.proof
-    }
-
-    /// Returns the canonical raw measurement replay evidence.
-    #[must_use]
-    pub fn evidence(&self) -> &[u8] {
-        &self.evidence
-    }
-
-    /// Returns the combined bounded payload length.
-    #[must_use]
-    pub fn payload_len(&self) -> usize {
-        self.proof.len().saturating_add(self.evidence.len())
-    }
-}
-
-fn resume_observation_source_identity(
-    scenario: &ScenarioDefForm,
-    schedule: &Schedule,
-    checkpoint: &Checkpoint,
-    schema_version: u32,
-    proof: &[u8],
-    evidence: &[u8],
-) -> ContentHash {
-    const DOMAIN: &[u8] = b"crucible.resume-observation-source.v1\0";
-
-    let configuration = Configuration {
-        def: scenario.scenario_def(),
-        schedule: schedule.clone(),
-    };
-    let checkpoint_material = ContentHash::from_bytes(&checkpoint.to_compact_binary());
-    let proof_len = u64::try_from(proof.len()).unwrap_or(u64::MAX);
-    let evidence_len = u64::try_from(evidence.len()).unwrap_or(u64::MAX);
-    let mut material = Vec::with_capacity(
-        DOMAIN
-            .len()
-            .saturating_add(32 * 3)
-            .saturating_add(4 + 8 + proof.len() + 8 + evidence.len()),
-    );
-    material.extend_from_slice(DOMAIN);
-    material.extend_from_slice(&scenario.id().bytes);
-    material.extend_from_slice(&configuration.id().bytes);
-    material.extend_from_slice(&checkpoint_material.bytes);
-    material.extend_from_slice(&schema_version.to_be_bytes());
-    material.extend_from_slice(&proof_len.to_be_bytes());
-    material.extend_from_slice(proof);
-    material.extend_from_slice(&evidence_len.to_be_bytes());
-    material.extend_from_slice(evidence);
-    ContentHash::from_bytes(&material)
-}
-
-/// Versioned, content-bound campaign choice evidence supplied to `ResumeSession`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResumeReplayClosure {
-    schema_version: u32,
-    identity: ContentHash,
-    payload: Vec<u8>,
-}
-
-impl ResumeReplayClosure {
-    /// Binds a schema version and exact payload to one resume source.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError::ResumeReplayClosure`] before hashing when
-    /// `payload` exceeds [`RESUME_REPLAY_CLOSURE_MAX_BYTES`].
-    pub fn new(
-        scenario: &ScenarioDefForm,
-        schedule: &Schedule,
-        checkpoint: &Checkpoint,
-        schema_version: u32,
-        payload: Vec<u8>,
-    ) -> Result<Self, LifecycleApiError> {
-        if payload.len() > RESUME_REPLAY_CLOSURE_MAX_BYTES {
-            return Err(LifecycleApiError::ResumeReplayClosure {
-                message: format!(
-                    "campaign replay closure has {} bytes, maximum is {RESUME_REPLAY_CLOSURE_MAX_BYTES}",
-                    payload.len()
-                ),
-            });
-        }
-        let identity = resume_replay_closure_identity(
-            scenario,
-            schedule,
-            checkpoint,
-            schema_version,
-            &payload,
-        );
-        Ok(Self {
-            schema_version,
-            identity,
-            payload,
-        })
-    }
-
-    /// Returns the replay-closure schema version.
-    #[must_use]
-    pub const fn schema_version(&self) -> u32 {
-        self.schema_version
-    }
-
-    /// Returns the identity binding the resume source, schema, length, and payload.
-    #[must_use]
-    pub const fn identity(&self) -> ContentHash {
-        self.identity
-    }
-
-    /// Returns the exact canonical replay-closure payload.
-    #[must_use]
-    pub fn payload(&self) -> &[u8] {
-        &self.payload
-    }
-
-    /// Returns the bound payload length.
-    #[must_use]
-    pub const fn payload_len(&self) -> usize {
-        self.payload.len()
-    }
-}
-
-fn resume_replay_closure_identity(
-    scenario: &ScenarioDefForm,
-    schedule: &Schedule,
-    checkpoint: &Checkpoint,
-    schema_version: u32,
-    payload: &[u8],
-) -> ContentHash {
-    const DOMAIN: &[u8] = b"crucible.resume-replay-closure.v1\0";
-
-    let configuration = Configuration {
-        def: scenario.scenario_def(),
-        schedule: schedule.clone(),
-    };
-    let checkpoint_material = ContentHash::from_bytes(&checkpoint.to_compact_binary());
-    let payload_len = u64::try_from(payload.len()).unwrap_or(u64::MAX);
-    let mut material = Vec::with_capacity(
-        DOMAIN
-            .len()
-            .saturating_add(32 * 3)
-            .saturating_add(4 + 8)
-            .saturating_add(payload.len()),
-    );
-    material.extend_from_slice(DOMAIN);
-    material.extend_from_slice(&scenario.id().bytes);
-    material.extend_from_slice(&configuration.id().bytes);
-    material.extend_from_slice(&checkpoint_material.bytes);
-    material.extend_from_slice(&schema_version.to_be_bytes());
-    material.extend_from_slice(&payload_len.to_be_bytes());
-    material.extend_from_slice(payload);
-    ContentHash::from_bytes(&material)
-}
-
-/// Response returned by `ResumeSession`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResumeSessionResponse {
-    /// Epoch-guarded session reference.
-    pub session: SessionRef,
-    /// State observed from the lock-free mirror after resume.
-    pub state: LiveStateKind,
-    /// Checkpoint accepted as the resume source.
-    pub checkpoint: ContentHash,
-    /// Configuration realized by the resumed session.
-    pub configuration: ContentHash,
-}
-
-/// Summary returned by `ListSessions`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionSummary {
-    /// Epoch-guarded session reference.
-    pub session: SessionRef,
-    /// State read from the lock-free live mirror.
-    pub state: LiveStateKind,
-    /// Terminal outcome read from the live mirror, when the session stopped.
-    pub outcome: Option<OutcomeKind>,
-    /// Terminal savepoint checkpoint id materialized for the outcome.
-    pub terminal_savepoint: Option<ContentHash>,
-    /// Latest scheduler virtual-time frontier read from the live mirror.
-    pub frontier: VirtualTime,
-    /// Event-log length read from the lock-free live mirror.
-    pub event_log_len: u64,
-    /// Number of scheduler quanta completed by the session actor.
-    pub quanta_stepped: u64,
-}
-
-/// Response returned by `ListSessions`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ListSessionsResponse {
-    /// Live session summaries.
-    pub sessions: Vec<SessionSummary>,
-}
-
-/// Request accepted by `DestroySession`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DestroySessionRequest {
-    /// Session reference to stop and drop.
-    pub session: SessionRef,
-    /// Optional epoch guard supplied by the client.
-    pub expected_epoch: Option<u64>,
-}
-
-impl DestroySessionRequest {
-    /// Builds a destroy request for `session`.
-    #[must_use]
-    pub const fn new(session: SessionRef) -> Self {
-        Self {
-            session,
-            expected_epoch: None,
-        }
-    }
-
-    /// Sets the optional expected epoch guard.
-    #[must_use]
-    pub const fn with_expected_epoch(mut self, expected_epoch: u64) -> Self {
-        self.expected_epoch = Some(expected_epoch);
-        self
-    }
-}
-
-/// Response returned by `DestroySession`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DestroySessionResponse {
-    /// Session reference supplied by the caller.
-    pub session: SessionRef,
-    /// Whether the session id was already absent.
-    pub already_absent: bool,
-    /// Whether a live actor was stopped by this request.
-    pub stopped: bool,
-}
-
-/// Request accepted by `GetReproduction`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct GetReproductionRequest {
-    /// Session whose reproduction context should be read.
-    pub session: SessionRef,
-    /// Optional epoch guard supplied by the client.
-    pub expected_epoch: Option<u64>,
-}
-
-impl GetReproductionRequest {
-    /// Builds a reproduction request for `session`.
-    #[must_use]
-    pub const fn new(session: SessionRef) -> Self {
-        Self {
-            session,
-            expected_epoch: None,
-        }
-    }
-
-    /// Sets the optional expected epoch guard.
-    #[must_use]
-    pub const fn with_expected_epoch(mut self, expected_epoch: u64) -> Self {
-        self.expected_epoch = Some(expected_epoch);
-        self
-    }
-}
-
-/// Response returned by `GetReproduction`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GetReproductionResponse {
-    /// Epoch-guarded session reference whose context was read.
-    pub session: SessionRef,
-    /// Recorded operator command stream in deterministic replay order.
-    pub commands: Vec<ReproductionCommandRecord>,
-}
-
-/// Payload recorded for one command in the reproduction context.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ReproductionCommandPayload {
-    /// Payload-free command kind admitted at the boundary.
-    pub command: SessionCommandKind,
-    /// Stable reply-free command payload material admitted at the boundary.
-    pub command_payload: String,
-    /// Scheduler-control batch identifier, or zero when no scheduler payload was applied.
-    pub scheduler_batch: u64,
-    /// Stable scheduler-owned control payload material admitted by this command, when any.
-    pub scheduler_control: Option<String>,
-}
-
-/// Result recorded for one command in the reproduction context.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ReproductionCommandResult {
-    /// The command was accepted and is part of the deterministic replay stream.
-    Accepted,
-}
-
-impl From<SessionControlResult> for ReproductionCommandResult {
-    fn from(value: SessionControlResult) -> Self {
-        match value {
-            SessionControlResult::Accepted => Self::Accepted,
-        }
-    }
-}
-
-/// One recorded command in the API reproduction context.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ReproductionCommandRecord {
-    /// Monotone session-local reproduction sequence.
-    pub sequence: u64,
-    /// Command payload admitted at the boundary.
-    pub payload: ReproductionCommandPayload,
-    /// Virtual-time boundary where the command took effect.
-    pub virtual_time: VirtualTime,
-    /// Number of scheduler quanta completed before the command took effect.
-    pub quanta: u64,
-    /// Event-log sequence immediately before the command took effect.
-    pub at_sequence: u64,
-    /// Terminal result returned for this recorded command.
-    pub result: ReproductionCommandResult,
-    /// Observational ordering aid for same-boundary commands; not a replay input.
-    pub observational_order: u64,
-}
-
-impl From<SessionControlLogEntry> for ReproductionCommandRecord {
-    fn from(value: SessionControlLogEntry) -> Self {
-        Self {
-            sequence: value.sequence,
-            payload: ReproductionCommandPayload {
-                command: value.command,
-                command_payload: session_control_payload_material(&value.payload),
-                scheduler_batch: value.scheduler_batch,
-                scheduler_control: value
-                    .scheduler_control
-                    .as_ref()
-                    .map(control_operation_material),
-            },
-            virtual_time: value.frontier,
-            quanta: value.quanta,
-            at_sequence: value.event_log_sequence_before,
-            result: value.result.into(),
-            observational_order: value.sequence,
-        }
-    }
-}
-
-fn session_control_payload_material(payload: &SessionControlPayload) -> String {
-    match payload {
-        SessionControlPayload::CommandKind { command } => {
-            format!("payload=command-kind\ncommand={command:?}\n")
-        }
-        SessionControlPayload::Fork { from } => {
-            format!("payload=fork\nfrom={}\n", checkpoint_ref_material(*from))
-        }
-        SessionControlPayload::SetBreakpoint { spec } => format!(
-            "payload=set-breakpoint\npredicate={}\ndisposition={}\npolicy={}\n",
-            hex_string(&spec.predicate.canonical_summary()),
-            breakpoint_disposition_material(&spec.disposition),
-            breakpoint_policy_material(spec.policy),
-        ),
-        SessionControlPayload::RemoveBreakpoint { id } => {
-            format!("payload=remove-breakpoint\nid={id}\n")
-        }
-        SessionControlPayload::CreateSavepoint { label } => {
-            format!("payload=create-savepoint\nlabel={}\n", hex_string(label))
-        }
-    }
-}
-
-fn control_operation_material(control: &ControlOperationKind) -> String {
-    match control {
-        ControlOperationKind::Pause => String::from("control=pause\n"),
-        ControlOperationKind::Resume => String::from("control=resume\n"),
-        ControlOperationKind::Step => String::from("control=step\n"),
-        ControlOperationKind::Snapshot => String::from("control=snapshot\n"),
-        ControlOperationKind::Fork => String::from("control=fork\n"),
-        ControlOperationKind::Query => String::from("control=query\n"),
-    }
-}
-
-fn checkpoint_ref_material(from: CheckpointRef) -> String {
-    match from {
-        CheckpointRef::Current => String::from("current"),
-        CheckpointRef::Checkpoint(hash) => format!("checkpoint:{}", hash.to_hex()),
-    }
-}
-
-fn breakpoint_disposition_material(disposition: &BreakpointDisposition) -> String {
-    match disposition {
-        BreakpointDisposition::Suspend => String::from("suspend"),
-        BreakpointDisposition::Trace => String::from("trace"),
-        BreakpointDisposition::Action(action) => {
-            format!("action:{}", hex_string(&action_material(action)))
-        }
-    }
-}
-
-fn action_material(action: &Action) -> String {
-    match action {
-        Action::ArmTimer { name, after } => format!(
-            "action=arm-timer\nname={}\nafter-nanos={}\n",
-            hex_string(&name.name),
-            after.nanos,
-        ),
-        Action::CancelTimer { name } => {
-            format!("action=cancel-timer\nname={}\n", hex_string(&name.name))
-        }
-        Action::StartNode { node } => {
-            format!("action=start-node\nnode={}\n", hex_string(&node.name))
-        }
-        Action::StopNode { node } => {
-            format!("action=stop-node\nnode={}\n", hex_string(&node.name))
-        }
-        Action::CreateSavepoint { label } => format!(
-            "action=create-savepoint\nlabel={}\n",
-            optional_hex_string(label.as_deref()),
-        ),
-        Action::Fork { label } => format!(
-            "action=fork\nlabel={}\n",
-            optional_hex_string(label.as_deref()),
-        ),
-        Action::Pass => String::from("action=pass\n"),
-        Action::Fail { reason } => format!("action=fail\nreason={}\n", hex_string(reason)),
-        Action::Log { level, message } => format!(
-            "action=log\nlevel={}\nmessage={}\n",
-            log_level_material(*level),
-            hex_string(message),
-        ),
-        Action::Group(actions) => {
-            let mut output = format!("action=group\ncount={}\n", actions.len());
-            for (index, action) in actions.iter().enumerate() {
-                output.push_str(&format!(
-                    "member.{index}={}\n",
-                    hex_string(&action_material(action)),
-                ));
-            }
-            output
-        }
-    }
-}
-
-fn log_level_material(level: LogLevel) -> &'static str {
-    match level {
-        LogLevel::Debug => "debug",
-        LogLevel::Info => "info",
-        LogLevel::Warn => "warn",
-        LogLevel::Error => "error",
-    }
-}
-
-fn breakpoint_policy_material(policy: BreakpointPolicy) -> &'static str {
-    match policy {
-        BreakpointPolicy::OneShot => "one-shot",
-        BreakpointPolicy::Repeatable => "repeatable",
-    }
-}
+mod session_contract;
+
+pub use session_contract::*;
+use session_contract::{
+    inline_scenario_form, resume_observation_source_identity, resume_replay_closure_identity,
+    scenario_form_white_box_policies,
+};
 
 /// Error returned by lifecycle unary API methods.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -1065,14 +278,6 @@ pub enum LifecycleApiError {
         scenario_seed: Seed,
         /// Seed supplied by the request.
         request_seed: Seed,
-    },
-    /// An inline scenario source did not match its advertised identity.
-    #[error("inline scenario payload identity mismatch: expected={expected:?} actual={actual:?}")]
-    InlineScenarioIdentityMismatch {
-        /// Advertised scenario definition handle.
-        expected: Box<ScenarioDef>,
-        /// Scenario definition handle reconstructed from the inline payload.
-        actual: Box<ScenarioDef>,
     },
     /// The genesis temporal graph could not be created.
     #[error("failed to create genesis temporal graph: {message}")]
@@ -1152,6 +357,12 @@ pub enum LifecycleApiError {
         /// Stable actor rejection detail.
         message: String,
     },
+    /// A mutation was attempted against an owner-enforced read-only session.
+    #[error("session {session:?} is an exclusive read-only debug session")]
+    ReadOnlySession {
+        /// Session that rejected mutation.
+        session: SessionRef,
+    },
     /// A debugger identity, capability, or controller lease was rejected.
     #[error("debug access rejected: {source}")]
     DebugAccess {
@@ -1184,13 +395,6 @@ pub enum LifecycleApiError {
 /// Source-aware loop factory used by the lifecycle control plane.
 pub type LifecycleLoopFactory<L> = Box<
     dyn Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
-        + Send
-        + Sync,
->;
-
-/// Factory that realizes one concrete backend from a validated fat checkpoint.
-pub type LifecycleResumeLoopFactory<L> = Box<
-    dyn Fn(&ScenarioDef, &ScenarioDefForm, Seed, &Checkpoint) -> Result<L, LifecycleApiError>
         + Send
         + Sync,
 >;
@@ -1246,10 +450,6 @@ pub use observation_resume::{
     ResumeObservationLoopFactory, ResumeObservationPreparationContext,
 };
 
-/// Callback type used to derive node white-box policies for a scenario.
-pub type WhiteBoxPolicyProvider =
-    Box<dyn Fn(&ScenarioDef) -> BTreeMap<NodeId, WhiteBoxPolicy> + Send + Sync>;
-
 /// In-process lifecycle control plane for unary API methods.
 pub struct LifecycleControlPlane<L, F> {
     server_name: String,
@@ -1258,17 +458,15 @@ pub struct LifecycleControlPlane<L, F> {
     next_session_id: u64,
     next_epoch: u64,
     loop_factory: F,
-    resume_loop_factory: Option<LifecycleResumeLoopFactory<L>>,
     resume_replay_closure_validator: Option<ResumeReplayClosureValidator>,
     resume_observation_loop_factory: Option<ResumeObservationLoopFactory<L>>,
     resume_observation_preparation_timeout: Duration,
     resume_observation_preparation_capacity: usize,
     active_resume_observation_preparations: Arc<AtomicU64>,
-    white_box_policy_provider: WhiteBoxPolicyProvider,
     mailbox_capacity: usize,
     startup_max_actor_yields: u64,
     max_sessions: Option<usize>,
-    resume_via_thin_replay: bool,
+    retain_stopped_sessions: bool,
     _loop: PhantomData<fn() -> L>,
 }
 
@@ -1279,20 +477,6 @@ where
     L: QuantumLoop + Send + 'static,
     F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>,
 {
-    /// Installs a trusted guest-marker white-box policy provider for new sessions.
-    ///
-    /// The lifecycle plane calls this provider inside the same process as the
-    /// session actor. It must derive policies from authoritative scenario
-    /// material, not from client-supplied breakpoint requests.
-    #[must_use]
-    pub fn with_white_box_policy_provider(
-        mut self,
-        provider: impl Fn(&ScenarioDef) -> BTreeMap<NodeId, WhiteBoxPolicy> + Send + Sync + 'static,
-    ) -> Self {
-        self.white_box_policy_provider = Box::new(provider);
-        self
-    }
-
     /// Installs the authority that authenticates campaign choice evidence on resume.
     ///
     /// The validator receives the scenario, exact recorded configuration, and
@@ -1336,13 +520,6 @@ where
         self
     }
 
-    /// Sets the wall-clock deadline for portable observation preparation.
-    #[must_use]
-    pub const fn with_resume_observation_preparation_timeout(mut self, timeout: Duration) -> Self {
-        self.resume_observation_preparation_timeout = timeout;
-        self
-    }
-
     /// Sets the maximum number of expensive observation preparations in flight.
     #[must_use]
     pub const fn with_resume_observation_preparation_capacity(mut self, capacity: usize) -> Self {
@@ -1357,13 +534,6 @@ where
         self
     }
 
-    /// Overrides the startup actor-yield budget.
-    #[must_use]
-    pub fn with_startup_max_actor_yields(mut self, startup_max_actor_yields: u64) -> Self {
-        self.startup_max_actor_yields = startup_max_actor_yields;
-        self
-    }
-
     /// Overrides the maximum number of live sessions accepted by `CreateSession`.
     #[must_use]
     pub const fn with_max_sessions(mut self, max_sessions: usize) -> Self {
@@ -1371,36 +541,10 @@ where
         self
     }
 
-    /// Realizes resumed sessions by deterministic replay from genesis.
-    ///
-    /// Production QEMU uses this mode when the persisted session has no exact
-    /// snapshot. The control plane verifies the replayed configuration and
-    /// virtual-time boundary before publishing the resumed session.
+    /// Keeps stopped session actors registered for terminal queries and reproduction reads.
     #[must_use]
-    pub const fn with_thin_replay_resume(mut self) -> Self {
-        self.resume_via_thin_replay = true;
-        self
-    }
-
-    /// Installs direct production realization for validated fat checkpoints.
-    ///
-    /// The factory must restore the complete concrete continuation named by
-    /// `checkpoint`. Once installed, resume never falls back to genesis replay.
-    #[must_use]
-    pub fn with_fat_checkpoint_resume_factory(
-        mut self,
-        factory: impl Fn(
-            &ScenarioDef,
-            &ScenarioDefForm,
-            Seed,
-            &Checkpoint,
-        ) -> Result<L, LifecycleApiError>
-        + Send
-        + Sync
-        + 'static,
-    ) -> Self {
-        self.resume_loop_factory = Some(Box::new(factory));
-        self.resume_via_thin_replay = false;
+    pub const fn with_terminal_session_retention(mut self, enabled: bool) -> Self {
+        self.retain_stopped_sessions = enabled;
         self
     }
 
@@ -1415,7 +559,7 @@ where
     /// # Errors
     ///
     /// Returns [`LifecycleApiError::RpcAbi`] when the client offers an
-    /// incompatible protocol major version.
+    /// a protocol version other than the sole version admitted by this build.
     pub fn hello(&self, request: HelloRequest) -> Result<HelloResponse, LifecycleApiError> {
         let version = negotiate_rpc_protocol(request.version)?;
         Ok(HelloResponse::new(
@@ -1467,11 +611,12 @@ where
             .map(|source| debug_genesis_checkpoint(&configuration, source))
             .transpose()?;
         let loop_instance = (self.loop_factory)(&scenario, scenario_form, request.seed)?;
-        let white_box_policies = self.white_box_policies_for_source(scenario_form, &scenario);
+        let white_box_policies = self.white_box_policies_for_source(scenario_form);
         let engine = Engine::new(configuration, graph, loop_instance)
             .with_white_box_policies(white_box_policies);
         let (sender, receiver) = mpsc::channel(self.mailbox_capacity);
-        let actor = SessionActor::new(engine, receiver).with_terminal_command_keepalive(true);
+        let actor = SessionActor::new(engine, receiver)
+            .with_terminal_command_keepalive(self.retain_stopped_sessions);
         let live = actor.live_snapshot();
         let event_log = ControlPlaneEventLog::new(actor.event_log());
         let reproduction_log = actor.reproduction_log();
@@ -1489,6 +634,8 @@ where
             debug_access: DebugCoordinator::new(),
             debug_operation_gate: Arc::new(Mutex::new(())),
             debug_genesis,
+            access: SessionAccess::ReadWrite,
+            _lifetime_retention: None,
             actor_task,
         };
 
@@ -1511,69 +658,11 @@ where
         })
     }
 
-    /// Resumes a session actor from a self-contained checkpoint closure.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError::SessionLimitReached`] when the live-session
-    /// cap has been reached, [`LifecycleApiError::ScenarioSeedMismatch`] when
-    /// the scenario seed differs from the request seed,
-    /// [`LifecycleApiError::GenesisGraph`] when the genesis temporal graph
-    /// cannot be built, or [`LifecycleApiError::ResumeCheckpoint`] when the
-    /// supplied scenario, schedule, and checkpoint do not describe one loadable
-    /// recorded configuration, or [`LifecycleApiError::ResumeReplayClosure`]
-    /// when typed campaign replay evidence is missing or invalid. Portable
-    /// observation sources must enter through [`ControlClient::resume_session`]
-    /// so authentication can run off the async runtime and outside the
-    /// lifecycle registry lock; direct calls reject them before invoking a
-    /// backend factory.
-    pub async fn resume_session(
-        &mut self,
-        request: ResumeSessionRequest,
-    ) -> Result<ResumeSessionResponse, LifecycleApiError> {
-        self.validate_resume_capacity_and_seed(&request)?;
-        if self.resume_via_thin_replay && request.observation_source.is_none() {
-            validate_resume_replay_closure_presence(
-                &request.schedule,
-                request.replay_closure.as_ref(),
-                false,
-            )?;
-            return self.resume_session_via_thin_replay(request).await;
-        }
-
-        if request.observation_source.is_some() {
-            return Err(LifecycleApiError::ResumeObservationSource {
-                message: String::from(
-                    "portable observation resume requires an async ControlClient transport",
-                ),
-            });
-        }
-
-        let configuration = self.validate_direct_resume_request(&request)?;
-        let scenario = configuration.def.clone();
-        let resumed_loop = match &self.resume_loop_factory {
-            Some(factory) => factory(
-                &scenario,
-                &request.scenario,
-                request.seed,
-                &request.checkpoint,
-            )?,
-            None => (self.loop_factory)(&scenario, Some(&request.scenario), request.seed)?,
-        };
-        self.finish_direct_resume(request, configuration, resumed_loop)
-            .await
-    }
-
     pub(crate) fn prepare_observation_resume(
         &self,
         request: ResumeSessionRequest,
     ) -> Result<PendingObservationResume<L>, LifecycleApiError> {
         self.validate_resume_capacity_and_seed(&request)?;
-        if request.observation_source.is_none() {
-            return Err(LifecycleApiError::ResumeObservationSource {
-                message: String::from("portable observation source envelope is missing"),
-            });
-        }
         let permit = self.acquire_resume_observation_preparation()?;
         let configuration = self.validate_direct_resume_request(&request)?;
         let factory = self
@@ -1672,17 +761,12 @@ where
             def: scenario,
             schedule: request.schedule.clone(),
         };
-        validate_resume_checkpoint_closure(
-            &configuration,
-            &request.checkpoint,
-            ResumeCheckpointValidation::DirectLoad,
-        )?;
+        validate_resume_checkpoint_closure(&configuration, &request.checkpoint)?;
         validate_resume_replay_closure_presence(
             &request.schedule,
             request.replay_closure.as_ref(),
             self.resume_replay_closure_validator.is_some()
-                || (request.observation_source.is_some()
-                    && self.resume_observation_loop_factory.is_some()),
+                || self.resume_observation_loop_factory.is_some(),
         )?;
         validate_resume_replay_closure_binding(request)?;
         validate_resume_observation_source_binding(request)?;
@@ -1718,8 +802,7 @@ where
                 .map_err(resume_checkpoint_error)?;
         }
 
-        let white_box_policies =
-            self.white_box_policies_for_source(Some(&request.scenario), &scenario);
+        let white_box_policies = self.white_box_policies_for_source(Some(&request.scenario));
         let engine = Engine::from_recorded_checkpoint(graph, resumed_loop, request.checkpoint.id)
             .map_err(|error| LifecycleApiError::ResumeCheckpoint {
                 message: error.to_string(),
@@ -1729,7 +812,8 @@ where
         let checkpoint = request.checkpoint.id;
         let configuration = configuration.id();
         let (sender, receiver) = mpsc::channel(self.mailbox_capacity);
-        let actor = SessionActor::new(engine, receiver).with_terminal_command_keepalive(true);
+        let actor = SessionActor::new(engine, receiver)
+            .with_terminal_command_keepalive(self.retain_stopped_sessions);
         let live = actor.live_snapshot();
         let event_log = ControlPlaneEventLog::new(actor.event_log());
         let reproduction_log = actor.reproduction_log();
@@ -1751,6 +835,8 @@ where
             debug_access: DebugCoordinator::new(),
             debug_operation_gate: Arc::new(Mutex::new(())),
             debug_genesis,
+            access: SessionAccess::ReadWrite,
+            _lifetime_retention: None,
             actor_task,
         };
         let state = runtime.live.read().state_kind;
@@ -1760,6 +846,106 @@ where
             state,
             checkpoint,
             configuration,
+        })
+    }
+
+    /// Admits an owner-authenticated exact restore as an exclusive read-only session.
+    ///
+    /// The caller supplies a checkpoint whose immutable production closure has
+    /// already been authenticated by its storage owner. Capacity and every
+    /// modeled identity are validated before `build_loop` acquires runtime
+    /// resources. The actor is registered paused and rejects all canonical
+    /// mutation for its complete lifetime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when capacity is exhausted, source,
+    /// configuration, checkpoint, or seed identities disagree, the temporal
+    /// graph cannot admit the checkpoint, or `build_loop` rejects restoration.
+    pub fn admit_authenticated_read_only_session<E>(
+        &mut self,
+        source: ScenarioDefForm,
+        configuration: Configuration,
+        checkpoint: Checkpoint,
+        seed: Seed,
+        retention: SessionLifetimeRetention,
+        build_loop: impl FnOnce() -> Result<L, E>,
+    ) -> Result<ResumeSessionResponse, LifecycleApiError>
+    where
+        E: fmt::Display,
+    {
+        if let Some(limit) = self.max_sessions
+            && self.sessions.len() >= limit
+        {
+            return Err(LifecycleApiError::SessionLimitReached { limit });
+        }
+        let scenario = source.scenario_def();
+        if scenario.seed() != seed {
+            return Err(LifecycleApiError::ScenarioSeedMismatch {
+                scenario_seed: scenario.seed(),
+                request_seed: seed,
+            });
+        }
+        if configuration.def != scenario
+            || checkpoint.configuration != configuration.id()
+            || checkpoint.scenario_ref != scenario.id()
+            || checkpoint.id != configuration.id()
+        {
+            return Err(LifecycleApiError::ResumeCheckpoint {
+                message: String::from(
+                    "owner-authenticated debug checkpoint has inconsistent modeled identities",
+                ),
+            });
+        }
+
+        let mut graph = graph_with_baked_genesis(&scenario)?;
+        if !configuration.is_genesis() {
+            graph
+                .cache_snapshot(&configuration, checkpoint.clone())
+                .map_err(resume_checkpoint_error)?;
+        }
+        let resumed_loop = build_loop().map_err(|error| LifecycleApiError::LoopFactory {
+            message: error.to_string(),
+        })?;
+        let engine = Engine::from_recorded_checkpoint(graph, resumed_loop, checkpoint.id)
+            .map_err(|error| LifecycleApiError::ResumeCheckpoint {
+                message: error.to_string(),
+            })?
+            .with_white_box_policies(self.white_box_policies_for_source(Some(&source)));
+        let (sender, receiver) = mpsc::channel(self.mailbox_capacity);
+        let actor = SessionActor::new(engine, receiver)
+            .with_terminal_command_keepalive(self.retain_stopped_sessions);
+        let live = actor.live_snapshot();
+        let event_log = ControlPlaneEventLog::new(actor.event_log());
+        let reproduction_log = actor.reproduction_log();
+        let state_transitions = actor.state_transition_bus();
+        let debug_genesis = Some(debug_genesis_checkpoint(
+            &Configuration::genesis(scenario.clone()),
+            &source,
+        )?);
+        let actor_task = tokio::spawn(async move { actor.run().await });
+        let session = self.next_session_ref(seed);
+        let runtime = SessionRuntime {
+            session,
+            sender,
+            live,
+            event_log,
+            reproduction_log,
+            state_transitions,
+            debug_access: DebugCoordinator::new(),
+            debug_operation_gate: Arc::new(Mutex::new(())),
+            debug_genesis,
+            access: SessionAccess::ReadOnlyDebug,
+            _lifetime_retention: Some(retention),
+            actor_task,
+        };
+        let state = runtime.live.read().state_kind;
+        self.sessions.insert(session.id, runtime);
+        Ok(ResumeSessionResponse {
+            session,
+            state,
+            checkpoint: checkpoint.id,
+            configuration: configuration.id(),
         })
     }
 
@@ -1818,6 +1004,15 @@ where
                 session_id: request.session.id,
             },
         )?;
+        if runtime.live.read().state_kind == LiveStateKind::Stopped {
+            let _ = runtime.sender.send(actor_shutdown_command()).await;
+            join_actor(runtime.actor_task).await?;
+            return Ok(DestroySessionResponse {
+                session: request.session,
+                already_absent: false,
+                stopped: true,
+            });
+        }
         let (reply, receiver) = CommandReply::channel();
         let shutdown = SessionCommand::Acknowledge {
             command: Box::new(SessionCommand::Stop),
@@ -1830,7 +1025,12 @@ where
             });
         }
         match receiver.await {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => {
+                // The first Stop terminalizes a running session and deliberately
+                // leaves its actor observable. A second terminal Stop releases
+                // that keepalive so Destroy can join the owner deterministically.
+                let _ = runtime.sender.send(actor_shutdown_command()).await;
+            }
             Ok(Err(error)) => {
                 runtime.actor_task.abort();
                 let _ = runtime.actor_task.await;
@@ -1886,26 +1086,15 @@ where
                 .get(name)
                 .ok_or_else(|| LifecycleApiError::ScenarioNotFound { name: name.clone() })?
                 .scenario_for_seed(request.seed),
-            CreateSessionSource::Inline {
-                scenario,
-                scenario_form,
-            } => {
-                if let Some(scenario_form) = scenario_form {
-                    let source_scenario = scenario_form.scenario_def();
-                    if source_scenario != *scenario {
-                        return Err(LifecycleApiError::InlineScenarioIdentityMismatch {
-                            expected: Box::new(scenario.clone()),
-                            actual: Box::new(source_scenario),
-                        });
-                    }
-                }
+            CreateSessionSource::Inline { scenario } => {
+                let scenario = scenario.scenario_def();
                 if scenario.seed() != request.seed {
                     return Err(LifecycleApiError::ScenarioSeedMismatch {
                         scenario_seed: scenario.seed(),
                         request_seed: request.seed,
                     });
                 }
-                Ok(scenario.clone())
+                Ok(scenario)
             }
         }
     }
@@ -1913,13 +1102,10 @@ where
     fn white_box_policies_for_source(
         &self,
         scenario_form: Option<&ScenarioDefForm>,
-        scenario: &ScenarioDef,
     ) -> BTreeMap<NodeId, WhiteBoxPolicy> {
-        let mut policies = scenario_form
+        scenario_form
             .map(scenario_form_white_box_policies)
-            .unwrap_or_default();
-        policies.extend((self.white_box_policy_provider)(scenario));
-        policies
+            .unwrap_or_default()
     }
 
     fn next_session_ref(&mut self, seed: Seed) -> SessionRef {
@@ -1982,40 +1168,6 @@ where
         Ok(runtime)
     }
 
-    /// Registers an authenticated read-only debugger observer for a session.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] when the session reference is stale or the
-    /// supplied role lacks [`DebugCapability::Observe`].
-    pub fn add_debug_observer(
-        &mut self,
-        session: SessionRef,
-        client: DebugClientId,
-        role: &DebugRole,
-    ) -> Result<(), LifecycleApiError> {
-        self.checked_runtime_mut(session)?
-            .debug_access
-            .add_observer(client, role)?;
-        Ok(())
-    }
-
-    /// Removes a debugger observer connection from a session.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] when the session reference is stale.
-    pub fn remove_debug_observer(
-        &mut self,
-        session: SessionRef,
-        client: &DebugClientId,
-    ) -> Result<(), LifecycleApiError> {
-        self.checked_runtime_mut(session)?
-            .debug_access
-            .remove_observer(client);
-        Ok(())
-    }
-
     /// Acquires the session's exclusive debugger controller lease.
     ///
     /// # Errors
@@ -2064,7 +1216,16 @@ where
         role: &DebugRole,
         capability: DebugCapability,
     ) -> Result<(), LifecycleApiError> {
-        self.checked_runtime(session, None)?
+        let runtime = self.checked_runtime(session, None)?;
+        if runtime.access == SessionAccess::ReadOnlyDebug
+            && matches!(
+                capability,
+                DebugCapability::Mutate | DebugCapability::Shell | DebugCapability::Admin
+            )
+        {
+            return Err(LifecycleApiError::ReadOnlySession { session });
+        }
+        runtime
             .debug_access
             .authorize_controller_operation(lease, role, capability)?;
         Ok(())
@@ -2160,6 +1321,9 @@ where
         session: SessionRef,
     ) -> Result<GuestIntrospectionDispatch, LifecycleApiError> {
         let runtime = self.checked_runtime(session, None)?;
+        if runtime.access == SessionAccess::ReadOnlyDebug {
+            return Err(LifecycleApiError::ReadOnlySession { session });
+        }
         Ok(GuestIntrospectionDispatch {
             sender: runtime.sender.clone(),
             session_id: runtime.session.id,
@@ -2175,14 +1339,28 @@ where
     /// # Errors
     ///
     /// Returns [`LifecycleApiError`] when the session reference is stale.
-    pub fn debug_reposition_dispatch(
+    pub(crate) fn debug_reposition_dispatch(
         &self,
         session: SessionRef,
     ) -> Result<DebugRepositionDispatch, LifecycleApiError> {
         let runtime = self.checked_runtime(session, None)?;
+        if runtime.access == SessionAccess::ReadOnlyDebug {
+            return Err(LifecycleApiError::ReadOnlySession { session });
+        }
         Ok(DebugRepositionDispatch {
             sender: runtime.sender.clone(),
             session_id: runtime.session.id,
+        })
+    }
+
+    pub(crate) fn debug_relay_access(
+        &self,
+        session: SessionRef,
+    ) -> Result<DebugRelayAccess, LifecycleApiError> {
+        let runtime = self.checked_runtime(session, None)?;
+        Ok(match runtime.access {
+            SessionAccess::ReadWrite => DebugRelayAccess::ReadWrite,
+            SessionAccess::ReadOnlyDebug => DebugRelayAccess::ReadOnly,
         })
     }
 
@@ -2227,14 +1405,18 @@ where
                 actual: runtime.session,
             });
         }
-        Ok(InProcessStreamingSession::new(
+        let streaming = InProcessStreamingSession::new(
             runtime.session,
             runtime.sender.clone(),
             Arc::clone(&runtime.live),
             runtime.event_log.clone(),
             runtime.reproduction_log.clone(),
             runtime.state_transitions.clone(),
-        ))
+        );
+        Ok(match runtime.access {
+            SessionAccess::ReadWrite => streaming,
+            SessionAccess::ReadOnlyDebug => streaming.with_read_only_debug_policy(),
+        })
     }
 
     /// Dispatches one streaming command against a lifecycle-owned session.
@@ -2248,7 +1430,16 @@ where
         request: SendRequest,
     ) -> Result<SendResponse, ControlClientError> {
         let session = request.session;
+        let command_id = request.command_id;
         let command_kind = SessionCommandKind::from(&request.command);
+        if self.checked_runtime(session, None)?.access == SessionAccess::ReadOnlyDebug
+            && !matches!(
+                command_kind,
+                SessionCommandKind::Query | SessionCommandKind::Stop
+            )
+        {
+            return Err(LifecycleApiError::ReadOnlySession { session }.into());
+        }
         let streaming_session = self.streaming_session(session)?;
         let mut response = match streaming_session.send(request).await {
             Ok(response) => response,
@@ -2266,8 +1457,31 @@ where
         if command_kind == SessionCommandKind::Stop
             && response.result.status == CommandResultStatus::Accepted
         {
-            let report = self.cleanup_accepted_streaming_stop(session).await?;
-            response.query_result = Some(QueryResult::Snapshot(Box::new(report.final_snapshot)));
+            if self.retain_stopped_sessions {
+                let snapshot = streaming_session
+                    .send(SendRequest::new(
+                        session,
+                        command_id,
+                        SessionCommand::Query {
+                            kind: QueryKind::Snapshot,
+                            reply: CommandReply::discard(),
+                        },
+                    ))
+                    .await?;
+                response.query_result = match snapshot.query_result {
+                    Some(result @ QueryResult::Snapshot(_)) => Some(result),
+                    _ => {
+                        return Err(StreamingApiError::CommandResponseMissing {
+                            command: SessionCommandKind::Query,
+                        }
+                        .into());
+                    }
+                };
+            } else {
+                let report = self.cleanup_accepted_streaming_stop(session).await?;
+                response.query_result =
+                    Some(QueryResult::Snapshot(Box::new(report.final_snapshot)));
+            }
         }
 
         Ok(response)
@@ -2280,7 +1494,6 @@ where
         let Some(runtime) = self.sessions.remove(&session.id) else {
             return Err(StreamingApiError::SessionNotFound { session }.into());
         };
-        let _ = runtime.sender.send(actor_shutdown_command()).await;
         join_actor(runtime.actor_task).await.map_err(Into::into)
     }
 }
@@ -2311,9 +1524,7 @@ fn validate_resume_replay_closure_binding(
 fn validate_resume_observation_source_binding(
     request: &ResumeSessionRequest,
 ) -> Result<(), LifecycleApiError> {
-    let Some(source) = request.observation_source.as_ref() else {
-        return Ok(());
-    };
+    let source = &request.observation_source;
     let expected = resume_observation_source_identity(
         &request.scenario,
         &request.schedule,
@@ -2337,15 +1548,16 @@ fn validate_resume_replay_closure_presence(
     closure: Option<&ResumeReplayClosure>,
     has_validator: bool,
 ) -> Result<(), LifecycleApiError> {
-    let requires_closure = schedule
-        .decisions()
-        .iter()
-        .any(|decision| matches!(decision, Decision::Selection(_)));
+    let requires_closure = has_validator
+        || schedule
+            .decisions()
+            .iter()
+            .any(|decision| matches!(decision, Decision::Selection(_)));
     let Some(closure) = closure else {
         return if requires_closure {
             Err(LifecycleApiError::ResumeReplayClosure {
                 message: String::from(
-                    "typed selection resume requires authenticated campaign replay evidence",
+                    "campaign-owned or typed-selection resume requires authenticated replay evidence",
                 ),
             })
         } else {
@@ -2374,6 +1586,15 @@ fn validate_resume_replay_closure_presence(
 pub struct InProcessLifecycleClient<L, F> {
     control_plane: Arc<tokio::sync::Mutex<LifecycleControlPlane<L, F>>>,
     wire_model: ControlWireModel,
+}
+
+impl<L, F> Clone for InProcessLifecycleClient<L, F> {
+    fn clone(&self) -> Self {
+        Self {
+            control_plane: Arc::clone(&self.control_plane),
+            wire_model: self.wire_model,
+        }
+    }
 }
 
 impl<L, F> InProcessLifecycleClient<L, F> {
@@ -2406,6 +1627,41 @@ where
     /// Returns the number of live sessions in the wrapped control plane.
     pub async fn session_count(&self) -> usize {
         self.control_plane.lock().await.session_count()
+    }
+
+    /// Admits one owner-authenticated exact restore into this client's control plane.
+    ///
+    /// This is the in-process ownership boundary used by daemon services that
+    /// already authenticated immutable storage. It shares the same session
+    /// capacity and mutation enforcement as every HTTP lifecycle request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when owner authentication disagrees with
+    /// modeled identities, capacity is exhausted, or runtime construction fails.
+    pub async fn admit_authenticated_read_only_session<E>(
+        &self,
+        source: ScenarioDefForm,
+        configuration: Configuration,
+        checkpoint: Checkpoint,
+        seed: Seed,
+        retention: SessionLifetimeRetention,
+        build_loop: impl FnOnce() -> Result<L, E>,
+    ) -> Result<ResumeSessionResponse, LifecycleApiError>
+    where
+        E: fmt::Display,
+    {
+        self.control_plane
+            .lock()
+            .await
+            .admit_authenticated_read_only_session(
+                source,
+                configuration,
+                checkpoint,
+                seed,
+                retention,
+                build_loop,
+            )
     }
 }
 
@@ -2458,15 +1714,6 @@ where
         request: ResumeSessionRequest,
     ) -> ControlClientFuture<'_, ResumeSessionResponse> {
         Box::pin(async move {
-            if request.observation_source.is_none() {
-                return self
-                    .control_plane
-                    .lock()
-                    .await
-                    .resume_session(request)
-                    .await
-                    .map_err(ControlClientError::from);
-            }
             let pending = self
                 .control_plane
                 .lock()
@@ -2635,7 +1882,16 @@ struct SessionRuntime {
     debug_access: DebugCoordinator,
     debug_operation_gate: Arc<Mutex<()>>,
     debug_genesis: Option<GenesisCheckpoint>,
+    access: SessionAccess,
+    // Dropping the runtime releases the owner-provided immutable source guard.
+    _lifetime_retention: Option<SessionLifetimeRetention>,
     actor_task: JoinHandle<Result<SessionRunReport, SessionError>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionAccess {
+    ReadWrite,
+    ReadOnlyDebug,
 }
 
 impl SessionRuntime {
@@ -2690,6 +1946,7 @@ async fn wait_for_live_state(
             return Ok(());
         }
         tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     Err(LifecycleApiError::StateDidNotAdvance {
         session_id: runtime.session.id,
@@ -2738,7 +1995,6 @@ async fn join_actor(
 fn validate_resume_checkpoint_closure(
     configuration: &Configuration,
     checkpoint: &Checkpoint,
-    validation: ResumeCheckpointValidation,
 ) -> Result<(), LifecycleApiError> {
     let configuration_id = configuration.id();
     if checkpoint.id != configuration_id {
@@ -2768,9 +2024,7 @@ fn validate_resume_checkpoint_closure(
             ),
         });
     }
-    if validation == ResumeCheckpointValidation::DirectLoad
-        && checkpoint.kind != CheckpointKind::Fat
-    {
+    if checkpoint.kind != CheckpointKind::Fat {
         return Err(LifecycleApiError::ResumeCheckpoint {
             message: String::from("resume checkpoint must contain fat materialized state"),
         });
@@ -2785,14 +2039,11 @@ fn validate_resume_checkpoint_closure(
             BTreeMap::new(),
         )
         .map_err(resume_checkpoint_error)?;
-        // A direct-load graph has one checkpoint slot per configuration id, so
-        // replacing its baked root with a later runtime-only snapshot would
-        // erase the true zero-time genesis. Thin replay never registers the
-        // supplied material: it may use a nonzero frontier to reconstruct a
-        // deterministic runtime whose causal schedule is still empty.
+        // A restored graph has one checkpoint slot per configuration id, so
+        // replacing its baked root with runtime-only material would erase the
+        // true zero-time genesis.
         let requires_baked_genesis = checkpoint.execution_closure.is_none()
-            && (validation == ResumeCheckpointValidation::DirectLoad
-                || checkpoint.virtual_time == VirtualTime::default());
+            && checkpoint.virtual_time == VirtualTime::default();
         if requires_baked_genesis && checkpoint != &baked {
             return Err(LifecycleApiError::ResumeCheckpoint {
                 message: String::from(
@@ -2839,12 +2090,6 @@ fn validate_resume_checkpoint_closure(
         });
     }
     Ok(())
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ResumeCheckpointValidation {
-    DirectLoad,
-    ThinReplay,
 }
 
 fn graph_with_baked_genesis(scenario: &ScenarioDef) -> Result<TemporalGraph, LifecycleApiError> {
@@ -2897,4 +2142,7 @@ fn resume_checkpoint_error(error: EngineError) -> LifecycleApiError {
         message: error.to_string(),
     }
 }
-mod thin_replay;
+
+#[cfg(test)]
+#[path = "lifecycle/tests.rs"]
+mod tests;

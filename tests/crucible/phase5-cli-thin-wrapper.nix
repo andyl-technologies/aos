@@ -15,7 +15,7 @@
     inherit lib;
     entry = ../../crates/crucible-cli/src/cli/control.rs;
   };
-  cliResumeFork = builtins.readFile ../../crates/crucible-cli/src/cli/resume_fork.rs;
+  cliResume = builtins.readFile ../../crates/crucible-cli/src/cli/resume.rs;
   nullOperationRecorder = builtins.readFile ../../crates/crucible-cli/src/null_operation_recorder.rs;
   session = import ./_crucible-session-source.nix {inherit lib;};
   sessionValidation = builtins.readFile ../../crates/crucible-session/src/validation.rs;
@@ -55,9 +55,9 @@
         needle = "validation_dag_with_baked_genesis(scenario)";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/cli/resume_fork.rs" cliResumeFork [
+    ++ failuresFor "crates/crucible-cli/src/cli/resume.rs" cliResume [
       {
-        label = "resume and fork delegate checkpoint materialization";
+        label = "resume delegates checkpoint materialization";
         needle = "recorded_checkpoint_for_configuration(configuration, frontier)";
       }
     ]
@@ -129,10 +129,6 @@
       {
         label = "explicit no checkpoint materialization";
         needle = "implements_checkpoint_materialization: false";
-      }
-      {
-        label = "explicit no fork logic";
-        needle = "implements_fork_logic: false";
       }
       {
         label = "no extra control capability field";
@@ -311,7 +307,7 @@
         needle = "Checkpoint::from_recorded_configuration(";
       }
     ]
-    ++ forbiddenFor "crates/crucible-cli/src/cli/resume_fork.rs" cliResumeFork [
+    ++ forbiddenFor "crates/crucible-cli/src/cli/resume.rs" cliResume [
       {
         label = "CLI-owned checkpoint materialization";
         needle = "Checkpoint::from_recorded_configuration(";

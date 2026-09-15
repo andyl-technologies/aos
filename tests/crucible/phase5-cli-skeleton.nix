@@ -77,10 +77,6 @@
         needle = "Resume(ResumeArgs)";
       }
       {
-        label = "closed fork subcommand";
-        needle = "Fork(ForkArgs)";
-      }
-      {
         label = "closed replay subcommand";
         needle = "Replay(ReplayArgs)";
       }
@@ -196,7 +192,7 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             component=crucible-cli
             parser=clap-derive
-            subcommands=run,verify,selftest,save,resume,fork,replay,search,fuzz,triage,debug,serve,completions
+            subcommands=run,verify,selftest,save,resume,replay,search,fuzz,triage,debug,serve,campaign,store,completions
             globals=seed,backend,daemon,qemu,plugin,store,format,trace,artifact-dir,verbose,quiet
             RESULT
           '';

@@ -112,9 +112,7 @@ pub(super) fn completed_quantum_clamp_is_attested(
     let acknowledgement_is_new = snapshot.control_boundary_ack & 1 == 1
         && acknowledgement_distance != 0
         && acknowledgement_distance < (1_u32 << 31);
-    let status_is_settled = snapshot.status == STATUS_IDLE
-        || (snapshot.status == STATUS_RUNNING
-            && snapshot.idle_wake_icount > snapshot.current_icount);
+    let status_is_settled = snapshot.status == STATUS_IDLE || snapshot.status == STATUS_RUNNING;
 
     acknowledgement_is_new
         && snapshot.publish_gen != pending.report_generation

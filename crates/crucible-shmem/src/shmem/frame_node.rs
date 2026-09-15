@@ -43,10 +43,10 @@ mod control_boundary_tests {
     fn repeated_request_and_acknowledgement_are_idempotent() {
         let slot = NodeSlot::new(KIND_VM);
         let request = slot
-            .request_control_boundary()
+            .request_control_boundary(0, None)
             .unwrap_or_else(|error| panic!("first request should publish: {error}"));
         let repeated = slot
-            .request_control_boundary()
+            .request_control_boundary(0, None)
             .unwrap_or_else(|error| panic!("repeated request should publish: {error}"));
 
         assert_eq!(request, 2);
@@ -61,10 +61,59 @@ mod control_boundary_tests {
         slot.control_boundary_ack.store(u32::MAX, Ordering::Release);
 
         let request = slot
-            .request_control_boundary()
+            .request_control_boundary(0, None)
             .unwrap_or_else(|error| panic!("wrapped request should publish: {error}"));
 
         assert_eq!(request, 0);
         assert_eq!(slot.acknowledge_control_boundary(), 1);
+    }
+
+    #[test]
+    fn outstanding_control_request_rejects_a_changed_frontier_or_capture() {
+        let slot = NodeSlot::new(KIND_VM);
+        let request = slot
+            .request_control_boundary(7, Some(3))
+            .unwrap_or_else(|error| panic!("bound request should publish: {error}"));
+
+        assert_eq!(request, 2);
+        assert_eq!(slot.control_boundary_fault_command_frontier(), 7);
+        assert_eq!(slot.control_boundary_capture_request(), Some(3));
+        assert!(matches!(
+            slot.request_control_boundary(8, Some(3)),
+            Err(NodeSlotError::ControlBoundaryRequestChanged { .. })
+        ));
+        assert!(matches!(
+            slot.request_control_boundary(7, Some(5)),
+            Err(NodeSlotError::ControlBoundaryRequestChanged { .. })
+        ));
+        assert_eq!(slot.snapshot().control_boundary_ack, request);
+    }
+}
+
+#[cfg(test)]
+mod virtual_timer_witness_tests {
+    use super::*;
+
+    #[test]
+    fn completed_virtual_timer_witness_round_trips_in_one_slot_snapshot() {
+        let slot = NodeSlot::new(KIND_VM);
+        assert_eq!(slot.snapshot().virtual_timer_witness, None);
+
+        let witness = VirtualTimerFireWitness {
+            generation: 7,
+            deadline_ns: 500,
+            deadline_icount: 63,
+            armed_raw_icount: 41,
+            fired_expire_ns: 500,
+            fired_virtual_ns: 504,
+            fired_raw_icount: 41,
+            completed: 1,
+            reserved: 0,
+        };
+        slot.publish_virtual_timer_witness(witness);
+
+        let snapshot = slot.snapshot();
+        assert_eq!(snapshot.virtual_timer_witness, Some(witness));
+        assert!(snapshot.publish_gen.is_multiple_of(2));
     }
 }

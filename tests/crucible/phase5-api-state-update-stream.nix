@@ -24,7 +24,7 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
 
-  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/21-api.md" apiDoc [
@@ -71,8 +71,22 @@
         needle = "state_transitions.subscribe";
       }
       {
-        label = "state update lag error";
+        label = "infallible coalesced state update receiver";
+        needle = "pub async fn recv_state_update(&mut self) -> Option<StreamingStateUpdateFrame>";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-api/src/streaming.rs" streaming [
+      {
+        label = "retired state update lag error";
         needle = "StateUpdateStreamLagged";
+      }
+      {
+        label = "redundant fallible state update adapter";
+        needle = "recv_api_state_update";
+      }
+      {
+        label = "compatibility-only fallibility";
+        needle = "fallible for compatibility";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/client.rs" client [

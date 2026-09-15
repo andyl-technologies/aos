@@ -10,6 +10,7 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   concurrencyTest = builtins.readFile ../../crates/crucible/tests/scheduler_concurrency.rs;
+  schedulerConcurrencyTests = builtins.readFile ../../crates/crucible/src/scheduler/tests/concurrent.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -24,7 +25,7 @@
       }
       {
         label = "concurrent run set note";
-        needle = "bounded concurrent RUN set";
+        needle = "adds a concurrent RUN set";
       }
       {
         label = "serialized resolve emit note";
@@ -66,7 +67,7 @@
       }
       {
         label = "worker bound validation";
-        needle = "concurrent scheduler max_host_workers must be positive";
+        needle = "concurrent backend max_host_workers must be positive";
       }
       {
         label = "serialized concurrent completions";
@@ -97,12 +98,8 @@
     ]
     ++ failuresFor "crates/crucible/tests/scheduler_concurrency.rs" concurrencyTest [
       {
-        label = "bounded run set test";
-        needle = "concurrent_run_set_is_bounded_by_workers_and_horizons";
-      }
-      {
-        label = "zero worker rejection test";
-        needle = "concurrent_run_set_rejects_zero_workers";
+        label = "horizon-bounded run set test";
+        needle = "concurrent_run_set_is_fixed_by_scheduler_horizons";
       }
       {
         label = "skewed peer exclusion test";
@@ -127,6 +124,12 @@
       {
         label = "intermediate frontier comparison";
         needle = "concurrent_frontiers";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/scheduler/tests/concurrent.rs" schedulerConcurrencyTests [
+      {
+        label = "zero worker rejection test";
+        needle = "concurrent_backend_rejects_zero_workers_before_preparation";
       }
     ]
     ++ forbiddenFor "crates/crucible/tests/scheduler_concurrency.rs" concurrencyTest [
@@ -201,6 +204,14 @@ in
               -p crucible \
               --test scheduler_concurrency \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-scheduler-concurrency-target" \
+              -p crucible \
+              --lib \
+              concurrent_backend_rejects_zero_workers_before_preparation \
+              -- --test-threads=1
           '';
         }
         {
@@ -213,7 +224,8 @@ in
             check=${attrPath}
             tasks=${taskList}
             component=crucible-scheduler
-            host_concurrency=bounded-by-lookahead-and-workers
+            scheduler_run_set=lookahead-bounded
+            host_dispatch=worker-bounded
             resolve_emit=serialized-through-single-scheduler
             serial_concurrent_event_logs=bit-identical
             related_gate=gate:e2e-determinism

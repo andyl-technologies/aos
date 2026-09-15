@@ -177,14 +177,32 @@ fn fresh_scheduler(seed: Seed) -> SingleScheduler {
     // window (so the concurrent dispatch genuinely contains two RUNs).
     let pending = vec![
         ScheduledEvent {
-            key: ScheduledEventKey::from_parts(VirtualTime { ticks: 12 }, a.clone(), b.clone(), 0),
+            key: ScheduledEventKey::new(
+                crucible::SharedTimelineKey {
+                    virtual_time: crucible::SimInstant {
+                        nanos: (VirtualTime { ticks: 12 }).ticks,
+                    },
+                    node: a.clone(),
+                    sequence: 0,
+                },
+                b.clone(),
+            ),
             payload: ScheduledEventPayload::BackendInput(BackendInput {
                 node: node_id("a"),
                 payload: b"b-to-a".to_vec(),
             }),
         },
         ScheduledEvent {
-            key: ScheduledEventKey::from_parts(VirtualTime { ticks: 16 }, b.clone(), a.clone(), 0),
+            key: ScheduledEventKey::new(
+                crucible::SharedTimelineKey {
+                    virtual_time: crucible::SimInstant {
+                        nanos: (VirtualTime { ticks: 16 }).ticks,
+                    },
+                    node: b.clone(),
+                    sequence: 0,
+                },
+                a.clone(),
+            ),
             payload: ScheduledEventPayload::BackendInput(BackendInput {
                 node: node_id("b"),
                 payload: b"a-to-b".to_vec(),

@@ -115,18 +115,6 @@ pub(super) fn stage_apply_commands(
     Ok(())
 }
 
-pub(crate) fn validate_typed_node_result(
-    request_payload: &[u8],
-    result: DequeuedFaultResult,
-    expected_status: FaultResultStatus,
-) -> Result<NodeFaultEvidenceV1, FaultActionCommitError> {
-    let request = NodeFaultPayloadV1::decode(request_payload).map_err(|_source| {
-        FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
-    })?;
-    validate_typed_node_result_decoded(&request, request_payload, result, expected_status)
-        .map(|(evidence, _result_buffer)| evidence)
-}
-
 /// Authenticates a typed PREPARE result and identifies rejection evidence.
 ///
 /// A prepared result returns `None`; every other authenticated status returns

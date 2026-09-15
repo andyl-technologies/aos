@@ -19,10 +19,9 @@ use crate::{
     ScenarioDefId,
 };
 
-const RECORD_SCHEMA_VERSION: u32 = 1;
 const RETENTION_SCHEMA_VERSION: u32 = 2;
-const CANDIDATE_BUNDLE_SCHEMA_VERSION: u32 = 3;
 const CANDIDATE_OCCURRENCES_SCHEMA_VERSION: u32 = 4;
+const MINIMIZATION_POLICY_SCHEMA_VERSION: u32 = 3;
 const MAX_REPRODUCTION_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_REPRODUCTION_RECORD_BYTES: usize = 34 * 1024 * 1024;
 const MAX_FINDING_RECORD_BYTES: usize = 4 * 1024 * 1024;
@@ -42,6 +41,8 @@ pub const MAX_FINDING_EXACT_PINS: usize = 256;
 pub const MAX_FINDING_MINIMIZATION_ATTEMPTS: usize = 4_096;
 /// Maximum execution-model policy bytes retained by one minimization trace.
 pub const MAX_FINDING_MINIMIZATION_POLICY_BYTES: usize = 64 * 1024;
+/// Maximum unique static bytes retained by one finding's replay captures.
+pub const MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Role-tagged exact-checkpoint accelerators retained by one finding cluster.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -96,15 +97,6 @@ impl FindingExactPins {
             additional,
             all,
         })
-    }
-
-    /// Converts a legacy untyped exact-checkpoint set into additional pins.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError::LimitExceeded`] when `pins` exceeds 256.
-    pub fn from_untyped(pins: BTreeSet<ExactCheckpointId>) -> Result<Self, CampaignCodecError> {
-        Self::new(BTreeSet::new(), BTreeSet::new(), BTreeSet::new(), pins)
     }
 
     /// Returns checkpoints immediately before causal failure evidence.
@@ -402,6 +394,21 @@ impl FindingSignature {
         codec::encode(self)
     }
 
+    /// Decodes one strict canonical finding signature.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical, invalid, or
+    /// oversized bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        if bytes.len() > MAX_FINDING_RECORD_BYTES {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "finding-signature-encoded-bytes",
+            });
+        }
+        codec::decode(bytes)
+    }
+
     fn content_children(&self) -> Vec<(String, ContentId)> {
         let mut children = self
             .causal_evidence
@@ -561,14 +568,14 @@ impl FindingMinimizationEvidence {
         attempts: Vec<FindingMinimizationAttempt>,
         final_replayed_state: CampaignHash,
     ) -> Result<Self, CampaignCodecError> {
-        if original.content_id().schema_version() != RECORD_SCHEMA_VERSION {
+        if original.content_id().schema_version() != RETENTION_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
-                reason: "finding minimization original is not schema v1",
+                reason: "finding minimization original is not current schema",
             });
         }
-        if policy_schema == 0 || policy.is_empty() {
+        if policy_schema != MINIMIZATION_POLICY_SCHEMA_VERSION || policy.is_empty() {
             return Err(CampaignCodecError::InvalidValue {
-                reason: "finding minimization policy is empty or has no schema",
+                reason: "finding minimization policy is empty or not current schema",
             });
         }
         if policy.len() > MAX_FINDING_MINIMIZATION_POLICY_BYTES {
@@ -667,6 +674,36 @@ impl Canonical for FindingMinimizationEvidence {
     }
 }
 
+/// Authenticated identity basis shared by reproduction artifact constructors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReproductionArtifactBasis {
+    scenario: ScenarioDefId,
+    scenario_artifact: ScenarioArtifactId,
+    configuration: ConfigurationId,
+    configuration_artifact: ConfigurationArtifactId,
+    finding_fingerprint: CampaignHash,
+}
+
+impl ReproductionArtifactBasis {
+    /// Builds an identity basis from its semantic and exact artifact identities.
+    #[must_use]
+    pub const fn new(
+        scenario: ScenarioDefId,
+        scenario_artifact: ScenarioArtifactId,
+        configuration: ConfigurationId,
+        configuration_artifact: ConfigurationArtifactId,
+        finding_fingerprint: CampaignHash,
+    ) -> Self {
+        Self {
+            scenario,
+            scenario_artifact,
+            configuration,
+            configuration_artifact,
+            finding_fingerprint,
+        }
+    }
+}
+
 /// Self-contained execution-model reproduction bytes after adapter verification.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReproductionArtifact {
@@ -689,25 +726,11 @@ impl ReproductionArtifact {
     /// Returns [`CampaignCodecError`] for a zero payload schema, empty payload,
     /// or payload above 32 MiB.
     pub fn new(
-        scenario: ScenarioDefId,
-        scenario_artifact: ScenarioArtifactId,
-        configuration: ConfigurationId,
-        configuration_artifact: ConfigurationArtifactId,
-        finding_fingerprint: CampaignHash,
+        basis: ReproductionArtifactBasis,
         payload_schema: u32,
         payload: Vec<u8>,
     ) -> Result<Self, CampaignCodecError> {
-        Self::new_versioned(
-            RECORD_SCHEMA_VERSION,
-            scenario,
-            scenario_artifact,
-            configuration,
-            configuration_artifact,
-            finding_fingerprint,
-            payload_schema,
-            payload,
-            None,
-        )
+        Self::new_current(basis, payload_schema, payload, None)
     }
 
     /// Builds a verifier-backed minimized reproduction with its exact trace.
@@ -716,48 +739,24 @@ impl ReproductionArtifact {
     ///
     /// Returns [`CampaignCodecError`] for an invalid payload, an inconsistent
     /// minimization target, or an encoded record above 34 MiB.
-    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
-    #[allow(clippy::too_many_arguments)]
     pub fn new_minimized(
-        scenario: ScenarioDefId,
-        scenario_artifact: ScenarioArtifactId,
-        configuration: ConfigurationId,
-        configuration_artifact: ConfigurationArtifactId,
-        finding_fingerprint: CampaignHash,
+        basis: ReproductionArtifactBasis,
         payload_schema: u32,
         payload: Vec<u8>,
         minimization: FindingMinimizationEvidence,
     ) -> Result<Self, CampaignCodecError> {
         if minimization.attempts().iter().any(|attempt| {
-            attempt.accepted() && attempt.observed_fingerprint() != Some(finding_fingerprint)
+            attempt.accepted() && attempt.observed_fingerprint() != Some(basis.finding_fingerprint)
         }) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "finding minimization accepted a different fingerprint",
             });
         }
-        Self::new_versioned(
-            RETENTION_SCHEMA_VERSION,
-            scenario,
-            scenario_artifact,
-            configuration,
-            configuration_artifact,
-            finding_fingerprint,
-            payload_schema,
-            payload,
-            Some(minimization),
-        )
+        Self::new_current(basis, payload_schema, payload, Some(minimization))
     }
 
-    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
-    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
-    #[allow(clippy::too_many_arguments)]
-    fn new_versioned(
-        schema_version: u32,
-        scenario: ScenarioDefId,
-        scenario_artifact: ScenarioArtifactId,
-        configuration: ConfigurationId,
-        configuration_artifact: ConfigurationArtifactId,
-        finding_fingerprint: CampaignHash,
+    fn new_current(
+        basis: ReproductionArtifactBasis,
         payload_schema: u32,
         payload: Vec<u8>,
         minimization: Option<FindingMinimizationEvidence>,
@@ -772,18 +771,13 @@ impl ReproductionArtifact {
                 limit: "finding-reproduction-payload-bytes",
             });
         }
-        if matches!(schema_version, RECORD_SCHEMA_VERSION) != minimization.is_none() {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "finding reproduction schema disagrees with minimization evidence",
-            });
-        }
         let value = Self {
-            schema_version,
-            scenario,
-            scenario_artifact,
-            configuration,
-            configuration_artifact,
-            finding_fingerprint,
+            schema_version: RETENTION_SCHEMA_VERSION,
+            scenario: basis.scenario,
+            scenario_artifact: basis.scenario_artifact,
+            configuration: basis.configuration,
+            configuration_artifact: basis.configuration_artifact,
+            finding_fingerprint: basis.finding_fingerprint,
             payload_schema,
             payload,
             minimization,
@@ -916,17 +910,12 @@ impl Canonical for ReproductionArtifact {
         self.finding_fingerprint.encode(encoder);
         self.payload_schema.encode(encoder);
         self.payload.encode(encoder);
-        if self.schema_version == RETENTION_SCHEMA_VERSION {
-            self.minimization.encode(encoder);
-        }
+        self.minimization.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
-        if !matches!(
-            schema_version,
-            RECORD_SCHEMA_VERSION | RETENTION_SCHEMA_VERSION
-        ) {
+        if schema_version != RETENTION_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported finding reproduction schema version",
             });
@@ -942,18 +931,15 @@ impl Canonical for ReproductionArtifact {
             "finding-reproduction-payload-bytes",
             u8::decode,
         )?;
-        let minimization = if schema_version == RETENTION_SCHEMA_VERSION {
-            Option::<FindingMinimizationEvidence>::decode(decoder)?
-        } else {
-            None
-        };
-        Self::new_versioned(
-            schema_version,
-            scenario,
-            scenario_artifact,
-            configuration,
-            configuration_artifact,
-            finding_fingerprint,
+        let minimization = Option::<FindingMinimizationEvidence>::decode(decoder)?;
+        Self::new_current(
+            ReproductionArtifactBasis::new(
+                scenario,
+                scenario_artifact,
+                configuration,
+                configuration_artifact,
+                finding_fingerprint,
+            ),
             payload_schema,
             payload,
             minimization,
@@ -1105,483 +1091,5 @@ impl Canonical for FindingCandidateOccurrenceSet {
     }
 }
 
-/// Canonical cluster of one stable failure signature and its occurrences.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Finding {
-    schema_version: u32,
-    signature: FindingSignature,
-    observation: ObservationId,
-    reproduction: ReproductionArtifactId,
-    first_seen_snapshot: CampaignSnapshotId,
-    occurrences: FindingOccurrenceSet,
-    minimized: Option<ReproductionArtifactId>,
-    exact_pins: FindingExactPins,
-    candidate_bundle: Option<FindingCandidateBundleId>,
-    candidate_occurrences: Option<FindingCandidateOccurrenceSet>,
-}
-
-impl Finding {
-    /// Builds one bounded canonical finding cluster.
-    ///
-    /// `first_seen_snapshot` is the authenticated parent snapshot at which the
-    /// first occurrence had already become observable. Naming the successor
-    /// that publishes this record would create a content-address cycle.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] when the exact-pin set or encoded record
-    /// exceeds its bound.
-    pub fn new(
-        signature: FindingSignature,
-        observation: ObservationId,
-        reproduction: ReproductionArtifactId,
-        first_seen_snapshot: CampaignSnapshotId,
-        occurrences: FindingOccurrenceSet,
-        minimized: Option<ReproductionArtifactId>,
-        exact_pins: BTreeSet<ExactCheckpointId>,
-    ) -> Result<Self, CampaignCodecError> {
-        Self::new_versioned(
-            RECORD_SCHEMA_VERSION,
-            signature,
-            observation,
-            reproduction,
-            first_seen_snapshot,
-            occurrences,
-            minimized,
-            FindingExactPins::from_untyped(exact_pins)?,
-            None,
-            None,
-        )
-    }
-
-    /// Builds a schema-v2 finding with role-tagged exact-checkpoint retention.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] when the encoded record exceeds 4 MiB.
-    // crucible-lint: allow rust-allow -- the stable constructor retains explicit schema arguments at this boundary.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_retention(
-        signature: FindingSignature,
-        observation: ObservationId,
-        reproduction: ReproductionArtifactId,
-        first_seen_snapshot: CampaignSnapshotId,
-        occurrences: FindingOccurrenceSet,
-        minimized: Option<ReproductionArtifactId>,
-        exact_pins: FindingExactPins,
-    ) -> Result<Self, CampaignCodecError> {
-        Self::new_versioned(
-            RETENTION_SCHEMA_VERSION,
-            signature,
-            observation,
-            reproduction,
-            first_seen_snapshot,
-            occurrences,
-            minimized,
-            exact_pins,
-            None,
-            None,
-        )
-    }
-
-    /// Builds a schema-v3 finding that retains its verified candidate bundle.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] when reproduction versions are invalid or
-    /// the encoded record exceeds 4 MiB.
-    // crucible-lint: allow rust-allow -- the versioned constructor keeps every canonical field explicit.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_candidate_bundle(
-        signature: FindingSignature,
-        observation: ObservationId,
-        reproduction: ReproductionArtifactId,
-        first_seen_snapshot: CampaignSnapshotId,
-        occurrences: FindingOccurrenceSet,
-        minimized: Option<ReproductionArtifactId>,
-        exact_pins: FindingExactPins,
-        candidate_bundle: FindingCandidateBundleId,
-    ) -> Result<Self, CampaignCodecError> {
-        Self::new_versioned(
-            CANDIDATE_BUNDLE_SCHEMA_VERSION,
-            signature,
-            observation,
-            reproduction,
-            first_seen_snapshot,
-            occurrences,
-            minimized,
-            exact_pins,
-            Some(candidate_bundle),
-            None,
-        )
-    }
-
-    /// Builds a schema-v4 finding that retains every verified candidate bundle.
-    ///
-    /// The representative observation and reproduction fields remain the first
-    /// finding evidence, including an absent or legacy minimized reproduction.
-    /// `candidate_bundle` is the first retained candidate bundle, which can
-    /// postdate that evidence when a legacy finding upgrades.
-    /// `candidate_occurrences` authenticates every retained bundle.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] when reproduction versions are invalid or
-    /// the encoded record exceeds 4 MiB.
-    // crucible-lint: allow rust-allow -- the versioned constructor keeps every canonical field explicit.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_candidate_occurrences(
-        signature: FindingSignature,
-        observation: ObservationId,
-        reproduction: ReproductionArtifactId,
-        first_seen_snapshot: CampaignSnapshotId,
-        occurrences: FindingOccurrenceSet,
-        minimized: Option<ReproductionArtifactId>,
-        exact_pins: FindingExactPins,
-        candidate_bundle: FindingCandidateBundleId,
-        candidate_occurrences: FindingCandidateOccurrenceSet,
-    ) -> Result<Self, CampaignCodecError> {
-        Self::new_versioned(
-            CANDIDATE_OCCURRENCES_SCHEMA_VERSION,
-            signature,
-            observation,
-            reproduction,
-            first_seen_snapshot,
-            occurrences,
-            minimized,
-            exact_pins,
-            Some(candidate_bundle),
-            Some(candidate_occurrences),
-        )
-    }
-
-    // crucible-lint: allow rust-allow -- the versioned constructor keeps every canonical field explicit.
-    #[allow(clippy::too_many_arguments)]
-    fn new_versioned(
-        schema_version: u32,
-        signature: FindingSignature,
-        observation: ObservationId,
-        reproduction: ReproductionArtifactId,
-        first_seen_snapshot: CampaignSnapshotId,
-        occurrences: FindingOccurrenceSet,
-        minimized: Option<ReproductionArtifactId>,
-        exact_pins: FindingExactPins,
-        candidate_bundle: Option<FindingCandidateBundleId>,
-        candidate_occurrences: Option<FindingCandidateOccurrenceSet>,
-    ) -> Result<Self, CampaignCodecError> {
-        let reproduction_version = reproduction.content_id().schema_version();
-        let minimized_version = minimized.map(|id| id.content_id().schema_version());
-        let reproduction_versions_match = match schema_version {
-            RECORD_SCHEMA_VERSION => {
-                reproduction_version == RECORD_SCHEMA_VERSION
-                    && minimized_version.is_none_or(|version| version == RECORD_SCHEMA_VERSION)
-                    && candidate_bundle.is_none()
-                    && candidate_occurrences.is_none()
-            }
-            RETENTION_SCHEMA_VERSION => {
-                reproduction_version == RECORD_SCHEMA_VERSION
-                    && minimized_version.is_none_or(|version| version == RETENTION_SCHEMA_VERSION)
-                    && candidate_bundle.is_none()
-                    && candidate_occurrences.is_none()
-            }
-            CANDIDATE_BUNDLE_SCHEMA_VERSION => {
-                reproduction_version == RECORD_SCHEMA_VERSION
-                    && minimized_version == Some(RETENTION_SCHEMA_VERSION)
-                    && candidate_bundle.is_some()
-                    && candidate_occurrences.is_none()
-            }
-            CANDIDATE_OCCURRENCES_SCHEMA_VERSION => {
-                reproduction_version == RECORD_SCHEMA_VERSION
-                    && minimized_version.is_none_or(|version| {
-                        matches!(version, RECORD_SCHEMA_VERSION | RETENTION_SCHEMA_VERSION)
-                    })
-                    && candidate_bundle.is_some()
-                    && candidate_occurrences.is_some()
-            }
-            _ => false,
-        };
-        if !reproduction_versions_match {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "finding schema disagrees with reproduction versions",
-            });
-        }
-        let value = Self {
-            schema_version,
-            signature,
-            observation,
-            reproduction,
-            first_seen_snapshot,
-            occurrences,
-            minimized,
-            exact_pins,
-            candidate_bundle,
-            candidate_occurrences,
-        };
-        codec::ensure_encoded_size(
-            &value,
-            MAX_FINDING_RECORD_BYTES,
-            "finding-record-encoded-bytes",
-        )?;
-        Ok(value)
-    }
-
-    /// Returns the canonical record-body and envelope schema version.
-    #[must_use]
-    pub const fn schema_version(&self) -> u32 {
-        self.schema_version
-    }
-
-    /// Returns the stable failure signature.
-    #[must_use]
-    pub const fn signature(&self) -> &FindingSignature {
-        &self.signature
-    }
-
-    /// Returns the representative first observation.
-    #[must_use]
-    pub const fn observation(&self) -> ObservationId {
-        self.observation
-    }
-
-    /// Returns the occurrence added or reaffirmed by this record version.
-    #[must_use]
-    pub const fn latest_occurrence(&self) -> ObservationId {
-        self.occurrences.latest()
-    }
-
-    /// Returns the original verified reproduction artifact.
-    #[must_use]
-    pub const fn reproduction(&self) -> ReproductionArtifactId {
-        self.reproduction
-    }
-
-    /// Returns the parent snapshot at which the finding was first observed.
-    #[must_use]
-    pub const fn first_seen_snapshot(&self) -> CampaignSnapshotId {
-        self.first_seen_snapshot
-    }
-
-    /// Returns the authenticated Merkle-set root of clustered observations.
-    #[must_use]
-    pub const fn occurrences(&self) -> ContentId {
-        self.occurrences.root()
-    }
-
-    /// Returns the authenticated number of clustered observations.
-    #[must_use]
-    pub const fn occurrence_count(&self) -> u32 {
-        self.occurrences.count()
-    }
-
-    /// Returns the verified minimized reproduction, when one is retained.
-    #[must_use]
-    pub const fn minimized(&self) -> Option<ReproductionArtifactId> {
-        self.minimized
-    }
-
-    /// Returns optional exact-checkpoint accelerators.
-    #[must_use]
-    pub const fn exact_pins(&self) -> &BTreeSet<ExactCheckpointId> {
-        self.exact_pins.all()
-    }
-
-    /// Returns the role-tagged exact-checkpoint retention contract.
-    #[must_use]
-    pub const fn exact_pin_retention(&self) -> &FindingExactPins {
-        &self.exact_pins
-    }
-
-    /// Returns the retained candidate-bundle compatibility anchor.
-    ///
-    /// Schema v3 binds this bundle to the representative evidence. Schema v4
-    /// preserves the first bundle retained after upgrade, while
-    /// [`Self::candidate_occurrences`] is authoritative for all bundles.
-    #[must_use]
-    pub const fn candidate_bundle(&self) -> Option<FindingCandidateBundleId> {
-        self.candidate_bundle
-    }
-
-    /// Returns the authenticated Merkle root of retained candidate bundles.
-    #[must_use]
-    pub const fn candidate_occurrences(&self) -> Option<ContentId> {
-        match self.candidate_occurrences {
-            Some(occurrences) => Some(occurrences.root()),
-            None => None,
-        }
-    }
-
-    /// Returns the number of retained candidate bundles.
-    #[must_use]
-    pub const fn candidate_occurrence_count(&self) -> u32 {
-        match self.candidate_occurrences {
-            Some(occurrences) => occurrences.count(),
-            None if self.candidate_bundle.is_some() => 1,
-            None => 0,
-        }
-    }
-
-    /// Returns the candidate bundle added or reaffirmed by this record version.
-    #[must_use]
-    pub const fn latest_candidate_bundle(&self) -> Option<FindingCandidateBundleId> {
-        match self.candidate_occurrences {
-            Some(occurrences) => Some(occurrences.latest()),
-            None => self.candidate_bundle,
-        }
-    }
-
-    /// Returns strict canonical record-body bytes.
-    #[must_use]
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        codec::encode(self)
-    }
-
-    /// Decodes strict canonical record-body bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] for malformed, noncanonical, invalid, or
-    /// oversized bytes.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
-        if bytes.len() > MAX_FINDING_RECORD_BYTES {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "finding-record-encoded-bytes",
-            });
-        }
-        codec::decode(bytes)
-    }
-
-    /// Returns the exact stored finding identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] if canonical envelope construction fails.
-    pub fn id(&self) -> Result<FindingId, CampaignCodecError> {
-        FindingId::from_content_id(
-            ObjectEnvelope::for_record_versioned(
-                CampaignRecordKind::Finding,
-                self.schema_version,
-                crate::object::content_children(self.content_children())?,
-                self.canonical_bytes(),
-            )?
-            .content_id(),
-        )
-    }
-
-    pub(crate) fn content_children(&self) -> Vec<(String, ContentId)> {
-        let mut children = vec![
-            ("observation".to_owned(), self.observation.content_id()),
-            (
-                "latest-occurrence".to_owned(),
-                self.occurrences.latest().content_id(),
-            ),
-            ("reproduction".to_owned(), self.reproduction.content_id()),
-            (
-                "first-seen-snapshot".to_owned(),
-                self.first_seen_snapshot.content_id(),
-            ),
-            ("occurrences".to_owned(), self.occurrences.root()),
-        ];
-        children.extend(self.signature.content_children());
-        if let Some(minimized) = self.minimized {
-            children.push(("minimized".to_owned(), minimized.content_id()));
-        }
-        if let Some(candidate_bundle) = self.candidate_bundle {
-            children.push(("candidate-bundle".to_owned(), candidate_bundle.content_id()));
-        }
-        if let Some(candidate_occurrences) = self.candidate_occurrences {
-            children.push((
-                "candidate-occurrences".to_owned(),
-                candidate_occurrences.root(),
-            ));
-            children.push((
-                "latest-candidate-bundle".to_owned(),
-                candidate_occurrences.latest().content_id(),
-            ));
-        }
-        if self.schema_version == RECORD_SCHEMA_VERSION {
-            children.extend(
-                self.exact_pins
-                    .all()
-                    .iter()
-                    .enumerate()
-                    .map(|(index, id)| (format!("exact-pin.{index:04x}"), id.content_id())),
-            );
-        } else {
-            children.extend(self.exact_pins.content_children());
-        }
-        children
-    }
-}
-
-impl Canonical for Finding {
-    fn encode(&self, encoder: &mut Encoder) {
-        self.schema_version.encode(encoder);
-        self.signature.encode(encoder);
-        self.observation.encode(encoder);
-        self.reproduction.encode(encoder);
-        self.first_seen_snapshot.encode(encoder);
-        self.occurrences.encode(encoder);
-        self.minimized.encode(encoder);
-        if self.schema_version == RECORD_SCHEMA_VERSION {
-            self.exact_pins.all().encode(encoder);
-        } else {
-            self.exact_pins.encode(encoder);
-        }
-        if self.schema_version >= CANDIDATE_BUNDLE_SCHEMA_VERSION {
-            self.candidate_bundle.encode(encoder);
-        }
-        if self.schema_version == CANDIDATE_OCCURRENCES_SCHEMA_VERSION {
-            self.candidate_occurrences.encode(encoder);
-        }
-    }
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        let schema_version = u32::decode(decoder)?;
-        if !matches!(
-            schema_version,
-            RECORD_SCHEMA_VERSION
-                | RETENTION_SCHEMA_VERSION
-                | CANDIDATE_BUNDLE_SCHEMA_VERSION
-                | CANDIDATE_OCCURRENCES_SCHEMA_VERSION
-        ) {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "unsupported finding record schema version",
-            });
-        }
-        let signature = FindingSignature::decode(decoder)?;
-        let observation = ObservationId::decode(decoder)?;
-        let reproduction = ReproductionArtifactId::decode(decoder)?;
-        let first_seen_snapshot = CampaignSnapshotId::decode(decoder)?;
-        let occurrences = FindingOccurrenceSet::decode(decoder)?;
-        let minimized = Option::<ReproductionArtifactId>::decode(decoder)?;
-        let exact_pins = if schema_version == RECORD_SCHEMA_VERSION {
-            FindingExactPins::from_untyped(
-                decoder.set_bounded(MAX_FINDING_EXACT_PINS, "finding-exact-pin-count")?,
-            )?
-        } else {
-            FindingExactPins::decode(decoder)?
-        };
-        let candidate_bundle = if schema_version >= CANDIDATE_BUNDLE_SCHEMA_VERSION {
-            Option::<FindingCandidateBundleId>::decode(decoder)?
-        } else {
-            None
-        };
-        let candidate_occurrences = if schema_version == CANDIDATE_OCCURRENCES_SCHEMA_VERSION {
-            Option::<FindingCandidateOccurrenceSet>::decode(decoder)?
-        } else {
-            None
-        };
-        Self::new_versioned(
-            schema_version,
-            signature,
-            observation,
-            reproduction,
-            first_seen_snapshot,
-            occurrences,
-            minimized,
-            exact_pins,
-            candidate_bundle,
-            candidate_occurrences,
-        )
-    }
-}
+mod record;
+pub use record::{Finding, FindingRecordBasis};

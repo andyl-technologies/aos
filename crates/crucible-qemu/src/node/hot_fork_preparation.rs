@@ -348,7 +348,7 @@ impl QemuNode {
     }
 }
 
-fn initial_template_state_is_exact(state: &QmpHotForkTemplateState) -> bool {
+pub(super) fn initial_template_state_is_exact(state: &QmpHotForkTemplateState) -> bool {
     state.generation() != 0
         && state.outcome() == QmpHotForkTemplateOutcome::Draining
         && state.transaction_active()

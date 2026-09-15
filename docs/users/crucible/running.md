@@ -60,7 +60,7 @@ Pin seeds in CI and in any command transcript intended for reproduction:
 
 ## Terminal conditions and budgets
 
-`run`, `resume`, and `fork` accept these terminal conditions:
+`run` and `resume` accept these terminal conditions:
 
 - `quiescence` — stop when the scheduler becomes quiescent; this is the default.
 - `virtual-time` — stop at the required `--max-virtual-time` budget.
@@ -76,7 +76,7 @@ ticks  tick  ns  us  ms  s
 No suffix means ticks. Fractional durations are not accepted.
 
 `run` also accepts `--max-quanta <n>` as an independent scheduler-work bound;
-`resume` and `fork` do not currently expose that flag:
+`resume` does not currently expose that flag:
 
 ```sh
 ./result/bin/crucible \

@@ -16,7 +16,7 @@ impl ProductionFaultNetworkInterceptor {
     pub(in crate::vm_lifecycle) fn preview_node_lifecycle_intents(
         &self,
         coordinate: FaultCoordinate,
-        nodes: &mut ProductionNodeSet,
+        nodes: &mut QemuNodeSet,
     ) -> Result<Vec<crucible_qemu::QemuNodeLifecycleIntent>, SchedulerError> {
         let sequence = self
             .cursor

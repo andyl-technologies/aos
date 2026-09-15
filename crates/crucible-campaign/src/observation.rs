@@ -29,8 +29,6 @@ const MEASUREMENT_SET_SCHEMA_VERSION: u32 = 2;
 const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_MEASUREMENT_EVALUATION_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_MEASUREMENT_SET_RECORD_BYTES: usize = 33 * 1024 * 1024;
-const MAX_MEASUREMENTS: usize = 4096;
-const MAX_SAMPLES_PER_MEASUREMENT: usize = 65_536;
 const MAX_PROPERTIES: usize = 4096;
 const MAX_SCENARIO_FAILURE_REASONS: usize = 4096;
 const MAX_SCENARIO_FAILURE_REASON_BYTES: usize = 16 * 1024 * 1024;
@@ -42,182 +40,6 @@ const MAX_COVERAGE_IDENTITIES: usize = 1_000_000;
 const MAX_ENVELOPE_CHILDREN: usize = 65_536;
 const OBSERVATION_FIXED_CHILDREN: usize = 6;
 pub(crate) const MAX_DISCOVERED_CHOICES: usize = MAX_ENVELOPE_CHILDREN - OBSERVATION_FIXED_CHILDREN;
-const MAX_VALUE_BYTES: usize = 1024 * 1024;
-
-/// One exact typed measurement sample or aggregate.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum MetricValue {
-    /// Boolean value.
-    Boolean(bool),
-    /// Signed integer value.
-    Signed(i64),
-    /// Unsigned integer value.
-    Unsigned(u64),
-    /// Opaque bounded byte value for a scenario-declared metric type.
-    Bytes(Vec<u8>),
-    /// Bounded identifier-like text value.
-    Text(String),
-}
-
-impl MetricValue {
-    const fn kind_tag(&self) -> u8 {
-        match self {
-            Self::Boolean(_) => 0,
-            Self::Signed(_) => 1,
-            Self::Unsigned(_) => 2,
-            Self::Bytes(_) => 3,
-            Self::Text(_) => 4,
-        }
-    }
-
-    fn validate(&self) -> Result<(), CampaignCodecError> {
-        match self {
-            Self::Bytes(bytes) if bytes.len() > MAX_VALUE_BYTES => {
-                Err(CampaignCodecError::LimitExceeded {
-                    limit: "measurement-value-bytes",
-                })
-            }
-            Self::Text(value) => validate_identifier(value, "measurement text value is invalid"),
-            Self::Boolean(_) | Self::Signed(_) | Self::Unsigned(_) | Self::Bytes(_) => Ok(()),
-        }
-    }
-}
-
-impl Canonical for MetricValue {
-    fn encode(&self, encoder: &mut Encoder) {
-        match self {
-            Self::Boolean(value) => {
-                encoder.u8(0);
-                value.encode(encoder);
-            }
-            Self::Signed(value) => {
-                encoder.u8(1);
-                value.encode(encoder);
-            }
-            Self::Unsigned(value) => {
-                encoder.u8(2);
-                value.encode(encoder);
-            }
-            Self::Bytes(value) => {
-                encoder.u8(3);
-                value.encode(encoder);
-            }
-            Self::Text(value) => {
-                encoder.u8(4);
-                value.encode(encoder);
-            }
-        }
-    }
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        let value = match decoder.u8()? {
-            0 => Self::Boolean(bool::decode(decoder)?),
-            1 => Self::Signed(i64::decode(decoder)?),
-            2 => Self::Unsigned(u64::decode(decoder)?),
-            3 => Self::Bytes(decoder.sequence_bounded(
-                MAX_VALUE_BYTES,
-                "measurement-value-bytes",
-                u8::decode,
-            )?),
-            4 => Self::Text(
-                decoder.string_bounded(MAX_IDENTIFIER_BYTES, "measurement-text-value-bytes")?,
-            ),
-            tag => {
-                return Err(CampaignCodecError::UnknownTag {
-                    kind: "metric-value",
-                    tag,
-                });
-            }
-        };
-        value.validate()?;
-        Ok(value)
-    }
-}
-
-/// Exact samples, aggregate, and retained evidence for one measurement.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MeasurementSeries {
-    samples: Vec<MetricValue>,
-    aggregate: MetricValue,
-    evidence: BTreeSet<ContentId>,
-}
-
-impl MeasurementSeries {
-    /// Builds one bounded nonempty measurement series.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when samples or evidence exceed their bounds or a
-    /// typed value is invalid.
-    pub fn new(
-        samples: Vec<MetricValue>,
-        aggregate: MetricValue,
-        evidence: BTreeSet<ContentId>,
-    ) -> Result<Self, CampaignCodecError> {
-        if samples.is_empty() || samples.len() > MAX_SAMPLES_PER_MEASUREMENT {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "measurement-sample-count",
-            });
-        }
-        if evidence.len() > MAX_EVIDENCE_OBJECTS {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "measurement-evidence-count",
-            });
-        }
-        for sample in &samples {
-            sample.validate()?;
-            if sample.kind_tag() != aggregate.kind_tag() {
-                return Err(CampaignCodecError::InvalidValue {
-                    reason: "measurement sample and aggregate types differ",
-                });
-            }
-        }
-        aggregate.validate()?;
-        Ok(Self {
-            samples,
-            aggregate,
-            evidence,
-        })
-    }
-
-    /// Returns exact samples in modeled event order.
-    #[must_use]
-    pub fn samples(&self) -> &[MetricValue] {
-        &self.samples
-    }
-
-    /// Returns the exact declared aggregate.
-    #[must_use]
-    pub const fn aggregate(&self) -> &MetricValue {
-        &self.aggregate
-    }
-
-    /// Returns retained sample and aggregation evidence objects.
-    #[must_use]
-    pub const fn evidence(&self) -> &BTreeSet<ContentId> {
-        &self.evidence
-    }
-}
-
-impl Canonical for MeasurementSeries {
-    fn encode(&self, encoder: &mut Encoder) {
-        self.samples.encode(encoder);
-        self.aggregate.encode(encoder);
-        self.evidence.encode(encoder);
-    }
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        Self::new(
-            decoder.sequence_bounded(
-                MAX_SAMPLES_PER_MEASUREMENT,
-                "measurement-sample-count",
-                MetricValue::decode,
-            )?,
-            MetricValue::decode(decoder)?,
-            decoder.set_bounded(MAX_EVIDENCE_OBJECTS, "measurement-evidence-count")?,
-        )
-    }
-}
 
 /// One execution-model-verified canonical measurement evaluation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -261,62 +83,27 @@ impl MeasurementEvaluationPayload {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum MeasurementSetBody {
-    Legacy(BTreeMap<String, MeasurementSeries>),
-    Evaluation(MeasurementEvaluationPayload),
-}
-
 /// Canonical exact measurement results for one observation.
 ///
-/// New records retain one verified, versioned execution-model evaluation.
-/// Schema-v1 name/series maps remain readable with their original identity for
-/// campaign compatibility, but are not independently verified aggregates.
+/// Records retain one verified, versioned execution-model evaluation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MeasurementSet {
-    schema_version: u32,
-    body: MeasurementSetBody,
+    evaluation: MeasurementEvaluationPayload,
 }
 
 impl MeasurementSet {
-    /// Builds one legacy schema-v1 claimed measurement map.
-    ///
-    /// New execution paths should use [`Self::from_evaluation`]. This
-    /// constructor remains available only so existing schema-v1 records retain
-    /// their exact canonical identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid name, oversized set, or oversized record.
-    pub fn new(
-        measurements: BTreeMap<String, MeasurementSeries>,
+    #[cfg(test)]
+    pub(crate) fn test_evaluation(
+        label: &[u8],
+        evidence: BTreeSet<ContentId>,
     ) -> Result<Self, CampaignCodecError> {
-        if measurements.len() > MAX_MEASUREMENTS {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "measurement-count",
-            });
-        }
-        for name in measurements.keys() {
-            validate_identifier(name, "measurement name is invalid")?;
-        }
-        let evidence_children = measurements.values().try_fold(0_usize, |total, series| {
-            total
-                .checked_add(series.evidence().len())
-                .ok_or(CampaignCodecError::LimitExceeded {
-                    limit: "measurement-evidence-child-count",
-                })
-        })?;
-        if evidence_children > MAX_ENVELOPE_CHILDREN {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "measurement-evidence-child-count",
-            });
-        }
-        let value = Self {
-            schema_version: RECORD_SCHEMA_VERSION,
-            body: MeasurementSetBody::Legacy(measurements),
-        };
-        codec::ensure_encoded_size(&value, MAX_RECORD_BYTES, "measurement-set-encoded-bytes")?;
-        Ok(value)
+        Self::from_evaluation(
+            CampaignHash::derive("crucible.test-measurement-definitions.v1", label),
+            1,
+            CampaignHash::derive("crucible.test-measurement-evaluation.v1", label),
+            label.to_vec(),
+            evidence,
+        )
     }
 
     /// Builds one bounded verified evaluation record.
@@ -357,14 +144,13 @@ impl MeasurementSet {
             });
         }
         let value = Self {
-            schema_version: MEASUREMENT_SET_SCHEMA_VERSION,
-            body: MeasurementSetBody::Evaluation(MeasurementEvaluationPayload {
+            evaluation: MeasurementEvaluationPayload {
                 definitions,
                 payload_schema,
                 evaluation,
                 payload,
                 evidence,
-            }),
+            },
         };
         codec::ensure_encoded_size(
             &value,
@@ -377,25 +163,13 @@ impl MeasurementSet {
     /// Returns the retained body schema version.
     #[must_use]
     pub const fn schema_version(&self) -> u32 {
-        self.schema_version
+        MEASUREMENT_SET_SCHEMA_VERSION
     }
 
-    /// Returns legacy measurements in canonical name order, when this is v1.
+    /// Returns the verified evaluation payload.
     #[must_use]
-    pub fn legacy_measurements(&self) -> Option<&BTreeMap<String, MeasurementSeries>> {
-        match &self.body {
-            MeasurementSetBody::Legacy(measurements) => Some(measurements),
-            MeasurementSetBody::Evaluation(_) => None,
-        }
-    }
-
-    /// Returns the verified evaluation payload, when this is schema v2.
-    #[must_use]
-    pub const fn evaluation(&self) -> Option<&MeasurementEvaluationPayload> {
-        match &self.body {
-            MeasurementSetBody::Legacy(_) => None,
-            MeasurementSetBody::Evaluation(evaluation) => Some(evaluation),
-        }
+    pub const fn evaluation(&self) -> &MeasurementEvaluationPayload {
+        &self.evaluation
     }
 
     /// Returns strict canonical bytes.
@@ -430,56 +204,27 @@ impl MeasurementSet {
     }
 
     pub(crate) fn content_children(&self) -> Vec<(String, ContentId)> {
-        match &self.body {
-            MeasurementSetBody::Legacy(measurements) => measurements
-                .values()
-                .enumerate()
-                .flat_map(|(measurement, series)| {
-                    series
-                        .evidence()
-                        .iter()
-                        .enumerate()
-                        .map(move |(index, id)| {
-                            (
-                                format!("measurement.{measurement:04x}.evidence.{index:04x}"),
-                                *id,
-                            )
-                        })
-                })
-                .collect(),
-            MeasurementSetBody::Evaluation(evaluation) => evaluation
-                .evidence
-                .iter()
-                .enumerate()
-                .map(|(index, id)| (format!("evaluation.evidence.{index:04x}"), *id))
-                .collect(),
-        }
+        self.evaluation
+            .evidence
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (format!("evaluation.evidence.{index:04x}"), *id))
+            .collect()
     }
 }
 
 impl Canonical for MeasurementSet {
     fn encode(&self, encoder: &mut Encoder) {
-        self.schema_version.encode(encoder);
-        match &self.body {
-            MeasurementSetBody::Legacy(measurements) => measurements.encode(encoder),
-            MeasurementSetBody::Evaluation(evaluation) => {
-                evaluation.definitions.encode(encoder);
-                evaluation.payload_schema.encode(encoder);
-                evaluation.evaluation.encode(encoder);
-                evaluation.payload.encode(encoder);
-                evaluation.evidence.encode(encoder);
-            }
-        }
+        MEASUREMENT_SET_SCHEMA_VERSION.encode(encoder);
+        self.evaluation.definitions.encode(encoder);
+        self.evaluation.payload_schema.encode(encoder);
+        self.evaluation.evaluation.encode(encoder);
+        self.evaluation.payload.encode(encoder);
+        self.evaluation.evidence.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         match u32::decode(decoder)? {
-            RECORD_SCHEMA_VERSION => Self::new(decoder.map_bounded_by(
-                MAX_MEASUREMENTS,
-                "measurement-count",
-                |decoder| decoder.string_bounded(MAX_IDENTIFIER_BYTES, "measurement-name-bytes"),
-                MeasurementSeries::decode,
-            )?),
             MEASUREMENT_SET_SCHEMA_VERSION => Self::from_evaluation(
                 CampaignHash::decode(decoder)?,
                 u32::decode(decoder)?,
@@ -1389,353 +1134,6 @@ pub(crate) fn scenario_failure_hash(reasons: &[String]) -> CampaignHash {
     )
 }
 
-/// Canonical modeled result of one admitted attempt.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Observation {
-    schema_version: u32,
-    attempt: AttemptId,
-    child: ConfigurationId,
-    child_content: ConfigurationArtifactId,
-    path: BranchPathId,
-    stop: StopOutcome,
-    measurements: MeasurementSetId,
-    properties: PropertyVerdictSetId,
-    coverage: CoverageProjectionId,
-    discovered_choices: BTreeSet<ChoiceOpportunityId>,
-    produced_selections: BTreeSet<SelectionId>,
-}
-
-impl Observation {
-    /// Builds one bounded canonical attempt observation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid stop outcome, too many discovered
-    /// choices, or an oversized encoded record.
-    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        attempt: AttemptId,
-        child: ConfigurationId,
-        child_content: ConfigurationArtifactId,
-        path: BranchPathId,
-        stop: StopOutcome,
-        measurements: MeasurementSetId,
-        properties: PropertyVerdictSetId,
-        coverage: CoverageProjectionId,
-        discovered_choices: BTreeSet<ChoiceOpportunityId>,
-    ) -> Result<Self, CampaignCodecError> {
-        let schema_version = observation_schema_version(&stop, false);
-        Self::from_versioned(Self {
-            schema_version,
-            attempt,
-            child,
-            child_content,
-            path,
-            stop,
-            measurements,
-            properties,
-            coverage,
-            discovered_choices,
-            produced_selections: BTreeSet::new(),
-        })
-    }
-
-    /// Attaches the nonempty selection closure produced by this attempt.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error after a nonempty selection closure was already
-    /// attached, or when the combined choice-reference count or encoded
-    /// observation exceeds its fixed bound.
-    pub(crate) fn with_produced_selections(
-        mut self,
-        produced_selections: BTreeSet<SelectionId>,
-    ) -> Result<Self, CampaignCodecError> {
-        if !self.produced_selections.is_empty() {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "observation already carries produced selections",
-            });
-        }
-        if produced_selections.is_empty() {
-            return Ok(self);
-        }
-        self.schema_version = observation_schema_version(&self.stop, true);
-        self.produced_selections = produced_selections;
-        Self::from_versioned(self)
-    }
-
-    fn from_versioned(value: Self) -> Result<Self, CampaignCodecError> {
-        value.stop.validate()?;
-        if matches!(&value.stop, StopOutcome::ObservationReached(proof) if proof.child() != value.child)
-        {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "observation stop proof disagrees with child configuration",
-            });
-        }
-        if value.discovered_choices.len() > MAX_DISCOVERED_CHOICES {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "observation-discovered-choice-count",
-            });
-        }
-        if value
-            .discovered_choices
-            .len()
-            .checked_add(value.produced_selections.len())
-            .is_none_or(|count| count > MAX_DISCOVERED_CHOICES)
-        {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "observation-choice-reference-count",
-            });
-        }
-        let has_produced_selections = !value.produced_selections.is_empty();
-        if value.schema_version != observation_schema_version(&value.stop, has_produced_selections)
-        {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "unsupported observation schema or stop outcome",
-            });
-        }
-        codec::ensure_encoded_size(&value, MAX_RECORD_BYTES, "observation-encoded-bytes")?;
-        Ok(value)
-    }
-
-    /// Returns the admitted attempt.
-    #[must_use]
-    pub const fn attempt(&self) -> AttemptId {
-        self.attempt
-    }
-
-    /// Returns the child configuration semantic identity.
-    #[must_use]
-    pub const fn child(&self) -> ConfigurationId {
-        self.child
-    }
-
-    /// Returns the exact retained child configuration artifact.
-    #[must_use]
-    pub const fn child_content(&self) -> ConfigurationArtifactId {
-        self.child_content
-    }
-
-    /// Returns the exact admitted branch path.
-    #[must_use]
-    pub const fn path(&self) -> BranchPathId {
-        self.path
-    }
-
-    /// Returns the modeled stop outcome.
-    #[must_use]
-    pub const fn stop(&self) -> &StopOutcome {
-        &self.stop
-    }
-
-    /// Returns the exact measurement set.
-    #[must_use]
-    pub const fn measurements(&self) -> MeasurementSetId {
-        self.measurements
-    }
-
-    /// Returns the exact property-verdict set.
-    #[must_use]
-    pub const fn properties(&self) -> PropertyVerdictSetId {
-        self.properties
-    }
-
-    /// Returns the exact coverage projection.
-    #[must_use]
-    pub const fn coverage(&self) -> CoverageProjectionId {
-        self.coverage
-    }
-
-    /// Returns discovered choice opportunities in canonical identity order.
-    #[must_use]
-    pub const fn discovered_choices(&self) -> &BTreeSet<ChoiceOpportunityId> {
-        &self.discovered_choices
-    }
-
-    /// Returns selections produced while continuing through discovered choices.
-    #[must_use]
-    pub const fn produced_selections(&self) -> &BTreeSet<SelectionId> {
-        &self.produced_selections
-    }
-
-    /// Returns strict canonical bytes.
-    #[must_use]
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        codec::encode(self)
-    }
-
-    /// Decodes strict canonical bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for malformed, noncanonical, invalid, or oversized input.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
-        decode_record(bytes, "observation-encoded-bytes")
-    }
-
-    /// Returns the exact observation identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if envelope construction fails.
-    pub fn id(&self) -> Result<ObservationId, CampaignCodecError> {
-        ObservationId::from_content_id(
-            crate::ObjectEnvelope::for_record_versioned(
-                crate::CampaignRecordKind::Observation,
-                self.schema_version,
-                crate::object::content_children(self.content_children())?,
-                self.canonical_bytes(),
-            )?
-            .content_id(),
-        )
-    }
-
-    pub(crate) fn content_children(&self) -> Vec<(String, ContentId)> {
-        let mut children = vec![
-            ("attempt".to_owned(), self.attempt.content_id()),
-            ("child".to_owned(), self.child_content.content_id()),
-            ("path".to_owned(), self.path.content_id()),
-            ("measurements".to_owned(), self.measurements.content_id()),
-            ("properties".to_owned(), self.properties.content_id()),
-            ("coverage".to_owned(), self.coverage.content_id()),
-        ];
-        children.extend(
-            self.discovered_choices
-                .iter()
-                .enumerate()
-                .map(|(index, choice)| {
-                    (
-                        format!("discovered-choice.{index:04x}"),
-                        choice.content_id(),
-                    )
-                }),
-        );
-        children.extend(
-            self.produced_selections
-                .iter()
-                .enumerate()
-                .map(|(index, selection)| {
-                    (
-                        format!("produced-selection.{index:04x}"),
-                        selection.content_id(),
-                    )
-                }),
-        );
-        children
-    }
-
-    pub(crate) const fn schema_version(&self) -> u32 {
-        self.schema_version
-    }
-}
-
-impl Canonical for Observation {
-    fn encode(&self, encoder: &mut Encoder) {
-        self.schema_version.encode(encoder);
-        self.attempt.encode(encoder);
-        self.child.encode(encoder);
-        self.child_content.encode(encoder);
-        self.path.encode(encoder);
-        self.stop.encode(encoder);
-        self.measurements.encode(encoder);
-        self.properties.encode(encoder);
-        self.coverage.encode(encoder);
-        self.discovered_choices.encode(encoder);
-        if observation_schema_has_produced_selections(self.schema_version) {
-            self.produced_selections.encode(encoder);
-        }
-    }
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        let schema_version = u32::decode(decoder)?;
-        if !matches!(
-            schema_version,
-            RECORD_SCHEMA_VERSION..=OBSERVATION_SCHEMA_VERSION
-        ) {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "unsupported observation schema or stop outcome",
-            });
-        }
-        let attempt = AttemptId::decode(decoder)?;
-        let child = ConfigurationId::decode(decoder)?;
-        let child_content = ConfigurationArtifactId::decode(decoder)?;
-        let path = BranchPathId::decode(decoder)?;
-        let stop = StopOutcome::decode(decoder)?;
-        let measurements = MeasurementSetId::decode(decoder)?;
-        let properties = PropertyVerdictSetId::decode(decoder)?;
-        let coverage = CoverageProjectionId::decode(decoder)?;
-        let discovered_choices = decoder.set_bounded(
-            MAX_DISCOVERED_CHOICES,
-            "observation-discovered-choice-count",
-        )?;
-        let produced_selections = if observation_schema_has_produced_selections(schema_version) {
-            decoder.set_bounded(
-                MAX_DISCOVERED_CHOICES,
-                "observation-produced-selection-count",
-            )?
-        } else {
-            BTreeSet::new()
-        };
-        Self::from_versioned(Self {
-            schema_version,
-            attempt,
-            child,
-            child_content,
-            path,
-            stop,
-            measurements,
-            properties,
-            coverage,
-            discovered_choices,
-            produced_selections,
-        })
-    }
-}
-
-fn observation_schema_version(stop: &StopOutcome, has_produced_selections: bool) -> u32 {
-    let mut version = match (
-        matches!(stop, StopOutcome::ScenarioFailure(_)),
-        has_produced_selections,
-    ) {
-        (false, false) => RECORD_SCHEMA_VERSION,
-        (true, false) => SCENARIO_FAILURE_OBSERVATION_SCHEMA_VERSION,
-        (false, true) => PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION,
-        (true, true) => SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION,
-    };
-    if stop.uses_extended_stop_schema() {
-        version += EXTENDED_STOP_OBSERVATION_SCHEMA_OFFSET;
-    } else if stop.uses_observation_stop_schema() {
-        version += OBSERVATION_STOP_SCHEMA_OFFSET;
-    }
-    version
-}
-
-const fn observation_schema_has_produced_selections(schema_version: u32) -> bool {
-    matches!(
-        schema_version,
-        PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
-            | SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
-            | 7
-            | 8
-            | 11
-            | 12
-    )
-}
-
-fn require_schema(actual: u32) -> Result<(), CampaignCodecError> {
-    if actual == RECORD_SCHEMA_VERSION {
-        Ok(())
-    } else {
-        Err(CampaignCodecError::InvalidValue {
-            reason: "unsupported observation record schema version",
-        })
-    }
-}
-
-fn decode_record<T: Canonical>(bytes: &[u8], limit: &'static str) -> Result<T, CampaignCodecError> {
-    if bytes.len() > MAX_RECORD_BYTES {
-        return Err(CampaignCodecError::LimitExceeded { limit });
-    }
-    codec::decode(bytes)
-}
+mod record;
+pub use record::{Observation, ObservationOutcome};
+use record::{decode_record, require_schema};

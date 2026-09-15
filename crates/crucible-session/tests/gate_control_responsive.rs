@@ -7,13 +7,20 @@ use std::sync::{Arc, Mutex};
 
 use crucible::{
     BackendEffect, Checkpoint, CheckpointKind, Configuration, ControlOperation,
-    ControlOperationKind, Decision, DeliveryOrderDecision, EventClass, EventDiagnosticPayload,
-    EventKey, EventLevel, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest,
-    ScenarioDef, ScheduledEvent, ScheduledEventKey, SchedulerError, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind, Seed, SimDouble,
-    SimDoubleConfig, SimulationBackend, TemporalGraph, VirtualTime, compare_event_log_determinism,
-    step,
+    ControlOperationKind, Decision, DeliveryOrderDecision, EventDiagnosticPayload, EventKey,
+    EventLevel, EventSource, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome,
+    QuantumRequest, ScenarioDef, ScheduledEvent, ScheduledEventKey, SchedulerError,
+    SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerNodeId,
+    SchedulingNodeKind, Seed, SimDouble, SimDoubleConfig, SimulationBackend, TemporalGraph,
+    VirtualTime, compare_event_log_determinism, try_step,
 };
+
+fn accepted_step(configuration: &Configuration, decision: Decision) -> Configuration {
+    match try_step(configuration, decision) {
+        Ok(configuration) => configuration,
+        Err(error) => panic!("test configuration step should be accepted: {error}"),
+    }
+}
 use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
 use crucible_session::{
     Engine, EngineState, EventLogCursor, LiveQueryKind, LiveQueryResult, LiveStateKind, Outcome,
@@ -228,11 +235,14 @@ async fn gate_control_plane_streams_event_log_entries_from_cursor_without_mutati
         streamed.push(frame.entry.clone());
         let has_causal = streamed
             .iter()
-            .any(|entry| entry.class() == EventClass::Causal);
+            .any(|entry| entry.class() == SchedulerEventLogClass::Causal);
         let has_observational = streamed
             .iter()
-            .any(|entry| entry.class() == EventClass::Observational);
-        if has_causal && has_observational {
+            .any(|entry| entry.class() == SchedulerEventLogClass::Observational);
+        let has_command_correlation = streamed
+            .iter()
+            .any(|entry| matches!(entry.source(), EventSource::Command { .. }));
+        if has_causal && has_observational && has_command_correlation {
             break;
         }
         tokio::task::yield_now().await;
@@ -241,12 +251,18 @@ async fn gate_control_plane_streams_event_log_entries_from_cursor_without_mutati
     assert!(
         streamed
             .iter()
-            .any(|entry| entry.class() == EventClass::Causal)
+            .any(|entry| entry.class() == SchedulerEventLogClass::Causal)
     );
     assert!(
         streamed
             .iter()
-            .any(|entry| entry.class() == EventClass::Observational)
+            .any(|entry| entry.class() == SchedulerEventLogClass::Observational)
+    );
+    assert!(
+        streamed
+            .iter()
+            .any(|entry| matches!(entry.source(), EventSource::Command { .. })),
+        "streamed control decisions must retain command correlation"
     );
     let comparison = compare_event_log_determinism(&streamed, &streamed);
     assert!(comparison.passes());
@@ -489,7 +505,7 @@ impl QuantumLoop for SimDoubleQuantumLoop {
             SimulationBackend::step_to(&mut self.backend, VirtualTime { ticks: self.quanta })?;
         assert_eq!(observation.reached, VirtualTime { ticks: self.quanta });
         let decision = generated_decision(self.quanta);
-        let configuration = step(&request.configuration, decision.clone());
+        let configuration = accepted_step(&request.configuration, decision.clone());
         let control = request.control;
         record_control_operations(&self.observed_control, &control);
         let event_log_entries = self.event_log_entries(&control);
@@ -558,11 +574,11 @@ impl SimDoubleQuantumLoop {
         let base = self.event_log_events;
         let mut entries = Vec::new();
         for operation in control {
-            if let Some(entry) =
-                control_operation_log_entry(base + entries.len() as u64, self.quanta, operation)
-            {
-                entries.push(entry);
-            }
+            entries.push(control_operation_log_entry(
+                base + entries.len() as u64,
+                self.quanta,
+                operation,
+            ));
         }
         entries.push(crucible::test_support::condition_payload_entry_for_test(
             base + entries.len() as u64,
@@ -614,11 +630,18 @@ fn complete_sim_double_setup(backend: &mut SimDouble) {
 }
 
 fn control_operation_log_entry(
-    _sequence: u64,
-    _ticks: u64,
-    _operation: &ControlOperation,
-) -> Option<SchedulerEventLogEntry> {
-    None
+    sequence: u64,
+    ticks: u64,
+    operation: &ControlOperation,
+) -> SchedulerEventLogEntry {
+    crucible::test_support::condition_payload_entry_for_test(
+        sequence,
+        VirtualTime { ticks },
+        SchedulerEventLogPayload::ResolvedHappening(resolved_control_operation(
+            ticks,
+            operation.clone(),
+        )),
+    )
 }
 
 fn record_control_operations(
@@ -643,11 +666,15 @@ fn observed_control_operations(
 fn resolved_control_operation(sequence: u64, operation: ControlOperation) -> ScheduledEvent {
     let node = control_node();
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime { ticks: sequence },
-            node.clone(),
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    nanos: (VirtualTime { ticks: sequence }).ticks,
+                },
+                node: node.clone(),
+                sequence: operation.sequence,
+            },
             node,
-            operation.sequence,
         ),
         payload: crucible::ScheduledEventPayload::Control(operation),
     }
@@ -656,11 +683,15 @@ fn resolved_control_operation(sequence: u64, operation: ControlOperation) -> Sch
 fn resolved_control_event(sequence: u64) -> ScheduledEvent {
     let node = control_node();
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime { ticks: sequence },
-            node.clone(),
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    nanos: (VirtualTime { ticks: sequence }).ticks,
+                },
+                node: node.clone(),
+                sequence,
+            },
             node,
-            sequence,
         ),
         payload: crucible::ScheduledEventPayload::Control(ControlOperation {
             sequence,

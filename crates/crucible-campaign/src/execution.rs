@@ -4,75 +4,41 @@
 //! bounded operational ceilings. The strict component-message formats are:
 //!
 //! ```text
-//! SubmitAttemptRequestV2 = version | assignment | daemon-epoch | lineage |
-//!                          attempt | resource-limits | retention-intent
-//! SubmitAttemptRequestV3 = version | assignment | daemon-epoch | lineage |
+//! SubmitAttemptRequestV6 = version | assignment | daemon-epoch | lineage |
 //!                          attempt | resource-limits | retention-intent |
-//!                          start-mode
-//! SubmitAttemptRequestV4 = version | assignment | daemon-epoch | lineage |
-//!                          attempt | resource-limits | retention-intent |
-//!                          scoped-start-mode
-//! SubmitAttemptRequestV5 = version | assignment | daemon-epoch | lineage |
-//!                          attempt | resource-limits | retention-intent |
-//!                          selected-savepoint-start-mode
-//! SubmitAttemptResponseV2/V3 = version | assignment | daemon-epoch | attempt |
-//!                              request-digest | disposition
+//!                          start-mode | finding-retention-policy-disposition
 //! SubmitAttemptResponseV4 = version | assignment | daemon-epoch | attempt |
-//!                           request-digest | completed-disposition |
-//!                           finding-candidate
-//! GetAttemptExecutionRequestV2 = version | daemon-epoch | lineage | attempt |
-//!                                execution | execution-basis-digest
+//!                           request-digest | disposition |
+//!                           optional-finding-candidate
 //! GetAttemptExecutionRequestV3 = version | daemon-epoch | lineage | attempt |
 //!                                execution | execution-basis-digest | scope
-//! GetAttemptExecutionResponseV2/V3 = version | daemon-epoch | attempt |
-//!                                    execution | request-digest | disposition
 //! GetAttemptExecutionResponseV4 = version | daemon-epoch | attempt | execution |
-//!                                 request-digest | completed-disposition |
-//!                                 finding-candidate
-//! ResumeAttemptExecutionRequestV2 = version | assignment | daemon-epoch |
+//!                                 request-digest | disposition |
+//!                                 optional-finding-candidate
+//! ResumeAttemptExecutionRequestV6 = version | assignment | daemon-epoch |
 //!                                    lineage | attempt | prior-execution |
 //!                                    checkpoint | resource-limits |
-//!                                    retention-intent
-//! ResumeAttemptExecutionRequestV3 = version | assignment | daemon-epoch |
-//!                                    lineage | attempt | prior-execution |
-//!                                    checkpoint | resource-limits |
-//!                                    retention-intent | prior-start-mode
-//! ResumeAttemptExecutionRequestV4 = version | assignment | daemon-epoch |
-//!                                    lineage | attempt | prior-execution |
-//!                                    checkpoint | resource-limits |
-//!                                    retention-intent | selected-start-mode
-//! ResumeAttemptExecutionResponseV2/V3 = version | assignment | daemon-epoch |
-//!                                        attempt | prior-execution | checkpoint |
-//!                                        request-digest | disposition
+//!                                    retention-intent | prior-start-mode |
+//!                                    finding-retention-policy-disposition |
+//!                                    prior-finding-retention-policy-disposition
 //! ResumeAttemptExecutionResponseV4 = version | assignment | daemon-epoch |
 //!                                     attempt | prior-execution | checkpoint |
-//!                                     request-digest | completed-disposition |
-//!                                     finding-candidate
-//! CheckpointAttemptExecutionRequestV2 = version | daemon-epoch | lineage |
-//!                                       attempt | execution |
-//!                                       execution-basis-digest
+//!                                     request-digest | disposition |
+//!                                     optional-finding-candidate
 //! CheckpointAttemptExecutionRequestV3 = version | daemon-epoch | lineage |
 //!                                       attempt | execution |
 //!                                       execution-basis-digest | scope
-//! CheckpointAttemptExecutionResponseV2 = version | daemon-epoch | attempt |
-//!                                        execution | request-digest |
-//!                                        disposition
 //! CheckpointAttemptExecutionResponseV4 = version | daemon-epoch | attempt |
 //!                                        execution | request-digest |
-//!                                        completed-disposition | finding-candidate
-//! CancelAttemptExecutionRequestV2 = version | daemon-epoch | lineage | attempt |
-//!                                   execution | execution-basis-digest
+//!                                        disposition | optional-finding-candidate
 //! CancelAttemptExecutionRequestV3 = version | daemon-epoch | lineage | attempt |
 //!                                   execution | execution-basis-digest | scope
-//! CancelAttemptExecutionResponseV2 = version | daemon-epoch | attempt | execution |
-//!                                    request-digest | disposition
 //! CancelAttemptExecutionResponseV4 = version | daemon-epoch | attempt | execution |
-//!                                    request-digest | completed-disposition |
-//!                                    finding-candidate
+//!                                    request-digest | disposition |
+//!                                    optional-finding-candidate
 //! ```
 //!
-//! Version 4 is valid only for a completed disposition with one candidate.
-//! Decoding a version 2 or version 3 response yields no finding candidate.
+//! Decoders reject every noncurrent request and response schema.
 //!
 //! Assignment, execution, epoch, resource, and retention fields are local
 //! execution metadata. They never enter the identity of an attempt,
@@ -83,54 +49,23 @@ use std::collections::BTreeMap;
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::validate_identifier;
 use crate::{
-    AttemptId, CampaignCodecError, CampaignFactId, CampaignHash, CampaignLineage,
-    CampaignLineageId, CampaignSnapshotId, ConfigurationArtifactId, ExactCheckpointId,
-    FindingCandidateBundleId, ObservationId,
+    AttemptAdmissionId, AttemptId, CampaignCodecError, CampaignFactId, CampaignHash,
+    CampaignLineage, CampaignLineageId, CampaignPolicyId, CampaignSnapshotId,
+    ConfigurationArtifactId, ExactCheckpointId, FindingCandidateBundleId, ObservationId,
 };
 
-const EXECUTOR_MESSAGE_SCHEMA_VERSION: u32 = 2;
-const MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION: u32 = 3;
-const SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION: u32 = 4;
-const SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION: u32 = 5;
+const RETENTION_POLICY_SUBMIT_REQUEST_SCHEMA_VERSION: u32 = 6;
 const SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION: u32 = 3;
-const RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION: u32 = 3;
-const SELECTED_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION: u32 = 4;
-const SUBMIT_ATTEMPT_RESPONSE_SCHEMA_VERSION: u32 = 3;
-const GET_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION: u32 = 3;
-const RESUME_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION: u32 = 3;
+const MATERIALIZED_RETENTION_POLICY_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION: u32 = 6;
 const FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION: u32 = 4;
 
 /// Maximum canonical bytes in one executor component message.
 pub const MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES: usize = 4 * 1024;
 
-/// Derives the assignment-neutral digest of one local execution contract.
+/// Derives the assignment-neutral digest for an explicit attempt contract.
 ///
-/// The digest binds the exact lineage, semantic attempt, resource ceilings,
-/// and retention intent. Assignment and daemon-incarnation identities are
-/// deliberately excluded so exact retries can share one execution.
-#[must_use]
-pub fn attempt_execution_basis_digest(
-    lineage: CampaignLineageId,
-    attempt: AttemptId,
-    resources: AttemptResourceLimits,
-    retention: ExecutionRetentionIntent,
-) -> CampaignHash {
-    let mut encoder = Encoder::new();
-    lineage.encode(&mut encoder);
-    attempt.encode(&mut encoder);
-    resources.encode(&mut encoder);
-    retention.encode(&mut encoder);
-    CampaignHash::derive(
-        "crucible.campaign.submit-attempt-execution-basis.v1",
-        &encoder.finish(),
-    )
-}
-
-/// Derives the assignment-neutral digest for an explicit attempt start mode.
-///
-/// [`AttemptStartMode::Execute`] preserves the version 1 execution-basis
-/// digest exactly. Materialized-start capture uses a separate version 2 domain
-/// that also authenticates the requested configuration artifact.
+/// The digest binds the start mode and mandatory retention-policy disposition
+/// in addition to the common execution fields.
 #[must_use]
 pub fn attempt_execution_basis_digest_for_start_mode(
     lineage: CampaignLineageId,
@@ -138,19 +73,30 @@ pub fn attempt_execution_basis_digest_for_start_mode(
     resources: AttemptResourceLimits,
     retention: ExecutionRetentionIntent,
     start_mode: AttemptStartMode,
+    policy: AttemptRetentionPolicyDisposition,
 ) -> CampaignHash {
-    if start_mode == AttemptStartMode::Execute {
-        return attempt_execution_basis_digest(lineage, attempt, resources, retention);
-    }
+    attempt_execution_basis_digest_with_retention_policy(
+        lineage, attempt, resources, retention, start_mode, policy,
+    )
+}
 
+fn attempt_execution_basis_digest_with_retention_policy(
+    lineage: CampaignLineageId,
+    attempt: AttemptId,
+    resources: AttemptResourceLimits,
+    retention: ExecutionRetentionIntent,
+    start_mode: AttemptStartMode,
+    policy: AttemptRetentionPolicyDisposition,
+) -> CampaignHash {
     let mut encoder = Encoder::new();
     lineage.encode(&mut encoder);
     attempt.encode(&mut encoder);
     resources.encode(&mut encoder);
     retention.encode(&mut encoder);
     start_mode.encode(&mut encoder);
+    policy.encode(&mut encoder);
     CampaignHash::derive(
-        "crucible.campaign.submit-attempt-execution-basis.v2",
+        "crucible.campaign.submit-attempt-execution-basis.v3",
         &encoder.finish(),
     )
 }
@@ -464,6 +410,107 @@ impl Canonical for ExecutionRetentionIntent {
     }
 }
 
+/// Compact admission-bound policy basis for automatic finding retention.
+///
+/// `snapshot` authenticates the accounting root that selected `admission` as
+/// this attempt's execution basis. Executors recheck that exact membership;
+/// loading another stored admission for the same attempt is insufficient.
+///
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttemptRetentionPolicyBasis {
+    snapshot: CampaignSnapshotId,
+    admission: AttemptAdmissionId,
+    policy: CampaignPolicyId,
+}
+
+impl AttemptRetentionPolicyBasis {
+    /// Builds one exact execution-basis admission and its derivable policy.
+    #[must_use]
+    pub const fn new(
+        snapshot: CampaignSnapshotId,
+        admission: AttemptAdmissionId,
+        policy: CampaignPolicyId,
+    ) -> Self {
+        Self {
+            snapshot,
+            admission,
+            policy,
+        }
+    }
+
+    /// Returns the immutable source snapshot that selected the admission.
+    #[must_use]
+    pub const fn snapshot(self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the exact execution-basis admission.
+    #[must_use]
+    pub const fn admission(self) -> AttemptAdmissionId {
+        self.admission
+    }
+
+    /// Returns the policy authenticated by the admission closure.
+    #[must_use]
+    pub const fn policy(self) -> CampaignPolicyId {
+        self.policy
+    }
+}
+
+impl Canonical for AttemptRetentionPolicyBasis {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.snapshot.encode(encoder);
+        self.admission.encode(encoder);
+        self.policy.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        let snapshot = CampaignSnapshotId::decode(decoder)?;
+        let admission = AttemptAdmissionId::decode(decoder)?;
+        let policy = CampaignPolicyId::decode(decoder)?;
+
+        Ok(Self::new(snapshot, admission, policy))
+    }
+}
+
+/// Explicit finding-retention policy disposition for one execution.
+///
+/// Operational work that cannot publish a campaign finding carries
+/// [`Self::Disabled`]. Semantic campaign work carries [`Self::Required`] with
+/// the admission-authenticated policy basis that the executor must recheck.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttemptRetentionPolicyDisposition {
+    /// Automatic finding retention is explicitly disabled.
+    Disabled,
+    /// Automatic finding retention requires the authenticated policy basis.
+    Required(AttemptRetentionPolicyBasis),
+}
+
+impl Canonical for AttemptRetentionPolicyDisposition {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::Disabled => 0_u8.encode(encoder),
+            Self::Required(basis) => {
+                1_u8.encode(encoder);
+                basis.encode(encoder);
+            }
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match u8::decode(decoder)? {
+            0 => Ok(Self::Disabled),
+            1 => Ok(Self::Required(AttemptRetentionPolicyBasis::decode(
+                decoder,
+            )?)),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "attempt-retention-policy-disposition",
+                tag,
+            }),
+        }
+    }
+}
+
 /// Durable namespace for one operational execution record.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AttemptExecutionScope {
@@ -641,27 +688,18 @@ fn decode_executor_message<T: Canonical>(
 
 fn response_schema_version(
     is_completed: bool,
-    uses_terminal_failure_schema: bool,
     finding_candidate: Option<FindingCandidateBundleId>,
 ) -> Result<u32, CampaignCodecError> {
-    if finding_candidate.is_some() {
-        if !is_completed {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "finding candidate requires a completed executor response",
-            });
-        }
-        return Ok(FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION);
+    if finding_candidate.is_some() && !is_completed {
+        return Err(CampaignCodecError::InvalidValue {
+            reason: "finding candidate requires a completed executor response",
+        });
     }
-    if uses_terminal_failure_schema {
-        return Ok(SUBMIT_ATTEMPT_RESPONSE_SCHEMA_VERSION);
-    }
-    Ok(EXECUTOR_MESSAGE_SCHEMA_VERSION)
+    Ok(FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION)
 }
 
 const fn require_executor_control_request_version(version: u32) -> Result<(), CampaignCodecError> {
-    if version == EXECUTOR_MESSAGE_SCHEMA_VERSION
-        || version == SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION
-    {
+    if version == SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION {
         Ok(())
     } else {
         Err(CampaignCodecError::InvalidValue {
@@ -671,11 +709,7 @@ const fn require_executor_control_request_version(version: u32) -> Result<(), Ca
 }
 
 const fn require_submit_attempt_request_version(version: u32) -> Result<(), CampaignCodecError> {
-    if version == EXECUTOR_MESSAGE_SCHEMA_VERSION
-        || version == MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION
-        || version == SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION
-        || version == SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION
-    {
+    if version == RETENTION_POLICY_SUBMIT_REQUEST_SCHEMA_VERSION {
         Ok(())
     } else {
         Err(CampaignCodecError::InvalidValue {
@@ -687,10 +721,7 @@ const fn require_submit_attempt_request_version(version: u32) -> Result<(), Camp
 const fn require_resume_attempt_execution_request_version(
     version: u32,
 ) -> Result<(), CampaignCodecError> {
-    if version == EXECUTOR_MESSAGE_SCHEMA_VERSION
-        || version == RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
-        || version == SELECTED_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
-    {
+    if version == MATERIALIZED_RETENTION_POLICY_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION {
         Ok(())
     } else {
         Err(CampaignCodecError::InvalidValue {

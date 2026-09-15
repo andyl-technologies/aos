@@ -75,10 +75,6 @@
         needle = "pub struct DebugDivergenceCoordinate";
       }
       {
-        label = "failure footer command";
-        needle = "pub struct DebugFailureFooterCommand";
-      }
-      {
         label = "first assertion violation scan";
         needle = "debug_first_assertion_violation_sequence";
       }
@@ -89,10 +85,6 @@
       {
         label = "exact divergence resolver";
         needle = "debug_resolve_exact_divergence_coordinate";
-      }
-      {
-        label = "quoted failure footer argument";
-        needle = "shell_quote_command_argument";
       }
       {
         label = "missing failure error";
@@ -120,15 +112,19 @@
         label = "divergence coordinate export";
         needle = "DebugDivergenceCoordinate";
       }
-      {
-        label = "failure footer export";
-        needle = "DebugFailureFooterCommand";
-      }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
       {
-        label = "shared debug footer command";
-        needle = "DebugFailureFooterCommand::new";
+        label = "shared reproduction footer type";
+        needle = "struct ReproductionFooter";
+      }
+      {
+        label = "copy-pasteable debug footer command";
+        needle = "debug_command: format!(\"crucible debug {artifact_argument} --at-failure\")";
+      }
+      {
+        label = "shared quoted footer argument";
+        needle = "let artifact_argument = shell_quote_command_argument";
       }
       {
         label = "cli footer test";
@@ -175,10 +171,6 @@
       {
         label = "goto delegation execution";
         needle = "debug_goto(&attach, &by_divergence.goto_request)";
-      }
-      {
-        label = "footer assertion";
-        needle = "has_copy_pasteable_at_failure_footer";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

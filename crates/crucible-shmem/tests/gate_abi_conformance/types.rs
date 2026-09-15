@@ -85,6 +85,8 @@ pub(super) struct NodeSlotState {
     pub(super) device_io_active: u8,
     pub(super) publish_gen: u32,
     pub(super) control_boundary_ack: u32,
+    pub(super) control_boundary_fault_command_frontier: u64,
+    pub(super) control_boundary_capture_request: u32,
     pub(super) preemption_at_icount: u64,
     pub(super) preemption_deadline_icount: u64,
     pub(super) preemption_ceiling_icount: u64,
@@ -97,6 +99,15 @@ pub(super) struct NodeSlotState {
     pub(super) logical_time_restore_target: u64,
     pub(super) logical_time_restore_request: u32,
     pub(super) logical_time_restore_ack: u32,
+    pub(super) timer_witness_generation: u64,
+    pub(super) timer_witness_deadline_ns: u64,
+    pub(super) timer_witness_deadline_icount: u64,
+    pub(super) timer_witness_armed_raw_icount: u64,
+    pub(super) timer_witness_fired_expire_ns: u64,
+    pub(super) timer_witness_fired_virtual_ns: u64,
+    pub(super) timer_witness_fired_raw_icount: u64,
+    pub(super) timer_witness_completed: u32,
+    pub(super) timer_witness_reserved: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

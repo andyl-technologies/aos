@@ -3,18 +3,16 @@
 use super::QemuVmSnapshot;
 use crate::{
     QemuHostIoCheckpoint, QemuHostIoCheckpointCodecError, QemuNodeCheckpointCodecError,
-    QemuNodeContinuationCheckpoint, QemuReplayOracleValidation,
+    QemuNodeContinuationCheckpoint,
 };
 use crucible::{Checkpoint, ContentHash};
 use std::sync::Arc;
 
 use crate::checkpoint::bounded_cbor::{BoundedCborError, HARD_FAT_CHECKPOINT_BYTES, admit_input};
 
-const MAGIC: &[u8] = b"crucible.qemu-vm-snapshot.v3\0";
+const MAGIC: &[u8] = b"crucible.qemu-vm-snapshot.v4\0";
 const MAX_BYTES: u64 = HARD_FAT_CHECKPOINT_BYTES;
 
-/// Maximum canonical byte length of one complete QEMU VM snapshot metadata record.
-pub const MAX_QEMU_VM_SNAPSHOT_CANONICAL_BYTES: u64 = MAX_BYTES;
 impl QemuVmSnapshot {
     /// Encodes the VMState metadata and every paired Apache continuation.
     ///
@@ -70,7 +68,6 @@ impl QemuVmSnapshot {
         let checkpoint_bytes = reader.blob("scheduler checkpoint")?;
         let host_io_bytes = reader.blob("host-I/O checkpoint")?;
         let node_bytes = reader.blob("node continuation")?;
-        let replay_oracle_validation = reader.replay_oracle()?;
         let live_capture = reader.boolean("live-capture flag")?;
         let stored_identity = reader.fixed::<32>("snapshot identity")?;
         reader.finish()?;
@@ -78,7 +75,6 @@ impl QemuVmSnapshot {
             checkpoint_bytes,
             host_io_bytes,
             node_bytes,
-            replay_oracle_validation,
             live_capture,
         )?;
         if identity.bytes != stored_identity {
@@ -107,7 +103,6 @@ impl QemuVmSnapshot {
             checkpoint: Arc::new(checkpoint),
             host_io,
             node,
-            replay_oracle_validation,
             live_capture,
             identity: ContentHash {
                 bytes: stored_identity,
@@ -140,13 +135,8 @@ pub(super) fn encode_snapshot(
         .to_compact_binary_with_limit(maximum.saturating_sub(nested_bytes))
         .map_err(map_node_error)?;
     admit_nested_bytes(nested_bytes, node.len(), maximum)?;
-    let identity = snapshot_identity_from_bytes(
-        &checkpoint,
-        &host_io,
-        &node,
-        snapshot.replay_oracle_validation,
-        snapshot.live_capture,
-    )?;
+    let identity =
+        snapshot_identity_from_bytes(&checkpoint, &host_io, &node, snapshot.live_capture)?;
     if identity != snapshot.identity {
         return Err(QemuVmSnapshotCodecError::Identity);
     }
@@ -154,7 +144,6 @@ pub(super) fn encode_snapshot(
         &checkpoint,
         &host_io,
         &node,
-        snapshot.replay_oracle_validation,
         snapshot.live_capture,
         snapshot.identity,
         maximum,
@@ -165,28 +154,19 @@ fn encode_snapshot_binary(
     checkpoint: &[u8],
     host_io: &[u8],
     node: &[u8],
-    replay_oracle: QemuReplayOracleValidation,
     live_capture: bool,
     identity: ContentHash,
     maximum: u64,
 ) -> Result<Vec<u8>, QemuVmSnapshotCodecError> {
-    let replay_bytes = match replay_oracle {
-        QemuReplayOracleValidation::NotRun => 1,
-        QemuReplayOracleValidation::Mismatch { .. } => 65,
-        QemuReplayOracleValidation::Match { .. } => 33,
-    };
-    let fixed = MAGIC
-        .len()
-        .checked_add(8 * 3 + replay_bytes + 1 + 32)
-        .ok_or_else(|| {
-            resource(
-                "QEMU VM snapshot",
-                0,
-                u64::MAX,
-                maximum,
-                HARD_FAT_CHECKPOINT_BYTES,
-            )
-        })?;
+    let fixed = MAGIC.len().checked_add(8 * 3 + 1 + 32).ok_or_else(|| {
+        resource(
+            "QEMU VM snapshot",
+            0,
+            u64::MAX,
+            maximum,
+            HARD_FAT_CHECKPOINT_BYTES,
+        )
+    })?;
     let total = [checkpoint.len(), host_io.len(), node.len()]
         .into_iter()
         .try_fold(fixed, |current, requested| {
@@ -233,21 +213,6 @@ fn encode_snapshot_binary(
     append_blob(&mut bytes, checkpoint)?;
     append_blob(&mut bytes, host_io)?;
     append_blob(&mut bytes, node)?;
-    match replay_oracle {
-        QemuReplayOracleValidation::NotRun => bytes.push(0),
-        QemuReplayOracleValidation::Mismatch {
-            fat_hash,
-            thin_hash,
-        } => {
-            bytes.push(1);
-            bytes.extend_from_slice(&fat_hash.bytes);
-            bytes.extend_from_slice(&thin_hash.bytes);
-        }
-        QemuReplayOracleValidation::Match { runtime_hash } => {
-            bytes.push(2);
-            bytes.extend_from_slice(&runtime_hash.bytes);
-        }
-    }
     bytes.push(u8::from(live_capture));
     bytes.extend_from_slice(&identity.bytes);
     if bytes.len() != total {
@@ -332,26 +297,6 @@ impl<'a> SnapshotReader<'a> {
         Ok(value)
     }
 
-    fn replay_oracle(&mut self) -> Result<QemuReplayOracleValidation, QemuVmSnapshotCodecError> {
-        match self.byte("replay-oracle tag")? {
-            0 => Ok(QemuReplayOracleValidation::NotRun),
-            1 => Ok(QemuReplayOracleValidation::Mismatch {
-                fat_hash: ContentHash {
-                    bytes: self.fixed::<32>("fat replay hash")?,
-                },
-                thin_hash: ContentHash {
-                    bytes: self.fixed::<32>("thin replay hash")?,
-                },
-            }),
-            2 => Ok(QemuReplayOracleValidation::Match {
-                runtime_hash: ContentHash {
-                    bytes: self.fixed::<32>("runtime replay hash")?,
-                },
-            }),
-            _ => Err(QemuVmSnapshotCodecError::Malformed),
-        }
-    }
-
     fn boolean(&mut self, field: &'static str) -> Result<bool, QemuVmSnapshotCodecError> {
         match self.byte(field)? {
             0 => Ok(false),
@@ -426,50 +371,25 @@ pub(super) fn canonical_snapshot_identity(
     checkpoint: &Checkpoint,
     host_io: &QemuHostIoCheckpoint,
     node: &QemuNodeContinuationCheckpoint,
-    replay_oracle_validation: QemuReplayOracleValidation,
     live_capture: bool,
 ) -> Result<ContentHash, QemuVmSnapshotCodecError> {
     let checkpoint = checkpoint.to_compact_binary();
     let host_io = host_io.to_canonical_bytes().map_err(map_host_io_error)?;
     let node = node.to_compact_binary().map_err(map_node_error)?;
-    snapshot_identity_from_bytes(
-        &checkpoint,
-        &host_io,
-        &node,
-        replay_oracle_validation,
-        live_capture,
-    )
+    snapshot_identity_from_bytes(&checkpoint, &host_io, &node, live_capture)
 }
 
 fn snapshot_identity_from_bytes(
     checkpoint: &[u8],
     host_io: &[u8],
     node: &[u8],
-    replay_oracle_validation: QemuReplayOracleValidation,
     live_capture: bool,
 ) -> Result<ContentHash, QemuVmSnapshotCodecError> {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"crucible.qemu.exact-snapshot.v6\0");
+    hasher.update(b"crucible.qemu.exact-snapshot.v7\0");
     hash_blob(&mut hasher, checkpoint)?;
     hash_blob(&mut hasher, host_io)?;
     hash_blob(&mut hasher, node)?;
-    match replay_oracle_validation {
-        QemuReplayOracleValidation::NotRun => {
-            hasher.update(&[0]);
-        }
-        QemuReplayOracleValidation::Mismatch {
-            fat_hash,
-            thin_hash,
-        } => {
-            hasher.update(&[1]);
-            hasher.update(&fat_hash.bytes);
-            hasher.update(&thin_hash.bytes);
-        }
-        QemuReplayOracleValidation::Match { runtime_hash } => {
-            hasher.update(&[2]);
-            hasher.update(&runtime_hash.bytes);
-        }
-    };
     hasher.update(&[u8::from(live_capture)]);
     Ok(ContentHash {
         bytes: *hasher.finalize().as_bytes(),

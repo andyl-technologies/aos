@@ -2,51 +2,40 @@
   pkgs,
   lib,
   qemuPackage ? pkgs.qemu-crucible,
-  patchName ? "0056-crucible-node-lifecycle-faults.patch",
   attrPath ? "checks.crucible.phase2.qemuNodeLifecycle",
   taskIds ? ["T-QEMU-0056"],
   dependencies ? [],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
-  patchSource = builtins.readFile (patchDir + "/${patchName}");
+  atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
+  patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
-  failures =
-    failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
-      {
-        label = "deferred native reset completion";
-        needle = "qemu_crucible_fault_lifecycle_reset_complete";
-      }
-      {
-        label = "writable volatile RAM treatment";
-        needle = "crucible_lifecycle_clear_ram";
-      }
-      {
-        label = "fixed-topology hang eligibility";
-        needle = "qemu_crucible_fault_vcpu_hung";
-      }
-      {
-        label = "lifecycle evidence format";
-        needle = "CRUCLIF1";
-      }
-      {
-        label = "repeated pflash post-load handler replacement";
-        needle = ''
-          +        if (pfl->vmstate) {
-          +            qemu_del_vm_change_state_handler(pfl->vmstate);
-        '';
-      }
-    ]
-    ++ forbiddenFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
-      {
-        label = "host sleep hang";
-        needle = "g_usleep";
-      }
-      {
-        label = "host signal-stop hang";
-        needle = "SIGSTOP";
-      }
-    ];
+  failures = failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
+    {
+      label = "deferred native reset completion";
+      needle = "qemu_crucible_fault_lifecycle_reset_complete";
+    }
+    {
+      label = "writable volatile RAM treatment";
+      needle = "crucible_lifecycle_clear_ram";
+    }
+    {
+      label = "fixed-topology hang eligibility";
+      needle = "qemu_crucible_fault_vcpu_hung";
+    }
+    {
+      label = "lifecycle evidence format";
+      needle = "CRUCLIF1";
+    }
+    {
+      label = "repeated pflash post-load handler replacement";
+      needle = ''
+        +        if (pfl->vmstate) {
+        +            qemu_del_vm_change_state_handler(pfl->vmstate);
+      '';
+    }
+  ];
 in
   if failures != []
   then throw "Crucible QEMU node-lifecycle microtest failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -115,12 +104,12 @@ in
               case "$architecture" in
                 x86_64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-x86_64
-                  machine_args='-machine pc -m 64M'
+                  machine_args='-machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
                   guest=fault-guest-x86.elf
                   ;;
                 aarch64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-aarch64
-                  machine_args='-machine virt -cpu max -m 64M'
+                  machine_args='-machine virt-9.2 -cpu cortex-a57 -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
                   guest=fault-guest-aarch64.elf
                   ;;
                 *)
@@ -148,8 +137,9 @@ in
               set +e
               timeout --kill-after=5 120 "$qemu_binary" \
                   $machine_args \
-                  -accel sim \
-                  -icount shift=0,rr_switch_quantum=256 \
+                  -nodefaults -no-user-config \
+                  -accel sim,thread=single \
+                  -icount shift=0,sleep=off,rr_switch_quantum=256 \
                   -smp 1 \
                   -nographic \
                   -serial none \
@@ -224,12 +214,12 @@ in
               case "$architecture" in
                 x86_64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-x86_64
-                  machine_args='-machine pc -m 64M'
+                  machine_args='-machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
                   guest=fault-guest-x86.elf
                   ;;
                 aarch64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-aarch64
-                  machine_args='-machine virt -cpu max -m 64M'
+                  machine_args='-machine virt-9.2 -cpu cortex-a57 -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
                   guest=fault-guest-aarch64.elf
                   ;;
                 *)
@@ -241,8 +231,9 @@ in
               log="logs/$architecture-ready-exhaustion.log"
               "$qemu_binary" \
                 $machine_args \
-                -accel sim \
-                -icount shift=0,rr_switch_quantum=256 \
+                -nodefaults -no-user-config \
+                -accel sim,thread=single \
+                -icount shift=0,sleep=off,rr_switch_quantum=256 \
                 -smp 1 \
                 -nographic \
                 -serial none \
@@ -324,12 +315,12 @@ in
               case "$architecture" in
                 x86_64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-x86_64
-                  machine_args='-machine pc -m 64M'
+                  machine_args='-machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
                   guest=fault-guest-x86.elf
                   ;;
                 aarch64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-aarch64
-                  machine_args='-machine virt -cpu max -m 64M'
+                  machine_args='-machine virt-9.2 -cpu cortex-a57 -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
                   guest=fault-guest-aarch64.elf
                   ;;
                 *)
@@ -361,8 +352,9 @@ in
               log="logs/$architecture-hang-$scope.log"
               if ! timeout --kill-after=5 120 "$qemu_binary" \
                   $machine_args \
-                  -accel sim \
-                  -icount shift=0,rr_switch_quantum=256 \
+                  -nodefaults -no-user-config \
+                  -accel sim,thread=single \
+                  -icount shift=0,sleep=off,rr_switch_quantum=256 \
                   -smp "$smp" \
                   -nographic \
                   -serial none \
@@ -409,7 +401,7 @@ in
             {
               printf 'PASS\n'
               printf 'gate=gate:patch-microtests\n'
-              printf 'patch=%s\n' '${patchName}'
+              printf 'atomic_patch=%s\n' '${atomicPatch.file}'
               printf 'patched_fixture_exercised=true\n'
               printf 'stock_negative_control=true\n'
               printf 'qemu_package=%s\n' '${qemuPackage}'

@@ -18,7 +18,7 @@ pub struct QemuLaunchArtifactIdentity {
     qemu: PathBuf,
     plugin: PathBuf,
     qemu_build_id: String,
-    qemu_patch_series_hash: String,
+    qemu_atomic_patch_hash: String,
     plugin_abi: String,
     shmem_abi_version: String,
 }
@@ -74,7 +74,7 @@ impl QemuLaunchArtifactIdentity {
         require_value(
             &qemu_fields,
             &qemu_marker_path,
-            "qemu_crucible_patches_applied",
+            "qemu_crucible_atomic_patch_applied",
             "true",
         )?;
         require_value(
@@ -84,7 +84,7 @@ impl QemuLaunchArtifactIdentity {
             "true",
         )?;
         let raw_build_id = field(&qemu_fields, &qemu_marker_path, "qemu_build_id")?;
-        let patch_hash = field(&qemu_fields, &qemu_marker_path, "qemu_patch_series_hash")?;
+        let patch_hash = field(&qemu_fields, &qemu_marker_path, "qemu_atomic_patch_hash")?;
         let qemu_abi_version = field(&qemu_fields, &qemu_marker_path, "qemu_shmem_abi_version")?;
         let qemu_abi = field(&qemu_fields, &qemu_marker_path, "qemu_shmem_abi")?;
         let _header = field(&qemu_fields, &qemu_marker_path, "qemu_shmem_header")?;
@@ -118,7 +118,7 @@ impl QemuLaunchArtifactIdentity {
             qemu,
             plugin,
             qemu_build_id: normalize_qemu_build_id(&raw_build_id),
-            qemu_patch_series_hash: patch_hash,
+            qemu_atomic_patch_hash: patch_hash,
             plugin_abi,
             shmem_abi_version: plugin_abi_version,
         })
@@ -142,10 +142,10 @@ impl QemuLaunchArtifactIdentity {
         &self.qemu_build_id
     }
 
-    /// Returns the QEMU patch-series identity.
+    /// Returns the QEMU atomic-patch identity.
     #[must_use]
-    pub fn qemu_patch_series_hash(&self) -> &str {
-        &self.qemu_patch_series_hash
+    pub fn qemu_atomic_patch_hash(&self) -> &str {
+        &self.qemu_atomic_patch_hash
     }
 
     /// Returns the matched plugin ABI label.
@@ -459,10 +459,10 @@ mod tests {
                 &self.qemu_marker,
                 format!(
                     "qemu_sim_capability=qemu-crucible\n\
-                     qemu_crucible_patches_applied=true\n\
+                     qemu_crucible_atomic_patch_applied=true\n\
                      qemu_plugins_enabled=true\n\
                      qemu_build_id={qemu_build}\n\
-                     qemu_patch_series_hash=sha256:patch\n\
+                     qemu_atomic_patch_hash=sha256:patch\n\
                      qemu_shmem_abi_version={abi_version}\n\
                      qemu_shmem_abi={abi}\n\
                      qemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\n\

@@ -1,8 +1,8 @@
-# 0097 - Canonical memory retry identity
+# Capability task 0097 — Canonical memory retry identity
 
 ## Purpose
 
-Patch `0097` removes the translation-block-local instruction ordinal from
+Capability task `0097` removes the translation-block-local instruction ordinal from
 memory retry identity. A faulted instruction can be retranslated with a
 different local ordinal even though its architectural PC, memory target, and
 page-walk coordinates are unchanged. Treating that local ordinal as semantic
@@ -21,7 +21,7 @@ clock coordinate as the execution-episode discriminator.
 
 ## Files and license scope
 
-The patch modifies GPL-side `plugins/crucible-fault-node.c`. It changes no
+The atomic patch modifies GPL-side `plugins/crucible-fault-node.c`. It changes no
 shared-memory or control wire format and adds no QEMU file.
 
 ## Required gates
@@ -29,8 +29,8 @@ shared-memory or control wire format and adds no QEMU file.
 1. The x86_64 and AArch64 page-table retry cases must publish error ordinal
    zero followed by applied ordinal one.
 2. The complete memory-access matrix must remain green.
-3. Checkpoint/restore, patch-prefix provenance, ABI, and license-boundary gates
-   must pass.
+3. Checkpoint/restore, atomic-patch source attribution and regeneration,
+   pristine-QEMU negative, ABI, and license-boundary gates must pass.
 
 - **[MEM-RETRY-ID-1]** Retry identity MUST NOT depend on a TB-local instruction
   ordinal.

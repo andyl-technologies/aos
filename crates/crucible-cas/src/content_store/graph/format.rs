@@ -6,78 +6,13 @@ use std::path::Path;
 use super::{StoreGraphConfig, StoreNodeId, StoreNodeSpec, invalid_graph};
 use crate::content_store::{GraphViolation, StoreError};
 
-const GRAPH_CONFIGURATION_V1_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v1\0";
-const GRAPH_CONFIGURATION_V2_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v2\0";
-const GRAPH_CONFIGURATION_V3_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v3\0";
-const GRAPH_CONFIGURATION_V4_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v4\0";
-const GRAPH_CONFIGURATION_V5_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v5\0";
-const GRAPH_CONFIGURATION_V6_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v6\0";
-const GRAPH_CONFIGURATION_V7_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v7\0";
-const GRAPH_CONFIGURATION_V8_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v8\0";
-const GRAPH_CONFIGURATION_V9_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v9\0";
-const GRAPH_CONFIGURATION_V10_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v10\0";
+const GRAPH_CONFIGURATION_V11_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v11\0";
 
 pub(super) fn canonical_graph_configuration(
     config: &StoreGraphConfig,
 ) -> Result<Vec<u8>, StoreError> {
     let mut bytes = Vec::new();
-    let has_compressed_directory = config
-        .nodes
-        .values()
-        .any(|node| matches!(node, StoreNodeSpec::CompressedDirectory { .. }));
-    let has_logical_quota = config
-        .nodes
-        .values()
-        .any(|node| matches!(node, StoreNodeSpec::LogicalQuota { .. }));
-    let has_encrypted_directory = config
-        .nodes
-        .values()
-        .any(|node| matches!(node, StoreNodeSpec::EncryptedDirectory { .. }));
-    let has_compressed_encrypted_directory = config
-        .nodes
-        .values()
-        .any(|node| matches!(node, StoreNodeSpec::CompressedEncryptedDirectory { .. }));
-    let has_durability_policy = config
-        .nodes
-        .values()
-        .any(|node| matches!(node, StoreNodeSpec::DurabilityPolicy { .. }));
-    let has_namespaced = config
-        .nodes
-        .values()
-        .any(|node| matches!(node, StoreNodeSpec::Namespaced { .. }));
-    let has_profile_validation = config
-        .nodes
-        .values()
-        .any(|node| matches!(node, StoreNodeSpec::ProfileValidated { .. }));
-    let has_physical_quota = config
-        .nodes
-        .values()
-        .any(|node| matches!(node, StoreNodeSpec::PhysicalQuota { .. }));
-    let has_s3 = config
-        .nodes
-        .values()
-        .any(|node| matches!(node, StoreNodeSpec::S3 { .. }));
-    bytes.extend_from_slice(if has_s3 {
-        GRAPH_CONFIGURATION_V10_MAGIC
-    } else if has_physical_quota {
-        GRAPH_CONFIGURATION_V9_MAGIC
-    } else if has_profile_validation {
-        GRAPH_CONFIGURATION_V8_MAGIC
-    } else if has_namespaced {
-        GRAPH_CONFIGURATION_V7_MAGIC
-    } else if has_durability_policy {
-        GRAPH_CONFIGURATION_V6_MAGIC
-    } else if has_compressed_encrypted_directory {
-        GRAPH_CONFIGURATION_V5_MAGIC
-    } else if has_encrypted_directory {
-        GRAPH_CONFIGURATION_V4_MAGIC
-    } else if has_logical_quota {
-        GRAPH_CONFIGURATION_V3_MAGIC
-    } else if has_compressed_directory {
-        GRAPH_CONFIGURATION_V2_MAGIC
-    } else {
-        GRAPH_CONFIGURATION_V1_MAGIC
-    });
+    bytes.extend_from_slice(GRAPH_CONFIGURATION_V11_MAGIC);
     encode_node_id(&mut bytes, &config.root)?;
     encode_count(&mut bytes, config.admitted_kinds.len())?;
     let mut admitted_kinds = config
@@ -165,20 +100,15 @@ pub(super) fn canonical_graph_configuration(
                     encode_node_id(&mut bytes, child)?;
                 }
             }
-            StoreNodeSpec::Tiered {
-                tiers,
-                write_tier,
-                promote_reads,
-            } => {
+            StoreNodeSpec::Tiered { tiers } => {
                 bytes.push(6);
                 encode_count(&mut bytes, tiers.len())?;
-                for child in tiers {
-                    encode_node_id(&mut bytes, child)?;
+                for tier in tiers {
+                    encode_node_id(&mut bytes, &tier.child)?;
+                    bytes.push(u8::from(tier.readable));
+                    bytes.push(u8::from(tier.writable));
+                    bytes.push(u8::from(tier.promote_reads));
                 }
-                let write_tier = u16::try_from(*write_tier)
-                    .map_err(|_| invalid_graph(id.as_str(), GraphViolation::TooManyNodes))?;
-                bytes.extend_from_slice(&write_tier.to_be_bytes());
-                bytes.push(u8::from(*promote_reads));
             }
             StoreNodeSpec::ReadThrough { cache, source } => {
                 bytes.push(7);

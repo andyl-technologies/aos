@@ -91,8 +91,8 @@
         needle = "&identity.qemu_build_id";
       }
       {
-        label = "QEMU patch series in provenance material";
-        needle = "&identity.qemu_patch_series_hash";
+        label = "QEMU atomic patch in provenance material";
+        needle = "&identity.qemu_atomic_patch_hash";
       }
       {
         label = "shmem ABI in provenance material";
@@ -121,8 +121,8 @@
         needle = "campaign_corpus_reuse_seeds_matching_provenance";
       }
       {
-        label = "patch-series refusal test";
-        needle = "campaign_corpus_reuse_refuses_patch_series_drift";
+        label = "atomic-patch refusal test";
+        needle = "campaign_corpus_reuse_refuses_atomic_patch_drift";
       }
       {
         label = "QEMU build id refusal test";
@@ -137,8 +137,8 @@
         needle = "run_identity.qemu_build_id = content_address_bytes";
       }
       {
-        label = "patch-series mutation";
-        needle = "run_identity.qemu_patch_series_hash = String::from";
+        label = "atomic-patch mutation";
+        needle = "run_identity.qemu_atomic_patch_hash = String::from";
       }
       {
         label = "guest-host protocol mutation";

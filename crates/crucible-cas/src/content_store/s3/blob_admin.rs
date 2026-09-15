@@ -250,53 +250,12 @@ impl S3BlobBackend {
     ///
     /// Returns [`StoreError`] when ordinary configuration, endpoint binding,
     /// or process-wide administrative namespace admission fails.
-    // crucible-lint: allow rust-allow -- the constructor keeps every independently authenticated S3 namespace and bound explicit.
-    #[allow(clippy::too_many_arguments)]
     pub fn new_with_admin(
-        name: impl Into<String>,
-        endpoint: StoreS3EndpointId,
-        bucket: impl Into<String>,
-        prefix: impl Into<String>,
-        maximum_logical_object_bytes: u64,
-        multipart_part_bytes: u64,
+        config: S3BlobBackendConfig,
         client: Arc<dyn StoreS3Client>,
         admin_client: Arc<dyn StoreS3BlobAdminClient>,
     ) -> Result<Self, StoreError> {
-        Self::new_inner(
-            name,
-            endpoint,
-            bucket,
-            prefix,
-            maximum_logical_object_bytes,
-            multipart_part_bytes,
-            client,
-            Some(admin_client),
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_observational_with_admin(
-        name: impl Into<String>,
-        endpoint: StoreS3EndpointId,
-        bucket: impl Into<String>,
-        prefix: impl Into<String>,
-        maximum_logical_object_bytes: u64,
-        multipart_part_bytes: u64,
-        client: Arc<dyn StoreS3Client>,
-        admin_client: Arc<dyn StoreS3BlobAdminClient>,
-    ) -> Result<Self, StoreError> {
-        let mut backend = Self::new_with_admin(
-            name,
-            endpoint,
-            bucket,
-            prefix,
-            maximum_logical_object_bytes,
-            multipart_part_bytes,
-            client,
-            admin_client,
-        )?;
-        backend.observational = true;
-        Ok(backend)
+        Self::new_inner(config, client, Some(admin_client))
     }
 
     pub(super) fn acquire_admin_publication_guard(
@@ -353,13 +312,7 @@ impl BlobStoreAdmin for S3BlobBackend {
             .map_err(|_| StoreError::Poisoned {
                 operation: "acquire-S3-blob-inventory-state-fence",
             })?;
-        let inventory = if self.observational {
-            administration
-                .load_state(self)?
-                .ok_or(StoreError::Incompatible)?
-        } else {
-            administration.load_or_create_state(self)?
-        };
+        let inventory = administration.load_or_create_state(self)?;
         Ok(Box::new(S3BlobInventoryFence {
             backend: self,
             administration,

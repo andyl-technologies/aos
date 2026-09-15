@@ -82,43 +82,6 @@ impl CampaignRuntimeAttachmentHandle {
         reservation.install(prepared).map(|_| ())
     }
 
-    /// Connects through an exact executor endpoint and attaches one runtime.
-    ///
-    /// The registry reserves the campaign and one bounded slot before any
-    /// endpoint filesystem or socket operation. The endpoint capability then
-    /// authenticates its parent namespace, named socket identity, exact owner
-    /// and mode, and connected `SO_PEERCRED` before component negotiation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignLocalServiceError`] for the same registry, authority,
-    /// repository, and runtime failures as [`Self::attach`], or when the exact
-    /// executor endpoint cannot be authenticated and connected.
-    pub fn attach_endpoint(
-        &self,
-        endpoint: &ExecutorLoopbackEndpointConfig,
-        config: &CanonicalCampaignRuntimeConfig,
-    ) -> Result<(), CampaignLocalServiceError> {
-        let shared = self
-            .shared
-            .upgrade()
-            .ok_or(CampaignLocalServiceError::RuntimeAttachmentClosed)?;
-        let reservation = shared.reserve(config.campaign().clone(), true, None)?;
-        shared.validate_packaged_scenario(config.campaign(), Some(endpoint.path()))?;
-        let planner_authority = shared
-            .planner_authority
-            .as_ref()
-            .ok_or(CampaignLocalServiceError::RuntimeAuthorityUnavailable)?
-            .clone();
-        let prepared = prepare_canonical_campaign_runtime_endpoint(
-            Arc::clone(&shared.repository),
-            planner_authority,
-            endpoint.clone(),
-            config,
-        )?;
-        reservation.install(prepared).map(|_| ())
-    }
-
     /// Returns the currently attached campaign names in canonical order.
     ///
     /// In-flight reservations are deliberately omitted because they do not yet
@@ -688,7 +651,6 @@ fn runtime_control_runtime_failure(
         CanonicalCampaignRuntimeError::ExecutorIncompatible
         | CanonicalCampaignRuntimeError::ExecutorResourcesExceedCeiling
         | CanonicalCampaignRuntimeError::ExecutorSlotsExceedCeiling
-        | CanonicalCampaignRuntimeError::UnsupportedExplorerPolicy
         | CanonicalCampaignRuntimeError::PlannerDriver(_)
         | CanonicalCampaignRuntimeError::ExecutorDriver(_)
         | CanonicalCampaignRuntimeError::Supervisor(_) => CampaignServiceFailure::InvalidRequest,

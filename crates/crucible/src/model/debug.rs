@@ -766,42 +766,6 @@ pub(super) fn debug_event_log_entry_is_assertion_violation(entry: &SchedulerEven
         && entry.event_payload().string("new_state") == Some("Violated"))
 }
 
-pub(super) fn shell_quote_command_argument(value: &str) -> String {
-    if !value.is_empty() && value.bytes().all(is_shell_safe_unquoted_byte) {
-        return value.to_owned();
-    }
-
-    let mut quoted = String::from("'");
-    for ch in value.chars() {
-        if ch == '\'' {
-            quoted.push_str("'\\''");
-        } else {
-            quoted.push(ch);
-        }
-    }
-    quoted.push('\'');
-    quoted
-}
-
-pub(super) fn is_shell_safe_unquoted_byte(byte: u8) -> bool {
-    matches!(
-        byte,
-        b'a'..=b'z'
-            | b'A'..=b'Z'
-            | b'0'..=b'9'
-            | b'@'
-            | b'%'
-            | b'_'
-            | b'+'
-            | b'='
-            | b':'
-            | b','
-            | b'.'
-            | b'/'
-            | b'-'
-    )
-}
-
 pub(super) fn debug_labels_contain_all(labels: &[&'static str], required: &[&'static str]) -> bool {
     required
         .iter()
@@ -1683,43 +1647,6 @@ impl DebugTargetSelector {
     }
 }
 
-/// Copy-pasteable debug command printed in non-passing failure footers.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct DebugFailureFooterCommand {
-    /// Reproduction artifact path displayed to the operator.
-    pub artifact: String,
-    /// Debug command that opens at the first failure.
-    pub debug_command: String,
-}
-
-impl DebugFailureFooterCommand {
-    /// Builds the `crucible debug <artifact> --at-failure` command.
-    #[must_use]
-    pub fn new(artifact: impl Into<String>) -> Self {
-        let artifact = artifact.into();
-        let debug_command = format!(
-            "crucible debug {} --at-failure",
-            shell_quote_command_argument(&artifact)
-        );
-        Self {
-            artifact,
-            debug_command,
-        }
-    }
-
-    /// Returns whether the command is the required at-failure debug footer.
-    #[must_use]
-    pub fn is_copy_pasteable_at_failure(&self) -> bool {
-        !self.artifact.is_empty()
-            && !self.artifact.chars().any(|ch| matches!(ch, '\n' | '\0'))
-            && self.debug_command
-                == format!(
-                    "crucible debug {} --at-failure",
-                    shell_quote_command_argument(&self.artifact)
-                )
-    }
-}
-
 /// Request to resolve an operator-facing debug target.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DebugTargetResolverRequest {
@@ -1729,8 +1656,6 @@ pub struct DebugTargetResolverRequest {
     pub selector: DebugTargetSelector,
     /// Mapping from event-log sequence to temporal-graph coordinate.
     pub event_coordinates: BTreeMap<u64, Configuration>,
-    /// Reproduction artifact shown in the optional failure footer command.
-    pub failure_footer_artifact: Option<String>,
 }
 
 impl DebugTargetResolverRequest {
@@ -1741,7 +1666,6 @@ impl DebugTargetResolverRequest {
             current,
             selector,
             event_coordinates: BTreeMap::new(),
-            failure_footer_artifact: None,
         }
     }
 
@@ -1749,13 +1673,6 @@ impl DebugTargetResolverRequest {
     #[must_use]
     pub fn with_event_coordinate(mut self, sequence: u64, configuration: Configuration) -> Self {
         self.event_coordinates.insert(sequence, configuration);
-        self
-    }
-
-    /// Adds the artifact path used to render an at-failure debug footer.
-    #[must_use]
-    pub fn with_failure_footer_artifact(mut self, artifact: impl Into<String>) -> Self {
-        self.failure_footer_artifact = Some(artifact.into());
         self
     }
 }
@@ -1775,8 +1692,6 @@ pub struct DebugTargetResolverReport {
     pub failure_event_sequence: Option<u64>,
     /// Divergence coordinate consumed directly by the resolver, when present.
     pub divergence: Option<DebugDivergenceCoordinate>,
-    /// Optional copy-pasteable failure footer command.
-    pub failure_footer: Option<DebugFailureFooterCommand>,
 }
 
 impl DebugTargetResolverReport {
@@ -1786,14 +1701,6 @@ impl DebugTargetResolverReport {
         self.goto_request.target == self.resolved_coordinate
             && self.goto_request.current.id() != ContentHash::default()
             && self.target_configuration != ContentHash::default()
-    }
-
-    /// Returns whether the report carries the required at-failure footer command.
-    #[must_use]
-    pub fn has_copy_pasteable_at_failure_footer(&self) -> bool {
-        self.failure_footer
-            .as_ref()
-            .is_some_and(DebugFailureFooterCommand::is_copy_pasteable_at_failure)
     }
 
     /// Returns whether this report satisfies the T-DBG-7 target resolver contract.
@@ -1878,41 +1785,6 @@ impl DebugMultiVcpuPolicy {
             && self.lands_affected_vcpus_at_one_coordinate
             && self.whole_world_lands_every_vcpu
             && self.coherent_reads_breakpoints_and_reverse
-    }
-}
-
-/// Contract for read-only gdbstub fallback while the S14 spike is unresolved.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct DebugGdbstubStepPolicy {
-    /// Whether the gdbstub attach/step behavior remains a named spike.
-    pub spike_required: bool,
-    /// Whether debugger attach defaults to read-only.
-    pub read_only_attach_default: bool,
-    /// Whether stepping is routed through Crucible deterministic step verbs.
-    pub crucible_driven_step_reverse_step: bool,
-    /// Whether raw gdb single-step is disabled until the spike is green.
-    pub raw_gdb_single_step_disabled_until_green: bool,
-}
-
-impl DebugGdbstubStepPolicy {
-    /// Builds the conservative S14 fallback policy.
-    #[must_use]
-    pub const fn disabled_raw_single_step_until_green() -> Self {
-        Self {
-            spike_required: true,
-            read_only_attach_default: true,
-            crucible_driven_step_reverse_step: true,
-            raw_gdb_single_step_disabled_until_green: true,
-        }
-    }
-
-    /// Returns whether the fallback prevents raw gdb stepping from perturbing time.
-    #[must_use]
-    pub const fn proves_s14_fallback(&self) -> bool {
-        self.spike_required
-            && self.read_only_attach_default
-            && self.crucible_driven_step_reverse_step
-            && self.raw_gdb_single_step_disabled_until_green
     }
 }
 
@@ -2005,8 +1877,6 @@ pub struct DebugCliSurfaceContract {
     pub symbol_resolution: DebugSymbolResolutionPolicy,
     /// Multi-vCPU debugger coherence policy.
     pub multi_vcpu: DebugMultiVcpuPolicy,
-    /// Gdbstub attach/step fallback policy.
-    pub gdbstub_step: DebugGdbstubStepPolicy,
     /// Read-only versus mutating debug boundary policy.
     pub read_mutate_boundary: DebugReadMutationBoundaryPolicy,
     /// Reverse-latency and snapshot-completeness policy.
@@ -2041,7 +1911,6 @@ impl DebugCliSurfaceContract {
             delegates_to_gdbstub_proxy: true,
             symbol_resolution: DebugSymbolResolutionPolicy::no_symbol_server(),
             multi_vcpu: DebugMultiVcpuPolicy::coherent_round_robin_threads(),
-            gdbstub_step: DebugGdbstubStepPolicy::disabled_raw_single_step_until_green(),
             read_mutate_boundary:
                 DebugReadMutationBoundaryPolicy::read_only_default_with_explicit_branching(),
             reverse_latency: DebugReverseLatencyPolicy::performance_only_checkpoint_cadence(),
@@ -2101,7 +1970,6 @@ impl DebugCliSurfaceContract {
             && self.delegates_to_gdbstub_proxy
             && self.symbol_resolution.proves_no_crucible_symbol_server()
             && self.multi_vcpu.proves_multi_vcpu_coherence()
-            && self.gdbstub_step.proves_s14_fallback()
             && self.read_mutate_boundary.proves_read_mutate_boundary()
             && self.reverse_latency.proves_reverse_latency_policy()
     }

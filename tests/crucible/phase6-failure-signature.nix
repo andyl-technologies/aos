@@ -16,7 +16,10 @@
     inherit lib;
     entry = ../../crates/crucible/src/lib.rs;
   };
-  signatureTest = builtins.readFile ../../crates/crucible/tests/gate_failure_signature.rs;
+  signatureTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/gate_failure_signature.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;

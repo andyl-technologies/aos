@@ -19,7 +19,22 @@ pub(crate) fn resume_session_request(seed: u64) -> ResumeSessionRequest {
         schedule: schedule.clone(),
     };
     let checkpoint = checkpoint_for_configuration(&configuration, VirtualTime { ticks: 1 });
-    ResumeSessionRequest::new(scenario, schedule, checkpoint, Seed::from_u64(seed))
+    let observation_source = ResumeObservationSource::new(
+        &scenario,
+        &schedule,
+        &checkpoint,
+        1,
+        b"rpc-observation-proof".to_vec(),
+        b"rpc-observation-evidence".to_vec(),
+    )
+    .unwrap_or_else(|error| panic!("test observation source should build: {error}"));
+    ResumeSessionRequest::new(
+        scenario,
+        schedule,
+        checkpoint,
+        Seed::from_u64(seed),
+        observation_source,
+    )
 }
 
 pub(crate) fn scenario_with_seed(scenario: &ScenarioDefForm, seed: Seed) -> ScenarioDefForm {

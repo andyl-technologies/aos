@@ -122,7 +122,7 @@ fn campaign_and_executor_endpoints_share_a_directory_without_sharing_authority()
     ));
     assert!(matches!(
         executor.bind(),
-        Err(ExecutorLoopbackEndpointError::EndpointInUse)
+        Err(CampaignLoopbackEndpointError::EndpointInUse)
     ));
     UnixStream::connect(campaign.path()).expect("connect campaign endpoint");
     UnixStream::connect(executor.path()).expect("connect executor endpoint");
@@ -175,18 +175,18 @@ fn executor_connector_rejects_namespace_and_socket_contract_drift() {
     .expect("executor endpoint config");
     assert!(matches!(
         endpoint.connect_with_timeout(Duration::ZERO),
-        Err(ExecutorLoopbackEndpointError::InvalidConnectTimeout)
+        Err(CampaignLoopbackEndpointError::InvalidConnectTimeout)
     ));
     assert!(matches!(
         endpoint.connect_with_timeout(MAX_EXECUTOR_CONNECT_TIMEOUT + Duration::from_nanos(1)),
-        Err(ExecutorLoopbackEndpointError::InvalidConnectTimeout)
+        Err(CampaignLoopbackEndpointError::InvalidConnectTimeout)
     ));
     let listener = UnixListener::bind(endpoint.path()).expect("bind executor socket");
     fs::set_permissions(endpoint.path(), Permissions::from_mode(0o660))
         .expect("install wrong executor mode");
     assert!(matches!(
         endpoint.connect(),
-        Err(ExecutorLoopbackEndpointError::InvalidConnectedSocket)
+        Err(CampaignLoopbackEndpointError::InvalidConnectedSocket)
     ));
 
     drop(listener);
@@ -195,7 +195,7 @@ fn executor_connector_rejects_namespace_and_socket_contract_drift() {
         .expect("make executor namespace writable");
     assert!(matches!(
         endpoint.connect(),
-        Err(ExecutorLoopbackEndpointError::ParentNamespaceWritable)
+        Err(CampaignLoopbackEndpointError::ParentNamespaceWritable)
     ));
 }
 

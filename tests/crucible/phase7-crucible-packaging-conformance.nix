@@ -6,7 +6,7 @@
   patchMicrotestsGate ? null,
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
-  series = import ../../pkgs/emulation/qemu-patches/_series.nix;
+  atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   packagingSpec = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
@@ -20,10 +20,10 @@
     (builtins.filter
       (name: lib.hasSuffix ".patch" name)
       (builtins.attrNames (builtins.readDir patchDir)));
-  manifestPatchFiles = series.patchFiles;
-  manifestCatalogNames = map (patch: patch.catalogName) series.patches;
-  catalogOnlyCapabilities = series.catalogOnlyCapabilities or [];
-  catalogOnlyNames = map (capability: capability.catalogName) catalogOnlyCapabilities;
+  manifestPatchFiles = [atomicPatch.file];
+  manifestCatalogNames = map (patch: patch.catalogName) [atomicPatch];
+  additionalCapabilities = atomicPatch.additionalCapabilities or [];
+  catalogOnlyNames = map (capability: capability.catalogName) additionalCapabilities;
   devOnlyCatalogNames = [
     "crucible-tcg-exec-diag"
     "crucible-virtserial-socket"
@@ -48,6 +48,7 @@
     builtins.filter
     (line:
       lib.hasPrefix "  crucible-" line
+      || lib.hasPrefix "  rr-" line
       || lib.hasPrefix "  (crucible-" line)
     (lib.splitString "\n" section11_3);
   firstField = value: let
@@ -79,7 +80,7 @@
     (patch:
       builtins.any
       (capability: hasInfix capability.catalogName patch)
-      catalogOnlyCapabilities)
+      additionalCapabilities)
     patchFiles;
   catalogOnlyManifestCatalogNames =
     builtins.filter (name: builtins.elem name catalogOnlyNames) manifestCatalogNames;
@@ -95,22 +96,20 @@
   devOnlyQemuNixReferences =
     builtins.filter (name: hasInfix name qemuNix) devOnlyCatalogNames;
 
-  qemuNixAppliesManifestSeries =
-    hasInfix "patchCommand = file:" qemuNix
-    && hasInfix "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)" qemuNix;
+  qemuNixAppliesAtomicPatch =
+    hasInfix "atomicPatchPath = patchDir + \"/\${atomicPatch.file}\";" qemuNix
+    && hasInfix "< \${atomicPatchPath}" qemuNix;
   qemuNixLines = lib.splitString "\n" qemuNix;
   trimLine = line: lib.trim line;
   qemuNixUnexpectedPatchCommandLines =
     builtins.filter
     (line: let
       trimmed = trimLine line;
-      generatedManifestPatchCommand =
-        hasInfix "patchCommand = file:" trimmed
-        && hasInfix "patchPath file" trimmed;
+      atomicPatchCommand = hasInfix "< \${atomicPatchPath}" trimmed;
     in
       hasInfix "patch -p1 <" trimmed
       && !(lib.hasPrefix "#" trimmed)
-      && !generatedManifestPatchCommand)
+      && !atomicPatchCommand)
     qemuNixLines;
   patchRefFromLine = line: let
     match = builtins.match ".*qemu-patches/([^} \"]+\\.patch).*" line;
@@ -193,7 +192,7 @@
   patchRequirementFailures =
     lib.concatMap
     (patch: requirementFailuresFor "patch" patch.file patch.enforces)
-    series.patches;
+    [atomicPatch];
   patchCatalogRowFailures =
     lib.concatMap
     (patch: let
@@ -201,11 +200,11 @@
     in
       rowClassFailuresFor "patch" patch.file row patch.class
       ++ rowTokenFailuresFor "patch" patch.file row patch.class patch.enforces)
-    series.patches;
+    [atomicPatch];
   catalogOnlyRequirementFailures =
     lib.concatMap
     (capability: requirementFailuresFor "catalog-only capability" capability.catalogName capability.enforces)
-    catalogOnlyCapabilities;
+    additionalCapabilities;
   catalogOnlyRowFailures =
     lib.concatMap
     (capability: let
@@ -213,21 +212,21 @@
     in
       rowClassFailuresFor "catalog-only capability" capability.catalogName row capability.class
       ++ rowTokenFailuresFor "catalog-only capability" capability.catalogName row capability.class capability.enforces)
-    catalogOnlyCapabilities;
+    additionalCapabilities;
 
   catalogOnlyMappingFailures =
     lib.concatMap
     (capability:
       lib.optionals (!(builtins.elem capability.carriedBy manifestPatchFiles)) [
-        "pkgs/emulation/qemu-patches/_series.nix: ${capability.catalogName} is carried by unknown patch ${capability.carriedBy}"
+        "pkgs/emulation/qemu-patches/_atomic-patch.nix: ${capability.catalogName} is carried by unknown patch ${capability.carriedBy}"
       ]
       ++ lib.optionals (!(hasInfix "`${capability.catalogName}` -> `${capability.carriedBy}`" qemuPatchSpec)) [
         "docs/rfcs/0010-crucible/11-qemu-patches.md: missing catalog-only carried-by mapping for ${capability.catalogName}"
       ])
-    catalogOnlyCapabilities;
+    additionalCapabilities;
 
   failures =
-    map (patch: "pkgs/emulation/qemu-patches/_series.nix: manifest references absent patch ${patch}")
+    map (patch: "pkgs/emulation/qemu-patches/_atomic-patch.nix: manifest references absent patch ${patch}")
     missingManifestPatches
     ++ map (patch: "pkgs/emulation/qemu-patches/${patch}: patch file is absent from the package manifest")
     unmanifestedPatchFiles
@@ -238,8 +237,8 @@
     ++ lib.optionals (builtins.length catalogRowNames != builtins.length catalogRowLines) [
       "docs/rfcs/0010-crucible/11-qemu-patches.md: section 11.3 catalog has duplicate crucible-* row names"
     ]
-    ++ lib.optionals (!qemuNixAppliesManifestSeries) [
-      "pkgs/emulation/qemu.nix: shipped QEMU package must apply series.patchFiles from _series.nix"
+    ++ lib.optionals (!qemuNixAppliesAtomicPatch) [
+      "pkgs/emulation/qemu.nix: shipped QEMU package must directly apply the atomic patch"
     ]
     ++ map (line: "pkgs/emulation/qemu.nix: unexpected non-manifest patch command line: ${trimLine line}")
     qemuNixUnexpectedPatchCommandLines
@@ -250,11 +249,11 @@
     ]
     ++ map (patch: "pkgs/emulation/qemu-patches/${patch}: catalog-only capability must not exist as an extra shipped patch file")
     catalogOnlyPatchFiles
-    ++ map (name: "pkgs/emulation/qemu-patches/_series.nix: catalog-only capability must not be a shipped manifest patch: ${name}")
+    ++ map (name: "pkgs/emulation/qemu-patches/_atomic-patch.nix: catalog-only capability must not be a shipped manifest patch: ${name}")
     catalogOnlyManifestCatalogNames
     ++ map (patch: "pkgs/emulation/qemu-patches/${patch}: dev-only diagnostic patch must not ship")
     devOnlyPatchFiles
-    ++ map (name: "pkgs/emulation/qemu-patches/_series.nix: dev-only diagnostic patch must not be in shipped manifest: ${name}")
+    ++ map (name: "pkgs/emulation/qemu-patches/_atomic-patch.nix: dev-only diagnostic patch must not be in shipped manifest: ${name}")
     devOnlyManifestCatalogNames
     ++ map (name: "pkgs/emulation/qemu.nix: shipped package references dev-only diagnostic patch ${name}")
     devOnlyQemuNixReferences
@@ -307,9 +306,9 @@ in
             printf 'tasks=%s\n' "$TASK_IDS"
             printf '%s\n' 'gate=gate:patch-microtests'
             printf '%s\n' 'catalog=docs/rfcs/0010-crucible/11-qemu-patches.md#11.3'
-            printf '%s\n' 'package_manifest=pkgs/emulation/qemu-patches/_series.nix'
+            printf '%s\n' 'package_manifest=pkgs/emulation/qemu-patches/_atomic-patch.nix'
             printf '%s\n' 'package=pkgs.qemu-crucible'
-            printf 'manifest_patch_count=%s\n' "$MANIFEST_PATCH_COUNT"
+            printf 'atomic_patch=%s\n' "$ATOMIC_PATCH"
             printf 'catalog_row_count=%s\n' "$CATALOG_ROW_COUNT"
             printf 'catalog_only_capability_count=%s\n' "$CATALOG_ONLY_COUNT"
             printf 'dev_only_catalog_count=%s\n' "$DEV_ONLY_COUNT"
@@ -319,7 +318,7 @@ in
             printf '%s\n' 'catalog_only_capabilities_mapped_to_carrier_patches=true'
             printf '%s\n' 'dev_only_patches_excluded=true'
             printf '%s\n' 'every_manifest_patch_maps_to_stated_requirement=true'
-            printf '%s\n' 'qemu_package_applies_only_manifest_series=true'
+            printf '%s\n' 'qemu_package_applies_atomic_patch=true'
             printf '%s\n' 'patch_microtests_gate=checks.crucible.phase2.gates.patchMicrotests'
             printf '%s\n' 'patch_microtests_gate_result_consumed=true'
           } > "$out/result"
@@ -327,8 +326,8 @@ in
       ];
       ATTR_PATH = attrPath;
       TASK_IDS = builtins.concatStringsSep "," taskIds;
-      MANIFEST_PATCH_COUNT = toString (builtins.length manifestPatchFiles);
+      ATOMIC_PATCH = atomicPatch.file;
       CATALOG_ROW_COUNT = toString (builtins.length catalogRowNames);
-      CATALOG_ONLY_COUNT = toString (builtins.length catalogOnlyCapabilities);
+      CATALOG_ONLY_COUNT = toString (builtins.length additionalCapabilities);
       DEV_ONLY_COUNT = toString (builtins.length devOnlyCatalogNames);
     }

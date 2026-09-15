@@ -60,7 +60,8 @@ formal model, the defining file is named.
 - **Injection determinism (Contract B)** — the icount at which an external input is
   delivered to a VM is a pure function of virtual time, not a host-timing race. (04)
 - **Execution fingerprint** — a cheap, deterministic digest of a VM's execution
-  (periodic icount + register/memory hash) used to detect divergence. (24)
+  (authenticated requested icount + register/memory hash) used to detect
+  divergence. (24)
 - **Divergence bisection** — automatically localizing the first differing
   decision/instruction between two runs. (24)
 - **Decision RNG** — the seeded RNG that resolves probabilistic Decisions;
@@ -96,7 +97,7 @@ formal model, the defining file is named.
   `qemu_plugin_request_time_control`, overriding warp. (12)
 - **Warp** — QEMU's default behavior of advancing virtual time by wall-clock while
   idle; suppressed under Crucible. (10, 11)
-- **Sim mode** — the activated state in which the patch series and plugin take
+- **Sim mode** — the activated state in which the atomic patch and plugin take
   effect; off by default (INV-7). (11)
 - **Shmem region** — the `#[repr(C)]` shared-memory area between host and each VM's
   plugin carrying per-node clocks, status, and SPSC frame queues. (13)

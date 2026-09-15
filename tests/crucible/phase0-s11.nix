@@ -5,7 +5,6 @@
   qemuDataDir ? "${qemuPackage}/share/qemu",
   qemuRuntimeDeps ? [],
   tracePluginPackage ? pkgs.crucible-qemu-trace-plugin,
-  execBoundaryPluginPackage ? null,
   accelerator ? "sim,thread=single",
   rrSwitchQuantum ? 4096,
   realtimeDeadlineProbe ? false,
@@ -17,7 +16,6 @@
   stopAt ? 4000000000,
   memoryMib ? 256,
   vcpuCount ? 4,
-  detIpiProbe ? false,
   # Some focused boot-prefix probes exercise deterministic INIT/SIPI delivery
   # before Linux starts the secondary vCPU's normal RR execution. They still
   # validate every exported cursor snapshot but leave the positive handoff
@@ -26,13 +24,6 @@
   # This bounds host wall time only. The deterministic proof horizon remains
   # the content-addressed stopAt node-icount under host preemption.
   runTimeoutSeconds ? 2400,
-  # Drop-one probes need a successful derivation even when a full-minus-patch
-  # QEMU produces a divergent trace. The canonical gate keeps this false.
-  permitTraceMismatch ? false,
-  # A drop-one build may classify a patch as build-required before producing
-  # a runnable QEMU. In that case, preserve the successful classification
-  # without attempting this runtime discriminator.
-  skipUnlessBuilt ? null,
 }: let
   boundedSchedulerPreemptionCheck = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
   workload = pkgs.mkDerivation {
@@ -362,18 +353,13 @@ in
           tracePluginPackage
           pkgs.socat
         ]
-        ++ qemuRuntimeDeps
-        ++ lib.optionals (execBoundaryPluginPackage != null) [execBoundaryPluginPackage];
+        ++ qemuRuntimeDeps;
 
       INITRAMFS = "${initramfs}/initrd.img";
       KERNEL = builtins.toString pkgs.linux;
       QEMU = "${qemuPackage}/bin/qemu-system-x86_64";
       QEMU_DATA_DIR = qemuDataDir;
       PLUGIN = "${tracePluginPackage}/lib/qemu/plugins/crucible-qemu-trace-plugin.so";
-      EXEC_BOUNDARY_PLUGIN =
-        if execBoundaryPluginPackage == null
-        then ""
-        else "${execBoundaryPluginPackage}/lib/qemu/plugins/drop-one-exec-boundary-plugin.so";
       CADENCE = builtins.toString cadence;
       RR_SWITCH_QUANTUM = builtins.toString rrSwitchQuantum;
       VCPU_COUNT = builtins.toString vcpuCount;
@@ -400,24 +386,12 @@ in
         if stopAt == null
         then "0"
         else "1";
-      DET_IPI_PROBE =
-        if detIpiProbe
-        then "1"
-        else "0";
-      PERMIT_TRACE_MISMATCH =
-        if permitTraceMismatch
-        then "1"
-        else "0";
       REALTIME_DEADLINE_PROBE =
         if realtimeDeadlineProbe
         then "1"
         else "0";
-      BUILD_GUARD =
-        if skipUnlessBuilt == null
-        then ""
-        else "${skipUnlessBuilt}";
-      # RR cursor / RR switch-quantum export is gated to `-accel sim` in the
-      # patch stack; under plain TCG the plugin reports inert cursor fields and
+      # RR cursor / RR switch-quantum export is gated to `-accel sim`; under
+      # plain TCG the plugin reports inert cursor fields and
       # emits no rr_switch rows.
       EXPECT_RR_CURSOR =
         if lib.hasPrefix "sim," accelerator || accelerator == "sim"
@@ -438,18 +412,6 @@ in
             grep -Fxq PASS "$BOUNDED_PREEMPTION_CHECK/result"
 
             unset LD_LIBRARY_PATH || true
-
-            if [ -n "$BUILD_GUARD" ] \
-              && [ "$(cat "$BUILD_GUARD/outcome")" != built ]; then
-              mkdir -p "$out"
-              cat > "$out/result" <<RESULT
-            PASS
-            check=phase0-s11
-            sim_discriminator_classification=not-applicable
-            reason=variant-not-built
-            RESULT
-              exit 0
-            fi
 
             active_timer_sink_pid=""
             active_hmp_client_pid=""
@@ -507,10 +469,9 @@ in
               'kernel_append=console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0' \
               "plugin_cadence=$CADENCE" \
               "plugin_stop_at=$STOP_AT" \
-              'plugin_extended=on' \
+              'plugin_fingerprint=aggregate' \
               'plugin_mem_events=off' \
               "plugin_vcpus=$VCPU_COUNT" \
-              "det_ipi_probe=$DET_IPI_PROBE" \
               "realtime_deadline_probe=$REALTIME_DEADLINE_PROBE" \
               "sustain_workload=$SUSTAIN_WORKLOAD" \
               > "$TMPDIR/launch-definition.txt"
@@ -690,22 +651,16 @@ in
               label="$1"
               trace_path="$TMPDIR/trace-current.jsonl"
               serial_path="$TMPDIR/serial-current.log"
-              exec_boundary_path="$TMPDIR/exec-boundaries-current.tsv"
-              plugin_arg="$PLUGIN,out=$trace_path,cadence=$CADENCE,extended=on,mem_events=off,vcpus=$VCPU_COUNT,launch_digest=$launch_definition_digest,qemu_build_digest=$qemu_build_digest,plugin_build_digest=$trace_plugin_build_digest"
+              plugin_arg="$PLUGIN,out=$trace_path,cadence=$CADENCE,mem_events=off,vcpus=$VCPU_COUNT,launch_digest=$launch_definition_digest,qemu_build_digest=$qemu_build_digest,plugin_build_digest=$trace_plugin_build_digest"
               qmp_socket="$TMPDIR/qmp-current.sock"
               hmp_socket="$TMPDIR/hmp-current.sock"
               migration_socket="$TMPDIR/migration-sink-current.sock"
               rm -f \
                 "$trace_path" \
                 "$serial_path" \
-                "$exec_boundary_path" \
                 "$qmp_socket" \
                 "$hmp_socket" \
                 "$migration_socket"
-
-              if [ "$DET_IPI_PROBE" -eq 1 ]; then
-                plugin_arg="$plugin_arg,det_ipi_probe=on"
-              fi
 
               if [ -n "$STOP_AT" ]; then
                 plugin_arg="$plugin_arg,stop_at=$STOP_AT"
@@ -732,11 +687,6 @@ in
                 -chardev file,id=serial0,path="$serial_path" \
                 -serial chardev:serial0 \
                 -plugin "$plugin_arg"
-
-              if [ -n "$EXEC_BOUNDARY_PLUGIN" ]; then
-                set -- "$@" \
-                  -plugin "$EXEC_BOUNDARY_PLUGIN,out=$exec_boundary_path"
-              fi
 
               if [ "$REALTIME_DEADLINE_PROBE" -eq 1 ]; then
                 socat \
@@ -839,9 +789,6 @@ in
               fi
               cp "$trace_path" "$TMPDIR/trace-$label.jsonl"
               cp "$serial_path" "$TMPDIR/serial-$label.log"
-              if [ -n "$EXEC_BOUNDARY_PLUGIN" ]; then
-                cp "$exec_boundary_path" "$TMPDIR/exec-boundaries-$label.tsv"
-              fi
             }
 
             run_one a
@@ -874,11 +821,10 @@ in
                       exact_horizon_sample_count: ([ $samples[]
                         | select(.final != true and .observed_icount == $stop_at)
                       ] | length),
-                      bounded_post_horizon_final_count: ([ $samples[]
+                      exact_horizon_final_count: ([ $samples[]
                         | select(
                             .final == true
-                            and .observed_icount >= $stop_at
-                            and (.observed_icount - $stop_at) <= $quantum
+                            and .observed_icount == $stop_at
                             and .stop_requested == true
                           )
                       ] | length)
@@ -910,8 +856,17 @@ in
                         rr_cursor_source,
                         sample_register_failures,
                         register_read_failures,
+                        register_retired,
+                        ram_status,
                         ram_bytes,
                         ram_digest,
+                        device_state_status,
+                        device_state_schema_status,
+                        device_state_complete,
+                        device_state_sections,
+                        device_state_bytes,
+                        device_state_digest,
+                        device_state_schema_digest,
                         memory_events_enabled,
                         device_event_capture,
                         device_event_hash,
@@ -1008,7 +963,7 @@ in
                   | [ .[] | select(.kind == "rr_switch") ] as $switches
                   | ($samples | length) >= 4
                   and all($samples[]; (
-                    .schema == "crucible.qemu.trace-fingerprint.v6"
+                    .schema == "crucible.qemu.trace-fingerprint.v7"
                     and .tracked_vcpus == $vcpus
                     and .launch_definition_digest == $launch_definition_digest
                     and .qemu_build_digest == $qemu_build_digest
@@ -1016,8 +971,16 @@ in
                     and rr_cursor_expectation
                     and .sample_register_failures == 0
                     and .register_read_failures == 0
+                    and .ram_status == 0
                     and .ram_bytes > 0
                     and .ram_digest != "0000000000000000000000000000000000000000000000000000000000000000"
+                    and .device_state_status == 0
+                    and .device_state_schema_status == 0
+                    and .device_state_complete == true
+                    and .device_state_sections > 0
+                    and .device_state_bytes > 0
+                    and .device_state_digest != "0000000000000000000000000000000000000000000000000000000000000000"
+                    and .device_state_schema_digest != "0000000000000000000000000000000000000000000000000000000000000000"
                     and .memory_events_enabled == false
                     and .device_event_capture == false
                     and .device_event_hash == null
@@ -1030,6 +993,10 @@ in
                     and (.register_file_bytes | type == "array")
                     and (.register_file_bytes | length) == $vcpus
                     and all(.register_file_bytes[]; . > 0)
+                    and (.register_retired | type == "array")
+                    and (.register_retired | length) == $vcpus
+                    and all(.register_retired[]; . >= 0)
+                    and (.register_retired | add) == .retired
                     and (.register_schema_digests | type == "array")
                     and (.register_schema_digests | length) == $vcpus
                     and all(.register_schema_digests[]; . != "0000000000000000000000000000000000000000000000000000000000000000")
@@ -1054,8 +1021,7 @@ in
                       and ([ $samples[]
                         | select(
                             .final == true
-                            and .observed_icount >= $stop_at
-                            and (.observed_icount - $stop_at) <= $quantum
+                            and .observed_icount == $stop_at
                             and .stop_at == $stop_at
                             and .stop_requested == true
                           )
@@ -1217,7 +1183,7 @@ in
                       elif $left[0].ram_digest != $right[0].ram_digest then "ram_digest"
                       elif $left[0].device_event_hash != $right[0].device_event_hash then "device_event_hash"
                       elif $left[0].stream_hash != $right[0].stream_hash then "stream_hash"
-                      elif $left[0].diagnostic_extended_fnv != $right[0].diagnostic_extended_fnv then "diagnostic_extended_fnv"
+                      elif $left[0].aggregate_fingerprint_fnv != $right[0].aggregate_fingerprint_fnv then "aggregate_fingerprint_fnv"
                       else "unknown"
                       end;
                     component
@@ -1266,27 +1232,8 @@ in
                 "$TMPDIR/trace-authoritative-a.jsonl" \
                 "$TMPDIR/trace-authoritative-b.jsonl" \
                 "$out/first-difference.txt"
-              if [ "$PERMIT_TRACE_MISMATCH" -eq 1 ]; then
-                cp "$TMPDIR/trace-a.jsonl" "$out/trace-a.jsonl"
-                cp "$TMPDIR/trace-b.jsonl" "$out/trace-b.jsonl"
-                cp "$TMPDIR/trace-authoritative-a.jsonl" "$out/trace-authoritative-a.jsonl"
-                cp "$TMPDIR/trace-authoritative-b.jsonl" "$out/trace-authoritative-b.jsonl"
-                if [ -n "$EXEC_BOUNDARY_PLUGIN" ]; then
-                  cp "$TMPDIR/exec-boundaries-a.tsv" "$out/exec-boundaries-a.tsv"
-                  cp "$TMPDIR/exec-boundaries-b.tsv" "$out/exec-boundaries-b.tsv"
-                fi
-                {
-                  echo PASS
-                  echo spike=multi-vcpu-rr-sim-tcg-fingerprint
-                  echo extended_fingerprint_match=false
-                  echo drop_one_mismatch_recorded=true
-                  cat "$out/first-difference.txt"
-                } > "$out/result"
-                exit 0
-              else
-                cat "$out/first-difference.txt" >&2
-                fail "authoritative extended fingerprint mismatch"
-              fi
+              cat "$out/first-difference.txt" >&2
+              fail "authoritative aggregate fingerprint mismatch"
             fi
             [ "$rr_switch_trace_match" = true ] \
               || fail "RR switch projection differs despite equal raw traces"
@@ -1332,16 +1279,16 @@ in
               || fail "RR cursor mismatch localizer did not identify the cursor"
 
             final_line=$(grep '"final":true' "$TMPDIR/trace-a.jsonl" | tail -1)
-            [ -n "$final_line" ] || fail "trace a omitted the plugin-exit sample"
+            [ -n "$final_line" ] || fail "trace a omitted the final aggregate sample"
             final_line_b=$(grep '"final":true' "$TMPDIR/trace-b.jsonl" | tail -1)
-            [ -n "$final_line_b" ] || fail "trace b omitted the plugin-exit sample"
-            plugin_exit_retired=$(printf '%s\n' "$final_line" | jq -r '.retired')
-            plugin_exit_retired_b=$(printf '%s\n' "$final_line_b" | jq -r '.retired')
-            plugin_exit_observed_icount=$(printf '%s\n' "$final_line" | jq -r '.observed_icount')
-            plugin_exit_observed_icount_b=$(printf '%s\n' "$final_line_b" | jq -r '.observed_icount')
-            plugin_exit_stop_requested=$(printf '%s\n' "$final_line" | jq -r '.stop_requested')
-            plugin_exit_stop_requested_b=$(printf '%s\n' "$final_line_b" | jq -r '.stop_requested')
-            final_extended_hash=$(printf '%s\n' "$final_line" | jq -r '.diagnostic_extended_fnv')
+            [ -n "$final_line_b" ] || fail "trace b omitted the final aggregate sample"
+            final_sample_retired=$(printf '%s\n' "$final_line" | jq -r '.retired')
+            final_sample_retired_b=$(printf '%s\n' "$final_line_b" | jq -r '.retired')
+            final_sample_observed_icount=$(printf '%s\n' "$final_line" | jq -r '.observed_icount')
+            final_sample_observed_icount_b=$(printf '%s\n' "$final_line_b" | jq -r '.observed_icount')
+            final_sample_stop_requested=$(printf '%s\n' "$final_line" | jq -r '.stop_requested')
+            final_sample_stop_requested_b=$(printf '%s\n' "$final_line_b" | jq -r '.stop_requested')
+            final_aggregate_hash=$(printf '%s\n' "$final_line" | jq -r '.aggregate_fingerprint_fnv')
             final_register_hashes=$(printf '%s\n' "$final_line" | jq -c '.register_digests')
             final_register_hash=$(printf '%s' "$final_register_hashes" | sha256sum | gawk '{print $1}')
             final_register_counts=$(printf '%s\n' "$final_line" | jq -c '.register_counts')
@@ -1357,23 +1304,20 @@ in
             horizon_sample_retired=not-applicable
             horizon_sample_observed_icount=not-applicable
             horizon_sample_stop_requested=not-applicable
-            horizon_sample_plugin_exit_retired_match=not-applicable
-            horizon_sample_plugin_exit_stream_match=not-applicable
-            horizon_sample_plugin_exit_register_match=not-applicable
-            horizon_sample_plugin_exit_ram_match=not-applicable
-            horizon_sample_plugin_exit_rr_match=not-applicable
+            horizon_sample_final_retired_match=not-applicable
+            horizon_sample_final_stream_match=not-applicable
+            horizon_sample_final_register_match=not-applicable
+            horizon_sample_final_ram_match=not-applicable
+            horizon_sample_final_rr_match=not-applicable
             horizon_sample_cross_run_match=not-applicable
-            horizon_sample_plugin_exit_state_comparison=not-applicable
+            horizon_sample_final_state_comparison=not-applicable
             exact_horizon_authoritative=not-applicable
-            plugin_exit_semantics=guest-complete
-            plugin_exit_pause_overshoot=not-applicable
-            plugin_exit_pause_overshoot_bound=not-applicable
-            plugin_exit_pause_overshoot_bounded=not-applicable
-            plugin_exit_pause_overshoot_cross_run_match=not-applicable
-            plugin_exit_cross_run_match=not-applicable
+            final_sample_semantics=guest-complete
+            final_sample_exact_horizon=not-applicable
+            final_sample_cross_run_match=not-applicable
             periodic_samples_expected=not-applicable
             periodic_samples_observed=not-applicable
-            plugin_exit_fingerprint_compared=true
+            final_sample_fingerprint_compared=true
             if [ "$SUSTAIN_WORKLOAD" -eq 1 ]; then
               horizon_line=$(jq -c --argjson stop_at "$STOP_AT_VALUE" \
                 'select((.kind // "sample") == "sample" and .final != true and .observed_icount == $stop_at)' \
@@ -1389,77 +1333,75 @@ in
               horizon_ram_bytes=$(printf '%s\n' "$horizon_line" | jq -r '.ram_bytes')
               horizon_rr_cursor=$(printf '%s\n' "$horizon_line" \
                 | jq -c '[.rr_current_vcpu,.rr_cursor_position,.rr_switch_quantum]')
-              plugin_exit_stream_hash=$(printf '%s\n' "$final_line" | jq -r '.stream_hash')
+              final_sample_stream_hash=$(printf '%s\n' "$final_line" | jq -r '.stream_hash')
 
               horizon_sample_observed_icount=$(printf '%s\n' "$horizon_line" | jq -r '.observed_icount')
               [ "$horizon_sample_observed_icount" = "$STOP_AT" ] \
                 || fail "horizon sample observed-icount mismatch: $horizon_sample_observed_icount/$STOP_AT"
               [ "$horizon_sample_stop_requested" = true ] \
                 || fail "horizon sample omitted the exact-boundary stop request"
-              [ "$plugin_exit_stop_requested" = true ] \
-                || fail "plugin-exit sample omitted the stop request"
-              [ "$plugin_exit_stop_requested_b" = true ] \
-                || fail "run b plugin-exit sample omitted the stop request"
+              [ "$final_sample_stop_requested" = true ] \
+                || fail "final aggregate sample omitted the stop request"
+              [ "$final_sample_stop_requested_b" = true ] \
+                || fail "run b final aggregate sample omitted the stop request"
 
-              [ "$plugin_exit_observed_icount" -ge "$STOP_AT" ] \
-                || fail "plugin exit observed before the exact horizon: $plugin_exit_observed_icount/$STOP_AT"
-              [ "$plugin_exit_observed_icount_b" -ge "$STOP_AT" ] \
-                || fail "run b plugin exit observed before the exact horizon: $plugin_exit_observed_icount_b/$STOP_AT"
-              plugin_exit_pause_overshoot=$((plugin_exit_observed_icount - STOP_AT))
-              plugin_exit_pause_overshoot_b=$((plugin_exit_observed_icount_b - STOP_AT))
+              [ "$final_sample_observed_icount" = "$STOP_AT" ] \
+                || fail "final aggregate missed the exact horizon: $final_sample_observed_icount/$STOP_AT"
+              [ "$final_sample_observed_icount_b" = "$STOP_AT" ] \
+                || fail "run b final aggregate missed the exact horizon: $final_sample_observed_icount_b/$STOP_AT"
               periodic_samples_expected=$(((STOP_AT + CADENCE - 1) / CADENCE))
               periodic_samples_observed=$((samples_a - 1))
               [ "$periodic_samples_observed" -eq "$periodic_samples_expected" ] \
                 || fail "non-final periodic sample count mismatch: $periodic_samples_observed/$periodic_samples_expected"
-              [ "$plugin_exit_pause_overshoot" -le "$RR_SWITCH_QUANTUM" ] \
-                || fail "plugin-exit pause overshoot exceeds one RR quantum: $plugin_exit_pause_overshoot/$RR_SWITCH_QUANTUM"
-              [ "$plugin_exit_pause_overshoot_b" -le "$RR_SWITCH_QUANTUM" ] \
-                || fail "run b plugin-exit pause overshoot exceeds one RR quantum: $plugin_exit_pause_overshoot_b/$RR_SWITCH_QUANTUM"
-              if [ "$plugin_exit_pause_overshoot" -eq "$plugin_exit_pause_overshoot_b" ]; then
-                plugin_exit_pause_overshoot_cross_run_match=true
-              else
-                plugin_exit_pause_overshoot_cross_run_match=false
-              fi
               if [ "$final_line" = "$final_line_b" ]; then
-                plugin_exit_cross_run_match=true
+                final_sample_cross_run_match=true
               else
-                plugin_exit_cross_run_match=false
+                final_sample_cross_run_match=false
               fi
 
-              if [ "$horizon_sample_retired" = "$plugin_exit_retired" ]; then
-                horizon_sample_plugin_exit_retired_match=true
+              if [ "$horizon_sample_retired" = "$final_sample_retired" ]; then
+                horizon_sample_final_retired_match=true
               else
-                horizon_sample_plugin_exit_retired_match=false
+                horizon_sample_final_retired_match=false
               fi
-              if [ "$horizon_stream_hash" = "$plugin_exit_stream_hash" ]; then
-                horizon_sample_plugin_exit_stream_match=true
+              if [ "$horizon_stream_hash" = "$final_sample_stream_hash" ]; then
+                horizon_sample_final_stream_match=true
               else
-                horizon_sample_plugin_exit_stream_match=false
+                horizon_sample_final_stream_match=false
               fi
               if [ "$horizon_register_hash" = "$final_register_hash" ] \
                 && [ "$horizon_register_hashes" = "$final_register_hashes" ]; then
-                horizon_sample_plugin_exit_register_match=true
+                horizon_sample_final_register_match=true
               else
-                horizon_sample_plugin_exit_register_match=false
+                horizon_sample_final_register_match=false
               fi
               if [ "$horizon_ram_hash" = "$final_ram_hash" ] \
                 && [ "$horizon_ram_bytes" = "$final_ram_bytes" ]; then
-                horizon_sample_plugin_exit_ram_match=true
+                horizon_sample_final_ram_match=true
               else
-                horizon_sample_plugin_exit_ram_match=false
+                horizon_sample_final_ram_match=false
               fi
               if [ "$horizon_rr_cursor" = "$final_rr_cursor" ]; then
-                horizon_sample_plugin_exit_rr_match=true
+                horizon_sample_final_rr_match=true
               else
-                horizon_sample_plugin_exit_rr_match=false
+                horizon_sample_final_rr_match=false
               fi
+              [ "$horizon_sample_final_retired_match" = true ] \
+                || fail "final aggregate retired count differs at the exact horizon"
+              [ "$horizon_sample_final_stream_match" = true ] \
+                || fail "final aggregate stream differs at the exact horizon"
+              [ "$horizon_sample_final_register_match" = true ] \
+                || fail "final aggregate registers differ at the exact horizon"
+              [ "$horizon_sample_final_ram_match" = true ] \
+                || fail "final aggregate RAM differs at the exact horizon"
+              [ "$horizon_sample_final_rr_match" = true ] \
+                || fail "final aggregate RR cursor differs at the exact horizon"
               horizon_sample_cross_run_match=true
-              horizon_sample_plugin_exit_state_comparison=recorded-non-authoritative-teardown
+              horizon_sample_final_state_comparison=exact-same-boundary
               exact_horizon_authoritative=true
-              plugin_exit_semantics=post-stop-request-teardown-observation
-              plugin_exit_pause_overshoot_bound="$RR_SWITCH_QUANTUM"
-              plugin_exit_pause_overshoot_bounded=true
-              plugin_exit_fingerprint_compared=diagnostic-only
+              final_sample_semantics=exact-observer-aggregate-before-native-vmstop
+              final_sample_exact_horizon=true
+              final_sample_fingerprint_compared=authoritative
             fi
 
             workload_affinity_active=false
@@ -1488,10 +1430,6 @@ in
             cp "$TMPDIR/trace-b.jsonl" "$out/trace-b.jsonl"
             cp "$TMPDIR/trace-authoritative-a.jsonl" "$out/trace-authoritative-a.jsonl"
             cp "$TMPDIR/trace-authoritative-b.jsonl" "$out/trace-authoritative-b.jsonl"
-            if [ -n "$EXEC_BOUNDARY_PLUGIN" ]; then
-              cp "$TMPDIR/exec-boundaries-a.tsv" "$out/exec-boundaries-a.tsv"
-              cp "$TMPDIR/exec-boundaries-b.tsv" "$out/exec-boundaries-b.tsv"
-            fi
             cp "$TMPDIR/rr-switch-trace-a.tsv" "$out/rr-switch-trace-a.tsv"
             cp "$TMPDIR/rr-switch-trace-b.tsv" "$out/rr-switch-trace-b.tsv"
             cp "$TMPDIR/per-vcpu-delta-trace-a.tsv" "$out/per-vcpu-delta-trace-a.tsv"
@@ -1525,11 +1463,6 @@ in
               else
                 echo workload_affinity_vcpus=not-observed
               fi
-              if [ "$DET_IPI_PROBE" -eq 1 ]; then
-                echo det_ipi_probe=enabled
-              else
-                echo det_ipi_probe=disabled
-              fi
               echo host_adversary=bounded-scheduler-preemption
               echo host_adversary_perturbations=6
               echo host_adversary_configured_pause_milliseconds=15
@@ -1549,7 +1482,7 @@ in
                 echo rr_cursor_export=inert-non-sim
                 echo rr_cursor_assertion=inert_non_sim
               fi
-              echo extended_fingerprint_match=true
+              echo aggregate_fingerprint_match=true
               echo aggregate_icount_stream_match=true
               echo rr_switch_trace_match=true
               echo per_vcpu_delta_trace_match=true
@@ -1558,42 +1491,36 @@ in
               echo horizon_sample_retired="$horizon_sample_retired"
               echo horizon_sample_observed_icount="$horizon_sample_observed_icount"
               echo horizon_sample_stop_requested="$horizon_sample_stop_requested"
-              echo plugin_exit_retired="$plugin_exit_retired"
-              echo plugin_exit_observed_icount="$plugin_exit_observed_icount"
-              echo plugin_exit_stop_requested="$plugin_exit_stop_requested"
+              echo final_sample_retired="$final_sample_retired"
+              echo final_sample_observed_icount="$final_sample_observed_icount"
+              echo final_sample_stop_requested="$final_sample_stop_requested"
               echo exact_horizon_authoritative="$exact_horizon_authoritative"
-              echo plugin_exit_semantics="$plugin_exit_semantics"
-              echo plugin_exit_pause_overshoot="$plugin_exit_pause_overshoot"
-              if [ "$SUSTAIN_WORKLOAD" -eq 1 ]; then
-                echo plugin_exit_pause_overshoot_run_b="$plugin_exit_pause_overshoot_b"
-              fi
-              echo plugin_exit_pause_overshoot_bound="$plugin_exit_pause_overshoot_bound"
-              echo plugin_exit_pause_overshoot_bounded="$plugin_exit_pause_overshoot_bounded"
-              echo plugin_exit_pause_overshoot_cross_run_match="$plugin_exit_pause_overshoot_cross_run_match"
+              echo final_sample_semantics="$final_sample_semantics"
+              echo final_sample_exact_horizon="$final_sample_exact_horizon"
               echo periodic_samples_expected="$periodic_samples_expected"
               echo periodic_samples_observed="$periodic_samples_observed"
               echo stop_request="$stop_request"
-              echo stop_requested="$plugin_exit_stop_requested"
-              echo plugin_exit_fingerprint_compared="$plugin_exit_fingerprint_compared"
+              echo stop_requested="$final_sample_stop_requested"
+              echo final_sample_fingerprint_compared="$final_sample_fingerprint_compared"
               echo horizon_sample_cross_run_match="$horizon_sample_cross_run_match"
-              echo plugin_exit_cross_run_match="$plugin_exit_cross_run_match"
-              echo horizon_sample_plugin_exit_state_comparison="$horizon_sample_plugin_exit_state_comparison"
-              echo horizon_sample_plugin_exit_retired_match="$horizon_sample_plugin_exit_retired_match"
-              echo horizon_sample_plugin_exit_stream_match="$horizon_sample_plugin_exit_stream_match"
-              echo horizon_sample_plugin_exit_register_match="$horizon_sample_plugin_exit_register_match"
-              echo horizon_sample_plugin_exit_ram_match="$horizon_sample_plugin_exit_ram_match"
-              echo horizon_sample_plugin_exit_rr_match="$horizon_sample_plugin_exit_rr_match"
+              echo final_sample_cross_run_match="$final_sample_cross_run_match"
+              echo horizon_sample_final_state_comparison="$horizon_sample_final_state_comparison"
+              echo horizon_sample_final_retired_match="$horizon_sample_final_retired_match"
+              echo horizon_sample_final_stream_match="$horizon_sample_final_stream_match"
+              echo horizon_sample_final_register_match="$horizon_sample_final_register_match"
+              echo horizon_sample_final_ram_match="$horizon_sample_final_ram_match"
+              echo horizon_sample_final_rr_match="$horizon_sample_final_rr_match"
               if [ "$SUSTAIN_WORKLOAD" -eq 1 ]; then
                 echo horizon_stream_hash="$horizon_stream_hash"
                 echo horizon_register_hash="$horizon_register_hash"
                 echo horizon_ram_hash="$horizon_ram_hash"
                 echo horizon_ram_bytes="$horizon_ram_bytes"
                 echo horizon_rr_cursor="$horizon_rr_cursor"
-                echo plugin_exit_stream_hash="$plugin_exit_stream_hash"
-                echo plugin_exit_rr_cursor="$final_rr_cursor"
+                echo final_sample_stream_hash="$final_sample_stream_hash"
+                echo final_sample_rr_cursor="$final_rr_cursor"
               fi
               echo samples="$samples_a"
-              echo final_extended_hash="$final_extended_hash"
+              echo final_aggregate_hash="$final_aggregate_hash"
               echo final_register_hash="$final_register_hash"
               echo final_register_hashes="$final_register_hashes"
               echo final_register_counts="$final_register_counts"
@@ -1624,7 +1551,6 @@ in
               echo first_differing_component=none
               echo mismatch_localization_vcpu_negative_test=true
               echo mismatch_localization_rr_cursor_negative_test=true
-              echo fallback=smp1_not_needed
             } > "$out/result"
           '';
         }

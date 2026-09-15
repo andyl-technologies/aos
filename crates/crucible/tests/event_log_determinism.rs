@@ -4,21 +4,22 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use std::collections::BTreeMap;
 
 use crucible::{
-    AppRandomDecision, Checkpoint, CheckpointKind, Configuration, ContentHash, Decision,
-    EngineError, EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLog, EventSource,
-    Icount, MaterializedState, NodeId, RngDecision, RngStreamId, SchedulerEvaluationBoundaryKind,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, TemporalGraph, VirtualTime, World, bake,
-    compare_event_log_determinism, event_log_causal_projection, step,
+    Checkpoint, CheckpointKind, Configuration, Decision, EngineError, EventAttributeValue,
+    EventDiagnosticPayload, EventLevel, EventLog, EventSource, Icount, MaterializedState,
+    RngDecision, RngStreamId, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, TemporalGraph, VirtualTime, World, bake,
+    compare_event_log_determinism, event_log_causal_projection,
 };
-
-fn node(name: &str) -> NodeId {
-    NodeId {
-        name: name.to_owned(),
-    }
-}
 
 fn time(ticks: u64) -> VirtualTime {
     VirtualTime { ticks }
@@ -34,26 +35,6 @@ fn rng_entry(sequence: u64, ticks: u64, stream: &str, value: u64) -> SchedulerEv
         time(ticks),
         SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name(stream),
-            value,
-        })),
-    )
-}
-
-fn app_random_entry(
-    sequence: u64,
-    ticks: u64,
-    node_name: &str,
-    stream: &str,
-    value: u64,
-) -> SchedulerEventLogEntry {
-    crucible::test_support::condition_payload_entry_for_test(
-        sequence,
-        time(ticks),
-        SchedulerEventLogPayload::Decision(Decision::AppRandom(AppRandomDecision {
-            node: node(node_name),
-            stream: RngStreamId::from_name(stream),
-            request_id: 1,
-            width: 32,
             value,
         })),
     )
@@ -165,19 +146,19 @@ fn causal_projection_bytes_differ_on_first_causal_payload_change() {
 fn causal_mismatch_reports_first_differing_entry_coordinate() {
     let expected = vec![
         diagnostic_entry(0, 8, "before", EventLevel::Debug, BTreeMap::new()),
-        app_random_entry(1, 9, "guest-a", "node-local-random", 31),
+        rng_entry(1, 9, "node-local-random", 31),
         boundary_entry(2, 10),
     ];
     let reproduced = vec![
         diagnostic_entry(0, 8, "before", EventLevel::Trace, BTreeMap::new()),
-        app_random_entry(1, 9, "guest-a", "node-local-random", 32),
+        rng_entry(1, 9, "node-local-random", 32),
         boundary_entry(2, 10),
     ];
 
     let comparison = compare_event_log_determinism(&expected, &reproduced);
     let mismatch = comparison
         .mismatch()
-        .expect("node-local causal payload change should produce a mismatch");
+        .expect("causal payload change should produce a mismatch");
     let expected_location = mismatch
         .expected_location
         .as_ref()
@@ -190,15 +171,10 @@ fn causal_mismatch_reports_first_differing_entry_coordinate() {
     assert!(!comparison.passes());
     assert_eq!(mismatch.causal_index, 0);
     assert_eq!(expected_location.raw_index, 1);
-    assert_eq!(expected_location.at.node.as_ref(), Some(&node("guest-a")));
+    assert_eq!(expected_location.at.node, None);
     assert_eq!(expected_location.at.icount, icount(9));
-    assert_eq!(
-        &expected_location.source,
-        &EventSource::Guest {
-            node: node("guest-a")
-        }
-    );
-    assert_eq!(expected_location.kind.as_str(), "app_random");
+    assert_eq!(&expected_location.source, &EventSource::Engine);
+    assert_eq!(expected_location.kind.as_str(), "rng_draw");
     assert_eq!(mismatch.first_location(), Some(expected_location));
     assert_eq!(reproduced_location.raw_index, 1);
     assert_eq!(&reproduced_location.at, &expected_location.at);
@@ -242,13 +218,11 @@ fn observational_verbosity_changes_do_not_change_causal_projection() {
 
 #[test]
 fn replay_oracle_rejects_fat_checkpoint_with_inconsistent_event_log_offset() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.event-log-determinism",
-        "replay-oracle-offset",
-    ));
+    let world = World::from_nodes(Vec::new())
+        .unwrap_or_else(|error| panic!("build empty replay-oracle world: {error}"));
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let child = step(
+    let child = accepted_step!(
         &genesis,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("event-log-offset"),

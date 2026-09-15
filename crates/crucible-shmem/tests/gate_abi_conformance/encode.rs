@@ -119,6 +119,16 @@ pub(super) fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
     );
     write_u64(
         &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET,
+        state.node.control_boundary_fault_command_frontier,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET,
+        state.node.control_boundary_capture_request,
+    );
+    write_u64(
+        &mut bytes,
         GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET,
         state.node.preemption_at_icount,
     );
@@ -176,6 +186,51 @@ pub(super) fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
         &mut bytes,
         GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET,
         state.node.logical_time_restore_ack,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET,
+        state.node.timer_witness_generation,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET,
+        state.node.timer_witness_deadline_ns,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET,
+        state.node.timer_witness_deadline_icount,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET,
+        state.node.timer_witness_armed_raw_icount,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET,
+        state.node.timer_witness_fired_expire_ns,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET,
+        state.node.timer_witness_fired_virtual_ns,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET,
+        state.node.timer_witness_fired_raw_icount,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET,
+        state.node.timer_witness_completed,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET,
+        state.node.timer_witness_reserved,
     );
 
     write_u64(

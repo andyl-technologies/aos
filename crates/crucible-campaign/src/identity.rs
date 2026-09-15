@@ -70,7 +70,7 @@ impl CampaignHash {
             return Err(CampaignCodecError::InvalidHex);
         }
         let mut bytes = [0_u8; 32];
-        for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
             let high = hex_nibble(pair[0]).ok_or(CampaignCodecError::InvalidHex)?;
             let low = hex_nibble(pair[1]).ok_or(CampaignCodecError::InvalidHex)?;
             bytes[index] = (high << 4) | low;
@@ -373,7 +373,7 @@ content_object_id!(
 content_object_id!(
     ExactCheckpointId,
     ObjectKind::ExactManifest,
-    [2, 3, 4],
+    4,
     "crucible.executor.exact-checkpoint-root",
     "Identifies one durable exact-checkpoint closure; current roots carry complete campaign continuation state."
 );
@@ -406,7 +406,7 @@ content_object_id!(
 content_object_id!(
     CampaignBudgetLedgerId,
     ObjectKind::CampaignFact,
-    [1, 2],
+    2,
     "crucible.campaign.budget-ledger",
     "Identifies one exact aggregate campaign budget ledger."
 );
@@ -420,7 +420,7 @@ content_object_id!(
 content_object_id!(
     CampaignSnapshotId,
     ObjectKind::CampaignSnapshot,
-    [2, 3],
+    3,
     "crucible.campaign.snapshot",
     "Identifies one immutable campaign snapshot."
 );
@@ -464,16 +464,16 @@ content_object_id!(
 content_object_id!(
     PlannerStepId,
     ObjectKind::CampaignFact,
-    [3, 4],
+    4,
     "crucible.campaign.planner-step",
-    "Identifies one coordinator-accepted planner step; version 3 IDs remain decodable for fact compatibility."
+    "Identifies one coordinator-accepted planner step."
 );
 content_object_id!(
     CampaignFactId,
     ObjectKind::CampaignFact,
     [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
     "crucible.campaign.fact",
-    "Identifies one immutable campaign fact; versions 2 through 13 remain decodable for history compatibility, and version 14 requests an observation stop."
+    "Identifies one immutable campaign fact across its currently emitted semantic variants."
 );
 semantic_id!(
     CampaignCommandId,
@@ -549,9 +549,9 @@ semantic_id!(
 content_object_id!(
     BranchRequestId,
     ObjectKind::CampaignFact,
-    [1, 2, 3, 4, 5, 6, 7, 8, 9],
+    [9],
     "crucible.campaign.branch-request",
-    "Identifies one bounded request for branch candidates; versions 1 through 8 remain decodable for history compatibility, and version 9 requests an observation stop."
+    "Identifies one bounded branch request whose schema records its source, cause, and stop semantics."
 );
 content_object_id!(
     CandidateGeneratorSpecId,
@@ -562,7 +562,7 @@ content_object_id!(
 content_object_id!(
     ProposalId,
     ObjectKind::CampaignFact,
-    [1, 2],
+    [2],
     "crucible.campaign.proposal",
     "Identifies one proposed value and its campaign provenance."
 );
@@ -573,44 +573,44 @@ semantic_id!(
 content_object_id!(
     BranchPathId,
     ObjectKind::CampaignFact,
-    [1, 2],
+    2,
     "crucible.campaign.branch-path",
-    "Identifies one ordered authenticated branch path; version 1 edge-only IDs remain decodable for history compatibility."
+    "Identifies one ordered authenticated branch path."
 );
 content_object_id!(
     AttemptId,
     ObjectKind::CampaignFact,
     [1, 2, 3, 4, 7, 8],
     "crucible.campaign.attempt",
-    "Identifies one immutable semantic execution attempt; versions 1 through 4 remain decodable for history compatibility, versions 5 and 6 are rejected superseded pre-release encodings, and versions 7 and 8 carry source-authenticated modeled continuation input."
+    "Identifies one immutable attempt whose schema records its start, stop, and modeled continuation input."
 );
 content_object_id!(
     AttemptAdmissionId,
     ObjectKind::CampaignFact,
-    [1, 2],
+    3,
     "crucible.campaign.attempt-admission",
-    "Identifies one immutable attempt admission or additional cause; version 1 remains decodable for history compatibility."
+    "Identifies one immutable attempt admission or additional cause."
 );
 content_object_id!(
     ObservationId,
     ObjectKind::Observation,
     [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     "crucible.campaign.observation",
-    "Identifies one canonical attempt observation; versions 1 through 8 remain decodable for history compatibility, and versions 9 through 12 carry authenticated observation stops."
+    "Identifies one canonical observation whose schema records its stop and produced-selection semantics."
 );
 content_object_id!(
     ObjectiveEvaluationId,
     ObjectKind::Observation,
     [1, 2],
     "crucible.campaign.objective-evaluation",
-    "Identifies one policy-bound exact objective evaluation; version 1 remains decodable for history compatibility."
+    "Identifies one policy-bound exact objective evaluation, including its scenario-failure shape."
 );
 content_object_id!(
     RankingExplanationId,
     ObjectKind::Projection,
     [1, 2],
     "crucible.campaign.ranking-explanation",
-    "Identifies one deterministic explanation for a ranked observation; version 1 remains decodable for history compatibility."
+    "Identifies one deterministic ranking explanation, including its scenario-failure shape."
 );
 content_object_id!(
     SurvivorSelectionId,
@@ -621,22 +621,23 @@ content_object_id!(
 content_object_id!(
     FindingId,
     ObjectKind::Finding,
-    [1, 2, 3, 4],
+    [4],
     "crucible.campaign.finding",
-    "Identifies one canonical campaign finding; versions 1 through 3 remain decodable for history compatibility."
+    "Identifies one current campaign finding with authenticated candidate occurrences."
 );
 content_object_id!(
     FindingCandidateBundleId,
     ObjectKind::Finding,
-    [1, 2],
+    [5],
     "crucible.campaign.finding-candidate-bundle",
-    "Identifies one durable executor-produced finding candidate handoff; version 1 remains decodable for history compatibility."
+    "Identifies one current durable finding candidate handoff with optional evidence and retention."
 );
 content_object_id!(
     FindingTriageReplayEvidenceId,
     ObjectKind::Finding,
+    [1, 2],
     "crucible.campaign.finding-triage-replay-evidence",
-    "Identifies one exact replay and its independently observed finding signature."
+    "Identifies one exact replay and observed signature in either inline or manifest-backed form."
 );
 content_object_id!(
     ReproductionArtifactId,
@@ -648,9 +649,9 @@ content_object_id!(
 content_object_id!(
     MeasurementSetId,
     ObjectKind::Observation,
-    [1, 2],
+    2,
     "crucible.campaign.measurement-set",
-    "Identifies one canonical measurement set; legacy claimed-series records remain readable."
+    "Identifies one canonical verifier-backed measurement set."
 );
 content_object_id!(
     PropertyVerdictSetId,
@@ -680,14 +681,14 @@ content_object_id!(
 content_object_id!(
     PlannerCandidateGuidanceId,
     ObjectKind::Projection,
-    [1, 2],
+    2,
     "crucible.campaign.planner-candidate-guidance",
-    "Identifies one snapshot-bound PUCT input; schema v1 remains readable."
+    "Identifies one snapshot-bound PUCT input."
 );
 content_object_id!(
     PlannerCandidateBudgetId,
     ObjectKind::Projection,
-    [1, 2],
+    2,
     "crucible.campaign.planner-candidate-budget",
     "Identifies one snapshot-bound candidate budget eligibility projection."
 );

@@ -44,6 +44,15 @@ fn qmp_channel_adds_stable_unix_socket_to_launch_command() {
             .windows(2)
             .any(|window| { window == ["-qmp", "unix:crucible-qmp.sock,server=on,wait=off"] })
     );
+    assert_eq!(
+        command
+            .args()
+            .iter()
+            .filter(|argument| argument.as_str() == "-S")
+            .count(),
+        1,
+        "QMP launches must remain stopped through control authentication"
+    );
     assert!(
         validate_pre_spawn_qemu_launch_args(command.args()).is_ok(),
         "QMP launch command must remain accepted by the pre-spawn determinism validator"

@@ -11,8 +11,6 @@
 //!                                    finding-candidate
 //! ```
 //!
-//! The parent module catalogs the retained earlier versions.
-
 use super::*;
 
 /// Strict idempotent cancellation request for one exact execution incarnation.
@@ -93,12 +91,10 @@ impl CancelAttemptExecutionRequest {
     /// Returns a domain-separated digest of every canonical request field.
     #[must_use]
     pub fn request_digest(&self) -> CampaignHash {
-        let domain = if self.schema_version == EXECUTOR_MESSAGE_SCHEMA_VERSION {
-            "crucible.campaign.cancel-attempt-execution-request.v2"
-        } else {
-            "crucible.campaign.cancel-attempt-execution-request.v3"
-        };
-        CampaignHash::derive(domain, &self.canonical_bytes())
+        CampaignHash::derive(
+            "crucible.campaign.cancel-attempt-execution-request.v3",
+            &self.canonical_bytes(),
+        )
     }
 
     /// Returns strict canonical component-message bytes.
@@ -126,9 +122,7 @@ impl Canonical for CancelAttemptExecutionRequest {
         self.attempt.encode(encoder);
         self.execution.encode(encoder);
         self.execution_basis.encode(encoder);
-        if self.schema_version == SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION {
-            self.scope.encode(encoder);
-        }
+        self.scope.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
@@ -139,11 +133,7 @@ impl Canonical for CancelAttemptExecutionRequest {
         let attempt = AttemptId::decode(decoder)?;
         let execution = ExecutionId::decode(decoder)?;
         let execution_basis = CampaignHash::decode(decoder)?;
-        let scope = if schema_version == SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION {
-            AttemptExecutionScope::decode(decoder)?
-        } else {
-            AttemptExecutionScope::Semantic
-        };
+        let scope = AttemptExecutionScope::decode(decoder)?;
         let request = Self {
             schema_version,
             daemon_epoch,
@@ -258,11 +248,7 @@ impl CancelAttemptExecutionResponse {
         finding_candidate: Option<FindingCandidateBundleId>,
     ) -> Result<Self, CampaignCodecError> {
         let response = Self {
-            schema_version: response_schema_version(
-                disposition.is_completed(),
-                false,
-                finding_candidate,
-            )?,
+            schema_version: response_schema_version(disposition.is_completed(), finding_candidate)?,
             daemon_epoch: request.daemon_epoch(),
             attempt: request.attempt(),
             execution: request.execution(),
@@ -377,16 +363,12 @@ impl Canonical for CancelAttemptExecutionResponse {
         self.execution.encode(encoder);
         self.request_digest.encode(encoder);
         self.disposition.encode(encoder);
-        if let Some(finding_candidate) = self.finding_candidate {
-            finding_candidate.encode(encoder);
-        }
+        self.finding_candidate.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
-        if schema_version != EXECUTOR_MESSAGE_SCHEMA_VERSION
-            && schema_version != FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION
-        {
+        if schema_version != FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported cancel attempt execution response schema version",
             });
@@ -396,11 +378,7 @@ impl Canonical for CancelAttemptExecutionResponse {
         let execution = ExecutionId::decode(decoder)?;
         let request_digest = CampaignHash::decode(decoder)?;
         let disposition = CancelAttemptExecutionDisposition::decode(decoder)?;
-        let finding_candidate = if schema_version == FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION {
-            Some(FindingCandidateBundleId::decode(decoder)?)
-        } else {
-            None
-        };
+        let finding_candidate = Option::<FindingCandidateBundleId>::decode(decoder)?;
         let response = Self {
             schema_version,
             daemon_epoch,
@@ -412,7 +390,6 @@ impl Canonical for CancelAttemptExecutionResponse {
         };
         if response_schema_version(
             response.disposition.is_completed(),
-            false,
             response.finding_candidate,
         )? != schema_version
         {

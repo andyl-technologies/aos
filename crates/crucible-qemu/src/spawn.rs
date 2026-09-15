@@ -10,31 +10,41 @@ use std::ffi::CString;
 use std::fs::{self, File};
 use std::io::{self, Read, Write as _};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::fs::FileExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::Duration;
 
 use crate::supervision::HostSupervisionDeadline;
 
+#[cfg(any(test, feature = "test-support"))]
+use rustix::fs::open;
 use rustix::fs::{
-    FileType, Mode, OFlags, fcntl_getfl, fcntl_setfl, fstat, fstatfs, fsync, open, openat,
+    FileType, Mode, OFlags, fchmod, fchown, fcntl_getfl, fcntl_setfl, fstat, fstatfs, openat,
 };
 use thiserror::Error;
 
+use crate::launch::{
+    MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES, MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES,
+    MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES, MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES,
+};
 use crate::{
     QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD, QEMU_PLUGIN_WAKE_FD, QemuLaunchCommand,
     QemuNodeChild,
 };
 
 mod materialization;
-use materialization::{PreparedRootOverlayMaterialization, PreparedVmStateMaterialization};
-pub use materialization::{
-    QemuRootOverlayMaterialization, QemuVmStateBinding, QemuVmStateMaterialization,
+pub(crate) use materialization::QemuProductionExactRestoreSource;
+pub(crate) use materialization::SealedAtomicExactRestoreInputs;
+use materialization::{
+    PreparedDeviceStateMaterialization, PreparedExactCheckpointMaterialization,
+    PreparedRootOverlayMaterialization,
+};
+pub(crate) use materialization::{
+    QemuExactDeviceStateBinding, QemuGuardedExactRamInput, require_exact_restore_not_canceled,
 };
 
 const CHILD_SOURCE_FD_MIN: RawFd = QEMU_PLUGIN_WAKE_FD + 1;
@@ -70,6 +80,7 @@ pub struct QemuChildProcessContract {
     maximum_writable_bytes: u64,
     credentials: Option<QemuChildCredentials>,
     attempt_binding: Arc<AttemptResourceBinding>,
+    exact_checkpoint_root: Option<crucible::ContentHash>,
 }
 
 /// Pinned authority over one pre-provisioned QEMU run directory.
@@ -94,55 +105,20 @@ pub struct QemuPreparedRunDirectory {
     directory_identity: PinnedFileIdentity,
     vmstate: OwnedFd,
     vmstate_identity: PinnedFileIdentity,
+    exact_device_state: Option<File>,
     root_overlay: Option<OwnedFd>,
     root_overlay_identity: Option<PinnedFileIdentity>,
+    rr_control_boundary_trace_identity: OnceLock<PinnedFileIdentity>,
+    runtime_determinism_trace_identity: OnceLock<PinnedFileIdentity>,
     launch_resources: crate::QemuLaunchResourceRequirements,
     admitted_ceiling: (u32, u64, u64),
     child_credentials: Option<QemuChildCredentials>,
     attempt_binding: Arc<AttemptResourceBinding>,
-    vmstate_materialization: PreparedVmStateMaterialization,
+    exact_device_state_materialization: PreparedDeviceStateMaterialization,
     root_overlay_materialization: PreparedRootOverlayMaterialization,
-}
-
-/// Reopen-independent read capability for one reaped QEMU VMState artifact.
-///
-/// The capability exposes bounded positional reads only. It carries no run-
-/// directory, mutation, quota, or process authority and remains readable after
-/// the attempt owner unlinks its private run-directory artifacts.
-#[derive(Debug)]
-pub struct QemuCapturedVmState {
-    file: File,
-    logical_length: u64,
-}
-
-impl QemuCapturedVmState {
-    /// Builds an unvalidated captured source for cross-crate conformance tests.
-    ///
-    /// Production code can obtain this capability only from the post-reap
-    /// realization executor.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn from_unvalidated_test_file(file: File, logical_length: u64) -> Self {
-        Self {
-            file,
-            logical_length,
-        }
-    }
-
-    /// Returns the exact stable byte length attested after process reap.
-    #[must_use]
-    pub const fn logical_length(&self) -> u64 {
-        self.logical_length
-    }
-
-    /// Reads bytes at one absolute artifact offset without shared cursor state.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error when the retained inode cannot be read.
-    pub fn read_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
-        self.file.read_at(buffer, offset)
-    }
+    exact_checkpoint_materialization: PreparedExactCheckpointMaterialization,
+    exact_checkpoint_target: Option<crucible::exact_checkpoint::ExactCheckpointVerifiedNode>,
+    exact_ram_inputs: Vec<QemuGuardedExactRamInput>,
 }
 
 #[derive(Debug)]
@@ -168,27 +144,10 @@ impl PinnedFileIdentity {
 }
 
 impl QemuPreparedRunDirectory {
-    /// Admits and opens one pre-provisioned run directory for a launch profile.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuSpawnError`] before path access when the command exceeds
-    /// the contract's admitted resources. Otherwise returns an error when the
-    /// path cannot be opened without following a final symlink, does not name
-    /// a directory, or lacks the required regular non-symlink VMState file.
-    pub fn open_for_launch(
-        command: &QemuLaunchCommand,
-        path: impl AsRef<Path>,
-        contract: &QemuChildProcessContract,
-    ) -> Result<Self, QemuSpawnError> {
-        Self::open_for_requirements(command.resource_requirements(), path.as_ref(), contract)
-    }
-
     /// Opens a prepared directory from an explicit resource profile for tests.
     ///
     /// This constructor exercises the same descriptor pinning and resource
-    /// admission as [`Self::open_for_launch`] without requiring an unrelated
-    /// launch-command fixture.
+    /// admission as production attempt storage without requiring a launch fixture.
     ///
     /// # Errors
     ///
@@ -203,7 +162,8 @@ impl QemuPreparedRunDirectory {
         Self::open_for_requirements(requirements, path.as_ref(), contract)
     }
 
-    pub(crate) fn open_for_requirements(
+    #[cfg(any(test, feature = "test-support"))]
+    fn open_for_requirements(
         requirements: crate::QemuLaunchResourceRequirements,
         path: &Path,
         contract: &QemuChildProcessContract,
@@ -286,6 +246,7 @@ impl QemuPreparedRunDirectory {
             directory,
             vmstate_identity: PinnedFileIdentity::from_stat(&vmstate_metadata),
             vmstate,
+            exact_device_state: None,
             root_overlay_materialization: if root_overlay.is_some() {
                 PreparedRootOverlayMaterialization::Provisioned
             } else {
@@ -293,11 +254,16 @@ impl QemuPreparedRunDirectory {
             },
             root_overlay,
             root_overlay_identity,
+            rr_control_boundary_trace_identity: OnceLock::new(),
+            runtime_determinism_trace_identity: OnceLock::new(),
             launch_resources: requirements,
             admitted_ceiling: contract.admitted_resource_ceiling(),
             child_credentials: contract.credentials,
             attempt_binding: Arc::clone(&contract.attempt_binding),
-            vmstate_materialization: PreparedVmStateMaterialization::Provisioned,
+            exact_device_state_materialization: PreparedDeviceStateMaterialization::Provisioned,
+            exact_checkpoint_materialization: PreparedExactCheckpointMaterialization::Absent,
+            exact_checkpoint_target: None,
+            exact_ram_inputs: Vec::new(),
         })
     }
 
@@ -348,6 +314,236 @@ impl QemuPreparedRunDirectory {
         &self.path
     }
 
+    /// Prepares the fixed child-owned RR control-boundary trace destination.
+    ///
+    /// The file is created through the retained directory descriptor before
+    /// spawn. QEMU may truncate and write the inode, but cannot choose its name,
+    /// ownership, or permissions.
+    pub(crate) fn prepare_rr_control_boundary_trace(&self) -> Result<(), QemuSpawnError> {
+        self.prepare_diagnostic_trace(
+            crate::QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+            &self.rr_control_boundary_trace_identity,
+        )
+    }
+
+    /// Prepares the fixed child-owned runtime-determinism trace destination.
+    pub(crate) fn prepare_runtime_determinism_trace(&self) -> Result<(), QemuSpawnError> {
+        self.prepare_diagnostic_trace(
+            crate::QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+            &self.runtime_determinism_trace_identity,
+        )
+    }
+
+    fn prepare_diagnostic_trace(
+        &self,
+        file_name: &'static str,
+        identity: &OnceLock<PinnedFileIdentity>,
+    ) -> Result<(), QemuSpawnError> {
+        self.revalidate_identity()?;
+        let credentials = self.child_credentials.ok_or_else(|| {
+            invalid_input(
+                "prepare fixed diagnostic trace",
+                "prepared run directory has no admitted child credentials",
+            )
+        })?;
+        let trace = openat(
+            &self.directory,
+            file_name,
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from_bits_truncate(0o600),
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "create fixed diagnostic trace",
+            source: source.into(),
+        })?;
+        fchmod(&trace, Mode::from_bits_truncate(0o600)).map_err(|source| QemuSpawnError::Io {
+            operation: "set fixed diagnostic trace permissions",
+            source: source.into(),
+        })?;
+        fchown(
+            &trace,
+            Some(rustix::process::Uid::from_raw(credentials.user_id)),
+            Some(rustix::process::Gid::from_raw(credentials.group_id)),
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "assign fixed diagnostic trace ownership",
+            source: source.into(),
+        })?;
+        let pinned_identity =
+            PinnedFileIdentity::from_stat(&fstat(&trace).map_err(|source| QemuSpawnError::Io {
+                operation: "pin fixed diagnostic trace identity",
+                source: source.into(),
+            })?);
+        identity
+            .set(pinned_identity)
+            .map_err(|_identity| QemuSpawnError::DiagnosticTraceChanged { file: file_name })?;
+        Ok(())
+    }
+
+    /// Retains the bounded RR control-boundary trace after QEMU has been reaped.
+    ///
+    /// The read is descriptor-relative and refuses symlinks, non-regular files,
+    /// extra links, substituted inodes, unexpected ownership or permissions,
+    /// and files outside the fixed byte and line ceilings. Its bytes also count
+    /// toward the attempt's aggregate writable-file admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when the trace is absent, malformed, changed
+    /// during retention, or exceeds its fixed or aggregate storage ceiling.
+    pub fn retain_rr_control_boundary_trace_after_reap(&self) -> Result<String, QemuSpawnError> {
+        self.retain_diagnostic_trace_after_reap(
+            crate::QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+            &self.rr_control_boundary_trace_identity,
+            MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES,
+            MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES,
+        )
+    }
+
+    /// Retains the bounded runtime-determinism trace after QEMU has been reaped.
+    ///
+    /// This applies the same descriptor-relative identity, metadata, bounded
+    /// read, and aggregate-admission checks as the RR trace reader, with the
+    /// larger fixed byte and line ceilings needed by the two-row runtime schema.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when the fixed trace cannot be authenticated.
+    pub fn retain_runtime_determinism_trace_after_reap(&self) -> Result<String, QemuSpawnError> {
+        self.retain_diagnostic_trace_after_reap(
+            crate::QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+            &self.runtime_determinism_trace_identity,
+            MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES,
+            MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES,
+        )
+    }
+
+    fn retain_diagnostic_trace_after_reap(
+        &self,
+        file_name: &'static str,
+        trace_identity: &OnceLock<PinnedFileIdentity>,
+        maximum_bytes: u64,
+        maximum_lines: usize,
+    ) -> Result<String, QemuSpawnError> {
+        self.revalidate_identity()?;
+        let credentials = self.child_credentials.ok_or_else(|| {
+            invalid_input(
+                "retain fixed diagnostic trace",
+                "prepared run directory has no admitted child credentials",
+            )
+        })?;
+        let trace = openat(
+            &self.directory,
+            file_name,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "open retained diagnostic trace",
+            source: source.into(),
+        })?;
+        let metadata = fstat(&trace).map_err(|source| QemuSpawnError::Io {
+            operation: "inspect retained diagnostic trace",
+            source: source.into(),
+        })?;
+        validate_diagnostic_trace_metadata(file_name, &metadata, credentials)?;
+        let expected_identity = trace_identity.get().copied().ok_or_else(|| {
+            invalid_input(
+                "retain fixed diagnostic trace",
+                "trace destination was not prepared before launch",
+            )
+        })?;
+        if !expected_identity.matches(&metadata) {
+            return Err(QemuSpawnError::DiagnosticTraceChanged { file: file_name });
+        }
+        let trace_bytes = u64::try_from(metadata.st_size).map_err(|_source| {
+            invalid_input(
+                "retain fixed diagnostic trace",
+                "trace length cannot be represented",
+            )
+        })?;
+        if trace_bytes == 0 || trace_bytes > maximum_bytes {
+            return Err(QemuSpawnError::DiagnosticTraceLength {
+                file: file_name,
+                actual: trace_bytes,
+                maximum: maximum_bytes,
+            });
+        }
+
+        let vmstate_bytes =
+            u64::try_from(self.revalidate_identity()?.st_size).map_err(|_source| {
+                invalid_input(
+                    "account retained diagnostic trace",
+                    "VMState length cannot be represented",
+                )
+            })?;
+        let root_overlay_bytes = if self.root_overlay.is_some() {
+            u64::try_from(self.revalidate_root_overlay_identity()?.st_size).map_err(|_source| {
+                invalid_input(
+                    "account retained diagnostic trace",
+                    "root-overlay length cannot be represented",
+                )
+            })?
+        } else {
+            0
+        };
+        if vmstate_bytes
+            .checked_add(root_overlay_bytes)
+            .and_then(|bytes| bytes.checked_add(trace_bytes))
+            .is_none_or(|bytes| bytes > self.admitted_ceiling.2)
+        {
+            return Err(QemuSpawnError::DiagnosticTraceExceedsAdmission {
+                file: file_name,
+                trace_bytes,
+                maximum: self.admitted_ceiling.2,
+            });
+        }
+
+        let mut bytes = Vec::new();
+        File::from(trace)
+            .take(maximum_bytes + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "read retained diagnostic trace",
+                source,
+            })?;
+        if u64::try_from(bytes.len()) != Ok(trace_bytes) {
+            return Err(QemuSpawnError::DiagnosticTraceChanged { file: file_name });
+        }
+        let lines = bytes.iter().filter(|byte| **byte == b'\n').count();
+        if lines == 0 || lines > maximum_lines {
+            return Err(QemuSpawnError::DiagnosticTraceLines {
+                file: file_name,
+                actual: lines,
+                maximum: maximum_lines,
+            });
+        }
+
+        let named = openat(
+            &self.directory,
+            file_name,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "reopen retained diagnostic trace",
+            source: source.into(),
+        })?;
+        let retained = fstat(&named).map_err(|source| QemuSpawnError::Io {
+            operation: "reinspect retained diagnostic trace",
+            source: source.into(),
+        })?;
+        validate_diagnostic_trace_metadata(file_name, &retained, credentials)?;
+        if !expected_identity.matches(&retained) || retained.st_size != metadata.st_size {
+            return Err(QemuSpawnError::DiagnosticTraceChanged { file: file_name });
+        }
+
+        String::from_utf8(bytes).map_err(|source| QemuSpawnError::DiagnosticTraceUtf8 {
+            file: file_name,
+            source,
+        })
+    }
+
     /// Lends the provisioned empty VMState container as a hot-fork destination.
     ///
     /// The retained source copies its frozen VMState bytes into this file
@@ -363,10 +559,10 @@ impl QemuPreparedRunDirectory {
     pub fn hot_fork_child_file_destination(
         &self,
     ) -> Result<std::os::fd::BorrowedFd<'_>, QemuSpawnError> {
-        if self.vmstate_materialization != PreparedVmStateMaterialization::Provisioned {
-            return Err(QemuSpawnError::PreparedVmStateNotReady {
-                path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
-            });
+        if self.exact_device_state_materialization
+            != PreparedDeviceStateMaterialization::Provisioned
+        {
+            return Err(QemuSpawnError::PreparedDeviceStateNotReady);
         }
         let retained = self.revalidate_identity()?;
         if retained.st_size != 0 {
@@ -431,7 +627,8 @@ impl QemuPreparedRunDirectory {
         &mut self,
         launch: &crate::QemuHotForkChildLaunch<A>,
     ) -> Result<(), QemuSpawnError> {
-        if self.vmstate_materialization != PreparedVmStateMaterialization::Provisioned
+        if self.exact_device_state_materialization
+            != PreparedDeviceStateMaterialization::Provisioned
             || (self.launch_resources.has_root_overlay()
                 && self.root_overlay_materialization
                     != PreparedRootOverlayMaterialization::Provisioned)
@@ -455,11 +652,11 @@ impl QemuPreparedRunDirectory {
                     .as_ref()
                     .and_then(|metadata| u64::try_from(metadata.st_size).ok())
                     .unwrap_or(0);
-                let vmstate_bytes = u64::try_from(vmstate.st_size).unwrap_or(u64::MAX);
-                (vmstate_bytes, overlay_bytes)
+                let device_state_bytes = u64::try_from(vmstate.st_size).unwrap_or(u64::MAX);
+                (device_state_bytes, overlay_bytes)
             })
         });
-        let (vmstate_bytes, overlay_bytes) = match validation {
+        let (device_state_bytes, overlay_bytes) = match validation {
             Ok(bytes) => bytes,
             Err(source) => {
                 self.invalidate_hot_fork_child_file_transfer();
@@ -504,10 +701,10 @@ impl QemuPreparedRunDirectory {
         if launch.child_files().len() != expected_file_count
             || !matches_vmstate
             || !matches_overlay
-            || vmstate_bytes == 0
+            || device_state_bytes == 0
             || (self.launch_resources.has_root_overlay() && overlay_bytes == 0)
             || self.root_overlay_identity == Some(self.vmstate_identity)
-            || vmstate_bytes
+            || device_state_bytes
                 .checked_add(overlay_bytes)
                 .is_none_or(|bytes| bytes > self.admitted_ceiling.2)
         {
@@ -517,7 +714,7 @@ impl QemuPreparedRunDirectory {
                 "transferred child files alias or exceed their admitted storage ceiling",
             ));
         }
-        self.vmstate_materialization = PreparedVmStateMaterialization::HotForkChild;
+        self.exact_device_state_materialization = PreparedDeviceStateMaterialization::HotForkChild;
         if self.launch_resources.has_root_overlay() {
             self.root_overlay_materialization = PreparedRootOverlayMaterialization::HotForkChild;
         }
@@ -529,17 +726,23 @@ impl QemuPreparedRunDirectory {
     /// This operation can only remove launch authority. It is safe after an
     /// explicit rejection and required after an ambiguous or post-fork error.
     pub fn invalidate_hot_fork_child_file_transfer(&mut self) {
-        self.vmstate_materialization = PreparedVmStateMaterialization::Updating;
+        self.exact_device_state_materialization = PreparedDeviceStateMaterialization::Updating;
         if self.launch_resources.has_root_overlay() {
             self.root_overlay_materialization = PreparedRootOverlayMaterialization::Updating;
         }
     }
 
     fn revalidate(&self) -> Result<(), QemuSpawnError> {
-        if self.vmstate_materialization == PreparedVmStateMaterialization::Updating {
-            return Err(QemuSpawnError::PreparedVmStateNotReady {
-                path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+        if matches!(
+            &self.exact_checkpoint_materialization,
+            PreparedExactCheckpointMaterialization::Updating { .. }
+        ) {
+            return Err(QemuSpawnError::PreparedExactCheckpointNotReady {
+                path: self.path.clone(),
             });
+        }
+        if self.exact_device_state_materialization == PreparedDeviceStateMaterialization::Updating {
+            return Err(QemuSpawnError::PreparedDeviceStateNotReady);
         }
         let retained_vmstate = self.revalidate_identity()?;
         if self.root_overlay_materialization == PreparedRootOverlayMaterialization::Updating {
@@ -554,10 +757,21 @@ impl QemuPreparedRunDirectory {
                 path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
             });
         }
-        if let PreparedVmStateMaterialization::Exact { bytes, .. } = self.vmstate_materialization {
-            let actual = u64::try_from(retained_vmstate.st_size).unwrap_or(u64::MAX);
+        if let PreparedDeviceStateMaterialization::Exact { bytes, .. } =
+            self.exact_device_state_materialization
+        {
+            let actual = if let Some(exact_device_state) = &self.exact_device_state {
+                let exact_device_metadata =
+                    fstat(exact_device_state).map_err(|source| QemuSpawnError::Io {
+                        operation: "inspect sealed exact device-state input",
+                        source: source.into(),
+                    })?;
+                u64::try_from(exact_device_metadata.st_size).unwrap_or(u64::MAX)
+            } else {
+                u64::try_from(retained_vmstate.st_size).unwrap_or(u64::MAX)
+            };
             if actual != bytes {
-                return Err(QemuSpawnError::PreparedVmStateIncomplete {
+                return Err(QemuSpawnError::PreparedExactInputIncomplete {
                     expected: bytes,
                     actual,
                 });
@@ -593,7 +807,7 @@ impl QemuPreparedRunDirectory {
             source: source.into(),
         })?;
         if !self.vmstate_identity.matches(&retained_vmstate) {
-            return Err(QemuSpawnError::PreparedVmStateChanged {
+            return Err(QemuSpawnError::PreparedDeviceStateChanged {
                 path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
             });
         }
@@ -603,7 +817,7 @@ impl QemuPreparedRunDirectory {
             source: source.into(),
         })?;
         if !self.vmstate_identity.matches(&named_metadata) {
-            return Err(QemuSpawnError::PreparedVmStateChanged {
+            return Err(QemuSpawnError::PreparedDeviceStateChanged {
                 path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
             });
         }
@@ -643,59 +857,6 @@ impl QemuPreparedRunDirectory {
         Ok(retained_metadata)
     }
 
-    /// Seals a positional read capability after the owning QEMU process is reaped.
-    ///
-    /// This method is crate-private so only the realization executor can invoke
-    /// it after its active-node shutdown attestation. It intentionally accepts
-    /// a file whose length changed through a completed QEMU `savevm` operation;
-    /// ordinary launch revalidation continues to require the prior exact length.
-    pub(crate) fn capture_vmstate_after_reap(&self) -> Result<QemuCapturedVmState, QemuSpawnError> {
-        if self.vmstate_materialization == PreparedVmStateMaterialization::Updating {
-            return Err(QemuSpawnError::PreparedVmStateNotReady {
-                path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
-            });
-        }
-        let before = self.revalidate_identity()?;
-        let logical_length =
-            u64::try_from(before.st_size).map_err(|_| QemuSpawnError::PreparedVmStateLength {
-                length: u64::MAX,
-                maximum: self.admitted_ceiling.2,
-            })?;
-        if logical_length == 0 || logical_length > self.admitted_ceiling.2 {
-            return Err(QemuSpawnError::PreparedVmStateLength {
-                length: logical_length,
-                maximum: self.admitted_ceiling.2,
-            });
-        }
-        fsync(&self.vmstate).map_err(|source| QemuSpawnError::Io {
-            operation: "synchronize captured exact-VMState artifact",
-            source: source.into(),
-        })?;
-        let file = File::from(
-            self.vmstate
-                .try_clone()
-                .map_err(|source| QemuSpawnError::Io {
-                    operation: "duplicate captured exact-VMState artifact",
-                    source,
-                })?,
-        );
-        let after = fstat(&file).map_err(|source| QemuSpawnError::Io {
-            operation: "reinspect captured exact-VMState artifact",
-            source: source.into(),
-        })?;
-        if !self.vmstate_identity.matches(&after)
-            || u64::try_from(after.st_size).ok() != Some(logical_length)
-        {
-            return Err(QemuSpawnError::PreparedVmStateChanged {
-                path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
-            });
-        }
-        Ok(QemuCapturedVmState {
-            file,
-            logical_length,
-        })
-    }
-
     fn validate_launch_basis(
         &self,
         command: &QemuLaunchCommand,
@@ -716,7 +877,8 @@ impl QemuPreparedRunDirectory {
     ) -> Result<(), QemuSpawnError> {
         if self.admitted_ceiling != contract.admitted_resource_ceiling()
             || !Arc::ptr_eq(&self.attempt_binding, &contract.attempt_binding)
-            || self.vmstate_materialization != PreparedVmStateMaterialization::Provisioned
+            || self.exact_device_state_materialization
+                != PreparedDeviceStateMaterialization::Provisioned
             || self.root_overlay_materialization != PreparedRootOverlayMaterialization::Absent
         {
             return Err(QemuSpawnError::PreparedLaunchAdmissionChanged);
@@ -736,7 +898,7 @@ fn open_prepared_vmstate(directory: &OwnedFd, path: &Path) -> Result<OwnedFd, Qe
     .map_err(|source| {
         let source: io::Error = source.into();
         if source.kind() == io::ErrorKind::NotFound {
-            QemuSpawnError::MissingPreparedVmState {
+            QemuSpawnError::MissingPreparedDeviceState {
                 path: path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
             }
         } else {
@@ -746,6 +908,30 @@ fn open_prepared_vmstate(directory: &OwnedFd, path: &Path) -> Result<OwnedFd, Qe
             }
         }
     })
+}
+
+fn validate_diagnostic_trace_metadata(
+    file_name: &'static str,
+    metadata: &rustix::fs::Stat,
+    credentials: QemuChildCredentials,
+) -> Result<(), QemuSpawnError> {
+    let mode = metadata.st_mode & 0o7777;
+    if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
+        || metadata.st_nlink != 1
+        || metadata.st_uid != credentials.user_id
+        || metadata.st_gid != credentials.group_id
+        || mode != 0o600
+    {
+        return Err(QemuSpawnError::DiagnosticTraceMetadata {
+            file: file_name,
+            file_type_mode: metadata.st_mode & libc::S_IFMT,
+            links: metadata.st_nlink,
+            user_id: metadata.st_uid,
+            group_id: metadata.st_gid,
+            mode,
+        });
+    }
+    Ok(())
 }
 
 fn open_optional_root_overlay(directory: &OwnedFd) -> Result<Option<OwnedFd>, QemuSpawnError> {
@@ -898,6 +1084,25 @@ fn current_supplementary_groups() -> Result<Vec<libc::gid_t>, QemuSpawnError> {
 }
 
 impl QemuChildProcessContract {
+    /// Duplicates the sticky cancellation event for one bounded QMP operation.
+    ///
+    /// The returned descriptor observes the same eventfd counter as the child
+    /// process contract. An attempt cancellation therefore interrupts both a
+    /// process blocked in setup and a descriptor-backed QMP capture or restore.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError::Io`] when the retained eventfd cannot be
+    /// duplicated.
+    pub fn try_clone_cancellation_event(&self) -> Result<OwnedFd, QemuSpawnError> {
+        self.cancellation_event
+            .try_clone()
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "duplicate QMP cancellation eventfd",
+                source,
+            })
+    }
+
     /// Duplicates this contract for another generation under the same attempt.
     ///
     /// The duplicated descriptors retain the same cgroup, cancellation event,
@@ -944,6 +1149,7 @@ impl QemuChildProcessContract {
             maximum_writable_bytes: self.maximum_writable_bytes,
             credentials: self.credentials,
             attempt_binding: Arc::clone(&self.attempt_binding),
+            exact_checkpoint_root: self.exact_checkpoint_root,
         })
     }
 
@@ -964,10 +1170,10 @@ impl QemuChildProcessContract {
         cgroup_directory: OwnedFd,
         cgroup_procs: OwnedFd,
         cancellation_event: OwnedFd,
-        maximum_vcpus: u32,
-        maximum_resident_bytes: u64,
+        cgroup_limits: crate::linux_cgroup::LinuxQemuCgroupLimits,
         maximum_writable_bytes: u64,
         credentials: QemuChildCredentials,
+        exact_checkpoint_root: Option<crucible::ContentHash>,
     ) -> Result<Self, QemuSpawnError> {
         validate_cgroup_directory_fd(&cgroup_directory)?;
         validate_cgroup_procs_fd(&cgroup_procs)?;
@@ -976,12 +1182,26 @@ impl QemuChildProcessContract {
             cgroup_directory: Some(cgroup_directory),
             cgroup_procs,
             cancellation_event,
-            maximum_vcpus,
-            maximum_resident_bytes,
+            maximum_vcpus: cgroup_limits.maximum_vcpus(),
+            maximum_resident_bytes: cgroup_limits.maximum_resident_bytes(),
             maximum_writable_bytes,
             credentials: Some(credentials),
             attempt_binding: Arc::new(AttemptResourceBinding),
+            exact_checkpoint_root,
         })
+    }
+
+    pub(crate) fn require_exact_checkpoint_root(
+        &self,
+        root: crucible::ContentHash,
+    ) -> Result<(), QemuSpawnError> {
+        if self.exact_checkpoint_root != Some(root) {
+            return Err(invalid_input(
+                "authenticate exact checkpoint root",
+                "attempt process contract is not bound to this exact checkpoint root",
+            ));
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -990,12 +1210,30 @@ impl QemuChildProcessContract {
         cancellation_event: OwnedFd,
         maximum_writable_bytes: u64,
     ) -> Self {
-        Self::from_unvalidated_test_descriptors(
+        Self::from_unvalidated_test_descriptors_with_root(
             cgroup_procs,
             cancellation_event,
             u32::MAX,
             u64::MAX,
             maximum_writable_bytes,
+            None,
+        )
+    }
+
+    #[cfg(test)]
+    fn for_exact_checkpoint_test(
+        cgroup_procs: OwnedFd,
+        cancellation_event: OwnedFd,
+        maximum_writable_bytes: u64,
+        exact_checkpoint_root: crucible::ContentHash,
+    ) -> Self {
+        Self::from_unvalidated_test_descriptors_with_root(
+            cgroup_procs,
+            cancellation_event,
+            u32::MAX,
+            u64::MAX,
+            maximum_writable_bytes,
+            Some(exact_checkpoint_root),
         )
     }
 
@@ -1013,6 +1251,25 @@ impl QemuChildProcessContract {
         maximum_resident_bytes: u64,
         maximum_writable_bytes: u64,
     ) -> Self {
+        Self::from_unvalidated_test_descriptors_with_root(
+            cgroup_procs,
+            cancellation_event,
+            maximum_vcpus,
+            maximum_resident_bytes,
+            maximum_writable_bytes,
+            None,
+        )
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn from_unvalidated_test_descriptors_with_root(
+        cgroup_procs: OwnedFd,
+        cancellation_event: OwnedFd,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
+        exact_checkpoint_root: Option<crucible::ContentHash>,
+    ) -> Self {
         Self {
             cgroup_directory: None,
             cgroup_procs,
@@ -1022,6 +1279,7 @@ impl QemuChildProcessContract {
             maximum_writable_bytes,
             credentials: None,
             attempt_binding: Arc::new(AttemptResourceBinding),
+            exact_checkpoint_root,
         }
     }
 
@@ -1050,6 +1308,7 @@ impl QemuChildProcessContract {
             maximum_writable_bytes,
             credentials: None,
             attempt_binding: Arc::new(AttemptResourceBinding),
+            exact_checkpoint_root: None,
         }
     }
 
@@ -1252,16 +1511,6 @@ pub enum QemuSpawnError {
         /// Underlying OS error.
         source: io::Error,
     },
-    /// The exact-VMState qcow2 container could not be created.
-    #[error("qemu-img could not create exact-VMState container {path}: {status}: {stderr}")]
-    VmStateImageTool {
-        /// Intended qcow2 container path.
-        path: PathBuf,
-        /// Process exit status rendered without host-specific structure.
-        status: String,
-        /// Trimmed qemu-img diagnostic output.
-        stderr: String,
-    },
     /// A guarded image-tool helper exited unsuccessfully.
     #[error("guarded qemu-img operation `{operation}` failed with {status}")]
     GuardedImageTool {
@@ -1284,6 +1533,71 @@ pub enum QemuSpawnError {
     GuardedQemuProbeOutputLimit {
         /// Maximum bytes retained independently for stdout and stderr.
         maximum_bytes: usize,
+    },
+    /// A fixed diagnostic trace had the wrong filesystem identity.
+    #[error(
+        "diagnostic trace `{file}` metadata is invalid: type={file_type_mode:o} links={links} owner={user_id}:{group_id} mode={mode:o}"
+    )]
+    DiagnosticTraceMetadata {
+        /// Fixed trace file name.
+        file: &'static str,
+        /// Observed file-type mode bits.
+        file_type_mode: u32,
+        /// Observed hard-link count.
+        links: u64,
+        /// Observed owning user.
+        user_id: libc::uid_t,
+        /// Observed owning group.
+        group_id: libc::gid_t,
+        /// Observed permission and special-mode bits.
+        mode: u32,
+    },
+    /// A fixed diagnostic trace was empty or exceeded its byte limit.
+    #[error("diagnostic trace `{file}` length {actual} is outside maximum {maximum}")]
+    DiagnosticTraceLength {
+        /// Fixed trace file name.
+        file: &'static str,
+        /// Observed byte length.
+        actual: u64,
+        /// Fixed maximum byte length.
+        maximum: u64,
+    },
+    /// A fixed diagnostic trace exceeded its line limit.
+    #[error("diagnostic trace `{file}` line count {actual} is outside maximum {maximum}")]
+    DiagnosticTraceLines {
+        /// Fixed trace file name.
+        file: &'static str,
+        /// Observed newline count.
+        actual: usize,
+        /// Fixed maximum newline count.
+        maximum: usize,
+    },
+    /// The fixed trace and launch artifacts exceeded aggregate storage admission.
+    #[error(
+        "diagnostic trace `{file}` uses {trace_bytes} bytes outside aggregate writable maximum {maximum}"
+    )]
+    DiagnosticTraceExceedsAdmission {
+        /// Fixed trace file name.
+        file: &'static str,
+        /// Trace bytes counted with the other launch artifacts.
+        trace_bytes: u64,
+        /// Aggregate attempt ceiling.
+        maximum: u64,
+    },
+    /// The fixed trace name or inode changed while being retained.
+    #[error("diagnostic trace `{file}` changed during retention")]
+    DiagnosticTraceChanged {
+        /// Fixed trace file name.
+        file: &'static str,
+    },
+    /// The fixed trace was not valid UTF-8 text.
+    #[error("diagnostic trace `{file}` is not UTF-8: {source}")]
+    DiagnosticTraceUtf8 {
+        /// Fixed trace file name.
+        file: &'static str,
+        /// UTF-8 decoding failure.
+        #[source]
+        source: std::string::FromUtf8Error,
     },
     /// A disk-backed fresh launch omitted its immutable root image.
     #[error("fresh disk-backed QEMU preparation requires one root image")]
@@ -1309,10 +1623,10 @@ pub enum QemuSpawnError {
         /// Descriptor-pinned generation path used only for diagnostics.
         path: PathBuf,
     },
-    /// The guarded run directory does not contain its pre-provisioned VMState image.
-    #[error("guarded QEMU launch requires pre-provisioned VMState container {path}")]
-    MissingPreparedVmState {
-        /// Required exact-VMState container path.
+    /// The guarded run directory lacks its pre-provisioned device-state container.
+    #[error("guarded QEMU launch requires pre-provisioned device-state container {path}")]
+    MissingPreparedDeviceState {
+        /// Required device-state container path.
         path: PathBuf,
     },
     /// The retained run-directory descriptor no longer names its opened inode.
@@ -1321,74 +1635,76 @@ pub enum QemuSpawnError {
         /// Original diagnostic path of the pinned directory.
         path: PathBuf,
     },
-    /// The VMState name no longer resolves to the retained regular file.
-    #[error("prepared exact-VMState identity changed: {path}")]
-    PreparedVmStateChanged {
-        /// Original diagnostic path of the VMState container.
+    /// The device-state name no longer resolves to the retained regular file.
+    #[error("prepared device-state identity changed: {path}")]
+    PreparedDeviceStateChanged {
+        /// Original diagnostic path of the device-state container.
         path: PathBuf,
     },
     /// The command, admitted ceiling, or attempt lifecycle differs from preparation.
     #[error("prepared QEMU run directory is bound to a different launch admission")]
     PreparedLaunchAdmissionChanged,
-    /// A replacement destination was already populated or partially updated.
-    #[error("replacement QEMU generation destination is not empty: {path}")]
-    ReplacementDestinationNotEmpty {
-        /// Descriptor-pinned destination path used only for diagnostics.
+    /// A prepared writable artifact has an invalid length.
+    #[error("prepared QEMU artifact is not ready: {path}")]
+    PreparedArtifactNotReady {
+        /// Descriptor-pinned artifact path used only for diagnostics.
         path: PathBuf,
     },
-    /// A replacement source lacks a complete stable writable artifact.
-    #[error("replacement QEMU generation source is not ready: {path}")]
-    ReplacementSourceNotReady {
-        /// Descriptor-pinned source path used only for diagnostics.
-        path: PathBuf,
-    },
-    /// The complete replacement artifact pair exceeds the aggregate quota.
+    /// The complete prepared artifact pair exceeds the aggregate quota.
     #[error(
-        "replacement artifacts use {vmstate_bytes} VMState bytes and {root_overlay_bytes} root-overlay bytes, above maximum {maximum}"
+        "prepared artifacts use {device_state_bytes} device-state bytes and {root_overlay_bytes} root-overlay bytes, above maximum {maximum}"
     )]
-    ReplacementArtifactsTooLarge {
-        /// Logical VMState bytes.
-        vmstate_bytes: u64,
+    PreparedArtifactsTooLarge {
+        /// Logical device-state bytes.
+        device_state_bytes: u64,
         /// Logical root-overlay bytes.
         root_overlay_bytes: u64,
         /// Admitted aggregate writable-byte ceiling.
         maximum: u64,
     },
-    /// A retained replacement artifact changed during descriptor-bound cloning.
-    #[error("replacement QEMU artifact changed during cloning: {path}")]
-    ReplacementArtifactChanged {
-        /// Descriptor-pinned generation path used only for diagnostics.
+    /// A declared exact restore exceeds the aggregate writable-byte admission.
+    #[error(
+        "exact checkpoint artifacts use {device_state_bytes} device-state bytes, {root_overlay_bytes} root-overlay bytes, and {ram_bytes} RAM bytes, above maximum {maximum}"
+    )]
+    PreparedExactCheckpointArtifactsTooLarge {
+        /// Declared device-state bytes.
+        device_state_bytes: u64,
+        /// Declared root-overlay bytes.
+        root_overlay_bytes: u64,
+        /// Sum of every declared RAM layer.
+        ram_bytes: u64,
+        /// Admitted aggregate writable-byte ceiling.
+        maximum: u64,
+    },
+    /// Exact-checkpoint admission metadata could not be allocated.
+    #[error("exact checkpoint artifact-set admission allocation failed")]
+    PreparedExactCheckpointAdmissionAllocation,
+    /// An exact-checkpoint materialization set is incomplete.
+    #[error("prepared exact-checkpoint materialization is not ready: {path}")]
+    PreparedExactCheckpointNotReady {
+        /// Pinned generation path used only for diagnostics.
         path: PathBuf,
     },
-    /// The exact VMState image has an invalid declared byte length.
-    #[error("prepared exact-VMState length {length} is outside the admitted maximum {maximum}")]
-    PreparedVmStateLength {
+    /// The exact device-state input has an invalid declared byte length.
+    #[error(
+        "prepared exact device-state length {length} is outside the admitted maximum {maximum}"
+    )]
+    PreparedDeviceStateLength {
         /// Declared exact checkpoint bytes.
         length: u64,
         /// Admitted aggregate writable-byte ceiling.
         maximum: u64,
     },
-    /// The exact VMState image is absent or a replacement remains incomplete.
-    #[error("prepared exact-VMState materialization is not ready: {path}")]
-    PreparedVmStateNotReady {
-        /// Pinned VMState path used only for diagnostics.
-        path: PathBuf,
-    },
-    /// The materialized exact VMState is shorter or longer than declared.
-    #[error("prepared exact-VMState is incomplete: expected {expected} bytes, found {actual}")]
-    PreparedVmStateIncomplete {
+    /// The exact device-state input is absent or incomplete.
+    #[error("prepared sealed device-state input is absent or incomplete")]
+    PreparedDeviceStateNotReady,
+    /// A materialized exact descriptor input is shorter or longer than declared.
+    #[error("prepared exact input is incomplete: expected {expected} bytes, found {actual}")]
+    PreparedExactInputIncomplete {
         /// Declared complete checkpoint length.
         expected: u64,
         /// Bytes written or found in the pinned file.
         actual: u64,
-    },
-    /// The committed VMState file belongs to another exact-checkpoint root.
-    #[error("prepared exact-VMState binding mismatch: expected {expected:?}, found {actual:?}")]
-    PreparedVmStateBindingMismatch {
-        /// Root-derived binding requested by the exact restore.
-        expected: QemuVmStateBinding,
-        /// Root-derived binding whose authenticated bytes were committed.
-        actual: QemuVmStateBinding,
     },
     /// The root-overlay name no longer resolves to the retained regular file.
     #[error("prepared root-overlay identity changed: {path}")]
@@ -1426,16 +1742,6 @@ pub enum QemuSpawnError {
         /// Bytes written or found in the pinned file.
         actual: u64,
     },
-    /// The committed root overlay belongs to another exact-checkpoint root.
-    #[error(
-        "prepared exact root-overlay binding mismatch: expected {expected:?}, found {actual:?}"
-    )]
-    PreparedRootOverlayBindingMismatch {
-        /// Root-derived binding requested by exact restore.
-        expected: QemuVmStateBinding,
-        /// Root-derived binding whose authenticated bytes were committed.
-        actual: QemuVmStateBinding,
-    },
     /// The guarded child would retain root or a supervisor credential.
     #[error(
         "QEMU child credentials must be non-root and distinct from the supervisor: {user_id}:{group_id}"
@@ -1453,54 +1759,15 @@ pub enum QemuSpawnError {
         source: crate::QemuLaunchResourceError,
     },
 }
-
-/// Spawns a validated QEMU launch command in `run_directory`.
-///
-/// The spawn path first creates the exact-VMState qcow2 container with the
-/// `qemu-img` adjacent to the selected QEMU executable. Relative launch
-/// artifacts, including that container, the QMP socket filename, and root
-/// overlay image, are then resolved by QEMU under this working directory
-/// without embedding volatile host paths in the launch hash material.
-///
-/// # Errors
-///
-/// Returns [`QemuSpawnError`] when run-directory or VMState-container
-/// preparation, descriptor creation, descriptor duplication, parent-death
-/// signal setup, changing the child working directory, or process spawning
-/// fails.
-pub fn spawn_qemu_child_with_fds_in_directory(
-    command: &QemuLaunchCommand,
-    run_directory: impl AsRef<Path>,
-    region_len: u64,
-) -> Result<QemuSpawnedChild, QemuSpawnError> {
-    let run_directory = run_directory.as_ref();
-    prepare_vmstate_container(command, run_directory)?;
-    let (mut resources, child_resources) = create_spawn_resources(region_len)?;
-    resources.fault_node_hash = command.plugin_fault_node_hash();
-    let child = spawn_process_with_resources(
-        command.executable(),
-        command.args(),
-        QemuSpawnWorkingDirectory::Path(run_directory),
-        child_resources,
-        &[],
-        "spawn QEMU child",
-        None,
-    )?;
-    Ok(QemuSpawnedChild {
-        child: QemuNodeChild::new(child),
-        resources,
-    })
-}
-
 /// Spawns QEMU from an already-provisioned run directory under `contract`.
 ///
-/// Unlike [`spawn_qemu_child_with_fds_in_directory`], this operation never
-/// invokes `qemu-img` or creates the exact-VMState container. The supervisor
-/// must provision and validate that container under its own bounded service
-/// policy before admitting the attempt. Before revalidating that authority,
-/// this path validates the command's fixed resource baseline against the
-/// ceilings sealed into `contract`. The child writes itself into the attempt
-/// cgroup and checks cancellation in `pre_exec`, before QEMU executes.
+/// This fixed-FD operation never invokes `qemu-img` or creates the exact-VMState
+/// container. The supervisor must provision and validate that container under
+/// its own bounded service policy before admitting the attempt. Before
+/// revalidating that authority, this path validates the command's fixed
+/// resource baseline against the ceilings sealed into `contract`. The child
+/// writes itself into the attempt cgroup and checks cancellation in `pre_exec`,
+/// before QEMU executes.
 ///
 /// # Errors
 ///
@@ -1508,7 +1775,7 @@ pub fn spawn_qemu_child_with_fds_in_directory(
 /// the prepared container is absent or not a regular file, descriptor
 /// preparation fails, the pre-exec containment contract rejects the child, or
 /// QEMU cannot be spawned.
-pub fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
+pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     command: &QemuLaunchCommand,
     run_directory: &QemuPreparedRunDirectory,
     region_len: u64,
@@ -1521,7 +1788,7 @@ pub fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     let child = spawn_process_with_resources(
         command.executable(),
         command.args(),
-        QemuSpawnWorkingDirectory::Pinned(run_directory),
+        run_directory,
         child_resources,
         &[],
         "spawn guarded QEMU child",
@@ -1552,123 +1819,11 @@ pub(crate) fn validate_guarded_launch_requirements(
         )
         .map_err(|source| QemuSpawnError::LaunchResources { source })
 }
-
-/// Prepares the exact-VMState qcow2 required by a launch or stopped probe.
-///
-/// # Errors
-///
-/// Returns [`QemuSpawnError`] when the run directory, existing artifact,
-/// adjacent `qemu-img`, durable staging write, or atomic publication fails.
-pub(crate) fn prepare_vmstate_container(
-    command: &QemuLaunchCommand,
-    run_directory: &Path,
-) -> Result<(), QemuSpawnError> {
-    fs::create_dir_all(run_directory).map_err(|source| QemuSpawnError::Io {
-        operation: "create QEMU run directory",
-        source,
-    })?;
-    let path = run_directory.join(crate::DEFAULT_VMSTATE_FILE_NAME);
-    match fs::metadata(&path) {
-        Ok(metadata) if metadata.is_file() => return Ok(()),
-        Ok(_) => {
-            return Err(QemuSpawnError::Io {
-                operation: "validate exact-VMState container path",
-                source: io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "exact-VMState container path is not a regular file",
-                ),
-            });
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(source) => {
-            return Err(QemuSpawnError::Io {
-                operation: "inspect exact-VMState container",
-                source,
-            });
-        }
-    }
-
-    let staging = tempfile::Builder::new()
-        .prefix(".crucible-vmstate-")
-        .suffix(".qcow2")
-        .tempfile_in(run_directory)
-        .map_err(|source| QemuSpawnError::Io {
-            operation: "stage exact-VMState container",
-            source,
-        })?;
-    let image_tool = Path::new(command.executable()).with_file_name("qemu-img");
-    let output = Command::new(&image_tool)
-        .arg("create")
-        .arg("-q")
-        .arg("-f")
-        .arg("qcow2")
-        .arg(staging.path())
-        .arg(format!("{}M", command.vmstate_size_mib()))
-        .output()
-        .map_err(|source| QemuSpawnError::Io {
-            operation: "execute qemu-img for exact-VMState container",
-            source,
-        })?;
-    if !output.status.success() {
-        return Err(QemuSpawnError::VmStateImageTool {
-            path,
-            status: output.status.to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
-    }
-
-    staging
-        .as_file()
-        .sync_all()
-        .map_err(|source| QemuSpawnError::Io {
-            operation: "flush exact-VMState container",
-            source,
-        })?;
-    match staging.persist_noclobber(&path) {
-        Ok(_) => {}
-        Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => {
-            let metadata = fs::metadata(&path).map_err(|source| QemuSpawnError::Io {
-                operation: "inspect concurrently created exact-VMState container",
-                source,
-            })?;
-            if !metadata.is_file() {
-                return Err(QemuSpawnError::Io {
-                    operation: "validate concurrently created exact-VMState container",
-                    source: io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "exact-VMState container path is not a regular file",
-                    ),
-                });
-            }
-        }
-        Err(error) => {
-            return Err(QemuSpawnError::Io {
-                operation: "publish exact-VMState container",
-                source: error.error,
-            });
-        }
-    }
-    File::open(run_directory)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|source| QemuSpawnError::Io {
-            operation: "flush QEMU run directory",
-            source,
-        })
-}
-
 #[derive(Debug)]
 struct QemuSpawnChildResources {
     control_socket: OwnedFd,
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
-}
-
-#[derive(Clone, Copy)]
-enum QemuSpawnWorkingDirectory<'a> {
-    #[cfg(test)]
-    Inherit,
-    Path(&'a Path),
-    Pinned(&'a QemuPreparedRunDirectory),
 }
 
 fn create_spawn_resources(
@@ -1723,7 +1878,7 @@ pub(crate) fn create_test_spawn_resource_pair(
 fn spawn_process_with_resources(
     executable: &str,
     args: &[String],
-    run_directory: QemuSpawnWorkingDirectory<'_>,
+    run_directory: &QemuPreparedRunDirectory,
     child_resources: QemuSpawnChildResources,
     envs: &[(&str, &str)],
     operation: &'static str,
@@ -1742,15 +1897,10 @@ fn spawn_process_with_resources(
         maximum_file_bytes: contract.maximum_writable_bytes,
         credentials: contract.credentials,
     });
-    let pinned_run_directory = match run_directory {
-        QemuSpawnWorkingDirectory::Pinned(directory) => Some(PreparedRunDirectoryRaw {
-            directory: directory.directory.as_raw_fd(),
-            vmstate_device: directory.vmstate_identity.device,
-            vmstate_inode: directory.vmstate_identity.inode,
-        }),
-        #[cfg(test)]
-        QemuSpawnWorkingDirectory::Inherit => None,
-        QemuSpawnWorkingDirectory::Path(_) => None,
+    let pinned_run_directory = PreparedRunDirectoryRaw {
+        directory: run_directory.directory.as_raw_fd(),
+        vmstate_device: run_directory.vmstate_identity.device,
+        vmstate_inode: run_directory.vmstate_identity.inode,
     };
 
     let mut command = Command::new(executable);
@@ -1760,9 +1910,6 @@ fn spawn_process_with_resources(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
-    if let QemuSpawnWorkingDirectory::Path(run_directory) = run_directory {
-        command.current_dir(run_directory);
-    }
     for (key, value) in envs {
         command.env(key, value);
     }
@@ -1776,9 +1923,7 @@ fn spawn_process_with_resources(
             if let Some(contract) = process_contract {
                 install_attempt_process_contract(contract)?;
             }
-            if let Some(directory) = pinned_run_directory {
-                install_prepared_run_directory(directory)?;
-            }
+            install_prepared_run_directory(pinned_run_directory)?;
             if let Some(credentials) = process_contract.and_then(|contract| contract.credentials) {
                 install_child_credentials(credentials)?;
             }
@@ -1966,10 +2111,10 @@ pub(crate) fn run_guarded_qemu_setup_probe(
                 }
             }
         }
-        if let Some(status) = status
-            && stdout_capture.eof
+        if stdout_capture.eof
             && stderr_capture.eof
             && stdin.is_none()
+            && let Some(status) = status
         {
             return Ok(Output {
                 status,

@@ -124,7 +124,7 @@ fn run_control_worker_rejects_unsolicited_run_frame_with_fail_loud_shutdown() {
     CONTROL_WORKER_SHUTDOWN_CALLS.store(0, Ordering::SeqCst);
     CONTROL_WORKER_DONE_BEFORE_SHUTDOWN.store(false, Ordering::SeqCst);
     host.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 2,
+        proto_version: 3,
         abi_version: 1,
         slot_index: 0,
         node_count: 1,
@@ -396,7 +396,7 @@ fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStre
     let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)
         .unwrap_or_else(|error| panic!("plugin lifecycle should connect: {error}"));
     host.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 2,
+        proto_version: 3,
         abi_version: 1,
         slot_index: 0,
         node_count: 1,
@@ -404,7 +404,7 @@ fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStre
     .unwrap_or_else(|error| panic!("HelloAck should write: {error}"));
     plugin
         .plugin_start_handshake(PluginHandshakeConfig {
-            proto_version: 2,
+            proto_version: 3,
             abi_version: 1,
         })
         .unwrap_or_else(|error| panic!("plugin handshake should complete: {error}"));
@@ -487,7 +487,6 @@ where
         install_live_runtime_with_fatal_policy(
             plugin_id,
             fixture.args(),
-            test_state(),
             capabilities,
             callback_registrar,
             reservation,
@@ -544,7 +543,8 @@ fn coverage_callback_model_apis() -> crate::QemuBasicBlockCoverageApis {
 
 extern "C" fn coverage_callback_model_register_tb_trans_cb(
     plugin_id: QemuPluginId,
-    callback: Option<crate::QemuVcpuTbTransCbFn>,
+    callback: Option<crate::coverage::QemuVcpuTbTransCbFn>,
+    _userdata: *mut std::ffi::c_void,
 ) {
     assert!(callback.is_some());
     CALLBACK_MODEL_REGISTERED_PLUGIN_ID.store(plugin_id, Ordering::SeqCst);
@@ -613,7 +613,8 @@ extern "C" fn coverage_callback_model_icount_at_tb_entry(
 
 extern "C" fn coverage_callback_model_register_flush_cb(
     _plugin_id: QemuPluginId,
-    _callback: crate::QemuPluginSimpleCbFn,
+    _callback: crate::coverage::QemuPluginSimpleCbFn,
+    _userdata: *mut std::ffi::c_void,
 ) {
 }
 
@@ -669,11 +670,12 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeThenTestCompletionRegistrar {
 }
 
 extern "C" fn capture_vcpu_init_registration(
-    plugin_id: QemuPluginId,
+    _plugin_id: QemuPluginId,
     callback: crate::QemuVcpuSimpleCbFn,
+    userdata: *mut std::ffi::c_void,
 ) {
     LIVE_VCPU_INIT_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
-    callback(plugin_id, 0);
+    callback(0, userdata);
 }
 
 extern "C" fn capture_vcpu_idle_resume_registration(
@@ -946,7 +948,6 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     let runtime = install_live_runtime(
         41,
         fixture.args(),
-        test_state(),
         test_capabilities(),
         &SuccessfulCallbackRegistrar,
         &mut reservation,
@@ -955,7 +956,6 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
 
     assert_eq!(runtime.plugin_id(), 41);
     assert_eq!(runtime.args().slot(), 0);
-    assert_eq!(runtime.lifecycle_phase(), PluginLifecyclePhase::Active);
     assert!(runtime._retained_control.is_some());
     let manifest = registered_resource_manifest()
         .unwrap_or_else(|| panic!("plugin resource manifest should be sealed before readiness"));
@@ -1251,7 +1251,6 @@ fn live_install_seals_the_optional_fingerprint_worker() {
     let runtime = install_live_runtime(
         42,
         fixture.fingerprint_args(),
-        test_state(),
         test_capabilities(),
         &SuccessfulCallbackRegistrar,
         &mut reservation,
@@ -1288,12 +1287,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
     LIVE_NETWORK_TX_REGISTRATIONS.store(0, Ordering::SeqCst);
     let fixture = LiveInstallFixture::new();
     let host = fixture.spawn_host(SETUP_ACK_STATUS_READY);
-    let execution_model = crate::QemuPluginExecutionModel::validate(
-        1,
-        crate::QemuTcgThreading::SingleThreadedRoundRobin,
-    )
-    .unwrap_or_else(|error| panic!("test execution model should validate: {error}"));
-    let state = test_state();
+    let execution_model = test_execution_model();
     let registrar = LiveVcpuTimeThenTestCompletionRegistrar {
         live: LiveVcpuTimeCallbackRegistrar::new(
             51,
@@ -1302,10 +1296,17 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
             LiveVcpuTimeCallbackCapabilities {
                 icount_raw: test_icount_raw,
                 force_vcpu_exit: test_force_vcpu_exit,
+                idle_wake_wait: crate::QemuIdleWakeWait::test_stub(test_wait_idle_wake),
                 request_vmstop: test_request_vmstop,
                 inject_preemption: Some(test_inject_preemption),
                 clock_deadline_ns: Some(test_deadline),
                 advance_time_ns: Some(test_direct_advance),
+                arm_virtual_timer_witness: Some(
+                    crate::runtime::live_callbacks::test_support::arm_timer_witness,
+                ),
+                query_virtual_timer_witness: Some(
+                    crate::runtime::live_callbacks::test_support::query_timer_witness,
+                ),
                 register_vcpu_init: Some(capture_vcpu_init_registration),
                 register_vcpu_idle_resume: Some(capture_vcpu_idle_resume_registration),
                 register_control_boundary: Some(capture_control_boundary_registration),
@@ -1328,7 +1329,6 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
     let runtime = install_live_runtime(
         51,
         fixture.args(),
-        state,
         test_capabilities(),
         &registrar,
         &mut reservation,
@@ -1564,18 +1564,17 @@ fn enabled_whitebox_without_process_symbols_fails_before_control_or_qemu_side_ef
     let fixture = LiveInstallFixture::new();
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-    let state = test_state();
+    let execution_model = test_execution_model();
     let capabilities = test_capabilities();
     let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
         43,
-        state.lifecycle_core().execution_model(),
+        execution_model,
         crate::QemuPluginTargetArchitecture::X86_64,
         &capabilities,
     );
     let error = install_live_runtime(
         43,
         fixture.whitebox_args(),
-        state,
         capabilities,
         &callback_registrar,
         &mut reservation,
@@ -1608,7 +1607,7 @@ fn production_registrar_installs_default_block_ninep_and_network_families() {
     let registrations_before = live_registration_counts();
     let fixture = LiveInstallFixture::new();
     let host = fixture.spawn_host(SETUP_ACK_STATUS_READY);
-    let state = test_state();
+    let execution_model = test_execution_model();
     let mut capabilities = test_capabilities();
     capabilities.register_vcpu_init = Some(capture_vcpu_init_registration);
     capabilities.register_vcpu_idle_resume = Some(capture_vcpu_idle_resume_registration);
@@ -1621,7 +1620,7 @@ fn production_registrar_installs_default_block_ninep_and_network_families() {
     capabilities.register_ninep = Some(capture_ninep_registration);
     let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
         54,
-        state.lifecycle_core().execution_model(),
+        execution_model,
         crate::QemuPluginTargetArchitecture::X86_64,
         &capabilities,
     );
@@ -1631,7 +1630,6 @@ fn production_registrar_installs_default_block_ninep_and_network_families() {
     let runtime = install_live_runtime(
         54,
         fixture.args(),
-        state,
         capabilities,
         &callback_registrar,
         &mut reservation,
@@ -1655,12 +1653,12 @@ fn missing_live_vcpu_time_capability_fails_preflight_before_control_io() {
     let _runtime_state = isolate_runtime_state_for_test();
     reset_capability_call_counts();
     let fixture = LiveInstallFixture::new();
-    let state = test_state();
+    let execution_model = test_execution_model();
     let mut capabilities = test_capabilities();
     capabilities.register_sim_shmem_dispatch = None;
     let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
         52,
-        state.lifecycle_core().execution_model(),
+        execution_model,
         crate::QemuPluginTargetArchitecture::X86_64,
         &capabilities,
     );
@@ -1670,7 +1668,6 @@ fn missing_live_vcpu_time_capability_fails_preflight_before_control_io() {
     let error = install_live_runtime(
         52,
         fixture.args(),
-        state,
         capabilities,
         &callback_registrar,
         &mut reservation,
@@ -1698,12 +1695,12 @@ fn missing_live_network_capability_fails_preflight_before_control_io() {
     let _runtime_state = isolate_runtime_state_for_test();
     reset_capability_call_counts();
     let fixture = LiveInstallFixture::new();
-    let state = test_state();
+    let execution_model = test_execution_model();
     let mut capabilities = test_capabilities();
     capabilities.net_inject = None;
     let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
         53,
-        state.lifecycle_core().execution_model(),
+        execution_model,
         crate::QemuPluginTargetArchitecture::X86_64,
         &capabilities,
     );
@@ -1713,7 +1710,6 @@ fn missing_live_network_capability_fails_preflight_before_control_io() {
     let error = install_live_runtime(
         53,
         fixture.args(),
-        state,
         capabilities,
         &callback_registrar,
         &mut reservation,
@@ -1744,12 +1740,12 @@ fn missing_live_ninep_capability_prevents_every_qemu_registration() {
     reset_capability_call_counts();
     let registrations_before = live_registration_counts();
     let fixture = LiveInstallFixture::new();
-    let state = test_state();
+    let execution_model = test_execution_model();
     let mut capabilities = test_capabilities();
     capabilities.register_ninep = None;
     let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
         55,
-        state.lifecycle_core().execution_model(),
+        execution_model,
         crate::QemuPluginTargetArchitecture::X86_64,
         &capabilities,
     );
@@ -1759,7 +1755,6 @@ fn missing_live_ninep_capability_prevents_every_qemu_registration() {
     let error = install_live_runtime(
         55,
         fixture.args(),
-        state,
         capabilities,
         &callback_registrar,
         &mut reservation,
@@ -1794,7 +1789,6 @@ fn handshake_failure_marks_the_singleton_failed_before_second_install_attempt() 
     let error = install_live_runtime(
         48,
         fixture.args(),
-        test_state(),
         test_capabilities(),
         &SuccessfulCallbackRegistrar,
         &mut reservation,

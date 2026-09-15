@@ -2,173 +2,101 @@
 
 use super::*;
 
-#[test]
 #[cfg(target_os = "linux")]
-fn gate_hot_fork_isolation_keeps_two_resource_generations_physically_private()
--> Result<(), Box<dyn Error>> {
-    use std::os::fd::AsFd as _;
+use std::os::fd::AsRawFd as _;
 
-    const PRIVATE_RING_CLASSES: [&str; 7] = [
-        "fault-command",
-        "fault-event",
-        "network",
-        "block",
-        "9p",
-        "coverage",
-        "doorbell",
-    ];
+#[path = "hot_fork/isolation.rs"]
+mod isolation;
 
-    let (source_identity, host_barrier, image) = held_hot_fork_ring_image()?;
-    let plugin_barrier =
-        crate::QmpHotForkPluginBarrierState::one_quiescent(15, host_barrier.ring_count());
-    let first_log = shared_log();
-    let second_log = shared_log();
-    let mut first_source = scripted_hot_fork_capture_node(
-        Arc::clone(&first_log),
-        source_identity,
-        source_identity,
-        host_barrier,
-        image.clone(),
-        [plugin_barrier; 8],
-        DescriptorScript::Success,
-    )?;
-    let mut second_source = scripted_hot_fork_capture_node(
-        Arc::clone(&second_log),
-        source_identity,
-        source_identity,
-        host_barrier,
-        image.clone(),
-        [plugin_barrier; 8],
-        DescriptorScript::Success,
-    )?;
-    first_source.prepare_hot_fork_child_resources(image.canonical_len()?)?;
-    second_source.prepare_hot_fork_child_resources(image.canonical_len()?)?;
-    let first_directory = tempfile::tempdir()?;
-    let second_directory = tempfile::tempdir()?;
-    let first_vmstate = std::fs::File::create(first_directory.path().join("vmstate.qcow2"))?;
-    let second_vmstate = std::fs::File::create(second_directory.path().join("vmstate.qcow2"))?;
-    let vmstate_root = crate::QmpHotForkChildFileRoot::node_name("vmstate")?;
-    let first_destinations = [crate::QemuHotForkChildFileDestination::new(
-        &vmstate_root,
-        first_vmstate.as_fd(),
-    )];
-    let second_destinations = [crate::QemuHotForkChildFileDestination::new(
-        &vmstate_root,
-        second_vmstate.as_fd(),
-    )];
-    let mut first_owner = ScriptedHotForkTargetOwner {
-        contract: unvalidated_hot_fork_process_contract()?,
-        retained: Vec::new(),
-    };
-    let mut second_owner = ScriptedHotForkTargetOwner {
-        contract: unvalidated_hot_fork_process_contract()?,
-        retained: Vec::new(),
-    };
+trait HotForkHostContinuationTestExt {
+    fn template_generation(&self) -> u64;
+    fn private_ring_generation(&self) -> u64;
+    fn ring_identity(&self) -> crucible_shmem::SetupRegionBackingIdentity;
+    fn plugin_endpoint_identity(&self) -> crate::QmpHotForkPluginEndpointIdentity;
+    fn shmem_hot_path_mut(&mut self) -> &mut dyn QemuShmemHotPathChannel;
+    fn host_io_binding(&self) -> ContentHash;
+    fn node_state(&self) -> &QemuHotForkNodeStateContinuation;
+    fn console_observation_available(&self) -> bool;
+    fn attach_console_observation(
+        &mut self,
+        child: &mut QemuNode,
+        node: NodeId,
+    ) -> Result<(), QemuNodeChannelError>;
+}
 
-    let first_launch = first_source.fork_prepared_hot_fork_template_with_files_into(
-        &mut first_owner,
-        |owner| Ok(&owner.contract),
-        &first_destinations,
-        1 << 20,
-    )?;
-    let second_launch = second_source.fork_prepared_hot_fork_template_with_files_into(
-        &mut second_owner,
-        |owner| Ok(&owner.contract),
-        &second_destinations,
-        1 << 20,
-    )?;
+impl HotForkHostContinuationTestExt for QemuHotForkHostContinuation {
+    fn template_generation(&self) -> u64 {
+        self.endpoint.template_generation()
+    }
 
-    // A hot-fork ring image is an authenticated image of every queue-backed
-    // ring class. Both live children use the same logical generation while
-    // owning different physical setup-region backings.
-    assert!(host_barrier.ring_count() >= PRIVATE_RING_CLASSES.len() as u64);
-    assert_eq!(
-        first_launch.host_continuation().private_ring_generation(),
-        second_launch.host_continuation().private_ring_generation()
-    );
-    assert_ne!(
-        first_launch.host_continuation().ring_identity(),
-        second_launch.host_continuation().ring_identity()
-    );
-    assert_ne!(
-        first_launch.host_continuation().plugin_endpoint_identity(),
-        second_launch.host_continuation().plugin_endpoint_identity()
-    );
-    assert_ne!(
-        first_launch.child_qmp().socket_cookie(),
-        second_launch.child_qmp().socket_cookie()
-    );
-    assert_ne!(
-        first_launch.diagnostics().socket_cookie(),
-        second_launch.diagnostics().socket_cookie()
-    );
-    assert_ne!(
-        first_launch.host_continuation().host_io_binding(),
-        second_launch.host_continuation().host_io_binding()
-    );
+    fn private_ring_generation(&self) -> u64 {
+        self.endpoint.private_ring_generation()
+    }
 
-    let first_file = first_launch
-        .child_files()
-        .first()
-        .ok_or("first launch omitted its writable destination")?;
-    let second_file = second_launch
-        .child_files()
-        .first()
-        .ok_or("second launch omitted its writable destination")?;
-    assert_eq!(first_file.root(), second_file.root());
-    assert_ne!(
-        (first_file.device(), first_file.inode()),
-        (second_file.device(), second_file.inode())
-    );
+    fn ring_identity(&self) -> crucible_shmem::SetupRegionBackingIdentity {
+        self.ring.backing_identity()
+    }
 
-    let (_first_parent, _first_process, first_qmp, mut first_diagnostics, mut first_continuation) =
-        first_launch.into_parts();
-    let (_second_parent, _second_process, second_qmp, mut second_diagnostics, second_continuation) =
-        second_launch.into_parts();
-    let second_log_before = recorded(&second_log);
-    let first_log_before = recorded(&first_log).len();
+    fn plugin_endpoint_identity(&self) -> crate::QmpHotForkPluginEndpointIdentity {
+        self.endpoint.identity()
+    }
 
-    assert_eq!(
-        first_continuation.shmem_hot_path_mut().current_icount()?,
-        Icount { retired: 11 }
-    );
-    assert_eq!(recorded(&first_log).len(), first_log_before + 1);
-    assert_eq!(recorded(&second_log), second_log_before);
-    assert!(first_continuation.console_observation_available());
-    assert!(second_continuation.console_observation_available());
-    first_continuation.attach_console_observation(&mut first_source, node_id("first-child"))?;
-    assert!(!first_continuation.console_observation_available());
-    assert!(second_continuation.console_observation_available());
+    fn shmem_hot_path_mut(&mut self) -> &mut dyn QemuShmemHotPathChannel {
+        self.shmem_hot_path.as_mut()
+    }
 
-    let first_drain = first_diagnostics.drain_available()?;
-    assert_eq!(first_drain.bytes_read(), 26);
-    assert!(second_diagnostics.retained().is_empty());
-    let second_drain = second_diagnostics.drain_available()?;
-    assert_eq!(second_drain.bytes_read(), 26);
+    fn host_io_binding(&self) -> ContentHash {
+        self.host_io_binding
+    }
 
-    // The live endpoint owners remain distinct until both sources complete
-    // their ordered release paths.
-    drop((
-        first_qmp,
-        second_qmp,
-        first_continuation,
-        second_continuation,
-    ));
-    first_source.release_hot_fork_plugin_endpoints()?;
-    first_source.release_hot_fork_child_console()?;
-    first_source.release_hot_fork_child_qmp()?;
-    let _first_capture =
-        first_source.release_hot_fork_child_diagnostics_with_consumer(&mut first_diagnostics)?;
-    drop(first_source.release_hot_fork_private_ring_mapping()?);
-    second_source.release_hot_fork_plugin_endpoints()?;
-    second_source.release_hot_fork_child_console()?;
-    second_source.release_hot_fork_child_qmp()?;
-    let _second_capture =
-        second_source.release_hot_fork_child_diagnostics_with_consumer(&mut second_diagnostics)?;
-    drop(second_source.release_hot_fork_private_ring_mapping()?);
-    first_source.shutdown_child()?;
-    second_source.shutdown_child()?;
-    Ok(())
+    fn node_state(&self) -> &QemuHotForkNodeStateContinuation {
+        &self.node_state
+    }
+
+    fn console_observation_available(&self) -> bool {
+        self.console_spool.is_some()
+    }
+
+    fn attach_console_observation(
+        &mut self,
+        child: &mut QemuNode,
+        node: NodeId,
+    ) -> Result<(), QemuNodeChannelError> {
+        if child.console_observation.is_some() {
+            return Err(QemuNodeChannelError::new(
+                "attach hot-fork child console observation",
+                "child node already owns a console observation",
+            ));
+        }
+        let spool = self.console_spool.take().ok_or_else(|| {
+            QemuNodeChannelError::new(
+                "attach hot-fork child console observation",
+                "child console observation was already transferred",
+            )
+        })?;
+        child.console_observation = Some(QemuConsoleObservation { node, spool });
+        Ok(())
+    }
+}
+
+trait HotForkChildLaunchTestExt<A> {
+    fn process_authority(&self) -> &A;
+    fn child_qmp(&self) -> &QemuHotForkChildQmpHostEndpoint;
+    fn host_continuation(&self) -> &QemuHotForkHostContinuation;
+}
+
+impl<A> HotForkChildLaunchTestExt<A> for QemuHotForkChildLaunch<A> {
+    fn process_authority(&self) -> &A {
+        &self.process_authority
+    }
+
+    fn child_qmp(&self) -> &QemuHotForkChildQmpHostEndpoint {
+        &self.child_qmp
+    }
+
+    fn host_continuation(&self) -> &QemuHotForkHostContinuation {
+        &self.host_continuation
+    }
 }
 
 #[test]
@@ -291,6 +219,11 @@ fn hot_fork_rejects_uncommitted_node_state_before_process_creation() -> Result<(
 #[cfg(target_os = "linux")]
 fn hot_fork_scheduler_continuation_owns_exact_private_planes() -> Result<(), Box<dyn Error>> {
     let (mut node, _log) = sealed_hot_fork_node_with_log(DescriptorScript::SchedulerContinuation)?;
+    let expected_cancellation = node
+        .hot_fork_child_process_contract_stage
+        .as_ref()
+        .ok_or("target process contract stage is absent")?
+        .checkpoint_cancellation_eventfd_id()?;
     node.last_observed_time = crucible::VirtualTime { ticks: 73 };
     node.next_network_output_sequence = 31;
     let mut process_owner = ScriptedHotForkChildOwner::default();
@@ -322,6 +255,14 @@ fn hot_fork_scheduler_continuation_owns_exact_private_planes() -> Result<(), Box
     assert!(!installed.child_reaped());
     assert_eq!(installed.last_observed_time, VirtualTime { ticks: 73 });
     assert_eq!(installed.next_network_output_sequence, 31);
+    let installed_cancellation = installed
+        .checkpoint_cancellation
+        .as_ref()
+        .ok_or("installed node omitted checkpoint cancellation")?;
+    assert_eq!(
+        crate::node::hot_fork_plugin_endpoints::eventfd_id(installed_cancellation.as_raw_fd())?,
+        expected_cancellation,
+    );
     assert!(installed._hot_fork_scheduler_authority.is_some());
     drop(installed);
     node.release_hot_fork_plugin_endpoints()?;
@@ -919,67 +860,6 @@ fn hot_fork_private_ring_stage_returns_mapping_before_transfer_on_source_drift()
     assert_eq!(returned.backing_identity(), identity);
     assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
     assert!(node.hot_fork_private_ring_stage().is_none());
-    node.shutdown_child()?;
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn hot_fork_audit_brackets_plugin_inventory_around_one_exact_child_process()
--> Result<(), Box<dyn Error>> {
-    let log = shared_log();
-    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
-    let process_id = node.child.process_id();
-
-    // `spawn` confirms `exec`, not completion of the child's loader/runtime
-    // setup. Entering nanosleep gives the procfs fixed-point assertion a
-    // deterministic fixture rather than racing startup mappings.
-    let status_path = format!("/proc/{process_id}/status");
-    let mut sleeping = false;
-    for _ in 0..500 {
-        let status = std::fs::read_to_string(&status_path)?;
-        if status.lines().any(|line| line.starts_with("State:\tS")) {
-            sleeping = true;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    if !sleeping {
-        return Err(format!("scripted child {process_id} did not enter sleeping state").into());
-    }
-
-    assert!(matches!(
-        node.audit_hot_fork_process(),
-        Err(crate::QemuHotForkAuditError::PluginDescriptorTargetInvalid { .. })
-    ));
-    assert_eq!(
-        recorded(&log),
-        vec![
-            ChannelCall::QmpHotForkReadiness,
-            ChannelCall::QmpHotForkThreadInventory,
-            ChannelCall::QmpHotForkRcuInventory,
-            ChannelCall::QmpHotForkAioInventory,
-            ChannelCall::QmpHotForkAioHandlerInventory,
-            ChannelCall::QmpHotForkBlockBackendInventory,
-            ChannelCall::QmpHotForkPluginResourceInventory,
-            ChannelCall::QmpHotForkBottomHalfInventory,
-            ChannelCall::QmpHotForkMutexInventory,
-            ChannelCall::QmpHotForkTimerInventory,
-            ChannelCall::QmpHotForkMonitorInventory,
-            ChannelCall::QmpHotForkMonitorInventory,
-            ChannelCall::QmpHotForkTimerInventory,
-            ChannelCall::QmpHotForkMutexInventory,
-            ChannelCall::QmpHotForkBottomHalfInventory,
-            ChannelCall::QmpHotForkPluginResourceInventory,
-            ChannelCall::QmpHotForkBlockBackendInventory,
-            ChannelCall::QmpHotForkAioHandlerInventory,
-            ChannelCall::QmpHotForkAioInventory,
-            ChannelCall::QmpHotForkRcuInventory,
-            ChannelCall::QmpHotForkThreadInventory,
-            ChannelCall::QmpHotForkReadiness,
-        ]
-    );
-
     node.shutdown_child()?;
     Ok(())
 }

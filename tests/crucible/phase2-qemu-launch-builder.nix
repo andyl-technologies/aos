@@ -8,12 +8,14 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  faultCapabilityLib = builtins.readFile ../../crates/crucible-qemu/src/fault_capability.rs;
-  launchLib =
-    builtins.readFile ../../crates/crucible-qemu/src/launch.rs
-    + builtins.readFile ../../crates/crucible-qemu/src/launch/error.rs
-    + builtins.readFile ../../crates/crucible-qemu/src/launch/helpers.rs
-    + builtins.readFile ../../crates/crucible-qemu/src/launch/plugin_config.rs;
+  faultCapabilityLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/fault_capability.rs;
+  };
+  launchLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/launch.rs;
+  };
   launchTest =
     builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
     + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs
@@ -177,7 +179,7 @@
       }
       {
         label = "virtio-blk device argv";
-        needle = "\"virtio-blk-pci,drive={ROOT_DRIVE_ID},id={ROOT_DEVICE_ID}\"";
+        needle = "virtio-blk-pci,drive={ROOT_DRIVE_ID},id={ROOT_DEVICE_ID},bus={QEMU_PCI_BUS},addr={QEMU_ROOT_PCI_ADDRESS}";
       }
       {
         label = "store-path validator";
@@ -237,7 +239,7 @@
       }
       {
         label = "plugin argument renderer";
-        needle = "pub fn qemu_plugin_argument(&self) -> String";
+        needle = "pub(super) fn qemu_plugin_argument(&self) -> String";
       }
       {
         label = "plugin argv appended";
@@ -348,10 +350,6 @@
         needle = "/nix/store/../tmp/kernel";
       }
       {
-        label = "overlay path rejection assertion";
-        needle = "QemuLaunchCommandError::InvalidOverlayFileName";
-      }
-      {
         label = "final argv validator assertion";
         needle = "validate_pre_spawn_qemu_launch_args(args).is_ok()";
       }
@@ -445,7 +443,7 @@ in
             command_line_hash=executable-and-argv
             vm_launch_hash=world-derived-artifacts
             pre_spawn_validation=true
-            child_spawn_deferred_to=T-QEMU-3,T-QEMU-7
+            child_spawn_authority=attempt-process-contract-and-fixed-plugin-fds
             multi_vcpu_extension=checks.crucible.phase2.qemuMultiVcpuLaunch
             RESULT
           '';

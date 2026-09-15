@@ -44,10 +44,6 @@
         needle = "thin adapter behind that unchanged interface";
       }
       {
-        label = "ABI and determinism stability";
-        needle = "no Crucible ABI or determinism contract may change";
-      }
-      {
         label = "content-address gate bar";
         needle = "gate:content-address";
       }
@@ -62,18 +58,6 @@
       {
         label = "no current dependency";
         needle = "no RFC-0007 dependency";
-      }
-      {
-        label = "seam constant";
-        needle = "pub const FUTURE_RATCHET_INTEGRATION_SEAM";
-      }
-      {
-        label = "merge bar constant";
-        needle = "pub const FUTURE_RATCHET_MERGE_BAR";
-      }
-      {
-        label = "stability rule constant";
-        needle = "pub const FUTURE_RATCHET_STABILITY_RULE";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

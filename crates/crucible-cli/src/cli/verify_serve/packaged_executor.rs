@@ -58,6 +58,8 @@ struct PackagedExecutorDeployment {
     qemu_profile: String,
     hot_fork: Option<PackagedHotForkDeployment>,
     guest_selectable_boundary_diagnostics: Option<GuestSelectableBoundaryDiagnosticsDeployment>,
+    #[serde(default)]
+    verify_determinism_findings: bool,
 }
 
 /// Optional retained-source policy; absence keeps hot-fork execution disabled.
@@ -84,10 +86,11 @@ struct GuestSelectableBoundaryDiagnosticsDeployment {
     maximum_events: usize,
 }
 
-/// Guarded host capability loaded for one campaign-backed legacy command.
+/// Guarded host capability loaded for one campaign run.
 pub(crate) struct GuardedCampaignRunDeployment {
     pub(crate) host: crucible_daemon::LinuxQemuAttemptHostConfig,
     pub(crate) resources: crucible_campaign::AttemptResourceLimits,
+    pub(crate) verify_determinism_findings: bool,
 }
 
 /// Resolves the operator-provisioned capability for local campaign execution.
@@ -135,7 +138,7 @@ fn resolve_campaign_deployment_path(
     )))
 }
 
-/// Loads the exact process and storage ceilings for a guarded legacy run.
+/// Loads the exact process and storage ceilings for a guarded campaign run.
 ///
 /// The deployment uses the same strict schema, ownership, cgroup, and project
 /// quota policy as the packaged executor. The returned host config still opens
@@ -145,7 +148,7 @@ fn resolve_campaign_deployment_path(
 ///
 /// Returns [`CliError`] when the deployment file or its resource policy is
 /// malformed, mutable by another user, or outside the supported bounds.
-pub(crate) fn load_guarded_campaign_run_deployment(
+pub(crate) fn load_campaign_run_deployment(
     path: &Path,
 ) -> Result<GuardedCampaignRunDeployment, CliError> {
     let deployment = load_validated_deployment(path)?;
@@ -175,7 +178,11 @@ pub(crate) fn load_guarded_campaign_run_deployment(
     )
     .map_err(|error| serve_error(format!("campaign executor resource limits error: {error}")))?;
 
-    Ok(GuardedCampaignRunDeployment { host, resources })
+    Ok(GuardedCampaignRunDeployment {
+        host,
+        resources,
+        verify_determinism_findings: deployment.verify_determinism_findings,
+    })
 }
 
 pub(super) fn prepare_cli_packaged_executor(
@@ -228,6 +235,9 @@ pub(super) fn prepare_cli_packaged_executor(
     }
     if let Some(diagnostics) = guest_selectable_diagnostics {
         config = config.with_guest_selectable_boundary_diagnostics(diagnostics);
+    }
+    if deployment.verify_determinism_findings {
+        config = config.with_determinism_finding_verification();
     }
     let executor = prepared
         .prepare_packaged_executor(config)
@@ -599,10 +609,10 @@ qemu_profile = "deterministic-tcg-v1"
             qemu_marker,
             format!(
                 "qemu_sim_capability=qemu-crucible\n\
-                 qemu_crucible_patches_applied=true\n\
+                 qemu_crucible_atomic_patch_applied=true\n\
                  qemu_plugins_enabled=true\n\
                  qemu_build_id=qemu-build-v1\n\
-                 qemu_patch_series_hash=sha256:patch\n\
+                 qemu_atomic_patch_hash=sha256:patch\n\
                  qemu_shmem_abi_version={abi_version}\n\
                  qemu_shmem_abi={abi}\n\
                  qemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\n\
@@ -640,14 +650,39 @@ qemu_profile = "deterministic-tcg-v1"
         let deployment = load_deployment(&path).expect("load deployment");
         assert_eq!(deployment.schema, PACKAGED_EXECUTOR_SCHEMA);
         assert_eq!(deployment.worker_count, 2);
-        let guarded =
-            load_guarded_campaign_run_deployment(&path).expect("load guarded run deployment");
+        assert!(!deployment.verify_determinism_findings);
+        let guarded = load_campaign_run_deployment(&path).expect("load guarded run deployment");
         assert_eq!(guarded.resources.maximum_vcpus(), 4);
         assert_eq!(guarded.resources.maximum_disk_bytes(), 2_147_483_648);
+        assert!(!guarded.verify_determinism_findings);
 
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
             .expect("weaken deployment mode");
         assert!(load_deployment(&path).is_err());
+    }
+
+    #[test]
+    fn packaged_determinism_finding_verification_is_explicit() {
+        let deployment: PackagedExecutorDeployment = toml::from_str(&format!(
+            "{}verify_determinism_findings = true\n",
+            authored()
+        ))
+        .expect("determinism verification deployment");
+
+        assert!(deployment.verify_determinism_findings);
+    }
+
+    #[test]
+    fn guarded_campaign_determinism_finding_verification_is_explicit() {
+        let directory = tempfile::tempdir().expect("deployment directory");
+        let path = directory.path().join("executor.toml");
+        let deployment = format!("{}verify_determinism_findings = true\n", authored());
+        fs::write(&path, deployment).expect("write deployment");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("secure deployment");
+
+        let guarded = load_campaign_run_deployment(&path).expect("load guarded run deployment");
+
+        assert!(guarded.verify_determinism_findings);
     }
 
     #[test]
@@ -709,7 +744,7 @@ qemu_profile = "deterministic-tcg-v1"
         fs::write(&path, deployment).expect("write deployment");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("secure deployment");
 
-        let error = load_guarded_campaign_run_deployment(&path)
+        let error = load_campaign_run_deployment(&path)
             .err()
             .expect("unsupported guarded QEMU profile");
         assert!(
@@ -730,7 +765,7 @@ qemu_profile = "deterministic-tcg-v1"
         fs::write(&path, deployment).expect("write deployment");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("secure deployment");
 
-        let error = load_guarded_campaign_run_deployment(&path)
+        let error = load_campaign_run_deployment(&path)
             .err()
             .expect("mismatched guarded host architecture");
         assert!(

@@ -153,12 +153,12 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
       {
-        label = "T-PAT-9 completion names instantiate";
-        needle = "`crucible::instantiate`";
+        label = "T-PAT-9 completion names exact resume lifecycle";
+        needle = "atomic exact-resume lifecycle";
       }
       {
-        label = "T-PAT-9 completion names baked genesis";
-        needle = "`TemporalGraph::with_baked_genesis`";
+        label = "T-PAT-9 completion names baked genesis replay catalog";
+        needle = "baked-genesis replay catalog";
       }
       {
         label = "T-PAT-9 completion names execution instantiate gate";

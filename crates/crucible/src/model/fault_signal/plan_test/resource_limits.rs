@@ -45,7 +45,11 @@ fn world_resource_admission_applies_authored_static_topology_limits() {
         2,
     );
 
-    let mut node = test_world().vm_nodes()[0].clone();
+    let world = test_world();
+    let Some(node) = world.vm_nodes().first() else {
+        panic!("test world should contain a VM node");
+    };
+    let mut node = node.clone();
     node.smp_vcpus = 2;
     let one_node = World::from_nodes_and_links(vec![node], Vec::new())
         .unwrap_or_else(|error| panic!("single SMP test world should build: {error}"));

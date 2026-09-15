@@ -1,6 +1,6 @@
-# Patch 0110: release halted partial RR turns
+# Capability task 0110 — Release halted partial RR turns
 
-Patch `0110-crucible-release-halted-rr-turn.patch` closes a scheduler-progress
+The atomic patch `crucible-qemu-11.1.1.patch` closes a scheduler-progress
 regression introduced by preserving a serialized RR cursor across partial
 turns.
 
@@ -67,8 +67,8 @@ Ordinary accelerators never enter this sim-only RR branch.
 The one-vCPU and four-vCPU diskless quantum guests finish boot with `HLT` at a
 nonzero RR cursor position. The live gates require the real patched QEMU and
 plugin to publish an all-halted boundary, advance to the exact PIT deadline,
-and reproduce the result under bounded scheduler preemption. The patch
-micro-test also requires the halted-owner escape to precede partial-turn
+and reproduce the result under bounded scheduler preemption. The focused
+capability test also requires the halted-owner escape to precede partial-turn
 continuation, requires `PAUSE` to set a dedicated marker that is consumed and
 cleared immediately on return, and requires the guest-yield transition to
 precede every callback or host-work exit while excluding unmarked interrupts,
@@ -80,8 +80,8 @@ parks forever. A passing `P` therefore proves an AP acquired the lock at the
 helper-marked zero-instruction handoff, before the BSP's next guest instruction;
 eventual rotation at the ordinary 4096-instruction quantum cannot satisfy the
 gate: after issuing the `AAAB` console prefix, the guest writes a test marker
-immediately before the critical PAUSE. A non-distributable test QEMU arms only
-that CPU/site and aborts only if the marked PAUSE takes the still-partial
+immediately before the critical PAUSE. The negative test instrumentation arms
+only that CPU/site and aborts only if the marked PAUSE takes the still-partial
 early-yield branch; earlier startup/contention PAUSEs cannot satisfy the marker.
 It retains the ordinary HLT and full-quantum paths. If the critical PAUSE merely
 exhausted the ordinary quantum, the marker is cleared without abort and the

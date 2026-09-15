@@ -59,12 +59,6 @@ pub enum QmpError {
     /// A launch omitted the fixed inert guest-introspection endpoint.
     #[error("QEMU launch did not predeclare the fixed guest-introspection endpoint")]
     DebugGuestEndpointNotPredeclared,
-    /// A public low-level load attempted production runtime realization.
-    #[error("public QMP loadvm only admits replay-oracle probes, got {purpose:?}")]
-    UnauthorizedLoadvmPurpose {
-        /// Rejected authorization purpose.
-        purpose: crate::QemuLoadvmCommandPurpose,
-    },
     /// A QMP stream operation had no timeout budget.
     #[error("{operation} has zero QMP timeout")]
     UnboundedTimeout {

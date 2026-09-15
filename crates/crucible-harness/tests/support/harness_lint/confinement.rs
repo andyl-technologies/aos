@@ -167,15 +167,12 @@ fn boundary_package_source_findings(
     sources: &[(PathBuf, String)],
 ) -> Vec<String> {
     let mut findings = Vec::new();
-    let mut package_has_nondeterminism = false;
 
     for (path, content) in sources {
         let nondeterminism_findings = scan_content(path, content);
         if nondeterminism_findings.is_empty() {
             continue;
         }
-        package_has_nondeterminism = true;
-
         if !boundary_source_allows_host_nondeterminism(package, package_dir, path) {
             findings.extend(nondeterminism_findings.into_iter().map(|finding| {
                 format!("{finding}; host nondeterminism outside supervision/diagnostics path")
@@ -184,13 +181,7 @@ fn boundary_package_source_findings(
 
         findings.extend(public_export_findings(path, content));
         findings.extend(route_ingress_findings(path, content));
-    }
-
-    if package_has_nondeterminism {
-        for (path, content) in sources {
-            findings.extend(state_influence_findings(path, content));
-            findings.extend(route_ingress_findings(path, content));
-        }
+        findings.extend(state_influence_findings(path, content));
     }
 
     findings
@@ -207,7 +198,13 @@ fn boundary_source_allows_host_nondeterminism(
     let relative = relative.to_string_lossy().replace('\\', "/");
 
     match package {
-        "crucible-cli" => relative_is_under(&relative, "src"),
+        "crucible-cli" => {
+            relative == "src/main.rs"
+                || relative_is_under(&relative, "src/diagnostics")
+                || relative_is_under(&relative, "src/host_boundary")
+                || relative_is_under(&relative, "src/output")
+                || relative_is_under(&relative, "src/progress")
+        }
         "crucible-debug-gateway" => relative_is_under(&relative, "src"),
         "crucible-daemon" => {
             relative_is_under(&relative, "src/diagnostics")
@@ -217,7 +214,6 @@ fn boundary_source_allows_host_nondeterminism(
         "crucible-qemu" => {
             relative_is_under(&relative, "src/block_realization_gate")
                 || relative_is_under(&relative, "src/diagnostics")
-                || relative_is_under(&relative, "src/live_coverage_gate")
                 || relative_is_under(&relative, "src/process")
                 || relative_is_under(&relative, "src/supervision")
         }

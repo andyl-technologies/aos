@@ -5,8 +5,10 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    EventClass, EventLevel, EventLog, EventSource, Icount, MarkerId, NodeId, ObservableEvent,
-    VirtualTime,
+    ControlOperation, ControlOperationKind, EventLevel, EventLog, EventSource, Icount, MarkerId,
+    NodeId, ObservableEvent, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
+    SchedulerEventLogClass, SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind,
+    SharedTimelineKey, SimInstant, VirtualTime,
 };
 
 #[test]
@@ -25,7 +27,7 @@ fn event_log_entries_carry_source_level_class_and_icount_stamp() {
     assert_eq!(entry.at(), VirtualTime { ticks: 99 });
     assert_eq!(entry.source(), &EventSource::Guest { node: node.clone() });
     assert_eq!(entry.level(), EventLevel::Info);
-    assert_eq!(entry.class(), EventClass::Observational);
+    assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
 
     let stamp = &entry.time().icount;
     assert_eq!(stamp.node, Some(node));
@@ -44,4 +46,38 @@ fn event_log_entries_carry_source_level_class_and_icount_stamp() {
     assert!(segment.contains("entry.source=guest"));
     assert!(segment.contains("entry.level=info"));
     assert!(segment.contains("entry.class=observational"));
+}
+
+#[test]
+fn command_caused_entries_preserve_command_correlation_source() {
+    let command_id = 12;
+    let control_node = SchedulerNodeId {
+        node: NodeId {
+            name: String::from("control-plane"),
+        },
+        kind: SchedulingNodeKind::ControlPlane,
+    };
+    let event = ScheduledEvent {
+        key: ScheduledEventKey::new(
+            SharedTimelineKey {
+                virtual_time: SimInstant { nanos: 12 },
+                node: control_node.clone(),
+                sequence: command_id,
+            },
+            control_node,
+        ),
+        payload: ScheduledEventPayload::Control(ControlOperation {
+            sequence: command_id,
+            kind: ControlOperationKind::Query,
+        }),
+    };
+
+    let entry = crucible::test_support::condition_payload_entry_for_test(
+        0,
+        VirtualTime { ticks: 12 },
+        SchedulerEventLogPayload::ResolvedHappening(event),
+    );
+
+    assert_eq!(entry.source(), &EventSource::Command { command_id });
+    assert_eq!(entry.time().icount.icount, Icount { retired: 12 });
 }

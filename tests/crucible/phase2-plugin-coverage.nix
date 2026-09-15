@@ -10,14 +10,17 @@
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginArgs = builtins.readFile ../../crates/crucible-qemu-plugin/src/args.rs;
-  pluginCoverage = builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage.rs;
+  pluginCoverage = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/coverage.rs;
+  };
   pluginCoverageTests = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-qemu-plugin/src/coverage/tests.rs;
   };
   liveCoverageGate = builtins.readFile ./phase6-basic-block-coverage.nix;
   coverageAbiModel = builtins.readFile ./phase2-plugin-coverage-abi.c;
-  qemuCoveragePatch = builtins.readFile ../../pkgs/emulation/qemu-patches/0014-crucible-plugin-tcg-exec-cb.patch;
+  qemuCoveragePatch = builtins.readFile ../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch;
   pluginRegistration = builtins.readFile ../../crates/crucible-qemu-plugin/src/registration.rs;
   pluginRegistrationTests = import ./_rust-module-source.nix {
     inherit lib;
@@ -134,18 +137,14 @@
     ]
     ++ failuresFor "tests/crucible/phase6-basic-block-coverage.nix" liveCoverageGate [
       {
-        label = "production loaded-QEMU coverage proof";
-        needle = "loaded_qemu_fingerprint_equivalence=coverage-off-equals-coverage-on";
-      }
-      {
-        label = "production loaded-QEMU canonical-log proof";
-        needle = "canonical_event_log_effect=none";
+        label = "coverage observation-only canonical fingerprint proof";
+        needle = "canonical_fingerprint_effect=none";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" patchSpec [
       {
-        label = "TCG-exec callback export spec";
-        needle = "qemu_plugin_register_tcg_exec_cb";
+        label = "exact TB-entry icount export spec";
+        needle = "qemu_plugin_icount_at_tb_entry";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedSpec [
@@ -219,7 +218,7 @@
     ++ failuresFor "crates/crucible-shmem split modules" shmemLib [
       {
         label = "coverage transport ABI version";
-        needle = "pub const ABI_VERSION: u32 = 21;";
+        needle = "pub const ABI_VERSION: u32 = 24;";
       }
       {
         label = "coverage queue bounded by map cardinality";
@@ -342,10 +341,6 @@
         needle = "if !self.mode.is_on()";
       }
       {
-        label = "hot path zero overhead method";
-        needle = "hot_path_has_zero_coverage_overhead";
-      }
-      {
         label = "callback proof token";
         needle = "pub struct CoverageCallback";
       }
@@ -391,7 +386,7 @@
       }
       {
         label = "flush callback registered before translation callbacks";
-        needle = "(apis.register_flush_cb)(plugin_id, live_coverage_flush);";
+        needle = "(apis.register_flush_cb)(plugin_id, live_coverage_flush, state_ptr.cast());";
       }
       {
         label = "flush callback reclaims translation metadata";
@@ -518,7 +513,7 @@
         needle = "pub fn dequeue_coverage(";
       }
     ]
-    ++ failuresFor "pkgs/emulation/qemu-patches/0014-crucible-plugin-tcg-exec-cb.patch" qemuCoveragePatch [
+    ++ failuresFor "pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch" qemuCoveragePatch [
       {
         label = "public exact TB-entry helper";
         needle = "int qemu_plugin_icount_at_tb_entry(uint64_t tb_insns,";
@@ -696,7 +691,7 @@ in
           '';
         }
         {
-          name = "verify-qemu10-coverage-callback-ordering";
+          name = "verify-qemu11-coverage-callback-ordering";
           script = ''
             set -eu
             qemu_source="$TMPDIR/qemu-coverage-ordering-source"
@@ -710,17 +705,17 @@ in
                 destroyed = NR
               }
               in_flush && /qht_reset\(&plugin.dyn_cb_arr_ht\)/ { reset = NR }
-              in_flush && /plugin_cb__simple\(QEMU_PLUGIN_EV_FLUSH\)/ { notified = NR }
+              in_flush && /plugin_cb__udata\(QEMU_PLUGIN_EV_FLUSH\)/ { notified = NR }
               END {
                 exit !(destroyed && reset && notified &&
                        destroyed < notified && reset < notified)
               }
             ' "$qemu_tree/plugins/core.c"
-            grep -q 'tb_flush() takes care of running the flush in an exclusive context' \
+            grep -q 'Must be called from an exclusive or serial context' \
               "$qemu_tree/include/exec/tb-flush.h"
-            grep -q 'if (cpu_in_serial_context(cpu))' \
+            grep -q 'current_cpu && cpu_in_serial_context(current_cpu)' \
               "$qemu_tree/accel/tcg/tb-maint.c"
-            grep -q 'async_safe_run_on_cpu(cpu, do_tb_flush' \
+            grep -q 'async_safe_run_on_cpu(cs, do_tb_flush' \
               "$qemu_tree/accel/tcg/tb-maint.c"
             awk '
               /icount_start_insn = gen_tb_start\(db, cflags\)/ { prologue = NR }
@@ -846,8 +841,8 @@ in
             coverage_signal=guest-pc-folded-into-fixed-map
             callback_api=stock-qemu-tb-translation-execution-and-flush-plus-exact-entry-helper
             callback_test_evidence=rust-callback-model-and-executable-c-abi-arithmetic-model
-            qemu10_flush_ordering=dynamic-callback-arrays-destroyed-and-reset-before-plugin-flush-callback
-            qemu10_flush_context=serialized-or-async-exclusive
+            qemu11_flush_ordering=dynamic-callback-arrays-destroyed-and-reset-before-plugin-flush-callback
+            qemu11_flush_context=serialized-or-async-exclusive
             exact_entry_math=committed-plus-budget-minus-remaining-minus-tb-insns
             exact_entry_edge_evidence=first-chained-post-refill-next-rr-vcpu-model-plus-early-exit-source-order
             live_qemu_proof=checks.crucible.phase6.basicBlockCoverage

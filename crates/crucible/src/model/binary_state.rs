@@ -222,48 +222,31 @@ pub(super) fn write_scenario_form_binary(
 
 pub(super) fn read_scenario_form_binary(
     reader: &mut ScenarioBinaryReader<'_>,
-    has_measurements: bool,
-    has_selectables: bool,
 ) -> Result<ScenarioDefForm, EngineError> {
     let expected = reader.read_hash()?;
     let world = read_world_binary(reader)?;
     let plan = read_plan_binary_for_scenario(&world, reader)?;
     let properties = read_properties_binary(&world, reader)?;
-    let measurements = if has_measurements {
-        let bytes = reader.read_binary_blob_bounded(
-            "measurement definitions",
-            MAX_MEASUREMENT_DEFINITION_BYTES,
-        )?;
-        let definitions =
-            serde_json::from_slice::<Vec<MeasurementDefinition>>(bytes).map_err(|error| {
-                scenario_serialization_error(format!(
-                    "decode canonical measurement definitions: {error}"
-                ))
-            })?;
-        let measurements = MeasurementDefinitions::from_decoded_definitions(
-            &world,
-            &plan,
-            &properties,
-            definitions,
-        )?;
-        if measurements.canonical_bytes() != bytes {
-            return Err(scenario_serialization_error(
-                "measurement definitions are not canonically encoded",
-            ));
-        }
-        measurements
-    } else {
-        MeasurementDefinitions::empty()
-    };
-    let selectables = if has_selectables {
-        let bytes = reader.read_binary_blob_bounded(
-            "scenario selectable declarations",
-            MAX_SCENARIO_SELECTABLE_BYTES,
-        )?;
-        ScenarioSelectables::from_canonical_bytes(&world, bytes)?
-    } else {
-        ScenarioSelectables::empty()
-    };
+    let bytes = reader
+        .read_binary_blob_bounded("measurement definitions", MAX_MEASUREMENT_DEFINITION_BYTES)?;
+    let definitions =
+        serde_json::from_slice::<Vec<MeasurementDefinition>>(bytes).map_err(|error| {
+            scenario_serialization_error(format!(
+                "decode canonical measurement definitions: {error}"
+            ))
+        })?;
+    let measurements =
+        MeasurementDefinitions::from_decoded_definitions(&world, &plan, &properties, definitions)?;
+    if measurements.canonical_bytes() != bytes {
+        return Err(scenario_serialization_error(
+            "measurement definitions are not canonically encoded",
+        ));
+    }
+    let bytes = reader.read_binary_blob_bounded(
+        "scenario selectable declarations",
+        MAX_SCENARIO_SELECTABLE_BYTES,
+    )?;
+    let selectables = ScenarioSelectables::from_canonical_bytes(&world, bytes)?;
     let seed = reader.read_seed()?;
     let app_random_draw_cap = reader.read_u64()?;
     let form = ScenarioDefForm::from_components_with_measurements_and_app_random_draw_cap(
@@ -1163,14 +1146,6 @@ pub(super) fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBi
             writer.write_u64(preemption.at.retired);
             write_preemption_kind_binary(&preemption.kind, writer);
         }
-        Decision::AppRandom(random) => {
-            writer.write_u8(4);
-            writer.write_string(&random.node.name);
-            write_rng_stream_binary(&random.stream, writer);
-            writer.write_u64(random.request_id);
-            writer.write_u8(random.width);
-            writer.write_u64(random.value);
-        }
         Decision::Selection(selection) => {
             writer.write_u8(5);
             writer.write_binary_blob(selection.canonical_bytes());
@@ -1220,15 +1195,6 @@ pub(super) fn read_decision_binary(
                 retired: reader.read_u64()?,
             },
             kind: read_preemption_kind_binary(reader)?,
-        })),
-        4 => Ok(Decision::AppRandom(AppRandomDecision {
-            node: NodeId {
-                name: reader.read_string()?,
-            },
-            stream: read_rng_stream_binary(reader)?,
-            request_id: reader.read_u64()?,
-            width: reader.read_u8()?,
-            value: reader.read_u64()?,
         })),
         5 => SelectionDecision::from_canonical_bytes(reader.read_binary_blob_bounded(
             "campaign selection decision",
@@ -1348,8 +1314,8 @@ pub(super) fn read_preemption_kind_binary(
 
 pub(super) fn write_world_binary(world: &World, writer: &mut ScenarioBinaryWriter) {
     writer.write_hash(world.id());
-    writer.write_count(world.topology_nodes().len());
-    for node in world.topology_nodes() {
+    writer.write_count(world.nodes().len());
+    for node in world.nodes() {
         match node {
             WorldNodeDef::Vm(node) => {
                 writer.write_u8(0);

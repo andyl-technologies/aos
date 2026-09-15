@@ -16,8 +16,7 @@
 //! `Control` and `Watch`+`Send` attach-and-command facade; [`server`] owns the
 //! HTTP/2 daemon transport; [`open_set`] owns the dotted-kind plus
 //! typed-attribute payload model; [`vm_lifecycle`] owns production local-VM
-//! loop construction; [`vm_resume`] owns the process-local VM resume realization
-//! bridge used by thin CLI callers; [`debug_gateway`] owns the Apache-side Unix
+//! loop construction; [`debug_gateway`] owns the Apache-side Unix
 //! control client for the separate GPL debugger gateway process;
 //! [`transport_security`] owns remote mutual-TLS authentication.
 
@@ -39,10 +38,8 @@ pub mod server;
 pub mod session_mapping;
 pub mod streaming;
 pub mod transport_security;
+#[cfg(target_os = "linux")]
 pub mod vm_lifecycle;
-#[path = "vm_resume.rs"]
-pub mod vm_resume;
-
 pub use client::{
     ClientControlStream, ClientWatchStream, ControlClient, ControlClientError, ControlClientFuture,
     ControlTransportKind, ControlWireModel, DebugControllerAccess, DebugControllerAcquisition,
@@ -78,13 +75,13 @@ pub use lifecycle::{
     LifecycleLoopFactory, LifecycleResourceLimit, ListScenariosResponse, ListSessionsResponse,
     QuiescentLifecycleLoop, RESUME_OBSERVATION_PREPARATION_CAPACITY,
     RESUME_OBSERVATION_PREPARATION_TIMEOUT, RESUME_OBSERVATION_SOURCE_MAX_BYTES,
-    RESUME_REPLAY_CLOSURE_MAX_BYTES, ReproductionCommandPayload, ReproductionCommandRecord,
-    ReproductionCommandResult, ResumeObservationCancellation,
+    RESUME_REPLAY_CLOSURE_MAX_BYTES, ReproductionCommandDecodeError, ReproductionCommandPayload,
+    ReproductionCommandRecord, ReproductionCommandResult, ResumeObservationCancellation,
     ResumeObservationCancellationRegistration, ResumeObservationLoopFactory,
     ResumeObservationPreparationContext, ResumeObservationSource, ResumeReplayClosure,
     ResumeReplayClosureValidationError, ResumeReplayClosureValidator, ResumeSessionRequest,
     ResumeSessionResponse, ScenarioCatalogEntry, ScenarioCatalogSource, ScenarioSummary, SessionId,
-    SessionRef, SessionSummary,
+    SessionLifetimeRetention, SessionRef, SessionSummary,
 };
 pub use open_set::{
     OPEN_SET_BREAKPOINT_KIND_PREFIX, OPEN_SET_CAPABILITY_CATEGORIES, OPEN_SET_COMMAND_KIND_PREFIX,
@@ -104,37 +101,30 @@ pub use rpc_abi::{
     encode_rpc_hello_request, encode_rpc_hello_response, encode_rpc_message,
     negotiate_rpc_protocol, rpc_status_code_from_wire_name, rpc_status_code_wire_name,
 };
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", target_os = "linux"))]
 pub use vm_lifecycle::{
-    AuthenticatedProductionCheckpointCodecFixture,
+    AuthenticatedProductionCheckpointCodecFixture, AuthenticatedProductionExactRamCodecFixture,
     build_authenticated_production_checkpoint_codec_fixture,
-    build_raw_production_checkpoint_codec_fixture,
+    build_exact_ram_production_checkpoint_codec_fixture,
 };
+#[cfg(target_os = "linux")]
 pub use vm_lifecycle::{
     BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceSnapshot,
-    PreparedProductionReplayOraclePromotion, ProductionBlockFaultEvidence,
-    ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
-    ProductionExactCheckpointReplayArtifact, ProductionExactCheckpointReplayCatalog,
-    ProductionExactCheckpointReplayTarget, ProductionExactCheckpointReplayTargets,
-    ProductionExactCheckpointResumeBasis, ProductionExactCheckpointRetirement,
-    ProductionExactCheckpointRetirementError, ProductionExactCheckpointRetirementReport,
-    ProductionExactCheckpointSource, ProductionFaultEvidenceSnapshot,
+    DecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
+    ProductionBakedSnapshotCatalog, ProductionBlockFaultEvidence, ProductionExactCheckpointClosure,
+    ProductionExactCheckpointObject, ProductionExactCheckpointResumeBasis,
+    ProductionExactCheckpointRetirement, ProductionExactCheckpointRetirementError,
+    ProductionExactCheckpointRetirementReport, ProductionFaultEvidenceSnapshot,
     ProductionNetworkOutageEvidence, ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence,
+    ProductionVmExactNodeRestoreAdmission, ProductionVmExactNodeRestoreAdmissions,
     ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmLifecycleResumeState,
-    ProductionVmNodeCheckpointArtifact, ProductionVmNodeGeneration, ProductionVmNodeLaunch,
-    ProductionVmNodeLaunchKind, ProductionVmNodeLaunchRequest, ProductionVmNodeLauncher,
-    ProductionVmNodeLease, ProductionVmNodePreparationKind, ProductionVmNodeReplayLaunchProfile,
-    authenticate_portable_exact_checkpoint_replay_oracle_promotion,
-    authenticate_portable_exact_checkpoint_replay_oracle_promotion_with_boundary,
-    authenticate_portable_exact_checkpoint_resume_basis,
-    authenticate_portable_exact_checkpoint_resume_basis_with_boundary,
-    build_production_vm_lifecycle_loop, build_production_vm_lifecycle_loop_from_checkpoint,
-    build_production_vm_lifecycle_loop_from_checkpoint_with_launcher,
-    build_production_vm_lifecycle_loop_from_exact_closure,
-    build_production_vm_lifecycle_loop_from_exact_closure_with_launcher,
+    ProductionVmNodeGeneration, ProductionVmNodeLaunch, ProductionVmNodeLaunchRequest,
+    ProductionVmNodeLauncher, ProductionVmNodeLease, ProductionVmNodeReplayLaunchProfile,
+    ProductionVmPortableReplayAssetPaths, ProductionVmPortableReplayGuestAssetPaths,
+    ProductionVmReplayExactNodeRestoreAdmission, build_production_vm_exact_resume_lifecycle,
     build_production_vm_lifecycle_loop_with_launcher, collect_signal_artifact_objects,
-    install_exact_checkpoint_closure, install_exact_checkpoint_closure_with_boundary,
-    install_exact_checkpoint_closure_with_boundary_and_admission, open_exact_checkpoint_closure,
+    collect_signal_artifact_objects_bounded, collect_signal_artifact_objects_with_budget,
+    decode_authenticated_production_exact_checkpoint, open_exact_checkpoint_closure,
     production_vm_search_frontier, retire_production_exact_checkpoint_catalog,
 };
 #[cfg(target_os = "linux")]
@@ -163,6 +153,8 @@ pub use server::{
     serve_lifecycle_http2_mtls_with_mode_until_shutdown,
     serve_lifecycle_http2_with_debug_policy_until_shutdown, serve_lifecycle_http2_with_mode,
     serve_lifecycle_http2_with_mode_until_shutdown,
+    serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown,
+    serve_shared_lifecycle_http2_with_debug_policy_until_shutdown,
 };
 pub use session_mapping::{
     API_COMMAND_MAPPINGS, API_METHOD_MAPPINGS, ApiCommandMapping, ApiDispatch, ApiMappingError,
@@ -180,13 +172,4 @@ pub use streaming::{
 };
 pub use transport_security::{
     DebugTransportIdentity, MutualTlsServerConfigError, mutual_tls_acceptor_from_pem,
-};
-pub use vm_resume::{
-    ModelCheckpointVmResumeRealizationProof, VmResumeRealizationError,
-    realize_model_checkpoint_vm_resume_from_savepoint,
-};
-pub use vm_resume::{
-    ProductionGuestArchitecture, ProductionPluginInstallConfig, ProductionPluginInstallError,
-    ProductionPluginInstallReport, ProductionPluginSwitch, ProductionRootImageFormat,
-    run_production_plugin_install_gate,
 };

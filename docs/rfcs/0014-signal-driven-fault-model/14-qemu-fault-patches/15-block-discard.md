@@ -1,11 +1,10 @@
-# 15 - Block discard transport
+# Capability task 0061 — Block discard transport
 
-The terminal GPL-side `0061-crucible-block-discard` QEMU patch extends the block
-driver introduced by `0015-crucible-blk-shmem`, and the GPL-2.0-only plugin
-transports the resulting real discard request. Patch `0061` applies after
-`0060`; the historical `0015` patch and every intervening patch remain
-unchanged. Discard is not emulated by issuing a host-side write and does not
-bypass the Crucible/QEMU process boundary.
+The atomic patch `crucible-qemu-11.1.1.patch` extends the
+Crucible shared-memory block driver, and the GPL-2.0-only plugin transports the
+resulting real discard request. Capability task 0061 requires the typed block
+result transport from task 0060. Discard is not emulated by issuing a host-side
+write and does not bypass the Crucible/QEMU process boundary.
 
 ## Capability and ABI
 
@@ -27,7 +26,7 @@ payload-free discard through the registered block callback, waits through the
 existing deterministic coroutine polling path, and returns the typed completion
 to QEMU. The driver registers this function as `.bdrv_co_pdiscard`.
 
-`include/qemu/qemu-plugin.h` adds only the typed operation constant. Callback
+`include/plugins/qemu-plugin.h` adds only the typed operation constant. Callback
 function signatures do not change: for discard, `offset` is the first byte,
 `data` is null, and `len` is the requested byte count. A non-null payload,
 unrepresentable count, range error, unknown operation, or nonempty successful
@@ -70,11 +69,12 @@ The implementation must include:
    save/restore, and media/persistence composition;
 3. plugin callback tests proving null-payload/range translation and fail-loud
    rejection;
-4. a live patched-QEMU discard test whose guest-visible readback changes and
-   whose result turns red if the QEMU patch hunk is reverted;
+4. a live patched-QEMU discard test whose guest-visible readback changes, plus a
+   pristine-QEMU negative that proves the capability is absent;
 5. non-sim and unpatched-QEMU inertness checks;
-6. `gate:abi-conformance`, `gate:license-boundary`, complete corresponding-source,
-   patch-series identity, and source/license inventory checks.
+6. `gate:abi-conformance`, `gate:license-boundary`, complete
+   corresponding-source, atomic-patch identity, and source/license inventory
+   checks.
 
-The commit modifying the QEMU patch or GPL plugin carries a DCO sign-off and no
-AI attribution.
+The single atomic QEMU commit carries a DCO sign-off. Changes retain all
+applicable source and license metadata in the corresponding-source bundle.

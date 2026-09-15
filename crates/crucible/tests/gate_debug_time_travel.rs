@@ -537,7 +537,7 @@ fn corrupt_checkpoint(
             node_id("guest-a"),
             NodeBlobRef::baked(ContentHash::from_canonical_material(
                 "crucible.test.debug-time-travel.corrupt-snapshot",
-                "wrong-loadvm-payload",
+                "wrong-restore-payload",
             )),
         )]),
     )

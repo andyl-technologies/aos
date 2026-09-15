@@ -2,15 +2,14 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeNoRealtimeWarp",
-  taskIds ? ["T-TIME-5"],
-  openTaskIds ? [],
+  taskIds ? [],
+  openTaskIds ? ["T-TIME-5"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   deterministicLaunch = import ./phase1-deterministic-launch.nix {inherit pkgs lib;};
-  noWarpWithPlugin = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib;};
-  icountNoRealtime = import ./phase1-icount-no-realtime.nix {inherit pkgs lib;};
+  atomicPatchEvidence = import ./phase2-patch-microtests.nix {inherit pkgs lib;};
 
   qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
   qemuTest =
@@ -122,8 +121,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
       {
-        label = "T-TIME-5 live completion evidence";
-        needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";
+        label = "T-TIME-5 partial evidence boundary";
+        needle = "visible instruction and idle-warp suppression in a running guest";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -235,15 +234,12 @@ in
               "idle_warp_under_time_control=suppressed" \
               "icount_budget_deadline_source=QEMU_CLOCK_VIRTUAL" \
               "realtime_deadline_in_precise_budget=false"
-            require_leaf ${noWarpWithPlugin} \
-              "gate=gate:layer0-determinism" \
-              "time_control_predicate=qemu_plugin_has_time_control" \
-              "wall_clock_warp_under_time_control=false" \
-              "notify_preserved_under_time_control=true"
-            require_leaf ${icountNoRealtime} \
-              "gate=gate:layer0-determinism" \
-              "qemu_mode=ICOUNT_PRECISE" \
-              "realtime_deadline_in_precise_budget=false"
+            require_leaf ${atomicPatchEvidence} \
+              "gate=gate:patch-microtests" \
+              "atomic_patch=crucible-qemu-11.1.1.patch" \
+              "atomic_patch_runtime_is_shipped_qemu=true" \
+              "qemu_plugin_clock_deadline_export_present=true" \
+              "qemu_plugin_time_drain_exports_present=true"
           '';
         }
         {
@@ -257,7 +253,7 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             open_tasks=${builtins.concatStringsSep "," openTaskIds}
             status=partial
-            evidence_scope=launch-policy-and-callback-core-model
+            evidence_scope=launch-policy-callback-core-model-and-atomic-package
             gate=gate:layer0-determinism
             guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time
             guest_time_epoch=fixed-rtc-epoch
@@ -267,7 +263,9 @@ in
             idle_warp_under_time_control=suppressed
             icount_budget_deadline_source=QEMU_CLOCK_VIRTUAL
             realtime_deadline_in_precise_budget=false
-            leaf_checks=deterministicLaunch,noWarpWithPlugin,icountNoRealtime
+            atomic_patch_evidence=phase2PatchMicrotests
+            retired_partial_patch_fixtures=0
+            leaf_checks=deterministicLaunch,atomicPatchEvidence
             RESULT
           '';
         }

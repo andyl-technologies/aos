@@ -14,8 +14,14 @@
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
   model = import ./_crucible-model-source.nix {inherit lib;};
-  lifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
-  lifecycleTest = builtins.readFile ../../crates/crucible-api/tests/gate_lifecycle_unary.rs;
+  lifecycle = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/src/lifecycle.rs;
+  };
+  lifecycleTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/tests/gate_lifecycle_unary.rs;
+  };
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-api/tests/gate_control_client.rs;
@@ -24,7 +30,7 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
 
-  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/21-api.md" apiDoc [
@@ -209,10 +215,6 @@
         needle = "ResumeCheckpoint";
       }
       {
-        label = "resume lifecycle method";
-        needle = "pub async fn resume_session";
-      }
-      {
         label = "resume checkpoint closure validation";
         needle = "fn validate_resume_checkpoint_closure";
       }
@@ -223,6 +225,14 @@
       {
         label = "resume checkpoint instantiation";
         needle = "Engine::from_recorded_checkpoint";
+      }
+      {
+        label = "authenticated observation resume preparation";
+        needle = "fn prepare_observation_resume";
+      }
+      {
+        label = "authenticated observation resume publication";
+        needle = "async fn commit_observation_resume";
       }
       {
         label = "list reads live mirror";
@@ -239,6 +249,16 @@
       {
         label = "absent destroy idempotent";
         needle = "already_absent: true";
+      }
+      {
+        label = "internal timeout permit regression";
+        needle = "timed_out_observation_preparation_retains_then_releases_its_permit";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-api/src/lifecycle.rs" lifecycle [
+      {
+        label = "test-only public observation timeout override";
+        needle = "with_resume_observation_preparation_timeout";
       }
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_lifecycle_unary.rs" lifecycleTest [
@@ -279,16 +299,12 @@
         needle = "create_session_rejects_inline_seed_mismatch_without_side_effects";
       }
       {
-        label = "resume checkpoint closure test";
-        needle = "resume_session_accepts_checkpoint_closure_and_paused_live_mirror";
+        label = "observation resume preparation test";
+        needle = "observation_resume_factory_finishes_before_session_publication";
       }
       {
-        label = "resume checkpoint rejection test";
-        needle = "resume_session_rejects_mismatched_checkpoint_closure_without_side_effects";
-      }
-      {
-        label = "resume genesis material rejection test";
-        needle = "resume_session_rejects_tampered_zero_time_baked_genesis";
+        label = "observation resume bounded concurrency test";
+        needle = "http_observation_preparation_releases_registry_lock_and_bounds_in_flight_work";
       }
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
@@ -414,6 +430,7 @@ in
             --offline \
             --target-dir "$TMPDIR/crucible-api-lifecycle-unary-target" \
             -p crucible-api \
+            --features test-support \
             --test gate_lifecycle_unary \
             -- --test-threads=1
           cargo test \
@@ -421,6 +438,7 @@ in
             --offline \
             --target-dir "$TMPDIR/crucible-api-lifecycle-unary-target" \
             -p crucible-api \
+            --features test-support \
             --test gate_control_client \
             -- --test-threads=1
         '';
@@ -439,6 +457,7 @@ in
             printf 'hello=side_effect_free\n'
             printf 'list_scenarios=registry_read\n'
             printf 'create_session=start_command\n'
+            printf 'resume_session=authenticated_observation_source\n'
             printf 'list_sessions=live_mirror_read\n'
             printf 'destroy_session=epoch_guarded_stop\n'
             printf 'rpc_lifecycle=control_client_transport\n'

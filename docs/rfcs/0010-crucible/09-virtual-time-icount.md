@@ -426,7 +426,7 @@ idle gaps — never by wall-clock while the guest is idle.
   wall-clock time while the guest is idle — MUST be suppressed whenever the
   Crucible plugin holds time control. Virtual time during idle advances ONLY by
   an explicit, scheduler-authorized jump (§9.8). The suppression is the
-  patch-series mechanism (E2 in
+  atomic-patch mechanism (E2 in
   [`04-determinism-contract.md`](04-determinism-contract.md) §4.6) and MUST be
   inert unless sim mode is active ([INV-7]). *Gate:* `gate:layer0-determinism`,
   `gate:qemu-inert`. *Spec:* §9.7; satisfies [DET-10], [INV-7], forward-refs 11,
@@ -477,7 +477,7 @@ requires the exact one.
   The scheduler MUST use this deadline as the node's *exact local event* in
   horizon computation, converting it to a target icount via the `ceil` map
   ([TIME-4]). This requires the clock-deadline
-  introspection capability of the plugin/patch series
+  introspection capability of the plugin/atomic patch
   ([`12-qemu-plugin.md`](12-qemu-plugin.md),
   [`11-qemu-patches.md`](11-qemu-patches.md)): the plugin reads the next
   `QEMU_CLOCK_VIRTUAL` timer deadline from QEMU's timer subsystem. *Gate:*
@@ -655,46 +655,35 @@ instruction-primary.
   scheduling axis; default perfect clock byte-identical to no-skew; fixed-point
   arithmetic with documented rounding, no `f64` on the path. — satisfies
   [TIME-16], [TIME-17], [TIME-18], [TIME-19]; spec §9.6.
-- [x] **T-TIME-5** Make guest-visible time sources resolve to icount-derived
+- [ ] **T-TIME-5** Make guest-visible time sources resolve to icount-derived
   virtual time from a fixed epoch; suppress idle warp when the plugin holds time
   control; compute the icount budget from the virtual clock only (no realtime
   deadline); acquire time control before the first visible instruction. —
   satisfies [TIME-20], [TIME-21], [TIME-22], [TIME-23]; spec §9.7.
-  Completed by `checks.crucible.phase2.qemuLivePluginQuantum`, which loads no
-  observation plugin and drives a diskless timer-driven multiboot guest end to
-  end: the plugin
-  acquires time control before the first instruction (proven by the boot barrier
-  advancing from cold boot to the exact first host ceiling), and when the guest
-  idles it advances virtual time by the icount budget derived from the virtual
-  clock — QEMU's native realtime idle warp stays suppressed — jumping to the exact
-  next deadline rather than to a host-wall-clock estimate. The forbidden-host-time
-  scan on the time path is held by `checks.crucible.phase1.timeNoRealtimeWarp`.
+  `checks.crucible.phase1.timeNoRealtimeWarp` proves the static launch policy,
+  registration ordering, and forbidden-host-time scan. T-TIME-5 remains open
+  until a loaded production-plugin flight proves ownership before the first
+  visible instruction and idle-warp suppression in a running guest.
 - [x] **T-TIME-6** Implement exact next-deadline introspection (plugin reads the
   next `QEMU_CLOCK_VIRTUAL` timer deadline) and feed it as the node's exact local
   event to the scheduler horizon; ban the overshoot-and-correct fallback and fail
   loudly if the capability is unavailable. — satisfies [TIME-24], [TIME-25],
   [TIME-26]; spec §9.8.
-  Completed by `checks.crucible.phase2.qemuLivePluginQuantum`, which records the
-  plugin reading the exact next `QEMU_CLOCK_VIRTUAL` timer deadline and feeding it
-  to the scheduler as the node's exact local event: at idle onset the gate emits
-  `idle_next_deadline_icount` equal to the introspected, ceil-converted deadline
-  with no overshoot-and-correct, the scheduler consumes it as the idle horizon,
-  and the value is identical on both runs. Advancing the node to that deadline is
-  T-TIME-7 / T-PLUG-7. The fail-loud-on-missing-capability and QEMU-export
-  microtest halves are held by `checks.crucible.phase1.clockDeadline`.
+  Completed by `checks.crucible.phase2.gates.patchMicrotests` and
+  `checks.crucible.phase7.productionRustPluginFlight`. The atomic patch gate
+  verifies the shipped deadline API, while the loaded production-plugin flight
+  observes the exact armed deadline and consumes it as the next idle wake.
 - [x] **T-TIME-7** Implement time advancement via the max-advance ceiling: convert
   horizon → ceiling icount ([TIME-4]), publish ceiling and reached-icount in the
   shmem region, coordinate the idle/advance handoff with a futex, and forbid any
   node self-extending past the published ceiling. — satisfies [TIME-27],
   [TIME-28], [TIME-29], [TIME-30]; spec §9.9.
-  Completed by `checks.crucible.phase2.qemuLivePluginQuantum`: the plugin
-  converts the introspected deadline horizon to a ceiling icount, publishes
-  ceiling/reached-icount in the shmem region, and hands
-  the idle vCPU off through the wake futex; the idle guest advances through the
-  exact deadline by a 40M-icount O(1) jump, wakes, and re-idles below the
-  published ceiling, never self-extending past it, because the max-advance
-  budget is computed as `ceiling - logical_offset`. The terminal icount is
-  byte-identical on the second, bounded-scheduler-preemption run.
+  Completed by `checks.crucible.phase1.timeAdvanceCeiling` and
+  `checks.crucible.phase7.productionRustPluginFlight`. The component gate covers
+  the shared-memory ceiling, futex handoff, conversion, and no-self-extension
+  rules. The loaded production-plugin flight advances an all-vCPU-idle guest to
+  the exact published deadline without overshoot and reproduces the same wake
+  boundary stream after restart.
 - [x] **T-TIME-8** Verify determinism of time in isolation under Contract A: a
   single node fed a recorded icount-stamped input list produces a bit-identical
   `(icount, virtual_time)` trajectory and matching time-derived fingerprint
@@ -709,41 +698,18 @@ instruction-primary.
     control proves the time-only fingerprint depends on the icount horizon rather
     than input bytes, overflow is rejected, and both the focused gate and the
     workspace harness lint reject host-time reads on the time path.
-  - **Live corroboration (`checks.crucible.phase2.qemuLivePluginFingerprint`):** a single
-    live node (the Rust control plugin as sole time authority) is driven to a
-    fixed ascending icount cadence and the whole scenario runs twice, the second
-    under bounded scheduler preemption. Both runs produce a byte-identical
-    fingerprint stream whose per-vCPU retired-instruction counts and per-boundary
-    aggregate icount are the time-derived fields — a bit-identical
-    `(icount, virtual_time)` trajectory, since virtual time is the icount
-    left-shifted by the fixed `icount_shift`. Host-time reads on the plugin time
-    path stay lint-banned (the plugin advances virtual time from the retired
-    icount; the only wall-clock reads are diagnostic advancement-rate windows
-    that carry explicit `crucible-lint` allow annotations and never enter guest
-    state, the fingerprint, or the cross-run comparison). This real-QEMU proof
-    intentionally uses the empty input list; the focused Contract A gate above
-    covers the recorded-input trajectory clause.
+  - `checks.crucible.phase7.productionRustPluginFlight` corroborates the model
+    with exact on-demand boundary samples from the loaded plugin under bounded
+    scheduler preemption and proves restart-identical sample and idle-wake
+    streams.
 - [x] **T-TIME-9** Implement the multi-vCPU single-aggregate-icount clock: derive
   the node clock from the aggregate retired-instruction count across all `N`
   vCPUs (no per-vCPU shift/epoch), keep per-vCPU counts plugin-internal, pin the
   node-icount `rr_switch_quantum` into the content hash, and compute the node's
   exact next deadline as the minimum over all vCPUs' armed virtual-clock
   deadlines. — satisfies [TIME-24], [TIME-34], [TIME-35]; spec §9.8, §9.10.
-  Completed by `checks.crucible.phase2.qemuLivePluginFingerprintSmp` (live at the
-  frozen `-smp 4` pin, corroborated at `-smp 2`) with the model proven by
-  `checks.crucible.phase1.timeMultiVcpuAggregateClock`. Live: the Rust plugin
-  drives the single aggregate-icount node clock across all `N` vCPUs to the
-  busy-window targets, and every boundary's aggregate node icount equals its
-  exact target (`aggregate_icount_equals_target`), so no per-vCPU shift/epoch or
-  idle-jump offset leaks into the aggregate accounting. The node-icount
-  `rr_switch_quantum` (4096) is pinned into the fingerprint definition digest
-  under the new `crucible.qemu.rust-plugin-fingerprint.v2` domain. Per-vCPU
-  counts stay plugin-internal: under single-threaded RR icount QEMU keeps one
-  global counter (the per-vCPU introspection retired stamp is a deterministic
-  constant), so the per-vCPU decomposition is the plugin's RR-cursor model
-  (`aggregate_multi_vcpu_deadline`), which the phase-1 gate proves. The node's
-  exact next deadline is the single `QEMU_CLOCK_VIRTUAL` timer-list read — already
-  the minimum across all vCPUs' armed virtual-clock deadlines by construction —
-  exercised live at the idle boundary by the `-smp 1` quantum gate and modeled at
-  `-smp N` by `aggregate_multi_vcpu_deadline`; the busy multi-vCPU gate does not
-  reach an idle window (deferred with the idle-warp determinism scope).
+  Completed by `checks.crucible.phase1.timeMultiVcpuAggregateClock` and
+  `checks.crucible.phase7.productionRustPluginFlight`. The model gate proves the
+  aggregate-clock contract. The loaded production flight runs four vCPUs,
+  records each vCPU register file, proves the aggregate icount equals the target,
+  and observes the exact next deadline and all-vCPU idle wake.

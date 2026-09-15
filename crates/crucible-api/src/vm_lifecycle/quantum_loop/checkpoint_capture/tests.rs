@@ -56,8 +56,20 @@ fn preparation_is_all_or_nothing_before_live_capture() {
     assert_eq!(prepared[0].node, node_a);
     assert_eq!(prepared[0].checkpoint.node_icounts, node_icounts);
     assert_eq!(
-        prepared[1].staged_vmstate_chunks,
-        staging.path().join("node-1-vmstate-objects")
+        prepared[1].ram_output,
+        staging.path().join("node-1-ram.crucram")
+    );
+    assert_eq!(
+        prepared[1].device_output,
+        staging.path().join("node-1-device.vmstate")
+    );
+    assert_eq!(
+        prepared[1].staged_ram_chunks,
+        staging.path().join("node-1-ram-objects")
+    );
+    assert_eq!(
+        prepared[1].staged_device_chunks,
+        staging.path().join("node-1-device-objects")
     );
 
     let incomplete_directories = BTreeMap::from([(node_a.clone(), PathBuf::from("generation-a"))]);

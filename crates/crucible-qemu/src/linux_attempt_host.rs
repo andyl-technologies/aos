@@ -178,6 +178,46 @@ impl LinuxQemuAttemptHostFactory {
         maximum_resident_bytes: u64,
         maximum_writable_bytes: u64,
     ) -> Result<LinuxQemuAttemptHostOwner, QemuVmRealizationError> {
+        self.begin_with_checkpoint_root(
+            maximum_vcpus,
+            maximum_resident_bytes,
+            maximum_writable_bytes,
+            None,
+        )
+    }
+
+    /// Installs resources born presealed to one supervisor-selected checkpoint.
+    ///
+    /// The caller must obtain `exact_checkpoint_root` from its current durable
+    /// resume-selection claim. The returned process contract has no operation
+    /// that can add or replace this root after construction.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable or availability error under the same conditions as
+    /// [`Self::begin`].
+    pub fn begin_exact_checkpoint(
+        &mut self,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
+        exact_checkpoint_root: crucible::ContentHash,
+    ) -> Result<LinuxQemuAttemptHostOwner, QemuVmRealizationError> {
+        self.begin_with_checkpoint_root(
+            maximum_vcpus,
+            maximum_resident_bytes,
+            maximum_writable_bytes,
+            Some(exact_checkpoint_root),
+        )
+    }
+
+    fn begin_with_checkpoint_root(
+        &mut self,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
+        exact_checkpoint_root: Option<crucible::ContentHash>,
+    ) -> Result<LinuxQemuAttemptHostOwner, QemuVmRealizationError> {
         if self.poisoned || self.process.is_poisoned() {
             return Err(QemuVmRealizationError::ExecutorUnavailable {
                 operation: "create QEMU attempt host owner",
@@ -200,6 +240,7 @@ impl LinuxQemuAttemptHostFactory {
             maximum_vcpus,
             maximum_resident_bytes,
             maximum_writable_bytes,
+            exact_checkpoint_root,
         ) {
             Ok(process) => process,
             Err(error) => {

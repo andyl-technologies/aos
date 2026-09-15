@@ -89,11 +89,12 @@ fn cli_selftest_honors_machine_output_trace_and_quiet() -> Result<(), Box<dyn Er
 }
 
 #[test]
-fn cli_save_machine_readable_jsonl_reports_handle_path() -> Result<(), Box<dyn Error>> {
+fn cli_save_machine_readable_jsonl_rejects_session_owned_export() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
     let scenario = temp.path().join("scenario.toml");
     let artifact_dir = temp.path().join("artifacts");
+    let save_store = temp.path().join("save-store");
     fs::write(&scenario, fixture.scenario.to_canonical_toml()?)?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
@@ -107,195 +108,19 @@ fn cli_save_machine_readable_jsonl_reports_handle_path() -> Result<(), Box<dyn E
             "--artifact-dir",
         ])
         .arg(&artifact_dir)
+        .arg("--store")
+        .arg(&save_store)
         .arg("save")
         .arg(&scenario)
         .args(["--at", "quiescence", "--label", "jsonl"])
         .output()?;
-    assert!(
-        output.status.success(),
-        "crucible save --format jsonl should exit 0; stdout=`{}` stderr=`{}`",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let stdout = String::from_utf8(output.stdout)?;
-    assert_machine_readable_jsonl(&stdout, &["save_export"])?;
-    assert!(stdout.contains("out="));
-    assert!(stdout.contains(".crucible-savepoint"));
-
-    let handles = fs::read_dir(&artifact_dir)?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let file_name = entry.file_name();
-            let file_name = file_name.to_str()?;
-            (file_name.starts_with("savepoint-jsonl-")
-                && file_name.ends_with(".crucible-savepoint"))
-            .then_some(entry)
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(handles.len(), 1);
-    assert!(
-        handles[0]
-            .path()
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("savepoint-jsonl-")
-                && name.ends_with(".crucible-savepoint"))
-    );
-
-    Ok(())
-}
-
-#[test]
-#[cfg_attr(not(debug_assertions), ignore = "debug fixture; fleet gates run QEMU")]
-fn cli_save_qemu_process_requires_packaged_live_guest_assets() -> Result<(), Box<dyn Error>> {
-    let temp = TempDir::new()?;
-    let artifact_dir = temp.path().join("qemu-save-artifacts");
-    let (qemu, plugin) = qemu_process_artifacts(temp.path())?;
-
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args(["--format", "jsonl", "--backend", "qemu", "--qemu"])
-        .arg(&qemu)
-        .arg("--plugin")
-        .arg(&plugin)
-        .args(["--seed", "7", "--artifact-dir"])
-        .arg(&artifact_dir)
-        .arg("save")
-        .arg("builtin:happy-path.scn")
-        .args(["--at", "quiescence", "--label", "qemu-process"])
-        .output()?;
     assert_eq!(output.status.code(), Some(4));
+    assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr)?;
-    assert!(stderr.contains("requires the AOS kernel"));
-    assert!(!stderr.contains("execution is unavailable"));
-    assert!(!stderr.contains("double fallback"));
-    assert!(
-        !artifact_dir.exists() || fs::read_dir(&artifact_dir)?.next().is_none(),
-        "rejected QEMU save must not emit an artifact"
-    );
-
-    Ok(())
-}
-
-#[test]
-#[cfg_attr(not(debug_assertions), ignore = "debug fixture; fleet gates run QEMU")]
-fn cli_resume_qemu_process_requires_packaged_live_guest_assets() -> Result<(), Box<dyn Error>> {
-    let temp = TempDir::new()?;
-    let save_artifact_dir = temp.path().join("resume-source-artifacts");
-    let save_store = temp.path().join("resume-source-store");
-    let resume_artifact_dir = temp.path().join("qemu-resume-artifacts");
-    let resume_store = temp.path().join("qemu-resume-store");
-    let (qemu, plugin) = qemu_process_artifacts(temp.path())?;
-
-    let save_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args([
-            "--format",
-            "jsonl",
-            "--backend",
-            "double",
-            "--seed",
-            "8",
-            "--artifact-dir",
-        ])
-        .arg(&save_artifact_dir)
-        .arg("--store")
-        .arg(&save_store)
-        .arg("save")
-        .arg("builtin:happy-path.scn")
-        .args(["--at", "quiescence", "--label", "resume-source"])
-        .output()?;
-    assert!(
-        save_output.status.success(),
-        "source savepoint for qemu resume should exit 0; stdout=`{}` stderr=`{}`",
-        String::from_utf8_lossy(&save_output.stdout),
-        String::from_utf8_lossy(&save_output.stderr),
-    );
-    let source = single_savepoint_handle(&save_artifact_dir, "resume-source")?;
-
-    let resume_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args(["--format", "jsonl", "--backend", "qemu", "--qemu"])
-        .arg(&qemu)
-        .arg("--plugin")
-        .arg(&plugin)
-        .arg("--artifact-dir")
-        .arg(&resume_artifact_dir)
-        .arg("--store")
-        .arg(&resume_store)
-        .arg("resume")
-        .arg(&source)
-        .args(["--until", "virtual-time", "--max-virtual-time", "2ticks"])
-        .output()?;
-    assert_eq!(resume_output.status.code(), Some(4));
-    let stderr = String::from_utf8(resume_output.stderr)?;
-    assert!(stderr.contains("requires the AOS kernel"));
-    assert!(!stderr.contains("execution is unavailable"));
-    assert!(!stderr.contains("double fallback"));
-    assert!(
-        !resume_artifact_dir.exists() || fs::read_dir(&resume_artifact_dir)?.next().is_none(),
-        "rejected QEMU resume must not emit an artifact"
-    );
-
-    Ok(())
-}
-
-#[test]
-#[cfg_attr(not(debug_assertions), ignore = "debug fixture; fleet gates run QEMU")]
-fn cli_fork_qemu_process_requires_packaged_live_guest_assets() -> Result<(), Box<dyn Error>> {
-    let temp = TempDir::new()?;
-    let save_artifact_dir = temp.path().join("fork-source-artifacts");
-    let fork_artifact_dir = temp.path().join("qemu-fork-artifacts");
-    let (qemu, plugin) = qemu_process_artifacts(temp.path())?;
-
-    let save_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args([
-            "--format",
-            "jsonl",
-            "--backend",
-            "double",
-            "--seed",
-            "9",
-            "--artifact-dir",
-        ])
-        .arg(&save_artifact_dir)
-        .arg("save")
-        .arg("builtin:happy-path.scn")
-        .args(["--at", "quiescence", "--label", "fork-source"])
-        .output()?;
-    assert!(
-        save_output.status.success(),
-        "source savepoint for qemu fork should exit 0; stdout=`{}` stderr=`{}`",
-        String::from_utf8_lossy(&save_output.stdout),
-        String::from_utf8_lossy(&save_output.stderr),
-    );
-    let source = single_savepoint_handle(&save_artifact_dir, "fork-source")?;
-
-    let fork_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args(["--format", "jsonl", "--backend", "qemu", "--qemu"])
-        .arg(&qemu)
-        .arg("--plugin")
-        .arg(&plugin)
-        .arg("--artifact-dir")
-        .arg(&fork_artifact_dir)
-        .args(["--seed", "7"])
-        .arg("fork")
-        .arg(&source)
-        .args([
-            "--until",
-            "virtual-time",
-            "--max-virtual-time",
-            "2ticks",
-            "--label",
-            "qemu-process-child",
-        ])
-        .output()?;
-    assert_eq!(fork_output.status.code(), Some(4));
-    let stderr = String::from_utf8(fork_output.stderr)?;
-    assert!(stderr.contains("requires the AOS kernel"));
-    assert!(!stderr.contains("execution is unavailable"));
-    assert!(!stderr.contains("double fallback"));
-    assert!(
-        !fork_artifact_dir.exists() || fs::read_dir(&fork_artifact_dir)?.next().is_none(),
-        "rejected QEMU fork must not emit an artifact"
-    );
+    assert!(stderr.contains(
+        "savepoint export requires Campaign-owned execution with an authenticated portable replay closure"
+    ));
+    assert!(!artifact_dir.exists());
 
     Ok(())
 }
@@ -759,69 +584,6 @@ retired_icount = 7
 "#
 }
 
-fn qemu_process_artifacts(dir: &Path) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
-    fs::create_dir_all(dir)?;
-    let qemu = dir.join("qemu-system-x86_64");
-    let plugin = dir.join("crucible-qemu-plugin.so");
-    fs::copy(env!("CARGO_BIN_EXE_crucible"), &qemu)?;
-    fs::write(&plugin, qemu_plugin_elf_fixture())?;
-    let shmem_abi_version = crucible::SHMEM_ABI_VERSION;
-    let plugin_abi = qemu_process_plugin_abi();
-    fs::write(
-        dir.join("qemu-build-identity.env"),
-        format!(
-            "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_patch_series_hash=sha256-process-qemu-patch-series\nqemu_shmem_abi_version={shmem_abi_version}\nqemu_shmem_abi={plugin_abi}\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-process-shmem-header\nqemu_build_id=process-qemu-build-v1\n"
-        ),
-    )?;
-    fs::write(
-        dir.join("crucible-qemu-plugin-build-info"),
-        format!(
-            "package=crucible-qemu-plugin\nqemu_package=qemu-crucible\nqemu_build_id=process-qemu-build-v1\nshmem_abi_version={shmem_abi_version}\nshmem_abi={plugin_abi}\nshmem_generated_header=include/aos/crucible/crucible_shmem_abi.h\nshmem_generated_header_hash=sha256-process-shmem-header\nplugin_abi={plugin_abi}\n"
-        ),
-    )?;
-    Ok((qemu, plugin))
-}
-
-fn qemu_plugin_elf_fixture() -> Vec<u8> {
-    let strings = b"\0qemu_plugin_install\0qemu_plugin_version\0";
-    let string_offset = 64_usize;
-    let symbol_offset = (string_offset + strings.len() + 7) & !7;
-    let section_offset = symbol_offset + 3 * 24;
-    let mut bytes = vec![0_u8; section_offset + 3 * 64];
-    bytes[..4].copy_from_slice(b"\x7fELF");
-    bytes[4] = 2;
-    bytes[5] = 1;
-    bytes[16..18].copy_from_slice(&3_u16.to_le_bytes());
-    bytes[40..48].copy_from_slice(&(section_offset as u64).to_le_bytes());
-    bytes[58..60].copy_from_slice(&64_u16.to_le_bytes());
-    bytes[60..62].copy_from_slice(&3_u16.to_le_bytes());
-    bytes[string_offset..string_offset + strings.len()].copy_from_slice(strings);
-    let install = symbol_offset + 24;
-    bytes[install..install + 4].copy_from_slice(&1_u32.to_le_bytes());
-    bytes[install + 4] = 0x12;
-    bytes[install + 6..install + 8].copy_from_slice(&1_u16.to_le_bytes());
-    let version = symbol_offset + 48;
-    let version_name = 1 + b"qemu_plugin_install".len() + 1;
-    bytes[version..version + 4].copy_from_slice(&(version_name as u32).to_le_bytes());
-    bytes[version + 4] = 0x11;
-    bytes[version + 6..version + 8].copy_from_slice(&1_u16.to_le_bytes());
-    let dynstr = section_offset + 64;
-    bytes[dynstr + 4..dynstr + 8].copy_from_slice(&3_u32.to_le_bytes());
-    bytes[dynstr + 24..dynstr + 32].copy_from_slice(&(string_offset as u64).to_le_bytes());
-    bytes[dynstr + 32..dynstr + 40].copy_from_slice(&(strings.len() as u64).to_le_bytes());
-    let dynsym = section_offset + 128;
-    bytes[dynsym + 4..dynsym + 8].copy_from_slice(&11_u32.to_le_bytes());
-    bytes[dynsym + 24..dynsym + 32].copy_from_slice(&(symbol_offset as u64).to_le_bytes());
-    bytes[dynsym + 32..dynsym + 40].copy_from_slice(&72_u64.to_le_bytes());
-    bytes[dynsym + 40..dynsym + 44].copy_from_slice(&1_u32.to_le_bytes());
-    bytes[dynsym + 56..dynsym + 64].copy_from_slice(&24_u64.to_le_bytes());
-    bytes
-}
-
-fn qemu_process_plugin_abi() -> String {
-    format!("crucible-shmem-abi-v{}", crucible::SHMEM_ABI_VERSION)
-}
-
 #[derive(Debug)]
 struct ArtifactDecision {
     sequence: u64,
@@ -919,7 +681,7 @@ fn replay_to_savepoint_artifact_text(
     let store_uri = format!("cas:{scenario_digest}");
     let decisions = replay_to_savepoint_decision_fixtures(schedule);
     let mut text = String::new();
-    artifact_line(&mut text, &["schema", "crucible.reproduction-artifact.v3"]);
+    artifact_line(&mut text, &["schema", "crucible.reproduction-artifact.v4"]);
     artifact_line(&mut text, &["seed", "111"]);
     artifact_line(
         &mut text,
@@ -927,9 +689,9 @@ fn replay_to_savepoint_artifact_text(
             "identity",
             env!("CARGO_PKG_VERSION"),
             "crucible-harness-e2e-v2",
-            "crucible.reproduction-artifact.v3",
+            "crucible.reproduction-artifact.v4",
             &content_address_bytes(b"mock-backend-source-v1"),
-            &content_address_bytes(b"mock-qemu-patch-series-v1"),
+            &content_address_bytes(b"mock-qemu-atomic-patch-v1"),
             &crucible::SHMEM_ABI_VERSION.to_string(),
             &crucible_api::CONTROL_PROTOCOL_VERSION.to_string(),
             &format!(
@@ -1052,7 +814,6 @@ fn replay_to_savepoint_decision_fixtures(
                 crucible::Decision::RngDraw(_) => "rng-draw",
                 crucible::Decision::Override(_) => "override",
                 crucible::Decision::Preemption(_) => "preemption",
-                crucible::Decision::AppRandom(_) => "app-random",
                 crucible::Decision::Selection(_) => "selection",
             };
             ReplayToSavepointDecisionFixture {

@@ -191,18 +191,12 @@
           require_covered_function temporal_graph_rejects_mismatched_or_thin_cached_snapshots
           require_covered_function temporal_graph_rejects_plain_cached_genesis_snapshot
           require_covered_function temporal_graph_rejects_mismatched_or_thin_baked_genesis
-          require_covered_function decision_recorder_records_rng_draws_and_app_random_outcomes
           require_covered_function decision_recorder_keeps_per_entity_streams_stable
-          require_covered_function decision_recorder_records_app_random_after_rng_draw
-          require_covered_function decision_recorder_records_app_random_guest_request_id
-          require_covered_function decision_recorder_rejects_invalid_app_random_widths
           require_covered_function decision_recorder_resumes_stream_positions_from_existing_schedule
           require_covered_function decision_recorder_derives_default_rr_preemption_without_recording_schedule
           require_covered_function decision_recorder_records_preemption_overrides_in_schedule
           require_covered_function decision_recorder_rejects_invalid_default_preemption_shape
           require_covered_function decision_recorder_derives_default_rr_preemption_without_overflow
-          require_covered_function decision_recorder_serves_app_random_override_without_rerolling_stream
-          require_covered_function decision_recorder_rejects_invalid_app_random_override_values
           require_covered_function sim_backend_rejects_backward_advance_and_post_shutdown_mutation
           require_covered_function sim_backend_rejects_unknown_checkpoint_deterministically
           require_covered_function stable_hasher_is_repeatable
@@ -393,8 +387,7 @@
             "crucible/src/decision.rs" \
             "crucible/src/decision.rs" \
             1 \
-            "pub fn serve_app_random" \
-            "Decision::AppRandom" \
+            "BackendRngEvidence" \
             "decision recorder app-random decision"
           require_line_marker \
             "crucible/src/decision.rs" \
@@ -406,14 +399,12 @@
             "crucible/src/decision.rs" \
             "crucible/src/decision.rs" \
             1 \
-            "fn validate_app_random_width(width: u8) -> Result<(), DecisionRecordError>" \
             "decision recorder invalid app-random width branch"
           require_line_marker_after \
             "crucible/src/decision.rs" \
             "crucible/src/decision.rs" \
             1 \
-            "pub fn serve_app_random_override" \
-            "Decision::AppRandom" \
+            "BackendRngEvidence" \
             "decision recorder app-random override decision"
           require_line_marker_after \
             "crucible/src/decision.rs" \
@@ -578,6 +569,21 @@
       ];
     }
     {
+      id = "decision-rng-and-forking";
+      sourcePath = "crates/crucible/src/decision.rs";
+      testPath = "crates/crucible/src/decision.rs";
+      status = "active";
+      instrumentation = "separate-deterministic-build";
+      activationMarkers = [];
+      activationSourceRoots = [];
+      requiredMarkers = [
+        "decision_recorder_keeps_per_entity_streams_stable"
+        "decision_recorder_domain_separates_same_name_node_and_link_streams"
+        "decision_recorder_does_not_perturb_streams_for_unrelated_world_edits"
+        "decision_recorder_resumes_stream_positions_from_existing_schedule"
+      ];
+    }
+    {
       id = "content-addressed-digest";
       sourcePath = "crates/crucible-sim/src/lib.rs";
       testPath = "crates/crucible-sim/src/lib.rs";
@@ -602,31 +608,6 @@
       requiredMarkers = [
         "replay_oracle_accepts_matching_corpus"
         "replay_oracle_reports_first_mismatch"
-      ];
-    }
-    {
-      id = "decision-rng-and-forking";
-      sourcePath = "crates/crucible/src/decision.rs";
-      testPath = "crates/crucible/src/decision.rs";
-      status = "active";
-      instrumentation = "separate-deterministic-build";
-      activationMarkers = [];
-      activationSourceRoots = [];
-      requiredMarkers = [
-        "decision_recorder_records_rng_draws_and_app_random_outcomes"
-        "decision_recorder_keeps_per_entity_streams_stable"
-        "decision_recorder_records_app_random_after_rng_draw"
-        "decision_recorder_records_app_random_guest_request_id"
-        "decision_recorder_rejects_invalid_app_random_widths"
-        "decision_recorder_resumes_stream_positions_from_existing_schedule"
-        "decision_recorder_derives_default_rr_preemption_without_recording_schedule"
-        "decision_recorder_records_preemption_overrides_in_schedule"
-        "decision_recorder_rejects_invalid_default_preemption_shape"
-        "decision_recorder_derives_default_rr_preemption_without_overflow"
-        "decision_recorder_serves_app_random_override_without_rerolling_stream"
-        "decision_recorder_rejects_invalid_app_random_override_values"
-        "assert_decision_rng_branch_coverage("
-        "assert_per_entity_rng_forking_coverage("
       ];
     }
     {
@@ -850,18 +831,12 @@
       "sim_backend_rejects_unknown_checkpoint_deterministically"
       "stable_hasher_covers_chunk_remainder_and_bool_inputs"
       "replay_oracle_reports_first_mismatch"
-      "decision_recorder_records_rng_draws_and_app_random_outcomes"
       "decision_recorder_keeps_per_entity_streams_stable"
-      "decision_recorder_records_app_random_after_rng_draw"
-      "decision_recorder_records_app_random_guest_request_id"
-      "decision_recorder_rejects_invalid_app_random_widths"
       "decision_recorder_resumes_stream_positions_from_existing_schedule"
       "decision_recorder_derives_default_rr_preemption_without_recording_schedule"
       "decision_recorder_records_preemption_overrides_in_schedule"
       "decision_recorder_rejects_invalid_default_preemption_shape"
       "decision_recorder_derives_default_rr_preemption_without_overflow"
-      "decision_recorder_serves_app_random_override_without_rerolling_stream"
-      "decision_recorder_rejects_invalid_app_random_override_values"
     ];
   in
     lib.concatMap (

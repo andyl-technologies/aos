@@ -16,7 +16,7 @@ Requirement IDs in this file use the prefix `PLUG`. Gate names referenced here
 are defined in [`24-determinism-harness-testing.md`](24-determinism-harness-testing.md);
 the canonical gates this file is bound by are `gate:single-vm-fingerprint`,
 `gate:layer1-injection`, `gate:qemu-inert`, `gate:abi-conformance`, and
-`gate:layer0-determinism`. The plugin's counterparts are the QEMU patch series
+`gate:layer0-determinism`. The plugin's counterparts are the atomic QEMU patch
 that exposes the capabilities it calls ([`11-qemu-patches.md`](11-qemu-patches.md)),
 the host executor that launches it and runs the scheduler
 ([`08-scheduling.md`](08-scheduling.md), [`10-qemu-integration.md`](10-qemu-integration.md)),
@@ -341,7 +341,7 @@ authoritative, and the woken plugin observes a consistent
 
 - **[PLUG-14]** On going idle the plugin MUST obtain the *exact* virtual time of
   the guest's next armed timer deadline from `QEMU_CLOCK_VIRTUAL` via the
-  clock-deadline introspection capability of the patch series
+  clock-deadline introspection capability of the atomic patch
   ([`11-qemu-patches.md`](11-qemu-patches.md),
   [`09-virtual-time-icount.md`](09-virtual-time-icount.md) §9.8), convert it to an
   icount via the fixed shift's `ceil` map ([TIME-4]), and report it to the
@@ -397,7 +397,7 @@ exploration decision about *when* a vCPU switch / interrupt happens.
   realtime quantum. The plugin MUST apply any `Decision::Preemption` the
   scheduler (08) hands it by forcing the vCPU switch / delivering the interrupt
   at the **commanded node-icount** via the preemption-injection capability of the
-  patch series (11/[PATCH-47]). If a commanded preemption falls outside the
+  atomic patch (11/[PATCH-47]). If a commanded preemption falls outside the
   authorized window `[deadline, ceiling]`, the plugin MUST fail loudly and
   localize it ([INV-10]) rather than clamp, defer, or apply it at a different
   icount. The interleaving, and any applied preemption, MUST be a pure function
@@ -556,7 +556,7 @@ applies the link model.
 ### 12.5.2 RX injection (inbound ring → guest)
 
 - **[PLUG-26]** The plugin MUST inject inbound frames into the guest's NIC via the
-  RX-injection capability of the patch series
+  RX-injection capability of the atomic patch
   ([`11-qemu-patches.md`](11-qemu-patches.md)), using a canonical retry path so
   a frame is never silently dropped when the guest's RX queue is momentarily not
   ready. QEMU reports backpressure without taking ownership; the plugin leaves
@@ -704,8 +704,7 @@ into restored execution. Registration and consumed-reply deltas use internal
 marker kinds `0xff08` and `0xff09`; together with the pending kind `0xff06` and
 the ordinary `setup_complete` marker, they maintain the host-owned exact
 checkpoint mirror without placing Rust or QEMU-private state across the process
-boundary. Control-protocol v2 has no selectable plan and fails
-closed on a selectable message.
+boundary. Missing or malformed selectable state fails closed during setup.
 
 - **[PLUG-51]** **App-controlled randomness (white-box, optional).** When and
   only when a node opts in (a white-box mode, [PLUG-5] `whitebox=on`), the plugin
@@ -716,7 +715,7 @@ closed on a selectable message.
   and writes the value back to the guest at the **trap icount** under the
   injection contract of §4.4 (host→guest reply carrying a delivery icount and
   becoming visible at exactly that icount, [DET-17], [PLUG-34]). The served value
-  MUST be recorded as a `Decision::AppRandom` (08) so it is part of the schedule
+  MUST be recorded as a `BackendRngEvidence` (08) so it is part of the schedule
   and replayable. Serving a request MUST be side-effect-free with respect to the
   architectural trajectory `T` **except** for the requested value delivered at
   the trap icount — it MUST NOT perturb virtual time, frame/I-O delivery, or the
@@ -789,7 +788,7 @@ section states the plugin's obligations on that channel and at the boot barrier.
 
 ### 12.9.2 Setup and ABI validation
 
-- **[PLUG-40]** On control-protocol v2 or v3 `Setup` the plugin MUST receive
+- **[PLUG-40]** On control-protocol v3 `Setup` the plugin MUST receive
   exactly three descriptors via `SCM_RIGHTS` in fixed order — the shmem fd, the
   wake fd, then the sealed node-local version-negotiated plugin-plan memfd
   ([`14-protocol.md`](14-protocol.md) [PROTO-8]) — `mmap` the shmem fd for exactly
@@ -798,10 +797,9 @@ section states the plugin's obligations on that channel and at the boot barrier.
   ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-30]), and only then arm the wake fd
   and register callbacks. Before readiness it MUST also require the plan fd to
   be a regular memfd sealed against write/grow/shrink/seal mutation, read at most
-  4 MiB and strictly decode the `CRUCABP1` version-1 body under v2, or read at
-  most 36 MiB plus 28 bytes and strictly decode the `CRUCSUP1` version-1
-  composite with canonical app-random and selectable nested plans under v3.
-  A profile/body mismatch, any other
+  most 36 MiB plus 28 bytes and strictly decode the `CRUCSUP2` version-2
+  composite with canonical app-random and selectable nested plans.
+  Any other
   fd count, a short region, mutable/malformed plan, or a failed header validation
   MUST be a setup failure ([PROTO-21]). *Gate:*
   `gate:abi-conformance`. *Spec:* §12.9.2, forward-ref
@@ -921,7 +919,7 @@ tightly here.
 
 - **[PLUG-49]** When sim mode is off the plugin is not loaded at all: no `-plugin`
   argument is passed, no control socket is created, no shared-memory region is
-  mapped, and none of the patch-series capabilities the plugin calls take effect
+  mapped, and none of the atomic-patch capabilities the plugin calls take effect
   ([`14-protocol.md`](14-protocol.md) [PROTO-24], [INV-7]). The plugin's existence
   MUST have zero effect on a QEMU process launched without it; AOS's production
   QEMU built from the same source MUST be behaviorally identical to upstream when
@@ -979,7 +977,7 @@ component that makes that purity true *inside* the QEMU process.
   TX/RX, block/9p submit/poll, white-box doorbell trap) so no host component
   injects/completes/stamps except through these paths. —
   satisfies [PLUG-2], [PLUG-3], [PLUG-4]; spec §12.1, §12.5, §12.6, §12.7.
-  Completed by `checks.crucible.phase2.qemuPluginAbiScaffold` and the live
+  Completed by `checks.crucible.phase2.qemuPluginRuntimeInstall` and the live
   callback gates. The packaged `cdylib` exports only the pinned QEMU install and
   version ABI, validates the live QEMU API, vCPU topology, and single-threaded
   RR execution proof before registration, and keeps lifecycle state separate
@@ -1006,20 +1004,14 @@ component that makes that purity true *inside* the QEMU process.
   plugin advances virtual time only by guest instructions up to the ceiling and by
   authorized idle jumps; ban host wall-clock/monotonic reads on the time path. —
   satisfies [PLUG-1], [PLUG-9], [PLUG-44]; spec §12.3.1, §12.10.1.
-  Completed by `checks.crucible.phase2.qemuLivePluginQuantum`, which loads no
-  observation plugin so the Rust plugin is the sole `sim_shmem` time authority:
-  across the boot quanta the guest advances by exactly its guest-instruction icount
-  up to each host-published scheduler ceiling and stops there, and the whole boot
-  fingerprint is byte-identical on a second run taken under bounded scheduler preemption — only
-  possible if virtual time is owned by the plugin and never sampled from a host
-  clock. When the guest idles, the plugin advances virtual time by the authorized
-  idle jump to the exact next timer deadline and the guest wakes and runs on: the
-  gate records a `terminal_icount` 40 million instructions past the idle-onset
-  icount, confirming the plugin — not the host — drove the idle advance. The
-  time-control, idle-loop, and deadline source
-  paths are held free of wall-clock/monotonic/entropy APIs by the sibling
-  `qemuPluginTimeControl` gate.
-- [x] **T-PLUG-5** Implement the idle (HLT/WFI) callback hot loop: publish
+  Completed by `checks.crucible.phase2.qemuPluginTimeControl` and
+  `checks.crucible.phase7.productionRustPluginFlight`. The component gate
+  rejects host-time APIs on the clock path. The loaded production-plugin flight
+  drives four live vCPUs to exact instruction ceilings, observes all-vCPU idle
+  and an exact timer deadline, reaches that deadline through the authorized
+  idle advance, and reproduces the same boundary stream under bounded host
+  preemption and restart.
+- [ ] **T-PLUG-5** Implement the idle (HLT/WFI) callback hot loop: publish
   icount, compute the next local wake from exact timer and inbound delivery
   signals against the scheduler ceiling, park on the canonical `wake_signal`
   futex (no busy spin, no wall-clock timeout) while the required registered
@@ -1028,26 +1020,22 @@ component that makes that purity true *inside* the QEMU process.
   republish running/resume status. —
   satisfies [PLUG-10], [PLUG-11], [PLUG-12], [PLUG-13], [PLUG-17]; spec §12.3.2,
   §12.3.3, §12.4.1.
-  Completed by `checks.crucible.phase2.qemuLivePluginQuantum`, which observes the
-  plugin run the idle hot loop live: at guest HLT idle onset it publishes icount,
-  computes the next local wake from the exact `QEMU_CLOCK_VIRTUAL` timer deadline,
-  and parks on the canonical `wake_signal` futex with no wall-clock timeout; the
-  registered eventfd separately drives QEMU main-loop re-entry. On scheduler
-  release it enqueues the authorized advance and, per the deferred-completion discipline,
-  waits for the queued-advance completion before mutating architectural state
-  rather than advancing eagerly — and with that completion now landing (T-PLUG-7)
-  it commits the jump, moving the idle guest to the exact deadline and republishing
-  running. Deterministic in-order inbound-frame injection is T-PLUG-8.
+  `checks.crucible.phase2.qemuPluginIdleLoop` covers the component state
+  machine, and `checks.crucible.phase7.productionRustPluginFlight` observes the
+  all-vCPU idle state and exact timer wake in the loaded production plugin.
+  T-PLUG-5 remains open for direct live evidence of the futex park, registered
+  eventfd wake, shutdown wake, ordered injection, and running/resume status
+  republication.
 - [x] **T-PLUG-6** Implement exact next-deadline introspection (read the next
   `QEMU_CLOCK_VIRTUAL` deadline via the required plugin export, `ceil`-convert to
   icount) and ban the overshoot-and-correct fallback; fail loudly during callback
   registration if the capability is missing. —
   satisfies [PLUG-14], [PLUG-15]; spec §12.3.4.
-  Completed by `checks.crucible.phase2.qemuLivePluginQuantum`, which records the
-  plugin read the exact next `QEMU_CLOCK_VIRTUAL` deadline through the required
-  export and `ceil`-convert it to icount live: at idle onset the gate emits
-  `idle_next_deadline_icount` equal to the introspected timer deadline with no
-  overshoot-and-correct, and the same value appears on both runs.
+  Completed by `checks.crucible.phase2.qemuPluginDeadlineIntrospection` and
+  `checks.crucible.phase7.productionRustPluginFlight`. The component gate
+  verifies conversion, required-capability admission, and fail-loud rejection;
+  the loaded production flight observes the exact armed deadline and reaches it
+  without overshoot.
 - [x] **T-PLUG-7** Implement idle-jump advancement through the required
   queued-advance (`qemu_plugin_advance_time_ns`) and normal-main-loop completion
   (`qemu_plugin_register_time_advance_cb`) exports: keep plugin state
@@ -1055,76 +1043,60 @@ component that makes that purity true *inside* the QEMU process.
   validate the exact target before clock/ring/RX commit so the wake-point
   architectural state is bit-identical regardless of host timing. — satisfies
   [PLUG-16]; spec §12.3.5.
-  Completed by `checks.crucible.phase2.qemuLivePluginQuantum`: the diskless
-  multiboot guest arms a periodic PIT timer,
-  parks in HLT, and the plugin advances virtual time by an authorized 40M-icount
-  O(1) jump through the exact `QEMU_CLOCK_VIRTUAL` timer deadline. The guest
-  wakes, runs, and re-idles below the published scheduler ceiling without
-  self-extending past it. The terminal architectural state is byte-identical on
-  a second run taken under bounded scheduler preemption, proving the queued advance commits the
-  same wake-point state regardless of host timing. The advance rides QEMU patch
-  0010's `icount_advance_virtual_time_to_ns`
-  primitive (replacing the qtest-only helper that spun under icount) with the
-  reset-vs-advance completion drain in patch 0025, plus the plugin max-advance
-  budget computed as `ceiling - logical_offset`.
-- [x] **T-PLUG-8** Implement inbound-frame polling/injection: peek delivery
+  Completed by `checks.crucible.phase2.qemuPluginSynchronousIdleAdvance` and
+  `checks.crucible.phase7.productionRustPluginFlight`. The component gate
+  verifies the queued main-loop completion protocol, pending-state immutability,
+  and timer ordering. The loaded production flight reaches the exact wake
+  deadline and reproduces the wake boundary stream under bounded host
+  preemption and restart.
+- [ ] **T-PLUG-8** Implement inbound-frame polling/injection: peek delivery
   icount, deliver iff `delivery_icount <= current_icount`, order injections by
   `(delivery_icount, src_node, seq)`, and fail loudly on an already-passed
   delivery icount. — satisfies [PLUG-18], [PLUG-19], [PLUG-20]; spec §12.4.2.
-  Completed by `checks.crucible.phase2.qemuLiveNetworkIo`: a real Linux guest
-  emits a probe through virtio-net, the router reply enters the reserved inbound
-  ring at exactly +100,000,000 icount, and the plugin injects it before the
-  guest emits its acknowledgement. The exact router latency, frame bytes,
-  ordering, and sequences are identical under bounded scheduler preemption; the gate records
-  raw probe and guest-ACK offsets separately as whole-guest diagnostics.
-- [x] **T-PLUG-9** Implement virtual-time freeze across in-flight device I/O via
+  `checks.crucible.phase7.qemuHotForkEquivalenceVm` currently proves real
+  virtio-net HTTP traffic, an authenticated routed queue reservation, a
+  same-event forwarder outage, and replay/restore/fork suffix equality. It does
+  not expose the raw probe and acknowledgement, delivery icount, frame bytes,
+  stable injection order and sequence, or bounded-preemption comparison needed
+  to close this task.
+- [ ] **T-PLUG-9** Implement virtual-time freeze across in-flight device I/O via
   `device_io_active`/pending-counter, paired one-to-one with submit/completion and
   cleared on burst-done. — satisfies [PLUG-21], [PLUG-22]; spec §12.4.3.
-  Completed by `checks.crucible.phase2.qemuLiveBlockIo` and
-  `checks.crucible.phase2.qemuLive9pIo`. Both gates delay a due response in host
-  wall time while the production plugin holds virtual time at the published
-  completion horizon, then require the device hold to clear and the real guest
-  to progress. The block path pairs each request token with one completion; the
-  9p path holds the counter across the whole request burst and clears it only at
-  burst-done. Both repeat under bounded scheduler preemption with identical modeled traffic.
-- [x] **T-PLUG-10** Implement the network TX interception callback: enqueue guest
+  Existing focused callback and dispatch tests do not authenticate the complete
+  loaded-QEMU freeze interval. The current hot-fork flight performs real block
+  and 9p I/O and proves guest progress, but does not record the pending counter,
+  completion horizon, or burst-done release needed to close this task.
+- [ ] **T-PLUG-10** Implement the network TX interception callback: enqueue guest
   frames into the outbound router ring with an emit-icount stamp, re-entrancy-safe,
   rejecting oversize frames and full rings loudly. — satisfies [PLUG-23],
   [PLUG-24], [PLUG-25]; spec §12.5.1.
-  Completed by `checks.crucible.phase2.qemuLiveNetworkIo`, which observes the
-  loaded QEMU callback forward the guest's exact Ethernet probe to
-  `SLOT_NET_ROUTER` with its emission icount and sequence. The packaged plugin's
-  unit gate covers re-entry, oversize, and full-ring fail-loud behavior.
-- [x] **T-PLUG-11** Implement RX injection via the canonical retry path from
+  The current hot-fork flight reaches HTTP 200 through the loaded production
+  network path, but does not authenticate the emitted frame bytes, emission
+  icount and sequence, re-entry behavior, or oversize/full-ring failures.
+- [ ] **T-PLUG-11** Implement RX injection via the canonical retry path from
   the idle context, after the idle jump, gated by the delivery-icount rule. —
   satisfies [PLUG-26], [PLUG-27]; spec §12.5.2.
-  Completed by `checks.crucible.phase2.qemuLiveNetworkIo`: the router's
-  delivery-stamped reply remains in the inbound ring across backpressure, then
-  transfers through QEMU's direct injection path only after complete guest
-  acceptance; the real guest proves receipt by emitting the exact ACK.
-- [x] **T-PLUG-12** Implement the block submit/poll callbacks against the
+  The current hot-fork flight proves a routed reservation and real guest HTTP
+  receipt, but does not expose the delivery-stamped reply, retained
+  backpressure state, complete guest acceptance, or exact guest acknowledgement.
+- [ ] **T-PLUG-12** Implement the block submit/poll callbacks against the
   reserved block slots, freezing time on submit and validating the response's
   delivery icount before delivery. — satisfies [PLUG-28], [PLUG-30], [PLUG-31];
   spec §12.6.
-  Completed by `checks.crucible.phase2.qemuLiveBlockIo`. A real Linux guest
-  submits both discovery traffic and an explicit sector write through
-  `SLOT_BLK_IO`; the host servicer publishes the exact future completion
-  horizon, the production plugin advances to it, validates and delivers the
-  response, releases the device hold, and lets the guest progress. A second run
-  combines bounded QEMU scheduler preemption with a 100 ms delayed response publication while
-  preserving the same request/completion observations. The drop-one gate proves
-  patch 0017 is load-bearing: without its zero-byte completion fix, request-token
-  ordering fails before the guest can progress.
-- [x] **T-PLUG-13** Implement the 9p submit/poll/burst-done callbacks against the
+  The current hot-fork flight performs an explicit guest sector write, observes
+  occupied volatile cache state, injects cache loss, and proves later guest
+  progress plus replay/restore/fork equality. It does not authenticate the
+  future completion icount, advance-delivery hold, delayed publication under
+  host preemption, or the load-bearing live mutation proof.
+- [ ] **T-PLUG-13** Implement the 9p submit/poll/burst-done callbacks against the
   reserved 9p slots, holding the freeze for the whole burst. — satisfies
   [PLUG-29], [PLUG-30], [PLUG-31]; spec §12.6.
-  Completed by `checks.crucible.phase2.qemuLive9pIo`, with
-  `checks.crucible.phase2.qemu9pSyncKick` proving exact QEMU dispatch
-  attribution. A real Linux guest forwards `Tversion` through `SLOT_9P_IO`,
-  receives the modeled response at an 821-icount latency, releases the
-  burst-wide device hold, and closes the scheduler ceiling either by retiring
-  to it or by publishing an idle wake strictly beyond it. The scheduler-preemption leg
-  delays response publication by 100 ms while preserving the modeled latency.
+  The current hot-fork flight mounts a real `9p2000.L` guest filesystem, reads
+  and validates its content, injects a typed `NinePResult` error at a modeled
+  opportunity, observes the guest read failure, and proves later guest progress
+  and deterministic continuations. It does not authenticate the guest
+  `Tversion`, completion icount, whole-burst freeze/release, or delayed
+  publication under host preemption.
 - [x] **T-PLUG-14** Implement the optional white-box doorbell trap: trap the
   reserved instruction/port, read guest memory via the plugin API, stamp the
   marker with the exact icount; ensure off-mode installs nothing and black-box is
@@ -1166,7 +1138,7 @@ component that makes that purity true *inside* the QEMU process.
   length at translation, observes exact TB-entry icount without committing timer
   state, bounds pending observations, and reclaims callback userdata after QEMU
   destroys generated callbacks during an exclusive TB flush. Rust callback-model
-  tests, an executable C ABI/arithmetic model, and QEMU-10 source-order checks
+  tests, an executable C ABI/arithmetic model, and [QEMU-10] source-order checks
   cover those contracts. ABI v2 now release-publishes each novel map entry into
   a dedicated per-VM SPSC ring whose capacity equals the fixed coverage-map
   cardinality. The host acquire-drains that ring only at completed quantum
@@ -1231,17 +1203,15 @@ component that makes that purity true *inside* the QEMU process.
   access. Focused tests prove descriptor and mapping lifetimes, callback
   serialization, QEMU-API-only guest memory access, and bounds checks before
   network, block, 9p, and white-box payload copies.
-- [x] **T-PLUG-22** Implement fail-loud handling for every determinism-critical
+- [ ] **T-PLUG-22** Implement fail-loud handling for every determinism-critical
   failure (broken IPC, missing capability, ABI mismatch, full ring, passed
   delivery icount) with a distinct diagnosable error that the divergence bisector
   can localize; never a wall-clock-dependent fallback. — satisfies [PLUG-48];
   spec §12.10.3.
-  Completed by `checks.crucible.phase2.qemuPluginFailLoud`. Its exhaustive
-  negative-control matrix covers broken IPC, missing capabilities, ABI/model
-  mismatch, full rings, and passed delivery icounts with distinct diagnostics
-  and no wall-clock fallback. The gate also consumes the production-plugin
-  network, block, and 9p live-I/O runs, proving the same guarded callback paths
-  are installed and exercised in QEMU rather than existing only as unit models.
+  `checks.crucible.phase2.qemuPluginFailLoud` covers broken IPC, missing
+  capabilities, ABI/model mismatch, full rings, and passed delivery icounts in
+  source and unit tests, with distinct diagnostics and no wall-clock fallback.
+  Loaded-QEMU network, block, and 9p failure-path evidence remains open.
 - [x] **T-PLUG-23** Add the plugin half of `gate:qemu-inert`: prove that with sim
   mode off the plugin is not loaded and has zero effect on QEMU behavior. This
   contributes plugin-half evidence for [PLUG-49]; the full real-QEMU corpus is
@@ -1252,14 +1222,15 @@ component that makes that purity true *inside* the QEMU process.
   `idle_wake_icount = min` over vCPUs of the next armed deadline. — satisfies
   [PLUG-3], [PLUG-10], [PLUG-50], [PLUG-52]; spec §12.1.2, §12.3.2,
   §12.3.6.
-  Completed by `checks.crucible.phase2.qemuLivePluginQuantumSmp`, together with
-  `checks.crucible.phase2.qemuLivePluginFingerprintSmp`,
+  Completed by `checks.crucible.phase2.qemuRrQuantumIcount`, together with
+  `checks.crucible.phase0.s11MultiVcpuFingerprint`,
   `checks.crucible.phase3.schedulerRrSubdivision`, and
   `checks.crucible.phase3.schedulerAllVcpusIdle`. The
   deterministic RR sub-division (fixed `rr_switch_quantum`, fixed ascending
-  rotation) and the all-vCPUs-halted predicate are *executed by QEMU*: patch 0002
-  pins the node-icount `rr_switch_quantum`, while patch 0025 synchronizes every
-  QEMU vCPU's halted state into the production plugin. The plugin uses
+  rotation) and the all-vCPUs-halted predicate are *executed by QEMU*. The
+  single atomic Crucible integration patch pins the node-icount
+  `rr_switch_quantum` and synchronizes every QEMU vCPU's halted state into the
+  production plugin. The plugin uses
   `VcpuHaltTracker` to run the idle hot loop exactly once when the final vCPU
   halts and suppresses resume until a queued idle advance completes. The same
   mechanisms are also modeled in `round_robin.rs` (`RoundRobinRunState`
@@ -1268,7 +1239,7 @@ component that makes that purity true *inside* the QEMU process.
   `aggregate_multi_vcpu_deadline`) — unit-proven and covered by
   `checks.crucible.phase3.schedulerRrSubdivision` /
   `schedulerAllVcpusIdle`. The RR sub-division behavior is live at `-smp N`:
-  `checks.crucible.phase2.qemuLivePluginFingerprintSmp` samples the authoritative
+  `checks.crucible.phase0.s11MultiVcpuFingerprint` samples the authoritative
   RR cursor deterministically over two runs at `-smp 4`. The dedicated SMP
   quantum gate boots a hermetic multiboot guest with the same production plugin
   at `-smp 4`. The guest starts APIC IDs 1-3 with directed INIT-SIPI-SIPI,
@@ -1308,23 +1279,20 @@ component that makes that purity true *inside* the QEMU process.
   preemption-injection capability (11/[PATCH-47]), failing loud and localizing an
   out-of-`[deadline, ceiling]` command rather than clamping or deferring. —
   satisfies [PLUG-50]; spec §12.3.6.
-  Completed by `checks.crucible.phase2.qemuLivePluginPreemption`, with the
-  callback-core contract retained in
-  `checks.crucible.phase2.qemuPluginPreemption`. The ABI-v5 shared-memory
+  Completed by `checks.crucible.phase2.qemuPluginPreemption` and
+  `checks.crucible.phase2.qemuPreemptionInject`. The ABI-v5 shared-memory
   scheduler mailbox carries vCPU-switch and interrupt commands into the loaded
   production Rust plugin. The plugin applies each command through
   `qemu_plugin_inject_preemption` at its exact commanded node-icount and
   acknowledges the mailbox sequence only after patched QEMU accepts it. The
-  live `-smp 2` gate reaches exact ceilings after both a forced vCPU switch and
-  a commanded interrupt, repeats byte-identically under bounded scheduler preemption, and
-  cross-checks the host-observable schedule against `SimDouble`. Patch and
-  plugin negative controls reject commands outside the authorized window
+  plugin contract tests and exact-source injection microtest reject commands
+  outside the authorized window
   `[deadline, ceiling]` rather than clamp, defer, or apply it at a different
   node-icount.
 - [x] **T-PLUG-26** Implement per-vCPU register-file + round-robin cursor reads
   (via 11/[PATCH-46]) feeding the N-vCPU fingerprint (10/[QEMU-34]),
   side-effect-free wrt `S`/`T`. — satisfies [PLUG-52]; spec §12.3.2.
-  Completed live by `checks.crucible.phase2.qemuLivePluginFingerprintSmp` at the
+  Completed live by `checks.crucible.phase2.qemuRrQuantumIcount` at the
   frozen `-smp 4` pin (corroborated at `-smp 2`). The plugin's
   `PluginVcpuIntrospector::read_nvcpu_fingerprint_inputs` reads exactly the `0..N`
   vCPU register files and the round-robin cursor (`current_vcpu` + position within
@@ -1340,7 +1308,7 @@ component that makes that purity true *inside* the QEMU process.
 - [x] **T-PLUG-27** Implement the optional app-controlled randomness doorbell:
   serve a `random_request` by drawing from the seeded decision source and
   replying at the trap icount under the injection contract, record a
-  `Decision::AppRandom`, keep it side-effect-free except the requested value, and
+  `BackendRngEvidence`, keep it side-effect-free except the requested value, and
   ensure the engine functions with zero requests. — satisfies [PLUG-51]; spec
   §12.7.
   Completed by `checks.crucible.phase2.qemuLiveWhiteboxDoorbell`. The

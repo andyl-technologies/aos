@@ -3,6 +3,8 @@
 #include <errno.h>
 #include <glib.h>
 #include <qemu-plugin.h>
+#include <sys/eventfd.h>
+#include <unistd.h>
 
 #include "aos/crucible/crucible_shmem_abi.h"
 #include "phase2-qemu-fault-event-envelope.h"
@@ -16,8 +18,10 @@ static uint32_t volatile_policy;
 static uint32_t device_policy;
 static bool require_ready;
 static bool ready_exhaustion;
-static bool terminal_crash;
+static bool crash_transition;
 static bool ready_observed;
+static gint ready_boundary_pending;
+static int ready_wake_fd = -1;
 static bool finished;
 static uint8_t terminal_evidence_hash[32];
 static uint8_t *payload;
@@ -109,7 +113,7 @@ static uint8_t *build_payload(size_t *length)
     put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_FIELD_COUNT_OFFSET, 5);
     g_byte_array_append(bytes, header, sizeof(header));
 
-    put_u32(transition, terminal_crash ? 2 : 3);
+    put_u32(transition, crash_transition ? 2 : 3);
     append_field(bytes, CRUCIBLE_NODE_FAULT_FIELD_P1,
                  CRUCIBLE_NODE_FAULT_FIELD_TYPE_U32,
                  transition, sizeof(transition));
@@ -154,11 +158,11 @@ static void validate_event(void)
         evidence_len != LIFECYCLE_EVIDENCE_BYTES ||
         memcmp(evidence, "CRUCLIF1", 8) != 0 ||
         get_u16(evidence + 8) != 4 ||
-        get_u16(evidence + 10) != (terminal_crash ? 2 : 3) ||
+        get_u16(evidence + 10) != (crash_transition ? 2 : 3) ||
         get_u32(evidence + 12) != volatile_policy ||
         get_u32(evidence + 16) != device_policy ||
         get_u32(evidence + 20) !=
-            (terminal_crash ? 0U :
+            (crash_transition ? 0U :
              ((volatile_policy == 1 ? 1U : 0U) |
               (device_policy == 1 ? 2U : 0U))) ||
         get_u64(evidence + 40) != 32 ||
@@ -206,21 +210,21 @@ static void validate_event(void)
          memcmp(evidence + 160, (uint8_t[32]) { 0 }, 32) == 0)) {
         fail("ready exhaustion omitted its permanent-failure evidence");
     }
-    if (!terminal_crash && !ready_exhaustion &&
+    if (!crash_transition && !ready_exhaustion &&
         (get_u32(evidence + 288) != 3 ||
          get_u32(evidence + 292) != 0 ||
          get_u32(evidence + 296) != 0 ||
          get_u32(evidence + 300) != 0)) {
         fail("nonterminal reset published malformed effective-transition fields");
     }
-    if (terminal_crash &&
+    if (crash_transition &&
         (get_u32(evidence + 288) != 2 ||
          get_u32(evidence + 292) != 1 ||
          get_u32(evidence + 296) != 3 ||
          get_u32(evidence + 300) != 0)) {
         fail("terminal crash omitted its pre-exit decision fields");
     }
-    if (terminal_crash || ready_exhaustion) {
+    if (crash_transition || ready_exhaustion) {
         uint8_t authorization_evidence[LIFECYCLE_EVIDENCE_BYTES];
         g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
         gsize digest_length = sizeof(terminal_evidence_hash);
@@ -306,7 +310,7 @@ static void completion(void *opaque)
         g_printerr(" process_generation=1\n");
         return;
     }
-    if (terminal_crash) {
+    if (crash_transition) {
         if (qemu_plugin_crucible_lifecycle_set_process_generation(2) !=
             -EALREADY) {
             fail("QEMU allowed process-generation mutation after terminal staging");
@@ -329,35 +333,51 @@ static void completion(void *opaque)
 
 static void ready_tb_exec(unsigned int vcpu_index, void *opaque)
 {
+    uint64_t wake = 1;
+
+    (void)vcpu_index;
+    (void)opaque;
+    if (!require_ready || ready_observed ||
+        !g_atomic_int_compare_and_exchange(&ready_boundary_pending, 0, 1)) {
+        return;
+    }
+    if (write(ready_wake_fd, &wake, sizeof(wake)) != sizeof(wake)) {
+        fail("guest ready-marker wake could not be published");
+    }
+    qemu_plugin_force_vcpu_exit();
+}
+
+static void ready_control_boundary(unsigned int vcpu_index,
+                                   uint64_t observed_icount, void *opaque)
+{
     int status;
 
     (void)vcpu_index;
     (void)opaque;
-    if (!require_ready || ready_observed) {
+    if (!g_atomic_int_get(&ready_boundary_pending) || ready_observed) {
         return;
     }
     ready_observed = true;
     status = qemu_plugin_crucible_fault_ready_marker(
-        "guest-ready", strlen("guest-ready"), qemu_plugin_icount_raw());
+        "guest-ready", strlen("guest-ready"), observed_icount);
     if (status < 0) {
         fail("QEMU rejected a live guest ready-marker observation");
     }
     if (status == 0) {
         ready_observed = false;
     }
+    g_atomic_int_set(&ready_boundary_pending, 0);
 }
 
-static void ready_tb_translate(qemu_plugin_id_t id,
-                               struct qemu_plugin_tb *tb)
+static void ready_tb_translate(struct qemu_plugin_tb *tb, void *userdata)
 {
-    (void)id;
+    (void)userdata;
     qemu_plugin_register_vcpu_tb_exec_cb(
         tb, ready_tb_exec, QEMU_PLUGIN_CB_NO_REGS, NULL);
 }
 
-static void at_exit(qemu_plugin_id_t id, void *opaque)
+static void at_exit(void *opaque)
 {
-    (void)id;
     (void)opaque;
     if (!finished) {
         fail("QEMU exited before the reset completion was observed");
@@ -411,12 +431,19 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     if (argc == 4) {
         if (strcmp(argv[3], "boot_policy=require_ready") == 0) {
             require_ready = true;
-            qemu_plugin_register_vcpu_tb_trans_cb(id, ready_tb_translate);
+            ready_wake_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+            if (ready_wake_fd < 0 ||
+                qemu_plugin_register_wake_fd(ready_wake_fd) != 0) {
+                fail("guest ready-marker wake registration failed");
+            }
+            qemu_plugin_register_control_boundary_cb(
+                ready_control_boundary, NULL);
+            qemu_plugin_register_vcpu_tb_trans_cb(id, ready_tb_translate, NULL);
         } else if (strcmp(argv[3], "boot_policy=exhaust") == 0) {
             require_ready = true;
             ready_exhaustion = true;
-        } else if (strcmp(argv[3], "terminal=crash") == 0) {
-            terminal_crash = true;
+        } else if (strcmp(argv[3], "transition=crash") == 0) {
+            crash_transition = true;
         } else {
             fail("optional boot policy is invalid");
         }

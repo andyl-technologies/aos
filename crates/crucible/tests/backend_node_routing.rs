@@ -66,8 +66,8 @@ struct NodeRecordingBackend {
 
 impl SimulationBackend for NodeRecordingBackend {
     fn step_to(&mut self, _ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
-        Err(BackendError::NotImplemented {
-            operation: "backend-global step_to",
+        Err(BackendError::Unsupported {
+            capability: "backend-global step_to",
         })
     }
 
@@ -103,14 +103,14 @@ impl SimulationBackend for NodeRecordingBackend {
     }
 
     fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError> {
-        Err(BackendError::NotImplemented {
-            operation: "snapshot",
+        Err(BackendError::Unsupported {
+            capability: "snapshot",
         })
     }
 
     fn restore(&mut self, _snapshot: &BackendSnapshot) -> Result<(), BackendError> {
-        Err(BackendError::NotImplemented {
-            operation: "restore",
+        Err(BackendError::Unsupported {
+            capability: "restore",
         })
     }
 
@@ -119,8 +119,8 @@ impl SimulationBackend for NodeRecordingBackend {
     }
 
     fn fingerprint(&mut self, _node: NodeId) -> Result<FingerprintSample, BackendError> {
-        Err(BackendError::NotImplemented {
-            operation: "fingerprint",
+        Err(BackendError::Unsupported {
+            capability: "fingerprint",
         })
     }
 
@@ -249,11 +249,15 @@ fn backend_quantum_loop_delivers_resolved_network_input_at_the_exact_boundary() 
         payload: b"guest-frame".to_vec(),
     };
     let event = ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime { ticks: 17 },
-            destination.clone(),
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    nanos: (VirtualTime { ticks: 17 }).ticks,
+                },
+                node: destination.clone(),
+                sequence: 3,
+            },
             source,
-            3,
         ),
         payload: ScheduledEventPayload::BackendInput(input.clone()),
     };

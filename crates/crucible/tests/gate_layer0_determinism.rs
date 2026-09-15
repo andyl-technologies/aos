@@ -1,13 +1,20 @@
-//! Checks `gate:layer0-determinism` for the engine test-double boundary.
+//! Checks `gate:layer0-determinism` for the deterministic local model.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use crucible::{
     AdvanceOutcome, Backend, BackendInput, Configuration, Decision, ExecutionFingerprint,
     ExecutionHorizon, Icount, NodeId, RngDecision, RngStreamId, ScenarioDef, Schedule,
-    ScheduledEventKey, SchedulerNodeId, SchedulingNodeKind, SimBackend, VirtualTime, step,
+    ScheduledEventKey, SchedulerNodeId, SchedulingNodeKind, SimBackend, VirtualTime,
 };
 
 #[test]
@@ -43,8 +50,8 @@ fn gate_layer0_determinism_keeps_schedule_decisions_explicitly_ordered() {
     let first = rng_decision("node-a", 1);
     let second = rng_decision("node-b", 1);
 
-    let left = step(&step(&genesis, first.clone()), second.clone());
-    let right = step(&step(&genesis, second.clone()), first.clone());
+    let left = accepted_step!(&accepted_step!(&genesis, first.clone()), second.clone());
+    let right = accepted_step!(&accepted_step!(&genesis, second.clone()), first.clone());
 
     assert_eq!(left.schedule.decisions(), &[first.clone(), second.clone()]);
     assert_eq!(right.schedule.decisions(), &[second, first]);
@@ -140,12 +147,17 @@ fn event_key(
     producer: &SchedulerNodeId,
     sequence: u64,
 ) -> ScheduledEventKey {
-    ScheduledEventKey::from_parts(
-        VirtualTime {
-            ticks: virtual_time,
+    ScheduledEventKey::new(
+        crucible::SharedTimelineKey {
+            virtual_time: crucible::SimInstant {
+                nanos: (VirtualTime {
+                    ticks: virtual_time,
+                })
+                .ticks,
+            },
+            node: consumer.clone(),
+            sequence,
         },
-        consumer.clone(),
         producer.clone(),
-        sequence,
     )
 }

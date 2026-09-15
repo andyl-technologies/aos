@@ -3,7 +3,7 @@
 #
 # Format:
 # repo-relative crate source<TAB>finding detail<TAB>count
-crucible-cli/src/main.rs	contains non-ASCII comment/doc text	20
+crucible-cli/src/main.rs	contains non-ASCII comment/doc text	16
 crucible-device/src/backpressure.rs	contains non-ASCII comment/doc text	6
 crucible-device/src/block.rs	contains non-ASCII comment/doc text	1
 crucible-device/src/block/codec.rs	contains non-ASCII comment/doc text	1
@@ -31,13 +31,10 @@ crucible-session/src/session/core.rs	contains non-ASCII comment/doc text	1
 crucible/src/backend.rs	contains non-ASCII comment/doc text	1
 crucible/src/device_subnode.rs	contains non-ASCII comment/doc text	8
 crucible/src/scheduler/runtime_state.rs	contains non-ASCII comment/doc text	1
-crucible/src/scheduler/single_scheduler_drive.rs	contains non-ASCII comment/doc text	4
+crucible/src/scheduler/single_scheduler_drive.rs	contains non-ASCII comment/doc text	3
 crucible/src/scheduler/single_scheduler_state.rs	contains non-ASCII comment/doc text	5
 crucible/src/scheduler/tests.rs	contains non-ASCII comment/doc text	3
 crucible/src/scheduler/topology.rs	contains non-ASCII comment/doc text	1
-crucible-qemu-plugin/src/runtime/live_callbacks.rs	contains non-ASCII comment/doc text	3
-crucible-qemu/src/mapped_quantum.rs	contains non-ASCII comment/doc text	1
+crucible-qemu-plugin/src/runtime/live_callbacks.rs	contains non-ASCII comment/doc text	2
 crucible-qemu/src/node.rs	contains non-ASCII comment/doc text	1
-crucible-qemu/src/single_vm_fingerprint/plugin_live_runner.rs	contains non-ASCII comment/doc text	1
-crucible-qemu/src/single_vm_fingerprint/terminal_trace.rs	contains non-ASCII comment/doc text	1
 crucible-shmem/src/shmem/fingerprint_sample.rs	contains non-ASCII comment/doc text	1

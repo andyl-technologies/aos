@@ -161,7 +161,7 @@ base** — it is not emitted twice. Full packs exist only at `X.Y.0`.
    no delta)           (minor base                      d-1.1.0}     d-1.0.0}
                         == major)
 
-  Per-patch derivation (last-3-patches + minor base, deduped):
+  Derivation for each patch release (last 3 patch releases + minor base, deduped):
     1.1.1 (Z=1): Z-1=1.1.0; minor base=1.1.0      → collapse → {d-1.1.0}
     1.1.2 (Z=2): Z-1=1.1.1, Z-2=1.1.0; base=1.1.0 → Z-2 collapses → {d-1.1.1, d-1.1.0}
     1.1.3 (Z=3): Z-1=1.1.2, Z-2=1.1.1, Z-3=1.1.0; → Z-3 collapses → {d-1.1.2, d-1.1.1, d-1.1.0}

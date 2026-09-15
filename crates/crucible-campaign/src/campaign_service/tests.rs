@@ -29,7 +29,7 @@ fn encode_hex(bytes: &[u8]) -> String {
 fn snapshot(label: &str) -> CampaignSnapshotId {
     CampaignSnapshotId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignSnapshot,
-        2,
+        3,
         label.as_bytes(),
     ))
     .expect("snapshot id")
@@ -55,25 +55,27 @@ fn policy(label: &str) -> CampaignPolicyId {
 
 fn branch_request(label: &str) -> BranchRequest {
     BranchRequest::new(
-        BranchPointId::from_hash(hash(&format!("{label}-branch-point"))),
-        ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
-            ObjectKind::Configuration,
-            1,
-            format!("{label}-parent").as_bytes(),
-        ))
-        .expect("parent id"),
-        ChoiceOpportunityId::from_content_id(ContentId::for_bytes(
-            ObjectKind::CampaignFact,
-            1,
-            format!("{label}-opportunity").as_bytes(),
-        ))
-        .expect("opportunity id"),
-        ChoiceDomainId::from_content_id(ContentId::for_bytes(
-            ObjectKind::CampaignFact,
-            1,
-            format!("{label}-domain").as_bytes(),
-        ))
-        .expect("domain id"),
+        BranchRequest::identity(
+            BranchPointId::from_hash(hash(&format!("{label}-branch-point"))),
+            ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Configuration,
+                1,
+                format!("{label}-parent").as_bytes(),
+            ))
+            .expect("parent id"),
+            ChoiceOpportunityId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                format!("{label}-opportunity").as_bytes(),
+            ))
+            .expect("opportunity id"),
+            ChoiceDomainId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                format!("{label}-domain").as_bytes(),
+            ))
+            .expect("domain id"),
+        ),
         CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(true)]))
             .expect("finite source"),
         BranchRequestCause::Operator(CampaignCommandId::from_hash(hash(&format!(
@@ -201,7 +203,7 @@ fn get_campaign_messages_are_canonical_and_request_bound() {
         ],
         [
             String::from("e25fd54be8cb0ea10f0dc695d3f7b029883e0f87269c692abe85f5ba9701a61d"),
-            String::from("3621345eb7ec6ae17e20f42ced081f182266ce1599d25e21e319a8baf9691a47"),
+            String::from("1fe7760e23f11073592759affd3d537cfcd100fceef28f5c70b407b38688016b"),
         ]
     );
 }
@@ -256,11 +258,11 @@ fn campaign_status_messages_are_snapshot_bound_and_have_raw_vectors() {
 
     assert_eq!(
         encode_hex(&request.canonical_bytes()),
-        "00000001000000000000000e6f70657261746f723a616c69636500000000000000106e6574776f726b2d7265636f76657279000000000000001a6372756369626c652e63616d706169676e2e736e617073686f74000000000000005463616d706169676e2d736e617073686f742e322e65623633643230366361623833326333326338333464303736346132613538646230373335363565623366386431373339316335396366646165663566653961"
+        "00000001000000000000000e6f70657261746f723a616c69636500000000000000106e6574776f726b2d7265636f76657279000000000000001a6372756369626c652e63616d706169676e2e736e617073686f74000000000000005463616d706169676e2d736e617073686f742e332e30366236343936623634333334396237373162303937613135616166353265373038383362666139646132303666646138393732313936333161303962363633"
     );
     assert_eq!(
         encode_hex(&response.canonical_bytes()),
-        "00000001c2645e11c40d98dafd76b6cd55d410ede6c68c1124fa31cf5c2535409a8ccb92000000000000001a6372756369626c652e63616d706169676e2e736e617073686f74000000000000005463616d706169676e2d736e617073686f742e322e656236336432303663616238333263333263383334643037363461326135386462303733353635656233663864313733393163353963666461656635666539610000000000000001000000000000000200000000000000030000000000000004000000000000000500000000000000060000000000000007000000000000000f000000000000200001424242424242424242424242424242428a56cb32569d9a14271f8d8ce49d59c77d6a288e42372209b4234532c01c3f2900000000000000080000000000000009000000000000000a000000000000000b000000000000000c000000000000000d000000000000000e000000000000000f"
+        "000000015fb7219275515e0774826d5cc04bf9c41e7974c4c2aa996fda58247823f7a16b000000000000001a6372756369626c652e63616d706169676e2e736e617073686f74000000000000005463616d706169676e2d736e617073686f742e332e303662363439366236343333343962373731623039376131356161663532653730383833626661396461323036666461383937323139363331613039623636330000000000000001000000000000000200000000000000030000000000000004000000000000000500000000000000060000000000000007000000000000000f000000000000200001424242424242424242424242424242428a56cb32569d9a14271f8d8ce49d59c77d6a288e42372209b4234532c01c3f2900000000000000080000000000000009000000000000000a000000000000000b000000000000000c000000000000000d000000000000000e000000000000000f"
     );
 }
 
@@ -310,8 +312,8 @@ fn apply_command_messages_bind_principal_name_and_payload() {
                 .to_string(),
         ],
         [
-            String::from("854db6d9d21dd722d3c8c754fe83fa55db271325a8c06dbbbd95d63222fbb8c7"),
-            String::from("66bf01a14552275865ffd5b6a9a91075387c976244cda5c3efaaee9324f18c18"),
+            String::from("600d71c591f0a3b03ccf47413529466e32008663fad4e6f9fbcaaf375314a36d"),
+            String::from("1ccec27169aa62ce8c9f530542930b5560e33d6220136442d69c97ce5fba1bb4"),
         ]
     );
 }
@@ -1023,6 +1025,7 @@ fn branch_messages_are_canonical_and_bind_the_exact_request() {
             coordination: root,
         },
         acceptance_fact.id().expect("acceptance fact id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("accepted snapshot");
     let response = SubmitCampaignBranchResponse::new(
@@ -1034,7 +1037,6 @@ fn branch_messages_are_canonical_and_bind_the_exact_request() {
             summary,
             snapshot: accepted_snapshot,
             acceptance_fact,
-            summary_recorded: true,
             replayed: false,
         },
     )
@@ -1045,11 +1047,6 @@ fn branch_messages_are_canonical_and_bind_the_exact_request() {
         response
     );
     response.validate_for(&request).expect("request binding");
-    assert_eq!(
-        encode_hex(&response.canonical_bytes()),
-        include_str!("testdata/submit-branch-response-v2.hex").trim()
-    );
-
     let mut malformed_schema = response.canonical_bytes();
     malformed_schema[..std::mem::size_of::<u32>()].copy_from_slice(&1_u32.to_be_bytes());
     assert!(SubmitCampaignBranchResponse::from_canonical_bytes(&malformed_schema).is_err());
@@ -1088,39 +1085,6 @@ fn branch_messages_are_canonical_and_bind_the_exact_request() {
     };
     assert!(mismatched_budget.validate_for(&request).is_err());
 
-    let mut unrecorded_new_response = response.clone();
-    unrecorded_new_response.summary_recorded = false;
-    assert!(unrecorded_new_response.validate_for(&request).is_err());
-
-    let legacy_fact = CampaignFact::BranchRequestIssued(response.request());
-    let legacy_snapshot = CampaignSnapshot::successor(
-        response.prior_snapshot(),
-        response.snapshot.lineage(),
-        response.snapshot.active_policy(),
-        response.snapshot.roots(),
-        legacy_fact.id().expect("legacy acceptance fact ID"),
-    )
-    .expect("legacy acceptance snapshot");
-    let legacy_response = SubmitCampaignBranchResponse::new(
-        &request,
-        BranchRequestResult {
-            prior_snapshot: response.prior_snapshot(),
-            new_snapshot: legacy_snapshot.id().expect("legacy acceptance snapshot ID"),
-            request: response.request(),
-            summary,
-            snapshot: legacy_snapshot,
-            acceptance_fact: legacy_fact,
-            summary_recorded: false,
-            replayed: true,
-        },
-    )
-    .expect("legacy replay response");
-    assert!(legacy_response.replayed());
-    assert!(!legacy_response.summary_recorded());
-    legacy_response
-        .validate_for(&request)
-        .expect("legacy replay provenance");
-
     let changed = SubmitCampaignBranchRequest::new(
         request.principal().clone(),
         request.campaign().clone(),
@@ -1140,8 +1104,8 @@ fn branch_messages_are_canonical_and_bind_the_exact_request() {
                 .to_string(),
         ],
         [
-            String::from("486e4c887f7964b881d511ccff736e871bc9ffde2b69d576f9874710f63ee118"),
-            String::from("e697616cbd6b01366d36226fa116bf20daa1199ecbf489a0c5c6f37dcc791ce5"),
+            String::from("ac57a4b4eb3e5780675ad023667ca406b2fddbd5693924659c1bbd581eb5e87e"),
+            String::from("1a51bb40b8b6d7e33a41d2078653f4464c2ad75e435a5ec6582c04d7b5ac21de"),
         ]
     );
 }
@@ -1207,8 +1171,8 @@ fn pin_messages_are_canonical_and_bind_the_exact_request() {
                 .to_string(),
         ],
         [
-            String::from("f660144a465eda8be74584b363ac4c67ee327bd8afdb42704954910ad178431d"),
-            String::from("ca85fb59c75c094ed8077a411bc7dac9f5730c08bc858542ec8171d9c127c820"),
+            String::from("314e5be32404396ac183a793a87ce47594056012d2f93b793f4c39000a196905"),
+            String::from("326d43f81a14e0d706638b7d3afdc69d06557cea7b24eb6687728bc1758dea84"),
         ]
     );
 }
@@ -1246,7 +1210,7 @@ fn discovery_messages_are_canonical_and_bind_the_exact_request() {
     .expect("attempt ID");
     let admission = AttemptAdmissionId::parse(&format!(
         "crucible.campaign.attempt-admission@{}",
-        ContentId::for_bytes(ObjectKind::CampaignFact, 2, b"discovery-admission").encode()
+        ContentId::for_bytes(ObjectKind::CampaignFact, 3, b"discovery-admission").encode()
     ))
     .expect("admission ID");
     let response = SubmitCampaignDiscoveryResponse::new(
@@ -1295,8 +1259,8 @@ fn discovery_messages_are_canonical_and_bind_the_exact_request() {
                 .to_string(),
         ],
         [
-            String::from("f5b4f0f2f5c6a6fcbe6c4ce6d55551032d44e1aeeca9d182d2a74ea245bf6f87"),
-            String::from("496e1f906e77d17ccc8c5d62eda0f1c2b3075a9ed860f06534b678540666f597"),
+            String::from("1da05ba3a110dbbd55eab6d5bbf75405320aeefbc3234b15377fa710bc9245cb"),
+            String::from("e32fdc21bae24db9305eef06c39d973fd0922a9519fba3da1fb22ff5236d508f"),
         ]
     );
 }

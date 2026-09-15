@@ -28,7 +28,7 @@ enum QemuHotFirstPendingRoute {
 /// origin is the checkpoint itself. Initial executions try one exact retained
 /// source world and use `fallback` only when the hot-fork factory explicitly
 /// declines the requested scenario and configuration.
-pub struct QemuHotFirstExecutionRouter<F, D, R>
+pub(crate) struct QemuHotFirstExecutionRouter<F, D, R>
 where
     F: QemuHotForkWorldLifecycleFactory,
 {
@@ -43,48 +43,18 @@ where
 {
     /// Creates a router from a whole-world hot-fork runner and exact-origin fallback.
     #[must_use]
-    pub const fn new(hot_fork: QemuHotForkWorldExecutionRunner<F, D>, fallback: R) -> Self {
+    pub(crate) const fn new(hot_fork: QemuHotForkWorldExecutionRunner<F, D>, fallback: R) -> Self {
         Self {
             hot_fork,
             fallback,
             pending: None,
         }
     }
-
-    /// Returns the whole-world hot-fork runner.
-    #[must_use]
-    pub const fn hot_fork(&self) -> &QemuHotForkWorldExecutionRunner<F, D> {
-        &self.hot_fork
-    }
-
-    /// Returns mutable access to the whole-world hot-fork runner.
-    #[must_use]
-    pub const fn hot_fork_mut(&mut self) -> &mut QemuHotForkWorldExecutionRunner<F, D> {
-        &mut self.hot_fork
-    }
-
-    /// Returns the exact-origin fallback runner.
-    #[must_use]
-    pub const fn fallback(&self) -> &R {
-        &self.fallback
-    }
-
-    /// Returns mutable access to the exact-origin fallback runner.
-    #[must_use]
-    pub const fn fallback_mut(&mut self) -> &mut R {
-        &mut self.fallback
-    }
-
-    /// Consumes the router into its hot-fork and fallback runners.
-    #[must_use]
-    pub fn into_parts(self) -> (QemuHotForkWorldExecutionRunner<F, D>, R) {
-        (self.hot_fork, self.fallback)
-    }
 }
 
 /// Failure from hot-first materialization routing or its selected runner.
 #[derive(Debug, thiserror::Error)]
-pub enum QemuHotFirstExecutionRouterError<H, R> {
+pub(crate) enum QemuHotFirstExecutionRouterError<H, R> {
     /// A previous successful result still owns post-publication authority.
     #[error("hot-first QEMU router still awaits prior semantic reconciliation")]
     PriorReconciliationPending,
