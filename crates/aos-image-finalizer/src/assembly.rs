@@ -1,9 +1,8 @@
 //! Closed unsigned-image assembly manifest.
 //!
-//! Current v3 assemblies include the resolved kernel configuration, exact
+//! Current v2 assemblies include the resolved kernel configuration, exact
 //! initrd contract, and stage-labelled static ability contracts as captured
-//! inputs. Historical v1 and v2 schemas retain their original file contracts
-//! without acquiring newer guarantees.
+//! inputs. Archived v1 assemblies retain their original file contract.
 //!
 //! ```json
 //! {"schema_version":"aos.image.unsigned-assembly/v1",
@@ -26,11 +25,8 @@ use crate::initrd_contract::InitrdStageContractV1;
 /// Schema for deterministic public-only image inputs.
 pub const UNSIGNED_IMAGE_ASSEMBLY_V1: &str = "aos.image.unsigned-assembly/v1";
 
-/// Assembly schema requiring the resolved kernel configuration for qualification.
+/// Current assembly schema requiring the checked image and ability contracts.
 pub const UNSIGNED_IMAGE_ASSEMBLY_V2: &str = "aos.image.unsigned-assembly/v2";
-
-/// Assembly schema requiring the checked initrd and static ability contracts.
-pub const UNSIGNED_IMAGE_ASSEMBLY_V3: &str = "aos.image.unsigned-assembly/v3";
 
 /// Required deterministic input or public trust artifact.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -141,7 +137,7 @@ pub struct UnsignedImageAssemblyV1 {
     /// Fail-closed maximum artifact sizes.
     pub budgets: ImageBudgetsV1,
     /// Checked stage and handoff facts for the unsigned initrd input required
-    /// by v3 assemblies. Finalized rebuilt archive bytes have their own output
+    /// by v2 assemblies. Finalized rebuilt archive bytes have their own output
     /// artifact identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initrd_contract: Option<InitrdStageContractV1>,
@@ -296,7 +292,7 @@ impl UnsignedImageAssemblyV1 {
     pub fn validate(&self) -> Result<()> {
         if !matches!(
             self.schema_version.as_str(),
-            UNSIGNED_IMAGE_ASSEMBLY_V1 | UNSIGNED_IMAGE_ASSEMBLY_V2 | UNSIGNED_IMAGE_ASSEMBLY_V3
+            UNSIGNED_IMAGE_ASSEMBLY_V1 | UNSIGNED_IMAGE_ASSEMBLY_V2
         ) || !self.platform.supports_images()
         {
             bail!("unsigned image assembly requires a supported schema and a Linux platform");
@@ -379,7 +375,7 @@ impl UnsignedImageAssemblyV1 {
         }
         let has_resolved_kernel_config = self.schema_version != UNSIGNED_IMAGE_ASSEMBLY_V1;
         if kinds.contains(&AssemblyFileKind::KernelConfig) != has_resolved_kernel_config {
-            bail!("resolved kernel configuration requires the v2 or v3 assembly schema");
+            bail!("resolved kernel configuration requires the v2 assembly schema");
         }
         self.validate_initrd_contract(&kinds)?;
         self.validate_static_ability_contracts(&kinds)?;
@@ -414,11 +410,11 @@ impl UnsignedImageAssemblyV1 {
     }
 
     fn validate_initrd_contract(&self, kinds: &BTreeSet<AssemblyFileKind>) -> Result<()> {
-        let requires_contract = self.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V3;
+        let requires_contract = self.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V2;
         if kinds.contains(&AssemblyFileKind::InitrdContract) != requires_contract
             || self.initrd_contract.is_some() != requires_contract
         {
-            bail!("initrd stage contract requires the v3 assembly schema");
+            bail!("initrd stage contract requires the v2 assembly schema");
         }
         let Some(contract) = &self.initrd_contract else {
             return Ok(());
@@ -432,7 +428,7 @@ impl UnsignedImageAssemblyV1 {
             .files
             .iter()
             .find(|file| file.kind == AssemblyFileKind::Initrd)
-            .ok_or_else(|| anyhow::anyhow!("v3 assembly lacks its normal initrd"))?;
+            .ok_or_else(|| anyhow::anyhow!("v2 assembly lacks its normal initrd"))?;
         if contract.artifact.size_bytes != initrd.size_bytes
             || contract.artifact.sha256 != initrd.sha256
         {
@@ -443,7 +439,7 @@ impl UnsignedImageAssemblyV1 {
             .files
             .iter()
             .find(|file| file.kind == AssemblyFileKind::InitrdContract)
-            .ok_or_else(|| anyhow::anyhow!("v3 assembly lacks its initrd contract file"))?;
+            .ok_or_else(|| anyhow::anyhow!("v2 assembly lacks its initrd contract file"))?;
         let contract_bytes = canonical::to_vec(contract)?;
         if contract_file.size_bytes != u64::try_from(contract_bytes.len())?
             || contract_file.sha256 != Sha256Digest::of_bytes(&contract_bytes)
@@ -454,13 +450,13 @@ impl UnsignedImageAssemblyV1 {
     }
 
     fn validate_static_ability_contracts(&self, kinds: &BTreeSet<AssemblyFileKind>) -> Result<()> {
-        let requires_contracts = self.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V3;
+        let requires_contracts = self.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V2;
         for kind in [
             AssemblyFileKind::InitrdStaticAbilityContract,
             AssemblyFileKind::HostStaticAbilityContract,
         ] {
             if kinds.contains(&kind) != requires_contracts {
-                bail!("static ability contracts require the v3 assembly schema");
+                bail!("static ability contracts require the v2 assembly schema");
             }
         }
         Ok(())
