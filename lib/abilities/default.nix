@@ -15,9 +15,11 @@
     moduleTypes = moduleOptionTypes;
   };
   effects = import ./effects;
+  resourceControllerTransition = import ./resource-controller-transition.nix;
   diagnostics = import ./diagnostic.nix;
   packageOutputSelectors = import ./package-output-selectors.nix {inherit diagnostics;};
-  inherit (packageOutputSelectors)
+  inherit
+    (packageOutputSelectors)
     canonicalizePackageOutputSelectors
     normalizePackageOutputSelectors
     ;
@@ -1573,6 +1575,7 @@ in rec {
   inherit
     schemas
     effects
+    resourceControllerTransition
     define
     declareInterface
     normalizeExport

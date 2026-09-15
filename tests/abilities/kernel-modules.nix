@@ -11,6 +11,11 @@
       required = true;
     };
   };
+  childRequestKey = lib.abilities.compositionRequestKey {
+    implementation = "kmod:kernel-modules";
+    providerInstance = "kmod:manager";
+    key = "required-modules";
+  };
   evaluated = lib.evalModules {
     inherit lib;
     modules = [
@@ -25,6 +30,12 @@
           bindings."test:kernel-modules" = {
             request = "consumer:required-modules";
             implementation = "kmod:kernel-modules";
+            providerInstance = "kmod:manager";
+            slot = "required-modules";
+          };
+          bindings."test:kernel-module-effects" = {
+            request = childRequestKey;
+            implementation = "kmod:kernel-module-effects";
             providerInstance = "kmod:manager";
             slot = "required-modules";
           };
@@ -52,17 +63,70 @@
   abilities = evaluated.config.aos.abilities;
   desired = builtins.head (builtins.attrValues abilities.desiredResources);
   output = abilities.compositionOutputs."consumer:required-modules".readiness-resource;
+  transition = abilities.implementations."kmod:kernel-modules".transition;
+  effectsInterface = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration abilities.interfaces."kmod:kernel-module-effects"
+  );
+  transitionMethods = kind: let
+    active = builtins.elem kind ["create" "update" "reconcile-stopped" "reconcile-divergent"];
+    binding = {
+      id = "kernel-module-effects";
+      request.consumer = desired.resource.provider;
+      interface = effectsInterface;
+      caller_grant = {
+        methods = ["load" "observe"];
+        resources = [
+          {
+            resource = desired.resource;
+            access = "exclusive-write";
+            operations = ["load"];
+          }
+        ];
+      };
+    };
+    fragment = transition {
+      provider = desired.resource.provider;
+      operation_scope = ["kernel-modules"];
+      changes = [
+        {
+          inherit kind;
+          resource = desired.resource;
+          current = null;
+          desired = null;
+        }
+      ];
+      authorized_bindings = lib.optional active {
+        authority.role = "desired";
+        inherit binding;
+      };
+      controllers = lib.optional active {
+        resource = desired.resource;
+        controller = {
+          provider = desired.resource.provider;
+          group = "kernel-modules";
+        };
+      };
+    };
+  in
+    builtins.map (operation: operation.method) fragment.operations;
 in
   assert abilities.interfaces.${kernelModules.alias} == kernelModules.declaration;
   assert !(abilities.interfaces ? "kmod:kernel-modules");
-  assert builtins.attrNames abilities.implementations == ["kmod:kernel-modules"];
+  assert builtins.attrNames abilities.implementations
+  == [
+    "kmod:kernel-module-effects"
+    "kmod:kernel-modules"
+  ];
+  assert abilities.compositionRequests.${childRequestKey}.parameters == desired.value;
   assert desired.kind == kernelModules.identity.name;
   assert desired.lifetime == "instance";
-  assert desired.value == {
+  assert desired.value
+  == {
     modules = ["overlay" "zeta"];
     required = true;
   };
-  assert desired.realization == {
+  assert desired.realization
+  == {
     schema = "aos.kmod.module-set-realization/v1";
     modules = ["overlay" "zeta"];
     required = true;
@@ -71,4 +135,9 @@ in
   assert output.value.operations == ["observe"];
   assert output.phase == "planning";
   assert output.lifetime == "instance";
-  true
+  assert transitionMethods "create" == ["load"];
+  assert transitionMethods "update" == ["load"];
+  assert transitionMethods "reconcile-stopped" == ["load"];
+  assert transitionMethods "reconcile-divergent" == ["load"];
+  assert transitionMethods "unchanged" == [];
+  assert transitionMethods "remove" == []; true
