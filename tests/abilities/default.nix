@@ -441,6 +441,9 @@
   aosPackageRuntimeServices = import ./aos-package-runtime-services.nix {
     inherit lib pkgs;
   };
+  abilityCrucibleService = import ./ability-crucible-service.nix {
+    inherit lib pkgs;
+  };
   serviceManagement = import ./service-management.nix {
     inherit lib;
   };
@@ -971,6 +974,7 @@ in
   assert k3sControllerTerminal;
   assert attestationVerifierService;
   assert aosPackageRuntimeServices;
+  assert abilityCrucibleService;
   assert serviceManagement;
   assert managedIdentityAllocation;
   assert systemServiceModules;

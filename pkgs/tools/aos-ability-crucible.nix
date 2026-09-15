@@ -60,6 +60,7 @@ in
       name = "aos-ability-crucible";
       entryPoint = "bin/aos-ability-crucible";
     };
+    abilities = ./_aos-ability-crucible;
 
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
@@ -77,6 +78,10 @@ in
     '';
 
     postInstall = ''
+      mkdir -p "$out/share/aos/providers"
+      cp ${./_aos-ability-crucible/endpoint-provider.nix} \
+        "$out/share/aos/providers/ability-crucible-endpoint.nix"
+
       test -x "$out/bin/aos-ability-crucible"
       if patchelf --print-interpreter "$out/bin/aos-ability-crucible" \
           > "$TMPDIR/aos-ability-crucible.interpreter" 2>/dev/null; then

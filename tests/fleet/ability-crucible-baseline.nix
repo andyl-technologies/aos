@@ -9,44 +9,15 @@
     inherit lib mkSystem pkgs;
     guestTools = qualificationImage;
   };
-  adapterSocket = "/run/aos-instrumentation/crucible.sock";
+  adapterSocket = "/run/aos/ability-crucible/crucible.sock";
   executorSocket = "/run/aos-instrumentation/controller.sock";
-  adapterConfiguration = builtins.toJSON {
-    schema = "aos.ability-crucible-adapter/v1";
-    socket = adapterSocket;
-    ready_command = "${pkgs.systemd}/bin/systemd-notify";
-    required_instruction_abi = 1;
-    required_marker_kinds = [
-      "assertion"
-      "coverage"
-      "event"
-      "lifecycle"
-    ];
-  };
-  executorConfiguration = builtins.toJSON {
-    schema = "aos.ability-execution-observer/v1";
-    socket = executorSocket;
-  };
-  crucibleModule = {lib, ...}: {
+  crucibleModule = {
     aos.profiles.abilityCrucible.enable = true;
-
-    # The test controller holds the digest-bound runtime acknowledgement at
-    # the selected fault boundary. Its upstream hop is the production adapter.
-    environment.etc."aos/ability-crucible-adapter.json".text = lib.mkForce adapterConfiguration;
-    environment.etc."aos/ability-execution-observer.json" = lib.mkForce {
-      text = executorConfiguration;
-      mode = "0600";
-    };
+    aos.services.abilityCrucible.socketName = "crucible.sock";
   };
   crucibleHostModule = ''
     aos.profiles.abilityCrucible.enable = true;
-    environment.etc."aos/ability-crucible-adapter.json".text = lib.mkForce ${
-      builtins.toJSON adapterConfiguration
-    };
-    environment.etc."aos/ability-execution-observer.json" = lib.mkForce {
-      text = ${builtins.toJSON executorConfiguration};
-      mode = "0600";
-    };
+    aos.services.abilityCrucible.socketName = "crucible.sock";
   '';
   base = import ./ability-native-power-loss.nix {
     inherit lib mkSystem pkgs qualificationImage;
@@ -62,16 +33,17 @@
   adapterPath = toString pkgs.aos-ability-crucible;
   disabledPackages = map toString disabledConfig.environment.systemPackages;
   enabledPackages = map toString enabledConfig.environment.systemPackages;
-  evaluationContract = assert !(disabledConfig.systemd.services ? "aos-ability-crucible");
-  assert !(disabledConfig.environment.etc ? "aos/ability-crucible-adapter.json");
-  assert !(disabledConfig.environment.etc ? "aos/ability-execution-observer.json");
-  assert !(builtins.elem adapterPath disabledPackages);
-  assert enabledConfig.systemd.services ? "aos-ability-crucible";
-  assert enabledConfig.environment.etc ? "aos/ability-crucible-adapter.json";
-  assert enabledConfig.environment.etc ? "aos/ability-execution-observer.json";
+  evaluationContract =
+    assert !(builtins.elem adapterPath disabledPackages);
   assert builtins.elem adapterPath enabledPackages;
-  assert enabledConfig.systemd.services."aos-ability-crucible".serviceConfig.RuntimeDirectory == "aos-instrumentation";
-  assert enabledConfig.systemd.services."aos-ability-crucible".serviceConfig.RuntimeDirectoryMode == "0700"; true;
+  assert enabledConfig.aos.abilities.executionObserver
+  == {
+    request = "fleet-observer:endpoint";
+    resourceOutput = "retained-resource";
+    socketOutput = "socket-path";
+  };
+  assert enabledConfig.aos.abilities.requests."aos-ability-crucible:observer-endpoint".parameters.socket_path == adapterSocket;
+  assert enabledConfig.aos.abilities.requests."fleet-observer:endpoint".parameters.socket_path == executorSocket; true;
 in
   assert evaluationContract;
     base
@@ -93,24 +65,10 @@ in
               "systemctl is-active --quiet aos-ability-crucible.service"
           )
           runtime.succeed(
-              "test \"$(stat -c '%U:%G:%a' /run/aos-instrumentation)\" "
+              "test \"$(stat -c '%U:%G:%a' /run/aos/ability-crucible)\" "
               "= root:root:700"
           )
-          runtime.succeed(
-              f"{JQ} -e "
-              "'.schema == \"aos.ability-crucible-adapter/v1\" "
-              "and .socket == \"${adapterSocket}\" "
-              "and .required_instruction_abi == 1 "
-              "and .required_marker_kinds == "
-              "[\"assertion\",\"coverage\",\"event\",\"lifecycle\"]' "
-              "/etc/aos/ability-crucible-adapter.json"
-          )
-          runtime.succeed(
-              f"{JQ} -e "
-              "'.schema == \"aos.ability-execution-observer/v1\" "
-              "and .socket == \"${executorSocket}\"' "
-              "/etc/aos/ability-execution-observer.json"
-          )
+          runtime.succeed("test -S ${adapterSocket}")
 
           selected_fault = read_json(TARGET)
           reached_fault = read_json(HELD_EVENT)

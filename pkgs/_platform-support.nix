@@ -807,6 +807,7 @@ let
     "kubernetes/_k3s-config/module.nix" = "linux-only-config-source";
     "kubernetes/_k3s-config/configuration-interface.nix" = "target-independent-source";
     "kubernetes/_k3s-config/configuration-provider.nix" = "linux-only-config-source";
+    "kubernetes/_k3s-config/object-interface.nix" = "target-independent-source";
     "kubernetes/_k3s-config/object-provider.nix" = "linux-only-config-source";
     "kubernetes/_k3s-config/roles.nix" = "linux-only-config-source";
     "kubernetes/_kubelet-config/module.nix" = "linux-only-config-source";
@@ -842,6 +843,9 @@ let
     "tests/_test-http-server/module.nix" = "linux-only-config-source";
     "tests/_test-static-cache-server/module.nix" = "linux-only-config-source";
     "tests/_upgrade-transition-fixture/module.nix" = "linux-only-config-source";
+    "tools/_aos-ability-crucible/endpoint-interface.nix" = "target-independent-source";
+    "tools/_aos-ability-crucible/endpoint-provider.nix" = "target-independent-source";
+    "tools/_aos-ability-crucible/module.nix" = "linux-only-config-source";
     "tools/_conntrackd/module.nix" = "linux-only-config-source";
     "tools/_smartmontools/module.nix" = "linux-only-config-source";
     "tools/aos/_abilities/configuration-provider/module.nix" = "target-independent-source";

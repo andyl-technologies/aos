@@ -6,9 +6,9 @@
 //! lifecycle, event, coverage, and assertion markers. It introduces no choice,
 //! measurement, campaign, QEMU, or shared-memory protocol.
 //!
-//! The root-owned adapter configuration is canonical JSON. The Nix profile
-//! renders `ready_command` as the exact AOS systemd store path; no host tool
-//! path or `PATH` lookup participates in readiness.
+//! The package-owned adapter configuration is canonical JSON. Its native
+//! ability module supplies `ready_command` as an authenticated package output;
+//! no host tool path or `PATH` lookup participates in readiness.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -28,12 +28,10 @@ use crucible_guest::{
 };
 use serde::{Deserialize, Serialize};
 
-const DEFAULT_CONFIG_PATH: &str = "/etc/aos/ability-crucible-adapter.json";
 const CONFIG_SCHEMA: &str = "aos.ability-crucible-adapter/v1";
 const EVENT_SCHEMA: &str = "aos.ability-execution-boundary-event/v1";
 const ACK_SCHEMA: &str = "aos.ability-execution-boundary-ack/v1";
 const EVENT_DIGEST_DOMAIN: &str = "aos.ability-execution-boundary-event/v1";
-const SOCKET_ROOT: &str = "/run/aos-instrumentation";
 const FRAME_MAX_BYTES: usize = 16 * 1024;
 const CONFIG_MAX_BYTES: u64 = 4 * 1024;
 const MAX_ACTIVE_MONITORS: usize = 1024;
@@ -41,8 +39,7 @@ const REQUIRED_MARKER_KINDS: [&str; 4] = ["assertion", "coverage", "event", "lif
 
 /// Runs the baseline adapter with command-line arguments after the binary name.
 ///
-/// The only accepted form is `--config PATH`; omitting it uses the fixed
-/// production profile path.
+/// The only accepted form is `--config PATH`.
 ///
 /// # Errors
 ///
@@ -70,9 +67,8 @@ where
 {
     let words = args.into_iter().collect::<Vec<_>>();
     match words.as_slice() {
-        [] => Ok(PathBuf::from(DEFAULT_CONFIG_PATH)),
         [flag, path] if flag == "--config" => Ok(PathBuf::from(path)),
-        _ => bail!("usage: aos-ability-crucible [--config PATH]"),
+        _ => bail!("usage: aos-ability-crucible --config PATH"),
     }
 }
 
@@ -121,10 +117,6 @@ impl AdapterConfig {
         ensure!(
             self.required_marker_kinds == REQUIRED_MARKER_KINDS.map(str::to_owned),
             "required Crucible baseline marker declarations are unavailable"
-        );
-        ensure!(
-            self.socket.parent() == Some(Path::new(SOCKET_ROOT)),
-            "adapter socket must be a direct child of {SOCKET_ROOT}"
         );
         let socket_text = self
             .socket
@@ -625,6 +617,16 @@ mod tests {
             attempt_remaining_millis: 1_000,
             recovery_remaining_millis: 2_000,
         }
+    }
+
+    #[test]
+    fn configuration_path_is_explicit() {
+        assert!(parse_args(Vec::<OsString>::new()).is_err());
+        assert_eq!(
+            parse_args([OsString::from("--config"), OsString::from("/run/aos/config.json")])
+                .unwrap(),
+            PathBuf::from("/run/aos/config.json")
+        );
     }
 
     #[test]

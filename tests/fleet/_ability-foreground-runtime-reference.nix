@@ -19,12 +19,9 @@
       transitionTransform
       ;
   };
-  observerConfiguration = ''{"schema":"aos.ability-execution-observer/v1","socket":"/run/aos-instrumentation/controller.sock"}'';
   observerClientModule = ''
-    environment.etc."aos/ability-execution-observer.json" = {
-      text = ${builtins.toJSON observerConfiguration};
-      mode = "0600";
-    };
+    imports = [ ${./_ability-execution-observer.nix} ];
+    aos.tests.executionObserver.enable = true;
   '';
   containerRuntimeModules =
     [
@@ -36,10 +33,8 @@
     ++ builtins.tail reference.runtimeModules
     ++ [
       {
-        environment.etc."aos/ability-execution-observer.json" = {
-          text = observerConfiguration;
-          mode = "0600";
-        };
+        imports = [./_ability-execution-observer.nix];
+        aos.tests.executionObserver.enable = true;
       }
     ];
   containerSystem = mkSystem containerRuntimeModules;
