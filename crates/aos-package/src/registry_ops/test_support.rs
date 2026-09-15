@@ -534,6 +534,7 @@ pub(in crate::registry_ops) fn test_provenance_signer() -> TestProvenanceSigner 
         signer: LocalPackageProvenanceSigner {
             key_id: TEST_PROVENANCE_KEY_ID.to_string(),
             key_path: key.private_key.clone(),
+            trusted_key: key.trusted_key.clone(),
         },
         trusted_key: key.trusted_key,
         _tmp: tmp,
