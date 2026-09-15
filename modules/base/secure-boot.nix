@@ -545,14 +545,16 @@ in {
           pkgs.aos-var-policy-migrate
           pkgs.systemd
         ];
-        intent = {
-          aos.security.measuredVar = {
-            enable = true;
-            pcrPublicKey = "${pcrKeyForInitrd}/pcr.pem";
-            inherit (cfg.measuredBoot) signedPcrs pinnedPcrs recoveryKeyPath;
-            requireVerity = config.aos.security.verity.enable;
-          };
-        };
+        intent = [
+          {
+            aos.security.measuredVar = {
+              enable = true;
+              pcrPublicKey = "${pcrKeyForInitrd}/pcr.pem";
+              inherit (cfg.measuredBoot) signedPcrs pinnedPcrs recoveryKeyPath;
+              requireVerity = config.aos.security.verity.enable;
+            };
+          }
+        ];
       };
     })
   ];

@@ -71,6 +71,11 @@
     debugConfig.aos.abilities.stages.initrd.packages;
   debugHostRequests = debugConfig.aos.abilities.requests;
   debugInitrdRequests = debugConfig.system.build.initrdAbilityGraph.requests;
+  debugAutologinIntent =
+    lib.findFirst
+    (fragment: lib.hasAttrByPath ["aos" "services" "getty" "autologin"] fragment)
+    null
+    debugConfig.aos.abilities.stages.initrd.intent;
   portableOptionTree = options:
     builtins.all (option:
       if (option._type or null) == "option"
@@ -135,7 +140,7 @@ in
   assert builtins.elem "util-linux" debugPackageNames;
   assert builtins.elem "util-linux" debugInitrdPackageNames;
   assert builtins.elem "systemd" debugInitrdPackageNames;
-  assert debugConfig.aos.abilities.stages.initrd.intent.aos.services.getty.autologin
+  assert debugAutologinIntent.aos.services.getty.autologin
   == {
     enable = true;
     stage = "initrd";

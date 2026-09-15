@@ -130,7 +130,9 @@ in {
     aos.boot.initrd.extraPackages = [pkgs.aos-verity-root-guard];
     aos.abilities.stages.initrd = {
       packages = [pkgs.aos-verity-root-guard pkgs.systemd];
-      intent.aos.security.verityRootVerification.enable = true;
+      intent = [
+        {aos.security.verityRootVerification.enable = true;}
+      ];
     };
   };
 }

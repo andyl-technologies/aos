@@ -172,14 +172,18 @@ in {
           pkgs.aos-boot-storage
           pkgs.systemd
         ];
-        intent.aos.boot.storageServices = {
-          espDevices = cfg.espDevices;
-          zfs = {
-            enable = true;
-            inherit (cfg.zfs) poolName encryptionRoot sealedKeyPath;
-            expectedDevices = builtins.attrValues resolvedDevices;
-          };
-        };
+        intent = [
+          {
+            aos.boot.storageServices = {
+              espDevices = cfg.espDevices;
+              zfs = {
+                enable = true;
+                inherit (cfg.zfs) poolName encryptionRoot sealedKeyPath;
+                expectedDevices = builtins.attrValues resolvedDevices;
+              };
+            };
+          }
+        ];
       };
       aos.filesystems.zfs = {
         enable = true;

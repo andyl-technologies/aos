@@ -1,6 +1,7 @@
 ##! Package-owned initrd security lifecycle declarations.
 {
   lib,
+  mkSystem,
   pkgs,
 }: let
   environment = stage: {
@@ -58,6 +59,18 @@
   measuredVarLifecycle = request "aos-var-policy-migrate" "aos-var-crypt-lifecycle";
   measuredVarDependencies = request "aos-var-policy-migrate" "aos-var-crypt-dependencies";
   measuredVarCondition = request "aos-var-policy-migrate" "aos-var-crypt-conditions";
+  secureVeritySystem = mkSystem {
+    systemName = "initrd-security-intent-test";
+    modules = [../../systems/server-verity.nix];
+  };
+  secureVerityIntent = secureVeritySystem.config.aos.abilities.stages.initrd.intent;
+  intentValuesAt = path:
+    builtins.concatMap
+    (fragment:
+      lib.optional
+      (lib.hasAttrByPath path fragment)
+      (lib.attrByPath path null fragment))
+    secureVerityIntent;
 in
   assert disabled.config.aos.abilities.requests == {};
   assert builtins.attrNames configured.config.aos.abilities.instances
@@ -104,6 +117,9 @@ in
   assert (request "aos-var-policy-migrate" "persistent-state").milestone == "var";
   assert (request "aos-var-policy-migrate" "verity-root").milestone
   == "verity-root-verified";
+  assert intentValuesAt ["aos" "security" "verityRootVerification" "enable"] == [true];
+  assert intentValuesAt ["aos" "security" "measuredVar" "enable"] == [true];
+  assert intentValuesAt ["aos" "security" "measuredVar" "requireVerity"] == [true];
   assert guardDependencies.required_by
   == [
     (output "aos-verity-root-guard:persistent-state" "readiness-resource")
