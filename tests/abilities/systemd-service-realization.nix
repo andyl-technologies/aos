@@ -332,10 +332,13 @@
           ];
         };
     };
-  ownershipComposition = owner:
+  ownershipComposition = owner: let
+    selectedResource = ownershipResource owner;
+  in
     lifecycleImplementation.compose {
+      allResources = [selectedResource];
       bindings.lifecycle.providerInstance = "systemd:manager";
-      resources.main = ownershipResource owner;
+      resources.main = selectedResource;
     };
   matchedOwnership = ownershipComposition "example";
   mismatchedOwnership = ownershipComposition "another-principal";
