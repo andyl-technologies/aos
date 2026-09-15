@@ -75,17 +75,17 @@ struct ActivationRecord<'a> {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct StoredActivationRecord {
-    pub(super) schema: String,
-    pub(super) generation: u32,
-    pub(super) generation_id: String,
+pub(crate) struct StoredActivationRecord {
+    pub(crate) schema: String,
+    pub(crate) generation: u32,
+    pub(crate) generation_id: String,
     pub(super) transaction_manifest: String,
     #[serde(rename = "dropped_packages")]
     _dropped_packages: Vec<String>,
-    pub(super) status: String,
-    pub(super) activation_exit: i32,
-    pub(super) native_ability_transaction: Option<String>,
-    pub(super) native_ability_prior_generation: Option<NonZeroU32>,
+    pub(crate) status: String,
+    pub(crate) activation_exit: i32,
+    pub(crate) native_ability_transaction: Option<String>,
+    pub(crate) native_ability_prior_generation: Option<NonZeroU32>,
 }
 
 /// Returns generations retained by the current native recovery record.
@@ -176,7 +176,7 @@ pub(crate) fn required_native_recovery_generations(
     Ok(required)
 }
 
-pub(super) fn read_stored_activation_record(
+pub(crate) fn read_stored_activation_record(
     path: &Path,
     required: bool,
 ) -> Result<Option<StoredActivationRecord>> {

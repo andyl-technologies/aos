@@ -51,7 +51,7 @@ mod transaction_blob;
 mod transaction_verification;
 pub use native_activation::supported_native_ability_features;
 pub(crate) use native_activation::{
-    RetainedNativePreflightError, preflight_retained_manifest, verify_rollout_boot_commit,
+    RetainedNativePreflightError, preflight_retained_manifest,
 };
 mod cancellation;
 mod execution_observer;

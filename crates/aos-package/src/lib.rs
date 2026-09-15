@@ -4007,7 +4007,11 @@ pub async fn run(
             aos_ability_model::LocalKey::new(transaction.clone())
                 .context("decoding rollout transaction identity")?,
         );
-        return config_eval::verify_rollout_boot_commit(*generation, &transaction, *running);
+        return sysroot::image_rollout::verify_rollout_boot_commit(
+            *generation,
+            &transaction,
+            *running,
+        );
     }
 
     if let PackageCommand::Attest {
@@ -4974,7 +4978,7 @@ fn hash_rederived_manifest(path: &Path) -> Result<String> {
     Ok(graph_compile::reproject::hash_cjson(&value))
 }
 
-fn verify_local_boot_commit(
+pub(crate) fn verify_local_boot_commit(
     record_path: &Path,
     quote_dir: &Path,
     catalog_expected_pcr11: Option<&str>,
