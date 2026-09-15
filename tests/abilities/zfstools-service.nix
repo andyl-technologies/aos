@@ -37,6 +37,8 @@
           aos.filesystems.zfs = {
             enable = true;
             poolName = "tank";
+            systemState = false;
+            reservedSpace.enable = false;
             datasets.data = {
               mountPoint = "/tank/data";
               compression = "zstd";
