@@ -10,14 +10,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context as _, Result, bail};
 use aos_ability_model::document::PackageSubject;
 use aos_ability_model::{
-    AbilityActivationMode, ArtifactReference, ExportDeclaration, GuaranteeDeclaration,
-    GuaranteeKey, HandlerDescriptor, InterfaceDocument, InterfaceKey, InterfaceName, LocalKey,
-    ModuleLocator, PackageDocument, PackageImplementation, PackageOptionDeclaration, PackageProbe,
-    PackageProbeArtifact, PackageProbeHarness, PackageProbeOperation, PackageProbeStep,
-    PackageProbeTemplate, PackageProbeTemplateFragment, PackageQualification,
-    ProviderImplementation, ProviderQualification, ProviderStateFormat, RelativePath,
-    RequiredFeature, RequirementDeclaration, ValueSchema, VersionedDocument,
-    validate_package_option_declarations,
+    ArtifactReference, ExportDeclaration, GuaranteeDeclaration, GuaranteeKey, HandlerDescriptor,
+    InterfaceDocument, InterfaceKey, InterfaceName, LocalKey, ModuleLocator, PackageDocument,
+    PackageImplementation, PackageOptionDeclaration, PackageProbe, PackageProbeArtifact,
+    PackageProbeHarness, PackageProbeOperation, PackageProbeStep, PackageProbeTemplate,
+    PackageProbeTemplateFragment, PackageQualification, ProviderImplementation,
+    ProviderQualification, ProviderStateFormat, RelativePath, RequiredFeature,
+    RequirementDeclaration, ValueSchema, VersionedDocument, validate_package_option_declarations,
 };
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
@@ -430,7 +429,6 @@ pub struct PackageAbilityProjection {
     /// Names required semantics in canonical order.
     pub required_features: Vec<RequiredFeature>,
     /// Selects the package activation mode.
-    pub activation_mode: AbilityActivationMode,
     /// Identifies the owning package.
     pub package: PackageProjectionSubject,
     /// Lists additional artifacts selected for retention.
@@ -757,7 +755,6 @@ pub fn resolve_package_projection(
     Ok(PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
         required_features: projection.required_features,
-        activation_mode: projection.activation_mode,
         package: PackageSubject {
             name: projection.package.name,
             version: projection.package.version,

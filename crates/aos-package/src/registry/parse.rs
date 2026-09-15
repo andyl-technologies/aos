@@ -41,8 +41,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::types::{
-    PackageMeta, SysrootImageEntry, package_name_bucket, validate_ability_aware_package_meta,
-    validate_supported_package_meta,
+    PackageMeta, SysrootImageEntry, package_name_bucket, validate_supported_package_meta,
 };
 
 type PackageMetaValidator = fn(&PackageMeta) -> Result<()>;
@@ -120,34 +119,6 @@ pub(crate) fn parse_registry_matching(
         Some(platform),
         version_req,
         validate_supported_package_meta,
-    )
-}
-
-/// Parses a registry for a consumer that understands authenticated abilities.
-///
-/// This is intentionally separate from [`parse_registry_matching`]. Release
-/// preparation and structured configuration evaluation must validate ability
-/// metadata, while ordinary package mutation paths retain their narrower
-/// fail-closed reader profile.
-///
-/// # Errors
-///
-/// Returns an error if the catalog is malformed or uses a feature the
-/// ability-aware consumer cannot validate.
-pub(crate) fn parse_registry_matching_for_ability_aware_consumer(
-    dir: &Path,
-    platform: &str,
-    version_req: Option<&semver::VersionReq>,
-) -> Result<(
-    HashMap<String, PackageMeta>,
-    HashMap<String, PackageMeta>,
-    Vec<PackageMeta>,
-)> {
-    parse_registry_selection(
-        dir,
-        Some(platform),
-        version_req,
-        validate_ability_aware_package_meta,
     )
 }
 
@@ -371,7 +342,7 @@ fn package_metas_for_platform(
                 expose_artifact: plat.expose_artifact.clone(),
                 config_module: plat.config_module.clone(),
                 documentation: plat.documentation.clone(),
-                ability: plat.ability.clone(),
+                contract: plat.contract.clone(),
                 permissions: plat.permissions.clone(),
                 bpf_lsm: plat.bpf_lsm.clone(),
                 attestation,
@@ -383,7 +354,7 @@ fn package_metas_for_platform(
                     .bpf_lsm
                     .as_ref()
                     .is_some_and(|bpf_lsm| !bpf_lsm.is_empty())
-                || meta.ability.is_some()
+                || meta.contract.is_some()
                 || !meta.attestation.is_empty())
                 && !plat.references.is_gate()
             {

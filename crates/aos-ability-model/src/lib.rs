@@ -41,8 +41,8 @@ pub use artifact_consumption::{
 };
 pub use diagnostic::{Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase};
 pub use document::{
-    AbilityActivationMode, AggregateOutput, BindingPlanDocument, BranchSelection,
-    DesiredStateDocument, EffectPlanDocument, EnvironmentDocument, ExecutionDocument,
+    AggregateOutput, BindingPlanDocument, BranchSelection, DesiredStateDocument,
+    EffectPlanDocument, EnvironmentDocument, ExecutionDocument, FEATURE_ABILITY_EFFECTS_V1,
     InterfaceDocument, MergeRecord, ModuleLocator, PackageDocument, RequiredFeature,
     SkippedOperationRecord, VersionedDocument, decode_canonical, encode_canonical,
 };

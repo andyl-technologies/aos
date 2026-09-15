@@ -1160,9 +1160,7 @@ impl RegistryPackageModules {
                 super::runtime::LocalRuntimePackage {
                     version: apm.version,
                     store_path: record.store_path,
-                    expose: apm.expose,
-                    expose_artifact: apm.expose_artifact,
-                    ability: apm.ability,
+                    contract: apm.contract,
                     closure: std::cell::RefCell::new(None),
                 },
             );
@@ -1178,13 +1176,14 @@ fn resolved_registry_package_module(
     registry: &crate::registry::Registry,
     package: &crate::types::PackageMeta,
 ) -> Result<Option<ResolvedPackageModule>> {
-    let Some(document) = crate::ability_package::resolve_package_document(package)? else {
+    let Some(document) = crate::package_contract::resolve_package_document(package)? else {
         return Ok(None);
     };
     let ability_store_path = package
-        .ability
+        .contract
         .as_ref()
-        .context("resolved package document has no authenticated companion")?
+        .context("resolved package document has no authenticated contract")?
+        .document
         .store_path
         .clone();
     let Some(module) = document.package_module.as_ref() else {
@@ -1212,15 +1211,10 @@ fn resolved_image_package_module(
     name: &str,
     package: &super::runtime::LocalRuntimePackage,
 ) -> Result<Option<ResolvedPackageModule>> {
-    let Some(ability) = package.ability.clone() else {
+    let Some(contract) = package.contract.clone() else {
         return Ok(None);
     };
-    let ability_store_path = ability.store_path.clone();
-    let manifest = crate::ability_package::read_package_manifest(&ability_store_path)?;
-    let decoded = crate::ability_package::decode_package_manifest(&manifest)?;
-    if decoded.package_module.is_none() {
-        return Ok(None);
-    }
+    let ability_store_path = contract.document.store_path.clone();
     let package_meta = crate::types::PackageMeta {
         name: name.to_string(),
         version: package.version.clone(),
@@ -1230,7 +1224,7 @@ fn resolved_image_package_module(
         maintainer: "AOS image".to_string(),
         platform: "x86_64-linux".to_string(),
         store_path: package.store_path.clone(),
-        nar_hash: decoded.package.payload.nar_hash.to_string(),
+        nar_hash: contract.payload.nar_hash.clone(),
         nar_size: 0,
         references: Vec::new(),
         source_drv: String::new(),
@@ -1241,16 +1235,16 @@ fn resolved_image_package_module(
         images: Vec::new(),
         min_format: None,
         requires_features: Vec::new(),
-        expose: package.expose.clone(),
-        expose_artifact: package.expose_artifact.clone(),
+        expose: None,
+        expose_artifact: None,
         config_module: None,
         documentation: None,
-        ability: Some(ability),
+        contract: Some(contract),
         permissions: Default::default(),
         bpf_lsm: None,
         attestation: Default::default(),
     };
-    let document = crate::ability_package::resolve_package_document(&package_meta)?;
+    let document = crate::package_contract::resolve_package_document(&package_meta)?;
 
     Ok(document.map(|document| ResolvedPackageModule {
         registry: String::new(),
@@ -1407,8 +1401,8 @@ impl PackageModuleResolver for RegistryPackageModules {
 mod tests {
     use aos_ability_model::document::PackageSubject;
     use aos_ability_model::{
-        AbilityActivationMode, ArtifactReference, LocalKey, ModuleLocator, PackageDocument,
-        PackageImplementation, RelativePath, RequiredFeature, VersionedDocument,
+        ArtifactReference, LocalKey, ModuleLocator, PackageDocument, PackageImplementation,
+        RelativePath, RequiredFeature, VersionedDocument,
     };
     use aos_ability_validate::PackageOutputSelector;
     use aos_contract::Sha256Digest;
@@ -1442,7 +1436,6 @@ mod tests {
         PackageDocument {
             schema: PackageDocument::SCHEMA.to_string(),
             required_features: vec![RequiredFeature::new("abilities-v1").unwrap()],
-            activation_mode: AbilityActivationMode::ContractsOnly,
             package: PackageSubject {
                 name: LocalKey::new(package).unwrap(),
                 version: "1.0.0".to_string(),

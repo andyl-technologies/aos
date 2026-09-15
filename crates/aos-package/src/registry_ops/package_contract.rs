@@ -5,41 +5,42 @@
 //! graph inspection, so callers cannot compute or rewrite either identity on a
 //! separate path.
 
-use crate::ability_package::canonical_nar_hash;
+use crate::package_contract::canonical_nar_hash;
 use crate::registry::release::RegistryReleaseEntry;
 use crate::registry_ops::store_paths::{
     introspect_closure_nars, introspect_direct_reference_hashes, introspect_store_path,
-    nix_command, validate_store_path_release_policy,
+    validate_store_path_release_policy,
 };
-use crate::types::{AbilityArtifactRetentionMeta, AbilityClosureMemberMeta};
-use anyhow::{bail, Context, Result};
+use crate::types::{
+    PackageContractArtifactMeta, PackageContractClosureMemberMeta, PackageContractSelectorMeta,
+};
+use anyhow::{Context, Result, bail};
 use aos_ability_model::{
-    artifact_closure_identity, artifact_content_identity, encode_canonical,
-    ArtifactClosureMemberInput, ArtifactReference, PackageDocument,
+    ArtifactClosureMemberInput, ArtifactReference, PackageDocument, artifact_closure_identity,
+    artifact_content_identity, encode_canonical,
 };
 use aos_ability_validate::{
-    decode_package_projection, resolve_package_projection, PackageAbilityProjection,
-    PackageOutputSelector,
+    PackageAbilityProjection, PackageOutputSelector, decode_package_projection,
+    resolve_package_projection,
 };
 use aos_contract::Sha256Digest;
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 
 /// An ability artifact reference and the exact closure retained for it.
-pub(in crate::registry_ops) struct ResolvedAbilityArtifact {
+pub(in crate::registry_ops) struct ResolvedContractArtifact {
     /// Semantic reference embedded in the checked package document.
     pub(in crate::registry_ops) reference: ArtifactReference,
     /// Complete realization metadata retained by the registry.
-    pub(in crate::registry_ops) retention: AbilityArtifactRetentionMeta,
+    pub(in crate::registry_ops) retention: PackageContractArtifactMeta,
 }
 
 /// Exact release-entry inventory used to bind symbolic package outputs.
-pub(crate) struct AbilitySelectorRegistry {
+pub(crate) struct PackageContractSelectorRegistry {
     outputs: BTreeMap<(String, String, String), Vec<(String, String)>>,
 }
 
-impl AbilitySelectorRegistry {
+impl PackageContractSelectorRegistry {
     /// Indexes exact planned outputs by package, platform, and output name.
     pub(crate) fn new(entries: &[RegistryReleaseEntry]) -> Self {
         let mut outputs = BTreeMap::new();
@@ -62,7 +63,7 @@ impl AbilitySelectorRegistry {
             package => package,
         };
         let output = selector.output.as_str();
-        if output == crate::types::ABILITY_MANIFEST_OUTPUT {
+        if output == crate::types::PACKAGE_CONTRACT_OUTPUT {
             bail!("ability projections cannot select another ability projection output");
         }
         let candidates = self
@@ -98,7 +99,7 @@ impl AbilitySelectorRegistry {
 /// inspected and canonically encoded.
 pub(in crate::registry_ops) fn resolve_store_artifact(
     store_path: &str,
-) -> Result<ResolvedAbilityArtifact> {
+) -> Result<ResolvedContractArtifact> {
     let artifact = introspect_store_path(store_path)
         .with_context(|| format!("introspecting ability artifact {store_path}"))?;
     validate_store_path_release_policy(&artifact)?;
@@ -111,7 +112,7 @@ pub(in crate::registry_ops) fn resolve_store_artifact(
         .into_iter()
         .map(|member| {
             let references = introspect_direct_reference_hashes(&member.path)?;
-            Ok(AbilityClosureMemberMeta {
+            Ok(PackageContractClosureMemberMeta {
                 store_path: member.path,
                 nar_hash: canonical_nar_hash(&member.nar_hash)?,
                 nar_size: member.nar_size,
@@ -141,14 +142,14 @@ pub(in crate::registry_ops) fn resolve_store_artifact(
     )?;
     let content = artifact_content_identity(&nar_digest);
 
-    Ok(ResolvedAbilityArtifact {
+    Ok(ResolvedContractArtifact {
         reference: ArtifactReference {
             content,
             store_path: store_path.to_string(),
             nar_hash: nar_digest,
             closure: closure_digest,
         },
-        retention: AbilityArtifactRetentionMeta {
+        retention: PackageContractArtifactMeta {
             content: content.to_string(),
             store_path: store_path.to_string(),
             nar_hash,
@@ -159,7 +160,7 @@ pub(in crate::registry_ops) fn resolve_store_artifact(
     })
 }
 
-/// Reads and resolves a symbolic package ability publication through one exact release inventory.
+/// Reads and resolves a symbolic companion through one exact release inventory.
 ///
 /// # Errors
 ///
@@ -173,25 +174,47 @@ pub(in crate::registry_ops) fn resolve_release_projection(
     platform: &str,
     primary_store_path: &str,
     source_store_path: &str,
-    selectors: &AbilitySelectorRegistry,
-) -> Result<(PackageDocument, Vec<Vec<u8>>)> {
+    selectors: &PackageContractSelectorRegistry,
+) -> Result<(
+    PackageDocument,
+    Vec<Vec<u8>>,
+    Vec<PackageContractSelectorMeta>,
+)> {
     let projection_path = Path::new(projection_store_path);
-    let projection_bytes = crate::ability_package::catalog::read_bounded_regular_file(
+    let projection_bytes = crate::package_contract::catalog::read_bounded_regular_file(
         &projection_path,
         "ability package projection",
     )?;
     let projection = decode_package_projection(&projection_bytes)?;
     validate_projection_coordinate(&projection, package, version)?;
     let interface_documents = projection.interface_documents.clone();
+    let symbolic_selectors = projection.artifacts.clone();
 
     let payload = resolve_store_artifact(primary_store_path)?.reference;
     let source = resolve_store_artifact(source_store_path)?.reference;
+    let mut resolved = BTreeMap::new();
+    let mut bindings = Vec::with_capacity(symbolic_selectors.len());
+    for selector in symbolic_selectors {
+        let path = selectors.select((package, version, platform), &selector)?;
+        let artifact = resolve_store_artifact(path)?;
+        resolved.insert(selector.clone(), artifact.reference);
+        bindings.push(PackageContractSelectorMeta {
+            package: selector.package.as_str().to_string(),
+            output: selector.output.as_str().to_string(),
+            artifact: artifact.retention,
+        });
+    }
     let document = resolve_package_projection(projection, payload, source, |selector| {
-        let path = selectors.select((package, version, platform), selector)?;
-        Ok(resolve_store_artifact(path)?.reference)
+        resolved.get(selector).cloned().with_context(|| {
+            format!(
+                "package contract selector {}:{} was not resolved",
+                selector.package.as_str(),
+                selector.output.as_str()
+            )
+        })
     })?;
     let interfaces = read_projection_interfaces(&interface_documents, &document)?;
-    Ok((document, interfaces))
+    Ok((document, interfaces, bindings))
 }
 
 fn validate_projection_coordinate(
@@ -226,90 +249,9 @@ fn read_projection_interfaces(
         .collect()
 }
 
-/// Materializes the resolved package document and retained interfaces as one
-/// canonical recursive fixed-output store object.
-///
-/// # Errors
-///
-/// Returns an error when canonical encoding, filesystem materialization,
-/// fixed-output insertion, or resulting Nix-store introspection fails.
-pub(in crate::registry_ops) fn materialize_resolved_ability_publication(
-    projection_store_path: &str,
-    package: &str,
-    version: &str,
-    document: &PackageDocument,
-    interfaces: &[Vec<u8>],
-) -> Result<ResolvedAbilityArtifact> {
-    let manifest = encode_canonical(document).context("encoding resolved ability package")?;
-    let temporary = tempfile::tempdir()
-        .context("creating resolved signed package ability publication input")?;
-    let publication = temporary
-        .path()
-        .join(format!("{package}-{version}-abilities"));
-    let interface_directory = publication.join("interfaces");
-    fs::create_dir_all(&interface_directory)
-        .context("creating resolved ability interface directory")?;
-    fs::write(publication.join("package.json"), &manifest)
-        .context("writing resolved ability package")?;
-
-    let declared_interfaces = document
-        .interfaces
-        .values()
-        .collect::<std::collections::BTreeSet<_>>();
-    if interfaces.len() != declared_interfaces.len() {
-        bail!("resolved ability interface count differs from package declarations");
-    }
-    for bytes in interfaces {
-        let interface: aos_ability_model::InterfaceDocument =
-            aos_contract::canonical::from_slice(bytes, "resolved ability interface")?;
-        let identity = interface.interface_key()?;
-        fs::write(
-            interface_directory.join(format!("{}.json", identity.descriptor.hex())),
-            bytes,
-        )
-        .context("writing resolved ability interface")?;
-    }
-    set_materialized_permissions(&publication)?;
-
-    let output = nix_command("nix-store")
-        .args(["--add-fixed", "--recursive", "sha256"])
-        .arg(&publication)
-        .output()
-        .context("adding resolved signed package ability publication to the Nix store")?;
-    if !output.status.success() {
-        bail!(
-            "nix-store --add-fixed failed for resolved signed package ability publication: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    let store_path = String::from_utf8(output.stdout)
-        .context("resolved signed package ability publication store path is not UTF-8")?
-        .trim()
-        .to_string();
-    if store_path == projection_store_path {
-        bail!("resolved signed package ability publication aliases its symbolic projection");
-    }
-    resolve_store_artifact(&store_path)
-}
-
-fn set_materialized_permissions(root: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        fs::set_permissions(root, fs::Permissions::from_mode(0o755))?;
-        fs::set_permissions(root.join("interfaces"), fs::Permissions::from_mode(0o755))?;
-        fs::set_permissions(root.join("package.json"), fs::Permissions::from_mode(0o644))?;
-        for entry in fs::read_dir(root.join("interfaces"))? {
-            fs::set_permissions(entry?.path(), fs::Permissions::from_mode(0o644))?;
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{AbilitySelectorRegistry, PackageOutputSelector};
+    use super::{PackageContractSelectorRegistry, PackageOutputSelector};
     use crate::registry::release::RegistryReleaseEntry;
 
     fn entry(package: &str, version: &str, output: &str, path: &str) -> RegistryReleaseEntry {
@@ -332,7 +274,7 @@ mod tests {
 
     #[test]
     fn selector_registry_binds_self_and_unique_foreign_outputs() {
-        let registry = AbilitySelectorRegistry::new(&[
+        let registry = PackageContractSelectorRegistry::new(&[
             entry("owner", "1", "bin", "/nix/store/owner-bin"),
             entry("provider", "7", "out", "/nix/store/provider-out"),
         ]);
@@ -353,27 +295,31 @@ mod tests {
 
     #[test]
     fn selector_registry_rejects_missing_ambiguous_and_projection_outputs() {
-        let registry = AbilitySelectorRegistry::new(&[
+        let registry = PackageContractSelectorRegistry::new(&[
             entry("provider", "1", "out", "/nix/store/provider-v1"),
             entry("provider", "2", "out", "/nix/store/provider-v2"),
         ]);
         let owner = ("owner", "1", "x86_64-linux");
 
         assert!(registry.select(owner, &selector("missing", "out")).is_err());
-        assert!(registry
-            .select(owner, &selector("provider", "out"))
-            .is_err());
-        assert!(registry
-            .select(
-                owner,
-                &selector("owner", crate::types::ABILITY_MANIFEST_OUTPUT)
-            )
-            .is_err());
+        assert!(
+            registry
+                .select(owner, &selector("provider", "out"))
+                .is_err()
+        );
+        assert!(
+            registry
+                .select(
+                    owner,
+                    &selector("owner", crate::types::PACKAGE_CONTRACT_OUTPUT)
+                )
+                .is_err()
+        );
     }
 
     #[test]
     fn owner_normalized_selector_selects_only_the_release_version() {
-        let registry = AbilitySelectorRegistry::new(&[
+        let registry = PackageContractSelectorRegistry::new(&[
             entry("owner", "1", "out", "/nix/store/owner-v1"),
             entry("owner", "2", "out", "/nix/store/owner-v2"),
         ]);

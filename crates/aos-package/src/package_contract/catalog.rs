@@ -11,18 +11,18 @@ use aos_ability_model::{InterfaceDocument, PackageDocument, VersionedDocument};
 use aos_ability_plan::RecursiveComposer;
 use aos_ability_validate::{ValidationContext, package_source_supported_features};
 
-use super::VerifiedAbilityPackageSet;
+use super::VerifiedPackageContractSet;
 
 /// Supplies a composer from one complete authenticated registry package set.
 ///
 /// The adapter owns the validated public interface catalog and exact package
 /// documents together so callers cannot compose against an unrelated context.
-pub struct VerifiedAbilityPlanningCatalog {
+pub struct VerifiedPackagePlanningCatalog {
     context: ValidationContext,
     packages: Vec<PackageDocument>,
 }
 
-impl VerifiedAbilityPlanningCatalog {
+impl VerifiedPackagePlanningCatalog {
     /// Loads an authenticated package and interface catalog from retained companions.
     ///
     /// # Errors
@@ -34,10 +34,10 @@ impl VerifiedAbilityPlanningCatalog {
     ) -> Result<Self> {
         let supported_features = package_source_supported_features()
             .context("constructing supported package ability features")?;
-        let mut interfaces = BTreeMap::new();
-        let mut packages = Vec::new();
+        let mut loaded = Vec::new();
 
         for (package, companion) in documents {
+            let mut package_interfaces = Vec::new();
             for interface in package.interfaces.values() {
                 let path = companion
                     .join("interfaces")
@@ -58,6 +58,24 @@ impl VerifiedAbilityPlanningCatalog {
                         path.display()
                     );
                 }
+                package_interfaces.push(document);
+            }
+            loaded.push((package, package_interfaces));
+        }
+
+        Self::from_documents(loaded)
+    }
+
+    fn from_documents(
+        documents: impl IntoIterator<Item = (PackageDocument, Vec<InterfaceDocument>)>,
+    ) -> Result<Self> {
+        let supported_features = package_source_supported_features()
+            .context("constructing supported package ability features")?;
+        let mut interfaces = BTreeMap::new();
+        let mut packages = Vec::new();
+        for (package, package_interfaces) in documents {
+            for document in package_interfaces {
+                let key = document.interface_key()?;
                 if let Some(existing) = interfaces.insert(key.clone(), document.clone())
                     && existing != document
                 {
@@ -78,10 +96,7 @@ impl VerifiedAbilityPlanningCatalog {
 
         Ok(Self {
             context,
-            packages: packages
-                .into_iter()
-                .map(|(_, package)| package)
-                .collect(),
+            packages: packages.into_iter().map(|(_, package)| package).collect(),
         })
     }
 
@@ -104,7 +119,7 @@ impl VerifiedAbilityPlanningCatalog {
     }
 }
 
-impl VerifiedAbilityPackageSet {
+impl VerifiedPackageContractSet {
     /// Loads the exact public interfaces retained by these verified companions.
     ///
     /// Interface documents are addressed by the descriptors already committed
@@ -116,15 +131,12 @@ impl VerifiedAbilityPackageSet {
     /// Returns an error when an interface file is missing, non-regular,
     /// non-canonical, unsupported, exceeds the version-1 bound, disagrees with
     /// its export key, or conflicts with another authenticated companion.
-    pub fn planning_catalog(&self) -> Result<VerifiedAbilityPlanningCatalog> {
-        VerifiedAbilityPlanningCatalog::from_authenticated_documents(self.packages.iter().map(
-            |sealed| {
-                (
-                    sealed.package().clone(),
-                    Path::new(sealed.retention.companion_store_path()).to_path_buf(),
-                )
-            },
-        ))
+    pub fn planning_catalog(&self) -> Result<VerifiedPackagePlanningCatalog> {
+        VerifiedPackagePlanningCatalog::from_documents(
+            self.packages
+                .iter()
+                .map(|sealed| (sealed.package().clone(), sealed.interfaces.clone())),
+        )
     }
 }
 

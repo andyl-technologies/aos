@@ -4,18 +4,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::document::{Contribution, PackageSubject, ProviderState};
 use aos_ability_model::{
-    AbilityActivationMode, AbilityValue, AccessMode, AggregateId, AggregateOutput,
-    AggregateOutputReference, AggregationContract, AggregationScope, ArtifactReference, BindingId,
-    BranchMembership, ContributionPermission, ControllerAssignment, DecisionAlternative,
-    DecisionNode, DecisionPredicate, DecisionSelector, DependencyEdge, DependencyKind,
-    DiagnosticCode, ExportDeclaration, HandlerDescriptor, IncarnationId, LocalKey, MergeNode,
-    MergedOutput, MethodReference, MethodSemantics, ModuleLocator, OperationResultReference,
-    OutputDescriptor, PROVIDER_STATE_FORMAT_V1, PackageDocument, PackageImplementation,
-    PlanNodeKey, ProviderAssignment, ProviderImplementation, ProviderStateFormat, RelativePath,
-    RequiredFeature, RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceId,
-    ResourceLifetime, ResourcePermission, ResourceReference, ResourceRevision, ResultProducerKey,
-    RevisionId, ScopePath, ScopedOperationKey, StringConstraint, ValueExpression, ValuePhase,
-    ValueSchema, ValueVisibility, VersionedDocument, compare_edges, compare_operation_keys,
+    AbilityValue, AccessMode, AggregateId, AggregateOutput, AggregateOutputReference,
+    AggregationContract, AggregationScope, ArtifactReference, BindingId, BranchMembership,
+    ContributionPermission, ControllerAssignment, DecisionAlternative, DecisionNode,
+    DecisionPredicate, DecisionSelector, DependencyEdge, DependencyKind, DiagnosticCode,
+    ExportDeclaration, HandlerDescriptor, IncarnationId, LocalKey, MergeNode, MergedOutput,
+    MethodReference, MethodSemantics, ModuleLocator, OperationResultReference, OutputDescriptor,
+    PROVIDER_STATE_FORMAT_V1, PackageDocument, PackageImplementation, PlanNodeKey,
+    ProviderAssignment, ProviderImplementation, ProviderStateFormat, RelativePath, RequiredFeature,
+    RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceId, ResourceLifetime,
+    ResourcePermission, ResourceReference, ResourceRevision, ResultProducerKey, RevisionId,
+    ScopePath, ScopedOperationKey, StringConstraint, ValueExpression, ValuePhase, ValueSchema,
+    ValueVisibility, VersionedDocument, compare_edges, compare_operation_keys,
     compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
@@ -1559,7 +1559,6 @@ fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
     let package = PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
         required_features: Vec::new(),
-        activation_mode: AbilityActivationMode::ContractsOnly,
         package: PackageSubject {
             name: key("pure-provider"),
             version: "1.0.0".to_string(),
@@ -1623,7 +1622,6 @@ fn configure_primary_state_format(fixture: &mut PlanFixture, mode: StateFormatFi
 
     let package = &mut fixture.binding_inputs.packages[0];
     if !matches!(mode, StateFormatFixture::MissingDeclaration) {
-        package.activation_mode = AbilityActivationMode::StructuredEffects;
         let implementation = &mut package.implementation.providers[0];
         implementation.owns_resource_kinds =
             if matches!(mode, StateFormatFixture::MissingOwnedResource) {

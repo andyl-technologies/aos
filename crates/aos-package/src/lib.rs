@@ -41,10 +41,10 @@
 //! - `runtime_boundary` — fail-closed container and read-only command
 //!   admission before configuration, profile, or host-service access.
 
-pub mod ability_package;
 pub mod attestation;
 pub mod clean;
 pub mod config;
+pub mod package_contract;
 // `pub` (not `pub(crate)`) so the `golden_config_artifact` integration test —
 // which lives in a separate crate and can only reach `pub` items — can import
 // `render_package_config` through it. The module is otherwise internal
@@ -5220,30 +5220,40 @@ fn verify_signed_package_module_member(
     if package.package.name != module.package {
         bail!("signed package catalog entry {path} has the wrong package identity");
     }
-    let canonical_nar = registry::store::NarBytes::from_hash(&module.nar_hash, 0)?.nar_hash();
-    let matching = package
-        .versions
-        .iter()
-        .flat_map(|version| version.platforms.values())
-        .filter_map(|platform| platform.ability.as_ref())
-        .filter(|contract| {
-            contract.package_digest == module.document_digest
-                && contract.artifacts.iter().any(|artifact| {
-                    artifact.store_path == module.store_path
-                        && registry::store::NarBytes::from_hash(&artifact.nar_hash, 0)
-                            .is_ok_and(|nar| nar.nar_hash() == canonical_nar)
-                })
-        })
-        .collect::<Vec<_>>();
-    let [contract] = matching.as_slice() else {
+    let mut matching = Vec::new();
+    for version in &package.versions {
+        for (platform_name, platform) in &version.platforms {
+            let Some(contract) = &platform.contract else {
+                continue;
+            };
+            let coordinate = package_contract::PackageContractCoordinate {
+                name: &module.package,
+                version: &version.version,
+                platform: platform_name,
+                store_path: &platform.store_path,
+                nar_hash: &platform.nar_hash,
+            };
+            let (document, _) =
+                package_contract::resolve_pinned_package_document(coordinate, contract)?;
+            let Some(locator) = document.package_module.as_ref() else {
+                continue;
+            };
+            if document.content_digest()?.to_string() == module.document_digest
+                && locator.artifact.store_path == module.store_path
+                && locator.artifact.nar_hash.to_string() == module.nar_hash
+                && locator.path.as_str() == module.entrypoint
+            {
+                matching.push(document);
+            }
+        }
+    }
+    let [document] = matching.as_slice() else {
         bail!(
             "signed release catalog must authenticate package module {} exactly once for package {}",
             module.store_path,
             module.package
         );
     };
-    let bytes = ability_package::read_package_manifest(&contract.store_path)?;
-    let document = ability_package::decode_package_manifest(&bytes)?;
     let locator = document
         .package_module
         .as_ref()

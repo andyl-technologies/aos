@@ -29,16 +29,16 @@ use super::ability_policy::{
 use super::ability_policy_authority::{
     OperatorPolicyAuthorityRecord, OperatorPolicyAuthorityStore,
 };
-use super::transaction_store::AbilityTransactionSession;
 use super::command_handler::{
     CommandHandlerAdapter, CommandHandlerResourceCatalog, preflight_selected_handler,
 };
-use crate::ability_package::{VerifiedAbilityPackage, VerifiedAbilityPackageSet};
+use super::transaction_store::AbilityTransactionSession;
+use crate::package_contract::{VerifiedPackageContract, VerifiedPackageContractSet};
 
 /// Resolves and executes only handlers selected by a checked effect plan.
 pub(crate) struct HandlerDispatcher<'a> {
     activation: &'a SpecializedAbilityActivation,
-    packages: &'a VerifiedAbilityPackageSet,
+    packages: &'a VerifiedPackageContractSet,
 }
 
 impl<'a> HandlerDispatcher<'a> {
@@ -49,7 +49,7 @@ impl<'a> HandlerDispatcher<'a> {
     /// Returns an error when any operation lacks an exact package-owned handler.
     pub(crate) fn preflight(
         activation: &'a SpecializedAbilityActivation,
-        packages: &'a VerifiedAbilityPackageSet,
+        packages: &'a VerifiedPackageContractSet,
     ) -> Result<()> {
         for operation in activation.plan().operations() {
             let (binding, package, _) = selected_route(activation.plan(), packages, operation)?;
@@ -66,7 +66,7 @@ impl<'a> HandlerDispatcher<'a> {
     /// Returns the same errors as [`Self::preflight`].
     pub(crate) fn new(
         activation: &'a SpecializedAbilityActivation,
-        packages: &'a VerifiedAbilityPackageSet,
+        packages: &'a VerifiedPackageContractSet,
     ) -> Result<Self> {
         Self::preflight(activation, packages)?;
         Ok(Self {
@@ -188,11 +188,11 @@ impl<'a> HandlerDispatcher<'a> {
 
 fn selected_route<'a>(
     plan: &'a CheckedEffectPlan,
-    packages: &'a VerifiedAbilityPackageSet,
+    packages: &'a VerifiedPackageContractSet,
     operation: &Operation,
 ) -> Result<(
     &'a Binding,
-    &'a VerifiedAbilityPackage,
+    &'a VerifiedPackageContract,
     &'a aos_ability_model::InterfaceDocument,
 )> {
     let binding = plan

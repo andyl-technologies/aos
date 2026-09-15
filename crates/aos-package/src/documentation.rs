@@ -9,34 +9,31 @@
 mod ability_render;
 
 use std::fs;
-use std::io::{self, Read as _, Write};
+use std::io::{self, Write};
 use std::net::{IpAddr, SocketAddr};
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
-use aos_ability_model::VersionedDocument as _;
+use anyhow::{Context, Result, bail};
 use aos_ability_validate::{
-    validate_ability_contract, AbilityContractData, CheckedAbilityContract,
+    AbilityContractData, CheckedAbilityContract, validate_ability_contract,
 };
-use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
 use aos_doc_model::{
-    document_json_schema, tokenize, DocumentationComparison, OptionDocument,
+    DOCUMENT_SCHEMA, DocumentationComparison, MAX_DOCUMENT_BYTES, OptionDocument,
     PackageAbilityReference, PackageDocumentation, PackageDocumentationProjection, SearchDocument,
-    DOCUMENT_SCHEMA, MAX_DOCUMENT_BYTES,
+    document_json_schema, tokenize,
 };
 use aos_proto_types::{
     ComparePackageDocumentationRequest, GetPackageAbilityReferenceRequest,
     GetPackageDocumentationRequest, GetPackageDocumentationSchemaRequest,
     SearchPackageDocumentationRequest,
 };
-use aos_remote::{hub_rpc, HubClient};
+use aos_remote::{HubClient, hub_rpc};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::documentation_lsp;
-use crate::profile::{meta, Profile};
+use crate::profile::{Profile, meta};
 use crate::types::{DocumentationArtifactMeta, ProfileScope};
 use crate::{DocumentationCacheCommand, DocumentationCommand, DocumentationOutput, OptionsCommand};
 
@@ -71,11 +68,8 @@ impl LoadedDocumentation {
     }
 
     fn projection(&self) -> Result<PackageDocumentationProjection> {
-        PackageDocumentationProjection::new(
-            self.document.clone(),
-            self.ability_reference.clone(),
-        )
-        .map_err(Into::into)
+        PackageDocumentationProjection::new(self.document.clone(), self.ability_reference.clone())
+            .map_err(Into::into)
     }
 
     fn render_plain(&self) -> Result<String> {
@@ -467,7 +461,7 @@ pub(crate) fn load_installed_documents(scope: ProfileScope) -> Result<Vec<Loaded
             );
         }
         loaded.ability_reference = apm
-            .ability
+            .contract
             .as_ref()
             .map(|ability| {
                 load_ability_reference(ability, &apm.name, &apm.version, &installed.store_path)
@@ -531,70 +525,26 @@ fn load_document_file(
 }
 
 fn load_ability_reference(
-    ability: &crate::types::AbilityPackageMeta,
+    contract: &crate::types::PackageContractMeta,
     package_name: &str,
     package_version: &str,
     primary_store_path: &str,
 ) -> Result<PackageAbilityReference> {
-    crate::ability_package::validate_ability_package_meta(ability)
-        .context("validating installed ability metadata for documentation")?;
-    let manifest = crate::ability_package::read_package_manifest(&ability.store_path)?;
-    if manifest.len() as u64 != ability.manifest_size
-        || Sha256Digest::of_bytes(&manifest).to_string() != ability.manifest_sha256
-    {
-        bail!("installed ability manifest identity mismatch for '{package_name}'");
-    }
-    let package = crate::ability_package::decode_package_manifest(&manifest)?;
-    if package.package.name.as_str() != package_name || package.package.version != package_version {
-        bail!("installed ability package identity mismatch for '{package_name}'");
-    }
-    let artifacts = crate::ability_package::collect_distinct_artifacts(&package)?;
-    crate::ability_package::verify_artifact_catalog(&artifacts, &ability.artifacts)
-        .context("binding installed ability artifacts to signed retention metadata")?;
-    if package.package.payload.store_path != primary_store_path {
-        bail!("installed ability payload identity mismatch for '{package_name}'");
-    }
-    if package.content_digest()?.to_string() != ability.package_digest {
-        bail!("installed ability semantic identity mismatch for '{package_name}'");
-    }
-
-    let mut interfaces = Vec::with_capacity(package.interfaces.len());
-    let interface_keys = package
-        .interfaces
-        .values()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    for interface_key in interface_keys {
-        let path = Path::new(&ability.store_path)
-            .join("interfaces")
-            .join(format!("{}.json", interface_key.descriptor.hex()));
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(&path)
-            .with_context(|| format!("opening installed ability interface {}", path.display()))?;
-        let metadata = file
-            .metadata()
-            .with_context(|| format!("reading installed ability interface {}", path.display()))?;
-        let limit = aos_ability_model::ABILITY_LIMITS_V1.max_document_bytes;
-        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > limit {
-            bail!(
-                "installed ability interface is not a bounded regular file: {}",
-                path.display()
-            );
-        }
-        let mut bytes = Vec::with_capacity(metadata.len() as usize);
-        std::io::Read::take(file, limit + 1)
-            .read_to_end(&mut bytes)
-            .with_context(|| format!("reading installed ability interface {}", path.display()))?;
-        if bytes.len() as u64 != metadata.len() {
-            bail!(
-                "installed ability interface changed while it was read: {}",
-                path.display()
-            );
-        }
-        interfaces.push(bytes);
-    }
+    let coordinate = crate::package_contract::PackageContractCoordinate {
+        name: package_name,
+        version: package_version,
+        platform: "installed",
+        store_path: primary_store_path,
+        nar_hash: &contract.payload.nar_hash,
+    };
+    let (package, interfaces) =
+        crate::package_contract::resolve_pinned_package_document(coordinate, contract)
+            .context("resolving installed package contract for documentation")?;
+    let manifest = aos_ability_model::encode_canonical(&package)?;
+    let interfaces = interfaces
+        .iter()
+        .map(|document| Ok(aos_ability_model::encode_canonical(document)?))
+        .collect::<Result<Vec<_>>>()?;
     let checked = validate_ability_contract(AbilityContractData::PackageSource {
         manifest: &manifest,
         retained_interfaces: &interfaces,
@@ -1281,10 +1231,9 @@ fn install_manpage(
 mod tests {
     use super::*;
     use aos_ability_model::{
-        decode_canonical, AbilityActivationMode, ArtifactReference, InterfaceDocument, LocalKey,
-        OptionSource, OptionVisibility, PackageOptionDeclaration, ProviderImplementation,
-        RequiredFeature, RequirementDeclaration, RequirementStrength, ValueSchema,
-        ABILITY_LIMITS_V1,
+        ABILITY_LIMITS_V1, ArtifactReference, InterfaceDocument, LocalKey, OptionSource,
+        OptionVisibility, PackageOptionDeclaration, ProviderImplementation, RequiredFeature,
+        RequirementDeclaration, RequirementStrength, ValueSchema, decode_canonical,
     };
     use aos_contract::Sha256Digest;
     use aos_doc_model::{
@@ -1370,7 +1319,6 @@ mod tests {
             version: "1.0".to_string(),
             manifest_sha256: Sha256Digest::of_bytes("manifest"),
             package_digest: Sha256Digest::of_bytes("package"),
-            activation_mode: AbilityActivationMode::StructuredEffects,
             interfaces: std::collections::BTreeMap::from([(
                 LocalKey::new("server-interface").unwrap(),
                 interface,
@@ -1489,9 +1437,11 @@ mod tests {
         assert!(!detail.contains("<script"));
 
         let rejected = local_http_response(&[], b"POST / HTTP/1.1\r\n\r\n");
-        assert!(String::from_utf8(rejected)
-            .unwrap()
-            .starts_with("HTTP/1.1 405 Method Not Allowed"));
+        assert!(
+            String::from_utf8(rejected)
+                .unwrap()
+                .starts_with("HTTP/1.1 405 Method Not Allowed")
+        );
     }
 
     #[test]
@@ -1548,19 +1498,23 @@ mod tests {
         for requirement in &mut reference.exports[0].requirements {
             requirement.accepted_interfaces = vec![interface_key.clone().into()];
         }
-        assert!(without_configuration
-            .render_plain()
-            .unwrap()
-            .contains("no operator-owned provider instance configuration is declared"));
+        assert!(
+            without_configuration
+                .render_plain()
+                .unwrap()
+                .contains("no operator-owned provider instance configuration is declared")
+        );
 
         let canonical_document = rendered_bytes(&loaded, DocumentationOutput::Json).unwrap();
         assert_eq!(
             PackageDocumentation::from_canonical_json(&canonical_document).unwrap(),
             loaded.document
         );
-        assert!(!String::from_utf8(canonical_document)
-            .unwrap()
-            .contains("package-ability-reference"));
+        assert!(
+            !String::from_utf8(canonical_document)
+                .unwrap()
+                .contains("package-ability-reference")
+        );
     }
 
     #[test]

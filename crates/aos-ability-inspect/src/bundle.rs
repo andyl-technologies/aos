@@ -261,12 +261,8 @@ impl InspectionBundle {
         validate_artifact_consumption_edges(&self.artifact_consumption_edges)?;
 
         // This reader-owned set cannot be widened by bundle-authored input.
-        let mut supported_features = package_source_supported_features()
+        let supported_features = package_source_supported_features()
             .map_err(|error| InspectionBundleError::Encode(error.into()))?;
-        supported_features.insert(
-            RequiredFeature::new("ability-effects-v1")
-                .map_err(|error| InspectionBundleError::Encode(error.into()))?,
-        );
         let context = ValidationContext::new(supported_features, self.interfaces.clone())
             .map_err(InspectionBundleError::Validation)?;
         let binding = context
