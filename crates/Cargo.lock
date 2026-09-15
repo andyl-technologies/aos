@@ -632,6 +632,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-kubernetes-provider"
+version = "0.1.0"
+dependencies = [
+ "aos-ability-model",
+ "aos-contract",
+ "aos-provider-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "aos-maintain"
 version = "0.1.0"
 dependencies = [

@@ -38,6 +38,7 @@ members = [
     "aos-provider-protocol",
     "aos-configuration-provider",
     "aos-filesystem-provider",
+    "aos-kubernetes-provider",
     "crucible-cas",
     "crucible-sim",
     "crucible-assert",
@@ -243,6 +244,7 @@ aos-image-finalizer = { path = "aos-image-finalizer" }
 aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }
 aos-provider-protocol = { path = "aos-provider-protocol" }
+aos-kubernetes-provider = { path = "aos-kubernetes-provider" }
 
 [workspace.lints.clippy]
 all = "deny"

@@ -456,6 +456,7 @@ let
     "aos-ebpf-net-policy"
     "aos-filesystem-provider"
     "aos-landlock"
+    "aos-kubernetes-provider"
     "aos-recovery"
     "aos-registry-server"
     "aos-service-root"
