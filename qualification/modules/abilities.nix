@@ -6,7 +6,10 @@
   ...
 }: let
   cfg = config.qualification;
-  containerExecutionMatrix = import ./_container-execution-matrix.nix {inherit lib;};
+  containerExecutionMatrix = import ./_container-execution-matrix.nix {
+    inherit lib nativeAdapterMatrix;
+    stagePolicy = cfg.containerExecution.stages;
+  };
   requiredInvalidation = ["subject" "policy" "executor" "environment"];
   # This cohort exercises credential delivery, loopback ingress policy, and
   # host systemd. Authority revocation, sandbox view isolation, lease fencing,

@@ -53,6 +53,14 @@
       interface = interfaceByIdentity package implementation.interface;
     }) (builtins.attrNames projection.qualification.implementations))
   selectedPackages;
+  containerExecutionDeclarations = map (entry: let
+    identity = interfaceIdentity entry.interface;
+  in {
+    adapter = entry.qualification.adapter;
+    scope = entry.qualification.scope;
+    interface = identity;
+    guarantees = builtins.sort builtins.lessThan (map (guarantee: guarantee.name) entry.implementation.guarantees);
+  }) selectedImplementations;
   packageDependencies = package:
     [package]
     ++ (package.buildDeps or [])
@@ -301,6 +309,7 @@ in
     inapplicable_cell_ids = inapplicableCellIds;
     applicability = canonicalApplicability;
     applicability_digest = "sha256:${applicabilityDigest}";
+    container_execution_declarations = containerExecutionDeclarations;
     inherit check;
     requirement = {
       phase = "staging";
