@@ -65,10 +65,11 @@
   registrySystem = mkSystem [
     ../../systems/server-test.nix
     {
-      aos.packages =
-        lib.genAttrs
-        ["aos-registry-server" "test-static-cache-server"]
-        (_: {bundle = true;});
+      environment.systemPackages = [
+        pkgs.aos-registry-server
+        pkgs.test-static-cache-server
+      ];
+      aos-registry-server.enable = true;
     }
   ];
 in {
@@ -82,7 +83,6 @@ in {
   machines = {
     registry = {
       system = registrySystem;
-      packages = ["aos-registry-server" "test-static-cache-server"];
       extraClosures = [
         abi2Top
         abi2Image
@@ -118,7 +118,6 @@ in {
       # services while the test immediately exercises a real reboot.
       memoryMiB = 8192;
       tpm = true;
-      packages = ["aos-test-agent"];
       metadata."host.nix" = ''
         {
           aos.provisioning.storage.partitions.var.sizeMin = "8G";
