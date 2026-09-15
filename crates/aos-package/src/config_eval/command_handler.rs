@@ -1725,9 +1725,6 @@ mod tests {
                 outputs: BTreeMap::new(),
                 methods,
                 lifecycle: LifecycleSemantics {
-                    stable_resource_identity: true,
-                    releases_ephemeral_on_disable: false,
-                    retains_persistent_by_default: false,
                     persistent_delete_method: None,
                 },
                 aggregation: AggregationContract {

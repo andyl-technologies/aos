@@ -45,7 +45,7 @@
       inherit key;
     };
     operations = ["observe"];
-    lifetime = "instance";
+    lifetime = "persistent";
   };
 
   provide = {
@@ -75,7 +75,7 @@
           name = entry.binding.slot;
           value = {
             kind = kernelModules.identity.name;
-            lifetime = "instance";
+            lifetime = "persistent";
             value = entry.parameters;
           };
         })

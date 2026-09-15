@@ -190,23 +190,7 @@
           else [])
         (builtins.attrValues declaration.methods);
     in
-      !declaration.lifecycle.releases_ephemeral_on_disable
-      || (
-        stoppingTargets
-        != []
-        && builtins.all (target: builtins.elem target stoppingTargets) retainedTargets
-      ))
-    (builtins.attrValues interfaces);
-  readOnlyInterfacesDoNotRelease =
-    builtins.all
-    (interface: let
-      declaration = interface.document.interface;
-      readOnly =
-        builtins.all
-        (method: method.semantics.required_target_access == "read")
-        (builtins.attrValues declaration.methods);
-    in
-      !readOnly || !declaration.lifecycle.releases_ephemeral_on_disable)
+      builtins.all (target: builtins.elem target stoppingTargets) retainedTargets)
     (builtins.attrValues interfaces);
   activationOutputsAreReferences =
     outputSchema "scheduledActivation" "realize" "activation-resource"
@@ -1081,14 +1065,8 @@ in
       };
     });
   assert lifecycleWrites == ["reload" "restart" "start" "stop"];
-  assert interfaces.lifecycle.document.interface.lifecycle.releases_ephemeral_on_disable;
-  assert interfaces.templateDefinition.document.interface.lifecycle.releases_ephemeral_on_disable;
-  assert !interfaces.serviceInstance.document.interface.lifecycle.releases_ephemeral_on_disable;
   assert builtins.attrNames interfaces.reload.document.interface.methods == ["observe"];
   assert featureMethodsAreReadOnly;
-  assert builtins.all
-  (interface: !interface.document.interface.lifecycle.releases_ephemeral_on_disable)
-  (builtins.attrValues featureInterfaces);
   assert lifecycleMethods.observe.outputs.observation.phase == "observation";
   assert lifecycleMethods.observe.outputs.observation.lifetime == "attempt";
   assert lifecycleMethods.start.outputs.observation.phase == "runtime";
@@ -1133,7 +1111,6 @@ in
   .success;
   assert producerOutputsMatchConsumers;
   assert lifecycleContractsAreExecutable;
-  assert readOnlyInterfacesDoNotRelease;
   assert prerequisiteSchema.max_items == 256;
   assert prerequisiteSchema.unique;
   assert prerequisiteSchema.canonical_order;
@@ -1145,14 +1122,10 @@ in
   assert plannedServiceOutputsAreReferences;
   assert interfaces.namedCredential.document.interface.outputs.credential-resource.phase == "planning";
   assert interfaces.namedCredential.document.interface.outputs.credential-resource.lifetime == "instance";
-  assert !interfaces.namedCredential.document.interface.lifecycle.releases_ephemeral_on_disable;
   assert interfaces.namedCredential.methods == ["observe"];
   assert interfaces.principalResolution.methods == ["observe" "release" "resolve"];
-  assert interfaces.principalResolution.document.interface.lifecycle.releases_ephemeral_on_disable;
   assert interfaces.groupResolution.methods == ["observe" "release" "resolve"];
-  assert interfaces.groupResolution.document.interface.lifecycle.releases_ephemeral_on_disable;
   assert interfaces.groupMembership.methods == ["observe" "reconcile" "release"];
-  assert interfaces.groupMembership.document.interface.lifecycle.releases_ephemeral_on_disable;
   assert interfaces.storageAllocation.document.interface.methods.allocate.outputs.storage-path.lifetime == "instance";
   assert interfaces.storageAllocation.document.interface.methods.allocate.outputs.storage-path.phase == "runtime";
   assert interfaces.storageAllocation.document.interface.outputs.planned-path.phase == "planning";
@@ -1161,13 +1134,9 @@ in
   assert interfaces.persistentStorageAllocation.document.interface.outputs.planned-path.phase == "planning";
   assert interfaces.persistentStorageAllocation.document.interface.outputs.planned-path.lifetime == "persistent";
   assert interfaces.persistentStorageAllocation.document.interface.methods.allocate.outputs.retained-resource.lifetime == "persistent";
-  assert !interfaces.persistentStorageAllocation.document.interface.lifecycle.releases_ephemeral_on_disable;
-  assert interfaces.persistentStorageAllocation.document.interface.lifecycle.retains_persistent_by_default;
   assert interfaces.persistentStorageAllocation.document.interface.lifecycle.persistent_delete_method == null;
   assert interfaces.persistentStorageAllocation.document.interface.methods.release.semantics.required_target_access == "exclusive-write";
   assert interfaces.persistentStorageAllocation.document.interface.methods.release.semantics.stops_provider;
-  assert !interfaces.networkReadiness.document.interface.lifecycle.releases_ephemeral_on_disable;
-  assert !interfaces.filesystemReadiness.document.interface.lifecycle.releases_ephemeral_on_disable;
   assert succeedsAs serviceTypes.storageAllocation placedStorageAllocation;
   assert !succeedsAs serviceTypes.storageAllocation invalidPlacedStorageAllocation;
   assert succeedsAs serviceTypes.storageAllocation ownedStorageAllocation;

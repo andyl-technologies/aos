@@ -189,23 +189,14 @@
   };
 
   lifecycle = {
-    stableResourceIdentity = true;
-    releasesEphemeralOnDisable = false;
-    retainsPersistentByDefault = true;
     persistentDeleteMethod = null;
   };
 
   credentialEffectsLifecycle = {
-    stableResourceIdentity = true;
-    releasesEphemeralOnDisable = true;
-    retainsPersistentByDefault = false;
     persistentDeleteMethod = null;
   };
 
   foregroundProcessLifecycle = {
-    stableResourceIdentity = true;
-    releasesEphemeralOnDisable = true;
-    retainsPersistentByDefault = false;
     persistentDeleteMethod = null;
   };
 

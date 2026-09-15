@@ -370,8 +370,8 @@ in
   == objectControllerIdentity;
   assert k3sPackageAbilities.implementations.kubernetes-objects.interface
   == objectContributionIdentity;
-  assert objectControllerDeclaration.lifecycle.releasesEphemeralOnDisable;
-  assert !objectContributionDeclaration.lifecycle.releasesEphemeralOnDisable;
+  assert objectControllerDeclaration.lifecycle.persistentDeleteMethod == null;
+  assert objectContributionDeclaration.lifecycle.persistentDeleteMethod == null;
   assert objectControllerDeclaration.methods.release.semantics
   == {
     requiredTargetAccess = "exclusive-write";

@@ -7,12 +7,8 @@
   serviceTypes,
 }: let
   lifecyclePolicy = {
-    stableResourceIdentity = true;
-    releasesEphemeralOnDisable = false;
-    retainsPersistentByDefault = false;
     persistentDeleteMethod = null;
   };
-  ephemeralLifecyclePolicy = lifecyclePolicy // {releasesEphemeralOnDisable = true;};
   mergeContract = descriptorFor "aos.ability.merge-contract/v1" {
     resource = "aos.service.instance";
     strategy = "closed-record-facets";
@@ -145,19 +141,12 @@
 
   canonicalWithGuarantees = guarantees: interfaceOutputs: alias: name: description: requestType: observationType: methodsFor: let
     methods = methodsFor "aos.service.instance";
-    ownsControllerLifecycle =
-      builtins.any
-      (method: method.semantics.stopsProvider)
-      (builtins.attrValues methods);
     declaration = declareInterface {
       inherit name description requestType methods;
       abi = 1;
       configurationType = null;
       outputs = interfaceOutputs;
-      lifecycle =
-        if ownsControllerLifecycle
-        then ephemeralLifecyclePolicy
-        else lifecyclePolicy;
+      lifecycle = lifecyclePolicy;
       inherit guarantees;
       inherit aggregation;
     };
@@ -219,7 +208,7 @@
         serviceTypes.resourceReference;
     };
     methods = managedConfigurationMethods;
-    lifecycle = ephemeralLifecyclePolicy;
+    lifecycle = lifecyclePolicy;
     guarantees = [];
     aggregation = {
       scope = "provider-instance";
@@ -252,7 +241,7 @@
       "References the exact network readiness resource selected for this request."
       serviceTypes.resourceReference;
     methods = networkReadinessMethods;
-    lifecycle = lifecyclePolicy // {releasesEphemeralOnDisable = false;};
+    lifecycle = lifecyclePolicy;
     guarantees = [];
     aggregation = {
       scope = "provider-instance";
@@ -285,7 +274,7 @@
       "References the exact filesystem readiness resource selected for this request."
       serviceTypes.resourceReference;
     methods = filesystemReadinessMethods;
-    lifecycle = lifecyclePolicy // {releasesEphemeralOnDisable = false;};
+    lifecycle = lifecyclePolicy;
     guarantees = [];
     aggregation = {
       scope = "provider-instance";
@@ -318,7 +307,7 @@
       "References the exact activation milestone selected for this request."
       serviceTypes.resourceReference;
     methods = activationMilestoneMethods;
-    lifecycle = lifecyclePolicy // {releasesEphemeralOnDisable = false;};
+    lifecycle = lifecyclePolicy;
     guarantees = [];
     aggregation = {
       scope = "provider-instance";
@@ -351,7 +340,7 @@
       "References the exact runtime entry population lifecycle selected for this request."
       serviceTypes.resourceReference;
     methods = runtimeEntryPopulationMethods;
-    lifecycle = lifecyclePolicy // {releasesEphemeralOnDisable = false;};
+    lifecycle = lifecyclePolicy;
     guarantees = [];
     aggregation = {
       scope = "provider-instance";
@@ -366,13 +355,19 @@
   kernelModulesName = "aos.kernel.modules";
   kernelModulesMethods = {
     load =
-      retainingMethod
-      serviceTypes.kernelModules
-      serviceTypes.kernelModulesObservation
-      kernelModulesName
-      "load"
-      "Loads the requested kernel modules and establishes their declared readiness policy."
-      write;
+      (retainingMethod
+        serviceTypes.kernelModules
+        serviceTypes.kernelModulesObservation
+        kernelModulesName
+        "load"
+        "Loads the requested kernel modules and establishes their declared readiness policy."
+        write)
+      // {
+        outputs.retained-resource =
+          output "runtime" "persistent"
+          "References the loaded kernel-module set retained beyond the provider instance."
+          serviceTypes.resourceReference;
+      };
     observe =
       method
       serviceTypes.kernelModules
@@ -388,7 +383,7 @@
     abi = 1;
     requestType = serviceTypes.kernelModules;
     outputs.readiness-resource =
-      output "planning" "instance"
+      output "planning" "persistent"
       "References the exact kernel-module set whose readiness gates dependent resources."
       serviceTypes.resourceReference;
     methods = kernelModulesMethods;
@@ -448,7 +443,7 @@
     outputType,
     outputLifetime ? "instance",
     interfaceOutputs ? {},
-    lifecycle ? ephemeralLifecyclePolicy,
+    lifecycle ? lifecyclePolicy,
     releaseDescription ? "Releases the exact active resource ownership established by this request.",
     actionDescription,
     observationDescription,
@@ -581,7 +576,7 @@
           "References the exact identity resource selected for realization."
           serviceTypes.resourceReference;
       };
-      lifecycle = ephemeralLifecyclePolicy;
+      lifecycle = lifecyclePolicy;
       guarantees = [];
       aggregation = {
         scope = "provider-instance";
@@ -1096,8 +1091,6 @@
       lifecycle =
         lifecyclePolicy
         // {
-          releasesEphemeralOnDisable = false;
-          retainsPersistentByDefault = true;
         };
       releaseDescription = "Detaches the exact active ownership of this persistent allocation while preserving its retained data.";
     };

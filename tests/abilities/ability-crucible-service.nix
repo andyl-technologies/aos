@@ -107,9 +107,8 @@ in
   assert builtins.attrNames disabled.config.aos.abilities.interfaces == builtins.attrNames abilities.interfaces;
   assert builtins.attrNames disabled.config.aos.abilities.implementations == builtins.attrNames abilities.implementations;
   assert abilities.instances ? "aos-ability-crucible:ability-crucible";
-  assert endpoint.parameters
-  == {endpoint = "default";};
-  assert endpointDeclaration.lifecycle.releasesEphemeralOnDisable == false;
+  assert endpoint.parameters == {endpoint = "default";};
+  assert endpointDeclaration.lifecycle.persistentDeleteMethod == null;
   assert endpointDeclaration.methods.observe.semantics
   == {
     requiredTargetAccess = "read";

@@ -195,9 +195,6 @@
     outputs = {};
     methods = {};
     lifecycle = {
-      stableResourceIdentity = true;
-      releasesEphemeralOnDisable = false;
-      retainsPersistentByDefault = false;
       persistentDeleteMethod = null;
     };
     aggregation = {
@@ -286,7 +283,7 @@
               targetResource = "aos.test.revision-resource";
             };
         };
-      lifecycle = crossSourceInterface.lifecycle // {retainsPersistentByDefault = true;};
+      lifecycle = crossSourceInterface.lifecycle;
     };
   revisionInterfaceIdentity = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration revisionInterface
@@ -547,9 +544,6 @@
     };
     methods = {};
     lifecycle = {
-      stableResourceIdentity = true;
-      releasesEphemeralOnDisable = false;
-      retainsPersistentByDefault = true;
       persistentDeleteMethod = null;
     };
     guarantees = [];

@@ -847,9 +847,6 @@ mod tests {
                 "observation_kind": "fixture-state",
                 "provider_contract": {
                     "lifecycle": {
-                        "stable_resource_identity": true,
-                        "releases_ephemeral_on_disable": true,
-                        "retains_persistent_by_default": true,
                         "persistent_delete_method": null,
                     },
                     "resource_lifetimes": ["persistent"],

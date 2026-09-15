@@ -43,9 +43,6 @@
     };
   };
   lifecycle = {
-    stableResourceIdentity = true;
-    releasesEphemeralOnDisable = false;
-    retainsPersistentByDefault = false;
     persistentDeleteMethod = null;
   };
   aggregation = {
@@ -64,8 +61,8 @@
     "Reports the exact observed local Nix store database state."
     observationType;
   retainedResourceOutput =
-    output "runtime" "instance"
-    "References the exact converged Nix store database resource."
+    output "runtime" "persistent"
+    "References the exact converged Nix store database retained across provider instances."
     types.resourceReference;
   method = name: description: access: outputs: {
     inherit description outputs;
@@ -107,7 +104,7 @@
     abi = 1;
     inherit requestType methods lifecycle aggregation;
     outputs.readiness-resource =
-      output "planning" "instance"
+      output "planning" "persistent"
       "References readiness for the exact requested Nix store database revision."
       types.resourceReference;
     guarantees = [];

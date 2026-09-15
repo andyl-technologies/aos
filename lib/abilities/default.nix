@@ -608,20 +608,10 @@
   normalizeLifecycle = value: let
     checked =
       requireAttrs "lifecycle" [
-        "stableResourceIdentity"
-        "releasesEphemeralOnDisable"
-        "retainsPersistentByDefault"
         "persistentDeleteMethod"
       ]
       value;
-    requireBoolean = field: candidate:
-      if builtins.isBool candidate
-      then candidate
-      else fail "lifecycle ${field} must be a Boolean";
   in {
-    stable_resource_identity = requireBoolean "stableResourceIdentity" checked.stableResourceIdentity;
-    releases_ephemeral_on_disable = requireBoolean "releasesEphemeralOnDisable" checked.releasesEphemeralOnDisable;
-    retains_persistent_by_default = requireBoolean "retainsPersistentByDefault" checked.retainsPersistentByDefault;
     persistent_delete_method =
       if (checked.persistentDeleteMethod or null) == null
       then null
@@ -780,12 +770,10 @@
     then fail "terminal export cannot declare a provider state format"
     else if (checked.stateFormat or null) != null && (checked.ownsResourceKinds or []) == []
     then fail "provider state format requires at least one owned resource kind"
-    else if lifecycle.releases_ephemeral_on_disable && stoppingMethods == []
-    then fail "interface '${checked.interface}' promises ephemeral release without a provider-stopping method"
-    else if lifecycle.releases_ephemeral_on_disable && uncoveredRetainedTargets != []
+    else if uncoveredRetainedTargets != []
     then
       fail
-      "interface '${checked.interface}' promises ephemeral release without a provider-stopping method for retained target '${builtins.head uncoveredRetainedTargets}'"
+      "interface '${checked.interface}' emits an instance-lifetime resource without a provider-stopping method for target '${builtins.head uncoveredRetainedTargets}'"
     else if lifecycle.persistent_delete_method != null && persistentDeleteMethod == null
     then fail "interface '${checked.interface}' names an absent persistent delete method"
     else if persistentDeleteMethod != null && !persistentDeleteMethod.semantics.stops_provider

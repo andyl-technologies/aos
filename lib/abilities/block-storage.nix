@@ -10,15 +10,9 @@
     visibility = "protected";
   };
   ephemeralLifecycle = {
-    stableResourceIdentity = true;
-    releasesEphemeralOnDisable = true;
-    retainsPersistentByDefault = false;
     persistentDeleteMethod = null;
   };
   persistentLifecycle = {
-    stableResourceIdentity = true;
-    releasesEphemeralOnDisable = false;
-    retainsPersistentByDefault = true;
     persistentDeleteMethod = null;
   };
   prerequisites = types.list {

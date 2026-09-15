@@ -189,9 +189,6 @@
       outputs = {};
       methods = {};
       lifecycle = {
-        stableResourceIdentity = true;
-        releasesEphemeralOnDisable = false;
-        retainsPersistentByDefault = true;
         persistentDeleteMethod = null;
       };
       guarantees = [
@@ -236,7 +233,7 @@
       else "exclusive-write";
     stopsProvider = name == "stop";
   };
-  methodSemanticsInterfaceFor = releasesEphemeralOnDisable: semantics:
+  methodSemanticsInterfaceFor = retainedResource: semantics:
     lib.abilities.define {
       interface = "aos.test.method-family";
       abi = 1;
@@ -246,7 +243,15 @@
         inherit semantics;
         parameters = lib.abilities.types.boolean;
         targetResource = "aos.test.method-family";
-        outputs = {};
+        outputs =
+          lib.optionalAttrs retainedResource {
+            retained-resource = {
+              schema = lib.abilities.types.resourceReference;
+              phase = "runtime";
+              visibility = "protected";
+              lifetime = "instance";
+            };
+          };
         permittedOperations = ["run"];
         guarantees = [];
         outcome = {
@@ -257,9 +262,6 @@
         };
       };
       lifecycle = {
-        stableResourceIdentity = true;
-        inherit releasesEphemeralOnDisable;
-        retainsPersistentByDefault = true;
         persistentDeleteMethod = null;
       };
       guarantees = [];
@@ -293,7 +295,7 @@
       .semantics
     )
     true);
-  invalidReleasePromise = builtins.tryEval (builtins.deepSeq (
+  invalidRetainedResourceLifecycle = builtins.tryEval (builtins.deepSeq (
       methodSemanticsInterfaceFor true {
         requiredTargetAccess = "exclusive-write";
         stopsProvider = false;
@@ -310,9 +312,6 @@
       outputs = {};
       methods = {};
       lifecycle = {
-        stableResourceIdentity = true;
-        releasesEphemeralOnDisable = false;
-        retainsPersistentByDefault = true;
         persistentDeleteMethod = null;
       };
       guarantees = [];
@@ -353,9 +352,6 @@
       outputs = {};
       methods = {};
       lifecycle = {
-        stableResourceIdentity = true;
-        releasesEphemeralOnDisable = false;
-        retainsPersistentByDefault = true;
         persistentDeleteMethod = null;
       };
       guarantees = [];
@@ -788,7 +784,7 @@ in
     stops_provider = false;
   };
   assert !invalidMethodSemantics.success;
-  assert !invalidReleasePromise.success;
+  assert !invalidRetainedResourceLifecycle.success;
   assert advisoryRequirement.strength == "advisory";
   assert advisoryRequirement.fallback.outputs
   == {

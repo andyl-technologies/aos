@@ -798,40 +798,20 @@ fn validate_interface_document(
     }
 
     let lifecycle_path = root.child("lifecycle");
-    if document.interface.lifecycle.releases_ephemeral_on_disable && stopping_targets.is_empty() {
+    for target in retained_instance_targets.difference(&stopping_targets) {
         push_diagnostic(
             diagnostics,
             diagnostic(
                 DiagnosticCode::MethodContractMismatch,
                 DiagnosticClass::IncompatibleInterface,
                 DiagnosticPhase::Schema,
-                lifecycle_path
-                    .child("releases_ephemeral_on_disable")
-                    .components()
-                    .to_vec(),
-                "ephemeral release requires an exclusive provider-stopping method".to_string(),
+                root.child("methods").components().to_vec(),
+                format!(
+                    "instance-lifetime resource lacks an exclusive provider-stopping method for retained target '{}'",
+                    target.as_str()
+                ),
             ),
         );
-    }
-    if document.interface.lifecycle.releases_ephemeral_on_disable {
-        for target in retained_instance_targets.difference(&stopping_targets) {
-            push_diagnostic(
-                diagnostics,
-                diagnostic(
-                    DiagnosticCode::MethodContractMismatch,
-                    DiagnosticClass::IncompatibleInterface,
-                    DiagnosticPhase::Schema,
-                    lifecycle_path
-                        .child("releases_ephemeral_on_disable")
-                        .components()
-                        .to_vec(),
-                    format!(
-                        "ephemeral release lacks an exclusive provider-stopping method for retained target '{}'",
-                        target.as_str()
-                    ),
-                ),
-            );
-        }
     }
     if let Some(delete_name) = &document.interface.lifecycle.persistent_delete_method {
         match document.interface.methods.get(delete_name) {
@@ -902,8 +882,8 @@ mod instance_configuration_tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use aos_ability_model::{
-        AccessMode, DiagnosticCode, InterfaceDocument, InterfaceName, LocalKey, StringConstraint,
-        ValueSchema,
+        AccessMode, DiagnosticCode, InterfaceDocument, InterfaceName, LocalKey, ResourceLifetime,
+        StringConstraint, ValuePhase, ValueSchema, ValueVisibility,
     };
 
     use super::{ValidationContext, instance_configuration_schema_is_literal};
@@ -994,27 +974,30 @@ mod instance_configuration_tests {
     }
 
     #[test]
-    fn observation_only_interface_cannot_promise_ephemeral_release() {
+    fn observation_only_interface_needs_no_authored_release_policy() {
         let mut document = crate::test_support::test_lifecycle_interface();
         document
             .interface
             .methods
             .retain(|name, _| name.as_str() == "observe");
 
-        let errors = ValidationContext::new(BTreeSet::new(), [document])
-            .expect_err("an observation-only interface cannot release provider state");
-
-        assert!(errors.diagnostics().iter().any(|diagnostic| {
-            diagnostic.code == DiagnosticCode::MethodContractMismatch
-                && diagnostic
-                    .message
-                    .contains("ephemeral release requires an exclusive provider-stopping method")
-        }));
+        ValidationContext::new(BTreeSet::new(), [document])
+            .expect("attempt-lifetime observations require no release operation");
     }
 
     #[test]
-    fn ephemeral_release_requires_provider_stopping_semantics() {
+    fn instance_lifetime_resource_requires_provider_stopping_semantics() {
         let mut document = crate::test_support::test_lifecycle_interface();
+        let start = document
+            .interface
+            .methods
+            .get_mut(&key("start"))
+            .expect("start method");
+        let retained = start.outputs.get_mut(&key("ready")).expect("start output");
+        retained.schema = ValueSchema::ResourceReference;
+        retained.phase = ValuePhase::Runtime;
+        retained.visibility = ValueVisibility::Protected;
+        retained.lifetime = ResourceLifetime::Instance;
         document
             .interface
             .methods
@@ -1027,10 +1010,9 @@ mod instance_configuration_tests {
 
         assert!(errors.diagnostics().iter().any(|diagnostic| {
             diagnostic.code == DiagnosticCode::MethodContractMismatch
-                && diagnostic
-                    .path
-                    .last()
-                    .is_some_and(|field| field == "releases_ephemeral_on_disable")
+                && diagnostic.message.contains(
+                    "instance-lifetime resource lacks an exclusive provider-stopping method",
+                )
         }));
     }
 

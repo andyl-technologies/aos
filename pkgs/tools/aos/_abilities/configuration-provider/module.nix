@@ -145,9 +145,6 @@
     outputs = {};
     methods = rolloutMethods;
     lifecycle = {
-      stableResourceIdentity = true;
-      releasesEphemeralOnDisable = false;
-      retainsPersistentByDefault = true;
       persistentDeleteMethod = null;
     };
     guarantees = [];

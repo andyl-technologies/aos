@@ -281,7 +281,7 @@ in
   assert requestSchema.fields.drop_in.fields.reload_triggers.canonical_order;
   assert requestSchema.fields.drop_in.fields.search_path.unique;
   assert !(requestSchema.fields.drop_in.fields.search_path.canonical_order or false);
-  assert declaration.lifecycle.releasesEphemeralOnDisable;
+  assert declaration.lifecycle.persistentDeleteMethod == null;
   assert declaration.methods.remove.semantics.requiredTargetAccess == "exclusive-write";
   assert declaration.methods.remove.semantics.stopsProvider;
   assert !(declaration.methods.remove.outputs ? retained-resource);

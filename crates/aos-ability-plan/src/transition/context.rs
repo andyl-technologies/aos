@@ -902,7 +902,7 @@ mod tests {
     }
 
     #[test]
-    fn stable_resource_identity_cannot_change_lifetime() {
+    fn resource_identity_cannot_change_lifetime() {
         let resource = resource(&instance("provider"), "stable");
         let current = ResourceRevision {
             resource: resource.clone(),

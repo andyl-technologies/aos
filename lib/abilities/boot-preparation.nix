@@ -14,9 +14,6 @@
   requestedResources = canonicalList (types.deferredResult types.resourceReference) 64;
   completedResources = canonicalList types.resourceReference 64;
   lifecycle = {
-    stableResourceIdentity = true;
-    releasesEphemeralOnDisable = false;
-    retainsPersistentByDefault = false;
     persistentDeleteMethod = null;
   };
   output = phase: lifetime: description: schema: {

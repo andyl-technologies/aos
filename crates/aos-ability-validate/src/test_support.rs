@@ -1054,9 +1054,6 @@ fn interface_document() -> InterfaceDocument {
                 },
             )]),
             lifecycle: LifecycleSemantics {
-                stable_resource_identity: true,
-                releases_ephemeral_on_disable: false,
-                retains_persistent_by_default: true,
                 persistent_delete_method: None,
             },
             aggregation: AggregationContract {
@@ -1097,8 +1094,6 @@ pub fn test_lifecycle_interface() -> InterfaceDocument {
         (key("start"), start),
         (key("stop"), stop),
     ]);
-    document.interface.lifecycle.releases_ephemeral_on_disable = true;
-    document.interface.lifecycle.retains_persistent_by_default = false;
     document
 }
 
@@ -1141,8 +1136,6 @@ pub fn test_manager_interface() -> InterfaceDocument {
         method.parameters = request.clone();
         method.outcome.indeterminate = IndeterminateSemantics::Reconcile;
     }
-    document.interface.lifecycle.releases_ephemeral_on_disable = false;
-    document.interface.lifecycle.retains_persistent_by_default = true;
     document
 }
 

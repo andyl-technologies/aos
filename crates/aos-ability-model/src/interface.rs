@@ -183,16 +183,10 @@ pub struct OutcomeSemantics {
     pub indeterminate: IndeterminateSemantics,
 }
 
-/// Describes lifecycle properties shared by an interface's resources.
+/// Names an explicitly supported persistent-resource deletion operation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LifecycleSemantics {
-    /// States whether resources retain logical identity across revisions.
-    pub stable_resource_identity: bool,
-    /// States whether disabling an instance releases ephemeral resources.
-    pub releases_ephemeral_on_disable: bool,
-    /// States whether persistent state is retained by default.
-    pub retains_persistent_by_default: bool,
     /// Names a separately authorized deletion operation, when supported.
     pub persistent_delete_method: Option<LocalKey>,
 }

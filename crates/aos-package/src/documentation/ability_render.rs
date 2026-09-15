@@ -195,13 +195,6 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
         }
 
         let lifecycle = &interface.lifecycle;
-        let _ = writeln!(
-            output,
-            "  declared lifecycle\tstable identity={}\trelease ephemeral={}\tretain persistent={}",
-            yes_no(lifecycle.stable_resource_identity),
-            yes_no(lifecycle.releases_ephemeral_on_disable),
-            yes_no(lifecycle.retains_persistent_by_default)
-        );
         if let Some(method) = &lifecycle.persistent_delete_method {
             let _ = writeln!(
                 output,
@@ -468,17 +461,12 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
 
         let lifecycle = &interface.lifecycle;
         output.push_str("<h5>Declared lifecycle contract</h5><ul>");
-        let _ = write!(
-            output,
-            "<li>Stable resource identity: {}</li><li>Release ephemeral resources on disable: {}</li><li>Retain persistent state by default: {}</li>",
-            yes_no(lifecycle.stable_resource_identity),
-            yes_no(lifecycle.releases_ephemeral_on_disable),
-            yes_no(lifecycle.retains_persistent_by_default)
-        );
         if let Some(method) = &lifecycle.persistent_delete_method {
             output.push_str("<li>Declared persistent deletion method: <code>");
             escape_html_into(method.as_str(), &mut output);
             output.push_str("</code></li>");
+        } else {
+            output.push_str("<li>No persistent deletion method declared.</li>");
         }
         output.push_str("</ul>");
 
@@ -691,10 +679,6 @@ const fn requirement_strength(strength: RequirementStrength) -> &'static str {
         RequirementStrength::Required => "required",
         RequirementStrength::Advisory => "advisory",
     }
-}
-
-const fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
 }
 
 fn escape_html_into(value: &str, output: &mut String) {
