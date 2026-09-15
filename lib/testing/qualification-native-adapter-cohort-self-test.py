@@ -43,16 +43,19 @@ class FixtureValidator:
         return isinstance(subject, dict) and subject.get("schema") == "fixture/v1"
 
     @staticmethod
-    def validate_subject(cell, subject, evidence_bytes, matrix_spec) -> None:
+    def validate_subject(cell, subject, evidence_bytes, matrix_spec, routes) -> None:
         if (
             subject != {"schema": "fixture/v1", "resource": "fixture-resource"}
             or evidence_bytes != b"fixture-evidence"
             or cell["id"] not in {entry["id"] for entry in matrix_spec["cells"]}
+            or len(routes) != 1
         ):
             raise RuntimeError("fixture subject is malformed")
 
     @staticmethod
-    def validate_probe(postcondition, observations, cohort_subject, cell) -> None:
+    def validate_probe(
+        postcondition, observations, cohort_subject, cell, matrix_spec
+    ) -> None:
         if (
             postcondition != "compatible-state-adopted"
             or observations
@@ -61,6 +64,7 @@ class FixtureValidator:
                 "state": "compatible",
             }
             or not cell["id"].endswith("/adopt-compatible-state")
+            or matrix_spec["cells"] != [cell]
         ):
             raise RuntimeError("fixture observation is malformed")
 
@@ -230,6 +234,7 @@ def assert_registry(module) -> None:
             {"schema": "fixture/v1"},
             b"fixture-evidence",
             specification(cell()),
+            [],
         ),
         "validator registry accepted an ambiguous subject",
     )

@@ -467,9 +467,11 @@ def validate_probe(
     observations: dict[str, Any],
     cohort_subject: dict[str, Any],
     cell: dict[str, Any],
+    matrix_spec: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Validates one provider-owned normalized postcondition result."""
 
+    del matrix_spec
     scenario = _cell_scenario(cell)
     if postcondition == "durable-attempt-state-classified":
         operation = observations.get("operation")
@@ -953,7 +955,9 @@ def validate_subject(
     subject: Any,
     evidence_bytes: Any,
     matrix_spec: dict[str, Any] | None,
+    routes: list[dict[str, Any]],
 ) -> None:
     """Validates one reference-stack cohort subject."""
 
+    del routes
     _validate_managed_configuration_subject(cell, subject, evidence_bytes, matrix_spec)
