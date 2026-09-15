@@ -478,6 +478,20 @@
     document = nodesAt [] rootSchema value;
   };
 
+  # Package capability declarations remain visible when their configured
+  # instances and requests are disabled.
+  splitContribution = contribution: let
+    declarationFields = ["guarantees" "interfaces" "implementations" "requirementTemplates"];
+    declarations = builtins.listToAttrs (builtins.concatMap (name:
+      if builtins.hasAttr name contribution
+      then [{inherit name; value = contribution.${name};}]
+      else [])
+    declarationFields);
+  in {
+    inherit declarations;
+    configured = builtins.removeAttrs contribution declarationFields;
+  };
+
   forService = {
     serviceTypes,
     consumerInstance,
@@ -609,5 +623,5 @@
       )
     );
 in {
-  inherit featureInterfaces forConfiguration forProducer forProducers forService structuredSource validate;
+  inherit featureInterfaces forConfiguration forProducer forProducers forService splitContribution structuredSource validate;
 }
