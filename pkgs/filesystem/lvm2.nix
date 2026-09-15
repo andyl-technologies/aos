@@ -1,5 +1,6 @@
 ##! lvm2 — Logical Volume Manager 2 tools
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -12,6 +13,56 @@
 in
   mkDerivation {
     pname = "lvm2";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "LVM lists its configuration, physical-volume, volume-group, and logical-volume commands.";
+        "files" = {};
+        "input" = "The LVM command inventory.";
+        "operation" = "Request help without scanning or changing block devices.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/sbin/lvm\"] + [\"help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"available lvm commands\" in result.stderr.lower() and \"pvcreate\" in result.stderr and \"lvcreate\" in result.stderr, (result.returncode, result.stdout, result.stderr)\nprint(\"lvm2 primary passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "lvm2 primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "LVM rejects the unknown command.";
+        "files" = {};
+        "input" = "An LVM invocation naming a command that does not exist.";
+        "operation" = "Resolve the unsupported command without scanning block devices.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/sbin/lvm\"] + [\"aos-invalid-command\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"no such command\" in result.stderr.lower(), (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"lvm2 rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "lvm2 rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -1,5 +1,6 @@
 ##! GNU parallel — Parallel shell job runner
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -12,6 +13,59 @@
 in
   mkDerivation {
     pname = "parallel";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Parallel preserves input order and prints both exact results.";
+        "files" = {
+          "emit.sh" = "printf 'answer=%s\\n' \"$1\"\n";
+        };
+        "input" = "The ordered values 1 and 2 supplied as standard input.";
+        "operation" = "Run one formatting job per value through GNU Parallel.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/parallel"
+              "--keep-order"
+              "@bash@"
+              "emit.sh"
+              "{}"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdin" = "1\n2\n";
+            "stdout" = {
+              "exact" = "answer=1\nanswer=2\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Parallel rejects the missing file with status 255.";
+        "files" = {};
+        "input" = "A pipe-part input pathname that does not exist.";
+        "operation" = "Open the missing input through GNU Parallel's pipe-part mode.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/parallel"
+              "--pipepart"
+              "-a"
+              "missing-qualification-file"
+              "@bash@"
+              "emit.sh"
+              "{}"
+            ];
+            "exit_code" = 255;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

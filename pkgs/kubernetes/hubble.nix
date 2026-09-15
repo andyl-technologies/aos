@@ -1,5 +1,6 @@
 ##! Hubble — Cilium observability CLI
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -8,6 +9,56 @@
 in
   mkDerivation {
     pname = "hubble";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Hubble returns a Bash function wired to its completion endpoint.";
+        "files" = {};
+        "input" = "A request for Hubble's Bash completion program.";
+        "operation" = "Generate the completion program without contacting Hubble Relay.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/hubble\", \"completion\", \"bash\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"__start_hubble\" in result.stdout and \"complete -o default\" in result.stdout, (result.returncode, result.stdout, result.stderr)\nprint(\"hubble operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "hubble operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Hubble rejects the unknown command.";
+        "files" = {};
+        "input" = "A Hubble invocation naming an unknown top-level command.";
+        "operation" = "Parse the unsupported command without contacting Hubble Relay.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/hubble\", \"aos-invalid-command\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"hubble rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "hubble rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

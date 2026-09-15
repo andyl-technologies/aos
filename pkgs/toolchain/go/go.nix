@@ -1,5 +1,6 @@
 ##! Go — the Go programming language, built from source
 {
+  lib,
   mkDerivation,
   mkUpstream,
   gnumake,
@@ -98,6 +99,59 @@ in
   else
     mkDerivation {
       pname = "go";
+      qualification.packageProbe = lib.qualification.commandProbe {
+        "primary" = {
+          "artifacts" = [];
+          "expected" = "The program prints the strings in lexical order.";
+          "files" = {
+            "main.go" = "package main\n\nimport (\n    \"fmt\"\n    \"sort\"\n)\n\nfunc main() {\n    values := []string{\"gamma\", \"alpha\", \"beta\"}\n    sort.Strings(values)\n    fmt.Println(values)\n}\n";
+          };
+          "input" = "A Go program that sorts three strings.";
+          "operation" = "Compile and run the program with the packaged Go toolchain.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/go"
+                "run"
+                "@work@/primary/main.go"
+              ];
+              "exit_code" = 0;
+              "stderr" = {
+                "exact" = "";
+              };
+              "stdout" = {
+                "exact" = "[alpha beta gamma]\n";
+              };
+              "timeout_seconds" = 120;
+            }
+          ];
+        };
+        "badInput" = {
+          "artifacts" = [];
+          "expected" = "The Go parser rejects the source with status 1.";
+          "files" = {
+            "invalid.go" = "package main\nfunc main() { value := ; _ = value }\n";
+          };
+          "input" = "A Go program with a missing expression in a declaration.";
+          "operation" = "Compile the malformed program with the packaged Go toolchain.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/go"
+                "run"
+                "@work@/bad-input/invalid.go"
+              ];
+              "exit_code" = 1;
+              "observes_rejection" = true;
+              "stdout" = {
+                "exact" = "";
+              };
+              "timeout_seconds" = 120;
+            }
+          ];
+        };
+      };
+
       inherit version;
       inherit update;
 

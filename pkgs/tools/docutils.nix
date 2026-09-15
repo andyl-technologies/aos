@@ -1,5 +1,6 @@
 ##! docutils — reStructuredText processing tools
 {
+  lib,
   mkDerivation,
   fetchurl,
   python3,
@@ -22,6 +23,50 @@
 in
   mkDerivation {
     pname = "docutils";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Docutils emits a successful document-tree representation.";
+        "files" = {
+          "document.rst" = "Heading\n=======\n\nA **bold** word.\n";
+        };
+        "input" = "A reStructuredText document with a heading and emphasized text.";
+        "operation" = "Parse and transform the document to Docutils pseudo-XML.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/rst2pseudoxml"
+              "document.rst"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Docutils rejects the unknown directive with status 1.";
+        "files" = {
+          "invalid.rst" = ".. aos-unknown-directive:: value\n";
+        };
+        "input" = "A reStructuredText document containing an unknown directive.";
+        "operation" = "Parse the document with errors configured to halt transformation.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/rst2pseudoxml"
+              "--halt=2"
+              "invalid.rst"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

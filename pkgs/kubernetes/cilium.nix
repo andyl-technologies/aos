@@ -1,5 +1,6 @@
 ##! Cilium — eBPF-based networking, security, and observability for Kubernetes
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -9,6 +10,56 @@
 in
   mkDerivation {
     pname = "cilium";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The client returns success and identifies Cilium.";
+        "files" = {};
+        "input" = "The packaged Cilium debugging client's version command.";
+        "operation" = "Print local version information without contacting an agent.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/cilium-dbg\", \"version\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"cilium\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nprint(\"cilium operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "cilium operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The client rejects the unsupported operation.";
+        "files" = {};
+        "input" = "A cilium-dbg invocation naming an unknown operation.";
+        "operation" = "Parse the unsupported operation without contacting an agent.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/cilium-dbg\", \"aos-invalid-operation\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"cilium rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "cilium rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

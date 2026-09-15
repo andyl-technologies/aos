@@ -1,5 +1,6 @@
 ##! k3s — Lightweight Kubernetes distribution
 {
+  lib,
   mkDerivation,
   fetchurl,
   fetchGoModules,
@@ -22,6 +23,56 @@
 in
   mkDerivation {
     pname = "k3s";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The command describes its supported invocation contract.";
+        "files" = {};
+        "input" = "The packaged k3s command-line interface.";
+        "operation" = "Request its offline command inventory.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/k3s\"] + [\"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"kubernetes, but small and simple\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nprint(\"k3s primary passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "k3s primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The command rejects the unsupported operation.";
+        "files" = {};
+        "input" = "A k3s invocation naming an unsupported command.";
+        "operation" = "Parse the unknown command without starting a service.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/k3s\"] + [\"aos-invalid-command\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"no help topic\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"k3s rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "k3s rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     inherit src;
 

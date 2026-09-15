@@ -1,4 +1,5 @@
 {
+  lib,
   mkDerivation,
   fetchurl,
   m4,
@@ -13,6 +14,52 @@
 in
   mkDerivation {
     pname = "sed";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Sed writes the transformed line exactly.";
+        "files" = {};
+        "input" = "A line containing the decimal value 41.";
+        "operation" = "Replace the value with 42 using a basic regular expression.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/sed"
+              "s/41/42/"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdin" = "answer=41\n";
+            "stdout" = {
+              "exact" = "answer=42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Sed rejects the expression with its script-error status.";
+        "files" = {};
+        "input" = "A substitution expression with an unterminated regular expression.";
+        "operation" = "Parse the malformed expression.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/sed"
+              "s/[unterminated/42/"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

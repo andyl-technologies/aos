@@ -1,5 +1,6 @@
 ##! cmake — cross-platform build system generator
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -31,6 +32,57 @@
 in
   mkDerivation {
     pname = "cmake";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "CMake evaluates the language constructs and emits the fixed result.";
+        "files" = {
+          "valid.cmake" = "math(EXPR answer \"6 * 7\")\nif(NOT answer EQUAL 42)\n  message(FATAL_ERROR \"wrong answer\")\nendif()\nmessage(\"cmake result: \${answer}\")\n";
+        };
+        "input" = "A CMake script performing integer arithmetic and a conditional.";
+        "operation" = "Execute the script in CMake script mode.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/cmake"
+              "-P"
+              "@work@/primary/valid.cmake"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "cmake result: 42\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "CMake rejects the unknown command with status 1.";
+        "files" = {
+          "invalid.cmake" = "not_a_cmake_command()\n";
+        };
+        "input" = "A CMake script calling an unknown command.";
+        "operation" = "Execute the invalid script in CMake script mode.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/cmake"
+              "-P"
+              "@work@/bad-input/invalid.cmake"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

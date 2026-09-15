@@ -5,6 +5,7 @@
 ##! from .proto files; the installed libraries and headers support native C++
 ##! consumers too.
 {
+  lib,
   mkDerivation,
   fetchurl,
   cmake,
@@ -17,6 +18,54 @@
 in
   mkDerivation {
     pname = "protobuf";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "protoc validates the declaration and writes its descriptor output.";
+        "files" = {
+          "answer.proto" = "syntax = \"proto3\";\npackage qualification;\nmessage Answer { int32 value = 1; }\n";
+        };
+        "input" = "A proto3 schema declaring one message with an int32 field.";
+        "operation" = "Compile the schema into a descriptor set with protoc.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/protoc"
+              "--descriptor_set_out=answer.pb"
+              "answer.proto"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "protoc rejects the schema with its parse-failure status.";
+        "files" = {
+          "invalid.proto" = "syntax = \"proto3\";\nmessage Invalid { int32 value = ; }\n";
+        };
+        "input" = "A protobuf field declaration with no numeric tag.";
+        "operation" = "Compile the malformed schema with protoc.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/protoc"
+              "--descriptor_set_out=invalid.pb"
+              "invalid.proto"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

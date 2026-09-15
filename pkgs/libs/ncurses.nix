@@ -1,5 +1,6 @@
 ##! ncurses — Terminal handling library
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -10,6 +11,75 @@
 in
   mkDerivation {
     pname = "ncurses";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Ncurses emits a database entry whose reconstructed capabilities match the source.";
+        "files" = {
+          "qualification.info" = "qualification|Qualification terminal,cols#42,lines#24,\n";
+        };
+        "input" = "A terminfo source declaring a 42-column qualification terminal.";
+        "operation" = "Compile the source with tic and reconstruct it with infocmp.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/tic"
+              "-x"
+              "-o"
+              "db"
+              "qualification.info"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/infocmp"
+              "-A"
+              "db"
+              "qualification"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "#\tReconstructed via infocmp from file: db/./q/qualification\nqualification|Qualification terminal,\n\tcols#42, lines#24,\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Infocmp rejects the absent terminal with status 1.";
+        "files" = {
+          "empty/.keep" = "empty\n";
+        };
+        "input" = "A lookup for a terminal absent from an empty custom terminfo database.";
+        "operation" = "Resolve the missing entry through infocmp.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/infocmp"
+              "-A"
+              "empty"
+              "qualification-missing"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -1,5 +1,6 @@
 ##! libcap — POSIX capabilities library
 {
+  lib,
   mkDerivation,
   fetchurl,
   stdenv,
@@ -11,6 +12,88 @@
 in
   mkDerivation {
     pname = "libcap";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The rendered set contains cap_chown with effective and permitted flags.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libcap primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libcap rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <string.h>\n#include <sys/capability.h>\nint main(void) {\n    cap_t capabilities = cap_from_text(\"cap_chown=ep\");\n    if (capabilities == NULL) return 2;\n    char *text = cap_to_text(capabilities, NULL);\n    int ok = text != NULL && strstr(text, \"cap_chown\") != NULL && strstr(text, \"ep\") != NULL;\n    cap_free(text); cap_free(capabilities);\n    return ok ? pass() : 3;\n}\n\n";
+        };
+        "input" = "The textual capability set cap_chown=ep.";
+        "operation" = "Parse the text and render the capability set back through libcap.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lcap"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libcap primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "libcap rejects the name by returning a null capability set.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libcap primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libcap rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <sys/capability.h>\nint main(void) {\n    cap_t capabilities = cap_from_text(\"cap_definitely_not_real=ep\");\n    if (capabilities != NULL) { cap_free(capabilities); return 2; }\n    return reject();\n}\n\n";
+        };
+        "input" = "A capability name that is not defined by Linux.";
+        "operation" = "Parse the invalid name with cap_from_text.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lcap"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libcap rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

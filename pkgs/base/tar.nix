@@ -1,4 +1,5 @@
 {
+  lib,
   mkDerivation,
   fetchurl,
   m4,
@@ -18,6 +19,70 @@
 in
   mkDerivation {
     pname = "tar";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The extracted member bytes exactly match the input.";
+        "files" = {
+          "payload.txt" = "answer=42\n";
+        };
+        "input" = "A text file stored in a new tar archive.";
+        "operation" = "Create the archive, then stream the member back through tar.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/tar"
+              "-cf"
+              "payload.tar"
+              "payload.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/tar"
+              "-xOf"
+              "payload.tar"
+              "payload.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "answer=42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Tar rejects the invalid archive with status 2.";
+        "files" = {
+          "invalid.tar" = "not a tar archive\n";
+        };
+        "input" = "Text bytes that do not form a tar archive.";
+        "operation" = "Attempt to list the malformed archive.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/tar"
+              "-tf"
+              "invalid.tar"
+            ];
+            "exit_code" = 2;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

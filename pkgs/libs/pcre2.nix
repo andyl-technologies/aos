@@ -1,5 +1,6 @@
 ##! pcre2 — Perl Compatible Regular Expressions (version 2)
 {
+  lib,
   mkDerivation,
   mkGithubUpstream,
   gnumake,
@@ -54,6 +55,88 @@
 in
   mkDerivation {
     pname = "pcre2";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The engine reports the whole match and one capture.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"pcre2 primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"pcre2 rejected invalid input\\n\", stderr);\n    return 7;\n}\n#define PCRE2_CODE_UNIT_WIDTH 8\n#include <pcre2.h>\nint main(void) {\n    int error; PCRE2_SIZE offset;\n    pcre2_code *code = pcre2_compile((PCRE2_SPTR)\"answer=([0-9]+)\", PCRE2_ZERO_TERMINATED, 0, &error, &offset, NULL);\n    if (code == NULL) return 2;\n    pcre2_match_data *data = pcre2_match_data_create_from_pattern(code, NULL);\n    int matches = pcre2_match(code, (PCRE2_SPTR)\"answer=42\", 9, 0, 0, data, NULL);\n    pcre2_match_data_free(data); pcre2_code_free(code);\n    return matches == 2 ? pass() : 3;\n}\n\n";
+        };
+        "input" = "A regular expression with a numeric capture and matching text.";
+        "operation" = "Compile and match the expression through PCRE2's 8-bit API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lpcre2-8"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "pcre2 primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "PCRE2 returns no compiled pattern and sets an error code.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"pcre2 primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"pcre2 rejected invalid input\\n\", stderr);\n    return 7;\n}\n#define PCRE2_CODE_UNIT_WIDTH 8\n#include <pcre2.h>\nint main(void) {\n    int error = 0; PCRE2_SIZE offset = 0;\n    pcre2_code *code = pcre2_compile((PCRE2_SPTR)\"(unclosed\", PCRE2_ZERO_TERMINATED, 0, &error, &offset, NULL);\n    if (code != NULL || error == 0) { pcre2_code_free(code); return 2; }\n    return reject();\n}\n\n";
+        };
+        "input" = "A regular expression with an unclosed group.";
+        "operation" = "Compile the malformed expression through PCRE2.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lpcre2-8"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "pcre2 rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = upstream.components.main.sources.source;

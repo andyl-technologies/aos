@@ -1,5 +1,6 @@
 ##! kbd — Linux console keyboard and font utilities
 {
+  lib,
   mkDerivation,
   fetchurl,
   autoconf,
@@ -24,6 +25,48 @@
 in
   mkDerivation {
     pname = "kbd";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "loadkeys accepts the mapping and emits its compiled table representation.";
+        "files" = {
+          "answer.map" = "keymaps 0\nkeycode 1 = Escape\n";
+        };
+        "input" = "A minimal Linux console keymap binding keycode 1 to Escape.";
+        "operation" = "Parse the keymap and translate it into C tables with loadkeys.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/loadkeys"
+              "-m"
+              "answer.map"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "loadkeys rejects the invalid keycode with a non-success status.";
+        "files" = {
+          "invalid.map" = "keymaps 0\nkeycode not-a-number = Escape\n";
+        };
+        "input" = "A keymap declaration whose keycode is not numeric.";
+        "operation" = "Parse the malformed mapping through loadkeys.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/loadkeys"
+              "-m"
+              "invalid.map"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

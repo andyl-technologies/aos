@@ -1,5 +1,6 @@
 ##! util-linux — Miscellaneous system utilities
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -27,6 +28,94 @@
 in
   mkDerivation {
     pname = "util-linux";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The public API returns the expected value and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\n#include <string.h>\n#include <uuid/uuid.h>\n\nint main(void) {\n    const char expected[] = \"12345678-1234-5678-9234-567812345678\";\n    char output[37];\n    uuid_t value;\n\n    if (uuid_parse(expected, value) != 0) {\n        return 2;\n    }\n    uuid_unparse_lower(value, output);\n    if (strcmp(output, expected) != 0) {\n        return 2;\n    }\n    return puts(\"util-linux api passed\") == EOF;\n}\n";
+        };
+        "input" = "A canonical UUID string.";
+        "operation" = "Parse and format the identifier through libuuid's public API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-luuid"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "util-linux api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The public API reports rejection and the consumer exits with the fixed rejection status and diagnostic.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\n#include <uuid/uuid.h>\n\nint main(void) {\n    uuid_t value;\n    if (uuid_parse(\"12345678-1234-5678-9234-56781234567z\", value) == 0) {\n        return 2;\n    }\n    fputs(\"util-linux rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "A UUID string containing a non-hexadecimal digit.";
+        "operation" = "Parse the malformed identifier through uuid_parse.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-luuid"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "util-linux rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     # Mounting filesystems does not require the optional Python bindings.
     # Keep those bindings available without retaining Python in boot images.

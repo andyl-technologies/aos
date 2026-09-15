@@ -194,6 +194,92 @@
 in
   mkDerivation {
     pname = "krb5";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The canonical principal text round-trips unchanged.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"krb5 primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"krb5 rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <stdlib.h>\n#include <string.h>\n#include <krb5.h>\nint main(void) {\n    krb5_context context = NULL; krb5_principal principal = NULL; char *text = NULL;\n    if (krb5_init_context(&context) != 0) return 2;\n    if (krb5_parse_name(context, \"user/admin@EXAMPLE.TEST\", &principal) != 0) return 3;\n    if (krb5_unparse_name(context, principal, &text) != 0) return 4;\n    int ok = strcmp(text, \"user/admin@EXAMPLE.TEST\") == 0;\n    krb5_free_unparsed_name(context, text); krb5_free_principal(context, principal); krb5_free_context(context);\n    return ok ? pass() : 5;\n}\n\n";
+        };
+        "input" = "The Kerberos principal user/admin in the EXAMPLE.TEST realm.";
+        "operation" = "Parse and unparse the principal through the krb5 context API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lkrb5"
+              "-lk5crypto"
+              "-lcom_err"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "krb5 primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The Kerberos parser returns a nonzero parse error.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"krb5 primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"krb5 rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <krb5.h>\nint main(void) {\n    krb5_context context = NULL; krb5_principal principal = NULL;\n    if (krb5_init_context(&context) != 0) return 2;\n    int status = krb5_parse_name(context, \"user\\\\\", &principal);\n    if (principal != NULL) krb5_free_principal(context, principal);\n    krb5_free_context(context);\n    if (status == 0) return 3;\n    return reject();\n}\n\n";
+        };
+        "input" = "A Kerberos principal with an empty realm.";
+        "operation" = "Parse the malformed principal through krb5_parse_name.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lkrb5"
+              "-lk5crypto"
+              "-lcom_err"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "krb5 rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

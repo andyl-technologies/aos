@@ -1,5 +1,6 @@
 ##! python3-3_12 — Python 3.12 interpreter (bootstrap for 3.14)
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -35,6 +36,54 @@
 in
   mkDerivation {
     pname = "python3-3_12";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The interpreter prints the exact integer result 42.";
+        "files" = {
+          "answer.py" = "print(19 + 23)\n";
+        };
+        "input" = "A Python program that computes the sum of 19 and 23.";
+        "operation" = "Compile and execute the program with the packaged interpreter.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/python3"
+              "answer.py"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The interpreter exits with its syntax-error status.";
+        "files" = {
+          "invalid.py" = "def incomplete(\n";
+        };
+        "input" = "A Python source file with an incomplete function definition.";
+        "operation" = "Compile the malformed source with the packaged interpreter.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/python3"
+              "-m"
+              "py_compile"
+              "invalid.py"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

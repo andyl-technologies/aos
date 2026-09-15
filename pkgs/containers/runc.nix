@@ -1,5 +1,6 @@
 ##! runc — OCI container runtime
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -12,6 +13,79 @@
 in
   mkDerivation {
     pname = "runc";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Runc emits a rootless process configuration using rootfs as the root path.";
+        "files" = {
+          "verify.py" = "import json\n\nconfig = json.load(open(\"config.json\", encoding=\"utf-8\"))\nassert config[\"ociVersion\"].startswith(\"1.\")\nassert config[\"root\"][\"path\"] == \"rootfs\"\nassert config[\"process\"][\"args\"]\nprint(\"runc specification passed\")\n";
+        };
+        "input" = "An empty bundle directory requesting runc's rootless OCI template.";
+        "operation" = "Generate config.json and validate its core OCI fields independently.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/runc"
+              "--root"
+              "@work@/primary/state"
+              "spec"
+              "--rootless"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@python@"
+              "verify.py"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "runc specification passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [
+          {
+            "path" = "config.json";
+            "text" = "{}\n";
+          }
+        ];
+        "expected" = "Runc refuses to overwrite the existing bundle configuration.";
+        "files" = {
+          "config.json" = "{}\n";
+        };
+        "input" = "A bundle directory in which config.json already exists.";
+        "operation" = "Attempt to generate a second OCI configuration over the existing file.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/runc"
+              "--root"
+              "@work@/bad-input/state"
+              "spec"
+              "--rootless"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

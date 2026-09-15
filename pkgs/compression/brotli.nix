@@ -1,5 +1,6 @@
 ##! Brotli — Generic-purpose lossless compression algorithm
 {
+  lib,
   mkDerivation,
   mkGithubUpstream,
   gnumake,
@@ -46,6 +47,69 @@
 in
   mkDerivation {
     pname = "brotli";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The decompressed bytes exactly reproduce the original payload.";
+        "files" = {
+          "payload.txt" = "AOS qualification payload\n";
+        };
+        "input" = "A fixed text payload.";
+        "operation" = "Compress the payload, then decompress the resulting stream through brotli.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/brotli"
+              "@work@/primary/payload.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/brotli"
+              "-d"
+              "-c"
+              "@work@/primary/payload.txt.br"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "AOS qualification payload\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The decoder rejects the malformed stream with a failure status.";
+        "files" = {
+          "invalid.br" = "not a compressed stream\n";
+        };
+        "input" = "A regular text file that is not a brotli stream.";
+        "operation" = "Ask brotli to decompress the invalid stream.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/brotli"
+              "-d"
+              "-c"
+              "@work@/bad-input/invalid.br"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = upstream.components.main.sources.source;

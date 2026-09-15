@@ -19,6 +19,56 @@
 in
   mkDerivation {
     pname = "conntrack-tools";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Conntrack returns success and reports its userspace version.";
+        "files" = {};
+        "input" = "The packaged connection-tracking client's release identity.";
+        "operation" = "Request its version without opening a netfilter socket.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([str(next(path for path in __import__(\"pathlib\").Path(\"@out@\").rglob(\"conntrack\") if path.is_file())), \"--version\"]\n, capture_output=True, text=True)\nassert result.returncode == 0 and \"conntrack\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nprint(\"conntrack-tools operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "conntrack-tools operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Conntrack rejects the unsupported option.";
+        "files" = {};
+        "input" = "A conntrack invocation containing an unknown option.";
+        "operation" = "Parse the invalid option without modifying kernel state.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([str(next(path for path in __import__(\"pathlib\").Path(\"@out@\").rglob(\"conntrack\") if path.is_file())), \"--aos-invalid-option\"]\n, capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"conntrack-tools rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "conntrack-tools rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

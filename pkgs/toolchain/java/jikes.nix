@@ -1,5 +1,6 @@
 ##! jikes — Jikes Java compiler (C++ implementation, outputs Java 1.4 bytecode)
 {
+  lib,
   mkDerivation,
   fetchurl,
   stdenv,
@@ -11,6 +12,66 @@
 in
   mkDerivation {
     pname = "jikes";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Jikes emits a classfile containing the declared answer constant.";
+        "files" = {
+          "Answer.java" = "public class Answer { public static final int VALUE = 42; }\n";
+          "java/io/Serializable.java" = "package java.io; public interface Serializable {}\n";
+          "java/lang/Object.java" = "package java.lang; public class Object {}\n";
+          "java/lang/String.java" = "package java.lang; public final class String {}\n";
+        };
+        "input" = "A Java class with a constant answer and the compiler's minimal bootstrap types.";
+        "operation" = "Compile the sources to Java 1.4 classfiles with Jikes.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, subprocess\nresult = subprocess.run([\"@out@/bin/jikes\", \"-bootclasspath\", \".\", \"java/lang/Object.java\", \"java/lang/String.java\", \"java/io/Serializable.java\", \"Answer.java\"], capture_output=True, text=True)\nassert result.returncode == 0, (result.stdout, result.stderr)\nclassfile = pathlib.Path(\"Answer.class\").read_bytes()\nassert classfile[:8] == bytes.fromhex(\"cafebabe00000030\")\nassert b\"VALUE\" in classfile and bytes.fromhex(\"0000002a\") in classfile\nprint(\"jikes operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "jikes operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Jikes reports a syntax error and does not emit the requested classfile.";
+        "files" = {
+          "Broken.java" = "public class Broken {\n";
+          "java/io/Serializable.java" = "package java.io; public interface Serializable {}\n";
+          "java/lang/Object.java" = "package java.lang; public class Object {}\n";
+          "java/lang/String.java" = "package java.lang; public final class String {}\n";
+        };
+        "input" = "A Java class whose body is missing its closing brace.";
+        "operation" = "Compile the malformed source with the same minimal bootstrap types.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport pathlib, subprocess\nresult = subprocess.run([\"@out@/bin/jikes\", \"-bootclasspath\", \".\", \"java/lang/Object.java\", \"java/lang/String.java\", \"java/io/Serializable.java\", \"Broken.java\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"Syntax Error\" in (result.stdout + result.stderr)\nassert not pathlib.Path(\"Broken.class\").exists()\n\nsys.stderr.write(\"jikes rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "jikes rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

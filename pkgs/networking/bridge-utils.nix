@@ -1,5 +1,6 @@
 ##! bridge-utils — Legacy Linux Ethernet bridge administration tools
 {
+  lib,
   mkDerivation,
   fetchurl,
   autoconf,
@@ -9,6 +10,56 @@
 in
   mkDerivation {
     pname = "bridge-utils";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Brctl returns a bridge table headed by bridge name and bridge ID fields.";
+        "files" = {};
+        "input" = "The host's current read-only Linux bridge inventory.";
+        "operation" = "Query the inventory with brctl show and validate its tabular heading.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/sbin/brctl\", \"show\"], capture_output=True, text=True)\nassert result.returncode == 0\nassert result.stdout.splitlines()[0].startswith(\"bridge name\\tbridge id\")\nprint(\"bridge-utils operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "bridge-utils operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Brctl rejects the unrecognized command.";
+        "files" = {};
+        "input" = "A bridge-utils command name that does not exist.";
+        "operation" = "Ask brctl to execute the unknown command.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/sbin/brctl\", \"aos-invalid-command\"], capture_output=True)\nif result.returncode == 0:\n    raise SystemExit(2)\nsys.stderr.write(\"bridge-utils rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "bridge-utils rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     src = fetchurl {
       urls = ["https://kernel.org/pub/linux/utils/net/bridge-utils/bridge-utils-${version}.tar.xz"];

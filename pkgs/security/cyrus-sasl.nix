@@ -1,5 +1,6 @@
 ##! Cyrus SASL — Pluggable authentication framework
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -16,6 +17,94 @@
 in
   mkDerivation {
     pname = "cyrus-sasl";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The API returns the expected value and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\n#include <string.h>\n#include <sasl/saslutil.h>\n\nint main(void) {\n    char encoded[16];\n    char decoded[16];\n    unsigned encoded_length = 0;\n    unsigned decoded_length = 0;\n    if (sasl_encode64(\"42\", 2, encoded, sizeof(encoded), &encoded_length) != SASL_OK\n        || encoded_length != 4 || strcmp(encoded, \"NDI=\") != 0\n        || sasl_decode64(encoded, encoded_length, decoded, sizeof(decoded), &decoded_length) != SASL_OK\n        || decoded_length != 2 || memcmp(decoded, \"42\", 2) != 0) {\n        return 2;\n    }\n    return puts(\"cyrus-sasl api passed\") == EOF;\n}\n";
+        };
+        "input" = "The ASCII bytes 42.";
+        "operation" = "Encode and decode the bytes with the SASL Base64 utility API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lsasl2"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "cyrus-sasl api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The API reports rejection and the consumer emits the fixed diagnostic and rejection status.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\n#include <sasl/saslutil.h>\n\nint main(void) {\n    char output[16];\n    unsigned output_length = 0;\n    if (sasl_decode64(\"%%%?\", 4, output, sizeof(output), &output_length) == SASL_OK) {\n        return 2;\n    }\n    fputs(\"cyrus-sasl rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "A Base64 string containing characters outside the alphabet.";
+        "operation" = "Decode the malformed text with sasl_decode64.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lsasl2"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "cyrus-sasl rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

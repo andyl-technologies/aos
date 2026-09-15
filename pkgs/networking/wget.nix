@@ -1,5 +1,6 @@
 ##! wget — Non-interactive network downloader
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -70,6 +71,56 @@
 in
   mkDerivation {
     pname = "wget";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Wget completes the HTTP exchange and preserves the exact response body.";
+        "files" = {};
+        "input" = "A loopback HTTP endpoint serving one fixed payload.";
+        "operation" = "Download the payload into a regular file with Wget.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import http.server, pathlib, subprocess, threading\npayload = b\"qualified wget payload\\n\"\nclass Handler(http.server.BaseHTTPRequestHandler):\n    def do_GET(self):\n        self.send_response(200)\n        self.send_header(\"Content-Length\", str(len(payload)))\n        self.end_headers()\n        self.wfile.write(payload)\n    def log_message(self, format, *args):\n        pass\nserver = http.server.ThreadingHTTPServer((\"127.0.0.1\", 0), Handler)\nthread = threading.Thread(target=server.serve_forever)\nthread.start()\ntry:\n    url = \"http://127.0.0.1:\" + str(server.server_port) + \"/payload\"\n    result = subprocess.run([\"@out@/bin/wget\", \"--quiet\", \"--output-document\", \"downloaded\", url], capture_output=True)\nfinally:\n    server.shutdown()\n    thread.join()\n    server.server_close()\nassert result.returncode == 0, result.stderr\nassert pathlib.Path(\"downloaded\").read_bytes() == payload\nprint(\"wget operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "wget operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Wget rejects the HTTP 404 response and leaves no accepted payload.";
+        "files" = {};
+        "input" = "A loopback HTTP endpoint returning a missing-resource response.";
+        "operation" = "Download the missing resource without retrying.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport http.server, pathlib, subprocess, threading\nclass Handler(http.server.BaseHTTPRequestHandler):\n    def do_GET(self):\n        self.send_error(404)\n    def log_message(self, format, *args):\n        pass\nserver = http.server.ThreadingHTTPServer((\"127.0.0.1\", 0), Handler)\nthread = threading.Thread(target=server.serve_forever)\nthread.start()\ntry:\n    url = \"http://127.0.0.1:\" + str(server.server_port) + \"/missing\"\n    result = subprocess.run([\"@out@/bin/wget\", \"--quiet\", \"--tries\", \"1\", \"--output-document\", \"rejected\", url], capture_output=True)\nfinally:\n    server.shutdown()\n    thread.join()\n    server.server_close()\nassert result.returncode != 0 and pathlib.Path(\"rejected\").stat().st_size == 0\n\nsys.stderr.write(\"wget rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "wget rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

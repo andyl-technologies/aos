@@ -1,5 +1,6 @@
 ##! sccache — Shared compilation cache
 {
+  lib,
   mkCargoPackage,
   fetchCargoDeps,
   fetchurl,
@@ -20,6 +21,81 @@
 in
   mkCargoPackage {
     pname = "sccache";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The cached compiler frontend produces a valid object and the linked program prints 42.";
+        "files" = {
+          "answer.c" = "#include <stdio.h>\n\nint main(void) {\n    return printf(\"42\\n\") < 0;\n}\n";
+        };
+        "input" = "A C translation unit that prints a fixed answer.";
+        "operation" = "Compile the translation unit through sccache, link it, and execute the result.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/sccache"
+              "@cc@"
+              "-c"
+              "answer.c"
+              "-o"
+              "answer.o"
+            ];
+            "exit_code" = 0;
+          }
+          {
+            "argv" = [
+              "@cc@"
+              "answer.o"
+              "-o"
+              "answer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/answer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Sccache propagates the compiler's syntax-error status.";
+        "files" = {
+          "invalid.c" = "int main(void) { int answer = ; return answer; }\n";
+        };
+        "input" = "A C translation unit with an incomplete initializer.";
+        "operation" = "Compile the malformed source through sccache.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/sccache"
+              "@cc@"
+              "-c"
+              "invalid.c"
+              "-o"
+              "invalid.o"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version src cargoDeps;
     # Keep the build lockfile aligned with the vendored dependency set.
     patches = [./sccache-openssl-4.patch];

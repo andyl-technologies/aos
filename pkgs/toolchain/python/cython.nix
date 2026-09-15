@@ -1,5 +1,6 @@
 ##! Cython — C extensions for Python
 {
+  lib,
   mkDerivation,
   fetchurl,
   python3,
@@ -9,6 +10,75 @@
 in
   mkDerivation {
     pname = "cython";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Cython emits a C extension implementation for the declared module.";
+        "files" = {
+          "probe.pyx" = "cpdef int add(int left, int right):\n    return left + right\n";
+        };
+        "input" = "A typed Cython function adding two C integers.";
+        "operation" = "Translate the module to C and inspect its generated initialization entry point.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/cython"
+              "--3str"
+              "--output-file"
+              "probe.c"
+              "probe.pyx"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "from pathlib import Path; source = Path('probe.c').read_text(); assert 'PyInit_probe' in source; print('cython generation passed')"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "cython generation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Cython rejects the syntax error with status 1.";
+        "files" = {
+          "invalid.pyx" = "cpdef int broken(int):\n    return 42\n";
+        };
+        "input" = "A Cython function declaration with a missing parameter name.";
+        "operation" = "Translate the malformed module to C.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/cython"
+              "--3str"
+              "--output-file"
+              "invalid.c"
+              "invalid.pyx"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

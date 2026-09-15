@@ -1,5 +1,6 @@
 ##! libcap-ng — POSIX capability manipulation library
 {
+  lib,
   mkDerivation,
   fetchurl,
   autoconf,
@@ -16,6 +17,88 @@
 in
   mkDerivation {
     pname = "libcap-ng";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The API returns the CAP_CHOWN capability number.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libcap-ng primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libcap-ng rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <linux/capability.h>\n#include <cap-ng.h>\nint main(void) {\n    return capng_name_to_capability(\"chown\") == CAP_CHOWN ? pass() : 2;\n}\n\n";
+        };
+        "input" = "The canonical Linux capability name chown.";
+        "operation" = "Resolve the name through capng_name_to_capability.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lcap-ng"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libcap-ng primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "libcap-ng rejects the name with a negative result.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libcap-ng primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libcap-ng rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <cap-ng.h>\nint main(void) {\n    if (capng_name_to_capability(\"qualification_capability_does_not_exist\") >= 0) return 2;\n    return reject();\n}\n\n";
+        };
+        "input" = "A capability name absent from Linux's capability registry.";
+        "operation" = "Resolve the unknown name through capng_name_to_capability.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lcap-ng"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libcap-ng rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     # Preserve the bindings separately from the library used by boot tools.
     outputs = ["out" "python"];

@@ -1,5 +1,6 @@
 ##! mandoc — mdoc and man document formatter
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -9,6 +10,54 @@
 in
   mkDerivation {
     pname = "mandoc";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Mandoc accepts the document without diagnostics.";
+        "files" = {
+          "answer.1" = ".Dd September 8, 2026\n.Dt ANSWER 1\n.Os\n.Sh NAME\n.Nm answer\n.Nd print the value 42\n";
+        };
+        "input" = "A minimal mdoc document with its required title and name sections.";
+        "operation" = "Validate the document through mandoc's lint formatter.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/mandoc"
+              "-Tlint"
+              "answer.1"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Mandoc rejects the formatter with status 5.";
+        "files" = {
+          "answer.1" = ".Dd September 8, 2026\n";
+        };
+        "input" = "A request for a mandoc output format that does not exist.";
+        "operation" = "Parse the unsupported formatter name.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/mandoc"
+              "-Tqualification-invalid"
+              "answer.1"
+            ];
+            "exit_code" = 5;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

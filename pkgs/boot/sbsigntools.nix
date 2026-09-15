@@ -1,5 +1,6 @@
 ##! sbsigntools — UEFI Secure Boot signing tools
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -20,6 +21,58 @@
 in
   mkDerivation {
     pname = "sbsigntools";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Sbsiglist emits a nonempty signature list containing the DER certificate bytes.";
+        "files" = {};
+        "input" = "A freshly generated DER certificate and a fixed EFI signature owner GUID.";
+        "operation" = "Convert the certificate into an EFI signature list with sbsiglist.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, shutil, subprocess\nopenssl = shutil.which(\"openssl\")\nassert openssl is not None\nrequest = subprocess.run([openssl, \"req\", \"-new\", \"-x509\", \"-newkey\", \"rsa:2048\", \"-nodes\", \"-sha256\", \"-days\", \"1\", \"-subj\", \"/CN=AOS Qualification/\", \"-keyout\", \"key.pem\", \"-out\", \"cert.pem\"], capture_output=True)\nassert request.returncode == 0, request.stderr\nconvert = subprocess.run([openssl, \"x509\", \"-in\", \"cert.pem\", \"-outform\", \"DER\", \"-out\", \"cert.der\"], capture_output=True)\nassert convert.returncode == 0, convert.stderr\nresult = subprocess.run([\"@out@/bin/sbsiglist\", \"--owner\", \"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\", \"--type\", \"x509\", \"--output\", \"certificate.esl\", \"cert.der\"], capture_output=True)\nassert result.returncode == 0, result.stderr\nassert pathlib.Path(\"certificate.esl\").stat().st_size > pathlib.Path(\"cert.der\").stat().st_size\nprint(\"sbsigntools operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "sbsigntools operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Sbsiglist rejects the type before writing an output list.";
+        "files" = {
+          "signature.bin" = "qualification\n";
+        };
+        "input" = "An unsupported EFI signature-list type.";
+        "operation" = "Attempt to construct a signature list with the invalid type.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport pathlib, subprocess\nresult = subprocess.run([\"@out@/bin/sbsiglist\", \"--owner\", \"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\", \"--type\", \"qualification-invalid\", \"--output\", \"invalid.esl\", \"signature.bin\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"Invalid type\" in result.stderr\nassert not pathlib.Path(\"invalid.esl\").exists()\n\nsys.stderr.write(\"sbsigntools rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "sbsigntools rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

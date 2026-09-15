@@ -1,5 +1,6 @@
 ##! libslirp — General purpose TCP-IP emulator (user-mode networking for QEMU)
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -15,6 +16,88 @@
 in
   mkDerivation {
     pname = "libslirp";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The runtime version matches the public header and exposes a positive state version.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libslirp primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libslirp rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <string.h>\n#include <slirp/libslirp.h>\nint main(void) {\n    int valid = strcmp(slirp_version_string(), SLIRP_VERSION_STRING) == 0\n        && slirp_state_version() > 0;\n    return valid ? pass() : 2;\n}\n\n";
+        };
+        "input" = "The linked libslirp implementation version.";
+        "operation" = "Query its version string and state format version.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lslirp"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libslirp primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Libslirp rejects the configuration by returning null.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libslirp primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libslirp rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <fcntl.h>\n#include <unistd.h>\n#include <slirp/libslirp.h>\nint main(void) {\n    int saved_stderr = dup(STDERR_FILENO);\n    int null_output = open(\"/dev/null\", O_WRONLY);\n    if (saved_stderr < 0 || null_output < 0) return 2;\n    if (dup2(null_output, STDERR_FILENO) < 0) return 3;\n    SlirpConfig config = {.version = SLIRP_CONFIG_VERSION_MAX + 1};\n    SlirpCb callbacks = {0};\n    Slirp *slirp = slirp_new(&config, &callbacks, NULL);\n    fflush(stderr);\n    if (dup2(saved_stderr, STDERR_FILENO) < 0) return 4;\n    close(null_output);\n    close(saved_stderr);\n    if (slirp != NULL) {\n        slirp_cleanup(slirp);\n        return 5;\n    }\n    return reject();\n}\n\n";
+        };
+        "input" = "A Slirp configuration version above the supported maximum.";
+        "operation" = "Construct a Slirp instance through slirp_new while suppressing its expected assertion log.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lslirp"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libslirp rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

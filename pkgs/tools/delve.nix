@@ -1,5 +1,6 @@
 ##! delve — Debugger for the Go programming language
 {
+  lib,
   mkGoPackage,
   fetchGoModules,
   fetchurl,
@@ -16,6 +17,56 @@
 in
   mkGoPackage {
     pname = "delve";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Delve returns success and identifies its debugger version.";
+        "files" = {};
+        "input" = "The packaged Delve debugger's release identity.";
+        "operation" = "Request its version without attaching to a process.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/dlv\", \"version\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"Delve Debugger\" in (result.stdout + result.stderr), (result.returncode, result.stdout, result.stderr)\nprint(\"delve operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "delve operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Delve rejects the unsupported command.";
+        "files" = {};
+        "input" = "A Delve invocation naming an unknown command.";
+        "operation" = "Parse the unsupported command without attaching to a process.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/dlv\", \"aos-invalid-command\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"delve rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "delve rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src goModules;
     goPackage = "./cmd/dlv";
     goOutput = "dlv";

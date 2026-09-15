@@ -1,5 +1,6 @@
 ##! libffi — Foreign Function Interface library
 {
+  lib,
   mkDerivation,
   mkGithubUpstream,
   gnumake,
@@ -79,6 +80,88 @@
 in
   mkDerivation {
     pname = "libffi";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The indirect call returns 42.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libffi primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libffi rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <ffi.h>\nstatic int add(int left, int right) { return left + right; }\nint main(void) {\n    ffi_cif cif; ffi_type *types[2] = {&ffi_type_sint, &ffi_type_sint};\n    int left = 19, right = 23, result = 0; void *values[2] = {&left, &right};\n    if (ffi_prep_cif(&cif, FFI_DEFAULT_ABI, 2, &ffi_type_sint, types) != FFI_OK) return 2;\n    ffi_call(&cif, FFI_FN(add), &result, values);\n    return result == 42 ? pass() : 3;\n}\n\n";
+        };
+        "input" = "Two integer arguments for an indirectly invoked addition function.";
+        "operation" = "Prepare a call interface and invoke the function through ffi_call.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lffi"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libffi primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "ffi_prep_cif returns FFI_BAD_ABI.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libffi primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libffi rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <ffi.h>\nint main(void) {\n    ffi_cif cif;\n    if (ffi_prep_cif(&cif, (ffi_abi)9999, 0, &ffi_type_void, NULL) != FFI_BAD_ABI) return 2;\n    return reject();\n}\n\n";
+        };
+        "input" = "An ABI selector outside libffi's supported ABI range.";
+        "operation" = "Prepare a call interface using the invalid ABI.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lffi"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libffi rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = upstream.components.main.sources.source;

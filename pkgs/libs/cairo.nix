@@ -1,5 +1,6 @@
 ##! cairo — Two-dimensional graphics library
 {
+  lib,
   mkDerivation,
   fetchurl,
   meson,
@@ -23,6 +24,94 @@
 in
   mkDerivation {
     pname = "cairo";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The public API returns the expected value and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\n#include <cairo.h>\n\nint main(void) {\n    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 2, 2);\n    cairo_t *context = cairo_create(surface);\n    cairo_set_source_rgb(context, 1.0, 0.0, 0.0);\n    cairo_paint(context);\n    cairo_surface_flush(surface);\n    int failed = cairo_status(context) != CAIRO_STATUS_SUCCESS\n        || cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS;\n    cairo_destroy(context);\n    cairo_surface_destroy(surface);\n    if (failed) {\n        return 2;\n    }\n    return puts(\"cairo api passed\") == EOF;\n}\n";
+        };
+        "input" = "A two-by-two in-memory ARGB image surface.";
+        "operation" = "Create the surface, paint it red, and validate the surface status.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include/cairo"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lcairo"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "cairo api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The public API reports rejection and the consumer exits with the fixed rejection status and diagnostic.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\n#include <cairo.h>\n\nint main(void) {\n    cairo_surface_t *surface = cairo_image_surface_create((cairo_format_t)999, 2, 2);\n    cairo_status_t status = cairo_surface_status(surface);\n    cairo_surface_destroy(surface);\n    if (status != CAIRO_STATUS_INVALID_FORMAT) {\n        return 2;\n    }\n    fputs(\"cairo rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "An image surface request with an invalid pixel format.";
+        "operation" = "Create the surface and inspect Cairo's error-object status.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include/cairo"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lcairo"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "cairo rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -1,5 +1,6 @@
 ##! fakeroot — Give a fake root environment through LD_PRELOAD
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -17,6 +18,47 @@
 in
   mkDerivation {
     pname = "fakeroot";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The child observes UID and GID zero without privileged filesystem operations.";
+        "files" = {};
+        "input" = "A child process creating a file and assigning simulated root ownership.";
+        "operation" = "Run the process under fakeroot and inspect the intercepted metadata.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/fakeroot"
+              "@python@"
+              "-c"
+              "import os; open('owned', 'w').close(); os.chown('owned', 0, 0); info = os.stat('owned'); print(f'{info.st_uid}:{info.st_gid}')"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "0:0\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Fakeroot rejects the option with status 1.";
+        "files" = {};
+        "input" = "A command-line option that fakeroot does not define.";
+        "operation" = "Invoke the wrapper with the invalid option.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/fakeroot"
+              "--aos-invalid-option"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

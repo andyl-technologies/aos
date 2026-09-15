@@ -1,5 +1,6 @@
 ##! BoringSSL — Google TLS implementation for private static linking
 {
+  lib,
   mkDerivation,
   fetchurl,
   cmake,
@@ -10,6 +11,94 @@
 in
   mkDerivation {
     pname = "boringssl";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The API returns the expected value and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\n#include <string.h>\n#include <openssl/evp.h>\n\nint main(void) {\n    unsigned char output[8] = {0};\n    int length = EVP_DecodeBlock(output, (const unsigned char *)\"NDI=\", 4);\n    if (length != 3 || memcmp(output, \"42\", 2) != 0) {\n        return 2;\n    }\n    return puts(\"boringssl api passed\") == EOF;\n}\n";
+        };
+        "input" = "The Base64 text NDI=, which encodes the ASCII bytes 42.";
+        "operation" = "Decode the text with EVP_DecodeBlock and verify the decoded prefix.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-lcrypto"
+              "-lpthread"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "boringssl api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The API reports rejection and the consumer emits the fixed diagnostic and rejection status.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\n#include <openssl/evp.h>\n\nint main(void) {\n    unsigned char output[8] = {0};\n    if (EVP_DecodeBlock(output, (const unsigned char *)\"%%%?\", 4) != -1) {\n        return 2;\n    }\n    fputs(\"boringssl rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "A Base64 string containing characters outside the alphabet.";
+        "operation" = "Decode the malformed text with EVP_DecodeBlock.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-lcrypto"
+              "-lpthread"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "boringssl rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

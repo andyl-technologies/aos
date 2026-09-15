@@ -9,6 +9,7 @@
 ##! Uses builtins.derivation (not mkDerivation) to match the gcc16 tier
 ##! build environment — the cc-wrapper interferes with GMP's CC_FOR_BUILD.
 {
+  lib,
   mkDerivation,
   stdenv,
   bootstrapTools,
@@ -44,6 +45,92 @@ in
   # Use mkDerivation but bypass the cc-wrapper by setting CC/CXX directly
   mkDerivation {
     pname = "gcc-libs";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The public API returns the expected value and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.cc" = "#include <iostream>\n#include <regex>\n\nint main() {\n    std::regex expression(\"[a-z]+[0-9]+\");\n    if (!std::regex_match(\"probe42\", expression)) {\n        return 2;\n    }\n    std::cout << \"gcc-libs api passed\\n\";\n}\n";
+        };
+        "input" = "A C++ regular expression and a matching identifier.";
+        "operation" = "Compile the expression with libstdc++ and match the complete string.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cxx@"
+              "primary.cc"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lstdc++"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "gcc-libs api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The API reports the rejected boundary and the consumer returns the fixed rejection status.";
+        "files" = {
+          "bad-input.cc" = "#include <iostream>\n#include <regex>\n\nint main() {\n    try {\n        std::regex expression(\"[\");\n        static_cast<void>(expression);\n        return 2;\n    } catch (const std::regex_error &) {\n        std::cerr << \"gcc-libs rejected invalid input\\n\";\n        return 7;\n    }\n}\n";
+        };
+        "input" = "A C++ regular expression with an unmatched opening bracket.";
+        "operation" = "Compile the malformed expression with libstdc++.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cxx@"
+              "bad-input.cc"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lstdc++"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "gcc-libs rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     version = "16.2.0";
 
     # No fetchurl source — we use builtins.fetchTarball inline

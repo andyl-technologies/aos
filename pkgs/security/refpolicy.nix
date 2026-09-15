@@ -1,5 +1,6 @@
 ##! SELinux Reference Policy
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -14,6 +15,56 @@
 in
   mkDerivation {
     pname = "refpolicy";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The base policy package and refpolicy include Makefile are nonempty and identify refpolicy.";
+        "files" = {};
+        "input" = "The installed SELinux base policy modules and development interface tree.";
+        "operation" = "Inspect the base module and the policy-development Makefile contract.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib\nroot = pathlib.Path(\"@out@/usr/share/selinux/refpolicy\")\nassert (root / \"base.pp\").stat().st_size > 0\nmakefile = (root / \"include/Makefile\").read_text()\nassert \"refpolicy\" in makefile and (root / \"include/support\").is_dir()\nprint(\"refpolicy operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "refpolicy operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The policy package rejects the absent module name.";
+        "files" = {};
+        "input" = "A request for an uncompiled qualification-invalid policy module.";
+        "operation" = "Resolve the nonexistent module from the installed policy store.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport pathlib\nassert not pathlib.Path(\"@out@/usr/share/selinux/refpolicy/qualification-invalid.pp\").exists()\n\nsys.stderr.write(\"refpolicy rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "refpolicy rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

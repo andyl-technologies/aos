@@ -1,5 +1,6 @@
 ##! Tcl — Tool Command Language runtime and development library
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -12,6 +13,49 @@
 in
   mkDerivation {
     pname = "tcl";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Tcl prints the exact integer result 42.";
+        "files" = {
+          "answer.tcl" = "puts [expr {19 + 23}]\n";
+        };
+        "input" = "A Tcl program that adds two integers.";
+        "operation" = "Evaluate the arithmetic expression with tclsh.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/tclsh9.0"
+              "answer.tcl"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Tcl reports an expression parse failure and exits unsuccessfully.";
+        "files" = {
+          "invalid.tcl" = "expr {19 +}\n";
+        };
+        "input" = "A Tcl arithmetic expression ending in an operator.";
+        "operation" = "Evaluate the malformed expression with tclsh.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/tclsh9.0"
+              "invalid.tcl"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

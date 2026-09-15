@@ -1,5 +1,6 @@
 ##! smartmontools — S.M.A.R.T. disk monitoring tools (smartctl, smartd)
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -18,6 +19,56 @@
 in
   mkDerivation {
     pname = "smartmontools";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Smartctl reports its version and bundled drive database release.";
+        "files" = {};
+        "input" = "The installed smartctl executable and drive database.";
+        "operation" = "Query smartctl's build and database identity without opening a device.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/sbin/smartctl\", \"--version\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"smartctl\" in result.stdout and \"smartmontools\" in result.stdout\nprint(\"smartmontools operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "smartmontools operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Smartctl rejects the unknown device type.";
+        "files" = {};
+        "input" = "An unsupported smartctl device type for /dev/null.";
+        "operation" = "Validate the device-type selector before issuing any disk command.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport subprocess\nresult = subprocess.run([\"@out@/sbin/smartctl\", \"--device\", \"qualification-invalid\", \"/dev/null\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"Unknown device type\" in result.stdout\n\nsys.stderr.write(\"smartmontools rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "smartmontools rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

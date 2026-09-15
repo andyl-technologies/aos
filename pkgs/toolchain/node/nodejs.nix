@@ -7,6 +7,7 @@
 ##! GYP-generated Makefiles); `PYTHON` is pinned to the AOS python3 so no host
 ##! interpreter is consulted.
 {
+  lib,
   mkDerivation,
   fetchurl,
   python3,
@@ -27,6 +28,52 @@
 in
   mkDerivation {
     pname = "nodejs";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Node.js prints the exact integer result 42.";
+        "files" = {};
+        "input" = "A JavaScript expression that adds 19 and 23.";
+        "operation" = "Evaluate the expression with the packaged Node.js runtime.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/node"
+              "-e"
+              "console.log(19 + 23)"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Node.js exits with its syntax-error status.";
+        "files" = {
+          "invalid.js" = "function broken(\n";
+        };
+        "input" = "A JavaScript function declaration with an unclosed parameter list.";
+        "operation" = "Parse the malformed program with the packaged runtime.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/node"
+              "--check"
+              "invalid.js"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

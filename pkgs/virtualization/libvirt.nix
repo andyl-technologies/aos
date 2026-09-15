@@ -1,5 +1,6 @@
 ##! libvirt — Virtualization management toolkit and system daemons
 {
+  lib,
   mkDerivation,
   fetchurl,
   meson,
@@ -390,6 +391,56 @@ in
     }: {
       link = testing.mkLinkCheck {
         pname = "libvirt";
+        qualification.packageProbe = lib.qualification.commandProbe {
+          "primary" = {
+            "artifacts" = [];
+            "expected" = "The command describes its supported invocation contract.";
+            "files" = {};
+            "input" = "The packaged libvirt command-line interface.";
+            "operation" = "Request its offline command inventory.";
+            "steps" = [
+              {
+                "argv" = [
+                  "@python@"
+                  "-c"
+                  "import subprocess\nresult = subprocess.run([\"@out@/bin/virsh\"] + [\"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"hypervisor connection uri\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nprint(\"libvirt primary passed\")\n"
+                ];
+                "exit_code" = 0;
+                "stderr" = {
+                  "exact" = "";
+                };
+                "stdout" = {
+                  "exact" = "libvirt primary passed\n";
+                };
+              }
+            ];
+          };
+          "badInput" = {
+            "artifacts" = [];
+            "expected" = "The command rejects the unsupported operation.";
+            "files" = {};
+            "input" = "A libvirt invocation naming an unsupported command.";
+            "operation" = "Parse the unknown command without starting a service.";
+            "steps" = [
+              {
+                "argv" = [
+                  "@python@"
+                  "-c"
+                  "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/virsh\"] + [\"aos-invalid-command\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"unknown command\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"libvirt rejected invalid input\\n\")\nraise SystemExit(7)\n"
+                ];
+                "exit_code" = 7;
+                "observes_rejection" = true;
+                "stderr" = {
+                  "exact" = "libvirt rejected invalid input\n";
+                };
+                "stdout" = {
+                  "exact" = "";
+                };
+              }
+            ];
+          };
+        };
+
         library = self;
         libs = ["-lvirt"];
         testSource = ''

@@ -1,4 +1,5 @@
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -26,6 +27,56 @@
 in
   mkDerivation {
     pname = "swtpm";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Swtpm-setup creates all three nonempty configuration files below the requested directory.";
+        "files" = {};
+        "input" = "An empty per-user configuration directory.";
+        "operation" = "Generate the default swtpm setup and local-CA configuration files.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import os, pathlib, subprocess\nconfig = pathlib.Path(\"config\").resolve()\nenvironment = os.environ.copy()\nenvironment[\"XDG_CONFIG_HOME\"] = str(config)\nresult = subprocess.run([\"@out@/bin/swtpm_setup\", \"--create-config-files\", \"skip-if-exist\"], env=environment, capture_output=True)\nassert result.returncode == 0, result.stderr\nnames = [\"swtpm_setup.conf\", \"swtpm-localca.conf\", \"swtpm-localca.options\"]\nassert all((config / name).stat().st_size > 0 for name in names)\nprint(\"swtpm operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "swtpm operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Swtpm-setup rejects the unknown option before creating TPM state.";
+        "files" = {};
+        "input" = "An option not recognized by swtpm-setup.";
+        "operation" = "Parse the invalid setup invocation.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport subprocess\nresult = subprocess.run([\"@out@/bin/swtpm_setup\", \"--qualification-invalid\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"unrecognized option\" in result.stderr\n\nsys.stderr.write(\"swtpm rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "swtpm rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -1,5 +1,6 @@
 ##! rpcsvc-proto — RPC service protocol definitions and rpcgen
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -12,6 +13,72 @@
 in
   mkDerivation {
     pname = "rpcsvc-proto";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The header declares the answer structure and its XDR function.";
+        "files" = {
+          "answer.x" = "struct answer {\n    int value;\n};\n";
+          "verify.py" = "content = open(\"answer.h\", encoding=\"utf-8\").read()\nrequired = [\"struct answer\",\"xdr_answer\"]\nassert all(fragment in content for fragment in required)\nprint(\"rpcgen output passed\")\n";
+        };
+        "input" = "An RPC language definition containing one structure and XDR procedure.";
+        "operation" = "Generate its public C declarations with rpcgen and inspect the emitted interface.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/rpcgen"
+              "-h"
+              "-o"
+              "answer.h"
+              "answer.x"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@python@"
+              "verify.py"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "rpcgen output passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "rpcgen rejects the syntax error without producing a usable header.";
+        "files" = {
+          "invalid.x" = "struct answer { int value };\n";
+        };
+        "input" = "An RPC structure whose field declaration lacks a semicolon.";
+        "operation" = "Parse the malformed RPC definition.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/rpcgen"
+              "-h"
+              "-o"
+              "invalid.h"
+              "invalid.x"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

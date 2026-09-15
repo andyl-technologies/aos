@@ -1,5 +1,6 @@
 ##! CA Certificates — Mozilla CA certificate bundle
 {
+  lib,
   mkDerivation,
   fetchurl,
   gawk,
@@ -8,6 +9,58 @@
 in
   mkDerivation {
     pname = "ca-certificates";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "OpenSSL accepts the complete PEM stream and loads multiple trust anchors.";
+        "files" = {};
+        "input" = "The package's canonical Mozilla CA bundle.";
+        "operation" = "Load the bundle through Python's OpenSSL certificate-store API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import ssl\ncontext = ssl.create_default_context(cafile=\"@out@/etc/ssl/certs/ca-certificates.crt\")\nassert len(context.get_ca_certs()) > 100\nprint(\"ca-certificates data passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "ca-certificates data passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "OpenSSL rejects the malformed trust bundle.";
+        "files" = {
+          "invalid.pem" = "-----BEGIN CERTIFICATE-----\ntruncated\n";
+        };
+        "input" = "A PEM file with a truncated certificate body.";
+        "operation" = "Load the malformed file through the same OpenSSL certificate-store API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import ssl, sys\ntry:\n    ssl.create_default_context(cafile=\"invalid.pem\")\nexcept ssl.SSLError:\n    sys.stderr.write(\"ca-certificates rejected invalid input\\n\")\n    raise SystemExit(7)\nraise SystemExit(2)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "ca-certificates rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

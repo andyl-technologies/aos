@@ -1,5 +1,6 @@
 ##! pm-utils — Suspend and resume hook framework
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -16,6 +17,56 @@
 in
   mkDerivation {
     pname = "pm-utils";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Pm-utils documents suspend, hibernate, and hybrid suspend queries.";
+        "files" = {};
+        "input" = "The pm-is-supported power-state option inventory.";
+        "operation" = "Request help without entering a sleep state.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/pm-is-supported\"] + [\"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"--suspend\" in result.stdout and \"--hibernate\" in result.stdout, (result.returncode, result.stdout, result.stderr)\nprint(\"pm-utils primary passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "pm-utils primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Pm-utils rejects the unsupported mode.";
+        "files" = {};
+        "input" = "A power-state query naming an unsupported mode.";
+        "operation" = "Parse the invalid mode without entering a sleep state.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/pm-is-supported\"] + [\"--aos-invalid-mode\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"pm-is-supported\" in result.stderr, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"pm-utils rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "pm-utils rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

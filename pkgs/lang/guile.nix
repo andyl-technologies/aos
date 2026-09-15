@@ -1,5 +1,6 @@
 ##! guile — GNU extension language implementation
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -18,6 +19,53 @@
 in
   mkDerivation {
     pname = "guile";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Guile prints the computed value.";
+        "files" = {};
+        "input" = "A Scheme expression mapping and summing a list.";
+        "operation" = "Evaluate the expression with Guile.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/guile"
+              "-c"
+              "(display (apply + (map (lambda (x) (* x x)) '(1 2 3 4)))) (newline)"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "30\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Guile rejects the syntax error with status 1.";
+        "files" = {};
+        "input" = "A Scheme expression with an unterminated list.";
+        "operation" = "Parse the malformed expression.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/guile"
+              "-c"
+              "(display (+ 1 2)"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

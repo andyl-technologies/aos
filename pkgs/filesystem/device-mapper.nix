@@ -1,5 +1,6 @@
 ##! device-mapper — Device-mapper userspace library and tools
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -11,6 +12,88 @@
 in
   mkDerivation {
     pname = "device-mapper";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The public API returns the expected result and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\n#include <libdevmapper.h>\n\nint main(void) {\n    struct dm_task *task = dm_task_create(DM_DEVICE_INFO);\n    if (task == NULL || !dm_task_set_name(task, \"aos-qualification\")) {\n        if (task != NULL) dm_task_destroy(task);\n        return 2;\n    }\n    dm_task_destroy(task);\n    return puts(\"device-mapper api passed\") == EOF;\n}\n";
+        };
+        "input" = "A syntactically valid device-mapper name.";
+        "operation" = "Create an information task and assign the name without contacting the kernel.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-ldevmapper"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "device-mapper api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The public API reports rejection and the consumer returns the fixed rejection status.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\n#include <libdevmapper.h>\n\nint main(void) {\n    struct dm_task *task = dm_task_create(DM_DEVICE_INFO);\n    if (task == NULL) {\n        return 2;\n    }\n    int accepted = dm_task_set_name(task, \"invalid/name\");\n    dm_task_destroy(task);\n    if (accepted) {\n        return 3;\n    }\n    fputs(\"device-mapper rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "A device-mapper name containing a slash.";
+        "operation" = "Assign the invalid name to an information task.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-ldevmapper"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

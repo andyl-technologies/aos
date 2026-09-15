@@ -1,5 +1,6 @@
 ##! protobuf-c — Protocol Buffers implementation for C
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -12,6 +13,51 @@
 in
   mkDerivation {
     pname = "protobuf-c";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "protoc-c validates the declaration and generates both outputs.";
+        "files" = {
+          "answer.proto" = "syntax = \"proto3\";\npackage qualification;\nmessage Answer { int32 value = 1; }\n";
+        };
+        "input" = "A proto3 schema declaring one message with an int32 field.";
+        "operation" = "Compile the schema into C source and header output through protoc-c.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/protoc-c"
+              "--c_out=."
+              "answer.proto"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "protoc-c rejects the schema with its parse-error status.";
+        "files" = {
+          "invalid.proto" = "syntax = \"proto3\";\nmessage Invalid { int32 value = ; }\n";
+        };
+        "input" = "A protobuf field declaration with no numeric tag.";
+        "operation" = "Compile the malformed schema through protoc-c.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/protoc-c"
+              "--c_out=."
+              "invalid.proto"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

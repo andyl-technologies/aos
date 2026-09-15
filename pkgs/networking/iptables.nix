@@ -1,5 +1,6 @@
 ##! iptables — Linux packet filtering framework
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -16,6 +17,63 @@
 in
   mkDerivation {
     pname = "iptables";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Iptables emits the equivalent nft add-rule command.";
+        "files" = {};
+        "input" = "An INPUT rule accepting TCP traffic to destination port 80.";
+        "operation" = "Translate the legacy rule into nftables syntax.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/iptables-translate"
+              "-A"
+              "INPUT"
+              "-p"
+              "tcp"
+              "--dport"
+              "80"
+              "-j"
+              "ACCEPT"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "nft 'add rule ip filter INPUT tcp dport 80 counter accept'\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Iptables rejects the unknown protocol with status 2.";
+        "files" = {};
+        "input" = "An INPUT rule naming a protocol that does not exist.";
+        "operation" = "Translate the malformed rule through iptables-translate.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/iptables-translate"
+              "-A"
+              "INPUT"
+              "-p"
+              "qualification-invalid"
+              "-j"
+              "ACCEPT"
+            ];
+            "exit_code" = 2;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

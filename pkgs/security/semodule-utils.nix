@@ -1,5 +1,6 @@
 ##! semodule-utils — SELinux module utilities (semodule_package, etc.)
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -9,6 +10,58 @@
 in
   mkDerivation {
     pname = "semodule-utils";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The module package round trip preserves the complete compiled policy module.";
+        "files" = {};
+        "input" = "A compiled SELinux module with one process-signal allow rule.";
+        "operation" = "Package the module, unpack it, and compare the recovered module bytes.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import base64, pathlib, subprocess\nencoded = \"jf98+Q8AAABTRSBMaW51eCBNb2R1bGUCAAAAGAAAAAEAAAAIAAAAAAAAAA0AAABxdWFsaWZpY2F0aW9uAwAAADEuMEAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAEAAAAHAAAAAAAAAAEAAAABAAAAAQAAAAAAAABwcm9jZXNzBgAAAAEAAABzaWduYWwBAAAAAQAAAAgAAAABAAAAAAAAAG9iamVjdF9yQAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAABAAAAAQAAAAYAAAABAAAAAQAAAAEAAAAAAAAAQAAAAAAAAAAAAAAAaW5pdF90AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAQAAAAEAAAAAAAAAAAAAAAEAAAABAAAAAAAAAEAAAABAAAAAAQAAAAAAAAABAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAQAAAAAEAAAAAAAAAAQAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAQAAAAEAAAABAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAEAAAABAAAAAAQAAAAAAAAABAAAAAAAAAEAAAAAAAAAAAAAAAEAAAABAAAAAAQAAAAAAAAABAAAAAAAAAEAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAEAAABAAAAAQAAAAAEAAAAAAAAAAQAAAAAAAABAAAAAAAAAAAAAAABAAAAAAAAAAAAAAABAAAAAAAAAAAAAAABAAAAAAAAAAAAAAABAAAAAAAAAAAAAAABAAAAAAAAAAAAAAABAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAABwAAAHByb2Nlc3MBAAAAAQAAAAEAAAABAAAACAAAAG9iamVjdF9yAgAAAAEAAAABAAAAAQAAAAYAAABpbml0X3QBAAAAAQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\"\nmodule = base64.b64decode(encoded)\npathlib.Path(\"qualification.mod\").write_bytes(module)\npackage = subprocess.run([\"@out@/bin/semodule_package\", \"-o\", \"qualification.pp\", \"-m\", \"qualification.mod\"], capture_output=True)\nassert package.returncode == 0, package.stderr\nunpack = subprocess.run([\"@out@/bin/semodule_unpackage\", \"qualification.pp\", \"unpacked.mod\"], capture_output=True)\nassert unpack.returncode == 0, unpack.stderr\nassert pathlib.Path(\"unpacked.mod\").read_bytes() == module\nprint(\"semodule-utils operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "semodule-utils operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Semodule-unpackage rejects the truncated header.";
+        "files" = {
+          "invalid.pp" = "bad";
+        };
+        "input" = "A truncated SELinux module package header.";
+        "operation" = "Attempt to unpack the malformed module package.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport subprocess\nresult = subprocess.run([\"@out@/bin/semodule_unpackage\", \"invalid.pp\", \"invalid.mod\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"truncated\" in result.stderr\n\nsys.stderr.write(\"semodule-utils rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "semodule-utils rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

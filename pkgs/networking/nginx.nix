@@ -17,6 +17,54 @@
 in
   mkDerivation {
     pname = "nginx";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Nginx reports successful configuration validation.";
+        "files" = {
+          "nginx.conf" = "daemon off;\nmaster_process off;\nerror_log stderr;\npid @work@/primary/nginx.pid;\nevents {}\nhttp {}\n";
+        };
+        "input" = "A minimal Nginx configuration with empty events and HTTP blocks.";
+        "operation" = "Parse and validate the configuration through nginx -t.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/nginx"
+              "-t"
+              "-p"
+              "@work@/primary/"
+              "-c"
+              "nginx.conf"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Nginx rejects the unknown directive with status 1.";
+        "files" = {
+          "nginx.conf" = "qualification_directive_does_not_exist on;\n";
+        };
+        "input" = "An Nginx configuration containing an unknown top-level directive.";
+        "operation" = "Parse and validate the malformed configuration through nginx -t.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/nginx"
+              "-t"
+              "-p"
+              "@work@/bad-input/"
+              "-c"
+              "nginx.conf"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -1,5 +1,6 @@
 ##! perl-http-message — HTTP message objects for Perl
 {
+  lib,
   mkDerivation,
   fetchurl,
   perl,
@@ -22,6 +23,60 @@
 in
   import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
     pname = "perl-http-message";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The serialized message contains the request line, header, and exact body.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use HTTP::Request;\nmy $request = HTTP::Request->new(\"POST\", \"http://example.test/qualified\");\n$request->header(\"Content-Type\" => \"text/plain\");\n$request->content(\"payload\");\nmy $wire = $request->as_string(\"\\r\\n\");\ndie \"request line missing\" unless $wire =~ /\\APOST http:\\/\\/example\\.test\\/qualified\\r\\n/;\ndie \"body missing\" unless $wire =~ /\\r\\n\\r\\npayload\\z/;\n";
+        };
+        "input" = "A POST request with one content-type header and a fixed body.";
+        "operation" = "Construct and serialize the request through HTTP::Request.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import json, os, pathlib, subprocess\n\nclosure = json.loads(os.environ[\"AOS_QUALIFICATION_PACKAGE_CLOSURE\"])\ninterpreters = sorted({str(pathlib.Path(path) / \"bin/perl\") for path in closure if (pathlib.Path(path) / \"bin/perl\").is_file()})\nlibraries = sorted(str(pathlib.Path(path) / \"lib/perl5\") for path in closure if (pathlib.Path(path) / \"lib/perl5\").is_dir())\nassert interpreters and libraries\nenvironment = os.environ.copy()\nenvironment[\"PERL5LIB\"] = \":\".join(libraries)\nresult = subprocess.run([interpreters[0], \"probe.pl\"], env=environment, capture_output=True, text=True)\nassert result.returncode == 0, result.stderr\nassert result.stdout == \"\" and result.stderr == \"\"\nprint(\"perl-http-message operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "perl-http-message operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "HTTP::Message rejects the non-reference content value.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use HTTP::Message;\nmy $message = HTTP::Message->new;\neval { $message->content_ref(\"not-a-reference\") };\ndie \"invalid content reference accepted\" unless $@ =~ /non-ref/;\n";
+        };
+        "input" = "A scalar supplied to the reference-only content_ref setter.";
+        "operation" = "Replace message content through content_ref with the invalid value.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import json, os, pathlib, subprocess\n\nclosure = json.loads(os.environ[\"AOS_QUALIFICATION_PACKAGE_CLOSURE\"])\ninterpreters = sorted({str(pathlib.Path(path) / \"bin/perl\") for path in closure if (pathlib.Path(path) / \"bin/perl\").is_file()})\nlibraries = sorted(str(pathlib.Path(path) / \"lib/perl5\") for path in closure if (pathlib.Path(path) / \"lib/perl5\").is_dir())\nassert interpreters and libraries\nenvironment = os.environ.copy()\nenvironment[\"PERL5LIB\"] = \":\".join(libraries)\nresult = subprocess.run([interpreters[0], \"probe.pl\"], env=environment, capture_output=True, text=True)\nassert result.returncode == 0, result.stderr\nassert result.stdout == \"\" and result.stderr == \"\"\nprint(\"perl-http-message operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "perl-http-message operation passed\n";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version dependencies;
     src = fetchurl {
       urls = ["https://cpan.metacpan.org/authors/id/O/OA/OALDERS/HTTP-Message-${version}.tar.gz"];

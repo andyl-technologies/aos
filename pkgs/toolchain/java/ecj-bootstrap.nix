@@ -1,5 +1,6 @@
 ##! ecj-bootstrap — Eclipse Compiler for Java 3.2.2 compiled with Jikes
 {
+  lib,
   mkDerivation,
   fetchurl,
   stdenv,
@@ -27,6 +28,60 @@
 in
   mkDerivation {
     pname = "ecj-bootstrap";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "ECJ writes Answer.class with the JVM CAFEBABE magic value.";
+        "files" = {
+          "Answer.java" = "public final class Answer {\n    public static int value() { return 42; }\n}\n";
+        };
+        "input" = "A Java class whose method returns the integer 42.";
+        "operation" = "Compile the class and inspect the emitted JVM class-file header.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, subprocess\nresult = subprocess.run([\"@out@/bin/ecj\", \"-source\", \"1.5\", \"-target\", \"1.5\", \"Answer.java\"], capture_output=True)\nassert result.returncode == 0, result.stderr\nassert pathlib.Path(\"Answer.class\").read_bytes()[:4] == b\"\\xca\\xfe\\xba\\xbe\"\nprint(\"ecj-bootstrap operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "ecj-bootstrap operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "ECJ emits a compiler diagnostic and rejects the source.";
+        "files" = {
+          "Broken.java" = "public class Broken { int value() { return ; } }\n";
+        };
+        "input" = "A Java class with a missing expression after return.";
+        "operation" = "Compile the syntactically invalid class.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/ecj\", \"-source\", \"1.5\", \"-target\", \"1.5\", \"Broken.java\"], capture_output=True)\nif result.returncode == 0:\n    raise SystemExit(2)\nassert b\"ERROR\" in result.stdout + result.stderr\nsys.stderr.write(\"ecj-bootstrap rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "ecj-bootstrap rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

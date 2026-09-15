@@ -1,5 +1,6 @@
 ##! fuse-overlayfs — Overlay filesystem implementation for FUSE
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -13,6 +14,56 @@
 in
   mkDerivation {
     pname = "fuse-overlayfs";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Fuse-overlayfs returns success and reports its version.";
+        "files" = {};
+        "input" = "The packaged fuse-overlayfs implementation's release identity.";
+        "operation" = "Request its version without mounting a filesystem.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/fuse-overlayfs\", \"--version\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"fuse-overlayfs\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nprint(\"fuse-overlayfs operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "fuse-overlayfs operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Fuse-overlayfs rejects the unsupported option.";
+        "files" = {};
+        "input" = "A fuse-overlayfs invocation containing an unknown option.";
+        "operation" = "Parse the invalid option without mounting a filesystem.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/fuse-overlayfs\", \"--aos-invalid-option\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"fuse-overlayfs rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "fuse-overlayfs rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

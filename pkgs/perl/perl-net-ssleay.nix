@@ -1,5 +1,6 @@
 ##! perl-net-ssleay — OpenSSL bindings for Perl
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -12,6 +13,60 @@
 in
   mkDerivation {
     pname = "perl-net-ssleay";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The binding returns a nonempty OpenSSL version string.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use Net::SSLeay;\nmy $version = Net::SSLeay::SSLeay_version(0);\ndie \"TLS version unavailable\" unless defined($version) && $version =~ /OpenSSL/;\n";
+        };
+        "input" = "A request for the linked TLS library version.";
+        "operation" = "Query OpenSSL through Net::SSLeay's public version API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import json, os, pathlib, subprocess\n\nclosure = json.loads(os.environ[\"AOS_QUALIFICATION_PACKAGE_CLOSURE\"])\ninterpreters = sorted({str(pathlib.Path(path) / \"bin/perl\") for path in closure if (pathlib.Path(path) / \"bin/perl\").is_file()})\nlibraries = sorted(str(pathlib.Path(path) / \"lib/perl5\") for path in closure if (pathlib.Path(path) / \"lib/perl5\").is_dir())\nassert interpreters and libraries\nenvironment = os.environ.copy()\nenvironment[\"PERL5LIB\"] = \":\".join(libraries)\nresult = subprocess.run([interpreters[0], \"probe.pl\"], env=environment, capture_output=True, text=True)\nassert result.returncode == 0, result.stderr\nassert result.stdout == \"\" and result.stderr == \"\"\nprint(\"perl-net-ssleay operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "perl-net-ssleay operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The decoder returns no certificate object and records an OpenSSL error.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use Net::SSLeay;\nmy $bio = Net::SSLeay::BIO_new(Net::SSLeay::BIO_s_mem());\nNet::SSLeay::BIO_write($bio, \"not a certificate\");\nmy $certificate = Net::SSLeay::PEM_read_bio_X509($bio);\nNet::SSLeay::BIO_free($bio);\ndie \"malformed certificate accepted\" if $certificate;\ndie \"rejection lacked TLS error\" unless Net::SSLeay::ERR_get_error();\n";
+        };
+        "input" = "Text without a PEM certificate boundary.";
+        "operation" = "Decode the malformed text through Net::SSLeay's X.509 BIO API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import json, os, pathlib, subprocess\n\nclosure = json.loads(os.environ[\"AOS_QUALIFICATION_PACKAGE_CLOSURE\"])\ninterpreters = sorted({str(pathlib.Path(path) / \"bin/perl\") for path in closure if (pathlib.Path(path) / \"bin/perl\").is_file()})\nlibraries = sorted(str(pathlib.Path(path) / \"lib/perl5\") for path in closure if (pathlib.Path(path) / \"lib/perl5\").is_dir())\nassert interpreters and libraries\nenvironment = os.environ.copy()\nenvironment[\"PERL5LIB\"] = \":\".join(libraries)\nresult = subprocess.run([interpreters[0], \"probe.pl\"], env=environment, capture_output=True, text=True)\nassert result.returncode == 0, result.stderr\nassert result.stdout == \"\" and result.stderr == \"\"\nprint(\"perl-net-ssleay operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "perl-net-ssleay operation passed\n";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

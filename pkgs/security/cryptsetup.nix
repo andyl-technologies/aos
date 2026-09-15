@@ -1,5 +1,6 @@
 ##! cryptsetup — LUKS / dm-crypt userspace tools and library
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -15,6 +16,101 @@
 in
   mkDerivation {
     pname = "cryptsetup";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Cryptsetup creates and recognizes the encrypted-container header.";
+        "files" = {
+          "key" = "correct horse battery staple\n";
+        };
+        "input" = "A sparse 16 MiB file and a fixed passphrase.";
+        "operation" = "Format a LUKS2 container and inspect its metadata.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "with open('container.img', 'wb') as image: image.truncate(16 * 1024 * 1024)"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/cryptsetup"
+              "luksFormat"
+              "--batch-mode"
+              "--type=luks2"
+              "--key-file=key"
+              "container.img"
+            ];
+            "exit_code" = 0;
+          }
+          {
+            "argv" = [
+              "@out@/bin/cryptsetup"
+              "luksDump"
+              "container.img"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Cryptsetup rejects the passphrase with status 2.";
+        "files" = {
+          "key" = "correct horse battery staple\n";
+          "wrong-key" = "incorrect passphrase\n";
+        };
+        "input" = "A LUKS2 container and a passphrase different from the enrolled key.";
+        "operation" = "Test the wrong passphrase without creating a device mapping.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "with open('container.img', 'wb') as image: image.truncate(16 * 1024 * 1024)"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/cryptsetup"
+              "luksFormat"
+              "--batch-mode"
+              "--type=luks2"
+              "--key-file=key"
+              "container.img"
+            ];
+            "exit_code" = 0;
+          }
+          {
+            "argv" = [
+              "@out@/bin/cryptsetup"
+              "open"
+              "--test-passphrase"
+              "--key-file=wrong-key"
+              "container.img"
+            ];
+            "exit_code" = 2;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

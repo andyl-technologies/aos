@@ -1,5 +1,6 @@
 ##! unzip — extract files from ZIP archives
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -9,6 +10,71 @@
 in
   mkDerivation {
     pname = "unzip";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Unzip emits the member bytes exactly.";
+        "files" = {
+          "create.py" = "import zipfile\n\ninfo = zipfile.ZipInfo(\"payload.txt\", date_time=(2000, 1, 1, 0, 0, 0))\nwith zipfile.ZipFile(\"payload.zip\", \"w\") as archive:\n    archive.writestr(info, b\"answer=42\\n\")\n";
+        };
+        "input" = "A ZIP archive with one fixed text member, created by Python's standard library.";
+        "operation" = "Stream the member through unzip without extracting it to disk.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "create.py"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/unzip"
+              "-p"
+              "payload.zip"
+              "payload.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "answer=42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Unzip rejects the malformed archive with its invalid-archive status.";
+        "files" = {
+          "invalid.zip" = "not a zip archive\n";
+        };
+        "input" = "Plain text that does not contain a ZIP central directory.";
+        "operation" = "Test the malformed file as a ZIP archive.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/unzip"
+              "-tqq"
+              "invalid.zip"
+            ];
+            "exit_code" = 9;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

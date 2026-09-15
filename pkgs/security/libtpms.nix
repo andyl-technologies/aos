@@ -1,4 +1,5 @@
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -14,6 +15,88 @@
 in
   mkDerivation {
     pname = "libtpms";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Libtpms exposes a nonzero version and accepts TPM 2.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libtpms primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libtpms rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <libtpms/tpm_library.h>\nint main(void) {\n    return TPMLIB_GetVersion() > 0\n        && TPMLIB_ChooseTPMVersion(TPMLIB_TPM_VERSION_2) == 0 ? pass() : 2;\n}\n\n";
+        };
+        "input" = "A request to select the TPM 2 implementation.";
+        "operation" = "Query libtpms's version and select TPM 2 through TPMLIB_ChooseTPMVersion.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-ltpms"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libtpms primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Libtpms returns a nonzero parameter error.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libtpms primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libtpms rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <libtpms/tpm_library.h>\nint main(void) {\n    TPM_RESULT status = TPMLIB_ChooseTPMVersion((TPMLIB_TPMVersion)99);\n    return status != 0 ? reject() : 2;\n}\n\n";
+        };
+        "input" = "A TPM implementation selector outside the public enum.";
+        "operation" = "Select the invalid implementation through TPMLIB_ChooseTPMVersion.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-ltpms"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libtpms rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

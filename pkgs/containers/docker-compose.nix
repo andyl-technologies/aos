@@ -1,5 +1,6 @@
 ##! docker-compose — Multi-container application CLI plugin
 {
+  lib,
   mkGoPackage,
   fetchGoModules,
   fetchurl,
@@ -18,6 +19,60 @@
 in
   mkGoPackage {
     pname = "docker-compose";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Compose emits a model containing the declared service image and command.";
+        "files" = {
+          "compose.yaml" = "services:\n  worker:\n    image: example.test/worker:1\n    command: [\"printf\", \"qualified\"]\n";
+        };
+        "input" = "A Compose file defining one service from a fixed image.";
+        "operation" = "Normalize the Compose model as JSON without contacting a daemon.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import json, subprocess\nresult = subprocess.run([\"@out@/bin/docker-compose\", \"-f\", \"compose.yaml\", \"config\", \"--format\", \"json\"], capture_output=True, text=True)\nassert result.returncode == 0\nmodel = json.loads(result.stdout)\nworker = model[\"services\"][\"worker\"]\nassert worker[\"image\"] == \"example.test/worker:1\"\nassert worker[\"command\"] == [\"printf\", \"qualified\"]\nprint(\"docker-compose operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "docker-compose operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Compose rejects the invalid services shape without contacting a daemon.";
+        "files" = {
+          "compose.yaml" = "services: invalid\n";
+        };
+        "input" = "A Compose file whose services member is a scalar.";
+        "operation" = "Ask Compose to normalize the malformed model.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/docker-compose\", \"-f\", \"compose.yaml\", \"config\"], capture_output=True)\nif result.returncode == 0:\n    raise SystemExit(2)\nsys.stderr.write(\"docker-compose rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "docker-compose rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src goModules;
     goPackage = "./cmd";
     goOutput = "docker-compose";

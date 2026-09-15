@@ -1,4 +1,5 @@
 {
+  lib,
   mkDerivation,
   fetchurl,
   m4,
@@ -40,6 +41,54 @@
 in
   mkDerivation {
     pname = "bash";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Bash prints the selected array value and computed integer.";
+        "files" = {};
+        "input" = "A shell program using an indexed array and arithmetic expansion.";
+        "operation" = "Evaluate the program with Bash.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/bash"
+              "-c"
+              "values=(alpha beta); printf \"%s:%d\\n\" \"\${values[1]}\" \"$((6 * 7))\""
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "beta:42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Bash reports a syntax failure with status 2.";
+        "files" = {};
+        "input" = "A shell program with an unterminated conditional expression.";
+        "operation" = "Ask Bash to parse the malformed program.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/bash"
+              "-n"
+              "-c"
+              "if true; then echo broken"
+            ];
+            "exit_code" = 2;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -1,5 +1,6 @@
 ##! libusb1 — userspace USB device access library
 {
+  lib,
   mkDerivation,
   mkGithubUpstream,
   gnumake,
@@ -55,6 +56,90 @@
 in
   mkDerivation {
     pname = "libusb1";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Libusb creates the isolated context without accessing USB devices.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libusb1 primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libusb1 rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <libusb.h>\nint main(void) {\n    libusb_context *context = NULL;\n    struct libusb_init_option option = {.option = LIBUSB_OPTION_NO_DEVICE_DISCOVERY};\n    int status = libusb_init_context(&context, &option, 1);\n    if (status != LIBUSB_SUCCESS || context == NULL) return 2;\n    libusb_exit(context);\n    return pass();\n}\n\n";
+        };
+        "input" = "A libusb context configured to skip device discovery.";
+        "operation" = "Initialize and release the context through libusb_init_context.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-I@out@/include/libusb-1.0"
+              "-lusb-1.0"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libusb1 primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Libusb returns LIBUSB_ERROR_INVALID_PARAM.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libusb1 primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libusb1 rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <libusb.h>\nint main(void) {\n    libusb_context *context = NULL;\n    if (libusb_init_context(&context, NULL, 0) != LIBUSB_SUCCESS) return 2;\n    int status = libusb_set_option(context, (enum libusb_option)LIBUSB_OPTION_MAX);\n    libusb_exit(context);\n    return status == LIBUSB_ERROR_INVALID_PARAM ? reject() : 3;\n}\n\n";
+        };
+        "input" = "An option identifier at the exclusive upper bound of libusb's option enum.";
+        "operation" = "Apply the unsupported option through libusb_set_option.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-I@out@/include/libusb-1.0"
+              "-lusb-1.0"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libusb1 rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = upstream.components.main.sources.source;

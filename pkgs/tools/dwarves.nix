@@ -1,5 +1,6 @@
 ##! dwarves - DWARF/BTF inspection tools including pahole
 {
+  lib,
   mkDerivation,
   fetchurl,
   cmake,
@@ -16,6 +17,64 @@
 in
   mkDerivation {
     pname = "dwarves";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Pahole finds and decodes the requested DWARF type.";
+        "files" = {
+          "layout.c" = "struct ProbeLayout {\n    char tag;\n    long value;\n};\n\nstruct ProbeLayout qualification_layout;\n";
+        };
+        "input" = "A C object containing debug information for a named structure.";
+        "operation" = "Compile the object and inspect the structure layout with pahole.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "-g"
+              "-c"
+              "layout.c"
+              "-o"
+              "layout.o"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/pahole"
+              "--class_name=ProbeLayout"
+              "layout.o"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Pahole rejects the file with status 1.";
+        "files" = {
+          "invalid.o" = "not an ELF object\n";
+        };
+        "input" = "A text file that is not an ELF object.";
+        "operation" = "Inspect the malformed object with pahole.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/pahole"
+              "invalid.o"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

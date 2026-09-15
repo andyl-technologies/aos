@@ -1,5 +1,6 @@
 ##! gjavah — GNU Classpath Java header generator (JNI)
 {
+  lib,
   mkDerivation,
   fetchurl,
   stdenv,
@@ -32,6 +33,56 @@
 in
   mkDerivation {
     pname = "gjavah";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Gjavah returns success and documents its class and output options.";
+        "files" = {};
+        "input" = "The packaged GNU Classpath JNI header generator interface.";
+        "operation" = "Request its help without loading a Java class.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/gjavah\", \"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"usage\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nprint(\"gjavah operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "gjavah operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Gjavah rejects the missing class and produces no header.";
+        "files" = {};
+        "input" = "A request to generate a header for a Java class absent from the classpath.";
+        "operation" = "Resolve the nonexistent class through the header generator.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/gjavah\", \"aos.qualification.MissingClass\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"gjavah rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "gjavah rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = classpathSrc;

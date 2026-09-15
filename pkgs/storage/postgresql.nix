@@ -185,6 +185,57 @@
 in
   mkDerivation {
     pname = "postgresql";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [
+          {
+            "path" = "database/PG_VERSION";
+            "text" = "18\n";
+          }
+        ];
+        "expected" = "PostgreSQL creates a version 18 data directory.";
+        "files" = {};
+        "input" = "An empty directory for a UTF-8 PostgreSQL cluster using trust authentication.";
+        "operation" = "Initialize the cluster locally through initdb without locale discovery.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/initdb"
+              "--no-locale"
+              "--encoding=UTF8"
+              "--auth=trust"
+              "-D"
+              "@work@/primary/database"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "PostgreSQL rejects the authentication method with status 1.";
+        "files" = {};
+        "input" = "A cluster request naming an unsupported local authentication method.";
+        "operation" = "Initialize the cluster through initdb with the invalid authentication method.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/initdb"
+              "--no-locale"
+              "--auth=qualification-invalid"
+              "-D"
+              "@work@/bad-input/database"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

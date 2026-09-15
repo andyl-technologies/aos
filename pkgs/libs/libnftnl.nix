@@ -1,5 +1,6 @@
 ##! libnftnl — Netfilter nf_tables userspace library
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -10,6 +11,88 @@
 in
   mkDerivation {
     pname = "libnftnl";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The table object preserves its family and name attributes.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libnftnl primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libnftnl rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <string.h>\n#include <libnftnl/table.h>\nint main(void) {\n    struct nftnl_table *table = nftnl_table_alloc();\n    if (table == NULL) return 2;\n    nftnl_table_set_u32(table, NFTNL_TABLE_FAMILY, 2);\n    int status = nftnl_table_set_str(table, NFTNL_TABLE_NAME, \"qualification\");\n    int valid = status == 0 && nftnl_table_get_u32(table, NFTNL_TABLE_FAMILY) == 2\n        && strcmp(nftnl_table_get_str(table, NFTNL_TABLE_NAME), \"qualification\") == 0;\n    nftnl_table_free(table);\n    return valid ? pass() : 3;\n}\n\n";
+        };
+        "input" = "An nftables table named qualification in the IPv4 family.";
+        "operation" = "Set and retrieve table attributes through libnftnl.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lnftnl"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libnftnl primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Libnftnl returns a negative parse status.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libnftnl primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libnftnl rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <libnftnl/table.h>\nint main(void) {\n    struct nftnl_table *table = nftnl_table_alloc();\n    struct nftnl_parse_err *error = nftnl_parse_err_alloc();\n    if (table == NULL || error == NULL) return 2;\n    int status = nftnl_table_parse(table, NFTNL_PARSE_JSON, \"not JSON\", error);\n    nftnl_parse_err_free(error);\n    nftnl_table_free(table);\n    return status < 0 ? reject() : 3;\n}\n\n";
+        };
+        "input" = "Text that is not an nftables JSON document.";
+        "operation" = "Parse the malformed text through nftnl_table_parse.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lnftnl"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libnftnl rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -1,5 +1,6 @@
 ##! libuv — Portable asynchronous I/O library
 {
+  lib,
   mkDerivation,
   fetchurl,
   cmake,
@@ -9,6 +10,88 @@
 in
   mkDerivation {
     pname = "libuv";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The port and round-tripped host match the input.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libuv primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libuv rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <arpa/inet.h>\n#include <string.h>\n#include <uv.h>\nint main(void) {\n    struct sockaddr_in address; char host[32];\n    if (uv_ip4_addr(\"127.0.0.1\", 42, &address) != 0 || uv_ip4_name(&address, host, sizeof(host)) != 0) return 2;\n    return ntohs(address.sin_port) == 42 && strcmp(host, \"127.0.0.1\") == 0 ? pass() : 3;\n}\n\n";
+        };
+        "input" = "The numeric IPv4 address 127.0.0.1 and port 42.";
+        "operation" = "Parse and render the address through libuv's networking API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-luv"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libuv primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "libuv returns UV_EINVAL.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libuv primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libuv rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <uv.h>\nint main(void) {\n    struct sockaddr_in address;\n    if (uv_ip4_addr(\"300.1.2.3\", 42, &address) != UV_EINVAL) return 2;\n    return reject();\n}\n\n";
+        };
+        "input" = "An IPv4 address containing an octet above 255.";
+        "operation" = "Parse the malformed address through uv_ip4_addr.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-luv"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libuv rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

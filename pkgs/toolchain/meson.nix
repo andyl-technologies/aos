@@ -1,5 +1,6 @@
 ##! meson — Build system designed for speed
 {
+  lib,
   mkDerivation,
   fetchurl,
   bash,
@@ -9,6 +10,54 @@
 in
   mkDerivation {
     pname = "meson";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [
+          {
+            "path" = "build/answer.txt";
+            "text" = "answer=42\n";
+          }
+        ];
+        "expected" = "Meson creates a build directory containing answer=42.";
+        "files" = {
+          "answer.in" = "answer=42\n";
+          "meson.build" = "project('qualification')\nconfigure_file(input: 'answer.in', output: 'answer.txt', copy: true)\n";
+        };
+        "input" = "A Meson project that configures one text file without a compiler.";
+        "operation" = "Configure the project through meson setup.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/meson"
+              "setup"
+              "build"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Meson rejects the syntax with status 1.";
+        "files" = {
+          "meson.build" = "project('qualification'\n";
+        };
+        "input" = "A Meson build definition with an unterminated project call.";
+        "operation" = "Configure the malformed project through meson setup.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/meson"
+              "setup"
+              "build"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

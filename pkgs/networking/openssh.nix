@@ -1,5 +1,6 @@
 ##! OpenSSH — Secure shell client and server
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -14,6 +15,69 @@
 in
   mkDerivation {
     pname = "openssh";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Both key generation and private-key parsing succeed.";
+        "files" = {};
+        "input" = "A request for a passphrase-protected Ed25519 private key in the probe workspace.";
+        "operation" = "Generate the key and derive its public key through ssh-keygen.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/ssh-keygen"
+              "-q"
+              "-t"
+              "ed25519"
+              "-N"
+              "qualification-passphrase"
+              "-f"
+              "qualification-key"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/ssh-keygen"
+              "-y"
+              "-P"
+              "qualification-passphrase"
+              "-f"
+              "qualification-key"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "ssh-keygen rejects the file with its key-load failure status.";
+        "files" = {
+          "invalid" = "not an OpenSSH private key\n";
+        };
+        "input" = "A text file that is not an OpenSSH private key.";
+        "operation" = "Attempt to derive a public key from the malformed file.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/ssh-keygen"
+              "-y"
+              "-f"
+              "invalid"
+            ];
+            "exit_code" = 255;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

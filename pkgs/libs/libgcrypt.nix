@@ -1,5 +1,6 @@
 ##! libgcrypt — general-purpose cryptographic library from the GnuPG project
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -12,6 +13,58 @@
 in
   mkDerivation {
     pname = "libgcrypt";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The helper returns the known 256-bit authentication code.";
+        "files" = {
+          "message.txt" = "abc";
+        };
+        "input" = "The byte string abc and the HMAC key key.";
+        "operation" = "Compute its HMAC-SHA-256 through the packaged helper.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/hmac256\", \"key\", \"message.txt\"], capture_output=True, text=True)\nassert result.returncode == 0 and result.stdout == \"9c196e32dc0175f86f4b1cb89289d6619de6bee699e4c378e68309ed97a1a6ab  message.txt\\n\", (result.returncode, result.stdout, result.stderr)\nprint(\"libgcrypt operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libgcrypt operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The helper rejects the missing key and prints its usage contract.";
+        "files" = {};
+        "input" = "An HMAC request with no key argument.";
+        "operation" = "Validate the incomplete helper invocation.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/hmac256\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"usage:\" in result.stderr.lower(), (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"libgcrypt rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libgcrypt rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

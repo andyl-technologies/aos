@@ -1,5 +1,6 @@
 ##! GNU Parted — Partition table editor and library
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -19,6 +20,91 @@
 in
   mkDerivation {
     pname = "parted";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Parted accepts the image geometry and writes the partition table.";
+        "files" = {};
+        "input" = "A blank four-MiB disk image and a one-MiB partition extent.";
+        "operation" = "Create a GPT label and partition through GNU Parted's script interface.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "open('disk.img', 'wb').truncate(4 * 1024 * 1024)"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/sbin/parted"
+              "-s"
+              "disk.img"
+              "mklabel"
+              "gpt"
+              "mkpart"
+              "primary"
+              "1MiB"
+              "2MiB"
+            ];
+            "exit_code" = 0;
+          }
+          {
+            "argv" = [
+              "@out@/sbin/parted"
+              "-s"
+              "disk.img"
+              "unit"
+              "s"
+              "print"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Parted rejects the label with a non-success status.";
+        "files" = {};
+        "input" = "A partition-table label name unsupported by GNU Parted.";
+        "operation" = "Attempt to create the unknown label on a local image.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "open('disk.img', 'wb').truncate(4 * 1024 * 1024)"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/sbin/parted"
+              "-s"
+              "disk.img"
+              "mklabel"
+              "qualification-label-does-not-exist"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
     src = fetchurl {
       urls = ["https://ftpmirror.gnu.org/parted/parted-${version}.tar.xz"];

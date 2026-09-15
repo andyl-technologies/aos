@@ -1,5 +1,6 @@
 ##! cmocka — Unit testing library for C
 {
+  lib,
   mkDerivation,
   fetchurl,
   cmake,
@@ -9,6 +10,82 @@
 in
   mkDerivation {
     pname = "cmocka";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Cmocka returns a zero failure count and the consumer prints the fixed success line.";
+        "files" = {
+          "passing.c" = "#include <stddef.h>\n#include <setjmp.h>\n#include <stdarg.h>\n#include <stdio.h>\n#include <cmocka.h>\n\nstatic void string_passes(void **state) {\n    (void)state;\n    assert_string_equal(\"qualified\", \"qualified\");\n}\n\nint main(void) {\n    const struct CMUnitTest tests[] = {\n        cmocka_unit_test(string_passes),\n    };\n    if (cmocka_run_group_tests(tests, NULL, NULL) != 0) {\n        return 2;\n    }\n    return puts(\"cmocka api passed\") == EOF;\n}\n";
+        };
+        "input" = "A cmocka test case asserting a fixed string value.";
+        "operation" = "Compile and run the one-test group through cmocka.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "passing.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lcmocka"
+              "-o"
+              "passing"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/passing"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Cmocka reports one failed test and the consumer returns the fixed rejection status.";
+        "files" = {
+          "failing.c" = "#include <stddef.h>\n#include <setjmp.h>\n#include <stdarg.h>\n#include <stdio.h>\n#include <cmocka.h>\n\nstatic void integer_fails(void **state) {\n    (void)state;\n    assert_int_equal(41, 42);\n}\n\nint main(void) {\n    const struct CMUnitTest tests[] = {\n        cmocka_unit_test(integer_fails),\n    };\n    if (cmocka_run_group_tests(tests, NULL, NULL) != 1) {\n        return 2;\n    }\n    fputs(\"cmocka rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "A cmocka test case containing a deliberately false integer assertion.";
+        "operation" = "Run the one-test group and inspect cmocka's failure count.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "failing.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lcmocka"
+              "-o"
+              "failing"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/failing"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
