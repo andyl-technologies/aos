@@ -10,7 +10,7 @@
   packageModule = package: {
     inherit (package) version;
     name = package.pname;
-    module = package.abilities._module;
+    module = package.module + "/module.nix";
     outputs = {
       self = builtins.toString package;
       dependencies = {};
