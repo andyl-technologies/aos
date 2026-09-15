@@ -4,21 +4,6 @@
   generation,
 }: let
   isGen2 = generation == 2;
-
-  httpService = {
-    description = "Upgrade fixture HTTP server on :8000";
-    wantedBy = ["multi-user.target"];
-    serviceConfig = {
-      ExecStart = "${pkgs.python3}/bin/python3 -m http.server --bind 0.0.0.0 8000";
-      WorkingDirectory = "%S";
-      StateDirectory = "test-http-server";
-      Restart = "on-failure";
-      DynamicUser = true;
-      ProtectSystem = "strict";
-      ProtectHome = true;
-      PrivateTmp = true;
-    };
-  };
 in {
   assertions = [
     {
@@ -27,47 +12,33 @@ in {
     }
   ];
 
-  # This module exists only to exercise image-generation reconciliation. Its
-  # Python HTTP server is therefore an explicit test artifact, never part of
-  # the production server image contract.
+  # These packages exist only to exercise image-generation reconciliation.
   aos.image.allowTestArtifacts = true;
-  aos.image.testArtifactRoots = [pkgs.python3];
+  aos.image.testArtifactRoots = [
+    pkgs.test-http-server
+    pkgs.upgrade-transition-fixture
+  ];
 
-  environment.systemPackages = [pkgs.python3];
-
-  aos.firewall.allowedTCP = [8000] ++ lib.optional isGen2 8443;
-  aos.kernel.sysctl = lib.mkIf isGen2 {
-    "net.ipv4.tcp_keepalive_time" = "300";
+  aos.abilities.environment = {
+    authority = "test";
+    key = "upgrade-http-fixture";
+    stage = "host";
   };
 
-  systemd.services =
-    {
-      test-http-server = httpService;
-    }
-    // (
+  environment.systemPackages = [
+    pkgs.test-http-server
+    pkgs.upgrade-transition-fixture
+  ];
+
+  test-http-server = {
+    enable = true;
+    port = 8000;
+  };
+  upgrade-transition-fixture = {
+    enable = true;
+    generation =
       if isGen2
-      then {
-        aos-upgrade-test-marker = {
-          description = "Upgrade-test marker oneshot";
-          wantedBy = ["multi-user.target"];
-          serviceConfig = {
-            Type = "oneshot";
-            ExecStart = "${pkgs.coreutils}/bin/true";
-            RemainAfterExit = true;
-          };
-        };
-      }
-      else {
-        aos-upgrade-removed = {
-          description = "Upgrade-test removed oneshot";
-          wantedBy = ["multi-user.target"];
-          serviceConfig = {
-            Type = "oneshot";
-            ExecStart = "${pkgs.coreutils}/bin/true";
-            ExecStop = "${pkgs.coreutils}/bin/touch /run/removed-stop-ran";
-            RemainAfterExit = true;
-          };
-        };
-      }
-    );
+      then "updated"
+      else "initial";
+  };
 }

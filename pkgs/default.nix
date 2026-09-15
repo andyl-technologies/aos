@@ -1327,6 +1327,7 @@
     "desired-prune-test"
     "test-http-server"
     "test-static-cache-server"
+    "upgrade-transition-fixture"
   ];
   frozenMaintenanceRoots = [
     "ant-bootstrap"

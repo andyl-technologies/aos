@@ -28,12 +28,16 @@ mkDerivation {
             daemon_threads = True
 
 
+        port_argument = sys.argv[1]
+        if not port_argument.startswith("--port="):
+            raise SystemExit("expected --port=<number>")
+
         handler = functools.partial(
             http.server.SimpleHTTPRequestHandler,
-            directory=pathlib.Path(__file__).resolve().parent.parent / "share/test-http-server",
+            directory=pathlib.Path(sys.argv[2]),
         )
 
-        httpd = ThreadingTCPServer(("0.0.0.0", int(sys.argv[1])), handler)
+        httpd = ThreadingTCPServer(("0.0.0.0", int(port_argument.split("=", 1)[1])), handler)
 
         with httpd:
             httpd.serve_forever()

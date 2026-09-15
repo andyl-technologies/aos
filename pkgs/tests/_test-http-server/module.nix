@@ -8,6 +8,7 @@
   abilityTypes = lib.abilities.types;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
+  inherit (lib.abilities) resultOf;
   ingress = serviceManagement.forProducer {
     consumerInstance = "test-http-server";
     key = "ingress";
@@ -24,39 +25,63 @@
     };
   };
 
+  content = serviceManagement.forProducer {
+    consumerInstance = "test-http-server";
+    key = "content";
+    interface = serviceManagement.interfaces.persistentStorageAllocation;
+    parameters = {
+      name = "content";
+      purpose = "state";
+      mode = "0755";
+    };
+  };
+
   service = serviceManagement.forService {
     inherit serviceTypes;
     consumerInstance = "test-http-server";
     declaration = {
       service = "main";
       enabled = true;
-      lifecycle = {
-        description = "AOS test HTTP server";
-        execution_model = "foreground";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [
-          {
-            executable = {
-              artifact = lib.abilities.packageOutput {};
-              entry_point = "bin/test-http-server";
-              arguments = [builtins.toString cfg.port];
-            };
-            ignore_failure = false;
-          }
-        ];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "on-failure";
-        restart_token = cfg.restartToken;
-        restart_delay_millis = 1000;
-        configuration_change_action = "restart";
-        remain_after_exit = false;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
+      lifecycle =
+        {
+          description = "AOS test HTTP server";
+          execution_model = "foreground";
+          environment_files = [];
+          condition = [];
+          pre_start = [];
+          start = [
+            {
+              executable = {
+                artifact = lib.abilities.packageOutput {};
+                entry_point = "bin/test-http-server";
+                arguments = [
+                  "--port=${builtins.toString cfg.port}"
+                  (resultOf "content" "storage-path")
+                ];
+              };
+              ignore_failure = false;
+            }
+          ];
+          post_start = [];
+          stop = [];
+          post_stop = [];
+          restart = "on-failure";
+          restart_delay_millis = 1000;
+          configuration_change_action = "restart";
+          remain_after_exit = false;
+          start_timeout_millis = 90000;
+          stop_timeout_millis = 90000;
+        }
+        // lib.optionalAttrs (cfg.restartToken != null) {
+          restart_token = cfg.restartToken;
+        };
+      storage.mounts = [
+        {
+          name = "content";
+          source = resultOf "content" "storage-path";
+          access = "read-write";
+        }
+      ];
       isolation = {
         privilege = "unprivileged";
         filesystem = "read-only-software";
@@ -68,12 +93,18 @@
         host_paths = [];
         permit_core_dumps = false;
       };
-      dependencies.prerequisites = [
-        (lib.abilities.resultOf "ingress" "readiness-resource")
-      ];
+      dependencies = let
+        readiness = resultOf "ingress" "readiness-resource";
+      in {
+        prerequisites = [readiness];
+        after = [readiness];
+        before = [];
+        requires = [readiness];
+        wants = [];
+      };
     };
   };
-  fragments = [ingress service];
+  fragments = [content ingress service];
 in {
   options.test-http-server = {
     enable = lib.mkOption {
