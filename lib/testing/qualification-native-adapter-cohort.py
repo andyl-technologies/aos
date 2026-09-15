@@ -29,6 +29,9 @@ TOKEN = re.compile(r"[a-z0-9.-]{1,96}").fullmatch
 LOCAL_KEY = re.compile(r"[A-Za-z0-9._-]{1,128}").fullmatch
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}").fullmatch
 RAW_DIGEST = re.compile(r"[0-9a-f]{64}").fullmatch
+RELATIVE_PATH = re.compile(
+    r"(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*"
+).fullmatch
 MAX_PROBE_FACTS = 32
 MAX_PROBE_BYTES = 64 * 1024
 QUALIFIED_CELL_PREFIX = (
@@ -39,36 +42,9 @@ QUALIFIED_CRASH_SCENARIOS = (
     "lose-external-result",
     "interrupt-after-durable-outcome",
 )
-PRIMARY_COHORT_CELL_IDS = [
-    *(QUALIFIED_CELL_PREFIX + scenario for scenario in QUALIFIED_CRASH_SCENARIOS),
-    (
-        "managed-configuration/aos.managed-configuration-effects/abi-1/"
-        "publish/reject-foreign-resource-mutation"
-    ),
-    (
-        "service-management/aos.service-management/abi-1/"
-        "reload/block-dependent-effect"
-    ),
-]
-POSTGRESQL_CELL_IDS = [
-    "postgresql/aos.postgresql-effects/abi-1/materialize/adopt-compatible-state",
-    "postgresql/aos.postgresql-effects/abi-1/materialize/reject-unsupported-transfer",
-    "postgresql/aos.postgresql-effects/abi-1/restart/lose-external-result",
-    "postgresql/aos.postgresql-effects/abi-1/restart/activate-retained-target",
-    "postgresql/aos.postgresql-effects/abi-1/materialize/activate-retained-target",
-    "postgresql/aos.postgresql-effects/abi-1/observe/adopt-compatible-state",
-    "postgresql/aos.postgresql-effects/abi-1/observe/activate-retained-target",
-    "postgresql/aos.postgresql-effects/abi-1/restart/adopt-compatible-state",
-    "postgresql/aos.postgresql-effects/abi-1/start/adopt-compatible-state",
-    "postgresql/aos.postgresql-effects/abi-1/stop/adopt-compatible-state",
-    "postgresql/aos.postgresql-effects/abi-1/observe/reject-unsupported-transfer",
-    "postgresql/aos.postgresql-effects/abi-1/restart/reject-unsupported-transfer",
-    "postgresql/aos.postgresql-effects/abi-1/start/reject-unsupported-transfer",
-    "postgresql/aos.postgresql-effects/abi-1/stop/reject-unsupported-transfer",
-    "postgresql/aos.postgresql-effects/abi-1/start/activate-retained-target",
-    "postgresql/aos.postgresql-effects/abi-1/stop/activate-retained-target",
-]
-QUALIFIED_CELL_IDS = [*PRIMARY_COHORT_CELL_IDS, *POSTGRESQL_CELL_IDS]
+QUALIFICATION_SUBJECT_SCHEMA = (
+    "aos.qualification.native-adapter-package-subject/v1"
+)
 RUNTIME_AUDIT_SCHEMA = "aos.qualification.native-adapter-runtime-audit/v1"
 RUNTIME_SUBJECT_SCHEMA = "aos.qualification.native-adapter-runtime-subject/v1"
 REPLACEMENT_SUBJECT_SCHEMA = (
@@ -244,32 +220,6 @@ def _effect_boundary_attempt_timeline(
             "reconciled-completed",
         ]
     return EFFECT_BOUNDARY_ATTEMPT_TIMELINES[scenario]
-EFFECT_BOUNDARY_ADAPTER_GROUPS = [
-    {
-        "credential-delivery",
-        "host-network-policy",
-        "host-storage",
-        "managed-configuration",
-        "network-endpoint",
-        "nginx-validation",
-        "service-management",
-    },
-    {"systemd-manager"},
-    {"postgresql"},
-    {"kubernetes-object", "systemd-bootstrap"},
-    {"image-rollout"},
-    {"foreground-process"},
-]
-
-
-def _effect_boundary_cell(cell: dict[str, Any]) -> bool:
-    """Returns whether the cell belongs to the provider-effect interruption cohort."""
-
-    return (
-        cell["id"].rsplit("/", 1)[-1] in EFFECT_BOUNDARY_SCENARIOS
-        and cell["id"] not in PRIMARY_COHORT_CELL_IDS
-        and cell["id"] not in POSTGRESQL_CELL_IDS
-    )
 PROVIDER_NEGATIVE_AUDIT_SCHEMA = (
     "aos.qualification.native-adapter-provider-negative-audit/v1"
 )
@@ -297,36 +247,6 @@ PROVIDER_ORACLE_KINDS = {
     "systemd-bootstrap": "systemd-unit",
     "systemd-manager": "systemd-unit",
     "service-management": "systemd-unit",
-}
-PROVIDER_ADAPTER_BY_INTERFACE = {
-    "aos.credential-delivery-effects": "credential-delivery",
-    "aos.foreground-process": "foreground-process",
-    "aos.host-network-policy-effects": "host-network-policy",
-    "aos.host-storage-effects": "host-storage",
-    "aos.ab-image-rollout-effects": "image-rollout",
-    "aos.kubernetes-object-effects": "kubernetes-object",
-    "aos.managed-configuration-effects": "managed-configuration",
-    "aos.network-endpoint-effects": "network-endpoint",
-    "aos.nginx-validation": "nginx-validation",
-    "aos.postgresql-effects": "postgresql",
-    "aos.systemd-provider-bootstrap": "systemd-bootstrap",
-    "aos.systemd-manager": "systemd-manager",
-    "aos.service-management": "service-management",
-}
-PROVIDER_ENTRY_POINTS = {
-    "credential-delivery": "libexec/aos-credential-delivery-handler",
-    "foreground-process": "libexec/aos-foreground-process-handler",
-    "host-network-policy": "libexec/aos-host-network-policy-handler",
-    "host-storage": "libexec/aos-host-storage-handler",
-    "image-rollout": "libexec/aos-ab-image-rollout-handler",
-    "kubernetes-object": "libexec/aos-kubernetes-object-handler",
-    "managed-configuration": "bin/.aos-package-runtime-unwrapped",
-    "network-endpoint": "libexec/aos-network-endpoint-handler",
-    "nginx-validation": "bin/nginx",
-    "postgresql": "libexec/aos-postgresql-handler",
-    "systemd-bootstrap": "bin/.aos-package-runtime-unwrapped",
-    "systemd-manager": "libexec/aos-systemd-manager-handler",
-    "service-management": "bin/.aos-package-runtime-unwrapped",
 }
 COHORT_SUBJECT_SCHEMA = "aos.qualification.host-resource-cohort-subject/v1"
 POSTGRESQL_COHORT_SUBJECT_SCHEMA = (
@@ -366,57 +286,6 @@ CANCELLATION_BOUNDARIES = [
     ("cancel", "cancellation-returned"),
     ("cancel", "cancellation-outcome-durable"),
 ]
-CANCELLATION_HANDLER_ENTRY_POINTS = {
-    "aos.credential-delivery-effects": (
-        "native-credential-delivery",
-        "libexec/aos-credential-delivery-handler",
-    ),
-    "aos.foreground-process": (
-        "native-foreground-process",
-        "libexec/aos-foreground-process-handler",
-    ),
-    "aos.host-network-policy-effects": (
-        "native-host-network-policy",
-        "libexec/aos-host-network-policy-handler",
-    ),
-    "aos.host-storage-effects": (
-        "native-host-storage",
-        "libexec/aos-host-storage-handler",
-    ),
-    "aos.managed-configuration-effects": (
-        "managed-configuration-terminal",
-        "bin/.aos-package-runtime-unwrapped",
-    ),
-    "aos.network-endpoint-effects": (
-        "native-network-endpoint",
-        "libexec/aos-network-endpoint-handler",
-    ),
-    "aos.nginx-validation": ("nginx-terminal", "bin/nginx"),
-    "aos.postgresql-effects": (
-        "native-postgresql",
-        "libexec/aos-postgresql-handler",
-    ),
-    "aos.kubernetes-object-effects": (
-        "native-kubernetes-object",
-        "libexec/aos-kubernetes-object-handler",
-    ),
-    "aos.systemd-provider-bootstrap": (
-        "systemd-bootstrap-terminal",
-        "bin/.aos-package-runtime-unwrapped",
-    ),
-    "aos.systemd-manager": (
-        "native-systemd-manager",
-        "libexec/aos-systemd-manager-handler",
-    ),
-    "aos.service-management": (
-        "service-management-terminal",
-        "bin/.aos-package-runtime-unwrapped",
-    ),
-    "aos.ab-image-rollout-effects": (
-        "native-ab-image-rollout",
-        "libexec/aos-ab-image-rollout-handler",
-    ),
-}
 CANCELLATION_ORACLE_KINDS = {
     "credential-delivery": "filesystem",
     "foreground-process": "foreground-process",
@@ -597,6 +466,132 @@ def sha256(value: Any) -> str:
     return "sha256:" + hashlib.sha256(canonical(value)).hexdigest()
 
 
+def _qualification_routes(
+    subject: Any, spec: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Validates package-derived executable routes for the matrix surface."""
+
+    if (
+        not isinstance(subject, dict)
+        or set(subject) != {"schema", "matrix-spec-digest", "routes"}
+        or subject.get("schema") != QUALIFICATION_SUBJECT_SCHEMA
+        or subject.get("matrix-spec-digest") != sha256(spec)
+        or not isinstance(subject.get("routes"), list)
+    ):
+        raise RuntimeError("native adapter package subject is malformed")
+
+    surface = spec.get("surface", {}).get("adapters")
+    if not isinstance(surface, list):
+        raise RuntimeError("native adapter package subject lacks a matrix surface")
+    adapters = {entry.get("adapter"): entry for entry in surface}
+    routes = subject["routes"]
+    identities = set()
+    coverage = set()
+    for route in routes:
+        if not isinstance(route, dict) or set(route) != {
+            "adapter",
+            "interface",
+            "methods",
+            "provenance",
+            "implementation",
+            "handler",
+            "artifact",
+            "entry-point",
+        }:
+            raise RuntimeError("native adapter package route is malformed")
+        adapter = adapters.get(route.get("adapter"))
+        methods = route.get("methods")
+        provenance = route.get("provenance")
+        identity = canonical(route)
+        if (
+            adapter is None
+            or route.get("interface")
+            != {
+                "name": adapter.get("interface_name"),
+                "abi": adapter.get("interface_abi"),
+                "descriptor": adapter.get("interface_descriptor"),
+            }
+            or not isinstance(methods, list)
+            or methods != sorted(set(methods))
+            or not methods
+            or any(not _matches(TOKEN, method) for method in methods)
+            or not isinstance(provenance, list)
+            or not provenance
+            or provenance
+            != sorted(
+                provenance,
+                key=lambda entry: (entry.get("package", ""), entry.get("ability-contract", "")),
+            )
+            or len({canonical(entry) for entry in provenance}) != len(provenance)
+            or any(
+                not isinstance(entry, dict)
+                or set(entry) != {"package", "ability-contract"}
+                or not _matches(TOKEN, entry.get("package"))
+                or not _matches(DIGEST, entry.get("ability-contract"))
+                for entry in provenance
+            )
+            or not _matches(DIGEST, route.get("implementation"))
+            or not _matches(LOCAL_KEY, route.get("handler"))
+            or not _matches(DIGEST, route.get("artifact"))
+            or not _matches(RELATIVE_PATH, route.get("entry-point"))
+            or identity in identities
+        ):
+            raise RuntimeError("native adapter package route differs from its matrix")
+        identities.add(identity)
+        coverage.update((route["adapter"], method) for method in methods)
+
+    expected = {
+        (adapter["adapter"], method["method"])
+        for adapter in surface
+        for method in adapter["methods"]
+    }
+    if coverage != expected:
+        raise RuntimeError("package projections do not cover the native adapter surface")
+    return routes
+
+
+def _adapter_for_interface(
+    spec: dict[str, Any], interface: Any
+) -> str | None:
+    """Finds the one matrix adapter owning an exact interface identity."""
+
+    matches = [
+        adapter["adapter"]
+        for adapter in spec["surface"]["adapters"]
+        if interface
+        == {
+            "name": adapter["interface_name"],
+            "abi": adapter["interface_abi"],
+            "descriptor": adapter["interface_descriptor"],
+        }
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _matching_package_routes(
+    routes: list[dict[str, Any]],
+    cell: dict[str, Any],
+    *,
+    implementation: Any = None,
+    handler: Any = None,
+    artifact: Any = None,
+    entry_point: Any = None,
+) -> list[dict[str, Any]]:
+    """Selects exact package routes matching one realized matrix operation."""
+
+    return [
+        route
+        for route in routes
+        if route["adapter"] == cell["adapter"]
+        and route["interface"] == cell["interface"]
+        and cell["method"] in route["methods"]
+        and (implementation is None or route["implementation"] == implementation)
+        and (handler is None or route["handler"] == handler)
+        and (artifact is None or route["artifact"] == artifact)
+        and (entry_point is None or route["entry-point"] == entry_point)
+    ]
+
+
 def build_cells(
     spec: dict[str, Any],
     submissions: dict[str, Any],
@@ -608,6 +603,7 @@ def build_cells(
     runtime_audit: dict[str, Any] | None = None,
     interruption_audit: dict[str, Any] | None = None,
     provider_negative_audit: dict[str, Any] | None = None,
+    qualification_subject: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Builds all cell observations and proves every positive claim is expected."""
 
@@ -637,6 +633,7 @@ def build_cells(
     provider_negative_cells = provider_negative_audit.get("cells")
     if not isinstance(provider_negative_cells, dict):
         raise RuntimeError("provider-negative audit cells are malformed")
+    routes = _qualification_routes(qualification_subject, spec)
     submitted_cells = (
         set(submissions)
         | set(runtime_cells)
@@ -660,110 +657,8 @@ def build_cells(
         raise RuntimeError(
             "cohort qualification scope differs from the applicable matrix partition"
         )
-    allowed_cells = QUALIFIED_CELL_IDS
-    effect_boundary_cells = [
-        cell["id"]
-        for adapters in EFFECT_BOUNDARY_ADAPTER_GROUPS
-        for cell in spec["cells"]
-        if cell["adapter"] in adapters and _effect_boundary_cell(cell)
-    ]
-    supported_cancellation_cells = [
-        cell["id"]
-        for cell in spec["cells"]
-        if _cell_scenario(cell) == "cancel-unsettled-attempt"
-        and cell.get("recovery", {}).get("cancel") is not None
-    ]
-    rollout_compatible_state_cells = [
-        cell["id"]
-        for cell in spec["cells"]
-        if cell["adapter"] == "image-rollout"
-        and _cell_scenario(cell) == "adopt-compatible-state"
-    ]
-    if has_runtime_audit:
-        runtime_failure_cells = [
-            cell["id"]
-            for cell in spec["cells"]
-            if _runtime_audit_cell(cell)
-            and cell["id"].rsplit("/", 1)[-1] in FAILURE_CONTROL_SCENARIOS
-        ]
-        runtime_role_cells = [
-            cell["id"]
-            for cell in spec["cells"]
-            if cell["id"].rsplit("/", 1)[-1] in ROLE_SCENARIOS
-        ]
-        runtime_replacement_cells = [
-            cell["id"]
-            for cell in spec["cells"]
-            if cell["id"].rsplit("/", 1)[-1] in REPLACEMENT_SCENARIOS
-        ]
-        allowed_cells = [
-            *PRIMARY_COHORT_CELL_IDS,
-            *runtime_role_cells,
-            *runtime_replacement_cells,
-            *runtime_failure_cells,
-            *POSTGRESQL_CELL_IDS,
-            *effect_boundary_cells,
-            *supported_cancellation_cells,
-            *rollout_compatible_state_cells,
-        ]
-    else:
-        allowed_cells = [
-            *allowed_cells,
-            *effect_boundary_cells,
-            *supported_cancellation_cells,
-            *rollout_compatible_state_cells,
-        ]
-    if has_interruption_audit:
-        before_acquisition_cells = [
-            cell["id"]
-            for cell in spec["cells"]
-            if cell["id"].rsplit("/", 1)[-1] == INTERRUPTION_SCENARIO
-        ]
-        insertion = len(PRIMARY_COHORT_CELL_IDS)
-        allowed_cells = [
-            *allowed_cells[:insertion],
-            *before_acquisition_cells,
-            *allowed_cells[insertion:],
-        ]
-    if provider_negative_cells:
-        already_qualified_provider_negative = {
-            "managed-configuration/aos.managed-configuration-effects/abi-1/"
-            "publish/reject-foreign-resource-mutation",
-            "service-management/aos.service-management/abi-1/"
-            "reload/block-dependent-effect",
-        }
-        allowed_cells = [
-            *allowed_cells,
-            *[
-                cell["id"]
-                for cell in spec["cells"]
-                if cell["id"].rsplit("/", 1)[-1]
-                in PROVIDER_NEGATIVE_SCENARIOS
-                and cell["id"] not in already_qualified_provider_negative
-            ],
-        ]
-    ordered_expected_cells = [
-        cell_id
-        for cell_id in expected_qualified_cells
-        if cell_id not in supported_cancellation_cells
-    ]
-    ordered_allowed_cells = [
-        cell_id
-        for cell_id in allowed_cells
-        if cell_id not in supported_cancellation_cells
-    ]
-
-    if (
-        not expected_qualified_cells
-        or any(cell_id not in allowed_cells for cell_id in expected_qualified_cells)
-        or ordered_expected_cells
-        != [
-            cell_id
-            for cell_id in ordered_allowed_cells
-            if cell_id in ordered_expected_cells
-        ]
-    ):
-        raise RuntimeError("cohort qualification scope differs from its fixed fixture")
+    if not expected_qualified_cells:
+        raise RuntimeError("cohort qualification scope is empty")
     if set(cohort_subjects) != set(submissions):
         raise RuntimeError("cohort subjects differ from its explicit qualification scope")
     if set(cohort_evidence) != set(submissions):
@@ -774,6 +669,7 @@ def build_cells(
             cohort_subjects[cell_id],
             cohort_evidence[cell_id],
             spec,
+            routes,
         )
     if has_runtime_audit:
         _validate_runtime_audit(runtime_audit, spec, specification_cells)
@@ -822,6 +718,8 @@ def build_cells(
                     provider_negative_record,
                     subject_digest,
                     probe_digests,
+                    spec,
+                    routes,
                 )
             )
         elif submitted is None:
@@ -1139,12 +1037,14 @@ def _validated_provider_negative_cell(
     record: dict[str, Any],
     subject_digest: str,
     probe_digests: set[str],
+    spec: dict[str, Any],
+    routes: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Validates one provider flight and derives its five exact probes."""
 
     if record.get("mode") in {"rollout-dependency", "rollout-map-validation"}:
         return _validated_rollout_provider_negative_cell(
-            cell, record, subject_digest, probe_digests
+            cell, record, subject_digest, probe_digests, routes
         )
     if set(record) != {"cell_digest", "subject", "plan_bundle", "evidence"}:
         raise RuntimeError("provider-negative audit cell is malformed")
@@ -1270,8 +1170,8 @@ def _validated_provider_negative_cell(
             "method",
             "candidate-linked",
             "artifact",
+            "implementation",
             "handler",
-            "entry-point",
         }
         or provider_route.get("adapter") != adapter
         or provider_route.get("interface") != cell["interface"]
@@ -1279,7 +1179,16 @@ def _validated_provider_negative_cell(
         or provider_route.get("candidate-linked") is not True
         or not _matches(DIGEST, provider_route.get("artifact"))
         or not _matches(LOCAL_KEY, provider_route.get("handler"))
-        or provider_route.get("entry-point") != PROVIDER_ENTRY_POINTS[adapter]
+        or len(
+            _matching_package_routes(
+                routes,
+                cell,
+                implementation=provider_route.get("implementation"),
+                handler=provider_route.get("handler"),
+                artifact=provider_route.get("artifact"),
+            )
+        )
+        != 1
         or evidence.get("boundary")
         != "after-durable-intent-before-external-effect"
     ):
@@ -1320,8 +1229,8 @@ def _validated_provider_negative_cell(
         "maximum-owner-count": 1,
     }:
         raise RuntimeError("provider-negative ownership is not exclusive")
-    successor_adapter = PROVIDER_ADAPTER_BY_INTERFACE.get(
-        dependent_operation.get("interface", {}).get("name")
+    successor_adapter = _adapter_for_interface(
+        spec, dependent_operation.get("interface")
     )
     for label, oracle, operation, oracle_kind, must_be_live in [
         ("foreign", foreign, foreign_operation, expected_oracle, True),
@@ -1356,9 +1265,7 @@ def _validated_provider_negative_cell(
         != {"kind", "resource", "before", "after", "unchanged", "live"}
         or blocked_witness.get("kind")
         != PROVIDER_ORACLE_KINDS.get(
-            PROVIDER_ADAPTER_BY_INTERFACE.get(
-                behavioral_witness.get("interface", {}).get("name")
-            )
+            _adapter_for_interface(spec, behavioral_witness.get("interface"))
         )
         or blocked_witness.get("resource") != behavioral_witness.get("resource")
         or not _matches(DIGEST, blocked_witness.get("before"))
@@ -1467,6 +1374,7 @@ def _validated_rollout_provider_negative_cell(
     record: dict[str, Any],
     subject_digest: str,
     probe_digests: set[str],
+    routes: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Validates rollout's same-machine dependency or map-collision evidence."""
 
@@ -1577,13 +1485,23 @@ def _validated_rollout_provider_negative_cell(
         "method": cell["method"],
         "candidate-linked": True,
         "artifact": route.get("artifact"),
+        "implementation": route.get("implementation"),
         "handler": route.get("handler"),
-        "entry-point": PROVIDER_ENTRY_POINTS["image-rollout"],
     }
     if (
         route != expected_route
         or not _matches(DIGEST, route.get("artifact"))
         or not _matches(LOCAL_KEY, route.get("handler"))
+        or len(
+            _matching_package_routes(
+                routes,
+                cell,
+                implementation=route.get("implementation"),
+                handler=route.get("handler"),
+                artifact=route.get("artifact"),
+            )
+        )
+        != 1
     ):
         raise RuntimeError("rollout provider route is not candidate-linked")
 
@@ -3354,9 +3272,12 @@ def _validate_cohort_subject(
     subject: Any,
     evidence_bytes: Any,
     matrix_spec: dict[str, Any] | None = None,
+    routes: list[dict[str, Any]] | None = None,
 ) -> None:
     if isinstance(subject, dict) and subject.get("schema") == CANCELLATION_COHORT_SUBJECT_SCHEMA:
-        _validate_cancellation_subject(cell, subject, evidence_bytes, matrix_spec)
+        _validate_cancellation_subject(
+            cell, subject, evidence_bytes, matrix_spec, routes or []
+        )
         return
 
     if cell.get("adapter") == "postgresql":
@@ -3379,6 +3300,7 @@ def _validate_cancellation_subject(
     subject: Any,
     evidence_bytes: Any,
     matrix_spec: dict[str, Any] | None,
+    routes: list[dict[str, Any]],
 ) -> None:
     """Rebuilds a cancellation subject from its exact production plan and route."""
 
@@ -3410,7 +3332,6 @@ def _validate_cancellation_subject(
             "cancel-route",
             "dependent-operation",
             "provider-implementation",
-            "handler-entry-point",
             "native-route",
         }
         if not isinstance(subject, dict) or set(subject) != expected_subject_fields:
@@ -3451,9 +3372,12 @@ def _validate_cancellation_subject(
             evidence["source-authority"],
             evidence["candidate-authority"],
         )
-        handler, entry_point = CANCELLATION_HANDLER_ENTRY_POINTS[
-            cell["interface"]["name"]
-        ]
+        matching_routes = _matching_package_routes(
+            routes,
+            cell,
+            implementation=implementation.get("descriptor"),
+            handler=implementation.get("handler"),
+        )
     except RuntimeError:
         raise
     except (AttributeError, KeyError, TypeError) as error:
@@ -3482,8 +3406,7 @@ def _validate_cancellation_subject(
         != {"interface": cell["interface"], "method": cell["recovery"]["cancel"]}
         or subject["cancel-route"] != operation_document["recovery"]["cancel"]
         or subject["provider-implementation"] != implementation
-        or implementation.get("handler") != handler
-        or subject["handler-entry-point"] != entry_point
+        or len(matching_routes) != 1
         or subject["native-route"] != native_route
     ):
         raise RuntimeError("cancellation subject differs from its production plan")

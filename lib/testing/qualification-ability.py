@@ -57,6 +57,9 @@ MATRIX_COHORT_SUPPORT_NAME = os.environ[
 MATRIX_COHORT_SUPPORT = (
     pathlib.Path(MATRIX_COHORT_SUPPORT_NAME) if MATRIX_COHORT_SUPPORT_NAME else None
 )
+NATIVE_ADAPTER_PACKAGE_SUBJECT_SCHEMA = (
+    "aos.qualification.native-adapter-package-subject/v1"
+)
 IMAGE_SUPPORT = pathlib.Path(os.environ["AOS_QUALIFICATION_IMAGE_SUPPORT"])
 NAR_SUPPORT = pathlib.Path(os.environ["AOS_QUALIFICATION_NAR_SUPPORT"])
 
@@ -936,6 +939,123 @@ class Scenario:
                 + result.stderr[-64 * 1024 :].decode(errors="replace")
             )
 
+    def native_adapter_package_subject(self) -> dict[str, Any]:
+        """Projects matrix routes from the exact candidate ability companions."""
+
+        if self.matrix_spec is None:
+            raise RuntimeError("native adapter package subject requires a matrix")
+        adapters = self.matrix_spec.get("surface", {}).get("adapters")
+        if not isinstance(adapters, list):
+            raise RuntimeError("native adapter matrix surface is malformed")
+        adapter_by_interface = {
+            canonical(
+                {
+                    "name": adapter["interface_name"],
+                    "abi": adapter["interface_abi"],
+                    "descriptor": adapter["interface_descriptor"],
+                }
+            ): adapter["adapter"]
+            for adapter in adapters
+        }
+        if len(adapter_by_interface) != len(adapters):
+            raise RuntimeError("native adapter matrix repeats an interface identity")
+
+        routes: dict[bytes, dict[str, Any]] = {}
+        seen_contracts = set()
+        for binding in RUNTIME_COMPANIONS:
+            source_contract = binding["abilities"]
+            if source_contract in seen_contracts:
+                continue
+            seen_contracts.add(source_contract)
+            try:
+                candidate_contract = pathlib.Path(
+                    self.candidate_companions[source_contract]
+                )
+                package = read_json(candidate_contract / "package.json")
+                providers = package["implementation"]["providers"]
+                handlers = package["implementation"]["handlers"]
+            except (KeyError, TypeError) as error:
+                raise RuntimeError(
+                    "candidate ability companion lacks its implementation projection"
+                ) from error
+            if not isinstance(providers, list) or not isinstance(handlers, dict):
+                raise RuntimeError("candidate ability implementation projection is malformed")
+
+            contract_digest = raw_digest(package)
+            package_name = package.get("package", {}).get("name")
+            if not isinstance(package_name, str):
+                raise RuntimeError("candidate ability package identity is malformed")
+            provenance = {
+                "package": package_name,
+                "ability-contract": contract_digest,
+            }
+            for provider in providers:
+                if not isinstance(provider, dict):
+                    raise RuntimeError("candidate provider implementation is malformed")
+                interface = provider.get("interface")
+                if not isinstance(interface, dict):
+                    raise RuntimeError("candidate provider interface is malformed")
+                adapter = adapter_by_interface.get(canonical(interface))
+                if adapter is None:
+                    continue
+                handler_name = provider.get("handler")
+                handler = handlers.get(handler_name)
+                if not isinstance(handler_name, str) or not isinstance(handler, dict):
+                    raise RuntimeError("native adapter lacks an exact terminal handler")
+                descriptor = interface.get("descriptor")
+                if not isinstance(descriptor, str) or not descriptor.startswith("sha256:"):
+                    raise RuntimeError("native adapter interface descriptor is malformed")
+                interface_document = read_json(
+                    candidate_contract
+                    / "interfaces"
+                    / f"{descriptor.removeprefix('sha256:')}.json"
+                )
+                if interface_document.get("interface") != {
+                    "name": interface["name"],
+                    "abi": interface["abi"],
+                }:
+                    raise RuntimeError("candidate interface document has another identity")
+                methods = interface_document.get("methods")
+                artifact = handler.get("artifact", {}).get("content")
+                entry_point = handler.get("entry_point")
+                if (
+                    not isinstance(methods, dict)
+                    or not isinstance(artifact, str)
+                    or not isinstance(entry_point, str)
+                ):
+                    raise RuntimeError("candidate interface method projection is malformed")
+
+                route = {
+                    "adapter": adapter,
+                    "interface": interface,
+                    "methods": sorted(methods),
+                    "implementation": digest(
+                        "aos.ability.provider-implementation/v1", provider
+                    ),
+                    "handler": handler_name,
+                    "artifact": artifact,
+                    "entry-point": entry_point,
+                }
+                route_key = canonical(route)
+                existing = routes.setdefault(
+                    route_key, route | {"provenance": []}
+                )
+                if provenance not in existing["provenance"]:
+                    existing["provenance"].append(provenance)
+
+        projected = []
+        for route in routes.values():
+            route["provenance"].sort(
+                key=lambda entry: (entry["package"], entry["ability-contract"])
+            )
+            projected.append(route)
+        projected.sort(key=canonical)
+        return {
+            "schema": NATIVE_ADAPTER_PACKAGE_SUBJECT_SCHEMA,
+            "matrix-spec-digest": raw_digest(self.matrix_spec),
+            "routes": projected,
+        }
+
     def _cell_artifact(self, kind: str, suffix: str) -> dict[str, Any]:
         artifact = one(
             [
@@ -1721,6 +1841,7 @@ class Scenario:
         if qemu_match is None:
             raise RuntimeError("QEMU returned an unsupported version identity")
         spec_digest = raw_digest(self.matrix_spec)
+        package_qualification_subject = self.native_adapter_package_subject()
         scenario_registry_digest = raw_digest(read_json(SCENARIO_REGISTRY))
         environment = {
             "schema_version": "aos.release.native-adapter-matrix-environment/v1",
@@ -1763,7 +1884,12 @@ class Scenario:
             "harness": {
                 "name": "native-adapter-host-resource-cohort",
                 "version": "cohort-v2",
-                "digest": sha256_file(FIXTURE_ARCHIVE),
+                "digest": raw_digest(
+                    {
+                        "fixture": sha256_file(FIXTURE_ARCHIVE),
+                        "package-subject": package_qualification_subject,
+                    }
+                ),
             },
         }
         environment_digest = raw_digest(environment)
@@ -1778,6 +1904,7 @@ class Scenario:
             runtime_audit,
             interruption_audit,
             provider_negative_audit,
+            package_qualification_subject,
         )
 
         finished = time.time()
@@ -1794,7 +1921,7 @@ class Scenario:
             ),
             "observed_seconds": int(finished - self.started),
             "checks": {
-                check: {"passed": True, "detail": CHECK_DETAILS[check]}
+                check: {"passed": True, "detail": check_detail(check)}
                 for check in self.case["checks"]
                 if not check.startswith("native-adapter-matrix-v1-sha256-")
             },
@@ -1861,7 +1988,7 @@ class Scenario:
                 raise RuntimeError("unique boot and initrd handoff coverage is incomplete")
 
         details = {
-            check: {"passed": True, "detail": CHECK_DETAILS[check]}
+            check: {"passed": True, "detail": check_detail(check)}
             for check in self.case["checks"]
         }
         qemu_version = IMAGE.run([IMAGE.QEMU, "--version"]).stdout.splitlines()[0]
@@ -2079,6 +2206,27 @@ class Scenario:
         REPORT.write_bytes(self.build_report(guest_kernel_release))
 
 
+NATIVE_ADAPTER_MATRIX_CHECK_PREFIX = "native-adapter-matrix-v1-sha256-"
+NATIVE_ADAPTER_MATRIX_CHECK_DETAIL = (
+    "The native-adapter matrix bound every applicable durability and authority "
+    "cell plus every exact provider-contract exclusion to the adapter interface "
+    "name, ABI, and descriptor."
+)
+
+
+def check_detail(check: str) -> str:
+    """Returns stable prose for a required check, including derived matrix IDs."""
+
+    if check.startswith(NATIVE_ADAPTER_MATRIX_CHECK_PREFIX):
+        digest_value = check.removeprefix(NATIVE_ADAPTER_MATRIX_CHECK_PREFIX)
+        if re.fullmatch(r"[0-9a-f]{64}", digest_value):
+            return NATIVE_ADAPTER_MATRIX_CHECK_DETAIL
+    try:
+        return CHECK_DETAILS[check]
+    except KeyError as error:
+        raise RuntimeError(f"qualification scenario has unknown check {check!r}") from error
+
+
 CHECK_DETAILS = {
     "connected-generic-markers-before-selected-interruption": (
         "The production ability adapter emitted the existing generic assertion, event, "
@@ -2099,11 +2247,6 @@ CHECK_DETAILS = {
     "disabled-production-executor-has-no-crucible-closure": (
         "The same production executor configuration without the opt-in profile retained no "
         "ability adapter or Crucible guest emitter in its realized closure."
-    ),
-    "native-adapter-matrix-v1-sha256-3a94192c0dda66ab8b278d7aab58c055041ca8d87eb5a1e561f371d7b3df9086": (
-        "The closed native-adapter matrix bound every applicable durability and "
-        "authority cell plus every exact provider-contract exclusion to the adapter "
-        "interface name, ABI, and descriptor."
     ),
     "authenticated-package-policy-and-operator-authority": (
         "The published AOS activation engine admitted only authenticated "
