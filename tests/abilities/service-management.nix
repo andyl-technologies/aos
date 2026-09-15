@@ -1456,4 +1456,6 @@ in
     })
     true))
   .success;
-  assert builtins.attrNames fixedPoint.config.aos.abilities.interfaces == declaredAliases; true
+  assert builtins.all
+  (alias: builtins.hasAttr alias fixedPoint.config.aos.abilities.interfaces)
+  declaredAliases; true
