@@ -52,8 +52,12 @@
   };
   realizedPackagedUnitSource = types.record {
     fields = {
-      artifact = types.artifactSelector;
+      artifact = types.artifactReference;
       unit_file = types.relativePath;
+    };
+  };
+  systemdUnitIdentity = types.record {
+    fields = {
       unit_name = types.string {
         maxLength = 255;
         syntax = null;
@@ -91,9 +95,13 @@
     fields = {
       schema = types.enum ["aos.systemd.packaged-unit-realization/v1"];
       source = realizedPackagedUnitSource;
+      systemd_unit = systemdUnitIdentity;
       activation = types.enum ["enabled" "reference"];
-      inherit dependencies;
-      drop_in = dropIn;
+      drop_in_text = types.string {
+        maxLength = 1048576;
+        syntax = null;
+      };
+      revision_receipt = types.executionPath;
     };
   };
 

@@ -90,12 +90,7 @@
   compose = {resources, ...}:
     emptyResult
     // {
-      realizations =
-        builtins.mapAttrs (_: resource: {
-          schema = "aos.systemd.packaged-unit-realization/v1";
-          inherit (resource.value) source activation dependencies drop_in;
-        })
-        resources;
+      realizations = builtins.mapAttrs (_: realizationFor) resources;
     };
 
   resolveDeferred = value:
@@ -122,7 +117,7 @@
   in
     if realization == null
     then null
-    else realization.unit_name or (realization.source.unit_name or null);
+    else realization.systemd_unit.unit_name or null;
   concreteUnitNames = references:
     builtins.sort builtins.lessThan (
       builtins.filter (name: name != null) (builtins.map unitNameForReference references)
@@ -130,52 +125,66 @@
 
   directive = name: values:
     lib.optionalString (values != []) "${name}=${builtins.concatStringsSep " " values}\n";
-  receiptUri = unitName: revision: let
+  receiptPath = unitName: let
     encodedName = builtins.replaceStrings ["%" "/" " "] ["%25" "%2F" "%20"] unitName;
-    digest = lib.removePrefix "sha256:" revision;
-  in "file:/etc/aos/ability-revisions/${encodedName}/sha256/${digest}";
+  in "/etc/aos/ability-revisions/${encodedName}/current";
 
-  dropInText = resource: let
-    realization = resource.realization;
-    dependencies = realization.dependencies;
+  dropInText = parameters: let
+    dependencies = parameters.dependencies;
     searchRoots =
       builtins.map
       (selector: (artifactLocatorFor selector).path)
-      realization.drop_in.search_path;
+      parameters.drop_in.search_path;
     searchPath = builtins.concatStringsSep ":" (
       builtins.concatMap (root: ["${root}/bin" "${root}/sbin"]) searchRoots
     );
     serviceDirectives =
-      lib.optionalString (realization.drop_in.accepted_exit_statuses != [])
-      "SuccessExitStatus=${builtins.concatStringsSep " " (builtins.map builtins.toString realization.drop_in.accepted_exit_statuses)}\n"
+      lib.optionalString (parameters.drop_in.accepted_exit_statuses != [])
+      "SuccessExitStatus=${builtins.concatStringsSep " " (builtins.map builtins.toString parameters.drop_in.accepted_exit_statuses)}\n"
       + lib.optionalString (searchPath != "") "Environment=\"PATH=${searchPath}\"\n";
   in
     "[Unit]\n"
-    + "Documentation=${receiptUri realization.source.unit_name resource.revision}\n"
+    + "Documentation=file:${receiptPath parameters.source.unit_name}\n"
     + directive "After" (concreteUnitNames dependencies.after)
     + directive "Before" (concreteUnitNames dependencies.before)
     + directive "Requires" (concreteUnitNames dependencies.requires)
     + directive "Wants" (concreteUnitNames dependencies.wants)
     + lib.optionalString (serviceDirectives != "") "\n[Service]\n${serviceDirectives}";
 
+  realizationFor = resource: let
+    parameters = resource.value;
+    sourceLocator = artifactLocatorFor parameters.source.artifact;
+  in {
+    schema = "aos.systemd.packaged-unit-realization/v1";
+    source = {
+      artifact = sourceLocator.artifactReference;
+      inherit (parameters.source) unit_file;
+    };
+    systemd_unit.unit_name = parameters.source.unit_name;
+    inherit (parameters) activation;
+    drop_in_text = dropInText parameters;
+    revision_receipt = receiptPath parameters.source.unit_name;
+  };
+
   selectedResources = builtins.filter (resource:
     resource.controller
     != null
     && config.aos.abilities.bindings.${resource.controller}.implementation == implementationName)
   (builtins.attrValues config.aos.abilities.resolvedResources);
-  staticPackage = resource: let
+  staticSource = resource: let
     realization = resource.realization;
-    locator = artifactLocatorFor realization.source.artifact;
+    locator = artifactLocatorFor resource.value.source.artifact;
   in {
-    name = "${packageName}-${resource.resource.key}-unit-source";
-    outPath = locator.path;
-    systemdUnitInventory.system = [realization.source.unit_file];
+    artifactRoot = locator.path;
+    unitFile = realization.source.unit_file;
+    unitName = realization.systemd_unit.unit_name;
+    owner = resource.controller;
   };
   staticUnits = builtins.listToAttrs (builtins.map (resource: {
-      name = resource.realization.source.unit_name;
+      name = resource.realization.systemd_unit.unit_name;
       value = {
         overrideStrategy = "asDropin";
-        text = dropInText resource;
+        text = resource.realization.drop_in_text;
         wantedBy = lib.optional (resource.realization.activation == "enabled") "multi-user.target";
       };
     })
@@ -185,6 +194,6 @@ in {
     inherit provide compose;
   };
 
-  config.systemd.packages = builtins.map staticPackage selectedResources;
+  config.systemd.packagedUnitSources = builtins.map staticSource selectedResources;
   config.systemd.units = staticUnits;
 }

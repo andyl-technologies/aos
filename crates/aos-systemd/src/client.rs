@@ -1150,6 +1150,26 @@ impl PinnedSystemdManager {
         self.await_submission(submission, path).await
     }
 
+    /// Starts one canonical unit after rechecking its exact AOS receipt URI.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the unit identity or receipt changed, the receipt
+    /// marker is missing or ambiguous, or the job does not complete.
+    pub async fn start_unit_exact_receipt(
+        &self,
+        name: &str,
+        expected_identity: &str,
+        expected_receipt: &str,
+    ) -> Result<JobOutcome> {
+        let unit = self
+            .exact_unit_receipt(name, expected_identity, expected_receipt)
+            .await?;
+        let submission = self.begin_submission()?;
+        let path = unit.start("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
     /// Stops one canonical unit after rechecking its admission-qualified identity.
     ///
     /// # Errors
@@ -1366,6 +1386,22 @@ impl PinnedSystemdManager {
         Ok(identity)
     }
 
+    /// Resolves a canonical unit and verifies its exact AOS receipt URI.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manager changed, the name is an alias, the
+    /// unit is not loaded, or its AOS receipt is absent or differs.
+    pub async fn unit_identity_at_receipt(
+        &self,
+        name: &str,
+        expected_receipt: &str,
+    ) -> Result<String> {
+        let (identity, unit) = self.resolve_unit(name).await?;
+        require_unit_receipt(name, &unit.documentation().await?, expected_receipt)?;
+        Ok(identity)
+    }
+
     async fn exact_unit<'a>(
         &'a self,
         name: &str,
@@ -1405,6 +1441,17 @@ impl PinnedSystemdManager {
     ) -> Result<UnitProxy<'a>> {
         let unit = self.exact_unit(name, expected_identity).await?;
         require_unit_revision(name, &unit.documentation().await?, expected_revision)?;
+        Ok(unit)
+    }
+
+    async fn exact_unit_receipt<'a>(
+        &'a self,
+        name: &str,
+        expected_identity: &str,
+        expected_receipt: &str,
+    ) -> Result<UnitProxy<'a>> {
+        let unit = self.exact_unit(name, expected_identity).await?;
+        require_unit_receipt(name, &unit.documentation().await?, expected_receipt)?;
         Ok(unit)
     }
 
@@ -1483,6 +1530,20 @@ fn require_unit_revision(
     documentation: &[String],
     expected_revision: &str,
 ) -> Result<()> {
+    let expected = unit_revision_receipt_uri(unit, expected_revision).ok_or_else(|| {
+        Error::UnitRevisionUnknown {
+            unit: unit.to_string(),
+        }
+    })?;
+    require_unit_receipt(unit, documentation, &expected)
+}
+
+fn require_unit_receipt(unit: &str, documentation: &[String], expected: &str) -> Result<()> {
+    if !expected.starts_with(UNIT_REVISION_RECEIPT_PREFIX) {
+        return Err(Error::UnitRevisionUnknown {
+            unit: unit.to_string(),
+        });
+    }
     let mut revisions = documentation
         .iter()
         .filter(|entry| entry.starts_with(UNIT_REVISION_RECEIPT_PREFIX));
@@ -1496,15 +1557,10 @@ fn require_unit_revision(
             unit: unit.to_string(),
         });
     }
-    let expected = unit_revision_receipt_uri(unit, expected_revision).ok_or_else(|| {
-        Error::UnitRevisionUnknown {
-            unit: unit.to_string(),
-        }
-    })?;
     if actual != &expected {
         return Err(Error::UnitRevisionChanged {
             unit: unit.to_string(),
-            expected,
+            expected: expected.to_string(),
             actual: (*actual).clone(),
         });
     }
@@ -1706,6 +1762,17 @@ mod pinned_tests {
                 )
                 .unwrap()],
                 revision,
+            ),
+            Err(Error::UnitRevisionChanged { .. })
+        ));
+
+        let fixed_receipt = "file:/etc/aos/ability-revisions/example.service/current";
+        require_unit_receipt("example.service", &[fixed_receipt.into()], fixed_receipt).unwrap();
+        assert!(matches!(
+            require_unit_receipt(
+                "example.service",
+                &[fixed_receipt.into()],
+                "file:/etc/aos/ability-revisions/other.service/current",
             ),
             Err(Error::UnitRevisionChanged { .. })
         ));

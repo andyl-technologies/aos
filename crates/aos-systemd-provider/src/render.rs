@@ -1,13 +1,8 @@
 //! Deterministic systemd drop-in rendering from checked realizations.
 
-use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use aos_ability_model::{ResourceReference, RevisionId};
-use aos_provider_protocol::{
-    BoundNativeContext, RESOURCE_CONTEXT_SCHEMA, ResourceContext, native_context_digest,
-};
 
 use crate::model::{PackagedUnitRealization, REALIZATION_SCHEMA};
 
@@ -57,30 +52,17 @@ pub(crate) fn validate_relative_path(path: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn render(
-    realization: &PackagedUnitRealization,
-    revision: RevisionId,
-    contexts: &[ResourceContext],
-) -> Result<RenderedUnit> {
+pub(crate) fn render(realization: &PackagedUnitRealization) -> Result<RenderedUnit> {
     if realization.schema != REALIZATION_SCHEMA {
         bail!("systemd realization uses an unsupported schema");
     }
-    validate_unit_name(&realization.source.unit_name)?;
+    validate_unit_name(&realization.systemd_unit.unit_name)?;
     validate_relative_path(&realization.source.unit_file)?;
-    if !realization.source.unit_name.ends_with(".service")
-        && (!realization.drop_in.accepted_exit_statuses.is_empty()
-            || !realization.drop_in.search_path.is_empty())
-    {
-        bail!("service-only drop-in fields were supplied for a non-service unit");
-    }
-    if realization
-        .drop_in
-        .accepted_exit_statuses
-        .iter()
-        .any(|status| !(0..=255).contains(status))
-    {
-        bail!("accepted exit status is outside 0..=255");
-    }
+    validate_receipt(
+        &realization.revision_receipt,
+        &realization.systemd_unit.unit_name,
+    )?;
+    validate_drop_in(&realization.drop_in_text, &realization.revision_receipt)?;
 
     let artifact_root = checked_store_root(&realization.source.artifact.store_path)?;
     let source = artifact_root.join(&realization.source.unit_file);
@@ -94,61 +76,9 @@ pub(crate) fn render(
         bail!("packaged unit is not a regular file contained by its artifact");
     }
 
-    let mut body = String::from("[Unit]\n");
-    body.push_str("Documentation=");
-    body.push_str(&receipt_uri(&realization.source.unit_name, revision));
-    body.push('\n');
-    append_references(
-        &mut body,
-        "After",
-        &realization.dependencies.after,
-        contexts,
-    )?;
-    append_references(
-        &mut body,
-        "Before",
-        &realization.dependencies.before,
-        contexts,
-    )?;
-    append_references(
-        &mut body,
-        "Requires",
-        &realization.dependencies.requires,
-        contexts,
-    )?;
-    append_references(
-        &mut body,
-        "Wants",
-        &realization.dependencies.wants,
-        contexts,
-    )?;
-
-    let search_path = search_path(&realization.drop_in.search_path)?;
-    if !realization.drop_in.accepted_exit_statuses.is_empty() || !search_path.is_empty() {
-        body.push_str("\n[Service]\n");
-    }
-    if !realization.drop_in.accepted_exit_statuses.is_empty() {
-        body.push_str("SuccessExitStatus=");
-        body.push_str(
-            &realization
-                .drop_in
-                .accepted_exit_statuses
-                .iter()
-                .map(i64::to_string)
-                .collect::<Vec<_>>()
-                .join(" "),
-        );
-        body.push('\n');
-    }
-    if !search_path.is_empty() {
-        body.push_str("Environment=\"PATH=");
-        body.push_str(&search_path);
-        body.push_str("\"\n");
-    }
-
     Ok(RenderedUnit {
         source,
-        drop_in: body.into_bytes(),
+        drop_in: realization.drop_in_text.as_bytes().to_vec(),
     })
 }
 
@@ -160,94 +90,28 @@ fn checked_store_root(store_path: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn search_path(artifacts: &[aos_ability_model::ArtifactReference]) -> Result<String> {
-    let mut entries = BTreeSet::new();
-    for artifact in artifacts {
-        let root = checked_store_root(&artifact.store_path)?;
-        entries.insert(root.join("bin").to_string_lossy().into_owned());
-        entries.insert(root.join("sbin").to_string_lossy().into_owned());
-    }
-    Ok(entries.into_iter().collect::<Vec<_>>().join(":"))
-}
-
-fn append_references(
-    body: &mut String,
-    directive: &str,
-    references: &[ResourceReference],
-    contexts: &[ResourceContext],
-) -> Result<()> {
-    let mut units = BTreeSet::new();
-    for reference in references {
-        if let Some(unit) = unit_for_reference(reference, contexts)? {
-            units.insert(unit);
-        }
-    }
-    if !units.is_empty() {
-        body.push_str(directive);
-        body.push('=');
-        body.push_str(&units.into_iter().collect::<Vec<_>>().join(" "));
-        body.push('\n');
+fn validate_receipt(receipt: &str, unit_name: &str) -> Result<()> {
+    let expected = format!("/etc/aos/ability-revisions/{unit_name}/current");
+    if receipt != expected {
+        bail!("systemd realization contains a mismatched revision receipt path");
     }
     Ok(())
 }
 
-fn unit_for_reference(
-    reference: &ResourceReference,
-    contexts: &[ResourceContext],
-) -> Result<Option<String>> {
-    let matches = contexts
-        .iter()
-        .filter(|context| context.reference == *reference)
-        .collect::<Vec<_>>();
-    if matches.len() != 1 {
-        bail!("systemd dependency does not have one exact admitted context");
+fn validate_drop_in(text: &str, receipt: &str) -> Result<()> {
+    if text.is_empty() || text.len() > 1024 * 1024 || text.contains('\0') || !text.ends_with('\n') {
+        bail!("systemd realization contains invalid drop-in text");
     }
-    let context = matches[0];
-    if native_context_digest(&context.native_context)? != context.native_context_digest {
-        bail!("systemd dependency context digest does not match");
+    let expected = format!("Documentation=file:{receipt}");
+    if text.lines().filter(|line| *line == expected).count() != 1 {
+        bail!("systemd realization drop-in does not bind its revision receipt");
     }
-    let bound: BoundNativeContext =
-        serde_json::from_value(context.native_context.as_json().clone())
-            .context("decoding dependency native context")?;
-    if bound.schema != RESOURCE_CONTEXT_SCHEMA || bound.resource_spec.resource != reference.resource
-    {
-        bail!("systemd dependency context is bound to another resource");
-    }
-
-    let realization = bound.resource_spec.realization.as_json();
-    let schema = realization
-        .get("schema")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    let unit = realization
-        .get("unit_name")
-        .or_else(|| {
-            realization
-                .get("source")
-                .and_then(|source| source.get("unit_name"))
-        })
-        .and_then(serde_json::Value::as_str);
-    if schema.starts_with("aos.systemd.") && unit.is_none() {
-        bail!("systemd dependency realization omits its checked unit name");
-    }
-    if let Some(unit) = unit {
-        validate_unit_name(unit)?;
-    }
-    Ok(unit.map(str::to_owned))
-}
-
-pub(crate) fn receipt_uri(unit_name: &str, revision: RevisionId) -> String {
-    format!(
-        "file:/etc/aos/ability-revisions/{unit_name}/sha256/{}",
-        revision.0.hex()
-    )
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{receipt_uri, validate_relative_path, validate_unit_name};
-    use aos_ability_model::RevisionId;
-    use aos_contract::Sha256Digest;
+    use super::{validate_drop_in, validate_receipt, validate_relative_path, validate_unit_name};
 
     #[test]
     fn unit_names_and_relative_paths_are_closed() {
@@ -260,12 +124,17 @@ mod tests {
     }
 
     #[test]
-    fn receipt_uri_uses_the_full_revision() {
-        let digest = Sha256Digest::parse(
-            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .expect("digest parses");
-        let uri = receipt_uri("example.service", RevisionId(digest));
-        assert!(uri.ends_with(&format!("/sha256/{}", digest.hex())));
+    fn realization_binds_one_exact_receipt() {
+        let receipt = "/etc/aos/ability-revisions/example.service/current";
+        assert!(validate_receipt(receipt, "example.service").is_ok());
+        assert!(validate_receipt(receipt, "other.service").is_err());
+        assert!(
+            validate_drop_in(
+                "[Unit]\nDocumentation=file:/etc/aos/ability-revisions/example.service/current\n",
+                receipt,
+            )
+            .is_ok()
+        );
+        assert!(validate_drop_in("[Unit]\n", receipt).is_err());
     }
 }

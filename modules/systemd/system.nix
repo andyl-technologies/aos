@@ -80,7 +80,6 @@ in {
     packages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [];
-      contributable = true;
       description = ''
         AOS packages that ship systemd unit files under
         `$pkg/lib/systemd/system/` (or `$pkg/etc/systemd/system/`).
@@ -91,6 +90,36 @@ in {
         leaves through `passthru.systemdUnitInventory.<type>`; this inventory
         is frozen into the image base library so on-host evaluation never
         enumerates a derivation output.
+      '';
+    };
+
+    packagedUnitSources = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          artifactRoot = lib.mkOption {
+            type = lib.types.path;
+            description = "Authenticated artifact root containing the packaged unit.";
+          };
+          unitFile = lib.mkOption {
+            type = lib.types.str;
+            description = "Unit file path relative to the authenticated artifact root.";
+          };
+          unitName = lib.mkOption {
+            type = lib.types.str;
+            description = "Exact backend unit name selected by the provider.";
+          };
+          owner = lib.mkOption {
+            type = lib.types.str;
+            description = "Selected controller binding that owns this source projection.";
+          };
+        };
+      });
+      default = [];
+      internal = true;
+      contributable = true;
+      description = ''
+        Authenticated unit sources projected by selected systemd providers.
+        This backend carrier avoids reconstructing package inventory metadata.
       '';
     };
 
@@ -289,6 +318,7 @@ in {
       upstreamUnits = [];
       upstreamWants = [];
       packages = config.systemd.packages;
+      packagedUnitSources = config.systemd.packagedUnitSources;
       package = config.systemd.package;
       packageOwners = builtins.listToAttrs (builtins.map (package:
         lib.nameValuePair
