@@ -24,6 +24,10 @@
   poolEffects = controllerKey "aos-zfs-provider:storage-pool" "aos-zfs-provider:manager" "pool";
   datasetEffects = controllerKey "aos-zfs-provider:storage-dataset" "aos-zfs-provider:manager" "dataset";
   provisioningEffects = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "provisioning";
+  provisioningDetection = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "detect-platform-provisioning";
+  provisioningAuthorization = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "authorize-input-provisioning";
+  provisioningPlan = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "observe-plan-provisioning";
+  provisioningNetwork = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "network-readiness-provisioning";
   evaluated = lib.evalModules {
     inherit lib;
     modules = [
@@ -40,6 +44,7 @@
             "aos-storage-format-provider:manager" = {};
             "aos-storage-provisioning-provider:manager" = {};
             "aos-zfs-provider:manager" = {};
+            "network-provider:manager" = {};
           };
           bindings = {
             "test:mapping" = {
@@ -102,6 +107,30 @@
               providerInstance = "aos-storage-provisioning-provider:manager";
               slot = "provisioning";
             };
+            "test:provisioning-detection" = {
+              request = provisioningDetection;
+              implementation = "aos:storage-provisioning-platform-detector";
+              providerInstance = "aos:storage-provisioning-platform-detector";
+              slot = "provisioning";
+            };
+            "test:provisioning-authorization" = {
+              request = provisioningAuthorization;
+              implementation = "aos:storage-provisioning-input-authorizer";
+              providerInstance = "aos:storage-provisioning-input-authorizer";
+              slot = "provisioning";
+            };
+            "test:provisioning-plan" = {
+              request = provisioningPlan;
+              implementation = "aos:storage-provisioning-plan-observer";
+              providerInstance = "aos:storage-provisioning-plan-observer";
+              slot = "provisioning";
+            };
+            "test:provisioning-network" = {
+              request = provisioningNetwork;
+              implementation = "network-provider:network-readiness";
+              providerInstance = "network-provider:manager";
+              slot = "network";
+            };
           };
         };
       }
@@ -116,6 +145,50 @@
         name = "aos-storage-format-provider";
         inherit (pkgs.aos-storage-format-provider) version;
         module = pkgs.aos-storage-format-provider.module + "/module.nix";
+      }
+      {
+        name = "aos";
+        module = ../../pkgs/tools/aos/_abilities/provisioning-metadata.nix;
+      }
+      {
+        name = "network-provider";
+        module = {lib, ...}: let
+          network = lib.abilities.interfaces.serviceManagement.interfaces.networkReadiness;
+        in {
+          config.aos.abilities = {
+            implementations.network-readiness = {
+              description = "Provides the test's exact configured-network observation.";
+              interface = network.identity;
+              artifact = lib.abilities.packageOutput {};
+              inherit (network) methods;
+              guarantees = [];
+              handlerDescriptor = null;
+              providerModule = null;
+              desiredType = null;
+              requiredFeatures = [];
+              provide = {
+                instance,
+                requests,
+                ...
+              }: {
+                requests = {};
+                resourceFragments = {};
+                outputs = builtins.mapAttrs (_: _: {
+                  readiness-resource = {
+                    interface = network.identity;
+                    resource = {
+                      provider = instance.id;
+                      key = "network-online";
+                    };
+                    operations = ["observe"];
+                    lifetime = "instance";
+                  };
+                }) requests;
+              };
+            };
+            instances.manager.implementation = "network-readiness";
+          };
+        };
       }
       {
         name = "consumer";
