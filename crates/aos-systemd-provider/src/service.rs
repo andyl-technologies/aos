@@ -30,7 +30,6 @@ use crate::render::{RenderedService, render_service};
 use crate::{decode_value, provider_context, require_resource_contexts, target_context, value};
 
 const ETC_ROOT: &str = "/etc";
-const SERVICE_TEMPLATE_DEFINITION_INTERFACE: &str = "aos.service.template-definition";
 
 pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
     if request.schema != ADMISSION_REQUEST_SCHEMA {
@@ -623,10 +622,7 @@ fn validate_template_reuse(
     if matches.len() != 1 {
         bail!("service instance does not have one exact static-template context");
     }
-    if reference.interface.name.as_str() != SERVICE_TEMPLATE_DEFINITION_INTERFACE
-        || reference.operations.len() != 1
-        || reference.operations[0].as_str() != "observe"
-    {
+    if reference.operations.len() != 1 || reference.operations[0].as_str() != "observe" {
         bail!("service instance template reference has invalid interface authority");
     }
     let context = matches[0];
