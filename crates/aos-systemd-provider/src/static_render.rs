@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn static_and_runtime_paths_use_identical_semantic_bytes() {
         let value = serde_json::json!({
-            "schema": "aos.systemd.service-realization/v2",
+            "schema": "aos.systemd.service-realization/v1",
             "systemd_unit": {"kind": "unit", "unit_name": "example.service"},
             "units": [{
                 "systemd_unit": {"unit_name": "example.service"},

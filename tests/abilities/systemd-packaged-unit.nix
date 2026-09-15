@@ -62,7 +62,15 @@
     };
   };
 
-  evaluate = consumerModule:
+  baseBindings = {
+    "test:unit" = {
+      request = "consumer:unit";
+      implementation = "systemd:systemd-packaged-unit";
+      providerInstance = "systemd:manager";
+      slot = "example";
+    };
+  };
+  evaluate = consumerModule: bindings:
     lib.evalModules {
       inherit lib;
       modules = [
@@ -75,12 +83,7 @@
               key = "systemd-packaged-unit";
               stage = "host";
             };
-            bindings."test:unit" = {
-              request = "consumer:unit";
-              implementation = "systemd:systemd-packaged-unit";
-              providerInstance = "systemd:manager";
-              slot = "example";
-            };
+            inherit bindings;
           };
         }
       ];
@@ -108,11 +111,23 @@
       };
     };
 
-  evaluation = evaluate (consumerModuleFor "lib/systemd/system/example.service");
+  pending = evaluate (consumerModuleFor "lib/systemd/system/example.service") baseBindings;
+  effectsChild = builtins.head (builtins.attrValues pending.config.aos.abilities.compositionPendingRequests);
+  resolvedBindings = baseBindings
+    // {
+      "test:unit-effects" = {
+        request = effectsChild.request;
+        implementation = "systemd:systemd-packaged-unit-effects";
+        providerInstance = "systemd:manager";
+        slot = effectsChild.slot;
+      };
+    };
+  evaluateResolved = consumerModule: evaluate consumerModule resolvedBindings;
+  evaluation = evaluateResolved (consumerModuleFor "lib/systemd/system/example.service");
   invalidUnitName = builtins.tryEval (builtins.deepSeq (
       builtins.head (
         builtins.attrValues (
-          (evaluate (consumerModuleFor "lib/systemd/system/not-a-unit"))
+          (evaluateResolved (consumerModuleFor "lib/systemd/system/not-a-unit"))
           .config
           .aos
           .abilities
@@ -236,6 +251,9 @@
   requestSchema = declaration.requestType._abilitySchema;
 in
   assert desired.realization.systemd_unit.unit_name == "example.service";
+  assert effectsChild.requirement == "packaged-unit-effects";
+  assert abilities.implementations."systemd:systemd-packaged-unit".handlerDescriptor == null;
+  assert abilities.implementations."systemd:systemd-packaged-unit-effects".providerModule == null;
   assert desired.realization.source.artifact.store_path == "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
   assert requestSchema.fields.dependencies.fields.after.unique;
   assert requestSchema.fields.dependencies.fields.after.canonical_order;

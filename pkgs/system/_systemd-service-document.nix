@@ -927,7 +927,7 @@
         })
         managerIdentity.aliases;
   in {
-    schema = "aos.systemd.service-realization/v2";
+    schema = "aos.systemd.service-realization/v1";
     systemd_unit = serviceIdentity;
     inherit aliases facets links;
     inherit units;
