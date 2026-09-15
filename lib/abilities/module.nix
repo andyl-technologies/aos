@@ -787,11 +787,10 @@
     );
 
   environmentType = abilityTypes.environmentId;
-  derivedInstanceKey = declaration:
-    "instance-${builtins.hashString "sha256" (builtins.toJSON {
-      schema = "aos.ability.instance-key/v1";
-      inherit declaration;
-    })}";
+  derivedInstanceKey = declaration: "instance-${builtins.hashString "sha256" (builtins.toJSON {
+    schema = "aos.ability.instance-key/v1";
+    inherit declaration;
+  })}";
   projectedInstanceIdentities =
     if config == null || config.aos.abilities.environment == null
     then {}
@@ -954,7 +953,33 @@
         && typeAccepts resourceDeclaration.requestType resource.value
         && implementation.desiredType != null
         && typeAccepts implementation.desiredType resource.realization;
+
+  compositionOutputType = strictSubmodule {
+    value = mkOption {
+      type = canonicalValueType;
+      description = "Typed provider output value.";
+    };
+    phase = mkOption {type = valuePhaseType;};
+    visibility = mkOption {type = moduleTypes.enum ["public" "protected"];};
+    lifetime = mkOption {type = lifetimeType;};
+  };
+  compositionPendingRequirementType = strictSubmodule {
+    implementation = mkOption {
+      type = declarationKeyType;
+      description = "Exact selected implementation that activated these requirements.";
+    };
+    providerInstance = mkOption {
+      type = declarationKeyType;
+      description = "Exact selected provider instance that activated these requirements.";
+    };
+    requirements = mkOption {
+      type = moduleTypes.listOf localKeyType;
+      description = "Canonical declared requirement aliases activated for the next binding pass.";
+    };
+  };
 in {
+  imports = [./composition-driver.nix];
+
   options.aos.abilities = {
     environment = mkOption {
       type = moduleTypes.nullOr environmentType;
@@ -1027,6 +1052,27 @@ in {
       type = abilityMapType "bindings" bindingType;
       default = {};
       description = "Deployment-owned exact provider selections and grants.";
+    };
+    compositionOutputs = mkOption {
+      type = moduleTypes.attrsOf (moduleTypes.attrsOf compositionOutputType);
+      default = {};
+      readOnly = true;
+      internal = true;
+      description = "Typed provider outputs derived for exact bound requests.";
+    };
+    compositionPendingRequests = mkOption {
+      type = moduleTypes.attrsOf requestBaseType;
+      default = {};
+      readOnly = true;
+      internal = true;
+      description = "Typed child requests retained for the next selected binding-resolution pass.";
+    };
+    compositionPendingRequirements = mkOption {
+      type = moduleTypes.attrsOf compositionPendingRequirementType;
+      default = {};
+      readOnly = true;
+      internal = true;
+      description = "Declared conditional requirements retained by exact provider selection group.";
     };
     desiredResources = mkOption {
       type = abilityMapType "desiredResources" desiredResourceBaseType;
