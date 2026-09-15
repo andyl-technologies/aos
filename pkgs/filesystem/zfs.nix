@@ -40,6 +40,7 @@ in
   mkDerivation {
     pname = "zfs";
     inherit version;
+    outputs = ["out" "dev"];
 
     src = fetchurl {
       urls = [
@@ -171,6 +172,25 @@ in
             "$out/bin/zarcsummary" "$out/bin/zilstat"
           rm -f "$out/share/man/man1/dbufstat.1" "$out/share/man/man1/zarcstat.1" \
             "$out/share/man/man1/zarcsummary.1" "$out/share/man/man1/zilstat.1"
+
+          # Kernel and userspace development files are useful to downstream
+          # builds, but production images need only the built modules, shared
+          # libraries, commands, and service integration.
+          mkdir -p "$dev/lib"
+          mv "$out/include" "$dev/include"
+          mv "$out/src" "$dev/src"
+          mv "$out/lib/pkgconfig" "$dev/lib/pkgconfig"
+          for libtool_archive in "$out/lib/"*.la; do
+            if [ -f "$libtool_archive" ]; then
+              mv "$libtool_archive" "$dev/lib/"
+            fi
+          done
+          sed -i \
+            -e "s|^includedir=.*|includedir=$dev/include|" \
+            "$dev/lib/pkgconfig/"*.pc
+          sed -i \
+            -e "s|^libdir=.*|libdir='$out/lib'|" \
+            "$dev/lib/"*.la
 
           # zvol_id is installed below lib/udev rather than bin/libexec, so the
           # generic fixup pass does not recognize it as a runtime executable.
