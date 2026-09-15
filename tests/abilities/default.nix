@@ -432,6 +432,9 @@
   upgradeTransitionFixture = import ./upgrade-transition-fixture.nix {
     inherit lib pkgs;
   };
+  k3sControllerTerminal = import ./k3s-controller-terminal.nix {
+    inherit lib pkgs;
+  };
   attestationVerifierService = import ./attestation-verifier-service.nix {
     inherit lib pkgs;
   };
@@ -926,6 +929,7 @@ in
   assert effectFixture.omitted == emptyEffects;
   assert kubernetesPackageServices;
   assert upgradeTransitionFixture;
+  assert k3sControllerTerminal;
   assert attestationVerifierService;
   assert kubernetesObjectManagementCore;
   assert serviceManagement;

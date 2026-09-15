@@ -1,9 +1,16 @@
 ##! Pure K3s configuration composition for authorized integration requests.
-{lib, ...}: let
+{
+  config,
+  lib,
+  packageName,
+  ...
+}: let
   contract = import ./configuration-interface.nix {inherit lib;};
   controllerAlias = contract.controller.alias;
   contributionAlias = contract.contribution.alias;
   controllerIdentity = contract.controller.identity;
+  controller = config.aos.abilities.implementations."${packageName}:${controllerAlias}";
+  effectsInterface = builtins.head controller.requirements.effects.accepted_interfaces;
   emptyResult = {
     requests = {};
     outputs = {};
@@ -64,10 +71,7 @@
       resourceFragments.configuration = {
         kind = controllerIdentity.name;
         lifetime = "instance";
-        value = {
-          base = entry.request.parameters;
-          contributions = {};
-        };
+        value = entry.request.parameters;
       };
     };
   provideContribution = context: let
@@ -98,6 +102,12 @@
         };
       };
     };
+  effectRequest = key: resource: {
+    requirement = "effects";
+    scope = [key];
+    slot = key;
+    parameters = resource.value;
+  };
   compose = {
     instance,
     resources,
@@ -113,18 +123,51 @@
     if builtins.length (builtins.attrNames mergedLabels) != labelCount
     then throw "K3s integration contributions contain a duplicate node label"
     else {
-      requests = {};
+      requests = builtins.mapAttrs effectRequest resources;
       outputs = {};
       realizations.configuration = {
         schema = "aos.k3s.configuration-realization/v1";
         path = executionPath instance;
       };
     };
+  transition = context:
+    lib.abilities.resourceControllerTransition {
+      inherit context;
+      terminalInterface = effectsInterface;
+      actions = {
+        create = {
+          method = "apply";
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        update = {
+          method = "apply";
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        unchanged = null;
+        remove = {
+          method = "release";
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        reconcile-stopped = {
+          method = "apply";
+          phase = "recovering";
+          access = "exclusive-write";
+        };
+        reconcile-divergent = {
+          method = "apply";
+          phase = "recovering";
+          access = "exclusive-write";
+        };
+      };
+    };
 in {
   config.aos.abilities.implementations = {
     ${controllerAlias} = {
       provide = provideBase;
-      inherit compose;
+      inherit compose transition;
     };
     ${contributionAlias}.provide = provideContribution;
   };

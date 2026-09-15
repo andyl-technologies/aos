@@ -1,9 +1,16 @@
 ##! Pure K3s composition for one authorized Kubernetes object-set controller.
-{lib, ...}: let
+{
+  config,
+  lib,
+  packageName,
+  ...
+}: let
   contract = lib.abilities.interfaces.kubernetesObjectManagement;
   controllerAlias = contract.controller.alias;
   contributionAlias = contract.contribution.alias;
   controllerIdentity = contract.controller.identity;
+  controller = config.aos.abilities.implementations."${packageName}:${controllerAlias}";
+  effectsInterface = builtins.head controller.requirements.effects.accepted_interfaces;
   emptyResult = {
     requests = {};
     outputs = {};
@@ -73,10 +80,7 @@
       resourceFragments.objects = {
         kind = controllerIdentity.name;
         lifetime = "instance";
-        value = {
-          cluster = entry.request.parameters;
-          contributions = {};
-        };
+        value = entry.request.parameters;
       };
     };
   provideContribution = context: let
@@ -100,6 +104,12 @@
         };
       };
     };
+  effectRequest = key: resource: {
+    requirement = "effects";
+    scope = [key];
+    slot = key;
+    parameters = resource.value;
+  };
   compose = {resources, ...}: let
     resource = resources.objects or (throw "K3s did not receive its canonical object-set resource");
     objects = lib.concatMap (entry: entry.objects) (builtins.attrValues resource.value.contributions);
@@ -112,18 +122,51 @@
     if builtins.length identities != builtins.length (lib.unique identities)
     then throw "Kubernetes object contributions contain a duplicate API identity"
     else {
-      requests = {};
+      requests = builtins.mapAttrs effectRequest resources;
       outputs = {};
       realizations.objects = {
         schema = "aos.kubernetes.object-set-realization/v1";
         kubeconfig = "/etc/rancher/k3s/k3s.yaml";
       };
     };
+  transition = context:
+    lib.abilities.resourceControllerTransition {
+      inherit context;
+      terminalInterface = effectsInterface;
+      actions = {
+        create = {
+          method = "apply";
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        update = {
+          method = "apply";
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        unchanged = null;
+        remove = {
+          method = "release";
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        reconcile-stopped = {
+          method = "apply";
+          phase = "recovering";
+          access = "exclusive-write";
+        };
+        reconcile-divergent = {
+          method = "apply";
+          phase = "recovering";
+          access = "exclusive-write";
+        };
+      };
+    };
 in {
   config.aos.abilities.implementations = {
     ${controllerAlias} = {
       provide = provideBase;
-      inherit compose;
+      inherit compose transition;
     };
     ${contributionAlias}.provide = provideContribution;
   };

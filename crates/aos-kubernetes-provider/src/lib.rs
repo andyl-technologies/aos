@@ -33,8 +33,7 @@ use thiserror::Error;
 
 mod configuration;
 
-const INTERFACE_NAME: &str = "aos.kubernetes.object-set";
-const CONTRIBUTION_INTERFACE_NAME: &str = "aos.kubernetes.objects";
+const EFFECTS_INTERFACE_NAME: &str = "aos.k3s.kubernetes-object-effects";
 const OBSERVATION_SCHEMA: &str = "aos.ability.kubernetes-object-set-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.kubernetes.object-set-context/v1";
 const REALIZATION_SCHEMA: &str = "aos.kubernetes.object-set-realization/v1";
@@ -542,29 +541,15 @@ fn validate_desired(desired: &AggregateRequest) -> Result<(), KubernetesProvider
 }
 
 fn validate_selected_inputs(
-    interface: &str,
+    _interface: &str,
     inputs: &AbilityValue,
     desired: &AggregateRequest,
 ) -> Result<(), KubernetesProviderError> {
-    if interface == INTERFACE_NAME {
-        let selected: AggregateRequest = decode(inputs)?;
-        if selected != *desired {
-            return Err(invalid(
-                "controller inputs differ from the retained aggregate resource",
-            ));
-        }
-    }
-    if interface == CONTRIBUTION_INTERFACE_NAME {
-        let contribution: ContributionRequest = decode(inputs)?;
-        if !desired
-            .contributions
-            .values()
-            .any(|value| value == &contribution)
-        {
-            return Err(invalid(
-                "Kubernetes contribution is absent from its retained aggregate",
-            ));
-        }
+    let selected: AggregateRequest = decode(inputs)?;
+    if selected != *desired {
+        return Err(invalid(
+            "terminal inputs differ from the retained aggregate resource",
+        ));
     }
     Ok(())
 }
@@ -618,11 +603,8 @@ fn validate_method(
     method: &str,
     semantics: &MethodSemantics,
 ) -> Result<(), KubernetesProviderError> {
-    let method_allowed = match interface {
-        INTERFACE_NAME => matches!(method, "apply" | "observe" | "release"),
-        CONTRIBUTION_INTERFACE_NAME => method == "observe",
-        _ => false,
-    };
+    let method_allowed =
+        interface == EFFECTS_INTERFACE_NAME && matches!(method, "apply" | "observe" | "release");
     if !method_allowed {
         return Err(invalid(
             "method does not belong to Kubernetes object-set management",
@@ -706,9 +688,7 @@ pub(crate) fn bound_target_context(
         ));
     };
     let native = validate_resource_context(context).map_err(|error| invalid(error.to_string()))?;
-    if matches!(invocation.method.interface.name.as_str(), INTERFACE_NAME)
-        && native.resource_spec.value != invocation.request.inputs
-    {
+    if native.resource_spec.value != invocation.request.inputs {
         return Err(invalid(
             "controller inputs differ from the retained aggregate resource",
         ));
@@ -1395,6 +1375,15 @@ mod tests {
             name: "gateway".into(),
             content: r#"{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"gateway","namespace":"default"},"spec":{}}"#.into(),
         }
+    }
+
+    #[test]
+    fn handler_accepts_only_the_package_owned_terminal_interface() {
+        let apply = MethodSemantics::ordinary(AccessMode::ExclusiveWrite);
+
+        assert!(validate_method(EFFECTS_INTERFACE_NAME, "apply", &apply).is_ok());
+        assert!(validate_method("aos.kubernetes.object-set", "apply", &apply).is_err());
+        assert!(validate_method("aos.kubernetes.objects", "apply", &apply).is_err());
     }
 
     #[test]
