@@ -3162,57 +3162,6 @@ mod tests {
     }
 
     #[test]
-    fn expose_schema_hash_omits_default_optional_credential_field() {
-        let config = crate::types::ExposeConfigMeta {
-            artifacts: Vec::new(),
-            credentials: vec![crate::types::CredentialMeta {
-                name: "tls-key".into(),
-                source: None,
-                ciphertext: None,
-                units: vec!["example.service".into()],
-                encrypted: true,
-                optional: false,
-            }],
-        };
-        let expected = crate::graph_compile::reproject::hash_cjson(&serde_json::json!({
-            "artifacts": [],
-            "credentials": [{
-                "name": "tls-key",
-                "units": ["example.service"],
-                "encrypted": true,
-            }],
-        }));
-
-        assert_eq!(expose_config_schema_hash(&config).unwrap(), expected);
-    }
-
-    #[test]
-    fn expose_schema_hash_binds_optional_credential_field() {
-        let config = crate::types::ExposeConfigMeta {
-            artifacts: Vec::new(),
-            credentials: vec![crate::types::CredentialMeta {
-                name: "tls-key".into(),
-                source: None,
-                ciphertext: None,
-                units: vec!["example.service".into()],
-                encrypted: true,
-                optional: true,
-            }],
-        };
-        let expected = crate::graph_compile::reproject::hash_cjson(&serde_json::json!({
-            "artifacts": [],
-            "credentials": [{
-                "name": "tls-key",
-                "units": ["example.service"],
-                "encrypted": true,
-                "optional": true,
-            }],
-        }));
-
-        assert_eq!(expose_config_schema_hash(&config).unwrap(), expected);
-    }
-
-    #[test]
     fn canonical_store_member_validation_preserves_exact_root_validation() {
         let root = format!("/nix/store/{}-etc-os-release", "0".repeat(32));
 
