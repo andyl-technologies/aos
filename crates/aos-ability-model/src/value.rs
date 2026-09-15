@@ -426,6 +426,13 @@ pub enum ValueExpression {
         /// Supplies fields in canonical member-name order.
         fields: BTreeMap<String, ValueExpression>,
     },
+    /// Resolves a normalized path below a deferred absolute execution path.
+    PathWithin {
+        /// Supplies the absolute execution path that owns the child path.
+        base: Box<ValueExpression>,
+        /// Identifies the normalized child path below `base`.
+        relative_path: crate::RelativePath,
+    },
     /// Supplies an exact immutable artifact reference.
     ArtifactReference {
         /// Identifies the retained artifact and closure.
@@ -457,6 +464,7 @@ impl ValueExpression {
         match self {
             Self::Literal { value } => JsonValueKind::of_json(value.as_json()),
             Self::List { .. } => Some(JsonValueKind::Array),
+            Self::PathWithin { .. } => Some(JsonValueKind::String),
             Self::Object { .. }
             | Self::ArtifactReference { .. }
             | Self::ResourceReference { .. } => Some(JsonValueKind::Object),
@@ -490,6 +498,13 @@ impl ValueExpression {
                         return false;
                     }
                     stack.extend(fields.values().map(|field| (field, child_depth)));
+                }
+                Self::PathWithin { base, .. } => {
+                    item_count = item_count.saturating_add(1);
+                    if item_count > max_items {
+                        return false;
+                    }
+                    stack.push((base, child_depth));
                 }
                 Self::Literal { .. }
                 | Self::ArtifactReference { .. }
@@ -744,5 +759,26 @@ mod tests {
         };
 
         assert!(!expression.is_within_limits(64, 2));
+    }
+
+    #[test]
+    fn path_within_has_a_closed_typed_wire_shape() {
+        let expression = ValueExpression::PathWithin {
+            base: Box::new(ValueExpression::Literal {
+                value: AbilityValue::new(Value::String("/run/krb5".to_string()))
+                    .expect("bounded path"),
+            }),
+            relative_path: crate::RelativePath::new("service.pid").expect("relative path"),
+        };
+        let encoded = serde_json::to_value(&expression).expect("serialize expression");
+
+        assert_eq!(encoded["source"], "path-within");
+        assert_eq!(encoded["relative_path"], "service.pid");
+        assert_eq!(
+            expression.top_level_json_kind(),
+            Some(crate::JsonValueKind::String)
+        );
+        assert!(expression.is_within_limits(64, 2));
+        assert!(!expression.is_within_limits(1, 2));
     }
 }

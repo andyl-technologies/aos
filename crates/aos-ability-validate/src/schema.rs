@@ -633,6 +633,27 @@ fn validate_expression_with_literal_source(
                 literal_source,
             );
         }
+        ValueExpression::PathWithin { base, .. } => {
+            if !matches!(
+                schema,
+                ValueSchema::String {
+                    syntax: Some(StringSyntax::ExecutionPathV1),
+                    ..
+                }
+            ) {
+                push_type_mismatch(path, "path-within expression", schema, diagnostics);
+                return;
+            }
+            validate_expression_with_literal_source(
+                schema,
+                base,
+                &path.child("base"),
+                diagnostics,
+                result_validator,
+                aggregate_validator,
+                literal_source,
+            );
+        }
         ValueExpression::ArtifactReference { .. } => {
             if !matches!(schema, ValueSchema::ArtifactReference) {
                 push_type_mismatch(path, "artifact reference", schema, diagnostics);
@@ -933,6 +954,7 @@ fn validate_standalone_size_and_strings(
                 }
                 stack.extend(fields.values());
             }
+            ValueExpression::PathWithin { base, .. } => stack.push(base),
             ValueExpression::ArtifactReference { reference } => {
                 if reference.store_path.len() as u64 > ABILITY_LIMITS_V1.max_string_bytes {
                     return Err(
@@ -1492,6 +1514,7 @@ fn validate_string(
         None => true,
         Some(StringSyntax::LocalKeyV1) => LocalKey::new(value).is_ok(),
         Some(StringSyntax::QualifiedNameV1) => InterfaceName::new(value).is_ok(),
+        Some(StringSyntax::ExecutionPathV1) => is_execution_path(value),
     };
     if !syntax_matches {
         push_diagnostic(
@@ -1503,6 +1526,15 @@ fn validate_string(
             ),
         );
     }
+}
+
+fn is_execution_path(path: &str) -> bool {
+    path.starts_with('/')
+        && !path.contains('\0')
+        && (path == "/"
+            || path[1..]
+                .split('/')
+                .all(|component| !component.is_empty() && component != "." && component != ".."))
 }
 
 fn validate_declared_string_bound(
@@ -1613,6 +1645,7 @@ fn expression_kind(expression: &ValueExpression) -> &'static str {
     match expression {
         ValueExpression::Literal { value } => json_kind(value.as_json()),
         ValueExpression::List { .. } => "array",
+        ValueExpression::PathWithin { .. } => "string",
         ValueExpression::Object { .. }
         | ValueExpression::ArtifactReference { .. }
         | ValueExpression::ResourceReference { .. } => "object",
@@ -1922,6 +1955,34 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.code == DiagnosticCode::NonCanonicalOrder)
         );
+    }
+
+    #[test]
+    fn path_within_requires_an_execution_path_schema_and_base() {
+        let schema = ValueSchema::String {
+            max_length: 4096,
+            syntax: Some(StringSyntax::ExecutionPathV1),
+        };
+        let path = ValueExpression::PathWithin {
+            base: Box::new(literal(Value::String("/run/krb5".to_string()))),
+            relative_path: aos_ability_model::RelativePath::new("service.pid")
+                .expect("relative path"),
+        };
+
+        assert!(validate_value(&schema, &path).is_ok());
+
+        let untyped_schema = ValueSchema::String {
+            max_length: 4096,
+            syntax: None,
+        };
+        assert!(validate_value(&untyped_schema, &path).is_err());
+
+        let relative_base = ValueExpression::PathWithin {
+            base: Box::new(literal(Value::String("run/krb5".to_string()))),
+            relative_path: aos_ability_model::RelativePath::new("service.pid")
+                .expect("relative path"),
+        };
+        assert!(validate_value(&schema, &relative_base).is_err());
     }
 
     #[test]

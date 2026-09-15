@@ -54,6 +54,8 @@ pub enum StringSyntax {
     LocalKeyV1,
     /// Uses at least two dot-separated `[A-Za-z0-9_-]+` segments.
     QualifiedNameV1,
+    /// Uses a normalized absolute path with no empty, `.` or `..` components.
+    ExecutionPathV1,
 }
 
 /// Constrains strings used as values or map keys.

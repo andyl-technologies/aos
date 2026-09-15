@@ -135,6 +135,24 @@
   localKeyPattern = "[A-Za-z0-9._-]+";
   qualifiedNamePattern = "[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+";
 
+  isExecutionPath = value: let
+    splitComponents =
+      if builtins.isString value
+      then builtins.filter builtins.isString (builtins.split "/" value)
+      else [];
+    components =
+      if splitComponents == []
+      then []
+      else builtins.tail splitComponents;
+  in
+    builtins.isString value
+    && builtins.stringLength value <= 4096
+    && builtins.substring 0 1 value == "/"
+    && (
+      value == "/"
+      || builtins.all (component: component != "" && component != "." && component != "..") components
+    );
+
   syntaxMatches = syntax: value:
     if syntax == null
     then true
@@ -142,6 +160,8 @@
     then builtins.match localKeyPattern value != null
     else if syntax == "qualified-name-v1"
     then builtins.match qualifiedNamePattern value != null
+    else if syntax == "execution-path-v1"
+    then isExecutionPath value
     else false;
 
   strictRecordType = file: fields: let
@@ -226,6 +246,7 @@
   in
     value
     != ""
+    && builtins.stringLength value <= 4096
     && builtins.substring 0 1 value != "/"
     && builtins.all (component: component != "" && component != "." && component != "..") components);
 
@@ -243,11 +264,20 @@
         open = false;
       };
     };
-  operationResultReferenceType = specialType "operation-result-reference" schemas.operationResultReference {
-    _type = moduleTypes.enum ["aos-request-output-reference"];
-    request = localKeyType;
-    output = localKeyType;
-  };
+  operationResultReferenceType =
+    (specialType "operation-result-reference" schemas.operationResultReference {
+      _type = moduleTypes.enum ["aos-request-output-reference"];
+      request = localKeyType;
+      output = localKeyType;
+    })
+    // {
+      check = value:
+        builtins.isAttrs value
+        && builtins.attrNames value == ["_type" "output" "request"]
+        && value._type == "aos-request-output-reference"
+        && localKeyType.check value.request
+        && localKeyType.check value.output;
+    };
 in rec {
   ## Publishes the closed version-1 value bounds used by authoring and wire validation.
   limits = {
@@ -409,19 +439,9 @@ in rec {
   executionPath = let
     schema = schemas.string {
       maxLength = 4096;
-      syntax = null;
+      syntax = "execution-path-v1";
     };
-    pathType = moduleTypes.addCheck moduleTypes.str (value: let
-      splitComponents = builtins.filter builtins.isString (builtins.split "/" value);
-      components =
-        if splitComponents == []
-        then []
-        else builtins.tail splitComponents;
-    in
-      builtins.stringLength value
-      <= 4096
-      && builtins.substring 0 1 value == "/"
-      && builtins.all (component: component != "" && component != "." && component != "..") components);
+    pathType = moduleTypes.addCheck moduleTypes.str isExecutionPath;
   in
     decorate "absolute execution path" schema pathType;
   principalName = decorate "principal name" localKey._abilitySchema localKeyType;
@@ -747,15 +767,39 @@ in rec {
   };
   deferredResult = expectedType: let
     schema = schemaOf "deferred result" expectedType;
+    admitsPathWithin =
+      schema.kind == "string"
+      && schema.syntax == "execution-path-v1";
+    pathWithinType = moduleTypes.mkOptionType {
+      name = "path within a deferred execution path";
+      description = "normalized path below a literal or deferred absolute execution path";
+      check = value:
+        admitsPathWithin
+        && builtins.isAttrs value
+        && builtins.attrNames value == ["_type" "base" "relative_path"]
+        && value._type == "aos-runtime-path"
+        && relativePathType.check value.relative_path
+        && (
+          expectedType.check value.base
+          || operationResultReferenceType.check value.base
+          || pathWithinType.check value.base
+        );
+      merge = moduleTypes.mergeEqualOption;
+    };
     authored = moduleTypes.mkOptionType {
-      name = "literal or deferred operation result";
-      description = "literal value or exact operation result reference";
-      check = value: expectedType.check value || operationResultReferenceType.check value;
+      name = "literal or deferred expression";
+      description = "literal value, exact operation result reference, or normalized child execution path";
+      check = value:
+        expectedType.check value
+        || operationResultReferenceType.check value
+        || pathWithinType.check value;
       merge = location: definitions: let
         value = (builtins.elemAt definitions (builtins.length definitions - 1)).value;
       in
         if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
         then operationResultReferenceType.merge location definitions
+        else if builtins.isAttrs value && (value._type or null) == "aos-runtime-path"
+        then pathWithinType.merge location definitions
         else expectedType.merge location definitions;
     };
   in

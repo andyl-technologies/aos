@@ -1061,6 +1061,7 @@
   checkCompositionValue = schemaValue: value: let
     schema = schemas.validateSchema "composition value schema" schemaValue;
     marker = builtins.isAttrs value && (value._type or null) == "aos-request-output-reference";
+    pathMarker = builtins.isAttrs value && (value._type or null) == "aos-runtime-path";
     invalid = expected: fail "composition value must be ${expected}";
     valueKind = candidate:
       if builtins.isBool candidate
@@ -1077,6 +1078,15 @@
   in
     if marker
     then value
+    else if pathMarker
+    then let
+      checked = requireAttrs "path-within expression" ["_type" "base" "relative_path"] value;
+    in
+      if schema.kind != "string" || schema.syntax != "execution-path-v1"
+      then invalid "an execution path"
+      else if !abilityTypes.relativePath.check checked.relative_path
+      then fail "path-within relative path is not normalized"
+      else checked // {base = checkCompositionValue schema checked.base;}
     else if !containsRequestOutput 0 value
     then schemas.checkValue schema value
     else if schema.kind == "list"
@@ -1420,6 +1430,8 @@
       in
         if !containsRequestOutput 0 checked
         then checked
+        else if builtins.isAttrs checked && (checked._type or null) == "aos-runtime-path"
+        then checked // {base = resolveComposition nodes sourceName schema checked.base trail;}
         else if schema.kind == "list"
         then let
           resolved = builtins.map (entry: resolveComposition nodes sourceName schema.element entry trail) checked;
@@ -1630,6 +1642,38 @@ in rec {
     request = requireLocalKey "result request" request;
     output = requireLocalKey "result output" output;
   };
+
+  pathWithin = args: let
+    checked = requireAttrs "path-within expression" ["base" "relativePath"] args;
+    isEffectResult = value:
+      builtins.isAttrs value
+      && builtins.attrNames value == ["_type" "key" "kind" "output" "up"]
+      && value._type == "aos-effect-result-reference"
+      && builtins.elem value.kind ["operation" "merge"]
+      && builtins.isInt value.up
+      && value.up >= 0
+      && value.up <= 64
+      && abilityTypes.localKey.check value.key
+      && abilityTypes.localKey.check value.output;
+    validBase = value:
+      abilityTypes.executionPath.check value
+      || (abilityTypes.deferredResult abilityTypes.executionPath).check value
+      || isEffectResult value
+      || (
+        builtins.isAttrs value
+        && (value._type or null) == "aos-runtime-path"
+        && abilityTypes.relativePath.check (value.relative_path or null)
+        && validBase (value.base or null)
+      );
+    candidate = {
+      _type = "aos-runtime-path";
+      inherit (checked) base;
+      relative_path = checked.relativePath;
+    };
+  in
+    if validBase candidate.base && abilityTypes.relativePath.check candidate.relative_path
+    then candidate
+    else fail "path-within requires a deferred execution path base and normalized relative path";
 
   compositionRequirementKey = args: let
     checked = requireAttrs "composition requirement identity" ["implementation" "alias"] args;

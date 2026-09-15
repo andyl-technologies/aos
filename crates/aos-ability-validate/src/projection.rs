@@ -280,6 +280,17 @@ fn authorize_expression(
         ValueExpression::OperationResult { .. } => {
             Err("runtime operation result cannot appear in a pure aggregate output")
         }
+        ValueExpression::PathWithin { base, .. } => authorize_expression(
+            context,
+            principal,
+            bindings,
+            schema,
+            base,
+            resources,
+            artifacts,
+            maximum_lifetime,
+            root_authority,
+        ),
         ValueExpression::List { items } => {
             let ValueSchema::List { element, .. } = schema else {
                 return Ok(());
@@ -705,6 +716,15 @@ fn preflight_projection_expressions(
                     );
                 }
                 stack.extend(fields.values().map(|field| (field, child_depth)));
+            }
+            ValueExpression::PathWithin { base, .. } => {
+                item_count = item_count.saturating_add(1);
+                if item_count > limits.max_collection_items {
+                    return Err(
+                        "aggregate output validation input exceeds the collection item limit",
+                    );
+                }
+                stack.push((base, child_depth));
             }
             ValueExpression::Literal { .. }
             | ValueExpression::ArtifactReference { .. }

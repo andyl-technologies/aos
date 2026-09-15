@@ -445,6 +445,25 @@
       group = "services";
     };
   };
+  pathWithinGraph = effects.graph {
+    directory = invoke {
+      target = service "observe";
+      through = serviceBinding;
+      method = "observe";
+      inputs = {};
+      group = "services";
+    };
+    consumer = effects.after ["directory"] (invoke {
+      target = service "observe";
+      through = serviceBinding;
+      method = "observe";
+      inputs.pid_file = abilities.pathWithin {
+        base = effects.result "directory" "execution-path";
+        relativePath = "krb5/service.pid";
+      };
+      group = "services";
+    });
+  };
 in {
   normalized = effects.normalize ["nginx"] transition;
   reversed = effects.normalize ["nginx"] (effects.graph {
@@ -454,6 +473,7 @@ in {
   longChain = effects.normalize ["chain"] (effects.graph chainNodes);
   bootstrap = effects.normalize ["bootstrap"] providerBootstrap;
   kubernetes = effects.normalize ["kubernetes"] kubernetesGraph;
+  pathWithin = effects.normalize ["path-within"] pathWithinGraph;
   inherit
     missingReference
     cycle
