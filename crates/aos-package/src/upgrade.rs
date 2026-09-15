@@ -1172,7 +1172,7 @@ mod tests {
         };
 
         let err = verify_secondary_artifact_downloads(&[result], &[artifact])
-            .expect_err("referenced expose image should be rejected");
+            .expect_err("secondary artifact with references should be rejected");
 
         assert!(err.to_string().contains("empty reference set"));
     }

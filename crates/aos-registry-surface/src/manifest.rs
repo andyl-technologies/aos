@@ -138,8 +138,8 @@ pub struct PlatformEntry {
     pub source_drv: String,
     /// NAR hash of the source derivation closure.
     pub source_nar_hash: String,
-    /// Store path hashes of direct runtime references, or a structural
-    /// RFC-0001 gate table for permission-bearing packages.
+    /// Store path hashes of direct runtime references, or a structural feature
+    /// gate for authenticated package metadata.
     #[serde(default)]
     pub references: ReferenceField,
     /// Pre-compiled images (only for sysroot packages).
@@ -192,10 +192,10 @@ impl PlatformEntry {
 }
 
 /// Store path hashes of a platform entry's direct runtime references, or a
-/// structural RFC-0001 gate table for permission-bearing packages.
+/// structural feature gate for authenticated package metadata.
 ///
 /// Old clients that expected a plain list reject the structural gate form,
-/// which is the intended fail-closed behavior for permission-bearing packages.
+/// which is the intended fail-closed behavior for gated metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ReferenceField {
@@ -242,7 +242,7 @@ impl ReferenceField {
     }
 }
 
-/// A structural RFC-0001 references gate table.
+/// A structural references feature-gate table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReferenceGate {

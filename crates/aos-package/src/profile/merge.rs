@@ -54,7 +54,7 @@ const SHARE_SKIP_SUBDIRS: &[&str] = &["man"];
 
 /// Directories in the generation root that belong to the profile bookkeeping
 /// rather than the FHS merge tree.  `clear_fhs_tree` preserves these.
-const PRESERVED_DIRS: &[&str] = &["usr", "src", "expose", "expose-images", "meta"];
+const PRESERVED_DIRS: &[&str] = &["usr", "src", "meta"];
 
 /// Result of building the FHS merge tree.
 pub struct MergeResult {
@@ -190,9 +190,8 @@ fn ordered_generation_roots(generation: &Generation) -> Result<Vec<(String, Path
 
 /// Remove the FHS tree (all merged symlink directories) from a generation.
 ///
-/// Preserves `usr/`, `src/`, `expose/`, `expose-images/`, and `meta/`
-/// directories (GC roots, source roots, rendered expose-artifact roots,
-/// exposed image roots, and per-generation package metadata).
+/// Preserves the `usr/`, `src/`, and `meta/` bookkeeping directories that hold
+/// GC roots, source roots, and per-generation package metadata.
 ///
 /// # Errors
 ///
@@ -543,6 +542,10 @@ mod tests {
         fs::write(gn.path.join("src/abc123"), "root").unwrap();
         fs::create_dir_all(gn.path.join("meta")).unwrap();
         fs::write(gn.path.join("meta/abc123.json"), "{}").unwrap();
+        fs::create_dir_all(gn.path.join("expose")).unwrap();
+        fs::write(gn.path.join("expose/retired"), "stale").unwrap();
+        fs::create_dir_all(gn.path.join("expose-images")).unwrap();
+        fs::write(gn.path.join("expose-images/retired"), "stale").unwrap();
 
         clear_fhs_tree(&gn).unwrap();
 
@@ -550,6 +553,8 @@ mod tests {
         assert!(!gn.path.join("bin").exists());
         assert!(!gn.path.join("lib").exists());
         assert!(!gn.path.join("share").exists());
+        assert!(!gn.path.join("expose").exists());
+        assert!(!gn.path.join("expose-images").exists());
 
         // Bookkeeping dirs should be preserved.
         assert!(gn.path.join("usr").exists());

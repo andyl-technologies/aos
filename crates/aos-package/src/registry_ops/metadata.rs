@@ -768,7 +768,7 @@ fn record_attestation_platform_fields(
     let references = table
         .get_mut("references")
         .and_then(toml::Value::as_table_mut)
-        .context("config-module platform is missing structural references metadata")?;
+        .context("attested platform is missing structural references metadata")?;
     let reference_features = references
         .entry("requires-features")
         .or_insert_with(|| toml::Value::Array(Vec::new()))

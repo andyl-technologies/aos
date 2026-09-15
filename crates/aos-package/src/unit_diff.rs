@@ -488,7 +488,7 @@ impl UnitDiff {
 
 /// Returns the package target owning a generated service-root preparation unit.
 ///
-/// The expose renderer reserves this exact name. Keeping the derivation here
+/// The service-root materializer reserves this exact name. Keeping the derivation here
 /// lets both generation activation and attached-unit reconciliation establish
 /// the same pre-reload stop barrier while the old strict cleanup command is
 /// still loaded.
