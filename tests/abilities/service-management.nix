@@ -92,6 +92,65 @@
     consumerInstance = "consumer";
     declaration = minimalService;
   };
+  structuredConfiguration = {
+    name = "structured";
+    source = {
+      kind = "structured-value";
+      format = "json";
+      document = [
+        {
+          kind = "object";
+          path = [];
+        }
+        {
+          kind = "string";
+          path = [
+            {
+              kind = "key";
+              value = "path";
+            }
+          ];
+          value = lib.abilities.resultOf "runtime" "storage-path";
+        }
+      ];
+    };
+    mode = "0440";
+  };
+  projectedStructuredConfiguration =
+    structuredConfiguration
+    // {
+      source = serviceManagement.structuredSource "json" {
+        enabled = true;
+        path = lib.abilities.resultOf "runtime" "storage-path";
+        ports = [80 443];
+      };
+    };
+  invalidStructuredConfiguration =
+    structuredConfiguration
+    // {
+      source =
+        structuredConfiguration.source
+        // {
+          document =
+            structuredConfiguration.source.document
+            ++ [
+              {
+                kind = "string";
+                path = [
+                  {
+                    kind = "key";
+                    value = "missing";
+                  }
+                  {
+                    kind = "key";
+                    value = "child";
+                  }
+                ];
+                value = "bad";
+              }
+            ];
+        };
+    };
   fixedPoint = lib.evalModules {
     specialArgs = {inherit lib;};
     modules = [
@@ -150,4 +209,12 @@ in
   assert interfaces.persistentStorageAllocation.document.interface.methods.allocate.outputs.retained-resource.lifetime == "persistent";
   assert builtins.attrNames expanded.requests == ["main-lifecycle"];
   assert expanded.requests.main-lifecycle.consumer == "consumer";
+  assert succeedsAs serviceTypes.configurationMaterialization structuredConfiguration;
+  assert succeedsAs serviceTypes.configurationMaterialization projectedStructuredConfiguration;
+  assert !(builtins.tryEval (builtins.deepSeq (serviceManagement.forConfiguration {
+      inherit serviceTypes;
+      consumerInstance = "consumer";
+      declaration = invalidStructuredConfiguration;
+    })
+    true)).success;
   assert builtins.attrNames fixedPoint.config.aos.abilities.interfaces == declaredAliases; true

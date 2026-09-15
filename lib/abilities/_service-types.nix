@@ -365,11 +365,93 @@
       reference = types.artifactFileReference;
     };
   };
+  documentPathSegment = types.taggedUnion {
+    tag = "kind";
+    variants = {
+      index = types.record {
+        fields = {
+          kind = types.enum ["index"];
+          value = types.integer {
+            minimum = 0;
+            maximum = 65535;
+          };
+        };
+      };
+      key = types.record {
+        fields = {
+          kind = types.enum ["key"];
+          value = boundedString 1024;
+        };
+      };
+    };
+  };
+  documentPath = types.list {
+    element = documentPathSegment;
+    maxItems = 64;
+  };
+  documentNode = types.taggedUnion {
+    tag = "kind";
+    variants = {
+      array = types.record {
+        fields = {
+          kind = types.enum ["array"];
+          path = documentPath;
+        };
+      };
+      boolean = types.record {
+        fields = {
+          kind = types.enum ["boolean"];
+          path = documentPath;
+          value = types.deferredResult types.boolean;
+        };
+      };
+      integer = types.record {
+        fields = {
+          kind = types.enum ["integer"];
+          path = documentPath;
+          value = types.deferredResult (types.integer {
+            minimum = -9007199254740991;
+            maximum = 9007199254740991;
+          });
+        };
+      };
+      null = types.record {
+        fields = {
+          kind = types.enum ["null"];
+          path = documentPath;
+        };
+      };
+      object = types.record {
+        fields = {
+          kind = types.enum ["object"];
+          path = documentPath;
+        };
+      };
+      string = types.record {
+        fields = {
+          kind = types.enum ["string"];
+          path = documentPath;
+          value = types.deferredResult types.runtimeString;
+        };
+      };
+    };
+  };
+  structuredConfigurationSource = types.record {
+    fields = {
+      kind = types.enum ["structured-value"];
+      format = types.enum ["json" "toml" "yaml"];
+      document = types.list {
+        element = documentNode;
+        maxItems = 65536;
+      };
+    };
+  };
   configurationMaterializationSource = types.taggedUnion {
     tag = "kind";
     variants = {
       artifact-file = artifactConfigurationSource;
       inline-text = inlineConfigurationSource;
+      structured-value = structuredConfigurationSource;
     };
   };
   configurationMaterialization = types.record {

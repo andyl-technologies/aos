@@ -192,6 +192,124 @@
     }
     // featureValue;
 
+  pathPrefix = length: path:
+    builtins.genList (index: builtins.elemAt path index) length;
+  structuredSource = format: value: let
+    keySegment = name: {
+      kind = "key";
+      value = name;
+    };
+    indexSegment = index: {
+      kind = "index";
+      value = index;
+    };
+    nodesAt = path: current:
+      if current == null
+      then [
+        {
+          kind = "null";
+          inherit path;
+        }
+      ]
+      else if builtins.isBool current
+      then [
+        {
+          kind = "boolean";
+          inherit path;
+          value = current;
+        }
+      ]
+      else if builtins.isInt current
+      then [
+        {
+          kind = "integer";
+          inherit path;
+          value = current;
+        }
+      ]
+      else if builtins.isString current
+      then [
+        {
+          kind = "string";
+          inherit path;
+          value = current;
+        }
+      ]
+      else if builtins.isList current
+      then
+        [
+          {
+            kind = "array";
+            inherit path;
+          }
+        ]
+        ++ builtins.concatLists (builtins.genList
+          (index: nodesAt (path ++ [(indexSegment index)]) (builtins.elemAt current index))
+          (builtins.length current))
+      else if builtins.isAttrs current && (current._type or null) == "aos-request-output-reference"
+      then [
+        {
+          kind = "string";
+          inherit path;
+          value = current;
+        }
+      ]
+      else if builtins.isAttrs current
+      then
+        [
+          {
+            kind = "object";
+            inherit path;
+          }
+        ]
+        ++ builtins.concatLists (builtins.map
+          (name: nodesAt (path ++ [(keySegment name)]) current.${name})
+          (builtins.attrNames current))
+      else throw "structured configuration values must contain only null, Boolean, integer, string, list, record, or deferred string leaves";
+  in {
+    kind = "structured-value";
+    inherit format;
+    document = nodesAt [] value;
+  };
+  structuredDocumentValid = source: let
+    nodes = source.document;
+    entries =
+      builtins.map (node: {
+        name = builtins.toJSON node.path;
+        value = node;
+      })
+      nodes;
+    nodesByPath = builtins.listToAttrs entries;
+    root = nodesByPath.${builtins.toJSON []} or null;
+    parentsValid = builtins.all (node: let
+      length = builtins.length node.path;
+    in
+      length
+      == 0
+      || (let
+        parentPath = pathPrefix (length - 1) node.path;
+        parent = nodesByPath.${builtins.toJSON parentPath} or null;
+        segment = builtins.elemAt node.path (length - 1);
+      in
+        parent
+        != null
+        && (
+          (segment.kind == "key" && parent.kind == "object")
+          || (segment.kind == "index" && parent.kind == "array")
+        )))
+    nodes;
+    formatValid =
+      source.format
+      != "toml"
+      || (root != null && root.kind == "object" && builtins.all (node: node.kind != "null") nodes);
+  in
+    nodes
+    != []
+    && builtins.length nodes == builtins.length (builtins.attrNames nodesByPath)
+    && root != null
+    && parentsValid
+    && formatValid;
+
   forService = {
     serviceTypes,
     consumerInstance,
@@ -225,11 +343,15 @@
     consumerInstance,
     declaration,
   }: let
+    source = declaration.source or {};
+    structuredValid = (source.kind or null) != "structured-value" || structuredDocumentValid source;
     checked =
       if !serviceTypes.configurationMaterialization.check declaration
       then throw "managed configuration does not match the canonical materialization type"
       else if builtins.match "[0-7][0-7][0-7]([0-7])?" declaration.mode == null
       then throw "managed configuration '${declaration.name}' mode must be three or four octal digits"
+      else if !structuredValid
+      then throw "managed configuration '${declaration.name}' has an invalid structured document tree"
       else declaration;
     interface = serviceInterfaces.managedConfiguration;
   in {
@@ -257,5 +379,5 @@
     };
   };
 in {
-  inherit featureInterfaces forConfiguration forProducer forService validate;
+  inherit featureInterfaces forConfiguration forProducer forService structuredSource validate;
 }
