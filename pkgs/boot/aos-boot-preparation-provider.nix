@@ -14,7 +14,7 @@
     inherit src;
     name = "aos-boot-preparation-provider-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-8eaeN2SDvVR3blLxBqC2FRE/uZd9E4KcGBCaW+my9qk=";
+    hash = "sha256-2tAj5sn/KEahcZivDkx4L6CtQm958EY9m4Va91WsyR4=";
   };
   targetTriple =
     {
