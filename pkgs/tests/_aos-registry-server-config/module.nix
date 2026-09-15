@@ -1,129 +1,406 @@
-##! Typed runtime configuration for the AOS registry and binary-cache server.
+##! Native service and configuration declarations for the test registry server.
 {
   config,
   lib,
   ...
 }: let
-  cfg = config."aos-registry-server";
-  inherit (lib) mkIf mkOption types;
-  statePath = types.strMatching "/var/lib/aos-registry-server(/[A-Za-z0-9._/-]+)?";
-in {
-  options."aos-registry-server" = {
-    enable = mkOption {
-      type = types.bool;
-      default = false;
-      description = "Whether at least one AOS registry-server workload may run.";
+  cfg = config.aos-registry-server;
+  abilityTypes = lib.abilities.types;
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
+  serviceTypes = serviceManagement.types;
+  inherit (lib.abilities) pathWithin resultOf;
+
+  nonEmpty = abilityTypes.refined {
+    name = "non-empty registry setting";
+    description = "a non-empty value without whitespace";
+    type = abilityTypes.runtimeString;
+    predicate = value: builtins.match "[^[:space:]]+" value != null;
+  };
+  port = abilityTypes.integer {
+    minimum = 1;
+    maximum = 65535;
+  };
+  positiveInt = abilityTypes.integer {
+    minimum = 1;
+    maximum = abilityTypes.limits.maxSafeInteger;
+  };
+  literal = text: {
+    kind = "literal";
+    inherit text;
+  };
+  executionPath = value: {
+    kind = "execution-path";
+    inherit value;
+  };
+  command = package: entryPoint: arguments: {
+    executable = {
+      artifact = lib.abilities.packageOutput {inherit package;};
+      entry_point = entryPoint;
+      inherit arguments;
+    };
+    ignore_failure = false;
+  };
+  selfCommand = entryPoint: arguments:
+    command "aos-registry-server" entryPoint arguments;
+  serviceFor = name: lifecycle: features:
+    serviceManagement.forService {
+      inherit serviceTypes;
+      consumerInstance = "aos-registry-server";
+      declaration =
+        {
+          service = name;
+          enabled = true;
+          lifecycle =
+            {
+              environment_files = [];
+              condition = [];
+              pre_start = [];
+              post_start = [];
+              stop = [];
+              post_stop = [];
+              restart = "on-failure";
+              restart_token = cfg.restartToken;
+              restart_delay_millis = 5000;
+              configuration_change_action = "restart";
+              remain_after_exit = false;
+              start_timeout_millis = 90000;
+              stop_timeout_millis = 90000;
+            }
+            // lifecycle;
+          identity = {
+            supplementary_groups = [];
+            ephemeral = true;
+            file_creation_mask = "0022";
+          };
+          isolation = {
+            privilege = "unprivileged";
+            filesystem = "read-only-system";
+            network = "host";
+            process_visibility = "private";
+            termination_scope = "all-processes";
+            temporary_directory = "private";
+            devices = [];
+            host_paths = [];
+            permit_core_dumps = false;
+          };
+        }
+        // features;
     };
 
+  registryStorage = serviceManagement.forProducer {
+    consumerInstance = "aos-registry-server";
+    key = "registry-storage";
+    interface = serviceManagement.interfaces.persistentStorageAllocation;
+    parameters = {
+      name = "registries";
+      purpose = "state";
+      mode = "0755";
+    };
+  };
+  cacheStorage = serviceManagement.forProducer {
+    consumerInstance = "aos-registry-server";
+    key = "cache-storage";
+    interface = serviceManagement.interfaces.persistentStorageAllocation;
+    parameters = {
+      name = "cache";
+      purpose = "state";
+      mode = "0755";
+    };
+  };
+  storeStorage = serviceManagement.forProducer {
+    consumerInstance = "aos-registry-server";
+    key = "store-storage";
+    interface = serviceManagement.interfaces.persistentStorageAllocation;
+    parameters = {
+      name = "store-root";
+      purpose = "state";
+      mode = "0755";
+    };
+  };
+  runtimeStorage = serviceManagement.forProducer {
+    consumerInstance = "aos-registry-server";
+    key = "runtime-storage";
+    interface = serviceManagement.interfaces.storageAllocation;
+    parameters = {
+      name = "runtime";
+      purpose = "runtime";
+      mode = "0755";
+    };
+  };
+  registryPath = resultOf "registry-storage" "storage-path";
+  cachePath = resultOf "cache-storage" "storage-path";
+  storePath = resultOf "store-storage" "storage-path";
+  runtimePath = resultOf "runtime-storage" "storage-path";
+  repositoryPath = pathWithin {
+    base = registryPath;
+    relativePath = cfg.git.repositoryPath;
+  };
+  bootstrapSocket = pathWithin {
+    base = runtimePath;
+    relativePath = cfg.cache.bootstrapSocket;
+  };
+
+  gitConfiguration = serviceManagement.forConfiguration {
+    inherit serviceTypes;
+    consumerInstance = "aos-registry-server";
+    declaration = {
+      name = "git-configuration";
+      source = {
+        kind = "interpolated-text";
+        fragments = [
+          (literal "REGISTRY_GIT_ENABLED=true\nREGISTRY_GIT_LISTEN=${cfg.git.listenAddress}\nREGISTRY_GIT_PORT=${builtins.toString cfg.git.port}\nREGISTRY_GIT_BASE_PATH=")
+          (executionPath repositoryPath)
+          (literal "\nREGISTRY_GIT_EXPORT_ALL=${
+            if cfg.git.exportAll
+            then "true"
+            else "false"
+          }\n")
+        ];
+        maximum_size_bytes = 4096;
+      };
+      mode = "0444";
+    };
+  };
+  cacheConfiguration = serviceManagement.forConfiguration {
+    inherit serviceTypes;
+    consumerInstance = "aos-registry-server";
+    declaration = {
+      name = "cache-configuration";
+      source = {
+        kind = "interpolated-text";
+        fragments = [(literal "REGISTRY_CACHE_ENABLED=true\n")];
+        maximum_size_bytes = 4096;
+      };
+      mode = "0444";
+    };
+  };
+  serveConfiguration = serviceManagement.forConfiguration {
+    inherit serviceTypes;
+    consumerInstance = "aos-registry-server";
+    declaration = {
+      name = "serve-configuration";
+      source = {
+        kind = "interpolated-text";
+        fragments = [
+          (literal ''
+            listen = "${cfg.cache.listenAddress}:${builtins.toString cfg.cache.port}"
+
+            [[views]]
+            name = "default"
+            anonymous_read = ${
+              if cfg.cache.anonymousRead
+              then "true"
+              else "false"
+            }
+            max_concurrent_builds = ${builtins.toString cfg.cache.maxConcurrentBuilds}
+
+            [bootstrap]
+            socket = "
+          '')
+          (executionPath bootstrapSocket)
+          (literal ''
+            "
+            socket_group = "${cfg.cache.bootstrapSocketGroup}"
+          '')
+        ];
+        maximum_size_bytes = 16384;
+      };
+      mode = "0444";
+    };
+  };
+
+  gitService =
+    serviceFor "git" {
+      description = "Git daemon serving AOS registries";
+      execution_model = "foreground";
+      start = [
+        (selfCommand "bin/aos-registry-server-git" [
+          (resultOf "git-configuration" "execution-path")
+        ])
+      ];
+    } {
+      configuration.views = [
+        {
+          name = "git";
+          source = resultOf "git-configuration" "execution-path";
+          optional = false;
+        }
+      ];
+      storage.mounts = [
+        {
+          name = "registries";
+          source = registryPath;
+          access = "read-write";
+        }
+      ];
+    };
+  cacheService =
+    serviceFor "cache" {
+      description = "AOS binary cache server";
+      execution_model = "foreground";
+      pre_start = [(selfCommand "bin/aos-registry-server-init-db" [storePath])];
+      start = [
+        (command "aos" "bin/aos" [
+          "serve"
+          "--config"
+          (resultOf "serve-configuration" "execution-path")
+        ])
+      ];
+    } {
+      environment = {
+        variables = {
+          AOS_ROOT = storePath;
+          HOME = storePath;
+        };
+        search_path = [
+          (lib.abilities.packageOutput {package = "nix";})
+          (lib.abilities.packageOutput {package = "zstd";})
+          (lib.abilities.packageOutput {package = "coreutils";})
+        ];
+      };
+      configuration.views = [
+        {
+          name = "cache";
+          source = resultOf "cache-configuration" "execution-path";
+          optional = false;
+        }
+        {
+          name = "serve";
+          source = resultOf "serve-configuration" "execution-path";
+          optional = false;
+        }
+      ];
+      storage.mounts = [
+        {
+          name = "cache";
+          source = cachePath;
+          access = "read-write";
+        }
+        {
+          name = "store";
+          source = storePath;
+          access = "read-write";
+        }
+        {
+          name = "runtime";
+          source = runtimePath;
+          access = "read-write";
+        }
+      ];
+    };
+
+  allFragments = [
+    registryStorage
+    cacheStorage
+    storeStorage
+    runtimeStorage
+    gitConfiguration
+    cacheConfiguration
+    serveConfiguration
+    gitService
+    cacheService
+  ];
+  enabledFragments =
+    [registryStorage cacheStorage storeStorage runtimeStorage]
+    ++ lib.optionals cfg.git.enable [gitConfiguration gitService]
+    ++ lib.optionals cfg.cache.enable [cacheConfiguration serveConfiguration cacheService];
+in {
+  options.aos-registry-server = {
+    enable = lib.mkOption {
+      type = abilityTypes.boolean;
+      default = false;
+      description = "Enable at least one registry-server workload.";
+    };
+    restartToken = lib.mkOption {
+      type = abilityTypes.optional serviceTypes.restartToken;
+      default = null;
+      description = "Operator-controlled token whose change requests service restarts.";
+    };
     git = {
-      enable = mkOption {
-        type = types.bool;
+      enable = lib.mkOption {
+        type = abilityTypes.boolean;
         default = true;
-        description = "Whether to serve registry Git repositories.";
+        description = "Serve registry Git repositories.";
       };
-      listenAddress = mkOption {
-        type = types.strMatching "[^[:space:]]+";
+      listenAddress = lib.mkOption {
+        type = nonEmpty;
         default = "0.0.0.0";
-        description = "Address passed to git daemon.";
+        description = "Address passed to the Git daemon.";
       };
-      port = mkOption {
-        type = types.port;
+      port = lib.mkOption {
+        type = port;
         default = 9418;
         description = "Git protocol listen port.";
       };
-      basePath = mkOption {
-        type = statePath;
-        default = "/var/lib/aos-registry-server/registries";
-        description = "Registry repository root beneath package-managed state.";
+      repositoryPath = lib.mkOption {
+        type = abilityTypes.relativePath;
+        default = "repositories";
+        description = "Repository directory below the provider-managed registry state root.";
       };
-      exportAll = mkOption {
-        type = types.bool;
+      exportAll = lib.mkOption {
+        type = abilityTypes.boolean;
         default = true;
-        description = "Whether git daemon exports repositories without git-daemon-export-ok.";
+        description = "Export repositories without a git-daemon-export-ok marker.";
       };
     };
-
     cache = {
-      enable = mkOption {
-        type = types.bool;
+      enable = lib.mkOption {
+        type = abilityTypes.boolean;
         default = true;
-        description = "Whether to run the AOS binary-cache server.";
+        description = "Run the AOS binary-cache server.";
       };
-      listenAddress = mkOption {
-        type = types.strMatching "[^:[:space:]]+";
+      listenAddress = lib.mkOption {
+        type = nonEmpty;
         default = "0.0.0.0";
         description = "Binary-cache listen address.";
       };
-      port = mkOption {
-        type = types.port;
+      port = lib.mkOption {
+        type = port;
         default = 15000;
         description = "Binary-cache listen port.";
       };
-      anonymousRead = mkOption {
-        type = types.bool;
+      anonymousRead = lib.mkOption {
+        type = abilityTypes.boolean;
         default = true;
-        description = "Whether the default cache view permits anonymous reads.";
+        description = "Permit anonymous reads from the default cache view.";
       };
-      maxConcurrentBuilds = mkOption {
-        type = lib.serviceTypes.positiveInt;
+      maxConcurrentBuilds = lib.mkOption {
+        type = positiveInt;
         default = 2;
         description = "Maximum concurrent builds admitted by the default view.";
       };
-      bootstrapSocket = mkOption {
-        type = types.strMatching "/run/aos-registry-server/[A-Za-z0-9._-]+";
-        default = "/run/aos-registry-server/bootstrap.sock";
-        description = "Volatile bootstrap control socket.";
+      bootstrapSocket = lib.mkOption {
+        type = abilityTypes.relativePath;
+        default = "bootstrap.sock";
+        description = "Bootstrap socket below the provider-managed runtime root.";
       };
-      bootstrapSocketGroup = mkOption {
-        type = types.strMatching "[A-Za-z_][A-Za-z0-9_-]*";
+      bootstrapSocketGroup = lib.mkOption {
+        type = abilityTypes.localKey;
         default = "root";
         description = "Group assigned to the bootstrap socket.";
       };
     };
   };
 
-  config = {
-    assertions = [
-      {
-        assertion = !cfg.enable || cfg.git.enable || cfg.cache.enable;
-        message = "aos-registry-server.enable requires git.enable or cache.enable";
-      }
-    ];
-
-    "aos-registry-server".config = {
-      git = {
-        REGISTRY_GIT_ENABLED =
-          if cfg.enable && cfg.git.enable
-          then "true"
-          else "false";
-        REGISTRY_GIT_LISTEN = cfg.git.listenAddress;
-        REGISTRY_GIT_PORT = cfg.git.port;
-        REGISTRY_GIT_BASE_PATH = cfg.git.basePath;
-        REGISTRY_GIT_EXPORT_ALL =
-          if cfg.git.exportAll
-          then "true"
-          else "false";
-      };
-      cache = {
-        REGISTRY_CACHE_ENABLED =
-          if cfg.enable && cfg.cache.enable
-          then "true"
-          else "false";
-      };
-      serve = {
-        listen = "${cfg.cache.listenAddress}:${toString cfg.cache.port}";
-        views = [
-          {
-            name = "default";
-            anonymous_read = cfg.cache.anonymousRead;
-            max_concurrent_builds = cfg.cache.maxConcurrentBuilds;
-          }
-        ];
-        bootstrap = {
-          socket = cfg.cache.bootstrapSocket;
-          socket_group = cfg.cache.bootstrapSocketGroup;
-        };
-      };
-    };
-  };
+  config = lib.mkMerge [
+    {
+      assertions = [
+        {
+          assertion = !cfg.enable || cfg.git.enable || cfg.cache.enable;
+          message = "aos-registry-server.enable requires git.enable or cache.enable";
+        }
+      ];
+      aos.abilities = lib.mkMerge (builtins.map
+        (fragment: (serviceManagement.splitContribution fragment).declarations)
+        allFragments);
+    }
+    (lib.mkIf cfg.enable {
+      aos.abilities = lib.mkMerge (
+        [{instances.aos-registry-server = {};}]
+        ++ builtins.map
+        (fragment: (serviceManagement.splitContribution fragment).configured)
+        enabledFragments
+      );
+    })
+  ];
 }
