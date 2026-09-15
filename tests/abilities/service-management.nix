@@ -497,6 +497,13 @@
           text = "rootpw {CLEARTEXT}";
         }
         {
+          kind = "artifact-path";
+          reference = {
+            artifact = lib.abilities.packageOutput {};
+            path = "etc/openldap/schema/core.schema";
+          };
+        }
+        {
           kind = "credential-content";
           resource = lib.abilities.resultOf "root-password" "retained-resource";
           path = lib.abilities.resultOf "root-password" "credential-path";

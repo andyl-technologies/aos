@@ -98,6 +98,9 @@ enum InterpolatedFragment {
     Literal {
         text: String,
     },
+    ArtifactPath {
+        reference: ArtifactFileReference,
+    },
     ExecutionPath {
         value: String,
     },
@@ -416,6 +419,14 @@ fn render_fragments(
             InterpolatedFragment::Literal { text } => {
                 append_bounded(&mut output, text.as_bytes(), maximum_size_bytes)?;
             }
+            InterpolatedFragment::ArtifactPath { reference } => {
+                let path = validated_artifact_file_path(reference)?;
+                append_bounded(
+                    &mut output,
+                    path_text(&path)?.as_bytes(),
+                    maximum_size_bytes,
+                )?;
+            }
             InterpolatedFragment::ExecutionPath { value } => {
                 append_bounded(&mut output, value.as_bytes(), maximum_size_bytes)?;
             }
@@ -473,6 +484,13 @@ fn append_bounded(
 fn read_artifact_file(
     reference: &ArtifactFileReference,
 ) -> Result<Vec<u8>, ConfigurationProviderError> {
+    let path = validated_artifact_file_path(reference)?;
+    read_bounded(&path, ABILITY_LIMITS_V1.max_document_bytes)
+}
+
+fn validated_artifact_file_path(
+    reference: &ArtifactFileReference,
+) -> Result<PathBuf, ConfigurationProviderError> {
     let relative = Path::new(&reference.path);
     if relative.is_absolute()
         || relative
@@ -486,7 +504,7 @@ fn read_artifact_file(
     if !path.starts_with(&root) || !fs::symlink_metadata(&path)?.file_type().is_file() {
         return Err(invalid("artifact file escapes its authenticated artifact"));
     }
-    read_bounded(&path, ABILITY_LIMITS_V1.max_document_bytes)
+    Ok(path)
 }
 
 fn read_protected(path: &Path) -> Result<Vec<u8>, ConfigurationProviderError> {
@@ -807,6 +825,45 @@ mod tests {
                 .expect("native context fixture is bounded"),
             native_context_digest: digest('3'),
         }
+    }
+
+    #[test]
+    fn artifact_path_fragment_emits_only_a_contained_regular_file() {
+        let directory = tempfile::tempdir().expect("temporary directory is created");
+        let schemas = directory.path().join("schemas");
+        fs::create_dir(&schemas).expect("schema directory is created");
+        let schema = schemas.join("core.schema");
+        fs::write(&schema, "objectclass ( 1.2.3 )\n").expect("schema file is written");
+        let reference = ArtifactReference {
+            content: digest('4'),
+            store_path: path_text(directory.path()).expect("artifact path is UTF-8"),
+            nar_hash: digest('5'),
+            closure: digest('6'),
+        };
+        let fragments = vec![InterpolatedFragment::ArtifactPath {
+            reference: ArtifactFileReference {
+                artifact: reference.clone(),
+                path: "schemas/core.schema".into(),
+            },
+        }];
+
+        let rendered = render_fragments(&fragments, 4096, &[], &mut BTreeMap::new())
+            .expect("contained artifact file path renders");
+        assert_eq!(
+            rendered,
+            fs::canonicalize(&schema)
+                .expect("schema path canonicalizes")
+                .as_os_str()
+                .as_encoded_bytes()
+        );
+
+        let escaping = vec![InterpolatedFragment::ArtifactPath {
+            reference: ArtifactFileReference {
+                artifact: reference,
+                path: "../outside".into(),
+            },
+        }];
+        assert!(render_fragments(&escaping, 4096, &[], &mut BTreeMap::new()).is_err());
     }
 
     #[test]
