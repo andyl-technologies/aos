@@ -94,7 +94,8 @@
           (name: pkgs.${name}.version)
           (builtins.filter
             (name:
-              pkgs.${name} ? version
+              pkgs.${name}
+              ? version
               && discard pkgs.${name}.drvPath == discard package.drvPath)
             packageNames)
         );
