@@ -32,15 +32,6 @@
         methods = ["apply" "observe" "remove"];
         parameters = {
           authority = "operator";
-          bootstrap = {
-            selector = {
-              kind = "mac";
-              value = "02:00:00:00:00:01";
-            };
-            addresses = ["198.51.100.10/24"];
-            gateway = "198.51.100.1";
-            dns = ["198.51.100.53"];
-          };
           links = [
             {
               kind = "ethernet";
@@ -125,13 +116,19 @@
     });
   abilities = resolved.config.aos.abilities;
   resource = builtins.head (builtins.attrValues abilities.desiredResources);
+  networkInterface = lib.abilities.interfaces.networkConfiguration.interface;
 in
   assert child.requirement == "network-configuration-effects";
   assert abilities.compositionPendingRequests == {};
   assert resource.kind == "aos.network.configuration";
+  assert !(resource.value ? bootstrap);
   assert resource.lifetime == "persistent";
   assert resource.realization.systemd.store_path == artifactReference.store_path;
   assert builtins.isFunction abilities.implementations."systemd:network-configuration".transition;
   assert abilities.implementations."systemd:network-configuration".handlerDescriptor == null;
   assert abilities.implementations."systemd:systemd-network-configuration-effects".providerModule == null;
+  assert lib.abilities.types.schemaOf "network apply method" networkInterface.declaration.methods.apply.parameters
+  == lib.abilities.types.schemaOf "network apply input" networkInterface.types.applyInput;
+  assert (lib.abilities.types.schemaOf "network apply input" networkInterface.types.applyInput).fields.bootstrap.value
+  == lib.abilities.types.schemaOf "network bootstrap" networkInterface.types.bootstrap;
   assert builtins.length resolved.config.systemd.providerNetworkConfigurationArtifacts == 1; true

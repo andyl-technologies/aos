@@ -689,7 +689,10 @@
     variants.network-configuration = types.record {
       fields = {
         kind = types.enum ["network-configuration"];
-        desired = networkConfiguration.requestType;
+        bootstrap = {
+          type = types.optional networkConfiguration.types.bootstrap;
+          optional = true;
+        };
       };
     };
   };

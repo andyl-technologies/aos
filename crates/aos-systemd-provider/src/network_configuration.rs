@@ -14,6 +14,10 @@ use aos_ability_model::{
     AbilityValue, AccessMode, LocalKey, MethodReference, MethodSemantics, ResourceReference,
 };
 use aos_contract::Sha256Digest;
+use aos_net::{
+    Addressing, BootstrapNetwork, LinkSelector, NetworkApplyInput, NetworkAuthority,
+    NetworkConfiguration, NetworkLink, ResolverConfiguration,
+};
 use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
     AdmissionResult, AdmissionRevision, INVOCATION_SCHEMA, Invocation, InvocationDisposition,
@@ -33,91 +37,6 @@ pub(crate) const STATIC_INPUT_SCHEMA: &str = "aos.systemd.network-configuration-
 const OBSERVATION_SCHEMA: &str = "aos.ability.network-configuration-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.systemd.network-configuration-context/v1";
 const SEED_RELATIVE_PATH: &str = "systemd/network/10-aos-seed.network";
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum Authority {
-    Image,
-    Operator,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-enum LinkSelector {
-    Name { value: String },
-    Mac { value: String },
-    Ethernet,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Addressing {
-    dhcp: bool,
-    addresses: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    gateway: Option<String>,
-    dns: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-enum NetworkLink {
-    Ethernet {
-        name: LocalKey,
-        selector: LinkSelector,
-        addressing: Addressing,
-    },
-    Vlan {
-        name: LocalKey,
-        parent: LinkSelector,
-        id: u16,
-        addressing: Addressing,
-    },
-    Bond {
-        name: LocalKey,
-        members: Vec<LinkSelector>,
-        mode: String,
-        addressing: Addressing,
-    },
-}
-
-impl NetworkLink {
-    fn name(&self) -> &LocalKey {
-        match self {
-            Self::Ethernet { name, .. } | Self::Vlan { name, .. } | Self::Bond { name, .. } => name,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct BootstrapNetwork {
-    selector: LinkSelector,
-    addresses: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    gateway: Option<String>,
-    dns: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ResolverConfiguration {
-    enabled: bool,
-    nameservers: Vec<String>,
-    search: Vec<String>,
-    dnssec: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct NetworkConfiguration {
-    authority: Authority,
-    links: Vec<NetworkLink>,
-    resolver: ResolverConfiguration,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    bootstrap: Option<BootstrapNetwork>,
-    prerequisites: Vec<ResourceReference>,
-}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -148,13 +67,18 @@ pub(crate) struct StaticNetworkConfiguration {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 enum EffectsRequest {
-    NetworkConfiguration { desired: NetworkConfiguration },
+    NetworkConfiguration {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bootstrap: Option<BootstrapNetwork>,
+    },
 }
 
 impl EffectsRequest {
-    const fn desired(&self) -> &NetworkConfiguration {
+    fn apply_input(&self) -> NetworkApplyInput {
         match self {
-            Self::NetworkConfiguration { desired } => desired,
+            Self::NetworkConfiguration { bootstrap } => NetworkApplyInput {
+                bootstrap: bootstrap.clone(),
+            },
         }
     }
 }
@@ -164,6 +88,8 @@ impl EffectsRequest {
 struct NetworkObservation {
     schema: String,
     expected: NetworkConfiguration,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    applied_bootstrap: Option<BootstrapNetwork>,
     state: NetworkState,
     discrepancies: Vec<LocalKey>,
 }
@@ -224,8 +150,7 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     require_realization(&realization)?;
     let rendered = render(&expected)?;
     let configuration_matches = rendered_matches(Path::new("/etc"), &rendered)?;
-    let seed_matches = seed_matches(Path::new("/var/etc"), &expected)?;
-    let observation = observation(&expected, configuration_matches, seed_matches, false)?;
+    let observation = observation(&expected, None, configuration_matches, true, false)?;
     let supported_purposes = SupportedPurposes::from_ordered(vec![
         InvocationPurpose::Effect,
         InvocationPurpose::Reconcile,
@@ -235,7 +160,7 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     Ok(AdmissionResult {
         schema: ADMISSION_SCHEMA.to_string(),
         disposition: AdmissionDisposition::Admitted,
-        revision: if configuration_matches && seed_matches {
+        revision: if configuration_matches {
             AdmissionRevision::Present {
                 revision: request.resource_spec.revision,
             }
@@ -247,7 +172,7 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
         native_context: value(&NetworkContext {
             schema: CONTEXT_SCHEMA.to_string(),
             configuration_matches,
-            seed_matches,
+            seed_matches: true,
         })?,
         supported_purposes,
     })
@@ -273,9 +198,8 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     let bound = validate_resource_context(target)?;
     let expected: NetworkConfiguration = decode_value(&bound.resource_spec.value)?;
     let effect: EffectsRequest = decode_value(&invocation.request.inputs)?;
-    if effect.desired() != &expected {
-        bail!("network effect inputs differ from the checked desired resource");
-    }
+    let apply_input = effect.apply_input();
+    validate_apply_input(&expected, &apply_input)?;
     require_resource_contexts(&expected.prerequisites, &invocation.request.resources)?;
     let realization: NetworkConfigurationRealization =
         decode_value(&bound.resource_spec.realization)?;
@@ -291,7 +215,11 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
         || (invocation.purpose == InvocationPurpose::Reconcile
             && matches!(method, "create" | "update" | "remove" | "reconcile"));
     if mutate {
-        converge_seed(Path::new("/var/etc"), &expected)?;
+        converge_seed(
+            Path::new("/var/etc"),
+            &expected.authority,
+            apply_input.bootstrap.as_ref(),
+        )?;
         reload_networkd(&realization).await?;
     }
 
@@ -301,8 +229,18 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     } else {
         rendered_matches(Path::new("/etc"), &rendered)?
     };
-    let seed_matches = seed_matches(Path::new("/var/etc"), &expected)?;
-    let raw = observation(&expected, configuration_matches, seed_matches, removing)?;
+    let seed_matches = seed_matches(
+        Path::new("/var/etc"),
+        &expected.authority,
+        apply_input.bootstrap.as_ref(),
+    )?;
+    let raw = observation(
+        &expected,
+        apply_input.bootstrap.as_ref(),
+        configuration_matches,
+        seed_matches,
+        removing,
+    )?;
     let evidence = effect_observation(&raw)?;
     let mut outputs = BTreeMap::new();
     outputs.insert(LocalKey::new("observation")?, evidence.clone());
@@ -406,7 +344,17 @@ fn validate_configuration(configuration: &NetworkConfiguration) -> Result<()> {
     {
         bail!("network resolver selects an unsupported DNSSEC mode");
     }
-    if let Some(bootstrap) = &configuration.bootstrap {
+    Ok(())
+}
+
+fn validate_apply_input(
+    configuration: &NetworkConfiguration,
+    input: &NetworkApplyInput,
+) -> Result<()> {
+    if let Some(bootstrap) = &input.bootstrap {
+        if configuration.authority != NetworkAuthority::Image {
+            bail!("only image-owned network policy may carry an early bootstrap result");
+        }
         if bootstrap.addresses.is_empty() {
             bail!("bootstrap network requires at least one address");
         }
@@ -621,10 +569,19 @@ fn rendered_matches(root: &Path, rendered: &RenderedConfiguration) -> Result<boo
     Ok(true)
 }
 
-fn seed_matches(root: &Path, expected: &NetworkConfiguration) -> Result<bool> {
-    let desired = match (&expected.authority, &expected.bootstrap) {
-        (Authority::Image, Some(bootstrap)) => Some(render_bootstrap(bootstrap).into_bytes()),
-        (Authority::Image, None) | (Authority::Operator, _) => None,
+fn seed_matches(
+    root: &Path,
+    authority: &NetworkAuthority,
+    bootstrap: Option<&BootstrapNetwork>,
+) -> Result<bool> {
+    let desired = match (authority, bootstrap) {
+        (NetworkAuthority::Image, Some(bootstrap)) => {
+            Some(render_bootstrap(bootstrap).into_bytes())
+        }
+        (NetworkAuthority::Image, None) | (NetworkAuthority::Operator, None) => None,
+        (NetworkAuthority::Operator, Some(_)) => {
+            bail!("operator-owned network policy cannot retain an image bootstrap seed")
+        }
     };
     match (desired, fs::read(root.join(SEED_RELATIVE_PATH))) {
         (Some(expected), Ok(actual)) => Ok(actual == expected),
@@ -635,10 +592,14 @@ fn seed_matches(root: &Path, expected: &NetworkConfiguration) -> Result<bool> {
     }
 }
 
-fn converge_seed(root: &Path, desired: &NetworkConfiguration) -> Result<()> {
+fn converge_seed(
+    root: &Path,
+    authority: &NetworkAuthority,
+    bootstrap: Option<&BootstrapNetwork>,
+) -> Result<()> {
     let destination = root.join(SEED_RELATIVE_PATH);
-    match (&desired.authority, &desired.bootstrap) {
-        (Authority::Image, Some(bootstrap)) => {
+    match (authority, bootstrap) {
+        (NetworkAuthority::Image, Some(bootstrap)) => {
             let parent = destination
                 .parent()
                 .ok_or_else(|| anyhow::anyhow!("metadata seed path has no parent"))?;
@@ -656,7 +617,7 @@ fn converge_seed(root: &Path, desired: &NetworkConfiguration) -> Result<()> {
                 .context("publishing metadata network seed")?;
             fs::File::open(parent)?.sync_all()?;
         }
-        (Authority::Image, None) | (Authority::Operator, _) => {
+        (NetworkAuthority::Image, None) | (NetworkAuthority::Operator, None) => {
             match fs::remove_file(&destination) {
                 Ok(()) => {
                     if let Some(parent) = destination.parent() {
@@ -666,6 +627,9 @@ fn converge_seed(root: &Path, desired: &NetworkConfiguration) -> Result<()> {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error).context("removing metadata network seed"),
             }
+        }
+        (NetworkAuthority::Operator, Some(_)) => {
+            bail!("operator-owned network policy cannot retain an image bootstrap seed")
         }
     }
     Ok(())
@@ -707,6 +671,7 @@ async fn reload_networkd(realization: &NetworkConfigurationRealization) -> Resul
 
 fn observation(
     expected: &NetworkConfiguration,
+    applied_bootstrap: Option<&BootstrapNetwork>,
     configuration_matches: bool,
     seed_matches: bool,
     removing: bool,
@@ -728,6 +693,7 @@ fn observation(
     Ok(NetworkObservation {
         schema: OBSERVATION_SCHEMA.to_string(),
         expected: expected.clone(),
+        applied_bootstrap: applied_bootstrap.cloned(),
         state,
         discrepancies,
     })
@@ -746,13 +712,17 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{
-        Addressing, Authority, BootstrapNetwork, LinkSelector, NetworkConfiguration,
-        NetworkConfigurationRealization, NetworkLink, ResolverConfiguration,
-        Sha256Digest, StaticNetworkConfiguration, converge_seed, render, render_static,
+    use aos_net::{
+        Addressing, BootstrapNetwork, LinkSelector, NetworkAuthority, NetworkConfiguration,
+        NetworkLink, ResolverConfiguration,
     };
 
-    fn configuration(authority: Authority) -> NetworkConfiguration {
+    use super::{
+        NetworkConfigurationRealization, Sha256Digest, StaticNetworkConfiguration, converge_seed,
+        render, render_static,
+    };
+
+    fn configuration(authority: NetworkAuthority) -> NetworkConfiguration {
         NetworkConfiguration {
             authority,
             links: vec![NetworkLink::Ethernet {
@@ -773,21 +743,24 @@ mod tests {
                 search: vec!["example.test".to_string()],
                 dnssec: "yes".to_string(),
             },
-            bootstrap: Some(BootstrapNetwork {
-                selector: LinkSelector::Mac {
-                    value: "02:00:00:00:00:01".to_string(),
-                },
-                addresses: vec!["198.51.100.10/24".to_string()],
-                gateway: Some("198.51.100.1".to_string()),
-                dns: vec!["198.51.100.53".to_string()],
-            }),
             prerequisites: Vec::new(),
+        }
+    }
+
+    fn bootstrap() -> BootstrapNetwork {
+        BootstrapNetwork {
+            selector: LinkSelector::Mac {
+                value: "02:00:00:00:00:01".to_string(),
+            },
+            addresses: vec!["198.51.100.10/24".to_string()],
+            gateway: Some("198.51.100.1".to_string()),
+            dns: vec!["198.51.100.53".to_string()],
         }
     }
 
     #[test]
     fn semantic_configuration_renders_networkd_and_resolved_files() {
-        let rendered = render(&configuration(Authority::Operator)).expect("render succeeds");
+        let rendered = render(&configuration(NetworkAuthority::Operator)).expect("render succeeds");
         let network = rendered
             .files
             .get(std::path::Path::new("systemd/network/10-host.network"))
@@ -808,7 +781,7 @@ mod tests {
         let output = TempDir::new().expect("temporary output");
         let input = StaticNetworkConfiguration {
             schema: super::STATIC_INPUT_SCHEMA.to_string(),
-            desired: configuration(Authority::Operator),
+            desired: configuration(NetworkAuthority::Operator),
             realization: NetworkConfigurationRealization {
                 schema: super::REALIZATION_SCHEMA.to_string(),
                 systemd: super::TaggedArtifactReference {
@@ -842,8 +815,9 @@ mod tests {
     #[test]
     fn operator_configuration_retires_and_image_rollback_restores_seed() {
         let root = TempDir::new().expect("temporary root");
-        let image = configuration(Authority::Image);
-        converge_seed(root.path(), &image).expect("seed is created");
+        let bootstrap = bootstrap();
+        converge_seed(root.path(), &NetworkAuthority::Image, Some(&bootstrap))
+            .expect("seed is created");
         let seed = root.path().join(super::SEED_RELATIVE_PATH);
         assert!(
             fs::read_to_string(&seed)
@@ -851,11 +825,11 @@ mod tests {
                 .contains("198.51.100.10/24")
         );
 
-        let operator = configuration(Authority::Operator);
-        converge_seed(root.path(), &operator).expect("seed is retired");
+        converge_seed(root.path(), &NetworkAuthority::Operator, None).expect("seed is retired");
         assert!(!seed.exists());
 
-        converge_seed(root.path(), &image).expect("seed is restored");
+        converge_seed(root.path(), &NetworkAuthority::Image, Some(&bootstrap))
+            .expect("seed is restored");
         assert!(
             fs::read_to_string(seed)
                 .expect("read seed")

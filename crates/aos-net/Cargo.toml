@@ -5,6 +5,8 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
+aos-ability-model = { workspace = true }
+
 # HTTP
 reqwest = { workspace = true, features = ["stream"] }
 url = { workspace = true }
