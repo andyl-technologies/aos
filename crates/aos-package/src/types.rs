@@ -3008,8 +3008,7 @@ pub struct CrossAbiReEvalInputs {
 // ---------------------------------------------------------------------------
 //
 // The generation model has two independent persisted axes: image substrate
-// and derived configuration. Legacy bundled records are accepted only by the
-// one-shot migration in `sysroot`; they are never a live authority.
+// and derived configuration.
 
 /// A/B slot discriminant for an image generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -3080,7 +3079,7 @@ pub struct ImageGeneration {
     pub uki_source_path: Option<String>,
     /// Store path of the sysroot toplevel this image was built from.
     pub toplevel: String,
-    /// Sysroot package name (provenance, migrated from legacy state).
+    /// Sysroot package name used for provenance.
     pub package_name: String,
     /// Sysroot package version.
     pub version: String,
@@ -3212,8 +3211,8 @@ impl ImageGenerationState {
 /// specific image generation's base library.
 ///
 /// This is the on-disk authority for `/var/lib/profiles/system/state.json`.
-/// Every security-relevant binding is required: legacy bundled state must be
-/// authenticated and migrated before this type will deserialize it.
+/// Every binding needed to reactivate or re-evaluate the generation is
+/// required by this schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigGeneration {
