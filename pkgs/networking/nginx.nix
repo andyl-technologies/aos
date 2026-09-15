@@ -240,12 +240,22 @@ in
       tlsRequests = builtins.attrNames tlsAbilities.requests;
       source = cleartextAbilities.requests."nginx:server-configuration".parameters.source;
       mainStorage = cleartextAbilities.requests."nginx:main-storage".parameters.mounts;
+      publicOptionSchemas =
+        builtins.map
+        (option: option.type._abilitySchema)
+        [
+          cleartext.options.nginx.upstreams
+          cleartext.options.nginx.virtualHosts
+          cleartext.options.nginx.tlsCredentials.certificate
+          cleartext.options.nginx.tlsCredentials.privateKey
+        ];
       qualifiedResultOf = request: output: {
         _type = "aos-request-output-reference";
         inherit request output;
       };
       contractHolds =
-        assertionsHold cleartext
+        builtins.deepSeq publicOptionSchemas true
+        && assertionsHold cleartext
         && assertionsHold tls
         && disabledAbilities.instances == {}
         && disabledAbilities.requests == {}
