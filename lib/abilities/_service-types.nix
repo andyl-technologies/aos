@@ -1199,6 +1199,16 @@
       state = types.enum ["failed" "pending" "ready" "unknown"];
     };
   };
+  runtimeEntryPopulation = types.record {
+    fields.scope = types.enum ["runtime-entries"];
+  };
+  runtimeEntryPopulationObservation = types.record {
+    fields = {
+      schema = types.enum ["aos.ability.runtime-entry-population-observation/v1"];
+      expected = runtimeEntryPopulation;
+      state = types.enum ["failed" "pending" "ready" "unknown"];
+    };
+  };
   kernelModuleNames = types.list {
     element = localKey;
     maxItems = 256;
@@ -1816,6 +1826,8 @@ in {
     filesystemReadinessObservation
     activationMilestone
     activationMilestoneObservation
+    runtimeEntryPopulation
+    runtimeEntryPopulationObservation
     kernelModules
     kernelModulesObservation
     namedCredential

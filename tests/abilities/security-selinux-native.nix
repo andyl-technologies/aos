@@ -35,21 +35,21 @@ in
   == [
     {
       _type = "aos-request-output-reference";
-      request = "refpolicy:sysinit-target";
-      output = "unit-resource";
+      request = "refpolicy:early-system";
+      output = "readiness-resource";
     }
     {
       _type = "aos-request-output-reference";
-      request = "refpolicy:tmpfiles-setup";
-      output = "unit-resource";
+      request = "refpolicy:runtime-entry-population";
+      output = "lifecycle-resource";
     }
   ];
   assert loaderDependencies.wanted_by
   == [
     {
       _type = "aos-request-output-reference";
-      request = "refpolicy:sysinit-target";
-      output = "unit-resource";
+      request = "refpolicy:early-system";
+      output = "readiness-resource";
     }
   ];
   assert autorelabel.enabled;
@@ -66,6 +66,8 @@ in
   ];
   assert requests."refpolicy:selinux-config".parameters.destination == "/etc/selinux/config";
   assert requests."refpolicy:semanage-config".parameters.destination == "/etc/selinux/semanage.conf";
+  assert requests."refpolicy:early-system".parameters.milestone == "early-system";
+  assert requests."refpolicy:runtime-entry-population".parameters.scope == "runtime-entries";
   assert config.aos.contributions.kernelParameters.refpolicy
   == [
     "enforcing=0"

@@ -36,7 +36,7 @@ in {
     (lib.mkIf (registrationAvailable && cfg.enable) {
       requests.dbus-system-registration = {
         requirement = "dbus-system-registration";
-        consumer = "service";
+        consumer = "polkit";
         scope = ["system-bus"];
         parameters = {
           name = "polkit";
