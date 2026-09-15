@@ -76,6 +76,11 @@ exposed as `packages.<system>.container-aos-publication-inputs` and contains:
 - `signature-input.json`, `signing-request.json`, and
   `publication-roots.json`.
 
+The canonical `/v1` signature input requires the static ability evidence
+descriptor. Tests parse that same contract through the signer, finalizer, Hub
+indexer, CLI, and registry graph walkers, and reject an input or release with a
+missing ability descriptor.
+
 It deliberately does not contain `container-release.json`. An external signer
 must add the DSSE object to a final layout and produce the canonical signed
 release sidecar. This keeps private material and claims of verified publication
