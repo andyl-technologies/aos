@@ -55,6 +55,7 @@ pub(crate) use native_activation::{
 };
 mod cancellation;
 mod execution_observer;
+pub mod registry_snapshot_provider;
 pub mod runtime;
 pub mod runtime_modules;
 pub mod service;

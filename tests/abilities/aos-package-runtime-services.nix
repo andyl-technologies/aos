@@ -49,12 +49,18 @@
   profileLifecycle = requests."aos:package-profile-convergence-lifecycle".parameters;
   quoteLifecycle = requests."aos:aos-attest-lifecycle".parameters;
   credentialRecoveryLifecycle = requests."aos:aos-credential-recovery-lifecycle".parameters;
+  snapshotImplementation = enabled.config.aos.abilities.implementations."aos:synchronized-registry-snapshot";
 in
   assert !(disabledRequests ? "aos:package-profile-specification");
   assert disabledRequests ? "aos:package-profile-convergence-lifecycle";
   assert disabledRequests ? "aos:aos-attest-lifecycle";
   assert disabledRequests ? "aos:aos-credential-recovery-lifecycle";
   assert initrd.config.aos.abilities.requests == {};
+  assert enabled.config.aos.abilities.instances."aos:synchronized-registry-snapshot".implementation
+  == "aos:synchronized-registry-snapshot";
+  assert !(initrd.config.aos.abilities.instances ? "aos:synchronized-registry-snapshot");
+  assert snapshotImplementation.providerModule == null;
+  assert snapshotImplementation.handlerDescriptor.entryPoint == "libexec/aos-registry-snapshot-provider";
   assert requests."aos:package-profile-specification".parameters.source.content
   == ''
     packages = ["nginx"]
