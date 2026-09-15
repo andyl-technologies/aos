@@ -781,6 +781,7 @@ let
     "kubernetes/_k3s-ability-provider/default.nix" = "target-independent-source";
     "kubernetes/_k3s-config/module.nix" = "linux-only-config-source";
     "kubernetes/_kubelet-config/module.nix" = "linux-only-config-source";
+    "networking/_chrony-abilities/module.nix" = "linux-only-config-source";
     "networking/_envoy/module.nix" = "linux-only-config-source";
     "networking/_envoy/render.nix" = "linux-only-config-source";
     "networking/_envoy/types.nix" = "linux-only-config-source";
@@ -788,9 +789,6 @@ let
     "networking/_openldap/module.nix" = "linux-only-config-source";
     "security/_krb5-kdc-config/module.nix" = "linux-only-config-source";
     "storage/_garage-config/module.nix" = "linux-only-config-source";
-    "storage/_postgresql-ability/contract.nix" = "target-independent-source";
-    "storage/_postgresql-ability/provider/default.nix" = "target-independent-source";
-    "storage/_postgresql-config/host-resources.nix" = "linux-only-config-source";
     "tools/_rsyncd/module.nix" = "linux-only-config-source";
     "tools/aos/_configuration-provider/module.nix" = "target-independent-source";
     "tools/aos/_configuration-provider/provider.nix" = "target-independent-source";
@@ -802,7 +800,15 @@ let
     "storage/_postgresql-tests/lifecycle.nix" = "linux-only-test-source";
     "system/_dbus-conf-xsl/make-session-conf.xsl" = "target-independent-source";
     "system/_dbus-conf-xsl/make-system-conf.xsl" = "target-independent-source";
-    "tests/_aos-registry-server-config/module.nix" = "linux-only-config-source";
+    "tests/_aos-registry-server/module.nix" = "linux-only-config-source";
+    "tests/_aos-secret-reference-test/module.nix" = "linux-only-config-source";
+    "tests/_aos-test-agent/module.nix" = "linux-only-config-source";
+    "tests/_apm-systemd-client-test/module.nix" = "linux-only-config-source";
+    "tests/_desired-config-test/module.nix" = "linux-only-config-source";
+    "tests/_desired-prune-test/module.nix" = "linux-only-config-source";
+    "tests/_landlock-argv-test/module.nix" = "linux-only-config-source";
+    "tests/_test-http-server/module.nix" = "linux-only-config-source";
+    "tests/_test-static-cache-server/module.nix" = "linux-only-config-source";
     "tools/_conntrackd/module.nix" = "linux-only-config-source";
   };
 
