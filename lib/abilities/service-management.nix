@@ -49,5 +49,5 @@ in {
     })
     (builtins.attrValues interfaces));
   guarantees = interfaceCatalog.guaranteeDeclarations;
-  inherit (constructors) featureInterfaces forConfiguration forProducer forProducers forService instanceOf splitContribution structuredSource validate;
+  inherit (constructors) featureInterfaces forConfiguration forProducer forProducers forService instanceOf splitContribution structuredSource validate valueFromStructuredSource;
 }

@@ -580,6 +580,71 @@
     document = nodesAt [] rootSchema value;
   };
 
+  valueFromStructuredSource = source: let
+    valueForNode = node:
+      if node.kind == "object"
+      then {}
+      else if node.kind == "array"
+      then []
+      else if node.kind == "null"
+      then null
+      else node.value;
+    setAt = path: value: current:
+      if path == []
+      then value
+      else let
+        segment = builtins.head path;
+        remaining = builtins.tail path;
+      in
+        if segment.kind == "key"
+        then
+          (
+            if builtins.isAttrs current
+            then current
+            else {}
+          )
+          // {
+            ${segment.value} = setAt remaining value (
+              if builtins.isAttrs current
+              then current.${segment.value} or null
+              else null
+            );
+          }
+        else if segment.kind == "index"
+        then let
+          list =
+            if builtins.isList current
+            then current
+            else [];
+          length = builtins.length list;
+          targetLength =
+            if length > segment.value
+            then length
+            else segment.value + 1;
+        in
+          builtins.genList
+          (index:
+            if index == segment.value
+            then
+              setAt remaining value (
+                if index < length
+                then builtins.elemAt list index
+                else null
+              )
+            else if index < length
+            then builtins.elemAt list index
+            else null)
+          targetLength
+        else throw "structured configuration path has an unsupported segment";
+  in
+    if source.kind != "structured-value"
+    then throw "configuration source is not a structured value"
+    else
+      builtins.foldl'
+      (value: node: setAt node.path (valueForNode node) value)
+      null
+      source.document;
+
   # Package capability declarations remain visible when their configured
   # instances and requests are disabled.
   splitContribution = contribution: let
@@ -796,5 +861,5 @@
       )
     );
 in {
-  inherit featureInterfaces forConfiguration forProducer forProducers forService instanceOf splitContribution structuredSource validate;
+  inherit featureInterfaces forConfiguration forProducer forProducers forService instanceOf splitContribution structuredSource validate valueFromStructuredSource;
 }

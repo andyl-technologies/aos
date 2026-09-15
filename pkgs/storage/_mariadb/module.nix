@@ -5,7 +5,7 @@
   ...
 }: let
   cfg = config.mariadb;
-  inherit (lib) mkOption types;
+  inherit (lib) mkOption;
   inherit (lib.abilities) resultOf;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
@@ -511,9 +511,13 @@
   };
 in {
   options.mariadb = {
-    enable = lib.mkEnableOption "the MariaDB database service";
+    enable = mkOption {
+      type = abilityTypes.boolean;
+      default = false;
+      description = "Enable the MariaDB database service.";
+    };
     restartToken = mkOption {
-      type = types.nullOr serviceTypes.restartToken;
+      type = abilityTypes.optional serviceTypes.restartToken;
       default = null;
       description = "Operator-controlled token whose change requests a service restart.";
     };

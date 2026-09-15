@@ -5,13 +5,37 @@
   ...
 }: let
   cfg = config.openldap;
-  inherit (lib) mkOption types;
+  inherit (lib) mkOption;
   inherit (lib.abilities) resultOf;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
   abilityTypes = lib.abilities.types;
 
-  positiveInt = types.addCheck types.int (value: value > 0);
+  positiveInt = abilityTypes.integer {
+    minimum = 1;
+    maximum = abilityTypes.limits.maxSafeInteger;
+  };
+  ldapUrl = abilityTypes.refined {
+    name = "OpenLDAP listener URL";
+    description = "an LDAP, LDAPS, or local-domain listener URL";
+    type = abilityTypes.runtimeString;
+    predicate = value: builtins.match "(ldap|ldaps|ldapi)://[^[:space:]]*" value != null;
+  };
+  ldapUrls = abilityTypes.refined {
+    name = "OpenLDAP listener URLs";
+    description = "a non-empty list of OpenLDAP listener URLs";
+    type = abilityTypes.list {
+      element = ldapUrl;
+      maxItems = abilityTypes.limits.maxCollectionItems;
+    };
+    predicate = value: value != [];
+  };
+  distinguishedName = abilityTypes.refined {
+    name = "OpenLDAP distinguished name";
+    description = "a non-empty distinguished name without control characters";
+    type = abilityTypes.runtimeString;
+    predicate = value: builtins.match "[A-Za-z][^[:cntrl:]]*" value != null;
+  };
   credentialReference = abilityTypes.record {
     fields = {
       resource = {
@@ -327,22 +351,22 @@
 in {
   options.openldap = {
     enable = mkOption {
-      type = types.bool;
+      type = abilityTypes.boolean;
       default = false;
       description = "Enable the package-owned OpenLDAP server.";
     };
     listenUrls = mkOption {
-      type = types.nonEmptyListOf (types.strMatching "(ldap|ldaps|ldapi)://[^[:space:]]*");
+      type = ldapUrls;
       default = ["ldap://127.0.0.1:389/"];
       description = "LDAP, LDAPS, or local-domain listener URLs passed to slapd.";
     };
     suffix = mkOption {
-      type = types.strMatching "[A-Za-z][^[:cntrl:]]*";
+      type = distinguishedName;
       default = "dc=example,dc=org";
       description = "Distinguished-name suffix served by the primary directory database.";
     };
     rootDn = mkOption {
-      type = types.strMatching "[A-Za-z][^[:cntrl:]]*";
+      type = distinguishedName;
       default = "cn=admin,dc=example,dc=org";
       description = "Directory administrator distinguished name for the primary database.";
     };
@@ -358,7 +382,7 @@ in {
     };
     tls = {
       enable = mkOption {
-        type = types.bool;
+        type = abilityTypes.boolean;
         default = false;
         description = "Enable TLS configuration and permit LDAPS listeners.";
       };
@@ -378,7 +402,7 @@ in {
         description = "Typed credential containing the trusted certificate authority bundle.";
       };
       verifyClient = mkOption {
-        type = types.enum ["allow" "demand" "never" "try"];
+        type = abilityTypes.enum ["allow" "demand" "never" "try"];
         default = "demand";
         description = "Client-certificate verification policy applied to TLS sessions.";
       };
