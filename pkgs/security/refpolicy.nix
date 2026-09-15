@@ -10,6 +10,10 @@
   checkpolicy,
   semodule-utils,
   policycoreutils,
+  libselinux,
+  bash,
+  coreutils,
+  grep,
 }: let
   version = "2.20240916";
 in
@@ -83,8 +87,10 @@ in
       semodule-utils
       policycoreutils
     ];
-    runtimeDeps = [];
+    runtimeDeps = [bash coreutils grep policycoreutils libselinux];
     propagatedDeps = [];
+
+    abilities = ./_refpolicy/module.nix;
 
     phases = [
       {
@@ -143,6 +149,26 @@ in
         script = ''
           make install DESTDIR=$out
           make install-headers DESTDIR=$out
+
+          checkmodule -M -m \
+            -o "$out/usr/share/selinux/refpolicy/aos_base.mod" \
+            ${./refpolicy-aos-base.te}
+          semodule_package \
+            -o "$out/usr/share/selinux/refpolicy/aos_base.pp" \
+            -m "$out/usr/share/selinux/refpolicy/aos_base.mod"
+
+          mkdir -p "$out/libexec"
+          sed \
+            -e "s|@bash@|${bash}|g" \
+            -e "s|@coreutils@|${coreutils}|g" \
+            -e "s|@grep@|${grep}|g" \
+            -e "s|@policycoreutils@|${policycoreutils}|g" \
+            -e "s|@libselinux@|${libselinux}|g" \
+            -e "s|@out@|$out|g" \
+            ${./refpolicy-load-policy.sh} \
+            > "$out/libexec/aos-selinux-load-policy"
+          chmod 0755 "$out/libexec/aos-selinux-load-policy"
+          test -s "$out/usr/share/selinux/refpolicy/aos_base.pp"
 
           # Patch the installed devel Makefile to use store paths instead
           # of hardcoded /usr and /etc paths

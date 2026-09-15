@@ -537,6 +537,9 @@
   securityPolkitNative = import ./security-polkit-native.nix {
     inherit pkgs lib;
   };
+  securitySelinuxNative = import ./security-selinux-native.nix {
+    inherit pkgs lib;
+  };
   securitySshNative = import ./security-ssh-native.nix {
     inherit pkgs lib;
   };
@@ -965,6 +968,7 @@ in
   assert securityAuditNative;
   assert securityEbpfLsmNative;
   assert securityPolkitNative;
+  assert securitySelinuxNative;
   assert securitySshNative;
   assert systemdManagerWatchdog;
   assert providerTerminalSeparation;
