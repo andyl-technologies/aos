@@ -505,6 +505,20 @@
     declaration,
   }: let
     source = declaration.source or {};
+    credentialFragments = builtins.filter
+      (fragment: (fragment.kind or null) == "credential-content")
+      (source.fragments or []);
+    protectedMode = builtins.elem (declaration.mode or null) ["0400" "0600"];
+    credentialPairsValid = builtins.all (fragment: let
+      resource = fragment.resource or {};
+      path = fragment.path or {};
+    in
+      (resource._type or null) == "aos-request-output-reference"
+      && (path._type or null) == "aos-request-output-reference"
+      && resource.request == path.request
+      && resource.output == "retained-resource"
+      && path.output == "credential-path")
+    credentialFragments;
     structuredValid =
       (source.kind or null)
       != "structured-value"
@@ -514,6 +528,10 @@
       then throw "managed configuration does not match the canonical materialization type"
       else if !structuredValid
       then throw "managed configuration '${declaration.name}' has an invalid structured document tree"
+      else if credentialFragments != [] && !protectedMode
+      then throw "managed configuration '${declaration.name}' containing credentials must use mode 0400 or 0600"
+      else if !credentialPairsValid
+      then throw "managed configuration '${declaration.name}' must pair each credential resource and path from one delivery request"
       else declaration;
     interface = serviceInterfaces.managedConfiguration;
     contribution = {
