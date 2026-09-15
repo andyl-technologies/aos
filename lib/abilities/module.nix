@@ -795,6 +795,11 @@
       default = [];
       description = "Runtime features required to admit this implementation.";
     };
+    qualification = mkOption {
+      type = moduleTypes.nullOr qualificationType;
+      default = null;
+      description = "Package-owned native conformance and observation claim.";
+    };
   };
   implementationType = checkedSubmodule "ability implementation" implementationBaseType (implementation:
     implementation.description
@@ -817,6 +822,14 @@
       || (
         packageOutputType.check implementation.providerModule.artifact
         && relativePathType.check implementation.providerModule.path
+      )
+    )
+    && (
+      implementation.qualification
+      == null
+      || (
+        implementation.qualification.conformanceFamilies != []
+        && uniqueValues implementation.qualification.conformanceFamilies
       )
     )
     && uniqueValues implementation.methods
