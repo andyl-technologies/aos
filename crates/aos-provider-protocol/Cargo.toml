@@ -5,6 +5,7 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 aos-ability-model.workspace = true
 aos-contract.workspace = true
 serde.workspace = true

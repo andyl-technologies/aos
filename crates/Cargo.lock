@@ -770,6 +770,7 @@ dependencies = [
 name = "aos-provider-protocol"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "aos-ability-model",
  "aos-contract",
  "serde",
