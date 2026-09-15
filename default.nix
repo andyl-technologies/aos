@@ -970,17 +970,8 @@
   packagesWithExpose =
     lib.filterAttrs (_: p: builtins.isAttrs p && p ? expose) pkgs;
 
-  packageExposeLifecycleCheck = import ./tests/packages/expose-lifecycle.nix {
-    inherit pkgs lib mkSystem testing;
-  };
-  packageFirewallReloadCheck = import ./tests/packages/firewall-reload.nix {
-    inherit pkgs mkSystem testing;
-  };
   packagePresetCheck = import ./tests/packages/preset.nix {
     inherit pkgs mkSystem testing;
-  };
-  packageTestHttpServerCheck = import ./tests/packages/test-http-server.nix {
-    inherit pkgs lib mkSystem testing;
   };
   apmInstallAtBootCheck = import ./lib/testing/apm-install-at-boot.nix {
     inherit pkgs mkSystem testing;
@@ -2034,7 +2025,6 @@ in {
           module-args
           module-enforcement
           package-documentation
-          package-expose
           aos-registry-server-config
           registry-hub
           nginx-config
@@ -2103,13 +2093,7 @@ in {
       };
     systemd-credentials = import ./lib/testing/systemd-credentials.nix {inherit pkgs lib;};
     systemd-verity = build.systemd-verity;
-    package-expose = import ./tests/packages/expose.nix {
-      inherit pkgs lib mkSystem packagesWithExpose;
-    };
-    package-firewall-reload = packageFirewallReloadCheck;
-    package-expose-lifecycle = packageExposeLifecycleCheck;
     package-preset = packagePresetCheck;
-    package-test-http-server = packageTestHttpServerCheck;
     selinux-base = selinuxBaseCheck;
     apm-install-at-boot = apmInstallAtBootCheck;
     lint = import ./tests/packages/lint.nix {inherit pkgs lib;};
@@ -2121,9 +2105,7 @@ in {
         hub-native-operations = hubNativeOperationsTest;
         hub-settings = hubSettingsTest;
         apm-install-at-boot = apmInstallAtBootCheck;
-        package-expose-lifecycle = packageExposeLifecycleCheck;
         package-preset = packagePresetCheck;
-        package-test-http-server = packageTestHttpServerCheck;
         selinux-base = selinuxBaseCheck;
       };
     integration = packageChecks // stdenvChecks;

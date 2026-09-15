@@ -176,20 +176,4 @@ in {
     badExpected = "The immutable package rejects mutable service state.";
     badPath = "@out@/var/lib/aos-pkg-apm-systemd-client-test/apm-test-notify-reload.count";
   };
-
-  expose-smoke = mkDataProbe {
-    package = "expose-smoke";
-    primaryInput = "The expose-smoke package payload.";
-    primaryOperation = "Read the installed marker line.";
-    primaryExpected = "The package contains the exact smoke-test payload.";
-    primaryScript = ''
-      import pathlib
-      assert pathlib.Path("@out@/share/expose-smoke/payload.txt").read_text() == "payload\n"
-      print("expose-smoke data passed")
-    '';
-    badInput = "A request for runtime service state inside the immutable package.";
-    badOperation = "Resolve the absent state marker.";
-    badExpected = "The immutable package rejects mutable service state.";
-    badPath = "@out@/var/lib/aos-pkg-expose-smoke/started";
-  };
 }

@@ -1631,7 +1631,6 @@
     "crucible-qemu-trace-plugin"
     "desired-config-test"
     "desired-prune-test"
-    "expose-smoke"
     "test-http-server"
     "test-static-cache-server"
   ];
