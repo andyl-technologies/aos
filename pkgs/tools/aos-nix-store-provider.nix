@@ -14,7 +14,7 @@
     inherit src;
     name = "aos-nix-store-provider-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-ybaCQ+OXukGuY05ntbj8ODkFoxdG7vMWO2g48FX620A=";
+    hash = "sha256-2tAj5sn/KEahcZivDkx4L6CtQm958EY9m4Va91WsyR4=";
   };
   targetTriple =
     {

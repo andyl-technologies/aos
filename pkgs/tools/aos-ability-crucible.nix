@@ -14,7 +14,7 @@
     inherit src;
     name = "aos-ability-crucible-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-4G8waM8fsmqSjIgkaitrG3HmPy2e6KShpDDJn7THqZc=";
+    hash = "sha256-2tAj5sn/KEahcZivDkx4L6CtQm958EY9m4Va91WsyR4=";
   };
   targetTriple =
     {
