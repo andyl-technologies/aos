@@ -148,7 +148,12 @@
       // {package = package;}
       // (
         if value ? interface
-        then {interface = qualify package value.interface;}
+        then {
+          interface =
+            if builtins.isString value.interface
+            then qualify package value.interface
+            else value.interface;
+        }
         else {}
       )
     else if collection == "instances"
@@ -241,6 +246,7 @@
   lifetimeType = abilityTypes.lifetime;
 
   interfaceKeyType = abilityTypes.interfaceKey;
+  implementationInterfaceType = moduleTypes.either declarationKeyType interfaceKeyType;
   interfaceSelectorType = strictSubmodule {
     name = mkOption {type = qualifiedNameType;};
     abi = mkOption {type = positiveU32Type;};
@@ -561,6 +567,17 @@
     if config == null
     then {}
     else config.aos.abilities.interfaces;
+  interfaceDeclarationForReference = context: reference:
+    if builtins.isString reference
+    then configuredInterfaces.${reference} or (throw "${context} references absent interface declaration '${reference}'.")
+    else let
+      matches = builtins.filter (declaration:
+        interfaceIdentity (interfaceDocumentFromDeclaration declaration) == reference)
+      (builtins.attrValues configuredInterfaces);
+    in
+      if builtins.length matches == 1
+      then builtins.head matches
+      else throw "${context} must resolve its exact shared interface identity to one declaration.";
   interfacesNamed = name: abi:
     builtins.filter (
       declaration:
@@ -653,8 +670,8 @@
       description = "Owning package injected by the package ability carrier.";
     };
     interface = mkOption {
-      type = declarationKeyType;
-      description = "Package-local alias of the provider-neutral interface declaration.";
+      type = implementationInterfaceType;
+      description = "Package-local declaration alias or exact shared provider-neutral interface identity.";
     };
     requirements = mkOption {
       type = moduleTypes.attrsOf implementationRequirementType;
@@ -916,7 +933,8 @@
     then config == null
     else let
       implementation = config.aos.abilities.implementations.${instance.implementation};
-      configurationType = config.aos.abilities.interfaces.${implementation.interface}.configurationType;
+      declaration = interfaceDeclarationForReference "ability instance" implementation.interface;
+      configurationType = declaration.configurationType;
     in
       if configurationType == null
       then instance.configuration == {}
@@ -1048,7 +1066,7 @@
   };
 
   semanticImplementation = name: implementation: let
-    declaration = config.aos.abilities.interfaces.${implementation.interface};
+    declaration = interfaceDeclarationForReference "implementation '${name}'" implementation.interface;
     normalizeHandler = handler:
       if handler == null
       then null
@@ -1212,7 +1230,9 @@
       then false
       else let
         implementation = config.aos.abilities.implementations.${binding.implementation};
-        controllerDeclaration = config.aos.abilities.interfaces.${implementation.interface};
+        controllerDeclaration = interfaceDeclarationForReference
+          "controller implementation '${binding.implementation}'"
+          implementation.interface;
         resourceDeclarations = uniqueInterfaceDeclarations (builtins.filter
           (declaration: declaration.name == resource.kind)
           (builtins.attrValues configuredInterfaces));

@@ -52,9 +52,14 @@
     _:
       abilities.interfaceDocumentFromDeclaration
   ) (builtins.mapAttrs (_: semanticInterface) evaluated.interfaces);
-  interfaceFor = implementation: interfaceDocuments.${implementation.interface};
+  interfaceFor = implementation:
+    if builtins.isString implementation.interface
+    then interfaceDocuments.${implementation.interface}
+    else null;
   interfaceIdentityFor = implementation:
-    abilities.interfaceIdentity (interfaceFor implementation);
+    if builtins.isString implementation.interface
+    then abilities.interfaceIdentity (interfaceFor implementation)
+    else implementation.interface;
   requirementsFor = implementation:
     map (name: implementation.requirements.${name})
     (builtins.attrNames implementation.requirements);
@@ -87,7 +92,9 @@
   ownedResourceKinds = implementation: let
     declaration = interfaceFor implementation;
   in
-    builtins.attrNames (builtins.listToAttrs (map
+    if declaration == null
+    then []
+    else builtins.attrNames (builtins.listToAttrs (map
       (method: {
         name = declaration.interface.methods.${method}.target_resource;
         value = true;

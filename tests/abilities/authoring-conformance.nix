@@ -641,6 +641,46 @@
     semantics = authoredGuarantee.semantics;
   };
   guaranteeReferenceProjection = projectAbilityConfig "authoring" guaranteeReferenceEvaluation;
+  sharedInterfaceIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration implementationInterface
+  );
+  sharedImplementationEvaluation = lib.evalModules {
+    modules = [lib.abilities.module];
+    packageModules = [
+      {
+        name = "authoring";
+        module.config.aos.abilities.implementations.shared = implementation // {
+          interface = sharedInterfaceIdentity;
+        };
+      }
+    ];
+  };
+  sharedImplementationProjection = projectAbilityConfig "authoring" sharedImplementationEvaluation;
+  sharedImplementationFixedPoint = lib.evalModules {
+    modules = [
+      lib.abilities.module
+      {
+        config.aos.abilities = {
+          environment = plainIdentity.environment;
+          interfaces.shared = implementationInterface;
+        };
+      }
+    ];
+    packageModules = [
+      {
+        name = "authoring";
+        module.config.aos.abilities = {
+          implementations.shared = implementation // {
+            interface = sharedInterfaceIdentity;
+          };
+          instances.shared = {
+            implementation = "shared";
+            configuration = true;
+          };
+        };
+      }
+    ];
+  };
   packageModuleFor = package: {
     name = package;
     module.config.aos.abilities = {
@@ -901,6 +941,11 @@ in
   assert !(authoredGuarantee ? descriptor);
   assert guaranteeReferenceEvaluation.config.aos.abilities.guarantees.authoring == authoredGuarantee;
   assert guaranteeReferenceEvaluation.config.aos.abilities.interfaces.test.guarantees == ["authoring"];
+  assert sharedImplementationEvaluation.config.aos.abilities.implementations."authoring:shared".interface
+  == sharedInterfaceIdentity;
+  assert sharedImplementationProjection.value.interfaces == {};
+  assert (builtins.head sharedImplementationProjection.value.exports).interface == sharedInterfaceIdentity;
+  assert sharedImplementationFixedPoint.config.aos.abilities.instances."authoring:shared".configuration;
   assert (builtins.head guaranteeReferenceProjection.value.interface_documents).document.interface.guarantees == [{
     name = authoredGuarantee.name;
     version = authoredGuarantee.version;
