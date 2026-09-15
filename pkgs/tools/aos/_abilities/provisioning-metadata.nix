@@ -2,12 +2,15 @@
 {
   config,
   lib,
+  packageName,
   ...
 }: let
   abilityTypes = lib.abilities.types;
   storage = lib.abilities.interfaces.blockStorage.interfaces.provisioning;
   serviceTypes = lib.abilities.interfaces.serviceManagement.types;
   runtimeArtifact = lib.abilities.packageOutput {output = "metadataRuntime";};
+  registrySnapshot =
+    config.aos.abilities.interfaces."${packageName}:synchronized-registry-snapshot".methods.observe.outputs.registry-snapshot.schema;
 
   optional = type: {
     type = abilityTypes.optional type;
@@ -176,6 +179,25 @@
       authorized_input = abilityTypes.deferredResult authorizedInput;
     };
   };
+  evaluationParameters = abilityTypes.record {
+    fields = {
+      request = storage.requestType;
+      authorized_input = abilityTypes.deferredResult authorizedInput;
+      registry_snapshot = abilityTypes.deferredResult registrySnapshot;
+    };
+  };
+  evaluationResult = abilityTypes.record {
+    fields = {
+      schema = abilityTypes.enum ["aos.configuration.provisioning-evaluation-result/v1"];
+      controller = abilityTypes.resourceReference;
+      handoff = abilityTypes.resourceReference;
+      manifest_blob = abilityTypes.transactionBlobReference;
+      manifest_sha256 = abilityTypes.digest;
+      registry_snapshot_sha256 = abilityTypes.digest;
+      host_module_sha256 = optional abilityTypes.digest;
+      instance_facts_sha256 = abilityTypes.digest;
+    };
+  };
   seedParameters = abilityTypes.record {
     fields = {
       request = storage.requestType;
@@ -203,6 +225,13 @@
       schema = abilityTypes.enum ["aos.metadata.provisioning-plan-observation/v1"];
       source = optional (abilityTypes.enum ["operator" "fallback"]);
       state = abilityTypes.enum ["ready" "planned"];
+    };
+  };
+  evaluationObservation = abilityTypes.record {
+    fields = {
+      schema = abilityTypes.enum ["aos.configuration.provisioning-evaluation-observation/v1"];
+      manifest_sha256 = optional abilityTypes.digest;
+      state = abilityTypes.enum ["ready" "evaluated"];
     };
   };
   seedObservation = abilityTypes.record {
@@ -310,6 +339,25 @@
     aggregation = aggregation observerAlias;
     guarantees = [];
   };
+  evaluatorAlias = "storage-provisioning-configuration-evaluator";
+  evaluatorMethod = method {
+    name = "evaluate";
+    description = "Evaluates authenticated provisioning input against one synchronized registry snapshot.";
+    parameters = evaluationParameters;
+    evidence = evaluationObservation;
+    outputs.configuration-result = output evaluationResult "Returns the graph-bound manifest blob identity and exact evaluation authorities.";
+  };
+  evaluatorDeclaration = lib.abilities.declareInterface {
+    name = "aos.configuration.storage-provisioning-evaluation";
+    description = "Evaluates one authorized provisioning input into a canonical configuration manifest blob.";
+    abi = 1;
+    requestType = storage.requestType;
+    methods.evaluate = evaluatorMethod;
+    outputs = {};
+    inherit (storage.declaration) lifecycle;
+    aggregation = aggregation evaluatorAlias;
+    guarantees = [];
+  };
   seedAlias = "storage-provisioning-network-seeder";
   seedMethod = method {
     name = "seed";
@@ -348,6 +396,7 @@ in {
       ${detectionAlias} = detectionDeclaration;
       ${authorizationAlias} = authorizationDeclaration;
       ${observerAlias} = observerDeclaration;
+      ${evaluatorAlias} = evaluatorDeclaration;
       ${seedAlias} = seedDeclaration;
     };
 
@@ -391,6 +440,19 @@ in {
         desiredType = null;
         requiredFeatures = [];
       };
+      ${evaluatorAlias} = {
+        description = "Evaluates authorized provisioning input through the package-owned full configuration runtime.";
+        artifact = runtimeArtifact;
+        interface = lib.abilities.interfaceIdentity (
+          lib.abilities.interfaceDocumentFromDeclaration evaluatorDeclaration
+        );
+        methods = ["evaluate"];
+        guarantees = [];
+        handlerDescriptor = handler evaluationParameters evaluationObservation;
+        providerModule = null;
+        desiredType = null;
+        requiredFeatures = [];
+      };
       ${seedAlias} = {
         description = "Seeds metadata networking through the package-owned metadata runtime.";
         artifact = runtimeArtifact;
@@ -410,6 +472,7 @@ in {
       ${detectionAlias}.implementation = detectionAlias;
       ${authorizationAlias}.implementation = authorizationAlias;
       ${observerAlias}.implementation = observerAlias;
+      ${evaluatorAlias}.implementation = evaluatorAlias;
       ${seedAlias}.implementation = seedAlias;
     };
   };

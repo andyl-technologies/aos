@@ -55,6 +55,7 @@ pub(crate) use native_activation::{
 };
 mod cancellation;
 mod execution_observer;
+pub(crate) mod provisioning_evaluator;
 pub mod registry_snapshot_provider;
 pub mod runtime;
 pub mod runtime_modules;
@@ -535,6 +536,9 @@ pub struct EvalCommand {
     /// platform-authored input.
     pub image_default_host: bool,
 
+    /// Binds provisioning evaluation to one protected synchronized authority.
+    pub(crate) registry_snapshot: Option<registry_snapshot_provider::SynchronizedSnapshot>,
+
     /// Require the delivered `host.nix` to carry a valid detached signature.
     /// The default trusts the deployment platform that supplied instance
     /// metadata. Signed mode is fail-closed when anchors or signatures are
@@ -655,6 +659,9 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
     // package. Off-host callers inject an explicit resolver instead.
     let resolver = stock::RegistryPackageModules::load_system()
         .context("loading authenticated system registry snapshot for config evaluation")?;
+    if let Some(snapshot) = &cmd.registry_snapshot {
+        validate_registry_authority(&resolver, snapshot)?;
+    }
 
     let mut seed_set = load_host_selection(cmd)?;
     for legacy_seed in load_seed_set(cmd.desired.as_deref())? {
@@ -783,6 +790,41 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
     Ok(EvalCommandReport {
         resolution_trace: outcome.trace.iter().map(render_iter_record).collect(),
     })
+}
+
+fn validate_registry_authority(
+    resolver: &stock::RegistryPackageModules,
+    snapshot: &registry_snapshot_provider::SynchronizedSnapshot,
+) -> Result<()> {
+    registry_snapshot_provider::validate_synchronized_snapshot(snapshot)?;
+    let releases = resolver
+        .registries()
+        .registries()
+        .iter()
+        .map(|registry| {
+            let receipt = registry
+                .release_trust()
+                .context("configuration registry has no authenticated release receipt")?;
+            Ok(registry_snapshot_provider::ReleaseIdentity {
+                registry: receipt.registry.clone(),
+                release_tag: receipt.release_tag.clone(),
+                commit: receipt.commit.clone(),
+                tag_signer_key: receipt.tag_signer_key.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let releases = registry_snapshot_provider::canonical_releases(releases)?;
+    anyhow::ensure!(
+        releases == snapshot.releases,
+        "configuration registry authority differs from the synchronized snapshot"
+    );
+    let (static_contract, _) = static_packages::checked_host_selection()
+        .context("revalidating the synchronized immutable package contract")?;
+    anyhow::ensure!(
+        static_contract == snapshot.static_contract,
+        "immutable package authority differs from the synchronized snapshot"
+    );
+    Ok(())
 }
 
 fn replay_candidate_ability_plan(

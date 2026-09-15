@@ -21,8 +21,8 @@ use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
     AdmissionResult, AdmissionRevision, HANDLER_ABI_ARGUMENT, INVOCATION_SCHEMA, Invocation,
     InvocationDisposition, InvocationPurpose, InvocationResult, RESULT_SCHEMA, ResourceContext,
-    SupportedPurposes, resource_set_digest, validate_admission_resource, validate_resource_context,
-    validate_resource_contexts,
+    SupportedPurposes, TRANSACTION_BLOB_OUTPUT_DIRECTORY_ENV, resource_set_digest,
+    validate_admission_resource, validate_resource_context, validate_resource_contexts,
 };
 use aos_storage_provisioning::{
     AuthorizedProvisioningInput, BaseLibraryIdentity, CanonicalProvisioningPlan,
@@ -40,15 +40,18 @@ use super::provisioning::{
     evaluate_canonical_provisioning_plan, run_authorize,
 };
 use super::{FetchOptions, run_fetch};
+use crate::config_eval::provisioning_evaluator::{self, EvaluationParameters, MANIFEST_SLOT};
 
 const AUTHORIZATION_INTERFACE: &str = "aos.metadata.storage-provisioning-input-authorization";
 const DETECTION_INTERFACE: &str = "aos.metadata.storage-provisioning-platform-detection";
 const PLAN_INTERFACE: &str = "aos.metadata.storage-provisioning-plan";
 const NETWORK_SEED_INTERFACE: &str = "aos.metadata.storage-provisioning-network-seed";
+const EVALUATION_INTERFACE: &str = "aos.configuration.storage-provisioning-evaluation";
 const AUTHORIZATION_OBSERVATION: &str = "aos.metadata.provisioning-authorization-observation/v1";
 const DETECTION_OBSERVATION: &str = "aos.metadata.provisioning-platform-observation/v1";
 const PLAN_OBSERVATION: &str = "aos.metadata.provisioning-plan-observation/v1";
 const NETWORK_SEED_OBSERVATION: &str = "aos.metadata.provisioning-network-seed-observation/v1";
+const EVALUATION_OBSERVATION: &str = "aos.configuration.provisioning-evaluation-observation/v1";
 const PROVIDER_CONTEXT: &str = "aos.metadata.provisioning-provider-context/v1";
 const STORAGE_VIEW_INTERFACE: &str = "aos.storage.view";
 const STORAGE_VIEW_OBSERVATION: &str = "aos.ability.storage-view-observation/v1";
@@ -178,6 +181,15 @@ struct NetworkSeedObservation {
     state: &'static str,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+struct EvaluationObservation {
+    schema: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manifest_sha256: Option<String>,
+    state: &'static str,
+}
+
 /// Runs one metadata provisioning handler call from the process streams.
 ///
 /// # Errors
@@ -236,6 +248,7 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
         DETECTION_INTERFACE => detection_observation(None, "ready")?,
         AUTHORIZATION_INTERFACE => authorization_observation(None, "ready")?,
         PLAN_INTERFACE => plan_observation(None, "ready")?,
+        EVALUATION_INTERFACE => evaluation_observation(None, "ready")?,
         NETWORK_SEED_INTERFACE => network_seed_observation(None, "ready")?,
         _ => bail!("unsupported metadata provisioning interface"),
     };
@@ -357,6 +370,24 @@ async fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResul
                 method_outputs([(
                     "provisioning-plan",
                     ability_value(serde_json::to_value(plan)?)?,
+                )])?,
+            )
+        }
+        EVALUATION_INTERFACE => {
+            let parameters: EvaluationParameters = decode(&invocation.request.inputs)?;
+            ensure!(
+                parameters.request == intent,
+                "configuration evaluation request differs from the checked resource"
+            );
+            let output = provisioning_evaluator::evaluate(parameters)?;
+            publish_blob_output(MANIFEST_SLOT, &output.manifest)?;
+            let manifest_sha256 = output.result.manifest_sha256.to_string();
+            completed_result(
+                &invocation,
+                evaluation_observation(Some(manifest_sha256), "evaluated")?,
+                method_outputs([(
+                    "configuration-result",
+                    ability_value(serde_json::to_value(output.result)?)?,
                 )])?,
             )
         }
@@ -705,6 +736,61 @@ fn write_seed_atomically(directory: &Path, destination: &Path, contents: &[u8]) 
     Ok(())
 }
 
+fn publish_blob_output(slot: &str, contents: &[u8]) -> Result<()> {
+    let output = std::env::var_os(TRANSACTION_BLOB_OUTPUT_DIRECTORY_ENV)
+        .context("reading the private transaction blob output directory")?;
+    let directory = PathBuf::from(output);
+    ensure!(
+        directory.is_absolute()
+            && directory
+                .components()
+                .all(|component| matches!(component, Component::RootDir | Component::Normal(_))),
+        "transaction blob output directory is not a normalized absolute path"
+    );
+    let metadata = fs::symlink_metadata(&directory)
+        .context("inspecting the private transaction blob output directory")?;
+    ensure!(
+        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+        "transaction blob output directory is not a real directory"
+    );
+    ensure!(
+        fs::canonicalize(&directory)? == directory,
+        "transaction blob output directory is not canonical"
+    );
+
+    publish_blob_output_at(&directory, slot, contents)
+}
+
+fn publish_blob_output_at(directory: &Path, slot: &str, contents: &[u8]) -> Result<()> {
+    let destination = directory.join(slot);
+    match fs::symlink_metadata(&destination) {
+        Ok(metadata) => {
+            ensure!(
+                metadata.file_type().is_file() && !metadata.file_type().is_symlink(),
+                "transaction blob output slot is not a regular file"
+            );
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("inspecting the transaction blob output slot"),
+    }
+
+    let mut temporary = Builder::new()
+        .prefix(".aos-transaction-blob-")
+        .tempfile_in(&directory)
+        .context("creating a private transaction blob output")?;
+    temporary
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(0o600))?;
+    temporary.write_all(contents)?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(&destination)
+        .map_err(|error| error.error)
+        .context("publishing the transaction blob output")?;
+    fs::File::open(&directory)?.sync_all()?;
+    Ok(())
+}
+
 fn validate_authorization_configuration(configuration: &AuthorizationConfiguration) -> Result<()> {
     ensure!(
         configuration.schema == "aos.metadata.provisioning-authorization-configuration/v1",
@@ -866,6 +952,7 @@ fn validate_method(interface: &str, method: &str) -> Result<()> {
         (DETECTION_INTERFACE, "detect")
         | (AUTHORIZATION_INTERFACE, "authorize")
         | (PLAN_INTERFACE, "observe")
+        | (EVALUATION_INTERFACE, "evaluate")
         | (NETWORK_SEED_INTERFACE, "seed") => Ok(()),
         _ => bail!("unsupported metadata provisioning method"),
     }
@@ -927,6 +1014,17 @@ fn network_seed_observation(
     })?)
 }
 
+fn evaluation_observation(
+    manifest_sha256: Option<String>,
+    state: &'static str,
+) -> Result<AbilityValue> {
+    ability_value(serde_json::to_value(EvaluationObservation {
+        schema: EVALUATION_OBSERVATION,
+        manifest_sha256,
+        state,
+    })?)
+}
+
 fn completed_result(
     invocation: &Invocation,
     evidence: AbilityValue,
@@ -946,6 +1044,7 @@ fn cancelled_result(invocation: &Invocation, interface: &str) -> Result<Invocati
         DETECTION_INTERFACE => detection_observation(None, "ready")?,
         AUTHORIZATION_INTERFACE => authorization_observation(None, "ready")?,
         PLAN_INTERFACE => plan_observation(None, "ready")?,
+        EVALUATION_INTERFACE => evaluation_observation(None, "ready")?,
         NETWORK_SEED_INTERFACE => network_seed_observation(None, "ready")?,
         _ => bail!("unsupported metadata provisioning interface"),
     };
@@ -1028,6 +1127,35 @@ mod tests {
         let error = checked_seed_directory(root.path()).expect_err("symbolic link is rejected");
 
         assert!(error.to_string().contains("symbolic link"));
+    }
+
+    #[test]
+    fn transaction_blob_publication_is_atomic_and_recoverable() {
+        let directory = tempfile::tempdir().expect("private blob output directory");
+
+        publish_blob_output_at(directory.path(), MANIFEST_SLOT, b"first")
+            .expect("first blob publication");
+        publish_blob_output_at(directory.path(), MANIFEST_SLOT, b"replacement")
+            .expect("recovered blob publication");
+
+        let path = directory.path().join(MANIFEST_SLOT);
+        assert_eq!(fs::read(&path).expect("published blob"), b"replacement");
+        assert_eq!(
+            fs::metadata(path).expect("published blob metadata").mode() & 0o7777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn transaction_blob_publication_rejects_a_symbolic_link_slot() {
+        let directory = tempfile::tempdir().expect("private blob output directory");
+        let outside = tempfile::NamedTempFile::new().expect("outside file");
+        symlink(outside.path(), directory.path().join(MANIFEST_SLOT)).expect("symbolic link");
+
+        let error = publish_blob_output_at(directory.path(), MANIFEST_SLOT, b"manifest")
+            .expect_err("symbolic link is rejected");
+
+        assert!(error.to_string().contains("not a regular file"));
     }
 
     #[test]

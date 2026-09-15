@@ -9,17 +9,17 @@
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 
-use anyhow::{bail, ensure, Context as _, Result};
+use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
-    AbilityValue, ArtifactReference, LocalKey, ResourceReference, ABILITY_LIMITS_V1,
+    ABILITY_LIMITS_V1, AbilityValue, ArtifactReference, LocalKey, ResourceReference,
 };
 use aos_contract::Sha256Digest;
 use aos_provider_protocol::{
-    resource_set_digest, validate_admission_resource, validate_resource_context,
-    validate_resource_contexts, AdmissionDisposition, AdmissionRequest, AdmissionResult,
-    AdmissionRevision, Invocation, InvocationDisposition, InvocationPurpose, InvocationResult,
-    ResourceContext, SupportedPurposes, ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA,
-    HANDLER_ABI_ARGUMENT, INVOCATION_SCHEMA, RESULT_SCHEMA,
+    ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
+    AdmissionResult, AdmissionRevision, HANDLER_ABI_ARGUMENT, INVOCATION_SCHEMA, Invocation,
+    InvocationDisposition, InvocationPurpose, InvocationResult, RESULT_SCHEMA, ResourceContext,
+    SupportedPurposes, resource_set_digest, validate_admission_resource, validate_resource_context,
+    validate_resource_contexts,
 };
 use serde::{Deserialize, Serialize};
 
@@ -43,13 +43,13 @@ struct SnapshotRequest {
     prerequisites: Vec<ResourceReference>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ReleaseIdentity {
-    registry: String,
-    release_tag: String,
-    commit: String,
-    tag_signer_key: String,
+pub(crate) struct ReleaseIdentity {
+    pub(crate) registry: String,
+    pub(crate) release_tag: String,
+    pub(crate) commit: String,
+    pub(crate) tag_signer_key: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -64,17 +64,17 @@ struct SnapshotCommitment<'a> {
     releases: &'a [ReleaseIdentity],
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct SynchronizedSnapshot {
-    schema: &'static str,
-    scope: String,
-    controller: ResourceReference,
-    handoff: ResourceReference,
-    synchronization: ResourceReference,
-    static_contract: ArtifactReference,
-    releases: Vec<ReleaseIdentity>,
-    snapshot_sha256: String,
+pub(crate) struct SynchronizedSnapshot {
+    pub(crate) schema: String,
+    pub(crate) scope: String,
+    pub(crate) controller: ResourceReference,
+    pub(crate) handoff: ResourceReference,
+    pub(crate) synchronization: ResourceReference,
+    pub(crate) static_contract: ArtifactReference,
+    pub(crate) releases: Vec<ReleaseIdentity>,
+    pub(crate) snapshot_sha256: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -278,7 +278,7 @@ fn observe_snapshot(request: &SnapshotRequest) -> Result<SynchronizedSnapshot> {
     let snapshot_sha256 = Sha256Digest::of_canonical(SNAPSHOT_SCHEMA, &commitment)?.to_string();
 
     Ok(SynchronizedSnapshot {
-        schema: SNAPSHOT_SCHEMA,
+        schema: SNAPSHOT_SCHEMA.into(),
         scope: request.scope.clone(),
         controller: request.controller.clone(),
         handoff: request.handoff.clone(),
@@ -289,7 +289,41 @@ fn observe_snapshot(request: &SnapshotRequest) -> Result<SynchronizedSnapshot> {
     })
 }
 
-fn canonical_releases(releases: Vec<ReleaseIdentity>) -> Result<Vec<ReleaseIdentity>> {
+/// Revalidates one protected synchronized-snapshot result.
+///
+/// # Errors
+///
+/// Returns an error when its schema, release ordering, or commitment digest is
+/// inconsistent with the exact controller, handoff, synchronization, and
+/// authenticated registry authorities it carries.
+pub(crate) fn validate_synchronized_snapshot(snapshot: &SynchronizedSnapshot) -> Result<()> {
+    ensure!(
+        snapshot.schema == SNAPSHOT_SCHEMA && snapshot.scope == "system",
+        "unsupported synchronized registry snapshot"
+    );
+    let releases = canonical_releases(snapshot.releases.clone())?;
+    ensure!(
+        releases == snapshot.releases,
+        "synchronized registry releases are not canonical"
+    );
+    let commitment = SnapshotCommitment {
+        schema: SNAPSHOT_SCHEMA,
+        scope: &snapshot.scope,
+        controller: &snapshot.controller,
+        handoff: &snapshot.handoff,
+        synchronization: &snapshot.synchronization,
+        static_contract: &snapshot.static_contract,
+        releases: &snapshot.releases,
+    };
+    let expected = Sha256Digest::of_canonical(SNAPSHOT_SCHEMA, &commitment)?.to_string();
+    ensure!(
+        snapshot.snapshot_sha256 == expected,
+        "synchronized registry snapshot differs from its commitment"
+    );
+    Ok(())
+}
+
+pub(crate) fn canonical_releases(releases: Vec<ReleaseIdentity>) -> Result<Vec<ReleaseIdentity>> {
     let mut encoded_releases = releases
         .into_iter()
         .map(|release| Ok((aos_contract::canonical::to_vec(&release)?, release)))
@@ -411,7 +445,13 @@ fn purpose_name(purpose: InvocationPurpose) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical_releases, ReleaseIdentity};
+    use aos_ability_model::{ArtifactReference, ResourceReference};
+    use aos_contract::Sha256Digest;
+
+    use super::{
+        ReleaseIdentity, SNAPSHOT_SCHEMA, SnapshotCommitment, SynchronizedSnapshot,
+        canonical_releases, validate_synchronized_snapshot,
+    };
 
     fn release(registry: &str) -> ReleaseIdentity {
         ReleaseIdentity {
@@ -430,5 +470,74 @@ mod tests {
         assert_eq!(releases[0].registry, "alpha");
         assert_eq!(releases[1].registry, "zeta");
         assert!(canonical_releases(vec![release("same"), release("same")]).is_err());
+    }
+
+    #[test]
+    fn synchronized_snapshot_revalidates_its_complete_commitment() {
+        let controller = reference("controller");
+        let handoff = reference("handoff");
+        let synchronization = reference("synchronization");
+        let static_contract = artifact();
+        let releases = vec![release("registry")];
+        let commitment = SnapshotCommitment {
+            schema: SNAPSHOT_SCHEMA,
+            scope: "system",
+            controller: &controller,
+            handoff: &handoff,
+            synchronization: &synchronization,
+            static_contract: &static_contract,
+            releases: &releases,
+        };
+        let snapshot_sha256 =
+            Sha256Digest::of_canonical(SNAPSHOT_SCHEMA, &commitment).expect("snapshot digest");
+        let mut snapshot = SynchronizedSnapshot {
+            schema: SNAPSHOT_SCHEMA.into(),
+            scope: "system".into(),
+            controller,
+            handoff,
+            synchronization,
+            static_contract,
+            releases,
+            snapshot_sha256: snapshot_sha256.to_string(),
+        };
+
+        validate_synchronized_snapshot(&snapshot).expect("valid synchronized snapshot");
+        snapshot.releases[0].commit = "ffffffffffffffffffffffffffffffffffffffff".into();
+
+        assert!(validate_synchronized_snapshot(&snapshot).is_err());
+    }
+
+    fn reference(key: &str) -> ResourceReference {
+        serde_json::from_value(serde_json::json!({
+            "interface": {
+                "name": "aos.test.resource",
+                "abi": 1,
+                "descriptor": format!("sha256:{}", "1".repeat(64)),
+            },
+            "resource": {
+                "provider": {
+                    "environment": {
+                        "authority": "test",
+                        "key": "host",
+                        "stage": "host",
+                    },
+                    "key": "provider",
+                },
+                "key": key,
+            },
+            "operations": ["observe"],
+            "lifetime": "transaction",
+        }))
+        .expect("resource-reference fixture is valid")
+    }
+
+    fn artifact() -> ArtifactReference {
+        serde_json::from_value(serde_json::json!({
+            "content": format!("sha256:{}", "2".repeat(64)),
+            "store_path": "/nix/store/00000000000000000000000000000000-static-contract",
+            "nar_hash": format!("sha256:{}", "3".repeat(64)),
+            "closure": format!("sha256:{}", "4".repeat(64)),
+        }))
+        .expect("artifact-reference fixture is valid")
     }
 }

@@ -97,6 +97,7 @@ pub fn run(command: &ServiceCommand) -> Result<()> {
         retained_host_inputs: None,
         require_signed_host_nix: false,
         image_default_host,
+        registry_snapshot: None,
     });
     cache_accepted_input(command, result)
 }
