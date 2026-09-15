@@ -54,6 +54,8 @@ in
     propagatedDeps = [];
     disallowedReferences = [cargoDeps rust];
 
+    abilities = ./_zram-generator/module.nix;
+
     phases = [
       {
         name = "unpack";
