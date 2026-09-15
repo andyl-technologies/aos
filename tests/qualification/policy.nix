@@ -315,7 +315,7 @@ in
   ];
   assert abilityRequirements.ability-native-image-rollout.production_only;
   assert abilityRequirements.ability-native-kubernetes.regressions
-  == ["checks.fleet.ability-native-kubernetes"];
+  == ["checks.fleet.k3s-control-plane-worker"];
   assert abilityRequirements.ability-native-kubernetes.checks
   == [
     "authenticated-k3s-bootstrap-and-provider-authority"
@@ -345,7 +345,7 @@ in
     "checks.fleet.ability-native-activation"
     "checks.fleet.ability-native-foreground-container"
     "checks.fleet.ability-native-image-rollout"
-    "checks.fleet.ability-native-kubernetes"
+    "checks.fleet.k3s-control-plane-worker"
     "checks.fleet.ability-native-power-loss"
   ];
   assert abilityRequirements.ability-native-adapter-matrix.production_only;

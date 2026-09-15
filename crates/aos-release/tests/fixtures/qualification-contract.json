@@ -239,7 +239,7 @@
       "phase": "staging",
       "production_only": false,
       "regressions": [
-        "checks.fleet.ability-native-kubernetes"
+        "checks.fleet.k3s-control-plane-worker"
       ],
       "scope": "release"
     },

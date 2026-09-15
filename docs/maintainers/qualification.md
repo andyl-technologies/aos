@@ -620,15 +620,23 @@ any other postcondition or cell in the matrix.
 The established scenario `regressions` fields point to
 `checks.fleet.ability-native-activation`,
 `checks.fleet.ability-native-image-rollout`,
-`checks.fleet.ability-native-kubernetes`,
+`checks.fleet.k3s-control-plane-worker`,
 `checks.fleet.ability-native-power-loss`. Those derivations establish
 source-candidate regression coverage. They do not satisfy the staging cases:
 release admission still requires fresh executor observations for the exact
 frozen release subjects and acceptance checks. The x86 fleet topology also
 does not claim direct aarch64 execution.
 
-The x86 release executor maps five implemented policy IDs to native ability
-scenarios: activation, adapter matrix, image rollout, Kubernetes, and recovery.
+K3s uses its package-function qualification plus the production
+`k3s-control-plane-worker` fleet path. That fleet path selects the real package
+modules, applies them through APM, observes readiness and exact object
+revisions, rejects an operator-authored provider grant without mutation, and
+exercises object replacement and removal. Release admission consumes fresh
+evidence through the ordinary report scenario; it does not patch a fabricated
+package companion to impersonate the finalized K3s or systemd artifacts.
+
+The x86 release executor maps the implemented native policy IDs to ability
+scenarios for activation, adapter matrix, image rollout, and recovery.
 Each mapped scenario selects the exact finalized server QCOW2,
 slot-A UKI, metadata, unsigned assembly, and finalized-set objects from the
 downloaded release case.

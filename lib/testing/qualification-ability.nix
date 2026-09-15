@@ -404,7 +404,6 @@ in
     "ability-native-activation"
     "ability-native-adapter-matrix"
     "ability-native-image-rollout"
-    "ability-native-kubernetes"
     "ability-native-recovery"
   ];
   assert (matrixSpec != null) == (scenarioId == "ability-native-adapter-matrix");

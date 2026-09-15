@@ -30,6 +30,11 @@
         bundle = true;
         preset = false;
       };
+      aos.packages.longhorn-manager = {
+        package = pkgs.longhorn-manager;
+        bundle = true;
+        preset = false;
+      };
     }
   ];
 
@@ -61,7 +66,7 @@ in {
   machines = {
     controlplane = {
       system = controlPlaneSystem;
-      packages = ["k3s-control-plane"];
+      packages = ["k3s-control-plane" "longhorn-manager"];
     };
 
     worker = {
@@ -131,46 +136,16 @@ in {
         machine.succeed("${pkgs.iproute2}/sbin/ip route replace default dev eth0")
 
     apply_k3s_module(controlplane, "k3s-control-plane", """{
-      aos.apm.desiredPackages = [ "k3s-control-plane" ];
+      aos.apm.desiredPackages = [ "k3s-control-plane" "longhorn-manager" ];
+      longhorn = {
+        enable = true;
+        defaultReplicaCount = 2;
+      };
       k3s = {
         enable = true;
         token.ref = "system-credential:k3s-token";
         node.ip = "192.168.50.10";
         networking.flannelInterface = "eth0";
-        integrations = {
-          resourceGrants = [
-            {
-              contribution = "revision-probe";
-              apiVersion = "v1";
-              kind = "Namespace";
-              name = "aos-revision-probe";
-              namespace = null;
-            }
-            {
-              contribution = "revision-probe-secondary";
-              apiVersion = "v1";
-              kind = "Namespace";
-              name = "aos-revision-probe-secondary";
-              namespace = null;
-            }
-          ];
-          resources.revision-probe = {
-            apiVersion = "v1";
-            kind = "Namespace";
-            name = "aos-revision-probe";
-            namespace = null;
-            priority = 50;
-            spec = {};
-          };
-          resources.revision-probe-secondary = {
-            apiVersion = "v1";
-            kind = "Namespace";
-            name = "aos-revision-probe-secondary";
-            namespace = null;
-            priority = 51;
-            spec = {};
-          };
-        };
       };
     }
     """)
@@ -256,43 +231,41 @@ in {
     receipt = controlplane.succeed(
         "cat /var/lib/rancher/k3s/server/aos-runtime-addons.revision"
     ).strip()
-    resources = []
-    for priority, contribution, namespace in (
-        (50, "revision-probe", "aos-revision-probe"),
-        (51, "revision-probe-secondary", "aos-revision-probe-secondary"),
-    ):
-        object_value = {
-            "apiVersion": "v1",
-            "kind": "Namespace",
-            "metadata": {"name": namespace},
-            "spec": {},
-        }
-        object_bytes = json.dumps(
-            object_value, sort_keys=True, separators=(",", ":")
-        ).encode()
-        resources.append({
-            "name": contribution,
-            "object": object_value,
-            "priority": priority,
-            "revision": "sha256:" + hashlib.sha256(object_bytes).hexdigest(),
-        })
-    bundle_payload = {
-        "schema": "aos.kubernetes-resources/v1",
-        "role": "control-plane",
-        "resources": resources,
+    longhorn_values = {
+        "defaultSettings": {"defaultReplicaCount": "2"},
+        "persistence": {"defaultClassReplicaCount": 2},
     }
-    desired_bundle_revision = "sha256:" + hashlib.sha256(json.dumps(
-        bundle_payload, sort_keys=True, separators=(",", ":")
-    ).encode()).hexdigest()
-    assert receipt == desired_bundle_revision, (receipt, desired_bundle_revision)
+    longhorn_object = {
+        "apiVersion": "helm.cattle.io/v1",
+        "kind": "HelmChart",
+        "metadata": {"name": "longhorn", "namespace": "kube-system"},
+        "spec": {
+            "chart": "longhorn",
+            "repo": "https://charts.longhorn.io",
+            "targetNamespace": "longhorn-system",
+            "version": "${pkgs.longhorn-manager.version}",
+            "valuesContent": json.dumps(
+                longhorn_values, sort_keys=True, separators=(",", ":")
+            ),
+        },
+    }
+    object_bytes = json.dumps(
+        longhorn_object, sort_keys=True, separators=(",", ":")
+    ).encode()
+    resources = [{
+        "name": "longhorn",
+        "object": longhorn_object,
+        "priority": 0,
+        "revision": "sha256:" + hashlib.sha256(object_bytes).hexdigest(),
+    }]
+    assert receipt.startswith("sha256:") and len(receipt) == 71, receipt
 
     for resource in resources:
-        namespace = resource["object"]["metadata"]["name"]
         desired_object_revision = resource["revision"]
         controlplane.wait_until_succeeds(
             "test \"$(${pkgs.k3s}/bin/kubectl "
             "--kubeconfig=/etc/rancher/k3s/k3s.yaml "
-            f"get namespace {shlex.quote(namespace)} -o json "
+            "get helmchart.helm.cattle.io longhorn -n kube-system -o json "
             "| ${pkgs.jq}/bin/jq -er "
             "'.metadata.annotations[\"aos.andyl.com/object-revision\"]')\" "
             f"= {shlex.quote(desired_object_revision)}",
@@ -346,11 +319,126 @@ in {
     )
 
     # Replace the selected package module through the normal activation path.
-    # The K3s-owned object controller must create the successor object, release
-    # both predecessor objects, and leave the running control plane untouched.
+    # The Longhorn package remains the sole author of its object; changing its
+    # typed option updates that object through the selected K3s controller.
     k3s_invocation = controlplane.succeed(
         "systemctl show -p InvocationID --value k3s.service"
     ).strip()
+    longhorn_uid = controlplane.succeed(
+        "${pkgs.k3s}/bin/kubectl "
+        "--kubeconfig=/etc/rancher/k3s/k3s.yaml "
+        "get helmchart.helm.cattle.io longhorn -n kube-system "
+        "-o json | ${pkgs.jq}/bin/jq -er .metadata.uid"
+    ).strip()
+    apply_k3s_module(controlplane, "k3s-control-plane", """{
+      aos.apm.desiredPackages = [ "k3s-control-plane" "longhorn-manager" ];
+      longhorn = {
+        enable = true;
+        defaultReplicaCount = 3;
+      };
+      k3s = {
+        enable = true;
+        token.ref = "system-credential:k3s-token";
+        node.ip = "192.168.50.10";
+        networking.flannelInterface = "eth0";
+      };
+    }
+    """, replace=True)
+
+    successor_object = dict(longhorn_object)
+    successor_object["spec"] = dict(longhorn_object["spec"])
+    successor_object["spec"]["valuesContent"] = json.dumps(
+        {
+            "defaultSettings": {"defaultReplicaCount": "3"},
+            "persistence": {"defaultClassReplicaCount": 3},
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    successor_revision = "sha256:" + hashlib.sha256(
+        json.dumps(
+            successor_object, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    controlplane.wait_until_succeeds(
+        "test \"$(${pkgs.k3s}/bin/kubectl "
+        "--kubeconfig=/etc/rancher/k3s/k3s.yaml "
+        "get helmchart.helm.cattle.io longhorn -n kube-system -o json "
+        "| ${pkgs.jq}/bin/jq -er "
+        "'.metadata.annotations[\"aos.andyl.com/object-revision\"]')\" "
+        f"= {shlex.quote(successor_revision)}",
+        timeout=60,
+    )
+    assert controlplane.succeed(
+        "${pkgs.k3s}/bin/kubectl "
+        "--kubeconfig=/etc/rancher/k3s/k3s.yaml "
+        "get helmchart.helm.cattle.io longhorn -n kube-system "
+        "-o json | ${pkgs.jq}/bin/jq -er .metadata.uid"
+    ).strip() == longhorn_uid
+    assert controlplane.succeed(
+        "systemctl show -p InvocationID --value k3s.service"
+    ).strip() == k3s_invocation
+
+    # An operator cannot mint a package-to-provider grant. The removed legacy
+    # option is deliberately unknown to the fixed point, so a forged mapping
+    # is rejected before planning and the admitted object remains unchanged.
+    generation_before_forgery = controlplane.succeed(
+        "${pkgs.jq}/bin/jq -er .current "
+        "/var/lib/profiles/system/state.json"
+    ).strip()
+    forged_module = """{
+      aos.apm.desiredPackages = [ "k3s-control-plane" "longhorn-manager" ];
+      longhorn = {
+        enable = true;
+        defaultReplicaCount = 3;
+      };
+      k3s = {
+        enable = true;
+        token.ref = "system-credential:k3s-token";
+        node.ip = "192.168.50.10";
+        networking.flannelInterface = "eth0";
+        integrations.resourceGrants = [
+          {
+            contribution = "longhorn";
+            apiVersion = "helm.cattle.io/v1";
+            kind = "HelmChart";
+            name = "forged-longhorn";
+            namespace = "kube-system";
+          }
+        ];
+      };
+    }
+    """
+    encoded_forgery = base64.b64encode(forged_module.encode()).decode()
+    controlplane.succeed(
+        "printf '%s' '" + encoded_forgery + "' | base64 -d "
+        "> /run/k3s-forged-grant.nix && "
+        f"{APM} config replace k3s-control-plane.nix "
+        "/run/k3s-forged-grant.nix"
+    )
+    status, stdout, stderr = controlplane.execute(
+        f"{APM} config apply --eval-root /run/k3s-forged-grant-eval",
+        timeout=600,
+    )
+    assert status != 0, (stdout, stderr)
+    assert "resourceGrants" in stdout + stderr, (stdout, stderr)
+    assert controlplane.succeed(
+        "${pkgs.jq}/bin/jq -er .current "
+        "/var/lib/profiles/system/state.json"
+    ).strip() == generation_before_forgery
+    assert controlplane.succeed(
+        "${pkgs.k3s}/bin/kubectl "
+        "--kubeconfig=/etc/rancher/k3s/k3s.yaml "
+        "get helmchart.helm.cattle.io longhorn -n kube-system "
+        "-o json | ${pkgs.jq}/bin/jq -er .metadata.uid"
+    ).strip() == longhorn_uid
+    assert controlplane.succeed(
+        "systemctl show -p InvocationID --value k3s.service"
+    ).strip() == k3s_invocation
+    controlplane.succeed(f"{APM} config discard")
+
+    # Removing the contributing package from the selected module set releases
+    # its object without restarting the independently owned K3s service.
     apply_k3s_module(controlplane, "k3s-control-plane", """{
       aos.apm.desiredPackages = [ "k3s-control-plane" ];
       k3s = {
@@ -358,58 +446,16 @@ in {
         token.ref = "system-credential:k3s-token";
         node.ip = "192.168.50.10";
         networking.flannelInterface = "eth0";
-        integrations = {
-          resourceGrants = [
-            {
-              contribution = "revision-probe-successor";
-              apiVersion = "v1";
-              kind = "Namespace";
-              name = "aos-revision-probe-successor";
-              namespace = null;
-            }
-          ];
-          resources.revision-probe-successor = {
-            apiVersion = "v1";
-            kind = "Namespace";
-            name = "aos-revision-probe-successor";
-            namespace = null;
-            priority = 50;
-            spec = {};
-          };
-        };
       };
     }
     """, replace=True)
-
-    successor_object = {
-        "apiVersion": "v1",
-        "kind": "Namespace",
-        "metadata": {"name": "aos-revision-probe-successor"},
-        "spec": {},
-    }
-    successor_revision = "sha256:" + hashlib.sha256(json.dumps(
-        successor_object, sort_keys=True, separators=(",", ":")
-    ).encode()).hexdigest()
     controlplane.wait_until_succeeds(
-        "test \"$(${pkgs.k3s}/bin/kubectl "
+        "test -z \"$(${pkgs.k3s}/bin/kubectl "
         "--kubeconfig=/etc/rancher/k3s/k3s.yaml "
-        "get namespace aos-revision-probe-successor -o json "
-        "| ${pkgs.jq}/bin/jq -er "
-        "'.metadata.annotations[\"aos.andyl.com/object-revision\"]')\" "
-        f"= {shlex.quote(successor_revision)}",
+        "get helmchart.helm.cattle.io longhorn -n kube-system "
+        "--ignore-not-found=true -o name)\"",
         timeout=60,
     )
-    for predecessor in (
-        "aos-revision-probe",
-        "aos-revision-probe-secondary",
-    ):
-        controlplane.wait_until_succeeds(
-            "test -z \"$(${pkgs.k3s}/bin/kubectl "
-            "--kubeconfig=/etc/rancher/k3s/k3s.yaml "
-            f"get namespace {shlex.quote(predecessor)} "
-            "--ignore-not-found=true -o name)\"",
-            timeout=60,
-        )
     assert controlplane.succeed(
         "systemctl show -p InvocationID --value k3s.service"
     ).strip() == k3s_invocation
