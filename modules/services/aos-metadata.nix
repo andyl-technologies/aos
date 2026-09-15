@@ -27,15 +27,20 @@
   trust = config.aos.config.evalAtBoot.trust;
   measured = config.aos.boot.secureBoot.measuredBoot.enable;
   configKeys = config.aos.apm.configKeys;
+  keyFileContent = keys: "${lib.concatStringsSep "\n" keys}\n";
   configTrustAnchors = pkgs.runCommand "aos-provisioning-trust-anchors" {} ''
     mkdir -p $out
-    ${lib.concatStringsSep "\n" (lib.mapAttrsToList (op: keys: ''
-        cat > $out/${op}.pub <<'KEYS'
-        ${lib.concatStringsSep "\n" keys}
-        KEYS
-      '')
+    ${lib.concatStringsSep "\n" (lib.mapAttrsToList (op: keys:
+        "printf '%s' ${lib.escapeShellArg (keyFileContent keys)} > $out/${op}.pub")
       configKeys)}
   '';
+  trustedConfigKeys = lib.mapAttrsToList (operator: keys: let
+    content = keyFileContent keys;
+  in {
+    kind = "immutable-file";
+    path = "${configTrustAnchors}/${operator}.pub";
+    content_sha256 = "sha256:${builtins.hashString "sha256" content}";
+  }) configKeys;
 in {
   options.aos.provisioning.metadataAgent = {
     stashDir = lib.mkOption {
@@ -56,6 +61,16 @@ in {
   };
 
   config = {
+    aos.metadata.storageProvisioning.authorizationConfiguration = {
+      schema = "aos.metadata.provisioning-authorization-configuration/v1";
+      trust_mode = trust;
+      trusted_config_keys = trustedConfigKeys;
+      base_library = {
+        store_path = toString config.aos.config.evalAtBoot.baseLib;
+        abi_hash = config.aos.config.evalAtBoot.baseLibAbiHash;
+      };
+    };
+
     aos.boot.initrd.extraPackages = [
       configTrustAnchors
       config.aos.config.evalAtBoot.baseLib

@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use aos_ability_model::ResourceReference;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -29,6 +30,217 @@ pub const OPERATOR_LABEL: &str = "aos-provenance-operator-v1";
 pub const FALLBACK_LABEL: &str = "aos-provenance-fallback-v1";
 /// Type GUID reserved exclusively for the one-time provisioning marker.
 pub const SENTINEL_TYPE_GUID: &str = "163bea60-58c7-46e7-b69a-6846a5a688af";
+
+/// Carries the fixed-point storage policy into one runtime provisioning transaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisioningIntent {
+    /// Names the logical provisioning resource.
+    pub name: String,
+    /// Enables the one-time provisioning transaction.
+    pub enabled: bool,
+    /// Identifies the root filesystem device observed by the boot substrate.
+    pub root_device: String,
+    /// Requires the measured-boot storage policy when true.
+    pub measured_boot: bool,
+    /// Selects the only supported initialization and divergence behavior.
+    pub policy: ProvisioningPolicy,
+    /// Lists exact resources that must be ready before provisioning begins.
+    pub prerequisites: Vec<ResourceReference>,
+}
+
+/// Defines the closed storage initialization and divergence policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisioningPolicy {
+    /// Selects when an absent storage layout may be initialized.
+    pub initialize: ProvisioningInitialization,
+    /// Selects the required response to drift after a committed transaction.
+    pub committed_divergence: CommittedDivergence,
+}
+
+/// Selects the supported storage initialization condition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProvisioningInitialization {
+    /// Initializes storage only when no durable provisioning marker exists.
+    IfUnprovisioned,
+}
+
+/// Selects the supported response to committed storage divergence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CommittedDivergence {
+    /// Requires an explicit factory reset before applying changed storage intent.
+    RequireFactoryReset,
+}
+
+/// Carries the exact authenticated metadata input between provisioning operations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorizedProvisioningInput {
+    /// Must equal `aos.metadata.authorized-provisioning-input/v1`.
+    pub schema: String,
+    /// Identifies whether operator input or image defaults supply the plan.
+    pub source: CanonicalProvisioningSource,
+    /// Carries exact authenticated `host.nix` bytes for operator input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_module: Option<String>,
+    /// Authenticates [`Self::host_module`] when operator input is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_module_sha256: Option<String>,
+    /// Records the authorization decision and source platform.
+    pub authorization: ProvisioningAuthorization,
+    /// Pins the exact module library used for restricted evaluation.
+    pub base_library: BaseLibraryIdentity,
+}
+
+/// Records how one metadata input was authorized.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisioningAuthorization {
+    /// Identifies the configured trust policy.
+    pub trust_mode: ProvisioningTrustMode,
+    /// Identifies the platform that supplied metadata.
+    pub platform_id: String,
+    /// Identifies the matching configuration signer in signed mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer: Option<String>,
+}
+
+/// Selects how metadata input is authorized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProvisioningTrustMode {
+    /// Trusts exact delivery by the selected deployment platform.
+    Platform,
+    /// Requires a matching signature from an explicit configuration key.
+    Signed,
+}
+
+/// Pins one immutable base module library and its ABI schema digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BaseLibraryIdentity {
+    /// Identifies the exact immutable module-library store path.
+    pub store_path: String,
+    /// Authenticates the option schema accepted by the module library.
+    pub abi_hash: String,
+}
+
+/// Validates the closed fixed-point provisioning intent.
+///
+/// # Errors
+///
+/// Returns an error when the local name, root device, policy, or prerequisite
+/// set falls outside the public interface contract.
+pub fn validate_provisioning_intent(intent: &ProvisioningIntent) -> Result<()> {
+    validate_local_key(&intent.name, "provisioning name")?;
+    if !intent.root_device.starts_with('/') {
+        bail!("root device must be an absolute execution path");
+    }
+    if intent.prerequisites.len() > 64 {
+        bail!("provisioning prerequisites exceed the interface bound");
+    }
+
+    let mut prerequisites = BTreeSet::new();
+    for prerequisite in &intent.prerequisites {
+        let encoded = serde_json::to_string(prerequisite)
+            .context("encoding one provisioning prerequisite")?;
+        if !prerequisites.insert(encoded) {
+            bail!("provisioning prerequisites must be unique");
+        }
+    }
+    Ok(())
+}
+
+/// Validates the exact authenticated metadata value passed to plan evaluation.
+///
+/// # Errors
+///
+/// Returns an error when its schema, source arm, digest, platform identity, or
+/// base-library identity is inconsistent.
+pub fn validate_authorized_provisioning_input(input: &AuthorizedProvisioningInput) -> Result<()> {
+    if input.schema != "aos.metadata.authorized-provisioning-input/v1" {
+        bail!("unsupported authorized provisioning input schema");
+    }
+    validate_local_key(&input.authorization.platform_id, "metadata platform id")?;
+    if input
+        .authorization
+        .signer
+        .as_ref()
+        .is_some_and(|signer| signer.len() > 512)
+    {
+        bail!("metadata signer identity exceeds the interface bound");
+    }
+    validate_digest(&input.base_library.abi_hash, "base-library ABI hash")?;
+    if !input.base_library.store_path.starts_with("/nix/store/") {
+        bail!("base library must use an immutable store path");
+    }
+
+    match (
+        input.source,
+        input.host_module.as_deref(),
+        input.host_module_sha256.as_deref(),
+    ) {
+        (CanonicalProvisioningSource::Operator, Some(module), Some(digest)) => {
+            if module.len() > 131_072 {
+                bail!("authorized host module exceeds the runtime result bound");
+            }
+            validate_digest(digest, "host module digest")?;
+            let actual = format!("sha256:{}", hex_digest(module.as_bytes()));
+            if actual != digest {
+                bail!("authorized host module differs from its digest");
+            }
+        }
+        (CanonicalProvisioningSource::Fallback, None, None) => {}
+        (CanonicalProvisioningSource::Operator, _, _) => {
+            bail!("operator provisioning requires an exact host module and digest");
+        }
+        (CanonicalProvisioningSource::Fallback, _, _) => {
+            bail!("fallback provisioning must not carry an operator host module");
+        }
+    }
+
+    match input.authorization.trust_mode {
+        ProvisioningTrustMode::Platform if input.authorization.signer.is_some() => {
+            bail!("platform-authorized input must not claim a configuration signer");
+        }
+        ProvisioningTrustMode::Signed
+            if input.source == CanonicalProvisioningSource::Operator
+                && input.authorization.signer.is_none() =>
+        {
+            bail!("signed operator input must identify its matching signer");
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_digest(value: &str, description: &str) -> Result<()> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        bail!("{description} must use the sha256 digest prefix");
+    };
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        bail!("{description} must contain 64 lower-case hexadecimal digits");
+    }
+    Ok(())
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::with_capacity(64), |mut encoded, byte| {
+            let _ = write!(encoded, "{byte:02x}");
+            encoded
+        })
+}
 
 /// Closed JSON product of restricted initrd evaluation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -480,6 +692,18 @@ fn validate_label(value: &str, kind: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_local_key(value: &str, kind: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        bail!("{kind} '{value}' must be 1-128 ASCII letters, digits, '.', '_' or '-'");
+    }
+    Ok(())
+}
+
 fn validate_partition_type(value: &str) -> Result<()> {
     if matches!(value, "linux-generic" | "swap") {
         return Ok(());
@@ -627,5 +851,48 @@ mod tests {
         .expect("valid evaluated provisioning plan");
 
         assert_eq!(canonical.partitions["var"].uuid, expected);
+    }
+
+    #[test]
+    fn authorized_input_binds_exact_operator_bytes() {
+        let host_module = "{ aos.provisioning.storage.partitions.var.sizeMin = \"4G\"; }\n";
+        let input = AuthorizedProvisioningInput {
+            schema: "aos.metadata.authorized-provisioning-input/v1".into(),
+            source: CanonicalProvisioningSource::Operator,
+            host_module: Some(host_module.into()),
+            host_module_sha256: Some(format!("sha256:{}", hex_digest(host_module.as_bytes()))),
+            authorization: ProvisioningAuthorization {
+                trust_mode: ProvisioningTrustMode::Signed,
+                platform_id: "aos-metadata".into(),
+                signer: Some("ops:01234567".into()),
+            },
+            base_library: BaseLibraryIdentity {
+                store_path: "/nix/store/00000000000000000000000000000000-base-lib".into(),
+                abi_hash: format!("sha256:{}", "a".repeat(64)),
+            },
+        };
+
+        validate_authorized_provisioning_input(&input).expect("operator input is self-consistent");
+    }
+
+    #[test]
+    fn fallback_input_cannot_smuggle_an_operator_module() {
+        let input = AuthorizedProvisioningInput {
+            schema: "aos.metadata.authorized-provisioning-input/v1".into(),
+            source: CanonicalProvisioningSource::Fallback,
+            host_module: Some("{}".into()),
+            host_module_sha256: Some(format!("sha256:{}", hex_digest(b"{}"))),
+            authorization: ProvisioningAuthorization {
+                trust_mode: ProvisioningTrustMode::Platform,
+                platform_id: "metal".into(),
+                signer: None,
+            },
+            base_library: BaseLibraryIdentity {
+                store_path: "/nix/store/00000000000000000000000000000000-base-lib".into(),
+                abi_hash: format!("sha256:{}", "b".repeat(64)),
+            },
+        };
+
+        assert!(validate_authorized_provisioning_input(&input).is_err());
     }
 }

@@ -8,6 +8,7 @@
     ./ebpf-lsm-policy-loader.nix
     ./package-attestation-quote.nix
     ./package-profile-convergence.nix
+    ./provisioning-metadata.nix
     ./release-coordinator/module.nix
   ];
 }

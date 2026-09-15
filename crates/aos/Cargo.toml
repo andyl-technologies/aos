@@ -30,6 +30,10 @@ name = "aos-metadata-runtime"
 path = "src/metadata_runtime.rs"
 
 [[bin]]
+name = "aos-metadata-provisioning-provider"
+path = "src/metadata_provisioning_provider.rs"
+
+[[bin]]
 name = "aos-configuration-provider"
 path = "src/configuration_provider.rs"
 
