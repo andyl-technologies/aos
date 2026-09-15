@@ -3153,19 +3153,23 @@ async fn ensure_image_imported(
         printer,
     )
     .await?;
-    let image_result = results
+    if !results
         .iter()
-        .find(|result| result.store_path == authenticated_path)
-        .context("image artifact download returned no authenticated root")?;
-    if image_result.nar_hash != authenticated_hash {
-        bail!("cache narinfo disagrees with the authenticated image update NAR");
+        .any(|result| result.store_path == authenticated_path)
+    {
+        bail!("image artifact download returned no authenticated root");
     }
 
     for result in &results {
         verify_download_hash(&result.local_path, &result.download_hash)?;
+        let expected_nar_hash = if result.store_path == authenticated_path {
+            authenticated_hash
+        } else {
+            result.nar_hash.as_str()
+        };
         crate::verify::verify_nar_hash_with_compression(
             &result.local_path,
-            &result.nar_hash,
+            expected_nar_hash,
             &result.compression,
         )
         .with_context(|| {
