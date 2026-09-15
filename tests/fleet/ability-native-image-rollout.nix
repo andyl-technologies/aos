@@ -9,7 +9,8 @@
   observerFixture = import ./_ability-execution-observer.nix {
     inherit lib pkgs;
   };
-  inherit (observerFixture) observerModule observerHostModule;
+  observerModule = observerFixture.module;
+  observerHostModule = observerFixture.hostModule;
   observerController = observerFixture.controller;
   imageLifecycle = import ./system-image-rollback.nix {
     inherit lib mkSystem pkgs systems;

@@ -26,7 +26,8 @@
   observerFixture = import ./_ability-execution-observer.nix {
     inherit lib pkgs;
   };
-  inherit (observerFixture) observerModule observerHostModule;
+  observerModule = observerFixture.module;
+  observerHostModule = observerFixture.hostModule;
   observerController = observerFixture.controller;
   runtimeSystem = mkSystem (fixture.runtimeModules ++ [observerModule] ++ extraRuntimeModules);
 in {
