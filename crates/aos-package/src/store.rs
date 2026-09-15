@@ -1263,7 +1263,7 @@ mod tests {
             kernel_path: None,
             evaluator_ref: format!("/nix/store/base-lib-{number}"),
             module_abi,
-            baselib_digest: format!("sha256:{number:064x}"),
+            base_lib_abi_hash: format!("sha256:{number:064x}"),
             root_verity_roothash: None,
             expected_pcr11: None,
             initrd_pcr11: None,

@@ -546,7 +546,7 @@ in {
                 printf '%s' "${config.aos.system.stateVersion}" > $out/meta/state-version
                 printf '%s' "${toString config.aos.system.moduleAbi}" > $out/meta/module-abi
                 printf '%s' "${toString config.aos.system.configInputAbi}" > $out/meta/config-input-abi
-                printf '%s' "sha256:${builtins.hashString "sha256" (toString config.aos.config.evalAtBoot.baseLib)}" > $out/meta/baselib-digest
+                printf '%s' "${config.aos.config.evalAtBoot.baseLibAbiHash}" > $out/meta/base-lib-abi-hash
                 printf '%s' "${pkgs.aos.packageRuntime}" > $out/meta/native-executor-ref
                 printf '%s' "EFI/Linux/aos-generation-0000000001${lib.optionalString (config.aos.boot.bootCountingTries != null) "+${toString config.aos.boot.bootCountingTries}"}.efi" > $out/meta/uki-path
                 printf '%s' ${lib.escapeShellArg config.aos.filesystems.espDevice} > $out/meta/esp-device

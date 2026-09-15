@@ -2100,7 +2100,7 @@ without changing `<hex>` is caught by the kernel dm-verity target at first read
 ### 4.9 Measured locus and retention (F1-Q1/Q2)
 
 - `modules/base/system.nix` os-release adds `AOS_MODULE_ABI=${toString
-  cfg.moduleAbi}` and `AOS_BASELIB_DIGEST=${baselibDigest}` next to
+  cfg.moduleAbi}` and `AOS_BASELIB_ABI_HASH=${baseLibAbiHash}` next to
   `AOS_STATE_VERSION`; this file is passed to ukify as `--os-release=@${osRelease}`
   (`aos-uki.nix:125`) and lands in the `.osrel` PE section measured into PCR 11.
   Add `aos.system.moduleAbi` (int, default 1). The on-host resolver reads
@@ -2208,10 +2208,11 @@ pub struct ImageGeneration {
     /// The monotonic shared-option-schema ABI this image's base lib exports
     /// (§3). Mirrors `AOS_MODULE_ABI` in this image's `/etc/os-release`.
     pub module_abi: u32,
-    /// SHA-256 of the base-lib closure, mirrored as `AOS_BASELIB_DIGEST` in
-    /// `/etc/os-release` and measured into PCR-11 via the `.osrel` section
-    /// (OQ2). Pairs with `root_verity_roothash` for the byte-level binding.
-    pub baselib_digest: String,
+    /// Canonical hash of the base-lib module ABI and option schema, mirrored as
+    /// `AOS_BASELIB_ABI_HASH` in `/etc/os-release` and measured into PCR-11 via
+    /// the `.osrel` section (OQ2). Pairs with `root_verity_roothash` for the
+    /// byte-level binding.
+    pub base_lib_abi_hash: String,
     /// dm-verity Merkle root over the erofs root that carries the base lib
     /// (F1). Baked into the UKI `.cmdline` as `roothash=<hex>`, hence
     /// measured into PCR-11. Tampering the base lib changes this hash,
@@ -2237,7 +2238,7 @@ pub enum ImageSlot { A, B }
 `ImageGenerationState { running: u32, default: u32, pending: Option<u32>,
 generations: Vec<ImageGeneration> }`:
 - `running` — the image-gen the live kernel booted (cross-checked against
-  `/etc/os-release` `AOS_MODULE_ABI` / `AOS_BASELIB_DIGEST`, never trusted from
+  `/etc/os-release` `AOS_MODULE_ABI` / `AOS_BASELIB_ABI_HASH`, never trusted from
   the network).
 - `default` — the slot `bootctl set-default` currently points at (the *durable*
   next-boot selection; see §5.2). Distinct from `running` during a staged-but-
@@ -2245,7 +2246,7 @@ generations: Vec<ImageGeneration> }`:
 - `pending` — a staged image-gen whose UKI is in the ESP but which has not been
   booted yet (set by step 1 of §5.1, cleared on its first successful boot).
 
-`module_abi`, `baselib_digest`, and `root_verity_roothash` are the on-`/var`
+`module_abi`, `base_lib_abi_hash`, and `root_verity_roothash` are the on-`/var`
 mirror of the **authoritative** copies that live in the image's
 `/etc/os-release` and PCR-11; APM reads the authoritative copies at boot and
 asserts equality (a mismatch is a tamper/rollback-confusion signal, fail-closed).
@@ -2316,7 +2317,7 @@ with it.
 | Datum | `ImageGeneration` (`/var/lib/profiles/image`) | `ConfigGeneration` (`/var/lib/profiles/system`) | Authoritative copy elsewhere |
 |---|---|---|---|
 | `module_abi` | `module_abi` | `module_abi_pinned` (copy at eval) | `/etc/os-release` `AOS_MODULE_ABI`; PCR-11 via `.osrel` |
-| base-lib identity | `evaluator_ref`, `baselib_digest` | — | `/etc/os-release` `AOS_BASELIB_DIGEST`; PCR-11 |
+| base-lib identity | `evaluator_ref`, `base_lib_abi_hash` | — | `/etc/os-release` `AOS_BASELIB_ABI_HASH`; PCR-11 |
 | base-lib byte integrity | `root_verity_roothash` | — | UKI `.cmdline` `roothash=`; PCR-11; dm-verity target |
 | eval inputs | — | `package_module_closure`, `host_nix_ref`, `facts_hash` | the store paths themselves (GC-rooted, §2) |
 | eval output | `toplevel` | `manifest_hash` → `gen-N/manifest.json` | the realized `/etc` store paths (GC-rooted, §2) |
@@ -2375,7 +2376,7 @@ in the image), surfaced two ways:
    `modules/base/system.nix`, default `1`, sibling to `stateVersion` at
    `system.nix:132`) is written into `/etc/os-release` as
    `AOS_MODULE_ABI=<K>` next to `AOS_STATE_VERSION` (`system.nix:257`), and the
-   base-lib digest as `AOS_BASELIB_DIGEST=<sha256>`. That os-release file is
+   base-lib ABI hash as `AOS_BASELIB_ABI_HASH=<sha256>`. That os-release file is
    passed to `aos-uki.nix` as `--os-release=@…` and lands in the `.osrel` PE
    section, which systemd-stub measures into **PCR-11** (OQ2). The base-lib
    *bytes* are additionally bound to PCR-11 by F1's dm-verity `roothash=` on the
@@ -2527,4 +2528,4 @@ contract.
 
 ---
 
-The relevant source loci for implementation are: `crates/aos-package/src/types.rs:3081-3112` (replace `SystemGeneration`/`SystemGenerationState` with `ImageGeneration`/`ImageGenerationState` + `ConfigGeneration`/`ConfigGenerationState`), `crates/aos-package/src/store.rs:251` (`create_gc_roots`: add `cfg/` + `cfgsrc/`, plus a new image-scoped `baselib/<module_abi>` root writer), `crates/aos-package/src/profile/mod.rs` (`Generation` accessors for the two new root dirs), `modules/base/system.nix:132,257` (`moduleAbi` option + `AOS_MODULE_ABI`/`AOS_BASELIB_DIGEST` os-release lines), `modules/base/activate.sh.in` (unchanged swap; the new `aos-firstboot-reeval.service` orders before it), and `modules/image/_builder.nix:176-183` (boot-counting tries-suffix + `bootctl set-default` durability over the `default aos-*.efi` glob).
+The relevant source loci for implementation are: `crates/aos-package/src/types.rs:3081-3112` (replace `SystemGeneration`/`SystemGenerationState` with `ImageGeneration`/`ImageGenerationState` + `ConfigGeneration`/`ConfigGenerationState`), `crates/aos-package/src/store.rs:251` (`create_gc_roots`: add `cfg/` + `cfgsrc/`, plus a new image-scoped `baselib/<module_abi>` root writer), `crates/aos-package/src/profile/mod.rs` (`Generation` accessors for the two new root dirs), `modules/base/system.nix:132,257` (`moduleAbi` option + `AOS_MODULE_ABI`/`AOS_BASELIB_ABI_HASH` os-release lines), `modules/base/activate.sh.in` (unchanged swap; the new `aos-firstboot-reeval.service` orders before it), and `modules/image/_builder.nix:176-183` (boot-counting tries-suffix + `bootctl set-default` durability over the `default aos-*.efi` glob).

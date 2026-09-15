@@ -1592,7 +1592,7 @@ mod tests {
             kernel_path: None,
             evaluator_ref: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-base-lib".to_string(),
             module_abi: 1,
-            baselib_digest: format!("sha256:{}", "11".repeat(32)),
+            base_lib_abi_hash: format!("sha256:{}", "11".repeat(32)),
             root_verity_roothash: Some("22".repeat(32)),
             expected_pcr11: None,
             initrd_pcr11: None,

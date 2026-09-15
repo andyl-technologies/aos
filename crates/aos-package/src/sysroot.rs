@@ -233,7 +233,7 @@ impl ImageSlotLayout {
 ///
 /// The `/var` image index is accepted only after its running record agrees
 /// with the baked `/aos-toplevel` pointer and metadata, the measured
-/// `AOS_MODULE_ABI` and `AOS_BASELIB_DIGEST` fields from the running image's
+/// `AOS_MODULE_ABI` and `AOS_BASELIB_ABI_HASH` fields from the running image's
 /// `os-release`, and the root slot/verity hash in `/proc/cmdline`.
 /// Config-generation state is deliberately not consulted. The initrd seed
 /// service separately compares the early-boot PCR-11 value because PCR-11 has
@@ -357,7 +357,7 @@ where
     let immutable_abi = read_toplevel_meta(&immutable_toplevel, "module-abi")?
         .parse::<u32>()
         .context("immutable toplevel has invalid module ABI")?;
-    let immutable_digest = read_toplevel_meta(&immutable_toplevel, "baselib-digest")?;
+    let immutable_abi_hash = read_toplevel_meta(&immutable_toplevel, "base-lib-abi-hash")?;
     let immutable_uki = read_toplevel_meta(&immutable_toplevel, "uki-path")?;
     let immutable_package = read_toplevel_meta(&immutable_toplevel, "package-name")?;
     let immutable_version = read_toplevel_meta(&immutable_toplevel, "version")?;
@@ -366,7 +366,7 @@ where
         .as_deref()
         .unwrap_or(&running.uki_path);
     if immutable_abi != running.module_abi
-        || immutable_digest != running.baselib_digest
+        || immutable_abi_hash != running.base_lib_abi_hash
         || immutable_uki != recorded_uki
         || immutable_package != running.package_name
         || immutable_version != running.version
@@ -385,11 +385,13 @@ where
         .context("running os-release has no AOS_MODULE_ABI")?
         .parse::<u32>()
         .context("running os-release has invalid AOS_MODULE_ABI")?;
-    let digest = fields
-        .get("AOS_BASELIB_DIGEST")
-        .context("running os-release has no AOS_BASELIB_DIGEST")?;
-    if abi != running.module_abi || digest != &running.baselib_digest {
-        bail!("running image identity disagrees with image state (abi {abi}, digest {digest})");
+    let abi_hash = fields
+        .get("AOS_BASELIB_ABI_HASH")
+        .context("running os-release has no AOS_BASELIB_ABI_HASH")?;
+    if abi != running.module_abi || abi_hash != &running.base_lib_abi_hash {
+        bail!(
+            "running image identity disagrees with image state (module ABI {abi}, base-lib ABI hash {abi_hash})"
+        );
     }
     let cmdline_fields = parse_kernel_cmdline(cmdline)?;
     let root_hash = cmdline_fields.get("roothash").cloned();
@@ -2458,7 +2460,7 @@ where
     let native_executor_ref = read_toplevel_meta(toplevel, "native-executor-ref")?;
     crate::config_eval::materialize::validate_canonical_store_path(&native_executor_ref)
         .context("validating target native executor identity")?;
-    let baselib_digest = read_toplevel_meta(toplevel, "baselib-digest")?;
+    let base_lib_abi_hash = read_toplevel_meta(toplevel, "base-lib-abi-hash")?;
     let recorded_uki = read_toplevel_meta(toplevel, "uki-path")?;
     // Validate the firmware namespace before either inactive root or the ESP
     // is touched. A merely relative path is not sufficient: image metadata
@@ -2599,7 +2601,7 @@ where
         kernel_path: resolve_kernel_path(&package.store_path),
         evaluator_ref: evaluator_ref.clone(),
         module_abi,
-        baselib_digest,
+        base_lib_abi_hash,
         root_verity_roothash: image
             .root_hash
             .as_deref()
@@ -5673,7 +5675,7 @@ mod tests {
         std::fs::create_dir_all(image_profile.as_path()).unwrap();
         std::fs::create_dir_all(toplevel.join("meta")).unwrap();
         std::fs::write(toplevel.join("meta/module-abi"), "7").unwrap();
-        std::fs::write(toplevel.join("meta/baselib-digest"), "sha256:base").unwrap();
+        std::fs::write(toplevel.join("meta/base-lib-abi-hash"), "sha256:base").unwrap();
         std::fs::write(
             toplevel.join("meta/uki-path"),
             "EFI/Linux/aos-server-1+3.efi",
@@ -5700,7 +5702,7 @@ mod tests {
         std::fs::create_dir_all(os_release.parent().unwrap()).unwrap();
         std::fs::write(
             os_release,
-            "VERSION_ID=1\nAOS_MODULE_ABI=7\nAOS_BASELIB_DIGEST=sha256:base\n",
+            "VERSION_ID=1\nAOS_MODULE_ABI=7\nAOS_BASELIB_ABI_HASH=sha256:base\n",
         )
         .unwrap();
         std::os::unix::fs::symlink(&logical_toplevel, &toplevel_link).unwrap();
@@ -5731,7 +5733,7 @@ mod tests {
                 kernel_path: None,
                 evaluator_ref: logical_base_lib.to_string_lossy().into_owned(),
                 module_abi: 7,
-                baselib_digest: "sha256:base".into(),
+                base_lib_abi_hash: "sha256:base".into(),
                 root_verity_roothash: Some("deadbeef".into()),
                 expected_pcr11: Some("abcd".into()),
                 initrd_pcr11: None,
@@ -5830,7 +5832,7 @@ mod tests {
         let outside = tmp.path().join("live-root-os-release");
         std::fs::write(
             &outside,
-            "VERSION_ID=1\nAOS_MODULE_ABI=7\nAOS_BASELIB_DIGEST=sha256:base\n",
+            "VERSION_ID=1\nAOS_MODULE_ABI=7\nAOS_BASELIB_ABI_HASH=sha256:base\n",
         )
         .unwrap();
         std::fs::remove_file(&physical_os_release).unwrap();
@@ -5864,7 +5866,7 @@ mod tests {
         std::fs::create_dir(&outside).unwrap();
         std::fs::write(
             outside.join("os-release"),
-            "VERSION_ID=1\nAOS_MODULE_ABI=7\nAOS_BASELIB_DIGEST=sha256:base\n",
+            "VERSION_ID=1\nAOS_MODULE_ABI=7\nAOS_BASELIB_ABI_HASH=sha256:base\n",
         )
         .unwrap();
         std::fs::remove_file(&physical_os_release).unwrap();
@@ -6398,7 +6400,7 @@ mod tests {
             kernel_path: None,
             evaluator_ref: format!("/nix/store/base-{number}"),
             module_abi: 1,
-            baselib_digest: format!("digest-{number}"),
+            base_lib_abi_hash: format!("digest-{number}"),
             root_verity_roothash: Some(format!("root-{number}")),
             expected_pcr11: Some(format!("pcr-{number}")),
             initrd_pcr11: None,
@@ -6947,7 +6949,7 @@ mod tests {
             kernel_path: None,
             evaluator_ref: format!("/nix/store/base-{number}"),
             module_abi: 1,
-            baselib_digest: format!("sha256:base-{number}"),
+            base_lib_abi_hash: format!("sha256:base-{number}"),
             root_verity_roothash: None,
             expected_pcr11: None,
             initrd_pcr11: None,

@@ -197,9 +197,10 @@ interfaces evolve independently of the base.
    a GC'd image-gen loses the base lib needed to re-eval them across an ABI
    boundary. A dedicated GC root keeps at least one prior base lib on `/var`
    (just the lib, not the whole UKI) independently of the ESP slot count.
-2. **Measured locus of `module_abi`.** The module ABI and base-lib digest are in
-   the PCR-11-measured UKI `.osrel`; the dm-verity root hash in `.cmdline` binds
-   the root bytes (see [`trust-and-secrets.md`](trust-and-secrets.md)).
+2. **Measured locus of `module_abi`.** The module ABI and canonical base-lib ABI
+   hash are in the PCR-11-measured UKI `.osrel`; the dm-verity root hash in
+   `.cmdline` binds the root bytes (see
+   [`trust-and-secrets.md`](trust-and-secrets.md)).
 3. **`stateVersion` vs `module_abi`.** `aos.system.stateVersion`
    (`system.nix:131`, state-migration trigger) and `module_abi` (option schema)
    are adjacent but distinct and remain orthogonal; a breaking option change

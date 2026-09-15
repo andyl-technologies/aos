@@ -1559,7 +1559,7 @@ mod tests {
                 char::from(b'p' + seed).to_string().repeat(32)
             ),
             module_abi: 1,
-            baselib_digest: "sha256:test".into(),
+            base_lib_abi_hash: "sha256:test".into(),
             root_verity_roothash: None,
             expected_pcr11: None,
             initrd_pcr11: None,

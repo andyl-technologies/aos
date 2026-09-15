@@ -593,7 +593,7 @@
 
         abi=$(read_meta module-abi)
         state_version=$(read_meta state-version)
-        baselib_digest=$(read_meta baselib-digest)
+        base_lib_abi_hash=$(read_meta base-lib-abi-hash)
         native_executor=$(read_meta native-executor-ref)
         base_lib=$(readlink "/sysroot$toplevel/base-lib")
         uki_path=$(read_meta uki-path)
@@ -645,16 +645,16 @@
         esac
         os_abi=$(read_os_release AOS_MODULE_ABI "/sysroot$os_release") \
           || fail_image_identity "immutable os-release has no unique module ABI"
-        os_digest=$(read_os_release AOS_BASELIB_DIGEST "/sysroot$os_release") \
-          || fail_image_identity "immutable os-release has no unique base-lib digest"
+        os_base_lib_abi_hash=$(read_os_release AOS_BASELIB_ABI_HASH "/sysroot$os_release") \
+          || fail_image_identity "immutable os-release has no unique base-lib ABI hash"
         os_version=$(read_os_release VERSION_ID "/sysroot$os_release") \
           || fail_image_identity "immutable os-release has no unique version"
         os_state_version=$(read_os_release AOS_STATE_VERSION "/sysroot$os_release") \
           || fail_image_identity "immutable os-release has no unique state version"
         [ "$abi" = "$os_abi" ] \
           || fail_image_identity "toplevel metadata disagrees with measured module ABI"
-        [ "$baselib_digest" = "$os_digest" ] \
-          || fail_image_identity "toplevel metadata disagrees with measured base-lib digest"
+        [ "$base_lib_abi_hash" = "$os_base_lib_abi_hash" ] \
+          || fail_image_identity "toplevel metadata disagrees with measured base-lib ABI hash"
         [ "$(read_meta version)" = "$os_version" ] \
           || fail_image_identity "toplevel metadata disagrees with measured version"
         [ "$state_version" = "$os_state_version" ] \
@@ -817,7 +817,7 @@
             --arg base "$base_lib" \
             --arg state_version "$state_version" \
             --arg native_executor "$native_executor" \
-            --arg digest "$baselib_digest" \
+            --arg base_lib_abi_hash "$base_lib_abi_hash" \
             --arg now "$now" \
             --arg uki "$uki_path" \
             --arg slot "$boot_slot" \
@@ -833,7 +833,7 @@
                  native_executor_ref: $native_executor,
                  registry: "seed", kernel_path: $kern,
                  evaluator_ref: $base, module_abi: $abi,
-                 baselib_digest: $digest, created_at: $now }
+                 base_lib_abi_hash: $base_lib_abi_hash, created_at: $now }
                  + (if $root_hash == "" then {} else {root_verity_roothash: $root_hash} end)
                  + (if $initrd_pcr11 == "" then {} else {initrd_pcr11: $initrd_pcr11} end)
                  + (if $recovery_enabled then {recovery: $recovery} else {} end))] }
@@ -848,7 +848,7 @@
               --arg pn "$(read_meta package-name)" --arg ver "$(read_meta version)" \
               --arg top "$toplevel" --arg kern "$kern" --arg base "$base_lib" \
               --arg state_version "$state_version" --arg native_executor "$native_executor" \
-              --arg digest "$baselib_digest" --arg now "$now" \
+              --arg base_lib_abi_hash "$base_lib_abi_hash" --arg now "$now" \
               --arg uki "$uki_path" --arg slot "$boot_slot" \
               --arg root_hash "$root_hash" --arg initrd_pcr11 "$initrd_pcr11" \
               --argjson abi "$abi" --argjson next "$next" \
@@ -861,7 +861,7 @@
                  native_executor_ref: $native_executor,
                  registry: "seed", kernel_path: $kern,
                  evaluator_ref: $base, module_abi: $abi,
-                 baselib_digest: $digest, created_at: $now }
+                 base_lib_abi_hash: $base_lib_abi_hash, created_at: $now }
                  + (if $root_hash == "" then {} else {root_verity_roothash: $root_hash} end)
                  + (if $initrd_pcr11 == "" then {} else {initrd_pcr11: $initrd_pcr11} end)
                  + (if $recovery_enabled then {recovery: $recovery} else {} end))]
@@ -876,7 +876,7 @@
             matching=$(${pkgs.jq}/bin/jq \
               --arg top "$toplevel" --arg pn "$(read_meta package-name)" \
               --arg ver "$(read_meta version)" --arg kern "$kern" \
-              --arg base "$base_lib" --arg digest "$baselib_digest" \
+              --arg base "$base_lib" --arg base_lib_abi_hash "$base_lib_abi_hash" \
               --arg state_version "$state_version" --arg native_executor "$native_executor" \
               --arg uki "$uki_path" --arg slot "$boot_slot" \
               --arg root_hash "$root_hash" --arg initrd_pcr11 "$initrd_pcr11" \
@@ -887,7 +887,7 @@
                  and .state_version == $state_version
                  and .native_executor_ref == $native_executor
                  and .kernel_path == $kern and .evaluator_ref == $base
-                 and .module_abi == $abi and .baselib_digest == $digest
+                 and .module_abi == $abi and .base_lib_abi_hash == $base_lib_abi_hash
                  and ((.uki_source_path // .uki_path) == $uki) and .slot == $slot
                  and ((.root_verity_roothash // "") == $root_hash)
                  and (if $recovery_enabled then .recovery == $recovery
@@ -980,7 +980,7 @@
                 ;;
             esac
             legacy_abi=$(tr -d '\n' < "/sysroot$legacy_top/meta/module-abi" 2>/dev/null || true)
-            legacy_digest=$(tr -d '\n' < "/sysroot$legacy_top/meta/baselib-digest" 2>/dev/null || true)
+            legacy_base_lib_abi_hash=$(tr -d '\n' < "/sysroot$legacy_top/meta/base-lib-abi-hash" 2>/dev/null || true)
             legacy_base=$(readlink "/sysroot$legacy_top/base-lib" 2>/dev/null || true)
             legacy_osrel=$(readlink "/sysroot$legacy_top/os-release" 2>/dev/null || true)
             [ -n "$legacy_abi" ] || { migration_failed=1; continue; }
@@ -988,25 +988,25 @@
             case "$legacy_base" in /nix/store/*) ;; *) migration_failed=1; continue ;; esac
             case "$legacy_osrel" in /nix/store/*) ;; *) migration_failed=1; continue ;; esac
             legacy_os_abi=$(read_os_release AOS_MODULE_ABI "/sysroot$legacy_osrel" 2>/dev/null || true)
-            legacy_os_digest=$(read_os_release AOS_BASELIB_DIGEST "/sysroot$legacy_osrel" 2>/dev/null || true)
+            legacy_os_base_lib_abi_hash=$(read_os_release AOS_BASELIB_ABI_HASH "/sysroot$legacy_osrel" 2>/dev/null || true)
             [ "$legacy_abi" = "$legacy_os_abi" ] || { migration_failed=1; continue; }
-            [ -n "$legacy_digest" ] && [ "$legacy_digest" = "$legacy_os_digest" ] \
+            [ -n "$legacy_base_lib_abi_hash" ] && [ "$legacy_base_lib_abi_hash" = "$legacy_os_base_lib_abi_hash" ] \
               || { migration_failed=1; continue; }
 
             legacy_matches=$(${pkgs.jq}/bin/jq \
               --arg top "$legacy_top" --arg base "$legacy_base" \
-              --arg digest "$legacy_digest" --argjson abi "$legacy_abi" \
+              --arg base_lib_abi_hash "$legacy_base_lib_abi_hash" --argjson abi "$legacy_abi" \
               '[.generations[] | select(.toplevel == $top
                  and .evaluator_ref == $base and .module_abi == $abi
-                 and .baselib_digest == $digest)] | length' \
+                 and .base_lib_abi_hash == $base_lib_abi_hash)] | length' \
               "$image_dir/state.json")
             [ "$legacy_matches" -eq 1 ] || { migration_failed=1; continue; }
             legacy_parent=$(${pkgs.jq}/bin/jq -r \
               --arg top "$legacy_top" --arg base "$legacy_base" \
-              --arg digest "$legacy_digest" --argjson abi "$legacy_abi" \
+              --arg base_lib_abi_hash "$legacy_base_lib_abi_hash" --argjson abi "$legacy_abi" \
               '.generations[] | select(.toplevel == $top
                  and .evaluator_ref == $base and .module_abi == $abi
-                 and .baselib_digest == $digest) | .number' \
+                 and .base_lib_abi_hash == $base_lib_abi_hash) | .number' \
               "$image_dir/state.json")
             ${pkgs.jq}/bin/jq --argjson index "$index" \
               --argjson abi "$legacy_abi" --argjson parent "$legacy_parent" \
