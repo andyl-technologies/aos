@@ -20,7 +20,6 @@
       aos.packages.k3s-combined = {
         package = pkgs.k3s-combined;
         bundle = true;
-        preset = false;
       };
     }
   ];
@@ -31,7 +30,6 @@
       aos.packages.k3s-worker = {
         package = pkgs.k3s-worker;
         bundle = true;
-        preset = false;
       };
     }
   ];

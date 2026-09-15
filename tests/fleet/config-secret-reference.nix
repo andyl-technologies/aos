@@ -10,7 +10,6 @@
         aos.packages.aos-secret-reference-test = {
           package = pkgs.aos-secret-reference-test;
           bundle = true;
-          preset = false;
         };
         # The in-guest publisher needs both registry-only artifacts. The
         # runtime package is bundled separately above.

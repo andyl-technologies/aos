@@ -193,12 +193,10 @@
       aos.packages.package-root-image-good = {
         package = goodPackage;
         bundle = true;
-        preset = false;
       };
       aos.packages.package-root-image-bad = {
         package = badPackage;
         bundle = true;
-        preset = false;
       };
       # The target inspects exposed-image metadata with `${pkgs.jq}/bin/jq`, so
       # jq's closure must ride this (measured) image — image slimming dropped it
@@ -212,7 +210,6 @@
     {
       aos.services.attestationVerifier = {
         enable = true;
-        catalogFiles = ["/var/lib/aos-attestation-verifier/package-attestation-catalog.json"];
         quoteIdentityFiles = ["/var/lib/aos-attestation-verifier/quote-identity.json"];
         pcr15BaselineFile = "/var/lib/aos-attestation-verifier/pcr15-baseline";
       };
@@ -314,10 +311,6 @@ in {
           copy_target_file_to_verifier(
               event_log_path,
               f"{VERIFIER_ROOT}/aos-packages.cel",
-          )
-          copy_target_file_to_verifier(
-              "/etc/aos/package-attestation-catalog.json",
-              f"{VERIFIER_ROOT}/package-attestation-catalog.json",
           )
           for key, filename in (
               ("ek_public", "ek.pub"),

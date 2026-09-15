@@ -11,12 +11,10 @@
         containerd = {
           package = pkgs.containerd;
           bundle = true;
-          preset = false;
         };
         kubelet = {
           package = pkgs.kubelet;
           bundle = true;
-          preset = false;
         };
       };
     }

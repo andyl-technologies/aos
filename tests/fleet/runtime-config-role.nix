@@ -18,7 +18,6 @@
         aos.packages.aos-test-agent = {
           package = pkgs.aos-test-agent;
           bundle = true;
-          preset = false;
         };
         # This production-profile image deliberately carries the fleet control
         # agent as test infrastructure. Keep the runtime-closure audit strict

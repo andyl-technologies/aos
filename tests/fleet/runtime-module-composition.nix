@@ -20,17 +20,14 @@
         nginx = {
           package = pkgs.nginx;
           bundle = true;
-          preset = false;
         };
         envoy = {
           package = pkgs.envoy;
           bundle = true;
-          preset = false;
         };
         k3s-worker = {
           package = pkgs.k3s-worker;
           bundle = true;
-          preset = false;
         };
       };
     }

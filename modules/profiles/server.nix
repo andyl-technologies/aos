@@ -54,7 +54,6 @@ in {
     aos.packages.aos-registry-server = {
       package = pkgs.aos-registry-server;
       bundle = lib.mkDefault false;
-      preset = false;
     };
 
     # Preserve the established server-role behavior when the package is
@@ -67,43 +66,36 @@ in {
     aos.packages.aos-test-agent = {
       package = pkgs.aos-test-agent;
       bundle = lib.mkDefault false;
-      preset = false;
     };
 
     aos.packages.k3s-control-plane = {
       package = lib.mkDefault pkgs.k3s-control-plane;
       bundle = lib.mkDefault false;
-      preset = lib.mkDefault false;
     };
 
     aos.packages.k3s-worker = {
       package = lib.mkDefault pkgs.k3s-worker;
       bundle = lib.mkDefault false;
-      preset = lib.mkDefault false;
     };
 
     aos.packages.k3s-combined = {
       package = lib.mkDefault pkgs.k3s-combined;
       bundle = lib.mkDefault false;
-      preset = lib.mkDefault false;
     };
 
     aos.packages.test-http-server = {
       package = pkgs.test-http-server;
       bundle = lib.mkDefault false;
-      preset = false;
     };
 
     aos.packages.test-static-cache-server = {
       package = pkgs.test-static-cache-server;
       bundle = lib.mkDefault false;
-      preset = false;
     };
 
     aos.packages.apm-systemd-client-test = {
       package = pkgs.apm-systemd-client-test;
       bundle = lib.mkDefault false;
-      preset = false;
     };
   };
 }
