@@ -178,6 +178,13 @@
     abi = 1;
     descriptor = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
   };
+  descriptorAgnosticSelector = {
+    inherit (testInterface) name abi;
+    descriptor = null;
+  };
+  mismatchedDescriptorSelector = descriptorAgnosticSelector // {
+    descriptor = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+  };
 
   guaranteeOrdering =
     builtins.map
@@ -1045,6 +1052,8 @@ in
   assert blockStorage;
   assert baseFilesystemsNative;
   assert packageQualification;
+  assert lib.abilities.interfaceSelectorMatches descriptorAgnosticSelector testInterface;
+  assert !(lib.abilities.interfaceSelectorMatches mismatchedDescriptorSelector testInterface);
   assert fails (normalizeBounded [true false null true false]);
   assert fails (normalizeBounded {oversized-member-name = true;});
   assert fails (normalizeBounded "0123456789abcdefg");

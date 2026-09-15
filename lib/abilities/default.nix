@@ -497,7 +497,11 @@
     left.name
     == right.name
     && left.abi == right.abi
-    && (!(right ? descriptor) || left.descriptor == right.descriptor);
+    && (
+      !(right ? descriptor)
+      || right.descriptor == null
+      || left.descriptor == right.descriptor
+    );
 
   interfaceSelectorMatches = selector: interface: sameInterface interface selector;
 
