@@ -130,6 +130,28 @@
         lifecycle = minimalService.lifecycle // {restart_token = "operator-requested-restart";};
       };
   };
+  observeOnlyKernelModules = serviceManagement.forProducer {
+    consumerInstance = "consumer";
+    key = "kernel-modules";
+    interface = interfaces.kernelModules;
+    methods = ["observe"];
+    parameters = {
+      modules = ["overlay"];
+      required = true;
+    };
+  };
+  invalidProducerMethods = methods:
+    !(builtins.tryEval (builtins.deepSeq (serviceManagement.forProducer {
+          consumerInstance = "consumer";
+          key = "kernel-modules";
+          interface = interfaces.kernelModules;
+          inherit methods;
+          parameters = {
+            modules = ["overlay"];
+            required = true;
+          };
+        })
+        true)).success;
   resultOf = request: output: lib.abilities.resultOf request output;
   extendedService =
     minimalService
@@ -610,6 +632,10 @@ in
   assert expanded.requirementTemplates.service-lifecycle.methods == ["observe" "restart" "start" "stop"];
   assert expandedWithReload.requirementTemplates.service-lifecycle.methods == ["observe" "reload" "restart" "start" "stop"];
   assert expandedWithRestartToken.requests.main-lifecycle.parameters.restart_token == "operator-requested-restart";
+  assert observeOnlyKernelModules.requirementTemplates.kernel-modules.methods == ["observe"];
+  assert invalidProducerMethods [];
+  assert invalidProducerMethods ["observe" "observe"];
+  assert invalidProducerMethods ["remove"];
   assert expanded.requests.main-lifecycle.parameters.configuration_change_action == "restart";
   assert validates extendedService;
   assert builtins.attrNames expandedExtended.requests

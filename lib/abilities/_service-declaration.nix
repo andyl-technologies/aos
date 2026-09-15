@@ -35,6 +35,21 @@
       })
       values)));
 
+  checkedMethods = interface: methods: let
+    uniqueMethods = builtins.attrNames (builtins.listToAttrs (builtins.map (name: {
+        inherit name;
+        value = true;
+      })
+      methods));
+  in
+    if methods == []
+    then throw "a producer requirement must select at least one interface method"
+    else if builtins.length methods != builtins.length uniqueMethods
+    then throw "producer requirement methods must be unique"
+    else if !builtins.all (name: builtins.elem name interface.methods) methods
+    then throw "producer requirement methods must belong to the selected interface"
+    else builtins.sort builtins.lessThan methods;
+
   validate = serviceTypes: declaration: let
     lifecycle = declaration.lifecycle;
     startCommandCount = builtins.length lifecycle.start;
@@ -499,7 +514,9 @@
     consumerInstance,
     interface,
     producers,
+    methods ? interface.methods,
   }: let
+    selectedMethods = checkedMethods interface methods;
     contribution =
       if !uniqueBy "key" producers
       then throw "producer request keys must be unique"
@@ -507,7 +524,7 @@
         requirementTemplates =
           if producers == []
           then {}
-          else {${interface.alias} = requirementFor interface interface.methods;};
+          else {${interface.alias} = requirementFor interface selectedMethods;};
         requests = builtins.listToAttrs (builtins.map (producer: {
             name = producer.key;
             value = {
@@ -525,6 +542,7 @@
   forProducer = args:
     forProducers {
       inherit (args) consumerInstance interface;
+      methods = args.methods or args.interface.methods;
       producers = [
         {
           inherit (args) key parameters;
