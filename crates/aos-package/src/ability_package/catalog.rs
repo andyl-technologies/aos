@@ -1,15 +1,15 @@
 //! Authenticated registry catalogs for composition and transition planning.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use aos_ability_model::{InterfaceDocument, PackageDocument, RequiredFeature};
+use aos_ability_model::{InterfaceDocument, PackageDocument};
 use aos_ability_plan::RecursiveComposer;
-use aos_ability_validate::ValidationContext;
+use aos_ability_validate::{ValidationContext, package_source_supported_features};
 
 use super::VerifiedAbilityPackageSet;
 
@@ -55,14 +55,8 @@ impl VerifiedAbilityPackageSet {
     /// non-canonical, unsupported, exceeds the version-1 bound, disagrees with
     /// its export key, or conflicts with another authenticated companion.
     pub fn planning_catalog(&self) -> Result<VerifiedAbilityPlanningCatalog> {
-        let interface_features = [
-            aos_ability_model::builtin::AB_IMAGE_ROLLOUT_FEATURE,
-            "abilities-v1",
-        ]
-        .into_iter()
-        .map(RequiredFeature::new)
-        .collect::<std::result::Result<BTreeSet<_>, _>>()
-        .context("constructing the built-in interface features")?;
+        let supported_features = package_source_supported_features()
+            .context("constructing supported package ability features")?;
         let mut interfaces = BTreeMap::new();
         for sealed in &self.packages {
             let companion = Path::new(sealed.retention.companion_store_path());
@@ -74,7 +68,7 @@ impl VerifiedAbilityPackageSet {
                 let document = aos_ability_model::decode_canonical::<InterfaceDocument>(
                     &bytes,
                     aos_ability_model::ABILITY_LIMITS_V1,
-                    &interface_features,
+                    &supported_features,
                 )
                 .with_context(|| format!("decoding ability interface {}", path.display()))?;
                 let key = document
@@ -94,16 +88,6 @@ impl VerifiedAbilityPackageSet {
             }
         }
 
-        let supported_features = [
-            aos_ability_model::builtin::AB_IMAGE_ROLLOUT_FEATURE,
-            "abilities-v1",
-            aos_ability_model::PROVIDER_STATE_FORMAT_V1,
-            aos_ability_model::PROVIDER_STATE_ADOPTION_V1,
-        ]
-        .into_iter()
-        .map(RequiredFeature::new)
-        .collect::<std::result::Result<BTreeSet<_>, _>>()
-        .context("constructing the built-in planning features")?;
         let context = ValidationContext::new(supported_features, interfaces.into_values())
             .context("validating authenticated registry ability interfaces")?;
         for sealed in &self.packages {
