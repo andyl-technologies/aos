@@ -6,6 +6,7 @@
 }: let
   featureInterfaces = {
     lifecycle = serviceInterfaces.lifecycle;
+    template_definition = serviceInterfaces.templateDefinition;
     dependencies = serviceInterfaces.dependencies;
     conditions = serviceInterfaces.conditions;
     linux_conditions = serviceInterfaces.linuxConditions;
@@ -40,6 +41,12 @@
         value = true;
       })
       values)));
+  uniqueGuarantees = values:
+    builtins.attrValues (builtins.listToAttrs (builtins.map (guarantee: {
+        name = guarantee.name;
+        value = guarantee;
+      })
+      values));
 
   checkedMethods = interface: methods: let
     uniqueMethods = builtins.attrNames (builtins.listToAttrs (builtins.map (name: {
@@ -109,6 +116,11 @@
         then (instantiation.template or null) != null && (instantiation.instance or null) == null
         else (instantiation.template or null) != null && (instantiation.instance or null) != null
       );
+    templateIsStatic =
+      instantiation
+      == null
+      || instantiation.kind != "template"
+      || !declaration.enabled;
     supervisionValid =
       supervision
       == null
@@ -150,7 +162,17 @@
     activationValid =
       activation
       == null
-      || uniqueBy "name" activation.bindings;
+      || (
+        uniqueBy "name" activation.bindings
+        && builtins.all
+        (binding:
+          builtins.elem binding.relationship [
+            "resource-triggers-service"
+            "service-depends-on-resource"
+            "service-member-of-resource"
+          ])
+        activation.bindings
+      );
     readinessValid =
       readiness
       == null
@@ -245,6 +267,8 @@
     then throw "service '${declaration.service}' reload strategy has inconsistent commands or signal"
     else if !instantiationValid
     then throw "service '${declaration.service}' instantiation kind has inconsistent template or instance fields"
+    else if !templateIsStatic
+    then throw "service '${declaration.service}' template definition must be disabled until a concrete instance is declared"
     else if !supervisionValid
     then throw "service '${declaration.service}' supervision protocol has inconsistent notification access or bus name"
     else if !startPolicyValid
@@ -256,7 +280,7 @@
     else if !environmentValid
     then throw "service '${declaration.service}' environment.variables cannot define PATH when search_path is non-empty"
     else if !activationValid
-    then throw "service '${declaration.service}' has duplicate activation binding names"
+    then throw "service '${declaration.service}' has duplicate or inconsistent activation relationships"
     else if !readinessValid
     then throw "service '${declaration.service}' process-signal readiness requires a signaling scope, and other mechanisms must not set one"
     else if !readinessExecutionValid
@@ -300,12 +324,12 @@
         }
       );
 
-  requirementFor = interface: methods: {
+  requirementFor = interface: methods: guarantees: {
     description = interface.declaration.description;
     inherit (interface.identity) abi descriptor;
     interface = interface.identity.name;
     inherit methods;
-    guarantees = [];
+    inherit guarantees;
     strength = "required";
     fallback = null;
   };
@@ -356,11 +380,17 @@
     };
 
   requestParameters = declaration: feature: let
-    featureValue = declaration.${feature};
+    featureValue =
+      if feature == "template_definition"
+      then declaration.lifecycle
+      else declaration.${feature};
   in
-    {
-      inherit (declaration) service enabled;
-    }
+    {inherit (declaration) service;}
+    // (
+      if feature == "template_definition"
+      then {}
+      else {inherit (declaration) enabled;}
+    )
     // featureValue;
 
   structuredSource = {
@@ -505,18 +535,37 @@
     declaration,
   }: let
     checked = validate serviceTypes declaration;
+    staticTemplate =
+      (checked.instantiation or null)
+      != null
+      && checked.instantiation.kind == "template";
     enabledFeatures =
       builtins.filter
-      (feature: feature == "lifecycle" || checked.${feature} or null != null)
+      (feature:
+        (feature == "lifecycle" && !staticTemplate)
+        || (feature == "template_definition" && staticTemplate)
+        || (
+          !builtins.elem feature ["lifecycle" "template_definition"]
+          && (checked.${feature} or null) != null
+        ))
       (builtins.attrNames featureInterfaces);
     methodsFor = feature:
       if feature == "lifecycle" && (checked.reload or null) == null
       then builtins.filter (method: method != "reload") featureInterfaces.lifecycle.methods
       else featureInterfaces.${feature}.methods;
+    guaranteesFor = feature:
+      if feature == "conditions"
+      then
+        uniqueGuarantees (builtins.map
+          (condition: featureInterfaces.conditions.guaranteesByKind.${condition.kind})
+          checked.conditions.all)
+      else if feature == "linux_conditions" && checked.linux_conditions.capabilities != []
+      then [featureInterfaces.linux_conditions.guaranteesByKind.capability]
+      else [];
     contribution = {
       requirementTemplates = builtins.listToAttrs (builtins.map (feature: {
           name = featureInterfaces.${feature}.alias;
-          value = requirementFor featureInterfaces.${feature} (methodsFor feature);
+          value = requirementFor featureInterfaces.${feature} (methodsFor feature) (guaranteesFor feature);
         })
         enabledFeatures);
       requests = builtins.listToAttrs (builtins.map (feature: {
@@ -571,7 +620,7 @@
       else declaration;
     interface = serviceInterfaces.managedConfiguration;
     contribution = {
-      requirementTemplates.${interface.alias} = requirementFor interface interface.methods;
+      requirementTemplates.${interface.alias} = requirementFor interface interface.methods [];
       requests.${checked.name} = {
         requirement = interface.alias;
         consumer = consumerInstance;
@@ -598,7 +647,7 @@
       if !uniqueBy "key" producers
       then throw "producer request keys must be unique"
       else {
-        requirementTemplates.${selectedInterface.alias} = requirementFor selectedInterface selectedMethods;
+        requirementTemplates.${selectedInterface.alias} = requirementFor selectedInterface selectedMethods [];
         requests = builtins.listToAttrs (builtins.map (producer: {
             name = producer.key;
             value = {

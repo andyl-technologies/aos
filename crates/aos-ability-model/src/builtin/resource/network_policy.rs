@@ -89,7 +89,7 @@ pub fn host_network_policy_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "remove",
-            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            MethodSemantics::provider_stop(),
             host_network_policy_request_schema(false)?,
             host_network_policy_observation_schema()?,
             BTreeMap::new(),

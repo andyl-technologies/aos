@@ -787,6 +787,36 @@
     compose = checked.compose or null;
     transition = checked.transition or null;
     provide = checked.provide or null;
+    methods = builtins.mapAttrs (normalizeOwnedMethod checked.interface) (checked.methods or {});
+    lifecycle = normalizeLifecycle checked.lifecycle;
+    stoppingMethods =
+      builtins.filter
+      (method: method.semantics.stops_provider)
+      (builtins.attrValues methods);
+    stoppingTargets = builtins.map (method: method.target_resource) stoppingMethods;
+    retainedTargets =
+      builtins.concatMap
+      (method:
+        if
+          builtins.any
+          (output:
+            output.schema.kind
+            == "resource-reference"
+            && builtins.elem output.phase ["runtime" "observation"]
+            && output.visibility == "protected"
+            && output.lifetime == "instance")
+          (builtins.attrValues method.outputs)
+        then [method.target_resource]
+        else [])
+      (builtins.attrValues methods);
+    uncoveredRetainedTargets =
+      builtins.filter
+      (target: !(builtins.elem target stoppingTargets))
+      retainedTargets;
+    persistentDeleteMethod =
+      if lifecycle.persistent_delete_method == null
+      then null
+      else methods.${lifecycle.persistent_delete_method} or null;
   in
     if (handler == null) == (compose == null)
     then fail "export must declare exactly one of compose or handler"
@@ -808,6 +838,16 @@
     then fail "terminal export cannot declare a provider state format"
     else if (checked.stateFormat or null) != null && (checked.ownsResourceKinds or []) == []
     then fail "provider state format requires at least one owned resource kind"
+    else if lifecycle.releases_ephemeral_on_disable && stoppingMethods == []
+    then fail "interface '${checked.interface}' promises ephemeral release without a provider-stopping method"
+    else if lifecycle.releases_ephemeral_on_disable && uncoveredRetainedTargets != []
+    then
+      fail
+      "interface '${checked.interface}' promises ephemeral release without a provider-stopping method for retained target '${builtins.head uncoveredRetainedTargets}'"
+    else if lifecycle.persistent_delete_method != null && persistentDeleteMethod == null
+    then fail "interface '${checked.interface}' names an absent persistent delete method"
+    else if persistentDeleteMethod != null && !persistentDeleteMethod.semantics.stops_provider
+    then fail "interface '${checked.interface}' persistent delete method must stop the provider"
     else {
       _type = "aos-ability-export";
       interface = {
@@ -824,8 +864,7 @@
           name: normalizeOutput "interface output '${requireLocalKey "output name" name}'"
         )
         checked.outputs;
-      methods = builtins.mapAttrs (normalizeOwnedMethod checked.interface) (checked.methods or {});
-      lifecycle = normalizeLifecycle checked.lifecycle;
+      inherit methods lifecycle;
       guarantees = canonicalGuarantees "export guarantees" (checked.guarantees or []);
       aggregation = normalizeAggregation checked.aggregation;
       requirements = builtins.mapAttrs normalizeRequirement (checked.requires or {});

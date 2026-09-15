@@ -190,7 +190,7 @@
 
   lifecycle = {
     stableResourceIdentity = true;
-    releasesEphemeralOnDisable = true;
+    releasesEphemeralOnDisable = false;
     retainsPersistentByDefault = true;
     persistentDeleteMethod = null;
   };
@@ -521,7 +521,7 @@
       if builtins.elem name ["observe" "observe-boot" "observe-health" "validate" "verify"]
       then "read"
       else "exclusive-write";
-    stopsProvider = name == "stop";
+    stopsProvider = builtins.elem name ["release" "remove" "stop"];
   };
   method = targetResource: name: {
     inherit targetResource;
@@ -763,6 +763,7 @@ in {
           name = managedConfigurationEffects.name;
           group = "managed-configuration-effects";
           handler = "managed-configuration-terminal";
+          selectedLifecycle = credentialEffectsLifecycle;
           methods = {
             prepare = method managedConfigurationEffects.name "prepare";
             publish = method managedConfigurationEffects.name "publish";

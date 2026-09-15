@@ -1046,7 +1046,7 @@ fn interface_document() -> InterfaceDocument {
             )]),
             lifecycle: LifecycleSemantics {
                 stable_resource_identity: true,
-                releases_ephemeral_on_disable: true,
+                releases_ephemeral_on_disable: false,
                 retains_persistent_by_default: true,
                 persistent_delete_method: None,
             },

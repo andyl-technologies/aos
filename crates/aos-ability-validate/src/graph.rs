@@ -673,6 +673,9 @@ fn validate_interface_document(
         diagnostics,
     );
 
+    let mut stopping_targets = BTreeSet::new();
+    let mut retained_instance_targets = BTreeSet::new();
+
     for (name, method) in &document.interface.methods {
         let method_path = root.child("methods").child(name.as_str());
         validate_schema_definition(
@@ -745,6 +748,12 @@ fn validate_interface_document(
                 ),
             );
         }
+        if method.outputs.values().any(|output| {
+            output.is_retained_resource()
+                && output.lifetime == aos_ability_model::ResourceLifetime::Instance
+        }) {
+            retained_instance_targets.insert(method.target_resource.clone());
+        }
         check_strict_order(
             &method.permitted_operations,
             &method_path.child("permitted_operations"),
@@ -769,6 +778,84 @@ fn validate_interface_document(
                     "a provider-stopping method must require exclusive target access".to_string(),
                 ),
             );
+        }
+        if method.semantics.stops_provider
+            && method.semantics.required_target_access
+                == aos_ability_model::AccessMode::ExclusiveWrite
+        {
+            stopping_targets.insert(method.target_resource.clone());
+        }
+    }
+
+    let lifecycle_path = root.child("lifecycle");
+    if document.interface.lifecycle.releases_ephemeral_on_disable && stopping_targets.is_empty() {
+        push_diagnostic(
+            diagnostics,
+            diagnostic(
+                DiagnosticCode::MethodContractMismatch,
+                DiagnosticClass::IncompatibleInterface,
+                DiagnosticPhase::Schema,
+                lifecycle_path
+                    .child("releases_ephemeral_on_disable")
+                    .components()
+                    .to_vec(),
+                "ephemeral release requires an exclusive provider-stopping method".to_string(),
+            ),
+        );
+    }
+    if document.interface.lifecycle.releases_ephemeral_on_disable {
+        for target in retained_instance_targets.difference(&stopping_targets) {
+            push_diagnostic(
+                diagnostics,
+                diagnostic(
+                    DiagnosticCode::MethodContractMismatch,
+                    DiagnosticClass::IncompatibleInterface,
+                    DiagnosticPhase::Schema,
+                    lifecycle_path
+                        .child("releases_ephemeral_on_disable")
+                        .components()
+                        .to_vec(),
+                    format!(
+                        "ephemeral release lacks an exclusive provider-stopping method for retained target '{}'",
+                        target.as_str()
+                    ),
+                ),
+            );
+        }
+    }
+    if let Some(delete_name) = &document.interface.lifecycle.persistent_delete_method {
+        match document.interface.methods.get(delete_name) {
+            Some(method)
+                if method.semantics.stops_provider
+                    && method.semantics.required_target_access
+                        == aos_ability_model::AccessMode::ExclusiveWrite => {}
+            Some(_) => push_diagnostic(
+                diagnostics,
+                diagnostic(
+                    DiagnosticCode::MethodContractMismatch,
+                    DiagnosticClass::IncompatibleInterface,
+                    DiagnosticPhase::Schema,
+                    lifecycle_path
+                        .child("persistent_delete_method")
+                        .components()
+                        .to_vec(),
+                    "persistent delete method must require exclusive access and stop the provider"
+                        .to_string(),
+                ),
+            ),
+            None => push_diagnostic(
+                diagnostics,
+                diagnostic(
+                    DiagnosticCode::MissingReference,
+                    DiagnosticClass::IncompatibleInterface,
+                    DiagnosticPhase::Schema,
+                    lifecycle_path
+                        .child("persistent_delete_method")
+                        .components()
+                        .to_vec(),
+                    "persistent delete method is absent from the exact interface".to_string(),
+                ),
+            ),
         }
     }
 }
@@ -893,6 +980,78 @@ mod instance_configuration_tests {
                 && diagnostic
                     .message
                     .contains("must require exclusive target access")
+        }));
+    }
+
+    #[test]
+    fn observation_only_interface_cannot_promise_ephemeral_release() {
+        let mut document = service_management_interface().expect("service interface");
+        document
+            .interface
+            .methods
+            .retain(|name, _| name.as_str() == "observe");
+
+        let errors = ValidationContext::new(BTreeSet::new(), [document])
+            .expect_err("an observation-only interface cannot release provider state");
+
+        assert!(errors.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::MethodContractMismatch
+                && diagnostic
+                    .message
+                    .contains("ephemeral release requires an exclusive provider-stopping method")
+        }));
+    }
+
+    #[test]
+    fn ephemeral_release_requires_provider_stopping_semantics() {
+        let mut document = service_management_interface().expect("service interface");
+        document
+            .interface
+            .methods
+            .get_mut(&key("stop"))
+            .expect("stop method")
+            .semantics = aos_ability_model::MethodSemantics::ordinary(AccessMode::ExclusiveWrite);
+
+        let errors = ValidationContext::new(BTreeSet::new(), [document])
+            .expect_err("ordinary write access cannot satisfy release semantics");
+
+        assert!(errors.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::MethodContractMismatch
+                && diagnostic
+                    .path
+                    .last()
+                    .is_some_and(|field| field == "releases_ephemeral_on_disable")
+        }));
+    }
+
+    #[test]
+    fn persistent_delete_method_must_exist_and_stop_the_provider() {
+        let mut absent = service_management_interface().expect("service interface");
+        absent.interface.lifecycle.persistent_delete_method = Some(key("delete"));
+
+        let absent_errors = ValidationContext::new(BTreeSet::new(), [absent])
+            .expect_err("an absent persistent delete method cannot be authorized");
+
+        assert!(absent_errors.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::MissingReference
+                && diagnostic
+                    .path
+                    .last()
+                    .is_some_and(|field| field == "persistent_delete_method")
+        }));
+
+        let mut non_stopping = service_management_interface().expect("service interface");
+        non_stopping.interface.lifecycle.persistent_delete_method = Some(key("start"));
+
+        let semantic_errors = ValidationContext::new(BTreeSet::new(), [non_stopping])
+            .expect_err("persistent deletion must stop the exact provider");
+
+        assert!(semantic_errors.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::MethodContractMismatch
+                && diagnostic
+                    .path
+                    .last()
+                    .is_some_and(|field| field == "persistent_delete_method")
         }));
     }
 

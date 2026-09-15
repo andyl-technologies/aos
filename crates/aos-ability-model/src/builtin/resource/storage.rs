@@ -73,7 +73,7 @@ pub fn host_storage_interface() -> Result<InterfaceDocument> {
         resource_method(
             &interface_name,
             "release",
-            MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            MethodSemantics::provider_stop(),
             host_storage_request_schema()?,
             host_storage_observation_schema()?,
             BTreeMap::new(),
