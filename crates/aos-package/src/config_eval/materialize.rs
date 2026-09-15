@@ -2371,7 +2371,7 @@ mod tests {
             serde_json::json!({
                 "base_lib": {"store_path":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-base", "abi_hash":hash, "module_abi":1},
                 "evaluator": {"store_path":"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-evaluator", "store_hash":store_hash},
-                "config_modules": {"closure_hash":"sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "count":0, "store_paths":[], "nar_hashes":[], "package_names":[], "module_abi_compat":[]},
+                "package_modules": {"modules": []},
                 "host_nix": {"content_hash":hash, "trust_mode":"platform", "platform":"test", "signer_key":null, "store_path":"/nix/store/cccccccccccccccccccccccccccccccc-host-nix"},
                 "instance_facts": {"facts_hash":hash, "platform":"test", "store_path":"/nix/store/dddddddddddddddddddddddddddddddd-facts"}
             }),
