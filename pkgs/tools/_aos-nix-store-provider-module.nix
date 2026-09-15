@@ -137,6 +137,7 @@ in {
     };
 
     requirementTemplates.${interfaceAlias} = {
+      description = "Requires convergence and observation of the local Nix store database.";
       inherit (identity) abi descriptor;
       interface = identity.name;
       methods = builtins.attrNames methods;

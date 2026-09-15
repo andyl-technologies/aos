@@ -580,7 +580,7 @@ in
         mv "$out/bin/aos-configuration-provider" "$packageRuntime/libexec/"
         mv "$out/bin/aos-image-rollout-provider" "$packageRuntime/libexec/"
         mkdir -p "$packageRuntime/share/aos/providers"
-        cp ${./_configuration-provider/provider.nix} \
+        cp ${./_abilities/configuration-provider/provider.nix} \
           "$packageRuntime/share/aos/providers/configuration-materialization.nix"
         ln -s ${coreutils}/bin/env "$packageRuntime/libexec/aos-env"
         ln -s ${nftables}/bin/nft "$packageRuntime/libexec/aos-nft"
