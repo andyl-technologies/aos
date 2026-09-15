@@ -467,7 +467,7 @@
   in
     if descriptor.phase != "planning"
     then fail "pure provider emitted non-planning output '${requestName}.${outputName}'"
-    else if !descriptor.schema.check value
+    else if !(lib.abilities.types.deferredResult descriptor.schema).check value
     then fail "provider output '${requestName}.${outputName}' does not match its declared type"
     else {
       inherit value;

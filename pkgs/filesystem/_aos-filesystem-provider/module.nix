@@ -24,6 +24,7 @@
     fields = {
       schema = types.enum ["aos.filesystem.storage-view-realization/v1"];
       source = types.resourceReference;
+      path = serviceManagement.types.storagePath;
       relative_path = {
         type = types.optional types.relativePath;
         optional = true;

@@ -879,6 +879,10 @@
       outputName = "storage-path";
       outputDescription = "Returns the authorized execution path for the storage view.";
       outputType = serviceTypes.storagePath;
+      interfaceOutputs.planned-path =
+        output "planning" "instance"
+        "Returns the exact authorized child path selected for this storage view before materialization."
+        serviceTypes.storagePath;
     };
     storageAllocation = producer {
       alias = "storage-allocation";

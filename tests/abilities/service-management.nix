@@ -1327,12 +1327,42 @@ in
   assert succeedsAs serviceTypes.storageView {
     name = "containerd-socket";
     source = resultOf "runtime-storage" "retained-resource";
+    source_path = resultOf "runtime-storage" "planned-path";
     access = "read-write";
     relative_path = "containerd.sock";
   };
+  assert (builtins.tryEval (builtins.deepSeq (serviceManagement.forProducer {
+      consumerInstance = "consumer";
+      key = "containerd-socket";
+      interface = interfaces.storageView;
+      parameters = {
+        name = "containerd-socket";
+        source = resultOf "runtime-storage" "retained-resource";
+        source_path = resultOf "runtime-storage" "planned-path";
+        access = "read-write";
+        relative_path = "containerd.sock";
+      };
+    })
+    true))
+  .success;
+  assert !(builtins.tryEval (builtins.deepSeq (serviceManagement.forProducer {
+      consumerInstance = "consumer";
+      key = "foreign-socket";
+      interface = interfaces.storageView;
+      parameters = {
+        name = "foreign-socket";
+        source = resultOf "runtime-storage" "retained-resource";
+        source_path = resultOf "foreign-storage" "planned-path";
+        access = "read-write";
+        relative_path = "containerd.sock";
+      };
+    })
+    true))
+  .success;
   assert !succeedsAs serviceTypes.storageView {
     name = "escaped-socket";
     source = resultOf "runtime-storage" "retained-resource";
+    source_path = resultOf "runtime-storage" "planned-path";
     access = "read-write";
     relative_path = "../containerd.sock";
   };

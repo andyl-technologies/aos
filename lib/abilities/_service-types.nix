@@ -1217,6 +1217,7 @@
     fields =
       referencedViewFields
       // {
+        source_path = types.deferredResult storagePath;
         access = types.enum ["read-only" "read-write"];
         relative_path = {
           type = types.optional types.relativePath;
