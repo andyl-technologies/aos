@@ -447,13 +447,17 @@
     );
   in
     lib.concatMap qualificationRequirementChecks claim.requirements;
-  mkNativeAbilityScenario = scenarioId: source: let
+  mkNativeAbilityScenario = {
+    scenarioId,
+    source,
+    cohorts ? null,
+  }: let
     spec = import source {
       inherit lib mkSystem pkgs;
       qualificationImage = true;
     };
   in
-    testing.mkQualificationAbilityScenario {
+    testing.mkQualificationAbilityScenario ({
       name = "aos-qualification-${scenarioId}";
       identity = qualificationExecutorIdentity;
       inherit scenarioId;
@@ -461,6 +465,18 @@
       testScript = spec.qualification.testScript or spec.testScript;
       stagingHubUrl = spec.qualification.stagingHubUrl or null;
       inherit (spec.qualification) candidateRuntimeCompanions extraClosures setupBody;
+    }
+    // lib.optionalAttrs (cohorts != null) {inherit cohorts;});
+  predecessorMatrixCohort = cohort:
+    cohort
+    // {
+      requiredInputs = ["predecessor-image"];
+      execution = {
+        bootInput = "predecessor-image";
+        fixtureRole = null;
+        recordsGuestKernel = true;
+      };
+      report = {kind = "matrix";};
     };
   nativeAdapterMatrixCohort = import ./tests/fleet/ability-native-power-loss.nix {
     inherit lib mkSystem pkgs;
@@ -663,9 +679,10 @@
 
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline =
-      mkNativeAbilityScenario
-      "ability-crucible-baseline"
-      ./tests/fleet/ability-crucible-baseline.nix;
+      mkNativeAbilityScenario {
+        scenarioId = "ability-crucible-baseline";
+        source = ./tests/fleet/ability-crucible-baseline.nix;
+      };
     ability-native-adapter-matrix = testing.mkQualificationAbilityScenario {
       name = "aos-qualification-ability-native-adapter-matrix";
       identity = qualificationExecutorIdentity;
@@ -685,7 +702,7 @@
             inherit (nativeEffectReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
         ]
-        ++ lib.imap (index: cohort: {
+        ++ lib.imap (index: cohort: predecessorMatrixCohort {
           id = "provider-effect-boundary-rollout-${builtins.toString index}";
           qualifiedCells = [(builtins.elemAt nativeEffectBoundaryCells.groups.rollout index)];
           inherit (cohort) testScript;
@@ -706,7 +723,7 @@
             inherit (nativeProviderStateReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
         ]
-        ++ lib.imap (index: cohort: {
+        ++ lib.imap (index: cohort: predecessorMatrixCohort {
           id = "provider-state-rollout-${builtins.toString index}";
           qualifiedCells = [(builtins.elemAt nativeProviderStateCells.groups.rollout index)];
           inherit (cohort) testScript;
@@ -739,7 +756,7 @@
             inherit (nativeCancellationForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
         ]
-        ++ lib.imap (index: cohort: {
+        ++ lib.imap (index: cohort: predecessorMatrixCohort {
           id = "provider-cancellation-rollout-${builtins.toString index}";
           qualifiedCells = [(builtins.elemAt nativeCancellationCells.groups.rollout index)];
           inherit (cohort) testScript;
@@ -766,19 +783,59 @@
             inherit (nativeProviderNegativeSystemdManager.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
         ]
-        ++ nativeProviderNegativeRollouts;
+        ++ map predecessorMatrixCohort nativeProviderNegativeRollouts;
 
       inherit (nativeAdapterMatrixCohort) testScript;
       inherit (nativeAdapterMatrixCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
     };
     ability-native-image-rollout =
-      mkNativeAbilityScenario
-      "ability-native-image-rollout"
-      ./tests/fleet/ability-native-image-rollout.nix;
+      mkNativeAbilityScenario {
+        scenarioId = "ability-native-image-rollout";
+        source = ./tests/fleet/ability-native-image-rollout.nix;
+        cohorts = [
+          {
+            id = "healthy";
+            requiredInputs = ["predecessor-image"];
+            execution = {
+              bootInput = "predecessor-image";
+              fixtureRole = "healthy";
+              recordsGuestKernel = true;
+            };
+            report = {
+              kind = "release-transition";
+              evidenceVariable = "ROLLOUT_BRANCH_EVIDENCE";
+              expectedEvidence = {
+                branch = "healthy";
+                outcome = "candidate-healthy";
+                retired = true;
+              };
+            };
+          }
+          {
+            id = "fallback";
+            requiredInputs = ["predecessor-image"];
+            execution = {
+              bootInput = "predecessor-image";
+              fixtureRole = "fallback";
+              recordsGuestKernel = false;
+            };
+            report = {
+              kind = "release-transition";
+              evidenceVariable = "ROLLOUT_BRANCH_EVIDENCE";
+              expectedEvidence = {
+                branch = "fallback";
+                outcome = "predecessor-fallback";
+                retired = false;
+              };
+            };
+          }
+        ];
+      };
     ability-native-recovery =
-      mkNativeAbilityScenario
-      "ability-native-recovery"
-      ./tests/fleet/runtime-module-composition.nix;
+      mkNativeAbilityScenario {
+        scenarioId = "ability-native-recovery";
+        source = ./tests/fleet/runtime-module-composition.nix;
+      };
   };
   recoveryPackageScenario =
     if hostPlatform.isLinux

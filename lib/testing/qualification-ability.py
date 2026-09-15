@@ -48,9 +48,7 @@ MATRIX_SPEC_PATH = pathlib.Path(MATRIX_SPEC_NAME) if MATRIX_SPEC_NAME else None
 MATRIX_QUALIFIED_CELLS = json.loads(
     os.environ["AOS_QUALIFICATION_NATIVE_ADAPTER_QUALIFIED_CELLS"]
 )
-MATRIX_COHORTS = json.loads(
-    os.environ["AOS_QUALIFICATION_NATIVE_ADAPTER_COHORTS"]
-)
+QUALIFICATION_COHORTS = json.loads(os.environ["AOS_QUALIFICATION_COHORTS"])
 MATRIX_COHORT_SUPPORT_NAME = os.environ[
     "AOS_QUALIFICATION_NATIVE_ADAPTER_COHORT_SUPPORT"
 ]
@@ -444,31 +442,125 @@ class Scenario:
 }}
 '''
 
-    def matrix_uses_image_rollout(self) -> bool:
-        """Returns whether the exact matrix scope contains image rollout cells."""
+    @staticmethod
+    def _validate_cohort(cohort: Any) -> None:
+        """Validates one closed qualification cohort declaration."""
 
-        return self.matrix_spec is not None and any(
-            cell_id.split("/", 1)[0] == "image-rollout"
-            for cell_id in MATRIX_QUALIFIED_CELLS
-        )
+        if not isinstance(cohort, dict) or set(cohort) != {
+            "execution",
+            "id",
+            "qualifiedCells",
+            "report",
+            "requiredInputs",
+            "script",
+            "setup",
+        }:
+            raise RuntimeError("qualification cohort input is malformed")
+        if not isinstance(cohort["id"], str) or not cohort["id"]:
+            raise RuntimeError("qualification cohort lacks its identity")
+        if not isinstance(cohort["script"], str) or not cohort["script"]:
+            raise RuntimeError("qualification cohort lacks its fixture script")
+        if not isinstance(cohort["setup"], str) or not cohort["setup"]:
+            raise RuntimeError("qualification cohort lacks its setup module")
+        if not isinstance(cohort["qualifiedCells"], list) or not all(
+            isinstance(cell_id, str) and cell_id
+            for cell_id in cohort["qualifiedCells"]
+        ):
+            raise RuntimeError("qualification cohort carries malformed matrix cells")
+
+        required_inputs = cohort["requiredInputs"]
+        if (
+            not isinstance(required_inputs, list)
+            or any(required_input != "predecessor-image" for required_input in required_inputs)
+            or len(set(required_inputs)) != len(required_inputs)
+        ):
+            raise RuntimeError("qualification cohort carries an unsupported required input")
+
+        execution = cohort["execution"]
+        if not isinstance(execution, dict) or set(execution) != {
+            "bootInput",
+            "fixtureRole",
+            "recordsGuestKernel",
+        }:
+            raise RuntimeError("qualification cohort execution is malformed")
+        if execution["bootInput"] not in {"candidate-image", "predecessor-image"}:
+            raise RuntimeError("qualification cohort names an unsupported boot input")
+        if execution["bootInput"] == "predecessor-image" and (
+            "predecessor-image" not in required_inputs
+        ):
+            raise RuntimeError("qualification cohort uses an undeclared boot input")
+        if execution["fixtureRole"] is not None and (
+            not isinstance(execution["fixtureRole"], str)
+            or not execution["fixtureRole"]
+        ):
+            raise RuntimeError("qualification cohort carries a malformed fixture role")
+        if not isinstance(execution["recordsGuestKernel"], bool):
+            raise RuntimeError("qualification cohort carries a malformed kernel policy")
+
+        report = cohort["report"]
+        if not isinstance(report, dict) or report.get("kind") not in {
+            "matrix",
+            "ordinary",
+            "release-transition",
+        }:
+            raise RuntimeError("qualification cohort report policy is malformed")
+        if report["kind"] == "release-transition":
+            if (
+                set(report) != {"evidenceVariable", "expectedEvidence", "kind"}
+                or not isinstance(report["evidenceVariable"], str)
+                or not report["evidenceVariable"]
+                or not isinstance(report["expectedEvidence"], dict)
+                or set(report["expectedEvidence"])
+                != {"branch", "outcome", "retired"}
+                or not isinstance(report["expectedEvidence"]["branch"], str)
+                or not report["expectedEvidence"]["branch"]
+                or not isinstance(report["expectedEvidence"]["outcome"], str)
+                or not report["expectedEvidence"]["outcome"]
+                or not isinstance(report["expectedEvidence"]["retired"], bool)
+                or execution["fixtureRole"] is None
+                or report["expectedEvidence"]["branch"]
+                != execution["fixtureRole"]
+                or execution["bootInput"] != "predecessor-image"
+            ):
+                raise RuntimeError("release-transition report policy is malformed")
+        elif set(report) != {"kind"}:
+            raise RuntimeError("qualification cohort report policy has unknown fields")
 
     @staticmethod
-    def cohort_uses_image_rollout(cohort: dict[str, Any]) -> bool:
-        """Returns whether one matrix cohort contains only image rollout cells."""
+    def _requires_input(cohort: dict[str, Any], required_input: str) -> bool:
+        return required_input in cohort["requiredInputs"]
 
-        cells = cohort.get("qualifiedCells", [])
-        return bool(cells) and all(
-            isinstance(cell_id, str)
-            and cell_id.split("/", 1)[0] == "image-rollout"
-            for cell_id in cells
+    def _requires_predecessor_image(self) -> bool:
+        return any(
+            self._requires_input(cohort, "predecessor-image")
+            for cohort in QUALIFICATION_COHORTS
+        )
+
+    def _is_release_transition(self) -> bool:
+        return bool(QUALIFICATION_COHORTS) and all(
+            cohort["report"]["kind"] == "release-transition"
+            for cohort in QUALIFICATION_COHORTS
         )
 
     def validate_inputs(self) -> None:
-        matrix_case = SCENARIO_ID == "ability-native-adapter-matrix"
-        rollout_case = SCENARIO_ID == "ability-native-image-rollout"
-        published_rollout_case = rollout_case or self.matrix_uses_image_rollout()
-        if published_rollout_case and not STAGING_HUB_URL:
-            raise RuntimeError("published image rollout lacks its authenticated staging origin")
+        if not isinstance(QUALIFICATION_COHORTS, list) or not QUALIFICATION_COHORTS:
+            raise RuntimeError("qualification lacks a production cohort")
+        for cohort in QUALIFICATION_COHORTS:
+            self._validate_cohort(cohort)
+        cohort_ids = [cohort["id"] for cohort in QUALIFICATION_COHORTS]
+        if len(set(cohort_ids)) != len(cohort_ids):
+            raise RuntimeError("qualification repeats a production cohort")
+        report_kinds = {cohort["report"]["kind"] for cohort in QUALIFICATION_COHORTS}
+        if self.matrix_spec is not None and report_kinds != {"matrix"}:
+            raise RuntimeError("matrix qualification carries another report policy")
+        if "release-transition" in report_kinds and report_kinds != {
+            "release-transition"
+        }:
+            raise RuntimeError("release-transition report policy is incomplete")
+
+        requires_predecessor = self._requires_predecessor_image()
+        if requires_predecessor and not STAGING_HUB_URL:
+            raise RuntimeError("predecessor image input lacks its authenticated staging origin")
         if PLATFORM != "x86_64-linux" or self.request["platform"] != PLATFORM:
             raise RuntimeError("native ability qualification requires x86_64 Linux")
         if (
@@ -482,27 +574,24 @@ class Scenario:
             or self.case["checks"] != EXPECTED_CHECKS
         ):
             raise RuntimeError("ability case differs from the implemented native scenario")
-        if matrix_case != (self.matrix_spec is not None):
-            raise RuntimeError("matrix specification is inapplicable to this native scenario")
-        if matrix_case:
+        if self.matrix_spec is not None:
             matrix_checks = [
                 check
                 for check in EXPECTED_CHECKS
                 if check.startswith("native-adapter-matrix-v1-sha256-")
             ]
             if (
-                not self.case.get("predecessor")
-                or len(matrix_checks) != 1
+                len(matrix_checks) != 1
                 or matrix_checks[0]
                 != "native-adapter-matrix-v1-sha256-"
                 + raw_digest(self.matrix_spec).removeprefix("sha256:")
             ):
                 raise RuntimeError("matrix specification differs from the exact case")
-        elif rollout_case:
+        if requires_predecessor:
             if not self.case.get("predecessor") or not self.predecessor_objects:
-                raise RuntimeError("image rollout case lacks its verified predecessor")
+                raise RuntimeError("qualification lacks its declared predecessor image input")
         elif self.case.get("predecessor") is not None or self.predecessor_objects:
-            raise RuntimeError("ordinary ability scenario unexpectedly names a predecessor")
+            raise RuntimeError("qualification carries an undeclared predecessor image input")
 
         manifest = read_json(pathlib.Path(self.objects[MANIFEST_OBJECT]))
         payload = manifest["payload"]
@@ -561,9 +650,7 @@ class Scenario:
         self._validate_object(self.assembly_artifact)
         self._validate_object(self.finalized_artifact)
         self._validate_image_controls()
-        if published_rollout_case:
-            if not self.case.get("predecessor") or not self.predecessor_objects:
-                raise RuntimeError("published image rollout lacks its verified predecessor")
+        if requires_predecessor:
             self._bind_predecessor_image()
         self._bind_published_package_outputs()
         self._prepare_candidate_handler_companions()
@@ -1688,7 +1775,7 @@ class Scenario:
         provider_negative_audit: dict[str, Any] | None = None
         for cohort_id, namespace in self.fixture_namespaces.items():
             cohort_input = one(
-                [entry for entry in MATRIX_COHORTS if entry["id"] == cohort_id],
+                [entry for entry in QUALIFICATION_COHORTS if entry["id"] == cohort_id],
                 f"matrix cohort {cohort_id}",
             )
             cohort_probes = namespace.get("NATIVE_ADAPTER_MATRIX_PROBES")
@@ -1817,12 +1904,12 @@ class Scenario:
             raise RuntimeError("matrix cohort did not retain its runtime audit")
         if interruption_audit is None:
             raise RuntimeError("matrix cohort did not retain its interruption audit")
-        if self.matrix_uses_image_rollout() and (
+        if self._requires_predecessor_image() and (
             not self.rollout_boot_ids["candidate"]
             or not self.rollout_boot_ids["predecessor"]
         ):
             raise RuntimeError(
-                "matrix image rollout did not boot both frozen published subjects"
+                "matrix predecessor input did not boot both frozen published subjects"
             )
 
         qemu_output = IMAGE.run([IMAGE.QEMU, "--version"]).stdout.splitlines()[0]
@@ -1936,26 +2023,23 @@ class Scenario:
         if self.matrix_spec is not None:
             return self.build_matrix_report(guest_kernel_release)
 
-        rollout_case = SCENARIO_ID == "ability-native-image-rollout"
-        if rollout_case:
+        release_transition = self._is_release_transition()
+        if release_transition:
+            transition_reports = {
+                cohort["id"]: cohort["report"] for cohort in QUALIFICATION_COHORTS
+            }
             branch_evidence = {
-                cohort_id: namespace.get("ROLLOUT_BRANCH_EVIDENCE")
+                cohort_id: namespace.get(
+                    transition_reports[cohort_id]["evidenceVariable"]
+                )
                 for cohort_id, namespace in self.fixture_namespaces.items()
             }
             if (
-                set(branch_evidence) != {"healthy", "fallback"}
-                or branch_evidence["healthy"]
-                != {
-                    "branch": "healthy",
-                    "outcome": "candidate-healthy",
-                    "retired": True,
-                }
-                or branch_evidence["fallback"]
-                != {
-                    "branch": "fallback",
-                    "outcome": "predecessor-fallback",
-                    "retired": False,
-                }
+                set(branch_evidence) != set(transition_reports)
+                or any(
+                    branch_evidence[cohort_id] != report["expectedEvidence"]
+                    for cohort_id, report in transition_reports.items()
+                )
                 or not self.rollout_boot_ids["candidate"]
                 or not self.rollout_boot_ids["predecessor"]
                 or self.handoff_boot_ids != self.rollout_boot_ids["candidate"]
@@ -1963,7 +2047,7 @@ class Scenario:
                 != self.rollout_boot_ids["candidate"]
                 | self.rollout_boot_ids["predecessor"]
             ):
-                raise RuntimeError("published image rollout branch evidence is incomplete")
+                raise RuntimeError("published release transition evidence is incomplete")
         else:
             expected_boots = (
                 1 + machine.counts.reboot_cycles + machine.hard_power_cycles
@@ -1998,7 +2082,7 @@ class Scenario:
                 "metadata_artifact": self.metadata_artifact["id"],
                 "assertions": (
                     len(self.rollout_boot_ids["candidate"])
-                    if rollout_case
+                    if release_transition
                     else self.boot_assertions
                 ),
             },
@@ -2026,7 +2110,7 @@ class Scenario:
             "guest_kernel_release": guest_kernel_release,
             "host_kernel_release": os.uname().release,
         }
-        if rollout_case:
+        if release_transition:
             environment["boot"]["predecessor"] = {
                 "release_id": self.case["predecessor"]["release_id"],
                 "manifest_digest": self.case["predecessor"]["manifest_digest"],
@@ -2043,7 +2127,9 @@ class Scenario:
                 "registry": self.request["registry"],
                 "candidate_version": self.payload["version"],
                 "branches": {
-                    cohort_id: namespace["ROLLOUT_BRANCH_EVIDENCE"]
+                    cohort_id: namespace[
+                        transition_reports[cohort_id]["evidenceVariable"]
+                    ]
                     for cohort_id, namespace in sorted(self.fixture_namespaces.items())
                 },
             }
@@ -2067,7 +2153,9 @@ class Scenario:
                 "warm_reboots": self.total_warm_reboots,
                 "hard_power_cycles": self.total_hard_power_cycles,
                 "metadata_free_reboots": self.total_metadata_free_reboots,
-                "rollout_branches": len(self.fixture_namespaces) if rollout_case else 0,
+                "rollout_branches": (
+                    len(self.fixture_namespaces) if release_transition else 0
+                ),
             },
             "environment": environment,
         }
@@ -2077,29 +2165,7 @@ class Scenario:
         guest_kernel_release: str | None = None
         try:
             self.validate_inputs()
-            if self.matrix_spec is not None:
-                cohorts = MATRIX_COHORTS
-            elif SCENARIO_ID == "ability-native-image-rollout":
-                cohorts = [
-                    {
-                        "id": branch,
-                        "script": str(FIXTURE_SCRIPT),
-                        "setup": str(SETUP_MODULE),
-                        "qualifiedCells": [],
-                    }
-                    for branch in ("healthy", "fallback")
-                ]
-            else:
-                cohorts = [
-                    {
-                        "id": "ability",
-                        "script": str(FIXTURE_SCRIPT),
-                        "setup": str(SETUP_MODULE),
-                        "qualifiedCells": [],
-                    }
-                ]
-            if not isinstance(cohorts, list) or not cohorts:
-                raise RuntimeError("matrix qualification lacks a production cohort")
+            cohorts = QUALIFICATION_COHORTS
             qualified_cells = [
                 cell_id
                 for cohort in cohorts
@@ -2115,33 +2181,11 @@ class Scenario:
                 )
 
             for index, cohort in enumerate(cohorts):
-                if (
-                    not isinstance(cohort, dict)
-                    or set(cohort) != {"id", "script", "setup", "qualifiedCells"}
-                    or not isinstance(cohort["id"], str)
-                    or not cohort["id"]
-                    or not isinstance(cohort["qualifiedCells"], list)
-                ):
-                    raise RuntimeError("matrix production cohort input is malformed")
-                image_cells = [
-                    cell_id
-                    for cell_id in cohort["qualifiedCells"]
-                    if isinstance(cell_id, str)
-                    and cell_id.split("/", 1)[0] == "image-rollout"
-                ]
-                if image_cells and not self.cohort_uses_image_rollout(cohort):
-                    raise RuntimeError(
-                        "matrix image rollout cells require an isolated production cohort"
-                    )
-
-                rollout_case = SCENARIO_ID == "ability-native-image-rollout"
-                matrix_rollout_cohort = (
-                    self.matrix_spec is not None
-                    and self.cohort_uses_image_rollout(cohort)
-                )
+                execution = cohort["execution"]
+                uses_predecessor = execution["bootInput"] == "predecessor-image"
                 image_path = (
                     self.predecessor_image["qcow2_path"]
-                    if rollout_case or matrix_rollout_cohort
+                    if uses_predecessor
                     else self.qcow2_path
                 )
                 machine = PublishedImageMachine(
@@ -2152,10 +2196,10 @@ class Scenario:
                     IMAGE.Counts(),
                     scenario=self,
                 )
-                if rollout_case or matrix_rollout_cohort:
+                if uses_predecessor:
                     machine.expect_published_image("predecessor")
-                if rollout_case:
-                    machine.rollout_branch = cohort["id"]
+                if execution["fixtureRole"] is not None:
+                    machine.rollout_branch = execution["fixtureRole"]
                 self.machine = machine
                 try:
                     self.enroll(machine)
@@ -2168,14 +2212,13 @@ class Scenario:
                     self.fixture_namespaces[cohort["id"]] = namespace
                     self.assert_running_published_boot(machine)
                     observed_kernel = machine.ssh("uname -r").strip()
-                    if rollout_case and cohort["id"] == "fallback":
-                        pass
-                    elif guest_kernel_release is None:
-                        guest_kernel_release = observed_kernel
-                    elif guest_kernel_release != observed_kernel:
-                        raise RuntimeError(
-                            "matrix cohorts observed different guest kernels"
-                        )
+                    if execution["recordsGuestKernel"]:
+                        if guest_kernel_release is None:
+                            guest_kernel_release = observed_kernel
+                        elif guest_kernel_release != observed_kernel:
+                            raise RuntimeError(
+                                "qualification cohorts observed different guest kernels"
+                            )
                     self.total_warm_reboots += machine.counts.reboot_cycles
                     self.total_hard_power_cycles += machine.hard_power_cycles
                     self.total_metadata_free_reboots += machine.metadata_free_reboots
