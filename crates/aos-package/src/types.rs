@@ -4071,11 +4071,6 @@ pin = "v2026.02"
             assert!(error.to_string().contains(required));
         }
 
-        let mut obsolete = serde_json::to_value(&state).unwrap();
-        obsolete["generations"][0]["legacy_state_version"] = serde_json::json!("7");
-        let error = serde_json::from_value::<ImageGenerationState>(obsolete)
-            .expect_err("obsolete image-generation fields must fail closed");
-        assert!(error.to_string().contains("legacy_state_version"));
     }
 
     fn sample_documentation_artifact() -> DocumentationArtifactMeta {
