@@ -31,6 +31,7 @@ DOWNLOADS = ROOT / "downloads.json"
 REPORT = ROOT / "scenario-report.json"
 
 PLATFORM = os.environ["AOS_QUALIFICATION_PLATFORM"]
+EXPECTED_CHECKS = json.loads(os.environ["AOS_QUALIFICATION_CHECKS"])
 PROBES = pathlib.Path(os.environ["AOS_QUALIFICATION_PROBES"])
 TRUST_KEYS = json.loads(os.environ["AOS_QUALIFICATION_TRUST_KEYS"])
 STAGING_HUB_URL = os.environ["AOS_QUALIFICATION_STAGING_HUB_URL"]
@@ -40,13 +41,6 @@ ZSTD = os.environ["AOS_QUALIFICATION_ZSTD"]
 UNAME = os.environ["AOS_QUALIFICATION_UNAME"]
 BOUND_IMAGE_VARIANT = os.environ.get("AOS_QUALIFICATION_BOUND_IMAGE_VARIANT")
 
-EXPECTED_CHECKS = {
-    "anonymous-download",
-    "closure-verification",
-    "functional-behavior",
-    "dependency-obligations",
-    "permissions-and-confinement",
-}
 PACKAGE_CASE = re.compile(
     r"^package-function/(?P<package>[A-Za-z0-9_.+@-]+)/"
     r"(?P<platform>x86_64-linux|aarch64-linux|x86_64-darwin|aarch64-darwin)$"
@@ -401,7 +395,7 @@ class PackageScenario:
             or self.case["platform"] != PLATFORM
             or self.case.get("target") is not None
             or self.case.get("claim") is not None
-            or set(self.case["checks"]) != EXPECTED_CHECKS
+            or self.case["checks"] != EXPECTED_CHECKS
         ):
             raise RuntimeError("package case differs from the implemented program")
         if self.case.get("package_role") not in {
@@ -941,6 +935,8 @@ class PackageScenario:
                 ),
             },
         }
+        if list(checks) != EXPECTED_CHECKS:
+            raise RuntimeError("package evidence differs from the evaluated check contract")
         operations = {
             "anonymous_objects": len(self.objects),
             "imported_nars": len(self.closure),
