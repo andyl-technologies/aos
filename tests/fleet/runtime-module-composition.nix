@@ -60,22 +60,18 @@
       aos-ability-boundary-observer = {
         package = ${pkgs.aos-ability-boundary-observer};
         bundle = true;
-        preset = false;
       };
       nginx = {
         package = ${pkgs.nginx};
         bundle = true;
-        preset = false;
       };
       envoy = {
         package = ${pkgs.envoy};
         bundle = true;
-        preset = false;
       };
       k3s-worker = {
         package = ${pkgs.k3s-worker};
         bundle = true;
-        preset = false;
       };
     };
     aos.apm.desiredPackages = lib.mkBefore [ "envoy" "k3s-worker" ];
@@ -89,14 +85,11 @@
       pkgs.envoy
       pkgs.envoy.contract.document
       pkgs.findutils
-      pkgs.git
       pkgs.grep
       pkgs.k3s-worker
       pkgs.k3s-worker.contract.document
       pkgs.nginx
-      pkgs.nginx.config
       pkgs.nginx.contract.document
-      pkgs.nginx.expose
       pkgs.nix
       pkgs.util-linux
     ]
@@ -159,11 +152,6 @@ in {
         if qualificationImage
         then ''runtime.guest_tool("apm")''
         else builtins.toJSON "${pkgs.aos.apm}/bin/apm"
-      }
-      APR = ${
-        if qualificationImage
-        then ''runtime.guest_tool("apr")''
-        else builtins.toJSON "${pkgs.aos.apr}/bin/apr"
       }
       AOS = ${
         if qualificationImage
@@ -364,6 +352,36 @@ in {
                   "schema": "aos.ability-execution-boundary-ack/v1",
               }, resumed
           return resumed
+
+
+      def boundary_events(transaction, plan, selector):
+          events = [
+              (position, json.loads(line))
+              for position, line in enumerate(runtime.succeed(
+                  f"{COREUTILS}/cat {shlex.quote(EVENTS)}"
+              ).splitlines())
+              if line
+          ]
+          return [
+              {**event, "transcript-position": position}
+              for position, event in events
+              if event["transaction"] == transaction
+              and event["operation"]["plan"] == plan
+              and operation_matches_selector(
+                  event["operation"]["operation"], selector
+              )
+          ]
+
+
+      def boundary_timeline(events):
+          return [
+              {
+                  "transcript-position": event["transcript-position"],
+                  "purpose": event["purpose"],
+                  "boundary": event["boundary"],
+              }
+              for event in events
+          ]
 
 
       def release_reconciliation(sequence):
@@ -666,93 +684,9 @@ in {
       status = runtime.succeed(f"{APM} config status 2>&1")
       assert "active runtime modules: empty" in status, status
 
-      # Nginx is bundled in the immutable image but deliberately absent from
-      # the seeded package profile. Publish its package/expose pair into a
-      # local authenticated registry and select it through public APM before
-      # supplying any operator configuration module.
-      runtime.fail(
-          f"HOME=/tmp USER=root {APM} list --system --installed "
-          "2>&1 | grep -q '^nginx'"
-      )
-      runtime.succeed(textwrap.dedent(f"""
-          set -eu
-          export HOME=/tmp/runtime-publisher
-          export USER=root
-          export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
-          export GIT_AUTHOR_NAME=Test
-          export GIT_AUTHOR_EMAIL=test@test
-          export GIT_COMMITTER_NAME=Test
-          export GIT_COMMITTER_EMAIL=test@test
-          export NIX_REMOTE=""
-          export NIX_CONF_DIR=/tmp/runtime-nix-conf
-          mkdir -p "$NIX_CONF_DIR"
-          printf 'experimental-features = nix-command\\nsandbox = false\\n' \
-            > "$NIX_CONF_DIR/nix.conf"
-
-          {APR} keys generate release --registry runtime-reg \
-            > /tmp/runtime-keygen.out 2>&1
-          PUBKEY=$(awk '/Public key:/ {{print $NF; exit}}' /tmp/runtime-keygen.out)
-          KEY=$HOME/.config/apm/keys/runtime-reg-release.key
-          {APR} create runtime-reg \
-            --trust-key "$PUBKEY" \
-            --trust-key-id release \
-            --key "$KEY"
-          mkdir -p "$HOME/.config/apm/registries.d"
-          cat > "$HOME/.config/apm/registries.d/runtime-reg.toml" <<EOF
-          [registry]
-          name = "runtime-reg"
-          url = "file://$HOME/.local/share/apm/registries/runtime-reg"
-
-          [registry.signing_keys]
-          release = "$KEY"
-
-          [registry.signing]
-          root_owner_signers = ["release"]
-          EOF
-
-          {APR} publish '${pkgs.nginx}' \
-            --name nginx \
-            --version '${pkgs.nginx.version}' \
-            --description 'runtime module acceptance fixture' \
-            --license BSD-2-Clause \
-            --maintainer test \
-            --expose-manifest '${pkgs.nginx.expose}/manifest.json' \
-            --config-module '${pkgs.nginx.config}' \
-            --config-base-lib '${runtimeSystem.config.aos.config.evalAtBoot.baseLib}' \
-            --registry runtime-reg \
-            --key-id release
-
-          REG_DIR=$HOME/.local/share/apm/registries/runtime-reg
-          mkdir -p /var/lib/runtime-module-registry-cache
-          {APR} release '${pkgs.nginx.version}' \
-            --registry runtime-reg \
-            --key-id release \
-            --cache-url file:///var/lib/runtime-module-registry-cache \
-            --upload-url file:///var/lib/runtime-module-registry-cache
-
-          HOME=/tmp USER=root {APM} registry --system add \
-            "file://$REG_DIR" \
-            --name runtime-reg \
-            --version '=${pkgs.nginx.version}' \
-            --trust-key "$PUBKEY" \
-            --no-clone
-          printf 'root_owner_signers = ["release"]\\n' \
-            >> /var/lib/apm/config/registries.d/runtime-reg.toml
-          HOME=/tmp USER=root {APM} update \
-            --system --registry runtime-reg
-
-          cat > /run/runtime-module-desired.toml <<'EOF'
-          packages = ["nginx", "envoy", "k3s-worker"]
-          EOF
-          HOME=/tmp USER=root {APM} install --system \
-            --from /run/runtime-module-desired.toml --yes
-
-      """), timeout=1200)
-      installed = runtime.succeed(
-          f"HOME=/tmp USER=root {APM} list --system --installed 2>&1"
-      )
-      assert "nginx" in installed, installed
-
+      # The image selects each package's authenticated module output. The
+      # runtime module contributes only operator intent to that same fixed
+      # point; it does not republish or reconstruct package contracts.
       runtime.succeed("install -d -m 0700 /run/runtime-module-fixtures")
       packages_module = """{
         aos.apm.desiredPackages = [ "nginx" "envoy" "k3s-worker" ];
