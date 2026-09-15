@@ -5,7 +5,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail, ensure};
-use aos_image_finalizer::assembly::UNSIGNED_IMAGE_ASSEMBLY_V3;
+use aos_image_finalizer::assembly::UNSIGNED_IMAGE_ASSEMBLY_V2;
 use aos_image_finalizer::capture::capture_unsigned_assembly;
 use aos_image_finalizer::finalize::verify_static_ability_contract_attachments;
 use aos_image_finalizer::initrd_contract::InitrdStageContractV1;
@@ -61,7 +61,7 @@ pub(super) fn verify(arguments: &[String]) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error when the assembly is malformed, an input changes during
-/// capture, the image is not schema v3, the embedded initrd contract and exact
+/// capture, the image is not schema v2, the embedded initrd contract and exact
 /// archive bytes disagree, or either stage-specific ability contract is absent.
 pub(super) fn verify_assembly(arguments: &[String]) -> Result<()> {
     if arguments.len() != 2 {
@@ -71,8 +71,8 @@ pub(super) fn verify_assembly(arguments: &[String]) -> Result<()> {
         Ok(format!("sha256:{}", "a".repeat(64)))
     })?;
     ensure!(
-        assembly.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V3 && assembly.initrd_contract.is_some(),
-        "producer assembly lacks its version-3 initrd and ability contracts"
+        assembly.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V2 && assembly.initrd_contract.is_some(),
+        "producer assembly lacks its version-2 initrd and ability contracts"
     );
     Ok(())
 }
@@ -93,8 +93,8 @@ pub(super) fn verify_assembly_attachments(arguments: &[String]) -> Result<()> {
         Ok(format!("sha256:{}", "a".repeat(64)))
     })?;
     ensure!(
-        assembly.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V3,
-        "producer assembly lacks version-3 ability contracts"
+        assembly.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V2,
+        "producer assembly lacks version-2 ability contracts"
     );
     let captured_inputs = tempfile::tempdir()?;
     verify_static_ability_contract_attachments(

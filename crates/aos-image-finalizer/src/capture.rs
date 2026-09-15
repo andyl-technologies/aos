@@ -21,13 +21,11 @@ use sha2::{Digest as _, Sha256};
 
 use crate::assembly::{
     AssemblyFileKind, AssemblyFileV1, AssemblyToolV1, ImageBudgetsV1, ImageCommandLinesV1,
-    ImageLayoutV1, ImageSignerRolesV1, UNSIGNED_IMAGE_ASSEMBLY_V2, UNSIGNED_IMAGE_ASSEMBLY_V3,
-    UnsignedImageAssemblyV1,
+    ImageLayoutV1, ImageSignerRolesV1, UNSIGNED_IMAGE_ASSEMBLY_V2, UnsignedImageAssemblyV1,
 };
 use crate::initrd_contract::{ArtifactExecutionStage, InitrdStageContractV1};
 
 const RECIPE_SCHEMA_V2: &str = "aos.image.assembly-recipe/v2";
-const RECIPE_SCHEMA_V3: &str = "aos.image.assembly-recipe/v3";
 const MAX_RECIPE_BYTES: u64 = 1024 * 1024;
 const MAX_STATIC_ABILITY_CONTRACT_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -92,13 +90,9 @@ pub fn capture_unsigned_assembly(
     let recipe_bytes = capture_control_file(&recipe_path, "image assembly recipe")?;
     canonical::require_canonical(&recipe_bytes, "image assembly recipe")?;
     let recipe: AssemblyRecipeV1 = canonical::from_slice(&recipe_bytes, "image assembly recipe")?;
-    if !matches!(
-        recipe.schema_version.as_str(),
-        RECIPE_SCHEMA_V2 | RECIPE_SCHEMA_V3
-    ) {
+    if recipe.schema_version != RECIPE_SCHEMA_V2 {
         bail!("unsupported image assembly recipe schema");
     }
-    let has_final_contracts = recipe.schema_version == RECIPE_SCHEMA_V3;
     if [
         recipe.command_lines.slot_a.as_str(),
         recipe.command_lines.slot_b.as_str(),
@@ -202,41 +196,34 @@ pub fn capture_unsigned_assembly(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let initrd_contract = if has_final_contracts {
-        let relative = "inputs/initrd-stage-contract.json";
-        let contract_bytes = capture_control_file(&root.join(relative), "initrd stage contract")?;
-        canonical::require_canonical(&contract_bytes, "initrd stage contract")?;
-        let contract: InitrdStageContractV1 =
-            canonical::from_slice(&contract_bytes, "initrd stage contract")?;
-        files.push(AssemblyFileV1 {
-            id: "initrd-contract".to_owned(),
-            kind: AssemblyFileKind::InitrdContract,
-            path: BundlePath::parse(relative)?,
-            size_bytes: u64::try_from(contract_bytes.len())?,
-            sha256: Sha256Digest::of_bytes(&contract_bytes),
-        });
-        Some(contract)
-    } else {
-        None
-    };
-    if has_final_contracts {
-        files.push(capture_static_ability_contract(
-            root,
-            "initrd-ability-contract",
-            AssemblyFileKind::InitrdStaticAbilityContract,
-            "inputs/initrd-static-ability-contract.json",
-            recipe.platform,
-            ArtifactExecutionStage::Initrd,
-        )?);
-        files.push(capture_static_ability_contract(
-            root,
-            "host-ability-contract",
-            AssemblyFileKind::HostStaticAbilityContract,
-            "inputs/host-static-ability-contract.json",
-            recipe.platform,
-            ArtifactExecutionStage::Host,
-        )?);
-    }
+    let relative = "inputs/initrd-stage-contract.json";
+    let contract_bytes = capture_control_file(&root.join(relative), "initrd stage contract")?;
+    canonical::require_canonical(&contract_bytes, "initrd stage contract")?;
+    let initrd_contract: InitrdStageContractV1 =
+        canonical::from_slice(&contract_bytes, "initrd stage contract")?;
+    files.push(AssemblyFileV1 {
+        id: "initrd-contract".to_owned(),
+        kind: AssemblyFileKind::InitrdContract,
+        path: BundlePath::parse(relative)?,
+        size_bytes: u64::try_from(contract_bytes.len())?,
+        sha256: Sha256Digest::of_bytes(&contract_bytes),
+    });
+    files.push(capture_static_ability_contract(
+        root,
+        "initrd-ability-contract",
+        AssemblyFileKind::InitrdStaticAbilityContract,
+        "inputs/initrd-static-ability-contract.json",
+        recipe.platform,
+        ArtifactExecutionStage::Initrd,
+    )?);
+    files.push(capture_static_ability_contract(
+        root,
+        "host-ability-contract",
+        AssemblyFileKind::HostStaticAbilityContract,
+        "inputs/host-static-ability-contract.json",
+        recipe.platform,
+        ArtifactExecutionStage::Host,
+    )?);
     files.sort_by(|left, right| left.id.cmp(&right.id));
 
     let tools = recipe
@@ -254,11 +241,7 @@ pub fn capture_unsigned_assembly(
         })
         .collect::<Result<Vec<_>>>()?;
     let assembly = UnsignedImageAssemblyV1 {
-        schema_version: if has_final_contracts {
-            UNSIGNED_IMAGE_ASSEMBLY_V3.to_owned()
-        } else {
-            UNSIGNED_IMAGE_ASSEMBLY_V2.to_owned()
-        },
+        schema_version: UNSIGNED_IMAGE_ASSEMBLY_V2.to_owned(),
         release_id: release_id.to_owned(),
         version: recipe.release,
         platform: recipe.platform,
@@ -280,7 +263,7 @@ pub fn capture_unsigned_assembly(
         },
         layout: recipe.layout,
         budgets: recipe.budgets,
-        initrd_contract,
+        initrd_contract: Some(initrd_contract),
         files,
         tools,
     };
@@ -467,11 +450,9 @@ mod tests {
             temporary.path().join("assembly-recipe.json"),
             canonical::to_vec(&recipe)?,
         )?;
-        if schema_version == RECIPE_SCHEMA_V3 {
-            write_initrd_contract(&temporary, "initrd")?;
-            write_static_ability_contract(&temporary, "initrd")?;
-            write_static_ability_contract(&temporary, "host")?;
-        }
+        write_initrd_contract(&temporary, "initrd")?;
+        write_static_ability_contract(&temporary, "initrd")?;
+        write_static_ability_contract(&temporary, "host")?;
         Ok(temporary)
     }
 
@@ -563,18 +544,19 @@ mod tests {
         let assembly = capture_unsigned_assembly(temporary.path(), "release-2026.9.0", |_| {
             Ok(format!("sha256:{}", "a".repeat(64)))
         })?;
-        assert_eq!(assembly.files.len(), 17);
+        assert_eq!(assembly.files.len(), 20);
+        assert!(assembly.initrd_contract.is_some());
         assert_eq!(assembly.tools.len(), 1);
         Ok(())
     }
 
     #[test]
     fn captures_initrd_contract_and_exact_archive_binding() -> Result<()> {
-        let temporary = fixture(RECIPE_SCHEMA_V3)?;
+        let temporary = fixture(RECIPE_SCHEMA_V2)?;
         let assembly = capture_unsigned_assembly(temporary.path(), "release-2026.9.0", |_| {
             Ok(format!("sha256:{}", "a".repeat(64)))
         })?;
-        assert_eq!(assembly.schema_version, UNSIGNED_IMAGE_ASSEMBLY_V3);
+        assert_eq!(assembly.schema_version, UNSIGNED_IMAGE_ASSEMBLY_V2);
         assert_eq!(assembly.files.len(), 20);
         assert!(assembly.initrd_contract.is_some());
 
@@ -594,11 +576,11 @@ mod tests {
 
     #[test]
     fn captures_stage_specific_static_ability_contracts() -> Result<()> {
-        let temporary = fixture(RECIPE_SCHEMA_V3)?;
+        let temporary = fixture(RECIPE_SCHEMA_V2)?;
         let assembly = capture_unsigned_assembly(temporary.path(), "release-2026.9.0", |_| {
             Ok(format!("sha256:{}", "a".repeat(64)))
         })?;
-        assert_eq!(assembly.schema_version, UNSIGNED_IMAGE_ASSEMBLY_V3);
+        assert_eq!(assembly.schema_version, UNSIGNED_IMAGE_ASSEMBLY_V2);
         assert_eq!(assembly.files.len(), 20);
 
         write_static_ability_contract(&temporary, "host")?;
@@ -621,7 +603,7 @@ mod tests {
 
     #[test]
     fn final_recipe_requires_both_static_ability_contracts() -> Result<()> {
-        let temporary = fixture(RECIPE_SCHEMA_V3)?;
+        let temporary = fixture(RECIPE_SCHEMA_V2)?;
         fs::remove_file(
             temporary
                 .path()
@@ -637,7 +619,7 @@ mod tests {
 
     #[test]
     fn rejects_untyped_static_ability_records() -> Result<()> {
-        let temporary = fixture(RECIPE_SCHEMA_V3)?;
+        let temporary = fixture(RECIPE_SCHEMA_V2)?;
         let path = temporary
             .path()
             .join("inputs/host-static-ability-contract.json");
@@ -656,7 +638,7 @@ mod tests {
 
     #[test]
     fn rejects_a_host_stage_initrd_dependency() -> Result<()> {
-        let temporary = fixture(RECIPE_SCHEMA_V3)?;
+        let temporary = fixture(RECIPE_SCHEMA_V2)?;
         write_initrd_contract(&temporary, "host")?;
 
         assert!(
@@ -671,7 +653,7 @@ mod tests {
 
     #[test]
     fn rejects_a_required_but_masked_handoff_unit() -> Result<()> {
-        let temporary = fixture(RECIPE_SCHEMA_V3)?;
+        let temporary = fixture(RECIPE_SCHEMA_V2)?;
         let path = temporary.path().join("inputs/initrd-stage-contract.json");
         let mut contract: serde_json::Value =
             canonical::from_slice(&fs::read(&path)?, "initrd stage contract fixture")?;
@@ -690,7 +672,7 @@ mod tests {
 
     #[test]
     fn rejects_a_contract_without_a_mandatory_producer_root() -> Result<()> {
-        let temporary = fixture(RECIPE_SCHEMA_V3)?;
+        let temporary = fixture(RECIPE_SCHEMA_V2)?;
         let path = temporary.path().join("inputs/initrd-stage-contract.json");
         let mut contract: serde_json::Value =
             canonical::from_slice(&fs::read(&path)?, "initrd stage contract fixture")?;
