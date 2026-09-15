@@ -236,7 +236,6 @@ in
             --arg baseLib ${lib.escapeShellArg (toString baseLib)} '
             .schema == "aos.config-manifest/v1"
             and (.etc | type == "object")
-            and (.units | type == "object")
             and (.jobScripts | type == "object")
             and (.inputs | type == "object")
             and .inputs.base_lib.store_path == $baseLib

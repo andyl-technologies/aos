@@ -48,7 +48,7 @@ are *specified here* so the tests are written before the code:
 
 - **On-host eval → manifest** (`fleet`): agent receives literal-Nix user-data →
   evaluates → emits manifest; **eval twice ⇒ byte-identical** (determinism gate);
-  manifest has the expected `etc`/`units`/`jobScripts`/`inputs` shape.
+  manifest has the expected `etc`/`jobScripts`/`inputs` shape.
 - **Resolve↔eval fixpoint** (`checks.eval` + `fleet`): a host.nix enabling a
   package resolves and authenticates its `PackageDocument.package_module`
   artifact, re-evaluates, and converges; a missing provider fails legibly; a

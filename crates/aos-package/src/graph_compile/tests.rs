@@ -112,10 +112,10 @@ fn strict_manifest(names: &[&str], graph: &ConfigGraph) -> ConfigManifest {
         "../../tests/fixtures/config_manifest/manifest.json"
     ))
     .unwrap();
-    for field in ["etc", "units", "jobScripts", "config", "credentials"] {
+    for field in ["etc", "jobScripts", "config", "credentials"] {
         value[field] = json!({});
     }
-    for field in ["users", "presets", "storePaths"] {
+    for field in ["users", "storePaths"] {
         value[field] = json!([]);
     }
     let mut packages = names.to_vec();
@@ -155,8 +155,7 @@ fn strict_manifest(names: &[&str], graph: &ConfigGraph) -> ConfigManifest {
     value["packageOutputs"] = serde_json::Value::Object(outputs);
     value["graph"] = serde_json::to_value(graph).unwrap();
     value["ownership"] = json!({
-        "etc": {}, "units": {}, "jobScripts": {}, "users": {},
-        "presets": {}, "storePaths": store_owners
+        "etc": {}, "jobScripts": {}, "users": {}, "storePaths": store_owners
     });
     let manifest: ConfigManifest = serde_json::from_value(value).unwrap();
     manifest.validate().unwrap();
@@ -655,10 +654,6 @@ fn reproject_filters_every_package_owned_aggregate() {
             "base.conf": {"kind": "text", "text": "base", "mode": "0644"},
             "web.conf": {"kind": "text", "text": "web", "mode": "0644"}
         },
-        "units": {
-            "base.service": {"action": "restart"},
-            "web.service": {"action": "restart"}
-        },
         "jobScripts": {
             "base": {"text": "base", "mode": "0755"},
             "web": {"text": "web", "mode": "0755"}
@@ -667,17 +662,11 @@ fn reproject_filters_every_package_owned_aggregate() {
             {"name": "root"},
             {"name": "web"}
         ],
-        "presets": [
-            {"unit": "base.service", "source": "image"},
-            {"unit": "web.service", "source": "package"}
-        ],
         "storePaths": [base_store, web_store],
         "ownership": {
             "etc": {"base.conf": "@base", "web.conf": "web"},
-            "units": {"base.service": "@base", "web.service": "web"},
             "jobScripts": {"base": "@base", "web": "web"},
             "users": {"root": "@base", "web": "web"},
-            "presets": {"base.service:image": "@base", "web.service:package": "web"},
             "storePaths": {(base_store): "@base", (web_store): "web"}
         }
     });
@@ -693,13 +682,8 @@ fn reproject_filters_every_package_owned_aggregate() {
     assert_eq!(r.manifest["packages"], json!(["firewall"]));
     assert!(r.manifest["etc"].get("base.conf").is_some());
     assert!(r.manifest["etc"].get("web.conf").is_none());
-    assert!(r.manifest["units"].get("web.service").is_none());
     assert!(r.manifest["jobScripts"].get("web").is_none());
     assert_eq!(r.manifest["users"], json!([{"name": "root"}]));
-    assert_eq!(
-        r.manifest["presets"],
-        json!([{"unit": "base.service", "source": "image"}])
-    );
     assert_eq!(r.manifest["storePaths"], json!([base_store]));
     assert!(r.manifest["ownership"]["etc"].get("web.conf").is_none());
 }
@@ -710,8 +694,7 @@ fn degraded_projection_rejects_unowned_aggregate_artifacts() {
         "packages": ["firewall", "web"],
         "etc": {"web.conf": {"kind": "text", "text": "web", "mode": "0644"}},
         "ownership": {
-            "etc": {}, "units": {}, "jobScripts": {}, "users": {},
-            "presets": {}, "storePaths": {}
+            "etc": {}, "jobScripts": {}, "users": {}, "storePaths": {}
         }
     });
     let error = reproject_manifest(
@@ -779,8 +762,7 @@ fn staged_render_bytes_and_credential_handles_enter_generation_manifest() {
             "mode": "0644",
             "sha256": sha256
         }],
-        "credentials": manifest.credentials["web"],
-        "units": {}
+        "credentials": manifest.credentials["web"]
     });
     crate::config_eval::materialize::write_bytes_beneath(
         &directory,
@@ -837,8 +819,7 @@ fn package_without_config_accepts_canonical_empty_credential_stage() {
         "package_pin": transaction.packages["acl"],
         "package": "acl",
         "artifacts": [],
-        "credentials": {},
-        "units": {}
+        "credentials": {}
     });
     crate::config_eval::materialize::write_bytes_beneath(
         &directory,

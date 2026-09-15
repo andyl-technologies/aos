@@ -106,10 +106,8 @@
     firewallWant = "systemd/system/multi-user.target.wants/${firewallUnit}";
     emptyOwnership = {
       etc = {};
-      units = {};
       jobScripts = {};
       users = {};
-      presets = {};
       storePaths = {};
     };
     baseline = {
@@ -129,23 +127,17 @@
           target = "../${firewallUnit}";
         };
       };
-      units = {
-        ${hostnameUnit} = {action = "restart";};
-        ${firewallUnit} = {action = "restart";};
-      };
       jobScripts.${hostnameScript} = {
         text = "hostname aos";
         mode = "0755";
         name = "hostname";
       };
       users = [];
-      presets = [];
       storePaths = [];
       ownership =
         emptyOwnership
         // {
           etc = builtins.mapAttrs (_: _: "@base") baseline.etc;
-          units = builtins.mapAttrs (_: _: "@base") baseline.units;
           jobScripts.${hostnameScript} = "@base";
         };
     };
@@ -161,17 +153,11 @@
               mode = "0644";
             };
           };
-        units =
-          baseline.units
-          // {
-            ${hostnameUnit} = {action = "image";};
-          };
       };
     candidate =
       baseline
       // {
         etc = builtins.removeAttrs baseline.etc [firewallPath firewallWant];
-        units = builtins.removeAttrs baseline.units [firewallUnit];
         jobScripts.${hostnameScript} = {
           text = "hostname node-1";
           mode = "0755";
@@ -181,40 +167,31 @@
           baseline.ownership
           // {
             etc = builtins.removeAttrs baseline.ownership.etc [firewallPath firewallWant];
-            units = builtins.removeAttrs baseline.ownership.units [firewallUnit];
           };
       };
     merged = mergeImageManifest {inherit imageManifest baseline candidate;};
   in
     if merged.etc.${hostnamePath}.text != "candidate unit"
     then throw "a changed generated job script must select its candidate unit body"
-    else if merged.units.${hostnameUnit}.action != "restart"
-    then throw "a changed generated job script must select its candidate unit action"
     else if merged.ownership.etc.${hostnamePath} != "@host"
     then throw "a changed generated job script must make its candidate unit host-owned"
-    else if merged.ownership.units.${hostnameUnit} != "@host"
-    then throw "a changed generated job script must make its unit action host-owned"
     else if merged.removedEtc != [firewallWant firewallPath]
     then throw "explicitly removed image artifacts must become deterministic overlay removals"
-    else if builtins.hasAttr firewallPath merged.etc || builtins.hasAttr firewallUnit merged.units
-    then throw "explicitly removed image units must not survive manifest merging"
+    else if builtins.hasAttr firewallPath merged.etc
+    then throw "explicitly removed image artifacts must not survive manifest merging"
     else "ok";
 
   activationStructuralReplacement = let
     ownershipFor = etc: {
       etc = builtins.mapAttrs (_: _: "@base") etc;
-      units = {};
       jobScripts = {};
       users = {};
-      presets = {};
       storePaths = {};
     };
     manifestWithEtc = etc: {
       inherit etc;
-      units = {};
       jobScripts = {};
       users = [];
-      presets = [];
       storePaths = [];
       ownership = ownershipFor etc;
     };

@@ -7,13 +7,6 @@
       "mode": "0644"
     }
   },
-  "units": {
-    "example.service": {
-      "action": "restart",
-      "credentials": ["join-token"],
-      "enable": true
-    }
-  },
   "jobScripts": {
     "example.service:ExecStart.0": {
       "text": "#!/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-bash/bin/bash\nexec example\n",
@@ -32,13 +25,6 @@
       "system": true,
       "description": "Example service",
       "supplementaryGroups": []
-    }
-  ],
-  "presets": [
-    {
-      "unit": "example.service",
-      "policy": "enable",
-      "source": "example"
     }
   ],
   "storePaths": [
@@ -115,17 +101,11 @@
     "etc": {
       "example.conf": "example"
     },
-    "units": {
-      "example.service": "example"
-    },
     "jobScripts": {
       "example.service:ExecStart.0": "example"
     },
     "users": {
       "example": "example"
-    },
-    "presets": {
-      "example.service:example": "example"
     },
     "storePaths": {
       "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example": "example",

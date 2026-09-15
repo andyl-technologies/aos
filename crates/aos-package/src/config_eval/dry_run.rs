@@ -15,9 +15,9 @@
 //!     ~ aos/packages/web/config.env   (changed)
 //!     + nftables/forward.conf         (new; provider: firewall)
 //!     - aos/packages/legacy/config.toml (package 'legacy' removed)
-//!   systemd units
-//!     ~ web.service        reload
-//!     + tracing.service    start
+//!   ability resources
+//!     ~ web-runtime
+//!     + tracing-runtime
 //!   packages to fetch (closure delta)
 //!     + /nix/store/...-otel-collector-0.9
 //! ```
@@ -42,13 +42,11 @@ pub struct EtcChange {
     pub kind: ChangeKind,
 }
 
-/// A single unit action in the diff.
+/// A single checked ability-resource change in the diff.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnitChange {
-    /// The unit name.
-    pub unit: String,
-    /// The reconcile action (`restart`, `reload`, `none`, `start`, or `stop`).
-    pub action: String,
+pub struct ResourceChange {
+    /// The exact key in the retained fixed-point resource map.
+    pub resource: String,
     /// Whether the unit was added, removed, or changed.
     pub kind: ChangeKind,
 }
@@ -80,8 +78,8 @@ impl ChangeKind {
 pub struct ManifestDiff {
     /// `/etc` entry changes, sorted by path.
     pub etc: Vec<EtcChange>,
-    /// Per-unit reconcile actions, sorted by unit.
-    pub units: Vec<UnitChange>,
+    /// Checked ability-resource changes, sorted by fixed-point key.
+    pub resources: Vec<ResourceChange>,
     /// Store paths the candidate pins that the base did not (closure delta).
     pub fetch_plan: Vec<String>,
 }
@@ -89,7 +87,7 @@ pub struct ManifestDiff {
 impl ManifestDiff {
     /// Whether the diff is empty (the candidate is structurally identical).
     pub fn is_empty(&self) -> bool {
-        self.etc.is_empty() && self.units.is_empty() && self.fetch_plan.is_empty()
+        self.etc.is_empty() && self.resources.is_empty() && self.fetch_plan.is_empty()
     }
 
     /// Render the human-readable diff (operability.md format).
@@ -103,16 +101,15 @@ impl ManifestDiff {
                 out.push_str(&format!("    {} {}\n", change.kind.sigil(), change.path));
             }
         }
-        out.push_str("\n  systemd units\n");
-        if self.units.is_empty() {
+        out.push_str("\n  ability resources\n");
+        if self.resources.is_empty() {
             out.push_str("    (no changes)\n");
         } else {
-            for change in &self.units {
+            for change in &self.resources {
                 out.push_str(&format!(
-                    "    {} {:<24} {}\n",
+                    "    {} {}\n",
                     change.kind.sigil(),
-                    change.unit,
-                    change.action
+                    change.resource
                 ));
             }
         }
@@ -125,15 +122,15 @@ impl ManifestDiff {
             }
         }
         out.push_str(&format!(
-            "\n{} etc change(s), {} unit action(s), {} path(s) to fetch.\n",
+            "\n{} etc change(s), {} resource change(s), {} path(s) to fetch.\n",
             self.etc.len(),
-            self.units.len(),
+            self.resources.len(),
             self.fetch_plan.len()
         ));
         out
     }
 
-    /// Render the `--json` envelope (operability.md `etc_diff`, `unit_actions`,
+    /// Render the `--json` envelope (`etc_diff`, `resource_changes`,
     /// `fetch_plan`, `resolution_trace`). `resolution_trace` is supplied by the
     /// caller (it comes from the fixpoint outcome, not the diff).
     pub fn to_json(&self, resolution_trace: &[String]) -> Value {
@@ -146,10 +143,9 @@ impl ManifestDiff {
                     ChangeKind::Changed => "changed",
                 },
             })).collect::<Vec<_>>(),
-            "unit_actions": self.units.iter().map(|u| json!({
-                "unit": u.unit,
-                "action": u.action,
-                "kind": match u.kind {
+            "resource_changes": self.resources.iter().map(|resource| json!({
+                "resource": resource.resource,
+                "kind": match resource.kind {
                     ChangeKind::Added => "added",
                     ChangeKind::Removed => "removed",
                     ChangeKind::Changed => "changed",
@@ -164,16 +160,14 @@ impl ManifestDiff {
 /// Compute the structural diff between a base and a candidate manifest
 /// (operability.md §Dry-run). Pure over the two `Value`s.
 ///
-/// `etc` is keyed by `/etc`-relative path; a value difference (including a
-/// `kind`/`text`/`target`/`mode` change) is [`ChangeKind::Changed`]. `units`
-/// reports each candidate unit's reconcile action when either its unit data or
-/// one of its generated job scripts changes, marking units absent from the base
-/// as new (`start`). `fetch_plan` is the candidate `storePaths` set minus the
-/// base's — the closure delta the switch would have to materialize.
+/// `etc` is keyed by `/etc`-relative path; a value difference is
+/// [`ChangeKind::Changed`]. `resources` compares the exact resolved-resource
+/// map retained by the checked native fixed point. `fetch_plan` is the
+/// candidate `storePaths` set minus the base's closure.
 pub fn diff_manifests(base: &Value, candidate: &Value) -> ManifestDiff {
     ManifestDiff {
         etc: diff_etc(base, candidate),
-        units: diff_units(base, candidate),
+        resources: diff_resources(base, candidate),
         fetch_plan: fetch_delta(base, candidate),
     }
 }
@@ -208,67 +202,49 @@ fn diff_etc(base: &Value, candidate: &Value) -> Vec<EtcChange> {
     changes
 }
 
-/// Diff the `units` maps of two manifests, including removed units that the
-/// pre-swap reconciler stops while their old definitions are still loaded.
-fn diff_units(base: &Value, candidate: &Value) -> Vec<UnitChange> {
-    let base_units = object_or_empty(base.get("units"));
-    let cand_units = object_or_empty(candidate.get("units"));
-    let base_job_scripts = object_or_empty(base.get("jobScripts"));
-    let cand_job_scripts = object_or_empty(candidate.get("jobScripts"));
+/// Diffs the exact checked resource maps retained by native activation.
+fn diff_resources(base: &Value, candidate: &Value) -> Vec<ResourceChange> {
+    let base_resources = resolved_resources(base);
+    let candidate_resources = resolved_resources(candidate);
     let mut changes = Vec::new();
-    for (unit, cand_val) in &cand_units {
-        let base_val = base_units.get(unit);
-        // The rendered unit keeps a stable generation-local script path, so a
-        // script-body change must still expose the unit's reconcile action.
-        let added = base_val.is_none();
-        let changed = base_val.map(|b| *b != *cand_val).unwrap_or(true)
-            || unit_job_scripts(&base_job_scripts, unit)
-                != unit_job_scripts(&cand_job_scripts, unit);
-        if !changed {
-            continue;
+    for (resource, candidate_value) in &candidate_resources {
+        match base_resources.get(resource) {
+            None => changes.push(ResourceChange {
+                resource: resource.clone(),
+                kind: ChangeKind::Added,
+            }),
+            Some(base_value) if *base_value != *candidate_value => {
+                changes.push(ResourceChange {
+                    resource: resource.clone(),
+                    kind: ChangeKind::Changed,
+                });
+            }
+            Some(_) => {}
         }
-        let action = if added {
-            "start".to_string()
-        } else {
-            cand_val
-                .get("action")
-                .and_then(Value::as_str)
-                .unwrap_or("restart")
-                .to_string()
-        };
-        changes.push(UnitChange {
-            unit: unit.clone(),
-            action,
-            kind: if added {
-                ChangeKind::Added
-            } else {
-                ChangeKind::Changed
-            },
-        });
     }
-    for unit in base_units.keys() {
-        if !cand_units.contains_key(unit) {
-            changes.push(UnitChange {
-                unit: unit.clone(),
-                action: "stop".to_string(),
+    for resource in base_resources.keys() {
+        if !candidate_resources.contains_key(resource) {
+            changes.push(ResourceChange {
+                resource: resource.clone(),
                 kind: ChangeKind::Removed,
             });
         }
     }
-    changes.sort_by(|a, b| a.unit.cmp(&b.unit));
+    changes.sort_by(|left, right| left.resource.cmp(&right.resource));
     changes
 }
 
-/// Returns the generated scripts belonging to one unit, keyed by slot.
-fn unit_job_scripts<'map, 'value>(
-    scripts: &'map BTreeMap<String, &'value Value>,
-    unit: &str,
-) -> BTreeMap<&'map str, &'value Value> {
-    let prefix = format!("{unit}:");
-    scripts
-        .iter()
-        .filter_map(|(key, value)| key.strip_prefix(&prefix).map(|slot| (slot, *value)))
-        .collect()
+fn resolved_resources(manifest: &Value) -> BTreeMap<String, &Value> {
+    manifest
+        .pointer("/inputs/ability_activation/fixed_point/resolvedResources")
+        .and_then(Value::as_object)
+        .map(|resources| {
+            resources
+                .iter()
+                .map(|(key, value)| (key.clone(), value))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The candidate `storePaths` set minus the base's (the closure delta).
@@ -460,11 +436,15 @@ mod tests {
                 "aos/packages/web/config.env": {"kind": "text", "text": "PORT=8080\n", "mode": "0644"},
                 "aos/packages/legacy/config.toml": {"kind": "text", "text": "x=1\n", "mode": "0644"},
             },
-            "units": {
-                "web.service": {"action": "reload"},
-            },
-            "jobScripts": {
-                "web.service:ExecStart.0": {"text": "serve 8080\n", "mode": "0755"},
+            "inputs": {
+                "ability_activation": {
+                    "fixed_point": {
+                        "resolvedResources": {
+                            "retired-runtime": {"revision": "sha256:retired"},
+                            "web-runtime": {"revision": "sha256:one"}
+                        }
+                    }
+                }
             },
             "storePaths": [
                 "/nix/store/aaa-web-1.0",
@@ -480,13 +460,15 @@ mod tests {
                 "aos/packages/web/config.env": {"kind": "text", "text": "PORT=9090\n", "mode": "0644"},
                 "nftables/forward.conf": {"kind": "text", "text": "policy accept\n", "mode": "0644"},
             },
-            "units": {
-                "web.service": {"action": "reload"},
-                "firewall.service": {"action": "restart"},
-                "tracing.service": {"action": "restart"},
-            },
-            "jobScripts": {
-                "web.service:ExecStart.0": {"text": "serve 9090\n", "mode": "0755"},
+            "inputs": {
+                "ability_activation": {
+                    "fixed_point": {
+                        "resolvedResources": {
+                            "tracing-runtime": {"revision": "sha256:tracing"},
+                            "web-runtime": {"revision": "sha256:two"}
+                        }
+                    }
+                }
             },
             "storePaths": [
                 "/nix/store/aaa-web-1.0",
@@ -510,31 +492,17 @@ mod tests {
     }
 
     #[test]
-    fn unit_actions_mark_new_and_changed() {
+    fn resource_changes_cover_add_remove_and_revision_change() {
         let diff = diff_manifests(&base(), &candidate());
-        let by_unit: BTreeMap<&str, &UnitChange> =
-            diff.units.iter().map(|u| (u.unit.as_str(), u)).collect();
-        // The unit data is unchanged, but its generated script changed.
-        assert_eq!(by_unit["web.service"].kind, ChangeKind::Changed);
-        assert_eq!(by_unit["web.service"].action, "reload");
-        // firewall and tracing are new -> "start".
-        assert_eq!(by_unit["firewall.service"].kind, ChangeKind::Added);
-        assert_eq!(by_unit["firewall.service"].action, "start");
-        assert_eq!(by_unit["tracing.service"].kind, ChangeKind::Added);
-        // A base-only unit is an observable pre-swap stop action.
-        let mut without_web = candidate();
-        without_web["units"]
-            .as_object_mut()
-            .unwrap()
-            .remove("web.service");
-        let removed = diff_manifests(&base(), &without_web);
-        let web = removed
-            .units
+        let by_resource: BTreeMap<&str, ChangeKind> = diff
+            .resources
             .iter()
-            .find(|change| change.unit == "web.service")
-            .unwrap();
-        assert_eq!(web.kind, ChangeKind::Removed);
-        assert_eq!(web.action, "stop");
+            .map(|change| (change.resource.as_str(), change.kind))
+            .collect();
+
+        assert_eq!(by_resource["web-runtime"], ChangeKind::Changed);
+        assert_eq!(by_resource["tracing-runtime"], ChangeKind::Added);
+        assert_eq!(by_resource["retired-runtime"], ChangeKind::Removed);
     }
 
     #[test]
@@ -559,7 +527,7 @@ mod tests {
         let trace = vec!["firewall.forwardPolicy = accept (web -> firewall)".to_string()];
         let v = diff.to_json(&trace);
         assert!(v.get("etc_diff").is_some());
-        assert!(v.get("unit_actions").is_some());
+        assert!(v.get("resource_changes").is_some());
         assert!(v.get("fetch_plan").is_some());
         assert_eq!(v["resolution_trace"][0], trace[0]);
     }

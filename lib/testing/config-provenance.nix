@@ -180,9 +180,6 @@ in
   assert !packageSessionContribution.success;
   assert manifest.ownership.etc."provenance-demo.conf" == "provenance-demo";
   assert manifest.ownership.etc."systemd/system/provenance-demo.service" == "provenance-demo";
-  assert manifest.ownership.units."provenance-demo.service" == "provenance-demo";
-  assert manifest.units."provenance-demo.service".action == "restart";
-  assert manifest.units."provenance-demo.service".enable;
   assert builtins.length jobKeys == 1;
   assert manifest.ownership.jobScripts.${builtins.head jobKeys} == "provenance-demo";
   assert !ancestorEtcCollision.success;

@@ -224,42 +224,6 @@ pub fn merge_staged_projection(
             owners.insert(artifact.path, Value::String(package.clone()));
         }
 
-        for (unit, action) in stage.units {
-            let entry = serde_json::json!({
-                "action": action,
-                "credentials": [],
-                "enable": false,
-            });
-            {
-                let units = object
-                    .get_mut("units")
-                    .and_then(Value::as_object_mut)
-                    .context("re-projected manifest has no units object")?;
-                if let Some(existing) = units.get(&unit)
-                    && existing != &entry
-                {
-                    bail!(
-                        "config reconcile action for unit {unit:?} conflicts with evaluated content"
-                    );
-                }
-                units.insert(unit.clone(), entry);
-            }
-            {
-                let unit_owners = object
-                    .get_mut("ownership")
-                    .and_then(Value::as_object_mut)
-                    .and_then(|ownership| ownership.get_mut("units"))
-                    .and_then(Value::as_object_mut)
-                    .context("re-projected manifest has no ownership.units object")?;
-                if let Some(owner) = unit_owners.get(&unit).and_then(Value::as_str)
-                    && owner != package
-                {
-                    bail!("config reconcile unit {unit:?} is owned by {owner:?}, not {package:?}");
-                }
-                unit_owners.insert(unit, Value::String(package.clone()));
-            }
-        }
-
         let credentials = object
             .get_mut("credentials")
             .and_then(Value::as_object_mut)
@@ -462,7 +426,7 @@ pub fn manifest_packages(manifest: &Value) -> BTreeSet<String> {
 ///
 /// Filters `packages` (array), the package-keyed `config` and `credentials`
 /// maps, and a `graph.edges` projection (both endpoints must be kept). Every
-/// other field is passed through verbatim, since fields like `etc`/`units`/
+/// other field is passed through verbatim, since fields like `etc` and
 /// `storePaths` are not package-keyed and cannot be projected by package alone
 /// (build-spec §5.3).
 fn project_manifest(full: &Value, kept: &BTreeSet<String>) -> Result<Value> {
@@ -521,7 +485,6 @@ fn project_manifest(full: &Value, kept: &BTreeSet<String>) -> Result<Value> {
             .unwrap_or_default()
     };
     let etc = retained("etc", map_keys("etc"))?;
-    let units = retained("units", map_keys("units"))?;
     let job_scripts = retained("jobScripts", map_keys("jobScripts"))?;
     let users = retained(
         "users",
@@ -531,21 +494,6 @@ fn project_manifest(full: &Value, kept: &BTreeSet<String>) -> Result<Value> {
             .flatten()
             .filter_map(|user| user.get("name").and_then(Value::as_str))
             .map(str::to_string)
-            .collect(),
-    )?;
-    let presets = retained(
-        "presets",
-        obj.get("presets")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|preset| {
-                Some(format!(
-                    "{}:{}",
-                    preset.get("unit")?.as_str()?,
-                    preset.get("source")?.as_str()?
-                ))
-            })
             .collect(),
     )?;
     let store_paths = retained(
@@ -577,11 +525,7 @@ fn project_manifest(full: &Value, kept: &BTreeSet<String>) -> Result<Value> {
         }
     }
 
-    for (field, keys) in [
-        ("etc", &etc),
-        ("units", &units),
-        ("jobScripts", &job_scripts),
-    ] {
+    for (field, keys) in [("etc", &etc), ("jobScripts", &job_scripts)] {
         if let Some(map) = obj.get_mut(field).and_then(Value::as_object_mut) {
             map.retain(|key, _| keys.contains(key));
         }
@@ -594,17 +538,6 @@ fn project_manifest(full: &Value, kept: &BTreeSet<String>) -> Result<Value> {
                 .is_some_and(|name| users.contains(name))
         });
     }
-    if let Some(records) = obj.get_mut("presets").and_then(Value::as_array_mut) {
-        records.retain(|record| {
-            let Some(unit) = record.get("unit").and_then(Value::as_str) else {
-                return false;
-            };
-            let Some(source) = record.get("source").and_then(Value::as_str) else {
-                return false;
-            };
-            presets.contains(&format!("{unit}:{source}"))
-        });
-    }
     if let Some(paths) = obj.get_mut("storePaths").and_then(Value::as_array_mut) {
         paths.retain(|path| path.as_str().is_some_and(|path| store_paths.contains(path)));
     }
@@ -612,10 +545,8 @@ fn project_manifest(full: &Value, kept: &BTreeSet<String>) -> Result<Value> {
     if let Some(index) = obj.get_mut("ownership").and_then(Value::as_object_mut) {
         for (field, keys) in [
             ("etc", &etc),
-            ("units", &units),
             ("jobScripts", &job_scripts),
             ("users", &users),
-            ("presets", &presets),
             ("storePaths", &store_paths),
         ] {
             let Some(map) = index.get_mut(field).and_then(Value::as_object_mut) else {

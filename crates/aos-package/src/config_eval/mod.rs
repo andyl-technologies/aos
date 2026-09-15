@@ -1691,8 +1691,8 @@ pub fn reeval_cross_abi(
 
     // Package resolution is an authenticated input of the old intent, not a
     // mutable registry lookup. Re-project those exact pins into the newly
-    // evaluated aggregate artifacts so config, units, presets, and ownership
-    // are rebuilt against the running image's base library.
+    // evaluated aggregate artifacts so configuration and ownership are rebuilt
+    // against the running image's base library.
     let runtime = runtime::RuntimeResolution {
         packages: source.package_outputs.clone(),
         edges: source.graph.edges.clone(),

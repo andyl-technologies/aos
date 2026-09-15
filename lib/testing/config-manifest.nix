@@ -20,19 +20,15 @@
     == [
       "etc"
       "jobScripts"
-      "presets"
       "storePaths"
-      "units"
       "users"
     ];
   validShape = value:
     value.schema
     == "aos.config-manifest/v1"
     && builtins.isAttrs value.etc
-    && builtins.isAttrs value.units
     && builtins.isAttrs value.jobScripts
     && builtins.isList value.users
-    && builtins.isList value.presets
     && builtins.isList value.storePaths
     && builtins.isList value.packages
     && builtins.isAttrs value.packageOutputs
@@ -45,12 +41,9 @@
   exactOwnershipCoverage = value:
     builtins.attrNames value.etc
     == builtins.attrNames value.ownership.etc
-    && builtins.attrNames value.units == builtins.attrNames value.ownership.units
     && builtins.attrNames value.jobScripts == builtins.attrNames value.ownership.jobScripts
     && builtins.sort (a: b: a < b) (builtins.map (user: user.name) value.users)
     == builtins.attrNames value.ownership.users
-    && builtins.sort (a: b: a < b) (builtins.map (preset: "${preset.unit}:${preset.source}") value.presets)
-    == builtins.attrNames value.ownership.presets
     && value.storePaths == builtins.attrNames value.ownership.storePaths;
   validInputs = value:
     value.module_abi
