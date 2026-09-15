@@ -892,10 +892,6 @@ in
       package = "self";
       output = "module";
     }
-    {
-      package = "self";
-      output = "out";
-    }
   ];
   assert builtins.length (builtins.attrNames disabledRsyncProjection.requirementTemplates) > 0;
   assert selectedChronyAbilities.instances ? "chrony:service";
