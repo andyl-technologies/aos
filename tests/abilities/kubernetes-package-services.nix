@@ -93,6 +93,22 @@
     k3s = {
       enable = true;
       token.ref = "system-credential:k3s-token";
+      networking.flannelBackend = "wireguard-native";
+    };
+  };
+  k3sControlPlane = evaluate pkgs.k3s-control-plane {
+    k3s = {
+      enable = true;
+      token.ref = "system-credential:k3s-token";
+      server = {
+        clusterInit = true;
+        disableComponents = [
+          "traefik"
+          "servicelb"
+        ];
+        tlsSans = ["api.example.test"];
+      };
+      kubeconfigMode = "0640";
     };
   };
   objectControllerDeclaration = k3sCombined.config.aos.abilities.interfaces."k3s-combined:kubernetes-object-set";
@@ -254,7 +270,19 @@ in
   assert disabledCilium.config.aos.abilities.requirementTemplates == cilium.config.aos.abilities.requirementTemplates;
   assert disabledLonghorn.config.aos.abilities.requirementTemplates == longhorn.config.aos.abilities.requirementTemplates;
   assert k3sWorker.config.k3s.role == "worker";
+  assert k3sControlPlane.config.k3s.role == "control-plane";
   assert k3sCombined.config.k3s.role == "combined";
+  assert (requests k3sControlPlane)."k3s-control-plane:k3s-environment".parameters.variables
+  == {
+    K3S_CLUSTER_INIT = "true";
+    K3S_DISABLE = "servicelb,traefik";
+    K3S_KUBECONFIG_MODE = "0640";
+    K3S_TLS_SAN = "api.example.test";
+  };
+  assert (requests k3sControlPlane)."k3s-control-plane:token-source".parameters.name
+  == "k3s-token";
+  assert (requests k3sCombined)."k3s-combined:configuration-base".parameters.base.flannel_backend
+  == "wireguard-native";
   assert (requests k3sWorker)."k3s-worker:kernel-modules".parameters.modules
   == [
     "br_netfilter"
