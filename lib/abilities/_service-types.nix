@@ -146,18 +146,12 @@
       default = "restart";
     };
     remain_after_exit = types.boolean;
-    start_timeout_millis = types.integer {
-      minimum = 1;
-      maximum = 86400000;
-    };
+    start_timeout_millis = positiveDurationMillis;
     start_timeout_unbounded = {
       type = types.boolean;
       default = false;
     };
-    stop_timeout_millis = types.integer {
-      minimum = 1;
-      maximum = 86400000;
-    };
+    stop_timeout_millis = positiveDurationMillis;
     stop_timeout_unbounded = {
       type = types.boolean;
       default = false;

@@ -1041,6 +1041,10 @@
   declaredAliases = builtins.attrNames serviceManagement.declarations;
 in
   assert succeedsAs serviceTypes.serviceDeclaration minimalService;
+  assert succeedsAs serviceTypes.serviceDeclaration (minimalService
+    // {
+      lifecycle = minimalService.lifecycle // {start_timeout_millis = 604800000;};
+    });
   assert !succeedsAs serviceTypes.serviceDeclaration (minimalService // {unit = "legacy.service";});
   assert !succeedsAs serviceTypes.serviceDeclaration (minimalService
     // {
