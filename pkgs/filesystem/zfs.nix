@@ -1,4 +1,7 @@
 ##! ZFS — OpenZFS filesystem and volume manager
+# OpenZFS is an out-of-tree module, so each release builds only against a
+# bounded range of kernel versions. Keep this pin aligned with the selected
+# kernel rather than discovering incompatibility inside a configure probe.
 {
   lib,
   mkDerivation,
@@ -17,7 +20,7 @@
   dwarves,
   kernel ? null,
 }: let
-  version = "2.4.0";
+  version = "2.4.4";
 in
   mkDerivation {
     pname = "zfs";
@@ -77,7 +80,7 @@ in
       urls = [
         "https://github.com/openzfs/zfs/releases/download/zfs-${version}/zfs-${version}.tar.gz"
       ];
-      hash = "sha256-e98T3gpx2VVUwOPkfV6PUHhsMNT0tjt8WTsdEa91ye4=";
+      hash = "sha256-Kjxw1Vo3zHFhipWmDoGtZlMCAesRjTd0Hcku/PhIyLE=";
     };
 
     buildDeps =
@@ -187,6 +190,15 @@ in
           # suite. It belongs in a dedicated test output, not on a production
           # host, and its compiled fixtures retain compiler paths.
           rm -rf "$out/share/zfs/zfs-tests"
+
+          # These interactive kstat formatters would retain Python in every
+          # ZFS image and carry /usr/bin/env shebangs that do not resolve in an
+          # AOS root. The package-owned metrics handler reads the same counters
+          # directly from /proc/spl/kstat/zfs/arcstats.
+          rm -f "$out/bin/dbufstat" "$out/bin/zarcstat" \
+            "$out/bin/zarcsummary" "$out/bin/zilstat"
+          rm -f "$out/share/man/man1/dbufstat.1" "$out/share/man/man1/zarcstat.1" \
+            "$out/share/man/man1/zarcsummary.1" "$out/share/man/man1/zilstat.1"
 
           # zvol_id is installed below lib/udev rather than bin/libexec, so the
           # generic fixup pass does not recognize it as a runtime executable.
