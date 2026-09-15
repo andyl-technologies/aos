@@ -1,11 +1,13 @@
 ##! D-Bus-owned system-bus registration aggregation contracts.
-{lib}: let
-  inherit (lib.abilities) declareInterface interfaceDocumentFromDeclaration interfaceIdentity types;
+{lib, ...}: let
+  inherit (lib.abilities) declareInterface types;
 
   controllerAlias = "system-registration";
   contributionAlias = "system-registration-contribution";
   resourceKind = "aos.dbus.system-registration";
-  serviceTypes = lib.abilities.interfaces.serviceManagement.types;
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
+  serviceTypes = serviceManagement.types;
+  packageArtifact = lib.abilities.packageOutput {};
   artifactDirectories = types.list {
     element = types.artifactPathReference;
     maxItems = 256;
@@ -131,16 +133,60 @@
       types.resourceReference;
     guarantees = [];
   };
-  describe = alias: declaration: methods: {
-    inherit alias declaration methods;
-    document = interfaceDocumentFromDeclaration declaration;
-    identity = interfaceIdentity (interfaceDocumentFromDeclaration declaration);
-    requestType = declaration.requestType;
-    observationType = observation;
-  };
 in {
-  controller =
-    describe controllerAlias controllerDeclaration (builtins.attrNames controllerMethods)
-    // {realizationType = realization;};
-  contribution = describe contributionAlias contributionDeclaration (builtins.attrNames contributionMethods);
+  config.aos.abilities = {
+    interfaces = {
+      ${controllerAlias} = controllerDeclaration;
+      ${contributionAlias} = contributionDeclaration;
+    };
+
+    implementations = {
+      ${controllerAlias} = {
+        description = "Materializes one system-bus configuration assembled from authorized registrations.";
+        interface = controllerAlias;
+        artifact = packageArtifact;
+        methods = builtins.attrNames controllerMethods;
+        guarantees = [];
+        requirements = {
+          configuration-materialization = {
+            alias = "configuration-materialization";
+            description = "Materializes the assembled system-bus configuration.";
+            accepted_interfaces = [serviceManagement.interfaces.managedConfiguration.identity];
+            methods = ["materialize" "observe" "release"];
+            guarantees = [];
+            strength = "required";
+            fallback = null;
+          };
+          service-reload = {
+            alias = "service-reload";
+            description = "Reloads the system bus after registration changes.";
+            accepted_interfaces = [serviceManagement.interfaces.reload.identity];
+            methods = ["observe" "reload"];
+            guarantees = [];
+            strength = "required";
+            fallback = null;
+          };
+        };
+        providerModule = {
+          artifact = packageArtifact;
+          path = "share/aos/providers/dbus-registration.nix";
+        };
+        desiredType = realization;
+        requiredFeatures = [];
+      };
+      ${contributionAlias} = {
+        description = "Merges one authenticated package registration into the system-bus configuration.";
+        interface = contributionAlias;
+        artifact = packageArtifact;
+        methods = builtins.attrNames contributionMethods;
+        guarantees = [];
+        providerModule = {
+          artifact = packageArtifact;
+          path = "share/aos/providers/dbus-registration.nix";
+        };
+        desiredType = realization;
+        requiredFeatures = [];
+      };
+    };
+  };
 }
