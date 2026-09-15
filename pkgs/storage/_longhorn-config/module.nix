@@ -1,57 +1,130 @@
-##! Typed Longhorn contribution to the versioned Kubernetes add-on interface.
+##! Longhorn configuration and provider-neutral Kubernetes requirements.
 {
   config,
   lib,
-  outputs,
+  packageVersion,
   ...
 }: let
-  inherit (lib) mkIf mkOption types;
-  # The package manifest records the authenticated engine companions as store
-  # paths, so readFile preserves their string context. fromJSON intentionally
-  # rejects context-bearing input. This module consumes only the version; the
-  # companions remain retained and authenticated independently through
-  # configModule.dependencies and runtimeDeps.
-  package = builtins.fromJSON (builtins.unsafeDiscardStringContext (
-    builtins.readFile "${outputs.self}/share/longhorn-package.json"
-  ));
+  inherit (lib) mkIf mkOption;
+  abilityTypes = lib.abilities.types;
   cfg = config.longhorn;
-in {
-  options.longhorn = {
-    enable = mkOption {
-      type = types.bool;
-      default = false;
-      description = "Contribute the Longhorn storage add-on to the selected Kubernetes owner.";
-    };
-    defaultReplicaCount = mkOption {
-      type = types.addCheck types.int (value: value >= 1 && value <= 20);
-      default = 3;
-      description = "Default number of replicas for Longhorn volumes.";
-    };
-    nodeLabel = mkOption {
-      type = types.strMatching "[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?";
-      default = "true";
-      description = "Value of the package-owned Longhorn scheduling node label.";
-    };
-  };
-
-  config.k3s.integrations.csi.longhorn = mkIf cfg.enable {
-    nodeLabels."node.longhorn.io/create-default-disk" = cfg.nodeLabel;
-  };
-  config.k3s.integrations.resources.longhorn = mkIf cfg.enable {
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
+  objectContract = lib.abilities.interfaces.kubernetesObjectManagement;
+  chartObject = {
     apiVersion = "helm.cattle.io/v1";
     kind = "HelmChart";
-    name = "longhorn";
-    namespace = "kube-system";
-    priority = 200;
+    metadata = {
+      name = "longhorn";
+      namespace = "kube-system";
+    };
     spec = {
       chart = "longhorn";
       repo = "https://charts.longhorn.io";
       targetNamespace = "longhorn-system";
-      version = package.version;
+      version = packageVersion;
       valuesContent = builtins.toJSON {
         defaultSettings.defaultReplicaCount = builtins.toString cfg.defaultReplicaCount;
         persistence.defaultClassReplicaCount = cfg.defaultReplicaCount;
       };
     };
   };
+  objects = {
+    requirementTemplates.kubernetes-objects =
+      lib.abilities.interfaceSelector {
+        inherit (objectContract.contribution.identity) name abi;
+      }
+      // {
+        description = "Contribute the exact Longhorn object set to a selected Kubernetes controller.";
+        methods = ["observe"];
+        guarantees = [];
+        strength = "required";
+        fallback = null;
+      };
+    requests.objects = {
+      requirement = "kubernetes-objects";
+      consumer = "integration";
+      scope = ["objects"];
+      parameters = {
+        objects = [
+          {
+            key = "longhorn";
+            api_version = chartObject.apiVersion;
+            kind = chartObject.kind;
+            namespace = chartObject.metadata.namespace;
+            name = chartObject.metadata.name;
+            content = builtins.toJSON chartObject;
+          }
+        ];
+        prerequisites = [];
+      };
+    };
+  };
+  integration = {
+    requirementTemplates.k3s-integration =
+      lib.abilities.interfaceSelector {
+        name = "aos.k3s.integration";
+        abi = 1;
+      }
+      // {
+        description = "Contribute the Longhorn node label to a selected K3s controller.";
+        methods = ["observe"];
+        guarantees = [];
+        strength = "required";
+        fallback = null;
+      };
+    requests.configuration = {
+      requirement = "k3s-integration";
+      consumer = "integration";
+      scope = ["configuration"];
+      parameters = {
+        disable_flannel = false;
+        disable_network_policy = false;
+        disable_kube_proxy = false;
+        node_labels."node.longhorn.io/create-default-disk" = cfg.nodeLabel;
+        prerequisites = [];
+      };
+    };
+  };
+  contributions = map serviceManagement.splitContribution [objects integration];
+in {
+  options.longhorn = {
+    enable = mkOption {
+      type = abilityTypes.boolean;
+      default = false;
+      description = "Contribute the Longhorn storage add-on to the selected Kubernetes owner.";
+    };
+    defaultReplicaCount = mkOption {
+      type = abilityTypes.integer {
+        minimum = 1;
+        maximum = 20;
+      };
+      default = 3;
+      description = "Default number of replicas for Longhorn volumes.";
+    };
+    nodeLabel = mkOption {
+      type = abilityTypes.refined {
+        name = "Kubernetes label value";
+        description = "a bounded Kubernetes label value";
+        type = abilityTypes.string {
+          maxLength = 253;
+          syntax = null;
+        };
+        predicate = value: builtins.match "([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)?" value != null;
+      };
+      default = "true";
+      description = "Value of the package-owned Longhorn scheduling node label.";
+    };
+  };
+
+  config.aos.abilities = lib.mkMerge (
+    (map (contribution: contribution.declarations) contributions)
+    ++ [
+      (mkIf cfg.enable (
+        lib.mkMerge (
+          [{instances.integration = {};}]
+          ++ map (contribution: contribution.configured) contributions
+        )
+      ))
+    ]
+  );
 }
