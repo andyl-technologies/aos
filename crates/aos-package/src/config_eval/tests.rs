@@ -1117,7 +1117,7 @@ fn documentation_prose_changes_only_document_identity_not_activation_inputs() {
                     "sha256:{}",
                     config_hash.to_string().repeat(64)
                 )),
-                    expose_artifact_nar_hash: None,
+                expose_artifact_nar_hash: None,
                 source_nar_hash: format!("sha256:{}", "2".repeat(64)),
             },
         };
@@ -1975,8 +1975,20 @@ fn retained_manifest_abi_bands_gate_cross_abi_rollback() {
     ))
     .unwrap();
     let mut retained = crate::types::CrossAbiReEvalInputs {
-        config_module_paths: source.inputs.config_modules.store_paths.clone(),
-        config_module_packages: source.inputs.config_modules.package_names.clone(),
+        config_module_paths: source
+            .inputs
+            .package_modules
+            .modules
+            .iter()
+            .map(|module| module.store_path.clone())
+            .collect(),
+        config_module_packages: source
+            .inputs
+            .package_modules
+            .modules
+            .iter()
+            .map(|module| module.package.clone())
+            .collect(),
         host_nix_ref: source.inputs.host_nix.store_path.clone(),
         facts_hash: source.inputs.instance_facts.facts_hash.clone(),
         facts_ref: source.inputs.instance_facts.store_path.clone(),
@@ -2068,8 +2080,20 @@ fn retained_identity_inputs(
     source.inputs.host_nix.store_path = host_nix.clone();
     source.inputs.host_nix.content_hash = super::sha256_identity(b"{}\n");
     let retained = crate::types::CrossAbiReEvalInputs {
-        config_module_paths: source.inputs.config_modules.store_paths.clone(),
-        config_module_packages: source.inputs.config_modules.package_names.clone(),
+        config_module_paths: source
+            .inputs
+            .package_modules
+            .modules
+            .iter()
+            .map(|module| module.store_path.clone())
+            .collect(),
+        config_module_packages: source
+            .inputs
+            .package_modules
+            .modules
+            .iter()
+            .map(|module| module.package.clone())
+            .collect(),
         host_nix_ref: host_nix,
         facts_hash: source.inputs.instance_facts.facts_hash.clone(),
         facts_ref: source.inputs.instance_facts.store_path.clone(),
@@ -2085,7 +2109,7 @@ fn retained_identity_rejects_modified_host_module_bytes() {
     let host_nix = tmp.path().join("host.nix");
     std::fs::write(&host_nix, b"{ services.sshd.enable = true; }\n").unwrap();
     let (source, retained) = retained_identity_inputs(&host_nix);
-    let expected_nar = source.inputs.config_modules.nar_hashes[0].clone();
+    let expected_nar = source.inputs.package_modules.modules[0].nar_hash.clone();
 
     let error = super::validate_retained_content_identities(&source, &retained, |_| {
         Ok(expected_nar.clone())
