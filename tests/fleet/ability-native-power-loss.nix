@@ -29,7 +29,7 @@
     inherit lib;
     packages = selectedPackages;
     regressions = [
-      "checks.fleet.ability-native-activation"
+      "checks.fleet.runtime-module-composition"
       "checks.fleet.ability-native-foreground-container"
       "checks.fleet.ability-native-image-rollout"
       "checks.fleet.k3s-control-plane-worker"

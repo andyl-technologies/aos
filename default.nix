@@ -425,7 +425,6 @@
     else null;
   nativeAbilityScenarioIds = [
     "ability-crucible-baseline"
-    "ability-native-activation"
     "ability-native-adapter-matrix"
     "ability-native-image-rollout"
     "ability-native-recovery"
@@ -771,10 +770,6 @@
       inherit (nativeAdapterMatrixCohort) testScript;
       inherit (nativeAdapterMatrixCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
     };
-    ability-native-activation =
-      mkNativeAbilityScenario
-      "ability-native-activation"
-      ./tests/fleet/ability-native-activation.nix;
     ability-native-image-rollout =
       mkNativeAbilityScenario
       "ability-native-image-rollout"
@@ -2032,7 +2027,6 @@ in {
     fleet = let
       base = discoverFleetTests // crucibleFleetChecks;
       runtimeConfigNames = [
-        "ability-native-activation"
         "ability-native-image-rollout"
         "ability-native-power-loss"
         "apm-desired-sequencing"

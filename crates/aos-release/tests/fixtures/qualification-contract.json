@@ -188,7 +188,7 @@
       "phase": "staging",
       "production_only": false,
       "regressions": [
-        "checks.fleet.ability-native-activation"
+        "checks.fleet.runtime-module-composition"
       ],
       "scope": "release"
     },
