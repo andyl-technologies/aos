@@ -1,12 +1,9 @@
 //! The on-host resolve/evaluate fixpoint driver.
 //!
-//! Stock Nix gives no read-access instrumentation, so the set of config
-//! providers a host needs cannot be statically closed: it is *discovered* by
-//! evaluating the module set, observing what is missing, fetching the named
-//! provider's `config` output, and re-evaluating until the eval succeeds or a
-//! terminal state is reached. [`run_fixpoint`] is that deterministic state
-//! machine; it is the driver *around* the existing closure resolver
-//! ([`crate::resolve`]).
+//! Package selection resolves the complete runtime closure and each selected
+//! package's authenticated contract before Nix evaluates the module fixed
+//! point. [`run_fixpoint`] evaluates that closed set once and preserves typed
+//! Nix failures for the command boundary.
 //!
 //! # Module map
 //!
@@ -16,17 +13,14 @@
 //!   shells out to `nix-instantiate --eval --strict --json --pure-eval
 //!   --option restrict-eval true
 //!   --option allow-import-from-derivation false` with an empty environment,
-//!   and classifies the result, plus the registry-backed
-//!   [`PackageModuleFetcher`]. Builder-gated:
-//!   it requires a real
-//!   stock-nix and registry, so it is unit-tested only for `entry.nix`
-//!   rendering.
+//!   and classifies the result. Builder-gated: it requires a real stock-nix,
+//!   so it is unit-tested only for `entry.nix` rendering.
 //!
 //! # The seam
 //!
 //! The evaluator boundary is `eval(working_set, host_nix, base_lib) ->
-//! Result<EvalClass>`. The resolver, registry index, fetch order (package module artifact
-//! first), `module_abi` gate, and manifest contract remain outside it.
+//! Result<EvalClass>`. Contract authentication, package resolution, and
+//! manifest construction remain outside it.
 //!
 //! # Failure-safe
 //!
@@ -83,9 +77,6 @@ use crate::types::option_path_root;
 /// loop unbounded (build-spec §5).
 pub const ITER_CAP_CEILING: u32 = 64;
 
-/// Slack added to the reachable-provider count when deriving the iteration cap.
-const ITER_CAP_SLACK: u32 = 8;
-
 // ---------------------------------------------------------------------------
 // Working set
 // ---------------------------------------------------------------------------
@@ -93,9 +84,7 @@ const ITER_CAP_SLACK: u32 = 8;
 /// One package in the fixpoint working set.
 ///
 /// The seed set is supplied by the caller from the host's desired packages;
-/// fetched providers are appended as the loop discovers missing options. A
-/// member that carries config-module metadata is gated against the running
-/// image's `module_abi` before it can enter `entry.nix`.
+/// package-contract documents are resolved before the module fixed point runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkingSetMember {
     /// Registry that authenticated this member's package module artifact.
@@ -159,10 +148,6 @@ pub struct FixpointInputs {
     pub facts_json: Option<PathBuf>,
     /// Packages explicitly installed (`desired.toml`): the starting working set.
     pub seed_set: Vec<WorkingSetMember>,
-    /// The running image's base-lib ABI (`K`).
-    pub module_abi: u32,
-    /// Optional override for the iteration cap; otherwise derived from the index.
-    pub iter_cap: Option<u32>,
 }
 
 /// One step of the causal chain, recorded for the non-convergence dump.
@@ -217,23 +202,6 @@ pub enum FixpointError {
         path: String,
         /// The reader/writer locus, when known.
         read_by: Option<String>,
-    },
-    /// A missing option whose providers all exclude the running `module_abi`.
-    AbiMismatch {
-        /// The unresolved option path or root.
-        path: String,
-        /// The running image ABI the providers failed to admit.
-        want: u32,
-    },
-    /// A seed config module excludes the running `module_abi` (pre-eval gate).
-    SeedAbiMismatch(String),
-    /// A provider is already present yet the same option stays missing —
-    /// fetching cannot help (a read cycle's terminal frame).
-    Unsatisfiable {
-        /// The still-missing option path or root.
-        path: String,
-        /// The provider already in the working set.
-        provider: String,
     },
     /// A *declared* option was left undefined with no default (`:744`).
     UndefinedOption {
@@ -293,15 +261,6 @@ impl std::fmt::Display for FixpointError {
                 }
                 Ok(())
             }
-            FixpointError::AbiMismatch { path, want } => write!(
-                f,
-                "every provider of '{path}' is incompatible with image module_abi {want}"
-            ),
-            FixpointError::SeedAbiMismatch(msg) => f.write_str(msg),
-            FixpointError::Unsatisfiable { path, provider } => write!(
-                f,
-                "'{path}' is still missing after fetching '{provider}'; fetching cannot satisfy it (read cycle)"
-            ),
             FixpointError::UndefinedOption { path, file } => {
                 write!(f, "the option '{path}' is declared but left undefined")?;
                 if let Some(file) = file {
@@ -408,81 +367,25 @@ pub trait NixEvaluator {
     fn evaluate(&self, attempt: &EvalAttempt<'_>) -> Result<EvalClass>;
 }
 
-/// A provider the driver selected from the index and is about to fetch.
-#[derive(Debug, Clone, Copy)]
-pub struct SelectedPackageModule<'a> {
-    /// Provider package name.
-    pub package: &'a str,
-    /// Provider package version.
-    pub version: &'a str,
-    /// Target platform.
-    pub platform: &'a str,
-    /// Store path of the `config` output to fetch.
-    pub module_artifact: &'a str,
-    /// Authenticated NAR hash of the package module artifact.
-    pub nar_hash: &'a str,
-    /// Authenticated uncompressed NAR size of the package module artifact.
-    pub nar_size: u64,
-}
-
-/// The fetch seam: download a selected provider's `config` output NAR.
-///
-/// The driver fetches the `config` output **before** any `out` closure
-/// (build-spec §4): the next eval reads only the config-only module, and the
-/// binary closure is needed solely if the provider survives into the converged
-/// set. Tests inject a recording mock.
-pub trait PackageModuleFetcher {
-    /// Fetch and verify `provider`'s `config` output into the local store.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on a terminal fetch failure (registry unreachable,
-    /// unsigned, hash mismatch); the driver maps it to [`FixpointError::Fetch`].
-    fn fetch_package_module(&self, provider: &SelectedPackageModule<'_>) -> Result<()>;
-}
-
 // ---------------------------------------------------------------------------
 // The fixpoint
 // ---------------------------------------------------------------------------
 
 /// Drive `evalModules` to a complete configuration (build-spec §1).
 ///
-/// The loop renders the current `working_set` into `entry.nix`, evaluates it,
-/// and on a missing-option signal selects the owning provider — a shared-root
-/// owner from the locally-derived [`SystemRoots`], else the package the root
-/// structurally names, resolved by name through `resolver` (ABI-gated) — fetches
-/// its `config` output, and re-evaluates. `working_set` is append-only over the
-/// finite package universe, so the loop terminates at or before the iteration
-/// cap.
-///
-/// [`SystemRoots`] is built once, up front, from the installed set: every seed
-/// package's config module (resolved by name through `resolver`). A per-system
-/// integrity violation (owned-root exclusivity, a shadowing collision, or an
-/// out-of-scope contribution) is a terminal error before any eval runs.
-///
-/// Before iteration 0 every seed that carries config-module metadata is gated
-/// against `inputs.module_abi`; an incompatible seed is a terminal
-/// [`FixpointError::SeedAbiMismatch`] before any eval runs. Each fetched
-/// provider is likewise gated before it enters `entry.nix`.
+/// Package selection and package-contract resolution complete before this
+/// function runs. The full selected module set is evaluated once; an unresolved
+/// option is therefore a terminal missing-provider error.
 ///
 /// # Errors
 ///
-/// Returns a [`FixpointError`] for every terminal state (no provider, ABI
-/// mismatch, owned-root/ shadowing/ contributable integrity violation, conflict,
-/// assertion, kill, opaque eval error, fetch failure) and
-/// [`FixpointError::NonConvergence`] at the iteration cap. Every terminal state
-/// is a clean no-op: no manifest is emitted, so nothing downstream activates.
-pub fn run_fixpoint<R, E, F>(
+/// Returns a [`FixpointError`] for every terminal evaluator state. Every
+/// terminal state is a clean no-op: no manifest is emitted, so nothing
+/// downstream activates.
+pub fn run_fixpoint<E: NixEvaluator>(
     inputs: &FixpointInputs,
-    _resolver: &R,
     evaluator: &E,
-    _fetcher: &F,
-) -> std::result::Result<FixpointOutcome, FixpointError>
-where
-    R: PackageModuleResolver,
-    E: NixEvaluator,
-    F: PackageModuleFetcher,
-{
+) -> std::result::Result<FixpointOutcome, FixpointError> {
     let working_set = inputs.seed_set.clone();
     let attempt = EvalAttempt {
         host_nix: &inputs.host_nix,
@@ -532,15 +435,12 @@ where
 /// therefore produce a false fixpoint. This preflight pins their registry
 /// identity, ABI-gates them, fetches the package module artifact, and makes iteration
 /// zero evaluate the complete selected module set.
-fn hydrate_seed_modules<R, F>(
+fn hydrate_seed_modules<R>(
     seeds: &mut [WorkingSetMember],
     resolver: &R,
-    _fetcher: &F,
-    _module_abi: u32,
 ) -> std::result::Result<(), FixpointError>
 where
     R: PackageModuleResolver,
-    F: PackageModuleFetcher,
 {
     for seed in seeds {
         let Some(resolved) = resolver
@@ -763,13 +663,6 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
     }
 
     let evaluator = stock::StockNixEvaluator::new(cmd.eval_root.clone(), cmd.verbose);
-    let fetcher = stock::SubstituterFetcher::new(
-        cmd.verbose,
-        resolver.registries(),
-        crate::types::ProfileScope::System,
-        cmd.eval_root.join("nix-cache"),
-    );
-
     // Resolve the selected names before evaluation. This both pins the exact
     // runtime outputs and adds signed package-level dependencies (`requires`
     // and capability providers) to the module working set.
@@ -788,8 +681,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
             seed_set.push(WorkingSetMember::seed(package.clone()));
         }
     }
-    hydrate_seed_modules(&mut seed_set, &resolver, &fetcher, cmd.module_abi)
-        .map_err(eval_command_failure)?;
+    hydrate_seed_modules(&mut seed_set, &resolver).map_err(eval_command_failure)?;
     assign_runtime_outputs(&mut seed_set, &runtime);
 
     // A config provider discovered by the inner option fixpoint can itself
@@ -810,11 +702,8 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
             base_lib: cmd.base_lib.clone(),
             facts_json: cmd.facts_json.clone().filter(|path| path.is_file()),
             seed_set,
-            module_abi: cmd.module_abi,
-            iter_cap: None,
         };
-        let mut candidate =
-            run_fixpoint(&inputs, &resolver, &evaluator, &fetcher).map_err(eval_command_failure)?;
+        let mut candidate = run_fixpoint(&inputs, &evaluator).map_err(eval_command_failure)?;
         let ability_evaluator = stock::StockAbilityRoundEvaluator::new(
             &evaluator,
             EvalAttempt {
@@ -858,8 +747,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         if next == candidate.working_set {
             break candidate;
         }
-        hydrate_seed_modules(&mut next, &resolver, &fetcher, cmd.module_abi)
-            .map_err(eval_command_failure)?;
+        hydrate_seed_modules(&mut next, &resolver).map_err(eval_command_failure)?;
         seed_set = next;
         outer_iterations += 1;
     };
