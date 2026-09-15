@@ -1147,10 +1147,10 @@ in
   assert interfaces.namedCredential.document.interface.outputs.credential-resource.lifetime == "instance";
   assert !interfaces.namedCredential.document.interface.lifecycle.releases_ephemeral_on_disable;
   assert interfaces.namedCredential.methods == ["observe"];
-  assert interfaces.principalResolution.methods == ["observe" "resolve"];
-  assert !interfaces.principalResolution.document.interface.lifecycle.releases_ephemeral_on_disable;
-  assert interfaces.groupResolution.methods == ["observe" "resolve"];
-  assert !interfaces.groupResolution.document.interface.lifecycle.releases_ephemeral_on_disable;
+  assert interfaces.principalResolution.methods == ["observe" "release" "resolve"];
+  assert interfaces.principalResolution.document.interface.lifecycle.releases_ephemeral_on_disable;
+  assert interfaces.groupResolution.methods == ["observe" "release" "resolve"];
+  assert interfaces.groupResolution.document.interface.lifecycle.releases_ephemeral_on_disable;
   assert interfaces.groupMembership.methods == ["observe" "reconcile" "release"];
   assert interfaces.groupMembership.document.interface.lifecycle.releases_ephemeral_on_disable;
   assert interfaces.storageAllocation.document.interface.methods.allocate.outputs.storage-path.lifetime == "instance";

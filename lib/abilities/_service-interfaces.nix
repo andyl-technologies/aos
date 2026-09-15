@@ -476,7 +476,7 @@
     observationDescription,
     outputDescription,
   }: let
-    resolveMethod = method requestType observationType name "resolve" actionDescription read;
+    resolveMethod = retainingMethod requestType observationType name "resolve" actionDescription write;
     methods = {
       resolve =
         resolveMethod
@@ -488,12 +488,25 @@
             };
         };
       observe = method requestType observationType name "observe" observationDescription read;
+      release =
+        method requestType observationType name "release"
+        "Releases only identity state owned by this request and leaves existing external identities unchanged."
+        stopSemantics;
     };
     declaration = declareInterface {
       inherit name description requestType methods;
       abi = 1;
-      outputs = {};
-      lifecycle = lifecyclePolicy;
+      outputs = {
+        ${outputName} =
+          output "planning" "instance"
+          "Returns the provider-selected identity name before realization."
+          outputType;
+        identity-resource =
+          output "planning" "instance"
+          "References the exact identity resource selected for realization."
+          serviceTypes.resourceReference;
+      };
+      lifecycle = ephemeralLifecyclePolicy;
       guarantees = [];
       aggregation = {
         scope = "provider-instance";
@@ -1080,6 +1093,10 @@
       outputName = "membership-resource";
       outputDescription = "References the exact retained group membership resource.";
       outputType = serviceTypes.resourceReference;
+      interfaceOutputs.membership-resource =
+        output "planning" "instance"
+        "References the exact group-membership resource selected for reconciliation."
+        serviceTypes.resourceReference;
       releaseDescription = "Removes only the group memberships established by this request.";
     };
     scheduledActivation = producer {
