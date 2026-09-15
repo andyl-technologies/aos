@@ -20,26 +20,7 @@ mkDerivation {
     }
   ];
 
-  configModule = {
-    src = ./_config-module-smoke;
-    dependencies.bash = bash;
-    moduleAbiCompat = {
-      min = 1;
-      max = 1;
-    };
-    declares = [
-      "configModuleSmoke.command"
-      "configModuleSmoke.enable"
-      "configModuleSmoke.privateMessage"
-    ];
-    ownsRoots = [
-      {
-        root = "configModuleSmoke";
-        interfaceAbi = 1;
-        contributable = [];
-      }
-    ];
-  };
+  abilities = ./_config-module-smoke/module.nix;
 
   meta = {
     description = "Package config-output smoke fixture";
