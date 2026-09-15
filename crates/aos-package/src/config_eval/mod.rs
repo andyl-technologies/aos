@@ -35,13 +35,34 @@
 //! clean no-op on the live system: no generation exists until a downstream
 //! service consumes a returned manifest.
 
+pub mod ability;
+pub mod ability_activation;
+pub mod ability_policy;
+pub mod ability_policy_authority;
+pub mod ability_rounds;
+pub(crate) mod transaction_store;
+pub use transaction_store::RetainedAbilityDiagnosticSource;
 pub mod activation;
 pub mod classify;
+mod command_handler;
 pub mod diagnostics;
 pub mod dry_run;
+mod handler_dispatch;
+mod handler_process;
 pub mod materialize;
+mod native_activation;
+mod protected_fs;
+mod rollout_boot;
+mod transaction_verification;
+pub use native_activation::supported_native_ability_features;
+pub(crate) use native_activation::{
+    RetainedNativePreflightError, preflight_retained_manifest, verify_rollout_boot_commit,
+};
+mod cancellation;
+mod execution_observer;
 pub mod runtime;
 pub mod runtime_modules;
+pub mod stage_handoff;
 pub mod stock;
 pub mod system_roots;
 
@@ -59,7 +80,7 @@ pub use system_roots::{
 };
 
 use crate::resolve::{GatedConfigModule, enforce_module_abi_compat};
-use crate::types::{ConfigModuleMeta, ModuleAbiCompat, option_path_root};
+use crate::types::{ModuleAbiCompat, option_path_root};
 
 /// Absolute ceiling on re-evals, so a pathological registry cannot make the
 /// loop unbounded (build-spec §5).
@@ -90,6 +111,8 @@ pub struct WorkingSetMember {
     pub package: String,
     /// Package version, when known.
     pub version: Option<String>,
+    /// Canonical signed ability document, when the package publishes one.
+    pub ability: Option<aos_ability_model::PackageDocument>,
     /// Store path of the package's `config` output (its config-only module),
     /// when it ships one. This is the only thing the eval reads.
     pub config_output: Option<String>,
@@ -97,9 +120,6 @@ pub struct WorkingSetMember {
     pub config_output_nar_hash: Option<String>,
     /// The member's declared base-lib ABI band, when it ships a config module.
     pub module_abi_compat: Option<ModuleAbiCompat>,
-    /// Resolver-controlled roots and foreign contribution paths authenticated
-    /// by this package's config-module metadata.
-    pub authorization: PackageAuthorization,
     /// Resolver-authenticated runtime outputs exposed to this module.
     pub outputs: PackageOutputs,
 }
@@ -117,52 +137,6 @@ pub struct PackageOutputs {
     pub dependencies: BTreeMap<String, String>,
 }
 
-/// Exact write authorization passed beside one authenticated package module.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackageAuthorization {
-    /// Shared roots this package owns. Its private package-name root is always
-    /// implicit and need not appear here.
-    pub owns: Vec<String>,
-    /// Allowed foreign writes, keyed by root and expressed as relative paths.
-    pub contributes: BTreeMap<String, Vec<String>>,
-    /// Exact base-owned artifact leaves this package may materialize.
-    #[serde(
-        default,
-        skip_serializing_if = "crate::types::ConfigModuleArtifacts::is_empty"
-    )]
-    pub artifacts: crate::types::ConfigModuleArtifacts,
-}
-
-impl PackageAuthorization {
-    /// Derives authorization solely from authenticated config-module metadata.
-    fn from_module(module: &ConfigModuleMeta) -> Self {
-        let mut owns: Vec<String> = module
-            .owns_roots
-            .iter()
-            .map(|owned| owned.root.clone())
-            .collect();
-        owns.sort();
-        owns.dedup();
-        let mut contributes: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for contribution in &module.contributes {
-            contributes
-                .entry(contribution.root.clone())
-                .or_default()
-                .extend(contribution.paths.iter().cloned());
-        }
-        for paths in contributes.values_mut() {
-            paths.sort();
-            paths.dedup();
-        }
-        Self {
-            owns,
-            contributes,
-            artifacts: module.artifacts.clone(),
-        }
-    }
-}
-
 impl WorkingSetMember {
     /// Builds a bare seed member with no config-module metadata.
     pub fn seed(package: impl Into<String>) -> Self {
@@ -172,10 +146,10 @@ impl WorkingSetMember {
             config_realization: None,
             package: package.into(),
             version: None,
+            ability: None,
             config_output: None,
             config_output_nar_hash: None,
             module_abi_compat: None,
-            authorization: PackageAuthorization::default(),
             outputs: PackageOutputs::default(),
         }
     }
@@ -224,6 +198,8 @@ pub struct IterRecord {
 pub struct FixpointOutcome {
     /// The JSON manifest text the final eval produced.
     pub manifest: String,
+    /// Exact activation authority emitted by the final ability fixed point.
+    pub ability_fixed_point: ability_rounds::AbilityFixedPointProjection,
     /// The converged working set (seed plus every fetched provider).
     pub working_set: Vec<WorkingSetMember>,
     /// The causal chain of provider additions.
@@ -699,6 +675,7 @@ where
             EvalClass::Manifest(manifest) => {
                 return Ok(FixpointOutcome {
                     manifest,
+                    ability_fixed_point: ability_rounds::AbilityFixedPointProjection::default(),
                     working_set,
                     trace,
                     iterations: iter,
@@ -727,8 +704,6 @@ where
                         }
                     })?;
                 system_roots.validate_discovered_module(authenticated_module.clone())?;
-                let authorization = PackageAuthorization::from_module(authenticated_module.module);
-
                 // Gate the newly-selected provider before it enters entry.nix.
                 let gate = GatedConfigModule {
                     package: &selection.package,
@@ -766,10 +741,10 @@ where
                     config_realization: authenticated_module.config_realization.clone(),
                     package: selection.package.clone(),
                     version: Some(selection.version.clone()),
+                    ability: None,
                     config_output: Some(selection.config_output.clone()),
                     config_output_nar_hash: Some(selection.config_nar_hash.clone()),
                     module_abi_compat: Some(selection.module_abi_compat),
-                    authorization,
                     outputs: PackageOutputs {
                         self_output: Some(authenticated_module.runtime_output.to_string()),
                         dependencies: authenticated_module.module.dependency_outputs.clone(),
@@ -797,15 +772,14 @@ where
     }
 }
 
-/// Resolves and fetches every selected seed's config-only module before the
-/// first full evaluation.
+/// Resolves every selected seed's authenticated module before the first full evaluation.
 ///
 /// Seed package modules may define defaults and assertions without first
 /// triggering a missing-option error. Leaving those modules unloaded would
 /// therefore produce a false fixpoint. This preflight pins their registry
 /// identity, ABI-gates them, fetches the config output, and makes iteration
 /// zero evaluate the complete selected module set.
-fn hydrate_seed_config_modules<R, F>(
+fn hydrate_seed_modules<R, F>(
     seeds: &mut [WorkingSetMember],
     resolver: &R,
     fetcher: &F,
@@ -816,13 +790,40 @@ where
     F: ConfigOutputFetcher,
 {
     for seed in seeds {
+        let ability = resolver
+            .ability_module_exact(
+                &seed.package,
+                seed.version.as_deref(),
+                seed.outputs.self_output.as_deref(),
+            )
+            .map_err(|source| FixpointError::Fetch {
+                provider: seed.package.clone(),
+                source,
+            })?;
+        if let Some(resolved) = ability {
+            if seed.config_output.is_some() {
+                return Err(FixpointError::Fetch {
+                    provider: seed.package.clone(),
+                    source: anyhow::anyhow!(
+                        "package carries both current ability and legacy config-module authority"
+                    ),
+                });
+            }
+            seed.registry = (!resolved.registry.is_empty()).then_some(resolved.registry);
+            seed.release_trust = resolved.release_trust;
+            seed.config_realization = resolved.realization;
+            seed.version = Some(resolved.version);
+            seed.outputs.self_output = Some(resolved.runtime_output);
+            seed.ability = Some(resolved.document);
+            continue;
+        }
+
         let Some(resolved) = resolver.config_module(&seed.package) else {
             continue;
         };
         seed.registry = (!resolved.registry.is_empty()).then(|| resolved.registry.to_string());
         seed.release_trust = resolved.release_trust.cloned();
         seed.config_realization = resolved.config_realization.clone();
-        seed.authorization = PackageAuthorization::from_module(resolved.module);
         seed.outputs.self_output = Some(resolved.runtime_output.to_string());
         seed.outputs.dependencies = resolved.module.dependency_outputs.clone();
         if seed.config_output_nar_hash.is_none() {
@@ -1322,7 +1323,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         }
     }
     preclose_config_requires(&mut seed_set, &resolver);
-    hydrate_seed_config_modules(&mut seed_set, &resolver, &fetcher, cmd.module_abi)
+    hydrate_seed_modules(&mut seed_set, &resolver, &fetcher, cmd.module_abi)
         .map_err(eval_command_failure)?;
     assign_runtime_outputs(&mut seed_set, &runtime);
 
@@ -1347,8 +1348,28 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
             module_abi: cmd.module_abi,
             iter_cap: None,
         };
-        let candidate =
+        let mut candidate =
             run_fixpoint(&inputs, &resolver, &evaluator, &fetcher).map_err(eval_command_failure)?;
+        let ability_evaluator = stock::StockAbilityRoundEvaluator::new(
+            &evaluator,
+            EvalAttempt {
+                host_nix: &inputs.host_nix,
+                runtime_modules: &inputs.runtime_modules,
+                base_lib: &inputs.base_lib,
+                facts_json: inputs.facts_json.as_deref(),
+                working_set: &candidate.working_set,
+                iteration: candidate.iterations,
+            },
+        );
+        let ability_resolver = stock::StockAbilityRoundResolver::new(&candidate.working_set);
+        let ability = ability_rounds::resolve_ability_rounds(
+            &ability_evaluator,
+            &ability_resolver,
+            aos_ability_model::ABILITY_LIMITS_V1.max_resolver_rounds,
+        )
+        .context("resolving the final ability module fixed point")?;
+        candidate.manifest = ability.manifest;
+        candidate.ability_fixed_point = ability.fixed_point;
         let selected: Vec<String> = candidate
             .working_set
             .iter()
@@ -1373,7 +1394,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
             break candidate;
         }
         preclose_config_requires(&mut next, &resolver);
-        hydrate_seed_config_modules(&mut next, &resolver, &fetcher, cmd.module_abi)
+        hydrate_seed_modules(&mut next, &resolver, &fetcher, cmd.module_abi)
             .map_err(eval_command_failure)?;
         seed_set = next;
         outer_iterations += 1;
@@ -1538,7 +1559,6 @@ fn config_module_inputs(
     Vec<String>,
     Vec<String>,
     Vec<ModuleAbiCompat>,
-    Vec<PackageAuthorization>,
     Vec<String>,
 )> {
     let mut seen = BTreeMap::<String, String>::new();
@@ -1546,7 +1566,6 @@ fn config_module_inputs(
     let mut nar_hashes = Vec::new();
     let mut packages = Vec::new();
     let mut abi_compat = Vec::new();
-    let mut authorizations = Vec::new();
     let mut origins = Vec::new();
     for member in working_set {
         let Some(path) = member.config_output.as_deref() else {
@@ -1581,21 +1600,13 @@ fn config_module_inputs(
         nar_hashes.push(canonical_nar_hash);
         packages.push(member.package.clone());
         abi_compat.push(compat);
-        authorizations.push(member.authorization.clone());
         origins.push(if member.registry.is_some() {
             "registry".to_string()
         } else {
             "image".to_string()
         });
     }
-    Ok((
-        paths,
-        nar_hashes,
-        packages,
-        abi_compat,
-        authorizations,
-        origins,
-    ))
+    Ok((paths, nar_hashes, packages, abi_compat, origins))
 }
 
 fn config_module_release_identity(
@@ -1675,21 +1686,31 @@ fn enrich_manifest(
     let object = raw
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("evaluated config manifest is not an object"))?;
+    let ability_activation = object
+        .get_mut("inputs")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|inputs| inputs.remove("ability_activation"));
 
     enrich_runtime_projection(object, runtime)?;
+    let config_projections = serde_json::from_value(
+        object
+            .get("configProjections")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({})),
+    )
+    .context("decoding enriched package config projections")?;
+    let ability_activation =
+        enrich_ability_activation(ability_activation, runtime, &config_projections)?;
+    if let Some(activation) = &ability_activation {
+        retain_ability_sidecar_roots(object, activation)?;
+    }
 
     let host_bytes = std::fs::read(&cmd.host_nix)
         .with_context(|| format!("reading host input {}", cmd.host_nix.display()))?;
     let evaluator = std::env::current_exe().context("resolving evaluator executable")?;
     let evaluator_store_path = evaluator_store_root(&evaluator)?;
-    let (
-        config_outputs,
-        config_nar_hashes,
-        config_packages,
-        config_abi_compat,
-        config_authorizations,
-        config_origins,
-    ) = config_module_inputs(&outcome.working_set)?;
+    let (config_outputs, config_nar_hashes, config_packages, config_abi_compat, config_origins) =
+        config_module_inputs(&outcome.working_set)?;
 
     let (facts, retained_facts_bytes, facts_input_path) =
         match cmd.facts_json.as_deref().filter(|path| path.is_file()) {
@@ -1796,7 +1817,7 @@ fn enrich_manifest(
         )
     };
 
-    if runtime_modules.is_some() {
+    if ability_activation.is_some() || runtime_modules.is_some() {
         object.insert(
             "schema".into(),
             serde_json::Value::String(materialize::ConfigManifest::SCHEMA_V2.to_string()),
@@ -1825,7 +1846,6 @@ fn enrich_manifest(
             "package_names": config_packages,
             "origins": config_origins,
             "module_abi_compat": config_abi_compat,
-            "authorizations": config_authorizations,
         },
         "host_nix": host_input,
         "instance_facts": facts_input,
@@ -1835,8 +1855,16 @@ fn enrich_manifest(
             .as_object_mut()
             .context("manifest inputs did not serialize as an object")?
             .insert("runtime_modules".into(), runtime_modules);
+    }
+    if let Some(ability_activation) = ability_activation {
+        inputs
+            .as_object_mut()
+            .context("manifest inputs did not serialize as an object")?
+            .insert("ability_activation".into(), ability_activation);
+    }
+    if inputs.get("runtime_modules").is_some() || inputs.get("ability_activation").is_some() {
         let expected = cmd.expected_current_generation.context(
-            "runtime-module evaluation requires a caller-supplied active generation snapshot",
+            "transactional evaluation requires a caller-supplied active generation snapshot",
         )?;
         inputs
             .as_object_mut()
@@ -1851,6 +1879,106 @@ fn enrich_manifest(
         serde_json::from_value(raw).context("validating config manifest structure")?;
     manifest.validate()?;
     Ok(manifest)
+}
+
+fn enrich_ability_activation(
+    input: Option<serde_json::Value>,
+    runtime: &runtime::RuntimeResolution,
+    config_projections: &BTreeMap<String, materialize::ProjectedPackageConfig>,
+) -> Result<Option<serde_json::Value>> {
+    let structured_packages = runtime
+        .packages
+        .values()
+        .filter_map(|package| package.ability.as_ref())
+        .any(|ability| ability.activation_mode == "structured-effects");
+    if structured_packages && input.is_none() {
+        anyhow::bail!("structured-effects package selection requires an ability_activation input");
+    }
+    let Some(mut input) = input else {
+        return Ok(None);
+    };
+    let object = input
+        .as_object_mut()
+        .context("manifest inputs.ability_activation must be an object")?;
+    object.insert(
+        "schema".to_string(),
+        serde_json::Value::String(materialize::AbilityActivationInput::SCHEMA.to_string()),
+    );
+    let packages = runtime
+        .packages
+        .iter()
+        .filter_map(|(name, package)| {
+            package.ability.as_ref().map(|ability| -> Result<_> {
+                let activation_revision = materialize::package_activation_revision(
+                    name,
+                    package,
+                    config_projections.get(name),
+                )?;
+                Ok(serde_json::json!({
+                    "name": name,
+                    "version": package.version,
+                    "platform": package.platform,
+                    "registry": package.registry,
+                    "runtime_store_path": package.store_path,
+                    "runtime_nar_hash": package.nar_hash,
+                    "runtime_nar_size": package.nar_size,
+                    "ability_store_path": ability.store_path,
+                    "ability_nar_hash": ability.nar_hash,
+                    "manifest_sha256": ability.manifest_sha256,
+                    "package_digest": ability.package_digest,
+                    "activation_revision": activation_revision,
+                }))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    object.insert("packages".to_string(), serde_json::Value::Array(packages));
+    Ok(Some(input))
+}
+
+fn retain_ability_sidecar_roots(
+    manifest: &mut serde_json::Map<String, serde_json::Value>,
+    activation: &serde_json::Value,
+) -> Result<()> {
+    let sidecar_paths = ["desired_state", "authenticated_policy_set"]
+        .into_iter()
+        .map(|field| {
+            activation
+                .get(field)
+                .and_then(|sidecar| sidecar.get("store_path"))
+                .and_then(serde_json::Value::as_str)
+                .with_context(|| format!("ability_activation.{field}.store_path is missing"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let store_paths = manifest
+        .get_mut("storePaths")
+        .and_then(serde_json::Value::as_array_mut)
+        .context("evaluated manifest storePaths is not an array")?;
+    for path in &sidecar_paths {
+        store_paths.push(serde_json::Value::String((*path).to_string()));
+    }
+    store_paths.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
+    store_paths.dedup();
+
+    let owners = manifest
+        .get_mut("ownership")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|ownership| ownership.get_mut("storePaths"))
+        .and_then(serde_json::Value::as_object_mut)
+        .context("evaluated manifest ownership.storePaths is not an object")?;
+    for path in sidecar_paths {
+        match owners.get(path).and_then(serde_json::Value::as_str) {
+            Some("@host") | None => {
+                owners.insert(
+                    path.to_string(),
+                    serde_json::Value::String("@host".to_string()),
+                );
+            }
+            Some(owner) => anyhow::bail!(
+                "ability activation sidecar {path} conflicts with store owner {owner:?}"
+            ),
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn current_config_generation_number(state_path: &Path) -> Result<u32> {
@@ -2121,6 +2249,7 @@ fn enrich_exposed_units(
                     .with_context(|| format!("validating runtime expose metadata for {package}"))?;
                 crate::types::validate_expose_artifact_meta(artifact)
                     .with_context(|| format!("validating runtime expose artifact for {package}"))?;
+
                 let unit_owner = existing_store_owners
                     .get(&artifact.store_path)
                     .and_then(serde_json::Value::as_str)
@@ -2136,6 +2265,12 @@ fn enrich_exposed_units(
                         unit_owner.to_string(),
                         package.clone(),
                     ));
+                }
+                if pin.uses_structured_effects() {
+                    // The native dispatcher still needs the authenticated unit
+                    // files to load concrete units. The structured graph owns
+                    // start/stop lifecycle, so omit only legacy enablement.
+                    continue;
                 }
                 entries.push((
                     format!("systemd/system/multi-user.target.wants/{}", expose.target),
@@ -2241,10 +2376,11 @@ fn enrich_expose_config_projections(
     let bindings = bindings
         .as_object()
         .context("evaluated configProjectionBindings must be an object")?;
+    let bindings = bindings.clone();
     let expected = runtime
         .packages
         .iter()
-        .filter_map(|(package, pin)| pin.config_projection.as_ref().map(|_| package.as_str()))
+        .filter_map(|(package, pin)| pin.config_projection.is_some().then_some(package.as_str()))
         .collect::<BTreeSet<_>>();
     let actual = bindings.keys().map(String::as_str).collect::<BTreeSet<_>>();
     if expected != actual {
@@ -2259,7 +2395,8 @@ fn enrich_expose_config_projections(
         .context("evaluated manifest config must be an object")?;
     let mut projections = BTreeMap::new();
     for package in expected {
-        let pin = runtime.packages[package]
+        let package_pin = &runtime.packages[package];
+        let pin = package_pin
             .config_projection
             .as_ref()
             .context("migrated package lost projection metadata")?;
@@ -2307,7 +2444,10 @@ fn enrich_expose_config_projections(
                 schema: materialize::ProjectedPackageConfig::SCHEMA.to_string(),
                 schema_hash: expected_schema_hash,
                 artifacts,
-                units: materialize::projected_unit_actions(&pin.config.artifacts),
+                units: materialize::projected_unit_actions_for_package(
+                    package_pin,
+                    &pin.config.artifacts,
+                ),
             },
         );
     }
@@ -2519,13 +2659,13 @@ pub fn reeval_cross_abi(
     inputs.base_lib.abi_hash = read_base_lib_abi_hash(running_base_lib, retained.to_module_abi)?;
     inputs.evaluator.store_path = evaluator_store_path.to_string_lossy().into_owned();
     inputs.evaluator.store_hash = evaluator_store_hash(&evaluator_path)?;
-    if inputs.runtime_modules.is_some() {
+    if inputs.runtime_modules.is_some() || inputs.ability_activation.is_some() {
         inputs.expected_current_generation = Some(
             expected_current_generation
-                .context("runtime-module re-evaluation requires the active generation snapshot")?,
+                .context("transactional re-evaluation requires the active generation snapshot")?,
         );
     }
-    if inputs.runtime_modules.is_some() {
+    if inputs.ability_activation.is_some() || inputs.runtime_modules.is_some() {
         object.insert(
             "schema".into(),
             serde_json::Value::String(materialize::ConfigManifest::SCHEMA_V2.to_string()),
@@ -2593,53 +2733,45 @@ fn retained_cross_abi_working_set(
     retained: &crate::types::CrossAbiReEvalInputs,
 ) -> Result<Vec<WorkingSetMember>> {
     let modules = &source.inputs.config_modules;
-    if modules.authorizations.len() != retained.config_module_paths.len() {
-        anyhow::bail!(
-            "retained generation has no complete authenticated config-module authorization set"
-        );
-    }
     Ok(retained
         .config_module_paths
         .iter()
         .zip(&modules.nar_hashes)
         .zip(&retained.config_module_packages)
         .zip(&modules.module_abi_compat)
-        .zip(&modules.authorizations)
-        .map(
-            |((((path, nar_hash), package), compat), authorization)| WorkingSetMember {
-                registry: None,
-                release_trust: None,
-                config_realization: None,
-                package: package.clone(),
-                version: source
+        .map(|(((path, nar_hash), package), compat)| WorkingSetMember {
+            registry: None,
+            release_trust: None,
+            config_realization: None,
+            package: package.clone(),
+            version: source
+                .package_outputs
+                .get(package)
+                .map(|pin| pin.version.clone()),
+            ability: None,
+            config_output: Some(path.clone()),
+            config_output_nar_hash: Some(nar_hash.clone()),
+            module_abi_compat: Some(*compat),
+            outputs: PackageOutputs {
+                self_output: source
                     .package_outputs
                     .get(package)
-                    .map(|pin| pin.version.clone()),
-                config_output: Some(path.clone()),
-                config_output_nar_hash: Some(nar_hash.clone()),
-                module_abi_compat: Some(*compat),
-                authorization: authorization.clone(),
-                outputs: PackageOutputs {
-                    self_output: source
-                        .package_outputs
-                        .get(package)
-                        .map(|pin| pin.store_path.clone()),
-                    dependencies: source
-                        .graph
-                        .edges
-                        .get(package)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|dependency| {
-                            source
-                                .package_outputs
-                                .get(dependency)
-                                .map(|pin| (dependency.clone(), pin.store_path.clone()))
-                        })
-                        .collect(),
-                },
+                    .map(|pin| pin.store_path.clone()),
+                dependencies: source
+                    .graph
+                    .edges
+                    .get(package)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|dependency| {
+                        source
+                            .package_outputs
+                            .get(dependency)
+                            .map(|pin| (dependency.clone(), pin.store_path.clone()))
+                    })
+                    .collect(),
             },
-        )
+        })
         .collect())
 }
 
@@ -2766,25 +2898,74 @@ where
 
 /// Recomputes a store path's NAR hash from its current bytes.
 fn retained_store_path_nar_hash(path: &Path) -> Result<String> {
-    let mut child = std::process::Command::new("nix-store")
-        .envs(aos_core::nix::aos_nix_env())
-        .arg("--dump")
+    let explicit_store = std::env::var_os("AOS_NIX_EVAL_STORE");
+    let rooted_nix_environment = std::env::var_os("AOS_ROOT").map(|_| aos_core::nix::aos_nix_env());
+    let eval_store =
+        retained_eval_store_uri(explicit_store.as_deref(), rooted_nix_environment.as_deref())?;
+    retained_store_path_nar_hash_in(path, eval_store.as_deref())
+}
+
+/// Selects an explicit evaluator store or reconstructs the exact rooted store.
+fn retained_eval_store_uri(
+    explicit_store: Option<&std::ffi::OsStr>,
+    rooted_nix_environment: Option<&[(&'static str, String)]>,
+) -> Result<Option<std::ffi::OsString>> {
+    if let Some(explicit_store) = explicit_store {
+        anyhow::ensure!(
+            !explicit_store.is_empty(),
+            "AOS_NIX_EVAL_STORE must not be empty"
+        );
+        return Ok(Some(explicit_store.to_os_string()));
+    }
+    let Some(rooted_nix_environment) = rooted_nix_environment else {
+        return Ok(None);
+    };
+    let setting = |name| {
+        rooted_nix_environment
+            .iter()
+            .find_map(|(candidate, value)| (*candidate == name).then_some(value.as_str()))
+            .with_context(|| format!("AOS_ROOT did not produce the required {name} binding"))
+    };
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("store", setting("NIX_STORE_DIR")?);
+    query.append_pair("state", setting("NIX_STATE_DIR")?);
+    query.append_pair("log", setting("NIX_LOG_DIR")?);
+    Ok(Some(format!("local?{}", query.finish()).into()))
+}
+
+/// Recomputes a store path's NAR hash through one exact evaluator store.
+fn retained_store_path_nar_hash_in(
+    path: &Path,
+    eval_store: Option<&std::ffi::OsStr>,
+) -> Result<String> {
+    let mut command = std::process::Command::new("nix");
+    command
+        .args(["--extra-experimental-features", "nix-command"])
+        .env_remove("NIX_REMOTE")
+        .env_remove("NIX_STORE_DIR")
+        .env_remove("NIX_STATE_DIR")
+        .env_remove("NIX_LOG_DIR");
+    if let Some(eval_store) = eval_store {
+        command.arg("--store").arg(eval_store);
+    }
+    let mut child = command
+        .args(["store", "dump-path"])
         .arg(path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("running nix-store --dump {}", path.display()))?;
+        .with_context(|| format!("running nix store dump-path {}", path.display()))?;
     let stdout = child
         .stdout
         .take()
-        .context("nix-store --dump did not provide stdout")?;
+        .context("nix store dump-path did not provide stdout")?;
     let hash = crate::verify::sha256_stream(stdout);
     let output = child
         .wait_with_output()
-        .with_context(|| format!("waiting for nix-store --dump {}", path.display()))?;
+        .with_context(|| format!("waiting for nix store dump-path {}", path.display()))?;
     if !output.status.success() {
         anyhow::bail!(
-            "nix-store --dump failed for {}: {}",
+            "nix store dump-path failed for {}: {}",
             path.display(),
             String::from_utf8_lossy(&output.stderr).trim(),
         );

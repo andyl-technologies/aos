@@ -1,0 +1,19 @@
+[package]
+name = "aos-configuration-provider"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-ability-model.workspace = true
+aos-contract.workspace = true
+aos-provider-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+rustix = { workspace = true, features = ["fs", "process"] }
+
+[dev-dependencies]
+tempfile.workspace = true

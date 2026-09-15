@@ -56,6 +56,8 @@ pub trait Manager {
     /// Resolve a unit name to its object path; fails with `NoSuchUnit`
     /// if the unit is not currently loaded.
     fn get_unit(&self, name: &str) -> zbus::Result<OwnedObjectPath>;
+    /// Loads a unit definition without starting it and returns its object path.
+    fn load_unit(&self, name: &str) -> zbus::Result<OwnedObjectPath>;
     /// List units filtered by active states and shell-glob name patterns;
     /// empty slices mean "no filter".
     fn list_units_by_patterns(
@@ -96,6 +98,18 @@ pub trait Manager {
     default_service = "org.freedesktop.systemd1"
 )]
 pub trait Unit {
+    /// Enqueues a start job for this exact unit object.
+    fn start(&self, mode: &str) -> zbus::Result<OwnedObjectPath>;
+    /// Enqueues a stop job for this exact unit object.
+    fn stop(&self, mode: &str) -> zbus::Result<OwnedObjectPath>;
+    /// Enqueues a restart job for this exact unit object.
+    fn restart(&self, mode: &str) -> zbus::Result<OwnedObjectPath>;
+    /// Enqueues a reload job for this exact unit object.
+    fn reload(&self, mode: &str) -> zbus::Result<OwnedObjectPath>;
+
+    /// Canonical unit name, including its type suffix.
+    #[zbus(property)]
+    fn id(&self) -> zbus::Result<String>;
     /// High-level activation state (`"active"`, `"failed"`, ...).
     #[zbus(property)]
     fn active_state(&self) -> zbus::Result<String>;
@@ -111,6 +125,12 @@ pub trait Unit {
     /// Filesystem path of the unit's fragment (its main unit file).
     #[zbus(property)]
     fn fragment_path(&self) -> zbus::Result<String>;
+    /// Whether systemd has detected unit files newer than its loaded state.
+    #[zbus(property)]
+    fn need_daemon_reload(&self) -> zbus::Result<bool>;
+    /// Documentation references parsed into the manager's loaded unit object.
+    #[zbus(property)]
+    fn documentation(&self) -> zbus::Result<Vec<String>>;
 }
 
 /// `org.freedesktop.systemd1.Service` — per-path, for `.service` units only.

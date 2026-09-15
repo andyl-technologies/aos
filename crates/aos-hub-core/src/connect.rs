@@ -289,6 +289,19 @@ fn browse_response(rendered: Rendered) -> Response {
             body,
         )
             .into_response(),
+        Rendered::PrivateHtml(body) => (
+            [
+                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (
+                    header::CONTENT_SECURITY_POLICY,
+                    "default-src 'self'; frame-ancestors 'none'",
+                ),
+                (header::CACHE_CONTROL, "private, no-store"),
+                (header::VARY, "Cookie, Authorization"),
+            ],
+            body,
+        )
+            .into_response(),
         Rendered::Json(body) => {
             ([(header::CONTENT_TYPE, "application/json")], body).into_response()
         }
@@ -424,6 +437,10 @@ async fn browse_dispatch(
                         match suffix {
                             "documentation" => {
                                 browse::api_package_documentation(&svc, &slug, package, &q).await
+                            }
+                            "abilities" => {
+                                browse::api_package_ability_reference(&svc, &slug, package, &q)
+                                    .await
                             }
                             "options" => {
                                 browse::api_package_options(&svc, &slug, package, &q).await
@@ -1804,9 +1821,21 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         list_registries
     );
     r = rpc_route!(r, "/aos.hub.v1.RegistryService/GetRegistry", get_registry);
-    r = rpc_route!(r, "/aos.hub.v1.RegistryService/GetRegistryMetadata", get_registry_metadata);
-    r = rpc_route!(r, "/aos.hub.v1.RegistryService/PlanUpdateRegistryMetadata", plan_update_registry_metadata);
-    r = rpc_route!(r, "/aos.hub.v1.RegistryService/UpdateRegistryMetadata", update_registry_metadata);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryService/GetRegistryMetadata",
+        get_registry_metadata
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryService/PlanUpdateRegistryMetadata",
+        plan_update_registry_metadata
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryService/UpdateRegistryMetadata",
+        update_registry_metadata
+    );
     r = rpc_route!(r, "/aos.hub.v1.RegistryService/ListReleases", list_releases);
     r = rpc_route!(
         r,
@@ -2664,6 +2693,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     );
     r = rpc_route!(
         r,
+        "/aos.hub.v1.DocumentationService/GetPackageAbilityReference",
+        get_package_ability_reference
+    );
+    r = rpc_route!(
+        r,
         "/aos.hub.v1.DocumentationService/SearchPackageDocumentation",
         search_package_documentation
     );
@@ -2691,6 +2725,27 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         r,
         "/aos.hub.v1.DocumentationService/GetPackageDocumentationSchema",
         get_package_documentation_schema
+    );
+    // AbilityDeploymentService - authenticated, private live reference overlays.
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.AbilityDeploymentService/PlanConfigureReporter",
+        plan_configure_ability_deployment_reporter
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.AbilityDeploymentService/ConfigureReporter",
+        configure_ability_deployment_reporter
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.AbilityDeploymentService/ReportPackageOverlay",
+        report_package_ability_deployment
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.AbilityDeploymentService/GetPackageOverlay",
+        get_package_ability_deployment
     );
     // ChannelService
     r = rpc_route!(r, "/aos.hub.v1.ChannelService/ListChannels", list_channels);
@@ -3870,10 +3925,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
             .route("/_assets/app.js", get(assets::app_js))
             .route("/_assets/theme.js", get(assets::theme_js))
             .route("/_assets/{asset}", get(assets::console_asset))
-            .route(
-                "/_assets/geist-sans-variable.woff2",
-                get(assets::font_sans),
-            )
+            .route("/_assets/geist-sans-variable.woff2", get(assets::font_sans))
             .route("/_assets/geist-mono-variable.woff2", get(assets::font_mono))
             .route("/_assets/OFL.txt", get(assets::font_license));
         // Crawler-control and LLM-summary documents, served from the shared
@@ -4395,6 +4447,29 @@ mod tests {
         assert_eq!(
             content_addressed.headers().get(header::ETAG),
             Some(&HeaderValue::from_static("\"digest\""))
+        );
+    }
+
+    #[test]
+    fn authorized_deployment_html_is_private_and_varies_by_credentials() {
+        let response = browse_response(Rendered::PrivateHtml(
+            "<p>private deployment overlay</p>".into(),
+        ));
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static("private, no-store"))
+        );
+        assert_eq!(
+            response.headers().get(header::VARY),
+            Some(&HeaderValue::from_static("Cookie, Authorization"))
+        );
+        assert_eq!(
+            response.headers().get(header::CONTENT_SECURITY_POLICY),
+            Some(&HeaderValue::from_static(
+                "default-src 'self'; frame-ancestors 'none'"
+            ))
         );
     }
 

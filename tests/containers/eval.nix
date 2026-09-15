@@ -34,6 +34,7 @@
     builtins.tryEval (builtins.deepSeq evaluated.config.system.build.toplevel true);
 
   server = evaluateServer {};
+  userland = evaluate "userland-eval" [];
   testing = evaluate "aos-testing-eval" [testingModule];
   aos = definitionFor {};
   testingAos = testing.config.aos.containers.definitions.aos;
@@ -104,6 +105,9 @@
   shellEntrypoint = tryDefinition {
     aos.containers.definitions.aos.runtime.entrypoint = lib.mkForce ["aos --help"];
   };
+  imageDefaultRuntimeGrant = tryDefinition {
+    aos.containers.definitions.aos.abilities.runtimeGrants = ["host-manager"];
+  };
   overrideSource = pkgs.writeTextFile {
     name = "container-evidence-override-test-source";
     text = "source\n";
@@ -138,6 +142,7 @@
   ];
   testingFilePaths = map (file: file.path) testingAos.filesystem.files;
   testingFileText = lib.concatMapStringsSep "\n" (file: file.text) testingAos.filesystem.files;
+  containerFilePaths = map (file: file.path) aos.filesystem.files;
 in
   assert aos.name == "aos";
   assert builtins.attrNames server.config.system.build.containers == ["aos"];
@@ -150,12 +155,24 @@ in
     enable = true;
     bakedGcRoots = true;
   };
-  assert aos.filesystem.allowedFacadeCollisions == ["kill"];
+  assert aos.filesystem.allowedFacadeCollisions == [];
   assert map (entry: entry.name) aos.filesystem.facade == ["aos" "apm" "apr"];
   assert map (entry: entry.target) aos.filesystem.facade
   == ["${pkgs.aos}/bin/aos" "${pkgs.aos.apm}/bin/apm" "${pkgs.aos.apr}/bin/apr"];
   assert aos.runtime.environment.PATH == "/var/lib/profiles/per-user/root/current/bin:/var/lib/profiles/per-user/root/current/sbin:/usr/bin:/usr/sbin:/bin";
   assert aos.runtime.environment.NIX_REMOTE == "local";
+  assert !userland.config.aos.boot.initrd.abilityHandoff.enable;
+  assert !(userland.config.boot.initrd.systemd.services ? aos-ability-initrd-controller);
+  assert !(userland.config.systemd.services ? aos-ability-host-receiver);
+  assert !builtins.elem
+  "aos-ability-host-receiver.service"
+  userland.config.systemd.services.aos-eval.requires;
+  assert !builtins.elem
+  "/etc/systemd/system/aos-ability-initrd-controller.service"
+  containerFilePaths;
+  assert !builtins.elem
+  "/etc/systemd/system/aos-ability-host-receiver.service"
+  containerFilePaths;
   assert aos.runtime.environment.XDG_DATA_HOME == "/root/.local/share";
   assert aos.runtime.workingDirectory == "/work";
   assert (builtins.head aos.filesystem.directories).path == "/root";
@@ -222,6 +239,7 @@ in
   assert !traversalDirectory.success;
   assert !unsafeRepository.success;
   assert !shellEntrypoint.success;
+  assert !imageDefaultRuntimeGrant.success;
   assert !mismatchedEvidenceOverrideOutput.success;
   assert !invalidTestingRegistry.success;
   assert !invalidTestingChannel.success;

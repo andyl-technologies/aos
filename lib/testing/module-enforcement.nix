@@ -66,8 +66,7 @@
   imageBudgetCheckWired = healthySystem.config.system.build.checks ? image-budget;
   defaultRootPartitionHasHeadroom =
     healthySystem.config.aos.image.rootPartitionMiB
-    == 1024
-    && healthySystem.config.aos.image.budgets.maxRootMiB == 512;
+    > healthySystem.config.aos.image.budgets.maxRootMiB;
 
   overriddenRootPartitionSystem = aos.mkSystem {
     modules = [
@@ -260,10 +259,6 @@
     packageModules = [
       {
         name = "diagnostic-fixture";
-        authorization = {
-          owns = [];
-          contributes = {};
-        };
         module.config = {
           assertions = [
             {
@@ -365,6 +360,7 @@
             artifacts = lib.mkOption {
               type = lib.types.attrsOf lib.types.str;
               default = {};
+              contributable = true;
             };
             observedOwner = lib.mkOption {type = lib.types.str;};
           };
@@ -376,10 +372,6 @@
       packageModules = [
         {
           name = "redis";
-          authorization = {
-            owns = ["artifacts"];
-            contributes = {};
-          };
           module = {config.artifacts."pkg.conf" = "value";};
         }
       ];
@@ -413,14 +405,11 @@
         };
       });
       default = {};
+      contributable = true;
     };
   };
   packageRecord = module: {
     name = "redis";
-    authorization = {
-      owns = ["tree" "artifacts" "rules"];
-      contributes = {nginx = ["virtualHosts"];};
-    };
     inherit module;
   };
   nestedPriorityEval = lib.evalModules {
@@ -476,6 +465,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
+            contributable = true;
           };
           options.observed = lib.mkOption {type = lib.types.str;};
         })
@@ -504,6 +494,7 @@
             options.nginx.enable = lib.mkOption {
               type = lib.types.bool;
               default = false;
+              contributable = true;
             };
           })
         ];
@@ -528,16 +519,13 @@
                 };
               });
               default = {};
+              contributable = true;
             };
           })
         ];
         packageModules = [
           {
             name = "redis";
-            authorization = {
-              owns = [];
-              contributes.systemd = ["services"];
-            };
             module.config.systemd.services.victim.enable = true;
           }
         ];
@@ -570,12 +558,27 @@
       .left
     ))
     .success;
-  foreignPackageDeclarationRejected =
+  uniquePackageDeclarationAccepted =
+    (lib.evalModules {
+      modules = [];
+      packageModules = [
+        (packageRecord ({lib, ...}: {
+          options.redis.value = lib.mkOption {type = lib.types.str;};
+          config.redis.value = "owned";
+        }))
+      ];
+      inherit lib;
+    })
+    .config
+    .redis
+    .value
+    == "owned";
+  duplicatePackageDeclarationRejected =
     !(builtins.tryEval (
-      (lib.evalModules {
+      builtins.deepSeq (lib.evalModules {
         modules = [
           ({lib, ...}: {
-            options.nginx.enable = lib.mkOption {
+            options.nginx.foreignDefault = lib.mkOption {
               type = lib.types.bool;
               default = false;
             };
@@ -591,9 +594,7 @@
         ];
         inherit lib;
       })
-      .config
-      .nginx
-      .enable
+      true
     ))
     .success;
   allowedContributionAccepted =
@@ -603,6 +604,7 @@
           options.nginx.virtualHosts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
+            contributable = true;
           };
         })
       ];
@@ -614,6 +616,33 @@
     .virtualHosts
     .demo
     == "ok";
+  nonContributableContributionRejected =
+    !(builtins.tryEval (
+      builtins.deepSeq (lib.evalModules {
+        modules = [
+          ({lib, ...}: {
+            options.nginx.workerProcesses = lib.mkOption {
+              type = lib.types.int;
+              default = 1;
+            };
+          })
+        ];
+        packageModules = [(packageRecord {config.nginx.workerProcesses = 8;})];
+        inherit lib;
+      })
+      true
+    ))
+    .success;
+  undeclaredPackageWriteRejected =
+    !(builtins.tryEval (
+      builtins.deepSeq (lib.evalModules {
+        modules = [];
+        packageModules = [(packageRecord {config.undeclared.value = true;})];
+        inherit lib;
+      })
+      true
+    ))
+    .success;
   mkOrderOwnershipPeeled =
     (lib.evalModules {
       modules = [
@@ -621,6 +650,7 @@
           options.rules = lib.mkOption {
             type = lib.types.listOf lib.types.str;
             default = [];
+            contributable = true;
           };
           options.observed = lib.mkOption {type = lib.types.str;};
         })
@@ -648,6 +678,7 @@
               };
             });
             default = {};
+            contributable = true;
           };
           options.observedOwners = lib.mkOption {type = lib.types.listOf lib.types.str;};
         })
@@ -657,10 +688,6 @@
         (packageRecord {config.artifacts.mixed.left = "left";})
         {
           name = "other";
-          authorization = {
-            owns = ["artifacts"];
-            contributes = {};
-          };
           module.config.artifacts.mixed.right = "right";
         }
       ];
@@ -678,6 +705,7 @@
             artifacts = lib.mkOption {
               type = lib.types.attrsOf lib.types.str;
               default = {};
+              contributable = true;
             };
             observed = lib.mkOption {type = lib.types.str;};
           };
@@ -688,10 +716,6 @@
       packageModules = [
         {
           name = "provider";
-          authorization = {
-            owns = [];
-            contributes = {};
-          };
           module = {lib, ...}: {
             options.provider.value = lib.mkOption {
               type = lib.types.str;
@@ -713,10 +737,6 @@
         packageModules = [
           {
             name = "provider";
-            authorization = {
-              owns = [];
-              contributes = {};
-            };
             module = {lib, ...}: {
               options.provider.value = lib.mkOption {type = lib.types.str;};
               config.provider.value = "private";
@@ -724,10 +744,6 @@
           }
           {
             name = "consumer";
-            authorization = {
-              owns = [];
-              contributes = {};
-            };
             module = {
               lib,
               config,
@@ -753,6 +769,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
+            contributable = true;
           };
           options.observed = lib.mkOption {type = lib.types.str;};
         })
@@ -783,6 +800,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
+            contributable = true;
           };
         })
       ];
@@ -801,6 +819,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
+            contributable = true;
           };
         })
       ];
@@ -844,6 +863,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
+            contributable = true;
           };
           options.observed = lib.mkOption {type = lib.types.str;};
         })
@@ -863,6 +883,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
+            contributable = true;
           };
         })
       ];
@@ -1035,30 +1056,6 @@
     ))
     .success;
 
-  # --- mkPackageRoot ({pkg}.* mount) ----------------------------------
-  #
-  # Mount a package module under its own root name; the root name is injected
-  # as the submodule `name`, and an un-configured root is inert (defaults).
-  pkgRootEval = lib.evalModules {
-    modules =
-      (lib.mountPackageModules {
-        redis = {name, ...}: {
-          options.enable = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-          };
-          options.rootName = lib.mkOption {
-            type = lib.types.str;
-            default = name;
-          };
-        };
-      })
-      ++ [{config.redis.enable = true;}];
-    lib = lib;
-  };
-  pkgRootNameInjected = pkgRootEval.config.redis.rootName == "redis";
-  pkgRootConfigurable = pkgRootEval.config.redis.enable == true;
-
   # --- Authenticated package import roots -----------------------------
   confinedPackageImport =
     (lib.evalModules {
@@ -1066,10 +1063,6 @@
       packageModules = [
         {
           name = "import-fixture";
-          authorization = {
-            owns = ["importConfinement"];
-            contributes = {};
-          };
           configRoot = ./fixtures/package-import-confined;
           module = ./fixtures/package-import-confined/module.nix;
           outputs = {
@@ -1091,10 +1084,6 @@
           packageModules = [
             {
               name = "import-fixture";
-              authorization = {
-                owns = ["importConfinement"];
-                contributes = {};
-              };
               configRoot = ./fixtures/package-import-escaped;
               module = ./fixtures/package-import-escaped/module.nix;
               outputs = {
@@ -1118,10 +1107,6 @@
           packageModules = [
             {
               name = "import-fixture";
-              authorization = {
-                owns = ["importConfinement"];
-                contributes = {};
-              };
               configRoot = ./fixtures/package-import-evaluated;
               module = ./fixtures/package-import-evaluated/module.nix;
               outputs = {
@@ -1145,10 +1130,6 @@
           packageModules = [
             {
               name = "import-fixture";
-              authorization = {
-                owns = ["importConfinement"];
-                contributes = {};
-              };
               configRoot = ./fixtures/package-import-string-escape;
               module = ./fixtures/package-import-string-escape/module.nix;
               outputs = {
@@ -1172,10 +1153,6 @@
         packageModules = [
           {
             name = "output-fixture";
-            authorization = {
-              owns = ["outputConfinement"];
-              contributes = {};
-            };
             configRoot = ./fixtures/package-output-unlisted;
             module = ./fixtures/package-output-unlisted/module.nix;
             outputs = {
@@ -1277,7 +1254,12 @@
         message = "imported forged _file provenance";
       }
       {
-        ok = foreignEnableRejected && nestedForeignEnableRejected && allowedContributionAccepted;
+        ok =
+          foreignEnableRejected
+          && nestedForeignEnableRejected
+          && allowedContributionAccepted
+          && nonContributableContributionRejected
+          && undeclaredPackageWriteRejected;
         message = "actual package write authorization";
       }
       {
@@ -1285,8 +1267,8 @@
         message = "package _module.args authorization";
       }
       {
-        ok = foreignPackageDeclarationRejected;
-        message = "package option declaration authorization";
+        ok = uniquePackageDeclarationAccepted && duplicatePackageDeclarationRejected;
+        message = "package option declaration ownership";
       }
       {
         ok = mkOrderOwnershipPeeled;
@@ -1315,10 +1297,6 @@
       {
         ok = uniqEnumAgrees && uniqEnumRejectsConflict && uniqEnumRejectsBadValue;
         message = "uniqEnum semantics";
-      }
-      {
-        ok = pkgRootNameInjected && pkgRootConfigurable;
-        message = "package root mount";
       }
       {
         ok = confinedPackageImport && escapedPackageImportRejected && evaluatedPackageImportRejected && lexicalStringPackageImportRejected;
@@ -1355,7 +1333,6 @@ in
           echo "  no operatorModules means no priority lift: OK"
           echo "  package provenance cannot forge operator priority: OK"
           echo "  types.uniqEnum agree/conflict: OK"
-          echo "  mkPackageRoot mount and name injection: OK"
           mkdir -p "$out"
           echo PASS > "$out/result"
         '';

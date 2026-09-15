@@ -15,6 +15,9 @@ use crate::tools::PinnedTool;
 
 const MAX_TOOL_STDOUT_BYTES: u64 = 1024 * 1024;
 const INITRD_EXPANSION_FACTOR: u64 = 32;
+// Keep the normalized rebuild byte-compatible with the image-side root builder.
+// Linux 7.2 supports physical EROFS clusters through 1 MiB.
+const EROFS_PHYSICAL_CLUSTER_ARGUMENT: &str = "-C1048576";
 
 /// Extracts one EROFS image into a newly created tree.
 ///
@@ -78,7 +81,7 @@ pub async fn rebuild_erofs(
                 "--workers=1",
                 "-z",
                 &compression,
-                "-C262144",
+                EROFS_PHYSICAL_CLUSTER_ARGUMENT,
                 "-Eztailpacking",
                 "-L",
                 &layout.root_filesystem_label,

@@ -1,5 +1,6 @@
 ##! python3 — Python 3.14 interpreter
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -19,7 +20,17 @@
   buildPackages,
 }: let
   version = "3.14.3";
+  pythonVersion = "3.14";
+  pythonAbi = "314";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+
+  extensionPlatformBySystem = {
+    "aarch64-linux" = "aarch64-linux-gnu";
+    "x86_64-linux" = "x86_64-linux-gnu";
+  };
+  extensionPlatform =
+    extensionPlatformBySystem.${stdenv.hostPlatform.system} or null;
+  sqliteExtensionFor = platform: "/lib/python${pythonVersion}/lib-dynload/_sqlite3.cpython-${pythonAbi}-${platform}.so";
 
   markupsafeSrc = fetchurl {
     urls = [
@@ -238,6 +249,34 @@ in
       self,
       pkgs,
     }: {
+      ${
+        if extensionPlatform != null
+        then "sqlite-extension-consumption"
+        else null
+      } = let
+        sqliteExtension = sqliteExtensionFor extensionPlatform;
+      in
+        import ../../../lib/build/artifact-consumption-audit.nix {
+          inherit pkgs lib;
+          name = "python-sqlite-runtime-plugin";
+          consumer = self;
+          consumerPath = "/bin/python3";
+          provider = self;
+          providerPath = sqliteExtension;
+          targetPlatform = {
+            system = stdenv.hostPlatform.constraints.os;
+            architecture = stdenv.hostPlatform.constraints.cpu;
+          };
+          mechanism = "runtime-plugin-load";
+          arguments = [
+            "-c"
+            ''import importlib.util, sys; specification = importlib.util.spec_from_file_location("_sqlite3", sys.argv[1]); module = importlib.util.module_from_spec(specification); specification.loader.exec_module(module); print(module.sqlite_version)''
+            "${self}${sqliteExtension}"
+          ];
+          expectedOutputSha256 = "sha256:${builtins.hashString "sha256" "${sqlite.version}\n"}";
+          inspector = pkgs.buildPackages.aos;
+        };
+
       import = testing.mkVMTest {
         name = "cross-cutting-python-import";
         rootfsDeps = [self];

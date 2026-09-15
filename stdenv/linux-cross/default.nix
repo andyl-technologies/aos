@@ -84,7 +84,7 @@
   cargoTargetPrefix = lib.toUpper (builtins.replaceStrings ["-"] ["_"] hostPlatform.config);
   cargoTargetLinkerVariable = "CARGO_TARGET_${cargoTargetPrefix}_LINKER";
   cargoTargetArVariable = "CARGO_TARGET_${cargoTargetPrefix}_AR";
-  compilerRuntimeDirectory = "${toolchain.gcc}/${hostPlatform.config}/lib64";
+  compilerRuntimeDirectory = "${toolchain.gccRuntime}/lib";
   compilerRuntimeLdFlags = "-L${compilerRuntimeDirectory} -Wl,-rpath,${compilerRuntimeDirectory} -Wl,-rpath-link,${compilerRuntimeDirectory}";
   collectRuntimeClosure = deps: seen: let
     newDependencies =
@@ -245,7 +245,11 @@
         AOS_RUST_TARGET = hostPlatform.config;
         "${cargoTargetLinkerVariable}" = "${ccWrapper}/bin/cc";
         "${cargoTargetArVariable}" = "${ccWrapper}/bin/ar";
-        nukeRefsKeep = (args.nukeRefsKeep or []) ++ [toolchain.glibc toolchain.gcc];
+        nukeRefsKeep = (args.nukeRefsKeep or []) ++ [toolchain.glibc toolchain.gccRuntime];
+        # Target package outputs must never retain the scheduler-native cross
+        # compiler. The extracted runtime above is the only permitted GCC
+        # runtime path in a Linux cross-built closure.
+        disallowedReferences = (args.disallowedReferences or []) ++ [toolchain.gcc];
       }
     );
 
@@ -276,7 +280,7 @@ in {
     initialPath
     ;
   inherit (buildStdenv) fetchurl fetchgit bootstrap;
-  inherit (toolchain) gcc glibc binutils linuxHeaders;
+  inherit (toolchain) gcc gccRuntime glibc binutils linuxHeaders;
 
   cc = ccWrapper;
   shell = shellPath;

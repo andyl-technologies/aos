@@ -49,7 +49,7 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha256};
 
 use aos_core::output::{OutputMode, Printer};
@@ -68,12 +68,26 @@ use crate::resolve::{collect_unique_metas, resolve_multiple};
 use crate::store::filter_missing;
 use crate::types::{
     ConfigGeneration, ConfigGenerationState, CrossAbiReEvalInputs, ImageGeneration,
-    ImageGenerationState, ImageSlot, ImageVerificationState, PackageMeta, ProfileScope,
-    ReactivationPlan, RecoveryPublication, RecoveryUkiEntry, RegistryRootConfig, SysrootImageEntry,
-    SysrootUkiEntry, UkiSlot,
+    ImageGenerationState, ImageRollout, ImageSlot, ImageVerificationState, PackageMeta,
+    ProfileScope, ReactivationPlan, RecoveryPublication, RecoveryUkiEntry, RegistryRootConfig,
+    SysrootImageEntry, SysrootUkiEntry, UkiSlot,
 };
 use crate::unit_diff::{self, UnitDiff};
 use crate::verify::{verify_download_hash, verify_downloads};
+
+mod activatability;
+pub(crate) mod image_rollout;
+pub use image_rollout::run_provider_from_process as run_image_rollout_provider;
+
+pub use activatability::{
+    ActivatabilityReason, ActivatabilityReasonCode, RETAINED_ACTIVATABILITY_SCHEMA,
+    RetainedActivatabilityReport, RetainedActivationMode, RetainedTargetKind,
+};
+
+use image_rollout::{
+    is_qualified_image_rollout, preflight_image_selection, qualified_rollout_record,
+    validate_active_rollout_selection,
+};
 
 // ---------------------------------------------------------------------------
 // Kernel upgrade mode
@@ -107,12 +121,13 @@ const ROOT_B_DEVICE: &str = "/dev/disk/by-partlabel/root-b";
 const ROOT_A_HASH_DEVICE: &str = "/dev/disk/by-partlabel/root-a-hash";
 const ROOT_B_HASH_DEVICE: &str = "/dev/disk/by-partlabel/root-b-hash";
 const RUNNING_TOPLEVEL_LINK: &str = "/aos-toplevel";
-const RUNNING_OS_RELEASE: &str = "/aos-toplevel/os-release";
 const IMMUTABLE_DRAIN_SCRIPT: &str = "/usr/lib/aos/drain";
 const RUNNING_CMDLINE: &str = "/proc/cmdline";
 const IMMUTABLE_ACTIVE_DB_CERTS: &str = "/usr/lib/aos/image-trust/active-db-certs.pem";
 const MAX_CONFIGURED_DB_CERTIFICATES: usize = 32;
 const MAX_INSTALLED_UKI_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_OS_RELEASE_BYTES: u64 = 64 * 1024;
+const MAX_UKI_IDENTITY_SECTION_BYTES: usize = 64 * 1024;
 const SUPPORTED_RECOVERY_ABI: u32 = 1;
 
 /// Recoverable intent record for publishing a generation as current.
@@ -257,9 +272,37 @@ impl ImageSlotLayout {
 pub(crate) fn running_image_generation() -> Result<ImageGeneration> {
     load_running_image_generation_from(
         Path::new(IMAGE_PROFILE_DIR),
-        Path::new(RUNNING_OS_RELEASE),
         Path::new(RUNNING_TOPLEVEL_LINK),
         Path::new(RUNNING_CMDLINE),
+        Path::new("/"),
+    )
+}
+
+/// Resolves the booted image generation beneath an already mounted root.
+///
+/// The image profile is supplied explicitly because the initrd sees durable
+/// profile state beneath `/sysroot`, while the immutable identity files live
+/// beneath `root`. Kernel command-line and block-device evidence remain in the
+/// current boot namespace and are checked by the same production validator as
+/// [`running_image_generation`].
+///
+/// # Errors
+///
+/// Returns an error if any image index, immutable identity, root-slot, or
+/// verity input is absent, malformed, or inconsistent.
+pub(crate) fn running_image_generation_beneath(
+    image_profile: &Path,
+    root: &Path,
+) -> Result<ImageGeneration> {
+    if !root.is_absolute() {
+        bail!("running image root must be absolute");
+    }
+
+    load_running_image_generation_from(
+        image_profile,
+        &root.join("aos-toplevel"),
+        Path::new(RUNNING_CMDLINE),
+        root,
     )
 }
 
@@ -273,24 +316,24 @@ pub(crate) fn load_image_generation_state_pub(profile: &Path) -> Result<ImageGen
 
 fn load_running_image_generation_from(
     image_profile: &Path,
-    os_release: &Path,
     toplevel_link: &Path,
     cmdline: &Path,
+    immutable_root: &Path,
 ) -> Result<ImageGeneration> {
     load_running_image_generation_with_device_identity(
         image_profile,
-        os_release,
         toplevel_link,
         cmdline,
+        immutable_root,
         block_device_identity,
     )
 }
 
 fn load_running_image_generation_with_device_identity<F>(
     image_profile: &Path,
-    os_release: &Path,
     toplevel_link: &Path,
     cmdline: &Path,
+    immutable_root: &Path,
     device_identity: F,
 ) -> Result<ImageGeneration>
 where
@@ -309,6 +352,11 @@ where
     })?;
     let baked_toplevel = std::fs::read_link(toplevel_link)
         .with_context(|| format!("reading running image pointer {}", toplevel_link.display()))?;
+    let baked_toplevel_text = baked_toplevel
+        .to_str()
+        .context("running image pointer target is not UTF-8")?;
+    crate::config_eval::materialize::validate_canonical_store_path(baked_toplevel_text)
+        .context("validating running image pointer target")?;
     if baked_toplevel != Path::new(&running.toplevel) {
         bail!(
             "running image pointer {} disagrees with image generation {} toplevel {}",
@@ -317,12 +365,14 @@ where
             running.toplevel
         );
     }
-    let baked_base_lib = std::fs::read_link(toplevel_link.join("base-lib")).with_context(|| {
-        format!(
-            "reading immutable running base-library pointer {}/base-lib",
-            toplevel_link.display()
-        )
-    })?;
+    let immutable_toplevel = resolve_absolute_path_beneath(immutable_root, &baked_toplevel)?;
+    let baked_base_lib =
+        std::fs::read_link(immutable_toplevel.join("base-lib")).with_context(|| {
+            format!(
+                "reading immutable running base-library pointer {}/base-lib",
+                immutable_toplevel.display()
+            )
+        })?;
     if baked_base_lib != Path::new(&running.evaluator_ref) {
         bail!(
             "running image base library {} disagrees with image generation {} evaluator_ref {}",
@@ -331,13 +381,13 @@ where
             running.evaluator_ref
         );
     }
-    let immutable_abi = read_toplevel_meta(toplevel_link, "module-abi")?
+    let immutable_abi = read_toplevel_meta(&immutable_toplevel, "module-abi")?
         .parse::<u32>()
         .context("immutable toplevel has invalid module ABI")?;
-    let immutable_digest = read_toplevel_meta(toplevel_link, "baselib-digest")?;
-    let immutable_uki = read_toplevel_meta(toplevel_link, "uki-path")?;
-    let immutable_package = read_toplevel_meta(toplevel_link, "package-name")?;
-    let immutable_version = read_toplevel_meta(toplevel_link, "version")?;
+    let immutable_digest = read_toplevel_meta(&immutable_toplevel, "baselib-digest")?;
+    let immutable_uki = read_toplevel_meta(&immutable_toplevel, "uki-path")?;
+    let immutable_package = read_toplevel_meta(&immutable_toplevel, "package-name")?;
+    let immutable_version = read_toplevel_meta(&immutable_toplevel, "version")?;
     let recorded_uki = running
         .uki_source_path
         .as_deref()
@@ -353,7 +403,10 @@ where
             running.number
         );
     }
-    let fields = parse_os_release(os_release)?;
+    let os_release = std::fs::read_link(immutable_toplevel.join("os-release"))
+        .context("reading immutable running os-release pointer")?;
+    let fields = read_immutable_os_release(immutable_root, &os_release)
+        .context("reading immutable running os-release identity")?;
     let abi = fields
         .get("AOS_MODULE_ABI")
         .context("running os-release has no AOS_MODULE_ABI")?
@@ -377,7 +430,7 @@ where
         .get("systemd.verity_root_data")
         .or_else(|| cmdline_fields.get("root"))
     {
-        let layout = ImageSlotLayout::from_toplevel(toplevel_link)?;
+        let layout = ImageSlotLayout::from_toplevel(&immutable_toplevel)?;
         let booted_slot = image_slot_for_root(Path::new(root), &layout, device_identity)?;
         if booted_slot != running.slot {
             bail!(
@@ -387,6 +440,17 @@ where
         }
     }
     Ok(running)
+}
+
+fn resolve_absolute_path_beneath(root: &Path, target: &Path) -> Result<PathBuf> {
+    ensure!(
+        root.is_absolute(),
+        "immutable filesystem root must be absolute"
+    );
+    let relative = target
+        .strip_prefix("/")
+        .context("immutable path target must be absolute")?;
+    Ok(root.join(relative))
 }
 
 /// Returns the kernel identity of an opened block device.
@@ -446,9 +510,27 @@ fn parse_kernel_cmdline(path: &Path) -> Result<std::collections::BTreeMap<String
     Ok(fields)
 }
 
-fn parse_os_release(path: &Path) -> Result<std::collections::BTreeMap<String, String>> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading running image identity {}", path.display()))?;
+fn read_immutable_os_release(
+    immutable_root: &Path,
+    logical_path: &Path,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let logical_path_text = logical_path
+        .to_str()
+        .context("immutable os-release pointer is not UTF-8")?;
+    crate::config_eval::materialize::validate_canonical_store_member_path(logical_path_text)
+        .context("validating immutable os-release pointer")?;
+    let relative_path = logical_path
+        .strip_prefix("/")
+        .context("immutable os-release pointer is not absolute")?
+        .to_str()
+        .context("immutable os-release relative path is not UTF-8")?;
+    let bytes = crate::config_eval::materialize::read_bounded_bytes_beneath(
+        immutable_root,
+        relative_path,
+        MAX_OS_RELEASE_BYTES,
+    )?;
+    let text = std::str::from_utf8(&bytes).context("immutable os-release is not UTF-8")?;
+
     let mut fields = std::collections::BTreeMap::new();
     for line in text.lines() {
         let line = line.trim();
@@ -681,6 +763,16 @@ pub async fn install_system(
         let switch_lock =
             crate::config_eval::activation::ActivateConfigParams::default().switch_lock;
         let _switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
+        let qualified_rollout = is_qualified_image_rollout(transition_mode, drain);
+        preflight_image_selection(
+            image_profile,
+            &ProfileScope::System.profile_path(),
+            Path::new(&toplevel_meta.store_path),
+            qualified_rollout,
+        )?;
+        if qualified_rollout {
+            drain_workloads(printer).await?;
+        }
         printer.step(8, 8, "Staging inactive A/B image slot...");
         let layout = ImageSlotLayout::from_running_toplevel()?;
         let staged = with_writable_boot(|| {
@@ -693,6 +785,7 @@ pub async fn install_system(
                 &closure.registry_name,
                 image,
                 &image_store,
+                qualified_rollout,
                 |_entry| {
                     let status = std::process::Command::new("bootctl")
                         .arg("set-default")
@@ -712,9 +805,6 @@ pub async fn install_system(
         ));
         match transition_mode {
             SystemTransitionMode::Reboot => {
-                if drain {
-                    drain_workloads(printer).await?;
-                }
                 SystemdClient::connect().await?.reboot().await?;
             }
             SystemTransitionMode::Advisory => {
@@ -962,6 +1052,7 @@ fn validate_direct_reactivation(
     }
     let manifest: crate::config_eval::materialize::ConfigManifest =
         serde_json::from_slice(&std::fs::read(manifest_path)?)?;
+    crate::config_eval::activation::reject_structured_activation_on_legacy_path(&manifest)?;
     if manifest.module_abi != running.module_abi
         || target.base_lib_ref != manifest.inputs.base_lib.store_path
     {
@@ -1130,33 +1221,48 @@ pub async fn rollback_system(
     printer: &Printer,
 ) -> Result<()> {
     let profile_path = ProfileScope::System.profile_path();
+    let switch_lock = crate::config_eval::activation::ActivateConfigParams::default().switch_lock;
+    let switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
     if list {
         let state = load_generation_state_readonly(&profile_path)?;
+        let running = running_image_generation()?;
+        let reports = state
+            .generations
+            .iter()
+            .map(|generation| {
+                activatability::configuration(config, &profile_path, generation, &running)
+            })
+            .collect::<Vec<_>>();
+        if printer.mode() == OutputMode::Json {
+            let bytes = aos_contract::canonical::to_vec(&reports)?;
+            printer.raw(std::str::from_utf8(&bytes)?);
+            return Ok(());
+        }
         if state.generations.is_empty() {
             printer.info("No system generations.");
         } else {
             printer.header("Configuration generations:");
-            for sysgen in &state.generations {
+            for (sysgen, report) in state.generations.iter().zip(&reports) {
                 let marker = if sysgen.number == state.current {
                     " (current)"
                 } else {
                     ""
                 };
+                let status = activatability_label(report);
                 printer.plain(&format!(
-                    "  gen-{}: image-gen-{}, ABI {}, {} [{}]{}",
+                    "  gen-{}: image-gen-{}, ABI {}, {} [{}]{} {}",
                     sysgen.number,
                     sysgen.image_gen_parent,
                     sysgen.module_abi_pinned,
                     sysgen.manifest_hash,
                     sysgen.created_at,
                     marker,
+                    status,
                 ));
             }
         }
         return Ok(());
     }
-    let switch_lock = crate::config_eval::activation::ActivateConfigParams::default().switch_lock;
-    let _switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
     let mut state = load_generation_state(&profile_path)?;
 
     let current = state
@@ -1189,6 +1295,12 @@ pub async fn rollback_system(
         current.number, target.number,
     ));
 
+    let running_image = running_image_generation()?;
+    let activatability =
+        activatability::configuration(config, &profile_path, &target, &running_image);
+    print_activatability(&activatability, printer)?;
+    activatability.require_activatable()?;
+
     if dry_run {
         printer.info("Dry run -- no changes made.");
         return Ok(());
@@ -1198,14 +1310,39 @@ pub async fn rollback_system(
         .join(IMAGE_STATE_FILE)
         .is_file()
     {
-        let running_image = running_image_generation()?;
+        let running_image = running_image;
         let running_abi = running_image.module_abi;
         match target.reactivation_plan(running_abi)? {
             ReactivationPlan::DirectReactivate => {
                 let manifest_path = validate_generation_manifest(&profile_path, &target)?;
-                validate_direct_reactivation(&target, &running_image, &manifest_path)?;
                 let manifest: crate::config_eval::materialize::ConfigManifest =
                     serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
+                if manifest.inputs.ability_activation.is_some() {
+                    drop(switch_guard);
+                    let marker_root = PathBuf::from(format!(
+                        "/run/aos/rollback-native-{}-{}",
+                        target.number,
+                        std::process::id()
+                    ));
+                    stage_retained_runtime(config, &manifest_path, &marker_root)?;
+                    let activated = crate::config_eval::activation::activate_config(
+                        &crate::config_eval::activation::ActivateConfigParams {
+                            manifest: manifest_path,
+                            graph: marker_root.join("graph.json"),
+                            marker_root,
+                            profile: profile_path.clone(),
+                            module_abi: running_abi,
+                            running_image: Some(running_image),
+                            switch_lock,
+                            ..crate::config_eval::activation::ActivateConfigParams::default()
+                        },
+                    )?;
+                    printer.success(&format!(
+                        "Configuration generation {activated} is active under the running image."
+                    ));
+                    return Ok(());
+                }
+                validate_direct_reactivation(&target, &running_image, &manifest_path)?;
                 let reconciliation = crate::credential_artifact::reconcile_secret_refs(
                     &config.settings,
                     &crate::credential_artifact::aos_root_path(),
@@ -1288,6 +1425,33 @@ pub async fn rollback_system(
     }
 
     bail!("image generation state is absent; refusing config rollback through legacy state")
+}
+
+fn activatability_label(report: &RetainedActivatabilityReport) -> String {
+    if report.is_activatable() {
+        return "[activatable]".to_string();
+    }
+    let codes = report
+        .reasons()
+        .iter()
+        .map(|reason| format!("{:?}", reason.code))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[blocked: {codes}]")
+}
+
+fn print_activatability(report: &RetainedActivatabilityReport, printer: &Printer) -> Result<()> {
+    if printer.mode() == OutputMode::Json {
+        let bytes = report.canonical_bytes()?;
+        printer.raw(std::str::from_utf8(&bytes)?);
+    } else if report.is_activatable() {
+        printer.info("Retained target is currently activatable.");
+    } else {
+        for reason in report.reasons() {
+            printer.warning(&format!("{:?}: {}", reason.code, reason.detail));
+        }
+    }
+    Ok(())
 }
 
 /// Copies a store tree into the persistent overlay upper using an atomic
@@ -1465,6 +1629,21 @@ fn copy_payload_to_slot(source: &Path, destination: &Path) -> Result<()> {
 /// rename UKIs, so they use this narrow bracket and restore read-only state on
 /// both success and failure.
 fn with_writable_boot<T>(action: impl FnOnce() -> Result<T>) -> Result<T> {
+    with_writable_boot_controlled(remount_boot, action)
+}
+
+/// Runs one ESP mutation with caller-supplied bounded remount operations.
+///
+/// The physical mount identity is authenticated before making the ESP writable,
+/// and the read-only restoration is attempted even when the mutation fails.
+///
+/// # Errors
+///
+/// Returns an error when mount validation, either remount, or the action fails.
+pub(crate) fn with_writable_boot_controlled<T>(
+    remount: impl FnMut(&Path, bool) -> Result<()>,
+    action: impl FnOnce() -> Result<T>,
+) -> Result<T> {
     let layout = ImageSlotLayout::from_running_toplevel()?;
     validate_boot_esp_mount(
         Path::new(BOOT_ROOT),
@@ -1472,7 +1651,7 @@ fn with_writable_boot<T>(action: impl FnOnce() -> Result<T>) -> Result<T> {
         &layout.esp_devices,
         true,
     )?;
-    with_writable_boot_using(Path::new(BOOT_ROOT), remount_boot, action)
+    with_writable_boot_using(Path::new(BOOT_ROOT), remount, action)
 }
 
 fn validate_boot_esp_mount(
@@ -2147,7 +2326,7 @@ fn validate_known_good_recovery(
 }
 
 /// Reads a required PE section as UTF-8 text after removing section padding.
-fn read_uki_section_text(uki: &Path, section: &str) -> Result<String> {
+pub(crate) fn read_uki_section_text(uki: &Path, section: &str) -> Result<String> {
     let metadata = std::fs::symlink_metadata(uki)
         .with_context(|| format!("inspecting installed UKI {}", uki.display()))?;
     if !metadata.file_type().is_file()
@@ -2163,11 +2342,23 @@ fn read_uki_section_text(uki: &Path, section: &str) -> Result<String> {
     }
     let bytes = crate::registry_ops::pe_section(&image, section)?
         .with_context(|| format!("UKI {} has no {section} section", uki.display()))?;
+    ensure!(
+        bytes.len() <= MAX_UKI_IDENTITY_SECTION_BYTES,
+        "{section} in {} exceeds its {}-byte identity bound",
+        uki.display(),
+        MAX_UKI_IDENTITY_SECTION_BYTES
+    );
     let content_end = bytes
         .iter()
         .rposition(|byte| *byte != 0)
         .map_or(0, |index| index + 1);
-    let text = std::str::from_utf8(&bytes[..content_end])
+    let content = &bytes[..content_end];
+    ensure!(
+        !content.contains(&0),
+        "{section} in {} contains an interior NUL byte",
+        uki.display()
+    );
+    let text = std::str::from_utf8(content)
         .with_context(|| format!("{section} in {} is not UTF-8", uki.display()))?;
     Ok(text.to_string())
 }
@@ -2247,6 +2438,7 @@ fn cleanup_replaced_slot_ukis(
     slot: ImageSlot,
     keep_recorded: &str,
 ) -> Result<()> {
+    let retained_entries = image_rollout::retained_uki_entry_ids(&layout.boot_root)?;
     let keep_entry = stable_uki_entry_id(
         Path::new(keep_recorded)
             .file_name()
@@ -2262,7 +2454,9 @@ fn cleanup_replaced_slot_ukis(
         let Ok(entry) = resolve_installed_uki_entry(&layout.boot_root, &previous.uki_path) else {
             continue;
         };
-        if stable_uki_entry_id(&entry)? == keep_entry {
+        if stable_uki_entry_id(&entry)? == keep_entry
+            || retained_entries.contains(&stable_uki_entry_id(&entry)?)
+        {
             continue;
         }
         let source = linux.join(entry);
@@ -2312,6 +2506,7 @@ fn stage_pending_image_generation_with<F>(
     registry: &str,
     image: &SysrootImageEntry,
     image_store: &Path,
+    qualified_rollout: bool,
     select: F,
 ) -> Result<ImageGeneration>
 where
@@ -2333,6 +2528,14 @@ where
     let module_abi = read_toplevel_meta(toplevel, "module-abi")?
         .parse::<u32>()
         .context("target image has invalid module ABI")?;
+    let state_version = read_toplevel_meta(toplevel, "state-version")?;
+    ensure!(
+        !state_version.is_empty(),
+        "target image has an empty state version"
+    );
+    let native_executor_ref = read_toplevel_meta(toplevel, "native-executor-ref")?;
+    crate::config_eval::materialize::validate_canonical_store_path(&native_executor_ref)
+        .context("validating target native executor identity")?;
     let baselib_digest = read_toplevel_meta(toplevel, "baselib-digest")?;
     let recorded_uki = read_toplevel_meta(toplevel, "uki-path")?;
     // Validate the firmware namespace before either inactive root or the ESP
@@ -2360,12 +2563,33 @@ where
                     pending.number
                 );
             }
-            select_image_default_with(profile, &mut state, pending.number, &pending_entry, select)?;
+            let rollout = qualified_rollout
+                .then(|| {
+                    let pending_state_version = pending
+                        .state_version
+                        .as_deref()
+                        .context("pending image has no authenticated state version")?;
+                    qualified_rollout_record(&state, pending.number, pending_state_version)
+                })
+                .transpose()?;
+            select_image_default_with(
+                profile,
+                &mut state,
+                pending.number,
+                &pending_entry,
+                rollout,
+                select,
+            )?;
             cleanup_replaced_slot_ukis(layout, &state, pending.slot, &pending.uki_path)?;
             replicate_boot_partitions(layout)?;
             return Ok(pending);
         }
         if pending.toplevel != package.store_path {
+            ensure!(
+                state.active_rollout.is_none(),
+                "unfinished qualified rollout targets image generation {}; refusing to replace its unpublished candidate",
+                pending.number
+            );
             abort_unpublished_image_selection(profile, &mut state, pending.number)?;
         }
     }
@@ -2408,12 +2632,18 @@ where
         recovery.is_some(),
     )?;
 
-    // Copy the lower-backed running evaluator before the inactive slot is
-    // overwritten. The target closure arrived through Nix and is copied too,
-    // making both baselib roots physical `/var` retention rather than dangling
-    // symlinks into whichever immutable root happens to be mounted.
+    // Copy every lower-backed running identity before the inactive slot is
+    // overwritten. The candidate closure arrived through Nix, but copying its
+    // exact identities is idempotent and ensures all ordinary image roots point
+    // into the persistent upper rather than a replaceable immutable lower.
     persist_store_closure_to_upper(&running.evaluator_ref, upper_store)?;
+    persist_store_closure_to_upper(&running.toplevel, upper_store)?;
+    if let Some(executor) = &running.native_executor_ref {
+        persist_store_closure_to_upper(executor, upper_store)?;
+    }
     persist_store_closure_to_upper(&evaluator_ref, upper_store)?;
+    persist_store_closure_to_upper(&package.store_path, upper_store)?;
+    persist_store_closure_to_upper(&native_executor_ref, upper_store)?;
     if let Some(artifact) = &recovery {
         let publication = RecoveryPublication {
             target: target_slot,
@@ -2449,6 +2679,8 @@ where
         toplevel: package.store_path.clone(),
         package_name: package.name.clone(),
         version: package.version.clone(),
+        state_version: Some(state_version.clone()),
+        native_executor_ref: Some(native_executor_ref),
         registry: registry.to_string(),
         kernel_path: resolve_kernel_path(&package.store_path),
         evaluator_ref: evaluator_ref.clone(),
@@ -2484,7 +2716,10 @@ where
         &profile.join(IMAGE_STATE_FILE),
         &serde_json::to_vec_pretty(&state)?,
     )?;
-    prepare_image_selection(profile, &mut state, number, &entry_id)?;
+    let rollout = qualified_rollout
+        .then(|| qualified_rollout_record(&state, number, &state_version))
+        .transpose()?;
+    prepare_image_selection(profile, &mut state, number, &entry_id, rollout.clone())?;
     stage_slot_artifacts(
         layout,
         target_slot,
@@ -2496,14 +2731,10 @@ where
     )?;
     replicate_boot_partitions(layout)?;
     state.recovery_pending = None;
-    crate::store::create_baselib_gc_root(
-        &profile.join(format!("image-gen-{number}")),
-        module_abi,
-        &evaluator_ref,
-    )?;
+    crate::store::create_image_gc_roots(&profile.join(format!("image-gen-{number}")), &generation)?;
     let configs = load_generation_state_readonly(system_profile)?;
-    crate::store::reconcile_baselib_gc_roots(profile, &state, &configs)?;
-    select_image_default_with(profile, &mut state, number, &entry_id, select)?;
+    crate::store::reconcile_image_gc_roots(profile, &state, &configs)?;
+    select_image_default_with(profile, &mut state, number, &entry_id, rollout, select)?;
     cleanup_replaced_slot_ukis(layout, &state, target_slot, &installed_uki)?;
     replicate_boot_partitions(layout)?;
     Ok(generation)
@@ -2515,6 +2746,10 @@ fn abort_unpublished_image_selection(
     state: &mut ImageGenerationState,
     target: u32,
 ) -> Result<()> {
+    ensure!(
+        state.active_rollout.is_none(),
+        "cannot abort unpublished image generation {target} while its qualified rollout is active"
+    );
     if state.pending != Some(target) {
         bail!("cannot abort image generation {target}: it is not pending");
     }
@@ -2563,8 +2798,23 @@ pub async fn rollback_image_generation(
 ) -> Result<()> {
     let profile = Path::new(IMAGE_PROFILE_DIR);
     let mut state = load_image_generation_state_pub(profile)?;
+    let switch_lock = crate::config_eval::activation::ActivateConfigParams::default().switch_lock;
+    let _switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
     if list {
-        for image in &state.generations {
+        let system_profile = ProfileScope::System.profile_path();
+        let reports = state
+            .generations
+            .iter()
+            .map(|generation| {
+                activatability::image(profile, &system_profile, generation, transition_mode, drain)
+            })
+            .collect::<Vec<_>>();
+        if printer.mode() == OutputMode::Json {
+            let bytes = aos_contract::canonical::to_vec(&reports)?;
+            printer.raw(std::str::from_utf8(&bytes)?);
+            return Ok(());
+        }
+        for (image, report) in state.generations.iter().zip(&reports) {
             let running = if image.number == state.running {
                 " (running)"
             } else {
@@ -2576,14 +2826,18 @@ pub async fn rollback_image_generation(
                 ""
             };
             printer.plain(&format!(
-                "  image-gen-{}: {} {} [{}]{}{}",
-                image.number, image.package_name, image.version, image.uki_path, running, default
+                "  image-gen-{}: {} {} [{}]{}{} {}",
+                image.number,
+                image.package_name,
+                image.version,
+                image.uki_path,
+                running,
+                default,
+                activatability_label(report),
             ));
         }
         return Ok(());
     }
-    let switch_lock = crate::config_eval::activation::ActivateConfigParams::default().switch_lock;
-    let _switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
     state = load_image_generation_state_pub(profile)?;
     let target = match generation {
         Some(number) => state
@@ -2602,6 +2856,11 @@ pub async fn rollback_image_generation(
     };
     let entry_id = resolve_installed_uki_entry(Path::new("/boot"), &target.uki_path)
         .with_context(|| format!("resolving image generation {} UKI", target.number))?;
+    let system_profile = ProfileScope::System.profile_path();
+    let activatability =
+        activatability::image(profile, &system_profile, &target, transition_mode, drain);
+    print_activatability(&activatability, printer)?;
+    activatability.require_activatable()?;
     if dry_run {
         printer.info(&format!(
             "Would set image generation {} ({}) as the durable next boot.",
@@ -2609,27 +2868,56 @@ pub async fn rollback_image_generation(
         ));
         return Ok(());
     }
+    let qualified_rollout = is_qualified_image_rollout(transition_mode, drain);
+    preflight_image_selection(
+        profile,
+        &system_profile,
+        Path::new(&target.toplevel),
+        qualified_rollout,
+    )?;
+    // Legacy preflight may have durably authenticated and added the running
+    // state version. Reload beneath the held switch lock so rollout
+    // construction observes that exact migrated record.
+    state = load_image_generation_state_pub(profile)?;
+    let rollout = if qualified_rollout {
+        drain_workloads(printer).await?;
+        let state_version = target
+            .state_version
+            .as_deref()
+            .context("rollback image has no authenticated state version")?;
+        Some(qualified_rollout_record(
+            &state,
+            target.number,
+            state_version,
+        )?)
+    } else {
+        None
+    };
     with_writable_boot(|| {
-        select_image_default_with(profile, &mut state, target.number, &entry_id, |entry| {
-            let status = std::process::Command::new("bootctl")
-                .arg("set-default")
-                .arg(entry)
-                .status()
-                .context("running bootctl set-default")?;
-            if !status.success() {
-                bail!("bootctl set-default failed with {status}");
-            }
-            Ok(())
-        })
+        select_image_default_with(
+            profile,
+            &mut state,
+            target.number,
+            &entry_id,
+            rollout,
+            |entry| {
+                let status = std::process::Command::new("bootctl")
+                    .arg("set-default")
+                    .arg(entry)
+                    .status()
+                    .context("running bootctl set-default")?;
+                if !status.success() {
+                    bail!("bootctl set-default failed with {status}");
+                }
+                Ok(())
+            },
+        )
     })?;
     printer.success(&format!(
         "Image generation {} is the durable next-boot default.",
         target.number
     ));
     if transition_mode == SystemTransitionMode::Reboot {
-        if drain {
-            drain_workloads(printer).await?;
-        }
         SystemdClient::connect().await?.reboot().await?;
     }
     Ok(())
@@ -2642,6 +2930,7 @@ fn resolve_installed_uki_entry(boot_root: &Path, recorded: &str) -> Result<Strin
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum ExhaustedEntry {
     Reject,
+    #[cfg(test)]
     Allow,
 }
 
@@ -2804,12 +3093,13 @@ fn select_image_default_with<F>(
     state: &mut ImageGenerationState,
     target: u32,
     entry_id: &str,
+    rollout: Option<ImageRollout>,
     select: F,
 ) -> Result<()>
 where
     F: FnOnce(&str) -> Result<()>,
 {
-    prepare_image_selection(profile, state, target, entry_id)?;
+    prepare_image_selection(profile, state, target, entry_id, rollout)?;
     let stable_entry_id = stable_uki_entry_id(entry_id)?;
 
     // sd-boot renames counted entries before launching them (for example,
@@ -2834,8 +3124,16 @@ fn prepare_image_selection(
     state: &mut ImageGenerationState,
     target: u32,
     entry_id: &str,
+    rollout: Option<ImageRollout>,
 ) -> Result<()> {
     stable_uki_entry_id(entry_id)?;
+    if let Some(active) = &state.active_rollout {
+        validate_active_rollout_selection(state, active, target)?;
+        ensure!(
+            rollout.as_ref() == Some(active),
+            "active qualified image rollout requires the exact drained rollout identity"
+        );
+    }
     let intent_path = profile.join(IMAGE_TRANSITION_INTENT);
     if intent_path.is_file() {
         let existing: ImageTransitionIntent = serde_json::from_slice(&std::fs::read(&intent_path)?)
@@ -2862,6 +3160,9 @@ fn prepare_image_selection(
     // provenance for an otherwise unknown image.
     let mut prepared = state.clone();
     prepared.pending = Some(target);
+    if let Some(rollout) = rollout {
+        prepared.active_rollout = Some(rollout);
+    }
     write_atomic_durable(
         &profile.join(IMAGE_STATE_FILE),
         &serde_json::to_vec_pretty(&prepared)?,
@@ -4757,7 +5058,7 @@ fn run_command(cmd: &str, args: &[&str]) -> Result<()> {
 /// Load all enabled registries from the scope's metadata cache.
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
-    RegistrySet::load(&config.cache_path(), &reg_configs, &native_platform())
+    RegistrySet::load_for_package_operations(&config.cache_path(), &reg_configs, &native_platform())
 }
 
 /// Validate a downloaded sysroot's Secure Boot facts against the registry's
@@ -5503,6 +5804,83 @@ fn days_to_ymd(days: i64) -> (i32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry_ops::test_support::synthetic_pe_section;
+
+    #[test]
+    fn uki_identity_section_reader_removes_only_nul_padding() {
+        let temporary = TempDir::new().unwrap();
+        let uki = temporary.path().join("identity.efi");
+        let section = b"ID=AOS\nVERSION_ID=1\n\0\0";
+        std::fs::write(
+            &uki,
+            synthetic_pe_section(b".osrel", section.len() as u32, section),
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_uki_section_text(&uki, ".osrel").unwrap(),
+            "ID=AOS\nVERSION_ID=1\n"
+        );
+    }
+
+    #[test]
+    fn uki_identity_section_reader_rejects_malformed_and_duplicate_sections() {
+        let temporary = TempDir::new().unwrap();
+        let malformed_path = temporary.path().join("malformed.efi");
+        let duplicate_path = temporary.path().join("duplicate.efi");
+        let pe_offset = 0x40_usize;
+        let coff = pe_offset + 4;
+        let section_table = coff + 20 + 112;
+
+        let mut malformed = synthetic_pe_section(b".cmdline", 5, b"root\0");
+        malformed[section_table + 20..section_table + 24].copy_from_slice(&u32::MAX.to_le_bytes());
+        std::fs::write(&malformed_path, malformed).unwrap();
+
+        let mut duplicate = synthetic_pe_section(b".osrel", 5, b"ID=A\n");
+        duplicate[coff + 2..coff + 4].copy_from_slice(&2_u16.to_le_bytes());
+        let repeated_header = duplicate[section_table..section_table + 40].to_vec();
+        duplicate.splice(section_table + 40..section_table + 40, repeated_header);
+        std::fs::write(&duplicate_path, duplicate).unwrap();
+
+        assert!(read_uki_section_text(&malformed_path, ".cmdline").is_err());
+        assert!(read_uki_section_text(&duplicate_path, ".osrel").is_err());
+    }
+
+    #[test]
+    fn uki_identity_section_reader_rejects_interior_nul_for_both_sections() {
+        let temporary = TempDir::new().unwrap();
+
+        for section in [".cmdline", ".osrel"] {
+            let uki = temporary.path().join(section.trim_start_matches('.'));
+            let content = b"first\0second\0";
+            std::fs::write(
+                &uki,
+                synthetic_pe_section(section.as_bytes(), content.len() as u32, content),
+            )
+            .unwrap();
+
+            assert!(read_uki_section_text(&uki, section).is_err());
+        }
+    }
+
+    #[test]
+    fn uki_identity_section_reader_enforces_file_and_section_bounds() {
+        let temporary = TempDir::new().unwrap();
+        let oversized_file = temporary.path().join("oversized-file.efi");
+        let oversized_section = temporary.path().join("oversized-section.efi");
+
+        let file = std::fs::File::create(&oversized_file).unwrap();
+        file.set_len(MAX_INSTALLED_UKI_BYTES + 1).unwrap();
+        let section = vec![b'x'; MAX_UKI_IDENTITY_SECTION_BYTES + 1];
+        std::fs::write(
+            &oversized_section,
+            synthetic_pe_section(b".cmdline", section.len() as u32, &section),
+        )
+        .unwrap();
+
+        assert!(read_uki_section_text(&oversized_file, ".cmdline").is_err());
+        assert!(read_uki_section_text(&oversized_section, ".cmdline").is_err());
+    }
 
     #[test]
     fn parses_only_complete_pem_certificate_sets() {
@@ -5607,8 +5985,19 @@ mod tests {
     fn running_identity_fixture() -> (TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
         let tmp = TempDir::new().unwrap();
         let image_profile = tmp.path().join("image");
-        let toplevel = tmp.path().join("toplevel");
-        let toplevel_link = tmp.path().join("aos-toplevel");
+        let immutable_root = tmp.path().join("sysroot");
+        let logical_toplevel =
+            PathBuf::from(format!("/nix/store/{}-running-toplevel", "0".repeat(32)));
+        let logical_base_lib =
+            PathBuf::from(format!("/nix/store/{}-running-base-lib", "1".repeat(32)));
+        let logical_os_release = PathBuf::from(format!(
+            "/nix/store/{}-running-os-release/os-release",
+            "2".repeat(32)
+        ));
+        let toplevel = resolve_absolute_path_beneath(&immutable_root, &logical_toplevel).unwrap();
+        let os_release =
+            resolve_absolute_path_beneath(&immutable_root, &logical_os_release).unwrap();
+        let toplevel_link = immutable_root.join("aos-toplevel");
         let cmdline = tmp.path().join("cmdline");
         std::fs::create_dir_all(image_profile.as_path()).unwrap();
         std::fs::create_dir_all(toplevel.join("meta")).unwrap();
@@ -5635,13 +6024,15 @@ mod tests {
             }"#,
         )
         .unwrap();
-        std::os::unix::fs::symlink("/nix/store/base-lib", toplevel.join("base-lib")).unwrap();
+        std::os::unix::fs::symlink(&logical_base_lib, toplevel.join("base-lib")).unwrap();
+        std::os::unix::fs::symlink(&logical_os_release, toplevel.join("os-release")).unwrap();
+        std::fs::create_dir_all(os_release.parent().unwrap()).unwrap();
         std::fs::write(
-            toplevel.join("os-release"),
+            os_release,
             "VERSION_ID=1\nAOS_MODULE_ABI=7\nAOS_BASELIB_DIGEST=sha256:base\n",
         )
         .unwrap();
-        std::os::unix::fs::symlink(&toplevel, &toplevel_link).unwrap();
+        std::os::unix::fs::symlink(&logical_toplevel, &toplevel_link).unwrap();
         std::fs::write(
             &cmdline,
             "quiet root=/dev/disk/by-partlabel/root-a roothash=deadbeef\n",
@@ -5653,17 +6044,21 @@ mod tests {
             pending: Some(1),
             recovery_known_good: None,
             recovery_pending: None,
+            active_rollout: None,
+            last_rollout: None,
             generations: vec![ImageGeneration {
                 number: 1,
                 slot: ImageSlot::A,
                 uki_path: "EFI/Linux/aos-server-1+3.efi".into(),
                 uki_source_path: None,
-                toplevel: toplevel.to_string_lossy().into_owned(),
+                toplevel: logical_toplevel.to_string_lossy().into_owned(),
                 package_name: "server".into(),
                 version: "1".into(),
+                state_version: None,
+                native_executor_ref: None,
                 registry: "test".into(),
                 kernel_path: None,
-                evaluator_ref: "/nix/store/base-lib".into(),
+                evaluator_ref: logical_base_lib.to_string_lossy().into_owned(),
                 module_abi: 7,
                 baselib_digest: "sha256:base".into(),
                 root_verity_roothash: Some("deadbeef".into()),
@@ -5678,8 +6073,7 @@ mod tests {
             serde_json::to_vec(&state).unwrap(),
         )
         .unwrap();
-        let os_release = toplevel_link.join("os-release");
-        (tmp, image_profile, toplevel_link, os_release, cmdline)
+        (tmp, image_profile, immutable_root, toplevel_link, cmdline)
     }
 
     fn fixture_device_identity(path: &Path) -> Result<u64> {
@@ -5692,15 +6086,15 @@ mod tests {
 
     fn load_running_image_generation_fixture(
         image_profile: &Path,
-        os_release: &Path,
+        immutable_root: &Path,
         toplevel_link: &Path,
         cmdline: &Path,
     ) -> Result<ImageGeneration> {
         load_running_image_generation_with_device_identity(
             image_profile,
-            os_release,
             toplevel_link,
             cmdline,
+            immutable_root,
             fixture_device_identity,
         )
     }
@@ -5729,11 +6123,104 @@ mod tests {
     }
 
     #[test]
-    fn running_image_rejects_tampered_var_index_metadata() {
-        let (_tmp, image_profile, toplevel_link, os_release, cmdline) = running_identity_fixture();
+    fn running_image_beneath_resolves_absolute_links_under_mounted_root() {
+        let (_tmp, image_profile, immutable_root, toplevel_link, cmdline) =
+            running_identity_fixture();
+        let logical_toplevel = std::fs::read_link(&toplevel_link).unwrap();
+        let physical_toplevel =
+            resolve_absolute_path_beneath(&immutable_root, &logical_toplevel).unwrap();
+        let logical_os_release = std::fs::read_link(physical_toplevel.join("os-release")).unwrap();
+
+        assert!(logical_toplevel.starts_with("/nix/store"));
+        assert!(logical_os_release.starts_with("/nix/store"));
+        assert!(!logical_toplevel.exists());
+        assert!(!logical_os_release.exists());
+
         let loaded = load_running_image_generation_fixture(
             &image_profile,
-            &os_release,
+            &immutable_root,
+            &toplevel_link,
+            &cmdline,
+        )
+        .expect("absolute store links must resolve beneath the mounted root");
+        assert_eq!(loaded.toplevel, logical_toplevel.to_string_lossy());
+    }
+
+    #[test]
+    fn running_image_rejects_os_release_symlink_escape() {
+        let (tmp, image_profile, immutable_root, toplevel_link, cmdline) =
+            running_identity_fixture();
+        let logical_toplevel = std::fs::read_link(&toplevel_link).unwrap();
+        let physical_toplevel =
+            resolve_absolute_path_beneath(&immutable_root, &logical_toplevel).unwrap();
+        let logical_os_release = std::fs::read_link(physical_toplevel.join("os-release")).unwrap();
+        let physical_os_release =
+            resolve_absolute_path_beneath(&immutable_root, &logical_os_release).unwrap();
+        let outside = tmp.path().join("live-root-os-release");
+        std::fs::write(
+            &outside,
+            "VERSION_ID=1\nAOS_MODULE_ABI=7\nAOS_BASELIB_DIGEST=sha256:base\n",
+        )
+        .unwrap();
+        std::fs::remove_file(&physical_os_release).unwrap();
+        std::os::unix::fs::symlink(&outside, &physical_os_release).unwrap();
+
+        let error = load_running_image_generation_fixture(
+            &image_profile,
+            &immutable_root,
+            &toplevel_link,
+            &cmdline,
+        )
+        .expect_err("immutable identity reads must not follow a live-root symlink");
+
+        assert!(
+            format!("{error:#}").contains("opening"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn running_image_rejects_os_release_parent_symlink_escape() {
+        let (tmp, image_profile, immutable_root, toplevel_link, cmdline) =
+            running_identity_fixture();
+        let logical_toplevel = std::fs::read_link(&toplevel_link).unwrap();
+        let physical_toplevel =
+            resolve_absolute_path_beneath(&immutable_root, &logical_toplevel).unwrap();
+        let logical_os_release = std::fs::read_link(physical_toplevel.join("os-release")).unwrap();
+        let physical_os_release =
+            resolve_absolute_path_beneath(&immutable_root, &logical_os_release).unwrap();
+        let outside = tmp.path().join("live-root-store-object");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(
+            outside.join("os-release"),
+            "VERSION_ID=1\nAOS_MODULE_ABI=7\nAOS_BASELIB_DIGEST=sha256:base\n",
+        )
+        .unwrap();
+        std::fs::remove_file(&physical_os_release).unwrap();
+        std::fs::remove_dir(physical_os_release.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside, physical_os_release.parent().unwrap()).unwrap();
+
+        let error = load_running_image_generation_fixture(
+            &image_profile,
+            &immutable_root,
+            &toplevel_link,
+            &cmdline,
+        )
+        .expect_err("immutable identity reads must reject a symlinked parent directory");
+
+        assert!(
+            format!("{error:#}").contains("symlink component"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn running_image_rejects_tampered_var_index_metadata() {
+        let (_tmp, image_profile, immutable_root, toplevel_link, cmdline) =
+            running_identity_fixture();
+        let loaded = load_running_image_generation_fixture(
+            &image_profile,
+            &immutable_root,
             &toplevel_link,
             &cmdline,
         )
@@ -5747,7 +6234,7 @@ mod tests {
         std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
         let error = load_running_image_generation_fixture(
             &image_profile,
-            &os_release,
+            &immutable_root,
             &toplevel_link,
             &cmdline,
         )
@@ -5757,7 +6244,8 @@ mod tests {
 
     #[test]
     fn running_image_authenticates_the_canonical_uki_source_path() {
-        let (_tmp, image_profile, toplevel_link, os_release, cmdline) = running_identity_fixture();
+        let (_tmp, image_profile, immutable_root, toplevel_link, cmdline) =
+            running_identity_fixture();
         let state_path = image_profile.join("state.json");
         let mut state: ImageGenerationState =
             serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
@@ -5767,7 +6255,7 @@ mod tests {
 
         let loaded = load_running_image_generation_fixture(
             &image_profile,
-            &os_release,
+            &immutable_root,
             &toplevel_link,
             &cmdline,
         )
@@ -5778,7 +6266,7 @@ mod tests {
         std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
         let error = load_running_image_generation_fixture(
             &image_profile,
-            &os_release,
+            &immutable_root,
             &toplevel_link,
             &cmdline,
         )
@@ -5788,7 +6276,8 @@ mod tests {
 
     #[test]
     fn running_image_rejects_tampered_roothash_and_slot() {
-        let (_tmp, image_profile, toplevel_link, os_release, cmdline) = running_identity_fixture();
+        let (_tmp, image_profile, immutable_root, toplevel_link, cmdline) =
+            running_identity_fixture();
         std::fs::write(
             &cmdline,
             "root=/dev/disk/by-partlabel/root-b roothash=bad\n",
@@ -5796,7 +6285,7 @@ mod tests {
         .unwrap();
         let error = load_running_image_generation_fixture(
             &image_profile,
-            &os_release,
+            &immutable_root,
             &toplevel_link,
             &cmdline,
         )
@@ -5810,7 +6299,7 @@ mod tests {
         .unwrap();
         let error = load_running_image_generation_fixture(
             &image_profile,
-            &os_release,
+            &immutable_root,
             &toplevel_link,
             &cmdline,
         )
@@ -5820,7 +6309,8 @@ mod tests {
 
     #[test]
     fn running_image_allows_repeatable_non_identity_kernel_parameters() {
-        let (_tmp, image_profile, toplevel_link, os_release, cmdline) = running_identity_fixture();
+        let (_tmp, image_profile, immutable_root, toplevel_link, cmdline) =
+            running_identity_fixture();
         std::fs::write(
             &cmdline,
             "console=ttyS0,115200 console=tty0 root=/dev/disk/by-partlabel/root-a roothash=deadbeef\n",
@@ -5828,7 +6318,7 @@ mod tests {
         .unwrap();
         load_running_image_generation_fixture(
             &image_profile,
-            &os_release,
+            &immutable_root,
             &toplevel_link,
             &cmdline,
         )
@@ -5841,7 +6331,7 @@ mod tests {
         .unwrap();
         let error = load_running_image_generation_fixture(
             &image_profile,
-            &os_release,
+            &immutable_root,
             &toplevel_link,
             &cmdline,
         )
@@ -5965,12 +6455,12 @@ mod tests {
                 )
                 .unwrap();
                 std::fs::write(
-                image_store.join(format!("recovery-{target_name}.conf")),
-                format!(
+                    image_store.join(format!("recovery-{target_name}.conf")),
+                    format!(
                     "title AOS Recovery {target_name}\nefi /EFI/AOS/recovery-{target_name}.efi\n"
                 ),
-            )
-            .unwrap();
+                )
+                .unwrap();
                 let known_good = format!("known-good-recovery-{opposite_name}").into_bytes();
                 std::fs::write(
                     recovery_dir.join(format!("recovery-{opposite_name}.efi")),
@@ -6231,6 +6721,8 @@ mod tests {
             toplevel: format!("/nix/store/top-{number}"),
             package_name: "aos".into(),
             version: number.to_string(),
+            state_version: None,
+            native_executor_ref: None,
             registry: "core".into(),
             kernel_path: None,
             evaluator_ref: format!("/nix/store/base-{number}"),
@@ -6248,6 +6740,8 @@ mod tests {
             pending: Some(3),
             recovery_known_good: None,
             recovery_pending: None,
+            active_rollout: None,
+            last_rollout: None,
             generations: vec![
                 generation(1, "aos-old-1+3.efi"),
                 generation(2, "aos-old-2+3.efi"),
@@ -6603,6 +7097,8 @@ mod tests {
             pending: None,
             recovery_known_good: None,
             recovery_pending: None,
+            active_rollout: None,
+            last_rollout: None,
             generations: vec![ImageGeneration {
                 number: 4,
                 slot: ImageSlot::A,
@@ -6611,6 +7107,8 @@ mod tests {
                 toplevel: top.into(),
                 package_name: "aos-system".into(),
                 version: "1".into(),
+                state_version: None,
+                native_executor_ref: None,
                 registry: "core".into(),
                 kernel_path: None,
                 evaluator_ref: base.clone(),
@@ -6964,12 +7462,15 @@ mod tests {
             pending: None,
             recovery_known_good: None,
             recovery_pending: None,
+            active_rollout: None,
+            last_rollout: None,
             generations: Vec::new(),
         };
-        let error = select_image_default_with(tmp.path(), &mut state, 2, "aos-2+3.efi", |_| {
-            bail!("injected bootctl failure")
-        })
-        .unwrap_err();
+        let error =
+            select_image_default_with(tmp.path(), &mut state, 2, "aos-2+3.efi", None, |_| {
+                bail!("injected bootctl failure")
+            })
+            .unwrap_err();
         assert!(error.to_string().contains("injected bootctl failure"));
         assert_eq!(state.default, 1);
         assert_eq!(state.pending, Some(2));
@@ -6982,7 +7483,7 @@ mod tests {
 
         let prepared_path = tmp.path().join(IMAGE_STATE_FILE);
         let mut selected = String::new();
-        select_image_default_with(tmp.path(), &mut state, 2, "aos-2+3.efi", |entry| {
+        select_image_default_with(tmp.path(), &mut state, 2, "aos-2+3.efi", None, |entry| {
             let prepared: ImageGenerationState = serde_json::from_slice(&std::fs::read(
                 &prepared_path,
             )?)
@@ -7008,10 +7509,12 @@ mod tests {
             pending: None,
             recovery_known_good: None,
             recovery_pending: None,
+            active_rollout: None,
+            last_rollout: None,
             generations: Vec::new(),
         };
 
-        prepare_image_selection(tmp.path(), &mut state, 2, "aos-2+3.efi").unwrap();
+        prepare_image_selection(tmp.path(), &mut state, 2, "aos-2+3.efi", None).unwrap();
 
         assert_eq!(state.default, 1);
         assert_eq!(state.pending, Some(2));
@@ -7032,9 +7535,11 @@ mod tests {
             pending: None,
             recovery_known_good: None,
             recovery_pending: None,
+            active_rollout: None,
+            last_rollout: None,
             generations: Vec::new(),
         };
-        prepare_image_selection(tmp.path(), &mut state, 2, "aos-2+3.efi").unwrap();
+        prepare_image_selection(tmp.path(), &mut state, 2, "aos-2+3.efi", None).unwrap();
 
         abort_unpublished_image_selection(tmp.path(), &mut state, 2).unwrap();
 
@@ -7046,7 +7551,7 @@ mod tests {
                 .unwrap();
         assert_eq!(durable.pending, None);
 
-        prepare_image_selection(tmp.path(), &mut state, 3, "aos-3+3.efi").unwrap();
+        prepare_image_selection(tmp.path(), &mut state, 3, "aos-3+3.efi", None).unwrap();
         assert_eq!(state.pending, Some(3));
     }
 

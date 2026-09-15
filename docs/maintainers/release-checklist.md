@@ -18,12 +18,10 @@ Whenever an item names a journal state, inspect the journal it produced with
 `aos release status --journal PATH_TO_JOURNAL` and compare the printed `State:`
 line with the expected value. Keep the old journal; later commands write successors.
 
-**Current blockers:** the test programs for published release artifacts still
-need implementation and installation. Also, `release build` takes
-`--completed-at` before executing the build; accurate completion-time capture
-needs fixing before its report can be used for a real release. Do not substitute
-synthetic fleet reports or guessed timestamps. Main also remains closed until
-its [launch requirements](registry-main.md) are satisfied.
+**Current blocker:** the test programs for published release artifacts still
+need implementation and installation. Do not substitute synthetic fleet
+reports. Main also remains closed until its
+[launch requirements](registry-main.md) are satisfied.
 
 ## 1. Prepare the release
 
@@ -117,7 +115,10 @@ Complete this section before starting builds or requesting signatures.
   recorded registry/deployment identities, both Linux image decisions, signer
   roles, channel ranges, and retention policy. The first public release needs a
   retained signed test snapshot as its update predecessor; an empty registry
-  base is not an installed OS to upgrade from.
+  base is not an installed OS to upgrade from. When no prior release exists,
+  follow the
+  [restricted qualification snapshot workflow](canonical-releases.md#create-a-first-qualification-predecessor)
+  before freezing the public plan.
 
   **Check when:** the request has been reviewed against the release record,
   every requested target has a test environment, and the predecessor bundle and
@@ -179,21 +180,25 @@ every output under `AOS_RELEASE_WORK`, using a new path for each command.
   The authorities must belong to this release. Unsigned outputs and fixture
   keys do not satisfy this item.
 
-- [ ] **Finalize the registry and cache.** Run
-  [finalize-registry](canonical-releases.md#finalize-the-isolated-registry)
-  with the exact build report and finalized container sidecar, followed by
+- [ ] **Prepare, review, and finalize the registry and cache.** Run
+  [prepare-registry](canonical-releases.md#prepare-and-finalize-the-isolated-registry)
+  with the exact build report and finalized container sidecar. Review its
+  generated transaction and retained tree together, then run
+  `finalize-registry` on those exact inputs, followed by
   [finalize-cache](canonical-releases.md#generate-and-sign-the-static-cache)
   against that isolated registry.
 
-  **Check when:** both commands exit zero, their result files identify the
-  planned package/platform outputs, and cache narinfo signatures verify.
-  Preserve the isolated registry, cache, and signer records.
+  **Check when:** preparation and both finalization commands exit zero, the
+  transaction and result identify the planned package/platform outputs, and
+  cache narinfo signatures verify. Preserve the transaction, isolated
+  registry, cache, and signer records.
 
-- [ ] **Review build evidence and close the bundle.** Assemble the payload and
-  unsigned manifest as specified in
-  [close and sign the bundle](canonical-releases.md#close-and-sign-the-bundle).
-  Include build observations, SBOM/advisory decisions, licenses, and matching
-  corresponding source. Run `aos release finalize`, with output `finalized/`.
+- [ ] **Review build evidence and close the bundle.** Prepare the canonical
+  advisory disposition, then run
+  [`aos release assemble`](canonical-releases.md#close-and-sign-the-bundle)
+  against the exact finalized cache, registry, images, and container. Review
+  its payload and unsigned manifest, then run `aos release finalize`, with
+  output `finalized/`.
 
   **Check when:** required build observations passed, every advisory has a
   disposition with no unresolved release blocker, and finalization exits zero.

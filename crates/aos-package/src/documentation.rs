@@ -6,20 +6,29 @@
 //! generated manpage as authority. Every canonical JSON payload is decoded
 //! through [`aos_doc_model`] before rendering or editor use.
 
+mod ability_render;
+
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read as _, Write};
 use std::net::{IpAddr, SocketAddr};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use aos_ability_model::VersionedDocument as _;
+use aos_ability_validate::{
+    AbilityContractData, CheckedAbilityContract, validate_ability_contract,
+};
+use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
 use aos_doc_model::{
-    DOCUMENT_JSON_SCHEMA, DOCUMENT_SCHEMA, DocumentationComparison, MAX_DOCUMENT_BYTES,
-    OptionDocument, PackageDocumentation, SearchDocument, tokenize,
+    DOCUMENT_SCHEMA, DocumentationComparison, MAX_DOCUMENT_BYTES, OptionDocument,
+    PackageAbilityReference, PackageDocumentation, SearchDocument, document_json_schema, tokenize,
 };
 use aos_proto_types::{
-    ComparePackageDocumentationRequest, GetPackageDocumentationRequest,
-    GetPackageDocumentationSchemaRequest, SearchPackageDocumentationRequest,
+    ComparePackageDocumentationRequest, GetPackageAbilityReferenceRequest,
+    GetPackageDocumentationRequest, GetPackageDocumentationSchemaRequest,
+    SearchPackageDocumentationRequest,
 };
 use aos_remote::{HubClient, hub_rpc};
 use serde::Serialize;
@@ -35,6 +44,52 @@ use crate::{DocumentationCacheCommand, DocumentationCommand, DocumentationOutput
 pub(crate) struct LoadedDocumentation {
     /// Decoded canonical document.
     pub document: PackageDocumentation,
+    /// Public contracts derived from this installed package's authenticated companion.
+    pub ability_reference: Option<PackageAbilityReference>,
+}
+
+/// One Hub document tied to the exact indexed registry commit that served it.
+struct VerifiedRemoteDocumentation {
+    document: PackageDocumentation,
+    registry_commit: String,
+}
+
+impl LoadedDocumentation {
+    fn render_plain(&self) -> Result<String> {
+        let mut output = self.document.render_plain();
+        if let Some(reference) = &self.ability_reference {
+            output.push_str(&ability_render::plain(reference)?);
+        } else {
+            output.push_str(&ability_render::plain_absent());
+        }
+        Ok(output)
+    }
+
+    fn render_html(&self) -> Result<String> {
+        let mut output = String::from(
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>",
+        );
+        output.push_str(&html_escape(&self.document.package.name));
+        output.push_str(" documentation</title></head><body>");
+        output.push_str(&self.document.render_html_fragment());
+        if let Some(reference) = &self.ability_reference {
+            output.push_str(&ability_render::html(reference)?);
+        } else {
+            output.push_str(&ability_render::html_absent());
+        }
+        output.push_str("</body></html>");
+        Ok(output)
+    }
+
+    fn render_roff(&self) -> Result<String> {
+        let mut output = self.document.render_roff();
+        if let Some(reference) = &self.ability_reference {
+            output.push_str(&ability_render::roff(reference)?);
+        } else {
+            output.push_str(&ability_render::roff_absent());
+        }
+        Ok(output)
+    }
 }
 
 /// Runs one `apm docs` command.
@@ -87,8 +142,8 @@ pub async fn run(command: &DocumentationCommand, printer: &Printer) -> Result<()
             token,
             system,
         } => {
-            let document = if let Some(hub) = hub {
-                remote_document(
+            let loaded = if let Some(hub) = hub {
+                remote_loaded_document(
                     hub,
                     registry
                         .as_deref()
@@ -106,7 +161,6 @@ pub async fn run(command: &DocumentationCommand, printer: &Printer) -> Result<()
                     version.as_deref(),
                     platform.as_deref(),
                 )?
-                .document
             };
             let format = format.unwrap_or_else(|| {
                 if printer.mode() == OutputMode::Json {
@@ -115,13 +169,13 @@ pub async fn run(command: &DocumentationCommand, printer: &Printer) -> Result<()
                     DocumentationOutput::Plain
                 }
             });
-            write_rendered(&document, format, output.as_deref())
+            write_rendered(&loaded, format, output.as_deref())
         }
         DocumentationCommand::Schema { hub, token } => {
             let bytes = if let Some(hub) = hub {
                 remote_schema(hub, token.as_deref()).await?
             } else {
-                DOCUMENT_JSON_SCHEMA.as_bytes().to_vec()
+                document_json_schema()?
             };
             write_bytes(&bytes, None)
         }
@@ -133,7 +187,7 @@ pub async fn run(command: &DocumentationCommand, printer: &Printer) -> Result<()
         } => {
             let scope = scope(*system);
             let loaded = local_document(scope, package, None, None)?;
-            let roff = loaded.document.render_roff();
+            let roff = loaded.render_roff()?;
             if *install {
                 let path = install_manpage(scope, &loaded.document, roff.as_bytes())?;
                 if *print_path || printer.mode() == OutputMode::Quiet {
@@ -279,12 +333,11 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
                 printer.json(&serde_json::to_value(&comparison)?);
             } else {
                 println!(
-                    "{} {} -> {} (schema changed: {}, runtime changed: {})",
+                    "{} {} -> {} (schema changed: {})",
                     comparison.package,
                     comparison.from_version,
                     comparison.to_version,
-                    comparison.semantic_changed,
-                    comparison.runtime_changed
+                    comparison.semantic_changed
                 );
                 for change in comparison.option_changes {
                     println!("{:?}\t{}", change.kind, change.path);
@@ -345,7 +398,7 @@ pub async fn run_schema(
         None => {
             let bytes = match hub {
                 Some(hub) => remote_schema(hub, token).await?,
-                None => DOCUMENT_JSON_SCHEMA.as_bytes().to_vec(),
+                None => document_json_schema()?,
             };
             write_bytes(&bytes, None)
         }
@@ -377,7 +430,7 @@ pub(crate) fn load_installed_documents(scope: ProfileScope) -> Result<Vec<Loaded
             continue;
         };
         let path = Path::new(&artifact.store_path);
-        let loaded = load_document_file(path, Some(&artifact), &apm.name)?;
+        let mut loaded = load_document_file(path, Some(&artifact), &apm.name)?;
         if loaded.document.package.name != apm.name
             || loaded.document.package.version != apm.version
         {
@@ -390,6 +443,13 @@ pub(crate) fn load_installed_documents(scope: ProfileScope) -> Result<Vec<Loaded
                 loaded.document.package.version
             );
         }
+        loaded.ability_reference = apm
+            .ability
+            .as_ref()
+            .map(|ability| {
+                load_ability_reference(ability, &apm.name, &apm.version, &installed.store_path)
+            })
+            .transpose()?;
         documents.push(loaded);
     }
     documents.sort_by(|left, right| {
@@ -441,7 +501,88 @@ fn load_document_file(
             bail!("documentation object identity mismatch for {source}");
         }
     }
-    Ok(LoadedDocumentation { document })
+    Ok(LoadedDocumentation {
+        document,
+        ability_reference: None,
+    })
+}
+
+fn load_ability_reference(
+    ability: &crate::types::AbilityPackageMeta,
+    package_name: &str,
+    package_version: &str,
+    primary_store_path: &str,
+) -> Result<PackageAbilityReference> {
+    crate::ability_package::validate_ability_package_meta(ability)
+        .context("validating installed ability metadata for documentation")?;
+    let manifest = crate::ability_package::read_package_manifest(&ability.store_path)?;
+    if manifest.len() as u64 != ability.manifest_size
+        || Sha256Digest::of_bytes(&manifest).to_string() != ability.manifest_sha256
+    {
+        bail!("installed ability manifest identity mismatch for '{package_name}'");
+    }
+    let package = crate::ability_package::decode_package_manifest(&manifest)?;
+    if package.package.name.as_str() != package_name || package.package.version != package_version {
+        bail!("installed ability package identity mismatch for '{package_name}'");
+    }
+    let artifacts = crate::ability_package::collect_distinct_artifacts(&package)?;
+    crate::ability_package::verify_artifact_catalog(&artifacts, &ability.artifacts)
+        .context("binding installed ability artifacts to signed retention metadata")?;
+    if package.package.payload.store_path != primary_store_path {
+        bail!("installed ability payload identity mismatch for '{package_name}'");
+    }
+    if package.content_digest()?.to_string() != ability.package_digest {
+        bail!("installed ability semantic identity mismatch for '{package_name}'");
+    }
+
+    let mut interfaces = Vec::with_capacity(package.interfaces.len());
+    let interface_keys = package
+        .interfaces
+        .values()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    for interface_key in interface_keys {
+        let path = Path::new(&ability.store_path)
+            .join("interfaces")
+            .join(format!("{}.json", interface_key.descriptor.hex()));
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&path)
+            .with_context(|| format!("opening installed ability interface {}", path.display()))?;
+        let metadata = file
+            .metadata()
+            .with_context(|| format!("reading installed ability interface {}", path.display()))?;
+        let limit = aos_ability_model::ABILITY_LIMITS_V1.max_document_bytes;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > limit {
+            bail!(
+                "installed ability interface is not a bounded regular file: {}",
+                path.display()
+            );
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        std::io::Read::take(file, limit + 1)
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("reading installed ability interface {}", path.display()))?;
+        if bytes.len() as u64 != metadata.len() {
+            bail!(
+                "installed ability interface changed while it was read: {}",
+                path.display()
+            );
+        }
+        interfaces.push(bytes);
+    }
+    let checked = validate_ability_contract(AbilityContractData::PackageSource {
+        manifest: &manifest,
+        retained_interfaces: &interfaces,
+    })
+    .context("checking installed package ability companion")?;
+    let CheckedAbilityContract::PackageSource(checked) = checked else {
+        bail!("package source validation returned another contract family");
+    };
+
+    PackageAbilityReference::from_checked_contract(&checked)
+        .context("generating authenticated package ability reference")
 }
 
 fn local_document(
@@ -601,6 +742,73 @@ async fn remote_search(
     Ok(results)
 }
 
+async fn remote_loaded_document(
+    hub: &str,
+    registry: &str,
+    token: Option<&str>,
+    package: &str,
+    version: Option<&str>,
+    platform: Option<&str>,
+) -> Result<LoadedDocumentation> {
+    let remote =
+        remote_document_selection(hub, registry, token, package, version, platform).await?;
+    let client = hub_client(hub, token)?;
+    let response = client
+        .call_topology_optional(
+            hub_rpc::GetPackageAbilityReference,
+            &GetPackageAbilityReferenceRequest {
+                registry: registry.to_string(),
+                package: remote.document.package.name.clone(),
+                version: remote.document.package.version.clone(),
+                platform: remote.document.package.platform.clone(),
+                release: String::new(),
+            },
+        )
+        .await?;
+    let ability_reference = response
+        .map(|response| {
+            verify_remote_ability_reference(response, &remote.document, &remote.registry_commit)
+        })
+        .transpose()?;
+
+    Ok(LoadedDocumentation {
+        document: remote.document,
+        ability_reference,
+    })
+}
+
+fn verify_remote_ability_reference(
+    response: aos_proto_types::GetPackageAbilityReferenceResponse,
+    document: &PackageDocumentation,
+    documentation_registry_commit: &str,
+) -> Result<PackageAbilityReference> {
+    let identity = response
+        .identity
+        .context("Hub ability reference response omitted its signed identity")?;
+    crate::types::validate_commit_hash(documentation_registry_commit)
+        .context("Hub documentation response has an invalid registry commit")?;
+    crate::types::validate_commit_hash(&identity.registry_commit)
+        .context("Hub ability reference response has an invalid registry commit")?;
+    let supported_features = aos_doc_model::ability_reference_supported_features()?;
+    let reference =
+        PackageAbilityReference::from_canonical_json(&response.canonical_json, &supported_features)
+            .context("validating Hub package ability reference")?;
+    let etag = hex::encode(Sha256::digest(&response.canonical_json));
+    if reference.package.as_str() != identity.package
+        || reference.version != identity.version
+        || identity.registry_commit != documentation_registry_commit
+        || identity.package != document.package.name
+        || identity.version != document.package.version
+        || identity.platform != document.package.platform
+        || reference.manifest_sha256.to_string() != identity.manifest_sha256
+        || reference.package_digest.to_string() != identity.package_digest
+        || response.etag != etag
+    {
+        bail!("Hub ability reference response identity mismatch");
+    }
+    Ok(reference)
+}
+
 async fn remote_document(
     hub: &str,
     registry: &str,
@@ -609,6 +817,21 @@ async fn remote_document(
     version: Option<&str>,
     platform: Option<&str>,
 ) -> Result<PackageDocumentation> {
+    Ok(
+        remote_document_selection(hub, registry, token, package, version, platform)
+            .await?
+            .document,
+    )
+}
+
+async fn remote_document_selection(
+    hub: &str,
+    registry: &str,
+    token: Option<&str>,
+    package: &str,
+    version: Option<&str>,
+    platform: Option<&str>,
+) -> Result<VerifiedRemoteDocumentation> {
     let response = hub_client(hub, token)?
         .call_topology(
             hub_rpc::GetPackageDocumentation,
@@ -623,6 +846,8 @@ async fn remote_document(
     let identity = response
         .identity
         .context("Hub documentation response omitted its signed identity")?;
+    crate::types::validate_commit_hash(&identity.registry_commit)
+        .context("Hub documentation response has an invalid registry commit")?;
     let document = PackageDocumentation::from_canonical_json(&response.canonical_json)
         .context("validating Hub package documentation")?;
     if document.package.name != identity.package
@@ -634,7 +859,10 @@ async fn remote_document(
     {
         bail!("Hub documentation response identity mismatch");
     }
-    Ok(document)
+    Ok(VerifiedRemoteDocumentation {
+        document,
+        registry_commit: identity.registry_commit,
+    })
 }
 
 async fn remote_schema(hub: &str, token: Option<&str>) -> Result<Vec<u8>> {
@@ -876,7 +1104,16 @@ fn local_http_response(documents: &[LoadedDocumentation], request: &[u8]) -> Vec
     else {
         return http_response("404 Not Found", "text/plain", b"not found\n");
     };
-    let body = document.document.render_html();
+    let body = match document.render_html() {
+        Ok(body) => body,
+        Err(_) => {
+            return http_response(
+                "500 Internal Server Error",
+                "text/plain",
+                b"documentation rendering failed\n",
+            );
+        }
+    };
     http_response("200 OK", "text/html; charset=utf-8", body.as_bytes())
 }
 
@@ -965,17 +1202,24 @@ fn run_cache(command: &DocumentationCacheCommand, printer: &Printer) -> Result<(
 }
 
 fn write_rendered(
-    document: &PackageDocumentation,
+    loaded: &LoadedDocumentation,
     format: DocumentationOutput,
     output: Option<&Path>,
 ) -> Result<()> {
+    write_bytes(&rendered_bytes(loaded, format)?, output)
+}
+
+fn rendered_bytes(loaded: &LoadedDocumentation, format: DocumentationOutput) -> Result<Vec<u8>> {
     let bytes = match format {
-        DocumentationOutput::Plain => document.render_plain().into_bytes(),
-        DocumentationOutput::Json => document.canonical_json()?,
-        DocumentationOutput::Html => document.render_html().into_bytes(),
-        DocumentationOutput::Man => document.render_roff().into_bytes(),
+        DocumentationOutput::Plain => loaded.render_plain()?.into_bytes(),
+        // Package documentation and ability declarations have independent
+        // authenticated identities. Preserve the existing canonical document
+        // schema rather than silently inventing an unversioned JSON envelope.
+        DocumentationOutput::Json => loaded.document.canonical_json()?,
+        DocumentationOutput::Html => loaded.render_html()?.into_bytes(),
+        DocumentationOutput::Man => loaded.render_roff()?.into_bytes(),
     };
-    write_bytes(&bytes, output)
+    Ok(bytes)
 }
 
 fn write_bytes(bytes: &[u8], output: Option<&Path>) -> Result<()> {
@@ -1016,9 +1260,15 @@ fn install_manpage(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_ability_model::{
+        ABILITY_LIMITS_V1, AbilityActivationMode, InterfaceDocument, LocalKey, RequiredFeature,
+        RequirementDeclaration, RequirementStrength, ValueSchema, decode_canonical,
+    };
+    use aos_contract::Sha256Digest;
     use aos_doc_model::{
-        ConfinementSummary, DocumentationIdentity, DocumentedPackage, InlineSpan, OptionDocument,
-        OptionOwner, OptionType, ProseBlock, RuntimeSurface, SourceLocator, Visibility,
+        AbilityExportReference, AbilityHandlerReference, DocumentationIdentity, DocumentedPackage,
+        InlineSpan, OptionDocument, OptionOwner, OptionType, PackageAbilityReference, ProseBlock,
+        SourceLocator, Visibility,
     };
     use tempfile::TempDir;
 
@@ -1037,11 +1287,9 @@ mod tests {
                 semantic_schema_sha256: String::new(),
                 runtime_nar_hash: format!("sha256:{}", "a".repeat(64)),
                 config_module_nar_hash: None,
-                system_module_nar_hash: None,
                 expose_artifact_nar_hash: None,
                 source_nar_hash: format!("sha256:{}", "b".repeat(64)),
             },
-            sections: Vec::new(),
             options: vec![OptionDocument {
                 path: vec![
                     aos_doc_model::PathSegment::Literal {
@@ -1071,25 +1319,70 @@ mod tests {
                     interface_abi: Some(1),
                 },
                 contributable: false,
-                activation: None,
                 source: Some(SourceLocator {
-                    path: "pkgs/networking/nginx.nix".to_string(),
-                    attribute: Some("nginx.enable".to_string()),
-                    line: Some(1),
+                    path: aos_ability_model::RelativePath::new("pkgs/networking/nginx.nix")
+                        .expect("valid source path"),
                 }),
             }],
-            runtime: RuntimeSurface {
-                confinement: Some(ConfinementSummary {
-                    class: "standard".to_string(),
-                    network: "private".to_string(),
-                    private_root: true,
-                }),
-                ..RuntimeSurface::default()
-            },
         };
         document.identity.semantic_schema_sha256 =
             document.computed_semantic_schema_sha256().unwrap();
         document
+    }
+
+    fn ability_reference() -> PackageAbilityReference {
+        let supported = aos_doc_model::ability_reference_supported_features().unwrap();
+        let mut interface = decode_canonical::<InterfaceDocument>(
+            include_bytes!("../../../tests/abilities/fixtures/interface.json"),
+            ABILITY_LIMITS_V1,
+            &supported,
+        )
+        .unwrap();
+        interface.interface.configuration = Some(ValueSchema::String {
+            max_length: 64,
+            syntax: None,
+        });
+        let interface_key = interface.interface_key().unwrap();
+
+        PackageAbilityReference {
+            schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.to_string(),
+            required_features: vec![
+                RequiredFeature::new("abilities-v1").unwrap(),
+                RequiredFeature::new(aos_doc_model::ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1)
+                    .unwrap(),
+            ],
+            package: LocalKey::new("nginx").unwrap(),
+            version: "1.0".to_string(),
+            manifest_sha256: Sha256Digest::of_bytes("manifest"),
+            package_digest: Sha256Digest::of_bytes("package"),
+            activation_mode: AbilityActivationMode::StructuredEffects,
+            interfaces: std::collections::BTreeMap::from([(
+                LocalKey::new("server-interface").unwrap(),
+                interface,
+            )]),
+            guarantees: std::collections::BTreeMap::new(),
+            exports: vec![AbilityExportReference {
+                name: LocalKey::new("server").unwrap(),
+                implementation: Sha256Digest::of_bytes("implementation"),
+                interface: interface_key.clone(),
+                requirements: vec![RequirementDeclaration {
+                    description: "Describes this consumed ability.".to_string(),
+                    alias: LocalKey::new("service-runtime").unwrap(),
+                    accepted_interfaces: vec![interface_key.into()],
+                    methods: Vec::new(),
+                    guarantees: Vec::new(),
+                    strength: RequirementStrength::Required,
+                    fallback: None,
+                }],
+            }],
+            requirements: Vec::new(),
+            handlers: vec![AbilityHandlerReference {
+                name: LocalKey::new("configure").unwrap(),
+                entry_point: ".handler\\entry\u{1b}\n</code><script>bad()</script>".to_string(),
+                arguments: ValueSchema::Boolean,
+                result: ValueSchema::Boolean,
+            }],
+        }
     }
 
     #[test]
@@ -1107,7 +1400,6 @@ mod tests {
             document_sha256: document.document_sha256().unwrap(),
             document_size: bytes.len() as u64,
             semantic_schema_sha256: document.identity.semantic_schema_sha256.clone(),
-            system_module_nar_hash: None,
             references: Vec::new(),
         };
         assert!(load_document_file(&path, Some(&artifact), "fixture").is_ok());
@@ -1126,7 +1418,10 @@ mod tests {
         assert!(score_search_row(&row, &["enable".to_string()]) > 0);
         assert_eq!(score_search_row(&row, &["database".to_string()]), 0);
 
-        let loaded = LoadedDocumentation { document };
+        let loaded = LoadedDocumentation {
+            document,
+            ability_reference: None,
+        };
         let browsed = search_loaded_documents(std::slice::from_ref(&loaded), "", None, 25)
             .expect("empty documentation search browses packages");
         assert_eq!(browsed.len(), 1);
@@ -1143,6 +1438,7 @@ mod tests {
     fn documentation_loopback_browser_is_content_bearing_and_bounded() {
         let loaded = LoadedDocumentation {
             document: fixture(),
+            ability_reference: Some(ability_reference()),
         };
         let index = local_http_response(
             std::slice::from_ref(&loaded),
@@ -1159,6 +1455,10 @@ mod tests {
         );
         let detail = String::from_utf8(detail).unwrap();
         assert!(detail.contains("nginx.enable"));
+        assert!(detail.contains("Declared abilities"));
+        assert!(detail.contains("Declared export <code>server</code>"));
+        assert!(detail.contains("does not report activation"));
+        assert!(detail.contains("&#x1b;&#xa;&lt;/code&gt;&lt;script&gt;bad()&lt;/script&gt;"));
         assert!(!detail.contains("<script"));
 
         let rejected = local_http_response(&[], b"POST / HTTP/1.1\r\n\r\n");
@@ -1167,5 +1467,145 @@ mod tests {
                 .unwrap()
                 .starts_with("HTTP/1.1 405 Method Not Allowed")
         );
+    }
+
+    #[test]
+    fn ordinary_renderers_show_only_the_static_public_declaration() {
+        let loaded = LoadedDocumentation {
+            document: fixture(),
+            ability_reference: Some(ability_reference()),
+        };
+
+        let plain = loaded.render_plain().unwrap();
+        assert!(plain.contains("DECLARED ABILITIES"));
+        assert!(plain.contains("EXPOSED ABILITIES"));
+        assert!(plain.contains("CONSUMED ABILITIES"));
+        assert!(plain.contains("declared export\tserver\taos.test.echo\tABI 1"));
+        assert!(plain.contains("service-runtime\trequired\tconsumed by export server"));
+        assert!(plain.contains("declared request or contribution schema"));
+        assert!(plain.contains("declared operator-owned provider instance configuration schema"));
+        assert!(plain.contains("\"max_length\": 64"));
+        assert!(plain.contains("declared aggregate output"));
+        assert!(plain.contains("declared method"));
+        assert!(plain.contains("does not report activation, provider selection"));
+        assert!(plain.contains("public schemas only, never deployed instance values"));
+        assert!(plain.contains("\\u{1b}\\n</code><script>bad()</script>"));
+
+        let html = loaded.render_html().unwrap();
+        assert!(html.contains("Declared request or contribution schema"));
+        assert!(html.contains("Exposed abilities"));
+        assert!(html.contains("Consumed abilities"));
+        assert!(html.contains("consumed by <code>export server</code>"));
+        assert!(html.contains("Declared operator-owned provider instance configuration schema"));
+        assert!(html.contains("&quot;max_length&quot;: 64"));
+        assert!(html.contains("public schemas only, never deployed instance values"));
+
+        let roff = loaded.render_roff().unwrap();
+        assert!(roff.contains(".SH \"DECLARED ABILITIES\""));
+        assert!(roff.contains("declared operator-owned provider instance configuration schema"));
+        assert!(roff.contains("\\eentry\\eu{1b}\\en</code><script>bad()</script>"));
+        assert!(!roff.contains("\n.handler"));
+
+        let mut without_configuration = loaded.clone();
+        without_configuration
+            .ability_reference
+            .as_mut()
+            .unwrap()
+            .interfaces
+            .values_mut()
+            .next()
+            .unwrap()
+            .interface
+            .configuration = None;
+        assert!(
+            without_configuration
+                .render_plain()
+                .unwrap()
+                .contains("no operator-owned provider instance configuration is declared")
+        );
+
+        let canonical_document = rendered_bytes(&loaded, DocumentationOutput::Json).unwrap();
+        assert_eq!(
+            PackageDocumentation::from_canonical_json(&canonical_document).unwrap(),
+            loaded.document
+        );
+        assert!(
+            !String::from_utf8(canonical_document)
+                .unwrap()
+                .contains("package-ability-reference")
+        );
+    }
+
+    #[test]
+    fn packages_without_companions_document_empty_ability_directions() {
+        let loaded = LoadedDocumentation {
+            document: fixture(),
+            ability_reference: None,
+        };
+
+        let plain = loaded.render_plain().unwrap();
+        assert!(plain.contains("EXPOSED ABILITIES\nNo exposed abilities are declared."));
+        assert!(plain.contains("CONSUMED ABILITIES\nNo consumed abilities are declared."));
+
+        let html = loaded.render_html().unwrap();
+        assert!(html.contains("<h3>Exposed abilities</h3>"));
+        assert!(html.contains("<h3>Consumed abilities</h3>"));
+
+        let roff = loaded.render_roff().unwrap();
+        assert!(roff.contains("EXPOSED ABILITIES"));
+        assert!(roff.contains("CONSUMED ABILITIES"));
+    }
+
+    #[test]
+    fn remote_reference_requires_exact_document_identity_and_etag() {
+        let document = fixture();
+        let reference = ability_reference();
+        let canonical_json = reference.canonical_json().unwrap();
+        let response = aos_proto_types::GetPackageAbilityReferenceResponse {
+            identity: Some(aos_proto_types::PackageAbilityReferenceIdentity {
+                registry_commit: "a".repeat(64),
+                package: document.package.name.clone(),
+                version: document.package.version.clone(),
+                platform: document.package.platform.clone(),
+                manifest_sha256: reference.manifest_sha256.to_string(),
+                package_digest: reference.package_digest.to_string(),
+            }),
+            etag: hex::encode(Sha256::digest(&canonical_json)),
+            canonical_json,
+        };
+
+        assert_eq!(
+            verify_remote_ability_reference(response.clone(), &document, &"a".repeat(64)).unwrap(),
+            reference
+        );
+
+        let mut empty_ability_commit = response.clone();
+        empty_ability_commit
+            .identity
+            .as_mut()
+            .unwrap()
+            .registry_commit
+            .clear();
+        assert!(
+            verify_remote_ability_reference(empty_ability_commit, &document, &"a".repeat(64))
+                .is_err()
+        );
+        assert!(
+            verify_remote_ability_reference(response.clone(), &document, "not-a-commit").is_err()
+        );
+
+        let mut wrong_platform = response.clone();
+        wrong_platform.identity.as_mut().unwrap().platform = "aarch64-linux".to_string();
+        assert!(
+            verify_remote_ability_reference(wrong_platform, &document, &"a".repeat(64)).is_err()
+        );
+
+        assert!(
+            verify_remote_ability_reference(response.clone(), &document, &"b".repeat(64)).is_err()
+        );
+
+        let mut wrong_etag = response;
+        wrong_etag.etag = "0".repeat(64);
+        assert!(verify_remote_ability_reference(wrong_etag, &document, &"a".repeat(64)).is_err());
     }
 }

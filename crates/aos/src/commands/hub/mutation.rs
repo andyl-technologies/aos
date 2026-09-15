@@ -353,7 +353,7 @@ pub(super) async fn consumer_scope_mutation(
         Response = hub_types::ConsumerScopeGrantResponse,
     > + Copy,
 ) -> Result<()> {
-    let client = hub_client(&access.hub, access.token.as_deref())?;
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
     topology_mutation::<
         _,
         hub_types::ApplyConsumerScopeGrantRequest,
@@ -402,7 +402,7 @@ pub(super) async fn delete_topology_resource(
         Response = hub_types::DeleteTopologyResourceResponse,
     > + Copy,
 ) -> Result<()> {
-    let client = hub_client(&access.hub, access.token.as_deref())?;
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
     topology_mutation::<
         _,
         hub_types::ApplyDeleteTopologyResourceRequest,
@@ -457,7 +457,7 @@ pub(super) async fn boundary_lifecycle_mutation(
 ) -> Result<()> {
     let (boundary_id, revision) =
         parse_generation_ref(boundary_revision, "network policy revision")?;
-    let client = hub_client(&access.hub, access.token.as_deref())?;
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
     topology_mutation::<
         _,
         hub_types::ApplyNetworkPolicyLifecycleRequest,
@@ -509,7 +509,7 @@ pub(super) async fn topology_state_mutation<Resp>(
 where
     Resp: DeserializeOwned + Serialize,
 {
-    let client = hub_client(&access.hub, access.token.as_deref())?;
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
     topology_mutation::<_, hub_types::ApplyDeleteTopologyResourceRequest, Resp, _>(
         printer,
         &client,

@@ -1,6 +1,7 @@
 ##! systemd — System and service manager
 {
   mkDerivation,
+  stdenv,
   fetchurl,
   gnumake,
   pkg-config,
@@ -42,16 +43,47 @@
   # when ukify runs (both also needed during meson configure — see
   # the configure phase's PYTHONPATH export). python3.nix pins 3.14.
   ukifyPythonPath = "${python3-pefile}/lib/python3.14/site-packages:${python3-pyelftools}/lib/python3.14/site-packages";
+
+  systemdRuntimeDeps = [
+    bash
+    util-linux
+    kmod
+    zlib
+    xz
+    lz4
+    zstd
+    openssl
+    libcap
+    libxcrypt
+    audit
+    libselinux
+    libsepol
+    pcre2
+    libseccomp
+    acl
+    cryptsetup
+    elfutils
+    linux-pam
+    tpm2-tss
+  ];
+  systemdRuntimeLibraryPath = builtins.concatStringsSep ":" (
+    map (dependency: "${dependency}/lib") systemdRuntimeDeps
+  );
 in
   mkDerivation {
     pname = "systemd";
     inherit version;
+    abilities = ./_systemd-abilities.nix;
 
-    # Split ukify into a `tools` output so the python3-pefile and
-    # python3-pyelftools site-packages stay out of PID-1 systemd's
-    # runtime closure. aos-uki (the only consumer of ukify) pulls
-    # systemd.tools explicitly.
+    # Keep UKI construction and kernel installation in `tools`, including
+    # kernel-install's Python hook. PID 1 and boot-time generators do not need
+    # that interpreter. Image builders select systemd.tools explicitly.
     outputs = ["out" "tools"];
+
+    # The package performs ELF path cleanup below, then retains its declared
+    # runtime directories for libraries loaded on demand. A second DT_NEEDED-
+    # only shrink would remove libmount and prevent PID 1 from booting.
+    dontPatchELF = true;
 
     src = fetchurl {
       urls = [
@@ -96,29 +128,10 @@ in
       # shared library) and keeps the 7 MiB header tree out of the closure.
       linux-headers
     ];
-    runtimeDeps = [
-      util-linux
-      kmod
-      zlib
-      xz
-      lz4
-      zstd
-      openssl
-      libcap
-      libxcrypt
-      audit
-      libselinux
-      libsepol
-      pcre2
-      libseccomp
-      acl
-      cryptsetup
-      elfutils
-      linux-pam
-      # TPM2 (RFC-0006 phase 3): libtss2-esys/rc/mu + the device TCTI for
-      # systemd-cryptsetup's TPM2 token, systemd-pcrextend, systemd-measure.
-      tpm2-tss
-    ];
+    # Installed helpers and the cryptsetup/ukify wrappers execute the target
+    # interpreters. TPM2 supplies libtss2-esys/rc/mu and the device TCTI for
+    # systemd-cryptsetup's TPM2 token, systemd-pcrextend, and systemd-measure.
+    runtimeDeps = systemdRuntimeDeps;
     propagatedDeps = [];
 
     # systemd's many [0]/[1] trailing-array structs get narrowed to a fixed
@@ -145,6 +158,21 @@ in
         name = "patch-source";
         script = ''
           nativePython=$(command -v python3)
+
+          # kernel-install and its complete plugin set live with ukify in the
+          # tools output. Preserve administrator overrides in /etc/kernel.
+          test "$(grep -Fc '"/usr/lib/kernel/install.d"' src/kernel-install/kernel-install.c)" -eq 1
+          sed -i \
+            "s|\"/usr/lib/kernel/install.d\"|\"$tools/lib/kernel/install.d\"|" \
+            src/kernel-install/kernel-install.c
+
+          # libseccomp is loaded on demand, so DT_NEEDED-based RPATH shrinking
+          # cannot retain its search directory. Bind the loader to the AOS
+          # library explicitly so syscall filters work without host libraries.
+          test "$(grep -Fc '"libseccomp.so.2"' src/shared/seccomp-util.c)" -eq 1
+          sed -i \
+            's|"libseccomp.so.2"|"${libseccomp}/lib/libseccomp.so.2"|' \
+            src/shared/seccomp-util.c
 
           # Fix shebangs: /usr/bin/env and /bin/bash don't exist in the sandbox
           for f in $(find . -type f \( -name '*.sh' -o -name '*.py' \)); do
@@ -231,7 +259,7 @@ in
                   meson setup .. \
                     $mesonFlags \
                     --prefix=$out \
-                    --sysconfdir=$out/etc \
+                    --sysconfdir=/etc \
                     -Dwerror=false \
                     --buildtype=release \
                     -Dmode=release \
@@ -388,13 +416,33 @@ in
             [ "$grepStatus" -eq 1 ] || exit "$grepStatus"
           fi
           rm -f "$nativePythonRefs"
+
+          # Upstream leaves several installed helpers on host-global
+          # interpreters, which do not exist on AOS. Keep the explicit list in
+          # sync with the installed systemd and kernel-install entry points.
+          for script in \
+            "$out/lib/kernel/install.d/50-depmod.install" \
+            "$out/lib/kernel/install.d/90-loaderentry.install" \
+            "$out/lib/kernel/install.d/90-uki-copy.install" \
+            "$out/lib/systemd/systemd-update-helper"; do
+            sed -i "1c #!${bash}/bin/bash" "$script"
+          done
+          sed -i "1c #!${python3}/bin/python3" \
+            "$out/lib/kernel/install.d/60-ukify.install"
+
+          mkdir -p "$out/share/aos/providers"
+          cp ${./_systemd-provider.nix} "$out/share/aos/providers/systemd.nix"
+          cp ${./_systemd-service-provider-lib.nix} "$out/share/aos/providers/_systemd-service-provider-lib.nix"
+          cp ${./_systemd-service-document.nix} "$out/share/aos/providers/_systemd-service-document.nix"
+          cp ${./_systemd-service-transition.nix} "$out/share/aos/providers/_systemd-service-transition.nix"
+          cp ${./_systemd-unit-document.nix} "$out/share/aos/providers/_systemd-unit-document.nix"
         '';
       }
       {
-        name = "fixup";
-        # LUKS2 token plugins (libcryptsetup-token-*.so) are loaded via
-        # dlopen from $cryptsetup/lib/cryptsetup/. DT_RPATH on the binary
-        # does NOT propagate to libraries loaded via dlopen, so
+        name = "wrap-runtime-tools";
+        # systemd's LUKS2 token plugins (libcryptsetup-token-*.so) are loaded
+        # via dlopen from $out/lib/cryptsetup/. DT_RPATH on the binary does not
+        # propagate to libraries loaded via dlopen, so
         # systemd-cryptsetup and systemd-cryptenroll need LD_LIBRARY_PATH
         # extended at runtime to find them. nixpkgs handles this with
         # wrapProgram (makeWrapper); AOS has no wrapProgram, so we inline
@@ -409,6 +457,21 @@ in
         # would fire at cat time and produce a trailing-colon path — a
         # classic ld.so CWD-search bug.)
         script = ''
+          # Meson does not preserve the cc-wrapper RPATH on every target.
+          # First resolve direct dependencies and discard unused build paths,
+          # then retain the declared runtime paths for systemd's dlopen calls.
+          # Those libraries are deliberately absent from DT_NEEDED.
+          find "$out" -type f | while read -r executable; do
+            patchelf --print-needed "$executable" >/dev/null 2>&1 || continue
+            patchelf --add-rpath \
+              "$out/lib:$out/lib/systemd:${systemdRuntimeLibraryPath}" \
+              "$executable"
+            patchelf --shrink-rpath "$executable"
+            patchelf --add-rpath \
+              "$out/lib:$out/lib/systemd:${systemdRuntimeLibraryPath}" \
+              "$executable"
+          done
+
           for f in bin/systemd-cryptsetup bin/systemd-cryptenroll; do
             if [ -x "$out/$f" ]; then
               wrapped="$out/$f"
@@ -433,6 +496,8 @@ in
           if [ -x "$out/bin/ukify" ]; then
             mkdir -p "$tools/bin"
             mv "$out/bin/ukify" "$tools/bin/.ukify-unwrapped"
+            sed -i "1c #!${python3}/bin/python3" \
+              "$tools/bin/.ukify-unwrapped"
             cat > "$tools/bin/ukify" << EOF
           #!${bash}/bin/bash
           export PYTHONPATH="${ukifyPythonPath}\''${PYTHONPATH:+:\$PYTHONPATH}"
@@ -440,6 +505,62 @@ in
           EOF
             chmod +x "$tools/bin/ukify"
           fi
+
+          mkdir -p "$tools/lib/kernel"
+          mv "$out/bin/kernel-install" "$tools/bin/kernel-install"
+          mv "$out/lib/kernel/install.d" "$tools/lib/kernel/install.d"
+
+          # The Python plugin imports ukify as a module, so point it at the
+          # unwrapped source instead of the public shell launcher. Both tools
+          # receive the same pefile and pyelftools module search path.
+          ukify_hook="$tools/lib/kernel/install.d/60-ukify.install"
+          mv "$ukify_hook" "$ukify_hook.unwrapped"
+          cat > "$ukify_hook" << EOF
+          #!${bash}/bin/bash
+          export PYTHONPATH="${ukifyPythonPath}\''${PYTHONPATH:+:\$PYTHONPATH}"
+          export KERNEL_INSTALL_UKIFY="\''${KERNEL_INSTALL_UKIFY:-$tools/bin/.ukify-unwrapped}"
+          exec "${python3}/bin/python3" "$ukify_hook.unwrapped" "\$@"
+          EOF
+          chmod +x "$ukify_hook"
+        '';
+      }
+      {
+        name = "verify-runtime-configuration-paths";
+        script = ''
+          # Administrator state belongs to the live /etc overlay. Compiling
+          # the output path into systemd would let runtime tools mutate the
+          # package through the writable /nix overlay.
+          grep -F '/etc/profile.d/70-systemd-shell-extra.sh' \
+            "$out/lib/tmpfiles.d/20-systemd-shell-extra.conf" >/dev/null
+          grep -F '/etc/profile.d/80-systemd-osc-context.sh' \
+            "$out/lib/tmpfiles.d/20-systemd-osc-context.conf" >/dev/null
+          if grep -F "$out/etc/profile.d" \
+            "$out/lib/tmpfiles.d/20-systemd-shell-extra.conf" \
+            "$out/lib/tmpfiles.d/20-systemd-osc-context.conf" >/dev/null; then
+            echo "systemd tmpfiles targets its immutable output" >&2
+            exit 1
+          fi
+
+          test ! -e "$out/etc"
+
+          ${
+            if stdenv.isCross
+            then ''
+              echo "skipping target systemd path execution while cross-compiling"
+            ''
+            else ''
+              test "$($out/bin/systemd-path system-configuration)" = /etc
+
+              unitPaths="$($out/bin/systemd-analyze unit-paths)"
+              printf '%s\n' "$unitPaths" \
+                | grep -Fx /etc/systemd/system >/dev/null
+              if printf '%s\n' "$unitPaths" \
+                | grep -Fx "$out/etc/systemd/system" >/dev/null; then
+                echo "systemd runtime unit lookup includes its immutable output" >&2
+                exit 1
+              fi
+            ''
+          }
         '';
       }
     ];

@@ -6,6 +6,10 @@
   ...
 }: let
   cfg = config.aos.security.sudo;
+  sudoExecutable = {
+    artifact = lib.abilities.packageOutput {package = "sudo";};
+    path = "bin/sudo";
+  };
   wheelMembers = config.aos.users.groups.wheel.members;
   passwordTag =
     if cfg.wheelNeedsPassword
@@ -47,16 +51,10 @@ in {
 
     aos.security.wrappers = {
       sudo = {
-        source = "${pkgs.sudo}/bin/sudo";
-        owner = "root";
-        group = "root";
-        mode = "4755";
+        source = sudoExecutable;
       };
       sudoedit = {
-        source = "${pkgs.sudo}/bin/sudo";
-        owner = "root";
-        group = "root";
-        mode = "4755";
+        source = sudoExecutable;
       };
     };
 
@@ -92,11 +90,7 @@ in {
             name = "sudo-wrapper";
             description = "sudo is materialized as a root-owned setuid wrapper";
             script = ''
-              vm.wait_until_succeeds(
-                  "systemctl is-active --quiet aos-security-wrappers.service",
-                  timeout=30,
-              )
-              vm.succeed("test -u /run/wrappers/bin/sudo")
+              vm.wait_until_succeeds("test -u /run/wrappers/bin/sudo", timeout=30)
               vm.succeed("test $(stat -c %u:%g /run/wrappers/bin/sudo) = 0:0")
               vm.succeed("sudo -n true")
             '';

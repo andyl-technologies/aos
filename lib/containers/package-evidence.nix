@@ -7,15 +7,16 @@
 {
   lib,
   pkgs,
+  packageNames ? pkgs.packageNames,
   overrides ? [],
 }: let
   discard = value:
     builtins.unsafeDiscardStringContext (builtins.toString value);
 
-  packageNames =
+  derivationPackageNames =
     builtins.filter
     (name: lib.isDerivation pkgs.${name})
-    pkgs.packageNames;
+    packageNames;
 
   normalizeLicense = license:
     if builtins.isList license
@@ -118,7 +119,7 @@
         }))
     outputNames;
 
-  packageEntries = builtins.concatMap entriesForPackage packageNames;
+  packageEntries = builtins.concatMap entriesForPackage derivationPackageNames;
   overrideEntries =
     map (override: {
       attribute = "container-evidence-override";

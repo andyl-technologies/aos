@@ -1,0 +1,193 @@
+# RFC-0022: Package abilities, typed consumption, and structured effects
+
+- **Status:** Proposed; implementation requires remediation. The checked model,
+  planning, execution, and inspection work does not yet satisfy the package,
+  provider-discovery, cutover, derivation, and single-source-of-truth rules in
+  the normative [target state](13-target-state.md).
+- **Date:** 2026-09-08.
+- **Audience:** package authors; maintainers of APM, AOS, APR, the Nix module
+  system, systemd integration, boot and image construction, sandbox runtimes,
+  security policy, AOS Hub, and documentation tooling.
+- **Baseline:** repository commit `10432f8cca97a169754759e42c19cff08fa0a946`.
+  Baseline claims were checked against that revision. Relative code links are
+  navigation aids and may evolve; canonical user documentation remains the
+  authority for current behavior.
+- **Builds on:** [RFC-0001](../0001-package-sandboxing/README.md),
+  [RFC-0005](../0005-ca-trust-map.md),
+  [RFC-0011](../0011-on-host-config-eval/README.md),
+  [RFC-0016](../0016-package-documentation/README.md), and
+  [RFC-0019](../0019-oci-containers/README.md).
+- **Coordinates with:** the sandbox and filesystem-view proposal in
+  [PR #232](https://github.com/andyl-technologies/aos/pull/232). Its authority,
+  resource identity, and execution machinery are integration surfaces, not
+  facilities this RFC independently replaces.
+- **Optional testing dependency:** pending [Crucible campaign PR #194](https://github.com/andyl-technologies/aos/pull/194)
+  supplies features used by advanced AOS guest instrumentation. The
+  [integration chapter](11-crucible-integration.md) pins the reviewed revision
+  and separates those dependencies from supported baseline guest interfaces.
+- **Number allocation:** RFC-0022 is reserved for this design. Related
+  in-progress proposals are referenced by PR while their numbering settles.
+
+## Summary
+
+AOS will represent how software consumes its dependencies, from build tools
+and shared libraries through configuration contributions, service management,
+credentials, storage, networking, and image construction. A package can export
+an ability, consume abilities from other packages or its execution environment,
+and implement higher-level abilities using those bindings.
+
+Nix remains the authoring and configuration language. Package-owned modules
+declare typed interfaces, requests, settings, and pure mappings through the
+ordinary AOS `options` and `config` fixed point. Shared ability-aware option
+types drive evaluation, portable schemas, generic parsing, editor support, and
+generated reference documentation from one declaration. Source-defined systems
+select bindings explicitly and validate them during evaluation and build.
+APM resolves eligible providers for authenticated registry packages, evaluates
+their configuration modules, and constructs equivalent bound plans. Both paths
+use the same versioned contracts and authorization rules.
+
+An ability declaration describes an interface and its requirements; it is not
+itself authority. Operator policy authorizes bindings. Trusted runtime code
+acquires scoped handles and verifies the environment before performing effects.
+Neither an installed package, a Nix attribute, a path, nor a container marker
+proves that a resource is available or authorized.
+
+The systemd package exposes a rich set of service-management abilities.
+Packages consume the lifecycle, dependency, reload, credential, socket,
+identity, and isolation features they require. Packages that intentionally use
+systemd-specific semantics request its specific interface. A host or a suitably
+provisioned system container may provide a manager instance; an application
+container may provide a narrower launch interface.
+
+Activation becomes a planned transition from observed and retained state to
+desired state. Provider authors explicitly compose lower abilities and their
+transition operations. Nix produces pure descriptions; a Rust planner and
+validator check bindings, dependencies, conflicts, and recovery rules. A Rust
+executor dispatches through trusted implementations, including systemd and
+Kubernetes. A durable transaction record supports crash recovery, rollout,
+compensation, and checked activation of older generations. Scripts may
+implement individual operations, but do not hide the
+transaction's ordering or failure semantics.
+
+## Decisions proposed for acceptance
+
+1. Keep packages as distribution and authoring units; distinguish deployed
+   instances, exported interfaces, requests, bindings, and concrete handles.
+2. Record dependency consumption explicitly, including mechanism, phase,
+   interface compatibility, authority, and lifetime. Preserve separate build,
+   configuration, activation, communication, authority, and retention graphs.
+3. Make recursive implementation part of ability authorship: exports declare
+   lower requirements, typed child requests/results, aggregation, and
+   transitions grounded in authorized operations and a valid bootstrap path.
+4. Retain the Nix language and extend the standard AOS module option
+   vocabulary. Define each ability and configuration fact once through
+   `mkOption` and `config`; derive package contracts, parsing schemas, and
+   reference documentation from that fixed point. Do not require an evaluator
+   fork, language-level effect inference, or a new service DSL.
+5. Preserve rich service declarations and package configuration ownership.
+   Expose manager features from provider packages and translate only an
+   explicitly supported subset through an alternative provider.
+6. Use explicit matching for source-defined outputs and bounded resolution for
+   registry inputs, with common validation and exact artifact identities.
+7. Separate environment discovery, policy authorization, and resource binding.
+   Availability never grants authority; missing enforcement prevents activation.
+8. Keep installation, workload preparation, activation, and observation
+   distinguishable even when one high-level command performs several steps.
+9. Make runtime transitions first-class. Derive finite executable effect
+   graphs from current and desired state; use a versioned operation language
+   represented as data and executed in Rust.
+10. Preserve independent package, configuration, and image generations, linked
+    by transaction and binding records. Rollback is a newly validated
+    transition, not unconditional reversal of past effects.
+11. Generate option and ability reference data and explanations from the same
+    module declarations and checked contracts for CLI, Hub, documentation,
+    editor tooling, previews, diagnostics, and generation comparisons.
+12. Preserve hermetic builds, registry trust, secret handling, resource fencing,
+    and the Crucible/QEMU process and licensing boundaries.
+13. Exercise production ability implementations in VM/fleet scenarios and
+    extend existing release qualification with independent behavior checks,
+    semantic fault injection, and evidence bound to exact tested subjects.
+14. Keep Crucible guest-agnostic. Configure an optional AOS-owned executor
+    integration to emit generic assertions, markers, measurements, and choices
+    inside Crucible; introduce no AOS-specific Crucible engine behavior.
+
+## Reading guide
+
+| Chapter | Purpose |
+| --- | --- |
+| [00 — Current model and goals](00-current-model-and-goals.md) | Establish the baseline and problem |
+| [01 — Abilities and consumption](01-abilities-and-consumption.md) | Define terms, graph meanings, authority, and invariants |
+| [02 — Nix and contracts](02-nix-authoring-and-contracts.md) | Describe pure authoring, ownership, publication, and validation |
+| [03 — Recursive composition](03-recursive-composition.md) | Work through provider authorship, child requests, results, and transitions |
+| [04 — Resolution and binding](04-resolution-and-binding.md) | Unify static matching and bounded registry resolution |
+| [05 — Platform integration](05-platform-and-package-integration.md) | Apply the model to services, boot, policies, images, and libraries |
+| [06 — Structured activation](06-structured-activation.md) | Specify execution, recovery, rollout, and rollback |
+| [07 — Documentation and operations](07-documentation-and-operations.md) | Explain CLI, Hub, editor, generation, and retention behavior |
+| [08 — Security and compatibility](08-security-and-compatibility.md) | Preserve authority and fail-closed version boundaries |
+| [09 — Implementation and validation](09-implementation-and-validation.md) | Define staged delivery and qualification gates |
+| [10 — Testing and qualification](10-testing-and-qualification.md) | Define production-path tests, independent observations, fault injection, and release evidence |
+| [11 — Crucible guest integration](11-crucible-integration.md) | Keep integration AOS-owned and identify pending PR #194 dependencies |
+| [12 — Alternatives and implementation decisions](12-alternatives-and-open-questions.md) | Record prior art, resolved questions, and extension boundaries |
+| [13 — Target state](13-target-state.md) | Fix component ownership, package integration, data flow, cutover, documentation, and qualification |
+
+Implementors should also read the detailed contracts before designing APIs:
+
+- [Normative component and data-ownership target](13-target-state.md).
+- [Data, composition, identity, binding, and compatibility](implementation-contract.md).
+- [Operation lifecycle, publication, scheduling, and recovery](execution-contract.md).
+- [Complete feature coverage and end-to-end acceptance fixture](implementation-completeness.md).
+
+The target-state chapter governs component ownership and data flow. The other
+contracts fix semantics abbreviated by the examples. Internal code organization
+and frontend wording remain implementation choices only within those ownership
+and dependency boundaries.
+
+## Architecture
+
+```text
+Native package abilities and package-owned recursive implementations
+  + desired configuration and target environment contract
+  + explicit bindings or bounded APM provider resolution
+  -> normalized desired resources and authorized consumption graph
+
+Desired resources + current state + provider transition definitions
+  -> finite typed effect plan
+  -> runtime admission and scoped resource acquisition
+  -> Rust execution through trusted providers
+  -> durable outcomes and observed consumer state
+```
+
+Evaluation and artifact construction remain pure/hermetic. Activation carries
+out runtime transitions; a static dependency graph alone does not determine
+them. The broader consumption model also describes build-time uses such as
+tool execution and linking. It does not turn build operations into host
+activation or require Nix evaluation for every runtime operation.
+
+## Intended outcome
+
+A user should be able to inspect an nginx deployment and trace:
+
+```text
+application configuration
+  -> authorized nginx virtual-host contribution
+  -> exact nginx configuration artifact
+  -> validation and service reload request
+  -> container-local systemd manager
+  -> delegated runtime resources and credential bindings
+```
+
+The same model should explain why an ELF library is retained, why an initrd
+cannot use a host-stage credential provider, why a container cannot satisfy a
+kernel-management request, and why an older generation can or cannot be
+reactivated. Ordinary users should receive concrete explanations rather than
+having to understand the entire graph.
+
+## Status discipline
+
+Normative words describe requirements of the complete proposal. A requirement
+is implemented only where current code and the completion checklist name its
+enforcement and evidence. Nix examples and operation names outside those
+implemented surfaces remain illustrative. Draft representations created while
+implementing the same unreleased change receive no compatibility path; the
+completed implementation cuts directly to the final model described in the
+[target-state chapter](13-target-state.md).

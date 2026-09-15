@@ -84,6 +84,23 @@ pub const FEATURE_UKI_SLOTS_V1: &str = "uki-slots-v1";
 /// Registry feature flag for signed, slot-paired recovery UKI metadata.
 pub const FEATURE_RECOVERY_UKIS_V1: &str = "recovery-ukis-v1";
 
+/// Registry feature flag for native-executor-qualified image rollouts.
+pub const FEATURE_NATIVE_IMAGE_ROLLOUT_V1: &str = "native-image-rollout-v1";
+
+/// Registry feature flag for an authenticated RFC-0022 ability manifest.
+pub const FEATURE_ABILITIES_V1: &str = "abilities-v1";
+
+/// Registry feature flag for RFC-0022 structured effect activation.
+///
+/// The ordinary package reader deliberately does not advertise this feature
+/// until every direct package mutation path dispatches structured lifecycle
+/// effects. Contracts-only ability metadata remains safe to install because
+/// it carries no activation owner.
+pub const FEATURE_ABILITY_EFFECTS_V1: &str = "ability-effects-v1";
+
+/// Names the retained derivation output containing an ability manifest.
+pub const ABILITY_MANIFEST_OUTPUT: &str = "abilities";
+
 const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_EXPOSE_V1,
     FEATURE_EXPOSE_ARTIFACT_V1,
@@ -102,6 +119,8 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_PACKAGE_DOCUMENTATION_V1,
     FEATURE_UKI_SLOTS_V1,
     FEATURE_RECOVERY_UKIS_V1,
+    FEATURE_NATIVE_IMAGE_ROLLOUT_V1,
+    FEATURE_ABILITIES_V1,
 ];
 
 const LANDLOCK_WRITABLE_TEMP_PREFIXES: &[&str] = &["/tmp", "/var/tmp"];
@@ -553,6 +572,9 @@ pub struct PackageMeta {
     /// Canonical package documentation selected for this version/platform.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation: Option<DocumentationArtifactMeta>,
+    /// Authenticated RFC-0022 ability package companion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ability: Option<AbilityPackageMeta>,
     /// Signed RFC-0001 permission manifest.
     #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
     pub permissions: PermissionsMeta,
@@ -583,6 +605,7 @@ pub use aos_registry_surface::manifest::{
 // schema (so the hub indexer and the Worker share them) and are re-exported
 // here so `aos_package::types::{ConfigModuleMeta, …}` paths are unchanged.
 pub use aos_registry_surface::manifest::{
+    AbilityArtifactRetentionMeta, AbilityClosureMemberMeta, AbilityPackageMeta,
     ConfigModuleArtifacts, ConfigModuleMeta, ConfigOptionDeclaration, ConfigOutputMeta,
     DocumentationArtifactMeta, ModuleAbiCompat, OwnedRoot, RootContribution,
 };
@@ -609,6 +632,7 @@ pub(crate) fn package_requires_provenance(meta: &PackageMeta) -> bool {
         meta.bpf_lsm.as_ref(),
     ) || meta.config_module.is_some()
         || meta.documentation.is_some()
+        || meta.ability.is_some()
 }
 
 /// Returns whether RFC-0001 metadata fields must be backed by DSSE provenance.
@@ -648,6 +672,25 @@ pub enum PolicyTier {
 /// permission.
 pub fn validate_supported_package_meta(meta: &PackageMeta) -> Result<()> {
     validate_supported_package_meta_with(meta, PACKAGE_META_FORMAT, SUPPORTED_PACKAGE_FEATURES)
+}
+
+/// Validates package metadata for an ability-aware trusted consumer.
+///
+/// Release authoring and structured configuration evaluation understand
+/// authenticated effect metadata in addition to the contracts-only metadata
+/// accepted by ordinary package readers. This capability does not grant
+/// ordinary install, upgrade, removal, or rollback paths permission to consume
+/// structured effects they do not yet dispatch.
+///
+/// # Errors
+///
+/// Returns an error when the trusted consumer cannot safely validate the
+/// package metadata.
+pub(crate) fn validate_ability_aware_package_meta(meta: &PackageMeta) -> Result<()> {
+    let mut supported_features = SUPPORTED_PACKAGE_FEATURES.to_vec();
+    supported_features.extend([FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1]);
+
+    validate_supported_package_meta_with(meta, PACKAGE_META_FORMAT, &supported_features)
 }
 
 /// Validate a package metadata entry against an explicit format/feature set.
@@ -719,6 +762,14 @@ pub fn validate_supported_package_meta_with(
             format!("invalid package-documentation metadata for '{}'", meta.name)
         })?;
     }
+    if let Some(ability) = &meta.ability {
+        require_feature(meta, FEATURE_ABILITIES_V1)?;
+        if ability.activation_mode == "structured-effects" {
+            require_feature(meta, FEATURE_ABILITY_EFFECTS_V1)?;
+        }
+        crate::ability_package::validate_ability_package_meta(ability)
+            .with_context(|| format!("invalid ability metadata for '{}'", meta.name))?;
+    }
     if meta.images.iter().any(|image| !image.ukis.is_empty()) {
         require_feature(meta, FEATURE_UKI_SLOTS_V1)?;
     }
@@ -738,6 +789,8 @@ pub fn validate_supported_package_meta_with(
             "uses config-module metadata"
         } else if meta.documentation.is_some() {
             "uses package-documentation metadata"
+        } else if meta.ability.is_some() {
+            "uses ability metadata"
         } else {
             "uses RFC-0001 exposed or permission metadata"
         };
@@ -1129,9 +1182,6 @@ pub fn validate_documentation_artifact_meta(
         "documentation semantic_schema_sha256",
         &documentation.semantic_schema_sha256,
     )?;
-    if let Some(digest) = documentation.system_module_nar_hash.as_deref() {
-        validate_sha256_digest("documentation system_module_nar_hash", digest)?;
-    }
     if !documentation.references.is_empty() {
         bail!(
             "documentation '{}' must have an empty reference set",
@@ -2386,6 +2436,9 @@ pub struct ApmMeta {
     /// Canonical documentation artifact captured at install time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation: Option<DocumentationArtifactMeta>,
+    /// Authenticated ability companion captured at install time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ability: Option<AbilityPackageMeta>,
     /// RFC-0001 permission manifest captured at install time.
     #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
     pub permissions: PermissionsMeta,
@@ -3401,6 +3454,12 @@ pub struct ImageGeneration {
     pub package_name: String,
     /// Sysroot package version.
     pub version: String,
+    /// Authenticated `/var` format contract carried by this image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_version: Option<String>,
+    /// Exact native ability executor store path carried by this image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_executor_ref: Option<String>,
     /// Source registry the sysroot package was installed from.
     pub registry: String,
     /// Resolved kernel store path (kernel-change detection across A/B).
@@ -3437,6 +3496,36 @@ pub struct ImageGeneration {
     pub created_at: String,
 }
 
+/// Describes the durable phase or terminal result of a qualified A/B rollout.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageRolloutStatus {
+    /// The candidate is the counted next-boot selection.
+    Staged,
+    /// The candidate booted and is awaiting strict configuration health.
+    CandidateBooted,
+    /// The candidate passed strict activation and native ability health.
+    Succeeded,
+    /// The candidate failed boot or strict health and the prior image returned.
+    HealthFailed,
+}
+
+/// Records one state-compatible, drained A/B image rollout.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageRollout {
+    /// Versioned schema for durable boot-side interpretation.
+    pub schema: String,
+    /// Image generation selected as the rollout candidate.
+    pub candidate: u32,
+    /// Known-good image generation retained for fallback.
+    pub prior: u32,
+    /// Exact `/var` format contract shared by candidate and prior.
+    pub state_version: String,
+    /// Current rollout phase or terminal result.
+    pub status: ImageRolloutStatus,
+}
+
 impl ImageGeneration {
     /// Returns whether a config-gen satisfies this image's ABI portion of the
     /// reactivation gate.
@@ -3470,6 +3559,12 @@ pub struct ImageGenerationState {
     /// Recoverable evidence for an incomplete inactive recovery publication.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery_pending: Option<RecoveryPublication>,
+    /// Qualified rollout currently crossing the reboot boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_rollout: Option<ImageRollout>,
+    /// Most recently completed qualified rollout outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_rollout: Option<ImageRollout>,
     /// All recorded image-generations, in creation order.
     #[serde(default)]
     pub generations: Vec<ImageGeneration>,
@@ -4316,6 +4411,7 @@ last_update = "2026-02-13T10:30:00Z"
                 expose_artifact: None,
                 config_module: None,
                 documentation: None,
+                ability: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -4414,6 +4510,7 @@ last_update = "2026-02-13T10:30:00Z"
             }),
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta {
                 capabilities: vec!["CAP_NET_BIND_SERVICE".into()],
                 network: Some(NetworkPermission::PrivateOutbound),
@@ -4532,6 +4629,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta {
                 network: Some(NetworkPermission::Host),
                 ..PermissionsMeta::default()
@@ -4571,6 +4669,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta {
                 tcp_connect: vec![443],
                 ..PermissionsMeta::default()
@@ -4621,6 +4720,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4672,6 +4772,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4714,6 +4815,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta {
                 tcp_bind: vec![0],
                 ..PermissionsMeta::default()
@@ -4756,6 +4858,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta {
                 network: Some(NetworkPermission::Host),
                 confinement: Some(ConfinementMeta {
@@ -4830,6 +4933,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4907,6 +5011,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -5078,6 +5183,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -5133,6 +5239,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -5171,6 +5278,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: Some(BpfLsmPolicyMeta {
                 policies: vec![BpfLsmPolicyArtifactMeta {
@@ -5246,6 +5354,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {
@@ -5574,6 +5683,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -5630,6 +5740,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -6179,6 +6290,10 @@ provenance = "provenance/firewall.jsonl"
         };
         let json = serde_json::to_string(&g).unwrap();
         assert!(json.contains("module_abi_pinned"));
+        assert!(
+            !json.contains("native_executor_ref"),
+            "configuration generations cannot replace the image-owned native executor"
+        );
         let parsed: ConfigGeneration = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.module_abi_pinned, 2);
         assert_eq!(parsed.host_nix_ref, "/nix/store/hn-host.nix");
@@ -6194,6 +6309,14 @@ provenance = "provenance/firewall.jsonl"
             pending: Some(2),
             recovery_known_good: None,
             recovery_pending: None,
+            active_rollout: Some(ImageRollout {
+                schema: "aos.image-rollout/v1".into(),
+                candidate: 2,
+                prior: 1,
+                state_version: "7".into(),
+                status: ImageRolloutStatus::Staged,
+            }),
+            last_rollout: None,
             generations: vec![
                 ImageGeneration {
                     number: 1,
@@ -6203,6 +6326,8 @@ provenance = "provenance/firewall.jsonl"
                     toplevel: "/nix/store/top1-server".into(),
                     package_name: "server".into(),
                     version: "2026.06.1".into(),
+                    state_version: Some("7".into()),
+                    native_executor_ref: Some("/nix/store/executor-1".into()),
                     registry: "core".into(),
                     kernel_path: Some("/nix/store/k1-linux".into()),
                     evaluator_ref: "/nix/store/bl1-aos-base-lib".into(),
@@ -6222,6 +6347,8 @@ provenance = "provenance/firewall.jsonl"
                     toplevel: "/nix/store/top2-server".into(),
                     package_name: "server".into(),
                     version: "2026.06.2".into(),
+                    state_version: Some("7".into()),
+                    native_executor_ref: Some("/nix/store/executor-2".into()),
                     registry: "core".into(),
                     kernel_path: Some("/nix/store/k2-linux".into()),
                     evaluator_ref: "/nix/store/bl2-aos-base-lib".into(),
@@ -6239,6 +6366,10 @@ provenance = "provenance/firewall.jsonl"
         let parsed: ImageGenerationState = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.running, 1);
         assert_eq!(parsed.pending, Some(2));
+        assert_eq!(
+            parsed.active_rollout.as_ref().map(|rollout| rollout.status),
+            Some(ImageRolloutStatus::Staged)
+        );
         let running = parsed.running_generation().unwrap();
         assert_eq!(running.module_abi, 1);
         assert!(running.admits_pin(1));
@@ -6264,7 +6395,6 @@ provenance = "provenance/firewall.jsonl"
             semantic_schema_sha256:
                 "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                     .to_string(),
-            system_module_nar_hash: None,
             references: Vec::new(),
         }
     }
@@ -6297,6 +6427,7 @@ provenance = "provenance/firewall.jsonl"
             expose_artifact: None,
             config_module: None,
             documentation: meta.documentation.clone(),
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: meta.attestation.clone(),
@@ -6317,6 +6448,123 @@ provenance = "provenance/firewall.jsonl"
         artifact.references.clear();
         artifact.document_size = aos_doc_model::MAX_DOCUMENT_BYTES as u64 + 1;
         assert!(validate_documentation_artifact_meta(&artifact).is_err());
+    }
+
+    #[test]
+    fn native_image_rollout_gate_rejects_pre_change_package_readers() {
+        let mut meta = sample_package_meta();
+        meta.name = "aos".to_string();
+        meta.sysroot = true;
+        meta.requires_features = vec![FEATURE_NATIVE_IMAGE_ROLLOUT_V1.to_string()];
+
+        validate_supported_package_meta(&meta)
+            .expect("the current package reader understands native image rollouts");
+
+        let pre_change_features = SUPPORTED_PACKAGE_FEATURES
+            .iter()
+            .copied()
+            .filter(|feature| *feature != FEATURE_NATIVE_IMAGE_ROLLOUT_V1)
+            .collect::<Vec<_>>();
+        let error =
+            validate_supported_package_meta_with(&meta, PACKAGE_META_FORMAT, &pre_change_features)
+                .expect_err("a pre-change package reader must reject the rollout gate");
+        assert!(error.to_string().contains(FEATURE_NATIVE_IMAGE_ROLLOUT_V1));
+    }
+
+    #[test]
+    fn package_readers_accept_contracts_but_reject_structured_effects() {
+        let mut meta = sample_package_meta();
+        meta.requires_features = vec![
+            FEATURE_ATTESTATION_V1.to_string(),
+            FEATURE_ABILITIES_V1.to_string(),
+        ];
+        let mut ability = structured_ability_meta();
+        ability.activation_mode = "contracts-only".to_string();
+        meta.ability = Some(ability);
+        meta.attestation.provenance =
+            Some("provenance/f/firewall/x86_64-linux/package.intoto.jsonl".to_string());
+
+        validate_supported_package_meta(&meta)
+            .expect("ordinary readers can retain authenticated contracts-only abilities");
+        validate_ability_aware_package_meta(&meta)
+            .expect("the ability-aware reader accepts contracts-only abilities");
+
+        let pre_ability_error = validate_supported_package_meta_with(
+            &meta,
+            PACKAGE_META_FORMAT,
+            &[FEATURE_ATTESTATION_V1],
+        )
+        .expect_err("a reader predating ability metadata must reject the feature gate");
+        assert!(pre_ability_error.to_string().contains(FEATURE_ABILITIES_V1));
+
+        meta.requires_features
+            .push(FEATURE_ABILITY_EFFECTS_V1.to_string());
+        meta.ability = Some(structured_ability_meta());
+
+        validate_ability_aware_package_meta(&meta)
+            .expect("the ability-aware reader accepts authenticated structured effects");
+        let package_reader_error = validate_supported_package_meta(&meta)
+            .expect_err("ordinary package mutation paths do not advertise ability effects");
+        assert!(
+            package_reader_error
+                .to_string()
+                .contains(FEATURE_ABILITY_EFFECTS_V1)
+        );
+
+        let structured_effects_error = validate_supported_package_meta_with(
+            &meta,
+            PACKAGE_META_FORMAT,
+            &[FEATURE_ATTESTATION_V1, FEATURE_ABILITIES_V1],
+        )
+        .expect_err("a contracts-only reader must reject structured effects");
+        assert!(
+            structured_effects_error
+                .to_string()
+                .contains(FEATURE_ABILITY_EFFECTS_V1)
+        );
+    }
+
+    #[test]
+    fn ability_aware_reader_accepts_structured_effects_with_legacy_metadata() {
+        let mut meta = sample_package_meta();
+        meta.requires_features = vec![
+            FEATURE_ATTESTATION_V1.to_string(),
+            FEATURE_ABILITIES_V1.to_string(),
+            FEATURE_ABILITY_EFFECTS_V1.to_string(),
+            FEATURE_CONFIG_MODULE_V1.to_string(),
+        ];
+        meta.config_module = Some(sample_config_module());
+        meta.ability = Some(structured_ability_meta());
+        meta.attestation.provenance =
+            Some("provenance/f/firewall/x86_64-linux/package.intoto.jsonl".to_string());
+
+        validate_ability_aware_package_meta(&meta)
+            .expect("the structured runtime can retain legacy metadata for old readers");
+
+        let error = validate_supported_package_meta(&meta)
+            .expect_err("ordinary readers must still reject structured effects");
+        assert!(error.to_string().contains(FEATURE_ABILITY_EFFECTS_V1));
+    }
+
+    fn structured_ability_meta() -> AbilityPackageMeta {
+        AbilityPackageMeta {
+            store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-firewall-abilities"
+                .to_string(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            nar_size: 1,
+            references: Vec::new(),
+            manifest_sha256:
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_string(),
+            manifest_size: 1,
+            package_digest:
+                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    .to_string(),
+            activation_mode: "structured-effects".to_string(),
+            artifacts: Vec::new(),
+            provenance: "provenance/firewall.ability.intoto.jsonl".to_string(),
+        }
     }
 
     fn sample_package_meta() -> PackageMeta {
@@ -6344,6 +6592,7 @@ provenance = "provenance/firewall.jsonl"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta::default(),

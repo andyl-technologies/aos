@@ -238,8 +238,8 @@ pub fn add_signed_release_graph(fixture: &Fixture) -> ContainerRelease {
     };
 
     ContainerRelease {
-        schema_version: 1,
-        media_type: MediaType::AosContainerRelease,
+        schema_version: 2,
+        media_type: MediaType::AosContainerReleaseV2,
         identity: ContainerReleaseIdentity {
             release: "1.0.0".to_string(),
             package: "aos".to_string(),
@@ -264,6 +264,10 @@ pub fn add_signed_release_graph(fixture: &Fixture) -> ContainerRelease {
         },
         qualification: ready_qualification(),
         evidence: ContainerReleaseEvidence {
+            abilities: Some(artifact(
+                "abilities",
+                MediaType::AosContainerStaticAbilities,
+            )),
             sbom: artifact("sbom", MediaType::SpdxJson),
             source: artifact("source", MediaType::AosSourceClosure),
             license: artifact("license", MediaType::AosLicenseReport),
@@ -280,6 +284,7 @@ pub fn publication_signature_input(release: &ContainerRelease) -> ContainerSigna
         oci: release.oci.clone(),
         nix: release.nix.clone(),
         evidence: ContainerSignatureInputEvidence {
+            abilities: release.evidence.abilities.clone(),
             sbom: release.evidence.sbom.clone(),
             source: release.evidence.source.clone(),
             license: release.evidence.license.clone(),
@@ -336,7 +341,7 @@ pub fn write_publication_inputs(inputs: &Path, layout: &Path, input: &ContainerS
             "artifactManifestMediaType": "application/vnd.oci.image.manifest.v1+json",
             "artifactSubject": input.oci.index,
             "finalSidecarPath": "containers/v1/index.json",
-            "finalSidecarMediaType": "application/vnd.aos.container-release.v1+json",
+            "finalSidecarMediaType": "application/vnd.aos.container-release.v2+json",
         },
         "constraints": {
             "exactInputBytesRequired": true,
@@ -359,6 +364,7 @@ pub fn write_publication_inputs(inputs: &Path, layout: &Path, input: &ContainerS
         "image": input.oci.index,
         "referrers": [
             input.nix.closure,
+            input.evidence.abilities,
             input.evidence.sbom,
             input.evidence.source,
             input.evidence.license,

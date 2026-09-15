@@ -53,6 +53,7 @@ buildStdenv.mkDerivation {
           --disable-shared \
           --disable-sim \
           --disable-werror \
+          --enable-gold \
           --with-sysroot=/
       '';
     }
@@ -79,6 +80,8 @@ buildStdenv.mkDerivation {
             ln -s "$tool" "$prefixed"
           fi
         done
+        test -x "$out/bin/${hostPlatform.config}-ld.gold"
+        ln -s "${hostPlatform.config}-ld.gold" "$out/bin/ld.gold"
       '';
     }
   ];

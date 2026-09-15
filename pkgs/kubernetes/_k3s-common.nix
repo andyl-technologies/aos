@@ -43,7 +43,6 @@ in {
     k3sModprobe
     pkgs.kmod # modprobe/lsmod
     pkgs.coreutils
-    pkgs.jq
   ];
   # Note: `pkgs.nftables` is intentionally NOT here. It's the
   # host-firewall tool (consumed by `nftables.service` from
@@ -52,76 +51,31 @@ in {
   # iptables-availability probe potentially auto-detect nftables
   # mode in some k3s versions — best avoided.
 
-  kernelModules = [
-    "br_netfilter"
-    "vxlan" # flannel default (VXLAN) backend
-    "ip_set" # k3s netpol controller
-  ];
-
-  # Forwarding + bridge call-iptables. `bridge.bridge-nf-call-*`
-  # only exist once br_netfilter is loaded; the stock
-  # systemd-sysctl.service is ordered After=systemd-modules-load.service,
-  # so as long as br_netfilter is in the module list above it loads
-  # first and these keys are writable when systemd-sysctl runs.
-  sysctls = {
-    "net.ipv4.ip_forward" = "1";
-    "net.ipv6.conf.all.forwarding" = "1";
-    "net.bridge.bridge-nf-call-iptables" = "1";
-    "net.bridge.bridge-nf-call-ip6tables" = "1";
-  };
-
-  enabledCheck = role:
-    pkgs.writeShellScriptBin "k3s-${role}-enabled" ''
-      set -eu
-
-      [ "''${K3S_ENABLED:-false}" = true ]
-    '';
-
-  preflightService = role: required: let
-    checks =
-      lib.concatMapStringsSep "\n" (varName: ''
-        : "''${${varName}:?[k3s-preflight] ${role}: ${varName} must be set in /etc/aos/packages/${role}/k3s.env}"
-      '')
-      required;
-  in {
-    description = "Pre-flight checks for ${role}";
-
-    # `wantedBy` + `before` schedule preflight first under
-    # `multi-user.target`; the matching `requisite` /
-    # `after = [...preflight.service]` sit on the role's
-    # `k3s.service` (declared inline per role, since k3s.service
-    # itself diverges between roles in `ExecStart` and ports).
-    wantedBy = ["multi-user.target"];
-    before = ["k3s.service"];
-
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-      EnvironmentFile = "-/etc/aos/packages/${role}/k3s.env";
-      StandardOutput = "journal+console";
-      StandardError = "journal+console";
-    };
-
-    script = ''
-      set -eu
-
-      if [ "''${K3S_ENABLED:-false}" != true ]; then
-        echo "[k3s-preflight] ${role}: disabled, skipping checks"
-        exit 0
-      fi
-
-      ${checks}
-
-      echo "[k3s-preflight] ${role}: required env present, k3s may start"
-    '';
-  };
-
   launcher = role: command:
     pkgs.writeShellScriptBin "k3s-${role}-start" ''
       set -eu
 
-      : "''${CREDENTIALS_DIRECTORY:?[k3s] ${role}: token credential was not loaded}"
-      token_file="$CREDENTIALS_DIRECTORY/token"
+      # The package check uses this side-effect-free path to prove that this
+      # exact production launcher executes its retained k3s payload.
+      if [ "''${1:-}" = verify-payload ]; then
+        [ "$#" -eq 2 ]
+        [ "$2" = ${lib.escapeShellArg "${pkgs.k3s}/bin/k3s"} ]
+        "$2" --version >/dev/null
+        printf '%s\n' k3s-payload-ok
+        exit 0
+      fi
+
+      if [ "$#" -ne 2 ]; then
+        echo "[k3s] ${role}: expected configuration and token credential paths" >&2
+        exit 64
+      fi
+      configuration=$1
+      token_file=$2
+      shift 2
+      if [ ! -r "$configuration" ]; then
+        echo "[k3s] ${role}: configuration is not readable" >&2
+        exit 1
+      fi
       if [ ! -r "$token_file" ]; then
         echo "[k3s] ${role}: token credential is not readable" >&2
         exit 1
@@ -129,22 +83,6 @@ in {
 
       export K3S_TOKEN_FILE="$token_file"
 
-      case ${lib.escapeShellArg command} in
-      server*)
-        addons=/etc/aos/packages/${role}/addons.json
-        destination=/var/lib/rancher/k3s/server/manifests/aos-runtime-addons.yaml
-        temporary="$destination.tmp"
-        ${pkgs.coreutils}/bin/mkdir -p "''${destination%/*}"
-        ${pkgs.jq}/bin/jq -er '
-          select(.schema == "aos.kubernetes-resources/v1")
-          | .resources
-          | map("# AOS resource: \(.name)\n\(.content)\n---\n")
-          | join("")
-        ' "$addons" > "$temporary"
-        ${pkgs.coreutils}/bin/mv -f "$temporary" "$destination"
-        ;;
-      esac
-
-      exec ${pkgs.k3s}/bin/k3s ${command} "$@"
+      exec ${pkgs.k3s}/bin/k3s ${command} --config "$configuration" "$@"
     '';
 }

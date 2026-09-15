@@ -10,8 +10,9 @@
 # reference; its bytes never enter the Nix store.
 #
 # Test cadence:
-#   1. Wait for k3s-preflight + k3s on each machine.
-#   2. From the control plane, kubectl get nodes — assert the worker
+#   1. Wait for the package-owned k3s service on each machine.
+#   2. Observe an admitted cluster-scoped object's exact desired revision.
+#   3. From the control plane, kubectl get nodes — assert the worker
 #      registered and reached the `Ready` condition. Worker
 #      registration covers the round trip: token ok, TLS ok, agent
 #      pulled flannel config from the API server, kubelet started.
@@ -71,6 +72,8 @@ in {
 
   testScript = ''
     import base64
+    import hashlib
+    import json
     import shlex
 
     APM = "${pkgs.aos.apm}/bin/apm"
@@ -130,6 +133,40 @@ in {
         token.ref = "system-credential:k3s-token";
         node.ip = "192.168.50.10";
         networking.flannelInterface = "eth0";
+        integrations = {
+          resourceGrants = [
+            {
+              contribution = "revision-probe";
+              apiVersion = "v1";
+              kind = "Namespace";
+              name = "aos-revision-probe";
+              namespace = null;
+            }
+            {
+              contribution = "revision-probe-secondary";
+              apiVersion = "v1";
+              kind = "Namespace";
+              name = "aos-revision-probe-secondary";
+              namespace = null;
+            }
+          ];
+          resources.revision-probe = {
+            apiVersion = "v1";
+            kind = "Namespace";
+            name = "aos-revision-probe";
+            namespace = null;
+            priority = 50;
+            spec = {};
+          };
+          resources.revision-probe-secondary = {
+            apiVersion = "v1";
+            kind = "Namespace";
+            name = "aos-revision-probe-secondary";
+            namespace = null;
+            priority = 51;
+            spec = {};
+          };
+        };
       };
     }
     """)
@@ -148,12 +185,7 @@ in {
     }
     """)
 
-    for machine, package in (
-        (controlplane, "k3s-control-plane"),
-        (worker, "k3s-worker"),
-    ):
-        source = f"/run/credstore/{package}/token"
-        machine.succeed(f"test -s {source} && test $(stat -c %a {source}) = 600")
+    for machine in (controlplane, worker):
         manifest = machine.succeed("cat /run/aos/manifest.json")
         assert token not in manifest, "cluster token leaked into the manifest"
 
@@ -187,25 +219,6 @@ in {
             print(machine.succeed("systemctl list-jobs --no-pager 2>&1 || true"))
             raise
 
-    # ── Package activation targets ─────────────────────────────────
-    controlplane.wait_until_succeeds(
-        "systemctl is-active aos-pkg-k3s-control-plane.target", timeout=60
-    )
-    worker.wait_until_succeeds(
-        "systemctl is-active aos-pkg-k3s-worker.target", timeout=60
-    )
-
-    # ── Pre-flight on each machine ─────────────────────────────────
-    # k3s-preflight is a oneshot — `is-active` returns "active"
-    # only after exit-0. A failure here means the package-owned
-    # projection or the resolved token credential is unavailable.
-    controlplane.wait_until_succeeds(
-        "systemctl is-active k3s-preflight.service", timeout=60
-    )
-    worker.wait_until_succeeds(
-        "systemctl is-active k3s-preflight.service", timeout=60
-    )
-
     # ── Control-plane service active ────────────────────────────────
     # `Type=notify` flips active once k3s emits READY=1 on its
     # sd_notify socket. For `--disable-agent`, that's apiserver +
@@ -231,6 +244,56 @@ in {
         "${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get --raw=/healthz | grep -qx 'ok'",
         timeout=60,
     )
+
+    # The local receipt proves which closed bundle the launcher staged. The
+    # object annotation is generated from its canonical object bytes and is
+    # read back through the Kubernetes API, proving that exact desired object
+    # revision was admitted rather than inferring admission from the receipt.
+    receipt = controlplane.succeed(
+        "cat /var/lib/rancher/k3s/server/aos-runtime-addons.revision"
+    ).strip()
+    resources = []
+    for priority, contribution, namespace in (
+        (50, "revision-probe", "aos-revision-probe"),
+        (51, "revision-probe-secondary", "aos-revision-probe-secondary"),
+    ):
+        object_value = {
+            "apiVersion": "v1",
+            "kind": "Namespace",
+            "metadata": {"name": namespace},
+            "spec": {},
+        }
+        object_bytes = json.dumps(
+            object_value, sort_keys=True, separators=(",", ":")
+        ).encode()
+        resources.append({
+            "name": contribution,
+            "object": object_value,
+            "priority": priority,
+            "revision": "sha256:" + hashlib.sha256(object_bytes).hexdigest(),
+        })
+    bundle_payload = {
+        "schema": "aos.kubernetes-resources/v1",
+        "role": "control-plane",
+        "resources": resources,
+    }
+    desired_bundle_revision = "sha256:" + hashlib.sha256(json.dumps(
+        bundle_payload, sort_keys=True, separators=(",", ":")
+    ).encode()).hexdigest()
+    assert receipt == desired_bundle_revision, (receipt, desired_bundle_revision)
+
+    for resource in resources:
+        namespace = resource["object"]["metadata"]["name"]
+        desired_object_revision = resource["revision"]
+        controlplane.wait_until_succeeds(
+            "test \"$(${pkgs.k3s}/bin/kubectl "
+            "--kubeconfig=/etc/rancher/k3s/k3s.yaml "
+            f"get namespace {shlex.quote(namespace)} -o json "
+            "| ${pkgs.jq}/bin/jq -er "
+            "'.metadata.annotations[\"aos.andyl.com/object-revision\"]')\" "
+            f"= {shlex.quote(desired_object_revision)}",
+            timeout=60,
+        )
 
     # ── Worker service active ───────────────────────────────────────
     try:

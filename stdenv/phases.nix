@@ -80,7 +80,7 @@ let
     '';
   };
 
-  fixupPhase = {
+  fixupPhaseFor = stripCommand: {
     name = "fixup";
     script = ''
       object_format="''${AOS_OBJECT_FORMAT:-elf}"
@@ -93,16 +93,21 @@ let
       # gcc-stage2 into its runtime closure via Nix's reference scanner.
       if [ -z "''${dontStrip:-}" ]; then
         echo "stripping..."
-        find "$out" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) -exec strip --strip-unneeded {} \; 2>/dev/null || true
-        find "$out" -type f -name '*.a' -exec strip -S {} \; 2>/dev/null || true
+        find "$out" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) \
+          -exec chmod u+w {} \; -exec ${stripCommand} --strip-unneeded {} \; 2>/dev/null || true
+        find "$out" -type f -name '*.a' \
+          -exec chmod u+w {} \; -exec ${stripCommand} -S {} \; 2>/dev/null || true
         if [ -d "$out/bin" ]; then
-          find "$out/bin" -type f -exec strip -s {} \; 2>/dev/null || true
+          find "$out/bin" -type f \
+            -exec chmod u+w {} \; -exec ${stripCommand} -s {} \; 2>/dev/null || true
         fi
         if [ -d "$out/sbin" ]; then
-          find "$out/sbin" -type f -exec strip -s {} \; 2>/dev/null || true
+          find "$out/sbin" -type f \
+            -exec chmod u+w {} \; -exec ${stripCommand} -s {} \; 2>/dev/null || true
         fi
         if [ -d "$out/libexec" ]; then
-          find "$out/libexec" -type f -exec strip -s {} \; 2>/dev/null || true
+          find "$out/libexec" -type f \
+            -exec chmod u+w {} \; -exec ${stripCommand} -s {} \; 2>/dev/null || true
         fi
       fi
 
@@ -206,9 +211,16 @@ let
     '';
   };
 
+  fixupPhase = fixupPhaseFor "strip";
+
+  # Language builders bypass mkDerivation's default phase selection. Their
+  # Linux cross outputs must still use the selected target strip.
+  crossElfFixupPhase = fixupPhaseFor "\"$STRIP\"";
+
   # Preserve the native phase bytes while avoiding grep -q's intentional
   # early pipe close for large Mach-O archives in Darwin cross builds.
   darwinCrossFixupPhase = let
+    crossFixupPhase = fixupPhaseFor "\"$STRIP\"";
     script =
       builtins.replaceStrings
       [
@@ -217,12 +229,12 @@ let
       [
         "    case \"$header\" in\n      *\"$expected_cpu\"*) ;;\n      *)\n        echo \"Mach-O architecture mismatch in $f: expected $expected_cpu\" >&2\n        echo \"$header\" >&2\n        exit 1\n        ;;\n    esac"
       ]
-      fixupPhase.script;
+      crossFixupPhase.script;
   in
-    assert script != fixupPhase.script;
-      fixupPhase // {inherit script;};
+    assert script != crossFixupPhase.script;
+      crossFixupPhase // {inherit script;};
 in rec {
-  inherit fixupPhase darwinCrossFixupPhase;
+  inherit fixupPhase crossElfFixupPhase darwinCrossFixupPhase;
 
   # GNU Autoconf (configure / make / make install)
   autoconfPhases = {
@@ -508,6 +520,7 @@ in rec {
     installCargoArtifacts ? false,
     cargoArtifactContract ? {},
     cargoNextest ? null,
+    cargoNextestProfile ? null,
     cargoNextestOpenFilesLimit ? null,
     cargoNextestMaxTestThreads ? null,
     nextestFlags ? "",
@@ -535,6 +548,14 @@ in rec {
       else if builtins.isInt cargoNextestMaxTestThreads && cargoNextestMaxTestThreads > 0
       then cargoNextestMaxTestThreads
       else throw "cargoNextestMaxTestThreads must be a positive integer";
+    nextestProfileFlag =
+      if cargoNextestProfile == null
+      then ""
+      else "--profile ${shellQuote cargoNextestProfile}";
+    nextestJunitReport =
+      if cargoNextestProfile == null
+      then null
+      else "target/nextest/${toString cargoNextestProfile}/junit.xml";
     shellQuote = value: "'${builtins.replaceStrings ["'"] ["'\"'\"'"] (toString value)}'";
     cargoEnvExports = builtins.concatStringsSep "\n" (
       builtins.map
@@ -675,6 +696,7 @@ in rec {
                     fi
                   ''
                 }
+                nextestStatus=0
                 cargo nextest run \
                   ${
                   if checkType == "release"
@@ -683,6 +705,7 @@ in rec {
                 } \
                   --frozen \
                   --offline \
+                  ${nextestProfileFlag} \
                   ${noDefaultFlag} \
                   ${featuresFlag} \
                   ${cargoTestFlags} \
@@ -691,7 +714,53 @@ in rec {
                   then ""
                   else ''--test-threads "$nextestTestThreads"''
                 } \
-                  ${nextestFlags}
+                  ${nextestFlags} \
+                  || nextestStatus=$?
+
+                if [ "$nextestStatus" -ne 0 ]; then
+                  ${
+                  if nextestJunitReport == null
+                  then ""
+                  else ''
+                    nextestJunitReport=${shellQuote nextestJunitReport}
+                    echo "Nextest failed; JUnit report: $nextestJunitReport" >&2
+
+                    if [ -s "$nextestJunitReport" ]; then
+                      # Passing test cases are self-closing elements. Retain
+                      # only failed/error cases and their captured output so a
+                      # large workspace report remains readable in Nix logs.
+                      nextestFailures="$NIX_BUILD_TOP/nextest-failures.xml"
+                      sed -n '
+                        /<testcase / { h; b }
+                        /<failure\|<error/ {
+                          x
+                          p
+                          x
+                          :failure
+                          p
+                          /<\/testcase>/ b
+                          n
+                          b failure
+                        }
+                      ' "$nextestJunitReport" > "$nextestFailures"
+
+                      if [ -s "$nextestFailures" ]; then
+                        head -n 1000 "$nextestFailures" >&2
+                        failureLines=$(wc -l < "$nextestFailures")
+                        if [ "$failureLines" -gt 1000 ]; then
+                          echo "Nextest failure details truncated after 1000 of $failureLines lines" >&2
+                        fi
+                      else
+                        echo "JUnit contains no completed failed test case; suite summary follows" >&2
+                        sed -n '/<testsuite /p' "$nextestJunitReport" >&2
+                      fi
+                    else
+                      echo "Nextest did not produce the configured JUnit report" >&2
+                    fi
+                  ''
+                }
+                  exit "$nextestStatus"
+                fi
               ''
               else ''
                 cargo test \

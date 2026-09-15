@@ -18,6 +18,7 @@
   aos.filesystems.rootFsType = lib.mkDefault "erofs";
   aos.filesystems.rootReadOnly = lib.mkDefault true;
   aos.security.verity.enable = lib.mkDefault true;
+  aos.boot.initrd.abilityHandoff.enable = lib.mkDefault true;
   aos.image.budgets = {
     maxRootMiB = 512;
     maxVerityMiB = 16;

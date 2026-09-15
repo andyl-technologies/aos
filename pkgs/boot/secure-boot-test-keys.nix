@@ -48,6 +48,8 @@ in
     buildDeps = [openssl efitools];
     runtimeDeps = [];
 
+    passthru.evidenceSources = [./secure-boot-test-keys.nix];
+
     phases = [
       {
         name = "gen";

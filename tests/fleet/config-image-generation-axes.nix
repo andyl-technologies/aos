@@ -1,10 +1,7 @@
-# Two-axis generation acceptance.
+# Generation and image-axis acceptance.
 #
 # Exercises the production image publisher, A/B stage and boot path, first-boot
-# evaluation, live configuration activation, and rollback porcelain. The two
-# target VMs separate the successful cross-ABI path from the deliberately
-# incompatible config-module path so the latter can fail closed without
-# weakening the positive acceptance case.
+# evaluation, live configuration activation, and rollback porcelain.
 {
   lib,
   mkSystem,
@@ -31,13 +28,6 @@
         [Network]
         Address=192.168.50.12/24
       '';
-      environment.etc."systemd/network/10-fleet-incompatible.network".text = ''
-        [Match]
-        MACAddress=52:54:00:12:00:01
-
-        [Network]
-        Address=192.168.50.10/24
-      '';
     }
   ];
   abi2Top = abi2.config.system.build.toplevel;
@@ -45,44 +35,6 @@
   abi2ImageDisk = abi2.config.system.build.imageArtifacts.raw.disk;
   abi2ImageInfo = abi2.config.system.build.imageArtifacts.raw.info;
   abi2Uki = abi2.config.system.build.uki;
-
-  # A real installable package whose authored configuration module supports
-  # ABI 1 only. The authored option module remains the negative ABI gate.
-  abi1OnlyConfig = pkgs.mkDerivation {
-    pname = "generation-axes-abi1-config";
-    version = "0";
-    src = null;
-    phases = [
-      {
-        name = "install";
-        script = ''
-          mkdir -p "$out/share/generation-axes-abi1-config"
-          printf '%s\n' fixture > "$out/share/generation-axes-abi1-config/payload"
-          ln -s '${pkgs.bash}' "$out/share/generation-axes-abi1-config/bash"
-        '';
-      }
-    ];
-    configModule = {
-      src = ../../pkgs/tests/_config-module-smoke;
-      dependencies.bash = pkgs.bash;
-      moduleAbiCompat = {
-        min = 1;
-        max = 1;
-      };
-      declares = [
-        "configModuleSmoke.command"
-        "configModuleSmoke.enable"
-        "configModuleSmoke.privateMessage"
-      ];
-      ownsRoots = [
-        {
-          root = "configModuleSmoke";
-          interfaceAbi = 1;
-          contributable = [];
-        }
-      ];
-    };
-  };
 
   # Image-mode machines do not consume fleet `extraClosures`. The test driver
   # clones the authenticated registry in each guest, so make the AOS-built Git
@@ -110,8 +62,6 @@
         lib.mkForce "10s";
     }
   ];
-  abi1BaseLib = targetBase.config.aos.config.evalAtBoot.baseLib;
-
   registrySystem = mkSystem [
     ../../systems/server-test.nix
     {
@@ -144,9 +94,6 @@ in {
         pkgs.systemd
         pkgs.e2fsprogs
         pkgs.util-linux
-        abi1OnlyConfig
-        abi1OnlyConfig.config
-        abi1BaseLib
       ];
       varSizeMiB = 12288;
       # Cache publication writes several GiB of NARs before the target imports
@@ -178,23 +125,6 @@ in {
           aos.networking.hostName = "axis-one";
           aos.apm.desiredPackages = [ "aos-test-agent" ];
           environment.etc."config-generation-axis".text = "one\n";
-        }
-      '';
-    };
-
-    incompatible = {
-      system = targetBase;
-      bootMode = "image";
-      imageDiskMiB = 24576;
-      memoryMiB = 8192;
-      tpm = true;
-      packages = ["aos-test-agent"];
-      metadata."host.nix" = ''
-        {
-          aos.provisioning.storage.partitions.var.sizeMin = "8G";
-          aos.networking.hostName = "axis-incompatible";
-          aos.apm.desiredPackages = [ "aos-test-agent" ];
-          environment.etc."config-generation-axis".text = "incompatible\n";
         }
       '';
     };
@@ -291,13 +221,11 @@ in {
 
 
       # Establish both ABI-1 hosts through the real boot evaluator and graph.
-      for machine in (target, incompatible):
-          machine.wait_until_succeeds(
-              "systemctl is-active --quiet aos-graph-compile.service", timeout=300
-          )
-          machine.succeed("systemctl is-active --quiet aos-config.target")
+      target.wait_until_succeeds(
+          "systemctl is-active --quiet aos-graph-compile.service", timeout=300
+      )
+      target.succeed("systemctl is-active --quiet aos-config.target")
       assert_live(target, "axis-one", "one")
-      assert_live(incompatible, "axis-incompatible", "incompatible")
 
       initial_state, initial = current_config(target)
       assert initial["module_abi_pinned"] == 1, initial
@@ -442,18 +370,6 @@ in {
             cat /tmp/publish.json >&2
             exit 1
           fi
-          ${pkgs.aos.apr}/bin/apr publish '${abi1OnlyConfig}' \
-            --name generation-axes-abi1-config \
-            --version 0 \
-            --description 'ABI-1-only config module fixture' \
-            --license MIT \
-            --maintainer test \
-            --config-module '${abi1OnlyConfig.config}' \
-            --config-base-lib '${abi1BaseLib}' \
-            --config-dependency 'bash=${abi1OnlyConfig.configModuleDependencies.bash}' \
-            --registry sysreg \
-            --key-id release \
-            --no-commit
           echo "$DEFAULT_BRANCH" > /tmp/sysreg-branch
           echo "$PUBKEY" > /tmp/sysreg-pubkey
       """), timeout=1200)
@@ -515,47 +431,9 @@ in {
       """), timeout=1800)
       public_key = registry.succeed("cat /tmp/sysreg-pubkey").strip()
       configure_registry(target, public_key)
-      configure_registry(incompatible, public_key)
-
-      # The incompatible host starts clean, then consumes the ABI-1-only
-      # config module from the signed release. This makes the generation's
-      # release provenance and config realization independently verifiable.
-      incompatible_host = """{
-        aos.provisioning.storage.partitions.var.sizeMin = \"8G\";
-        aos.networking.hostName = \"axis-incompatible\";
-        aos.apm.desiredPackages = [ \"aos-test-agent\" \"generation-axes-abi1-config\" ];
-        configModuleSmoke.enable = true;
-        environment.etc.\"config-generation-axis\".text = \"incompatible\\n\";
-      }
-      """
-      incompatible_encoded = base64.b64encode(incompatible_host.encode()).decode()
-      incompatible.succeed(
-          f"printf '%s' {incompatible_encoded} | base64 -d > /run/generation-axes-incompatible.nix"
-      )
-      incompatible.succeed(f"""
-          {APM} -v switch \
-            --from /run/generation-axes-incompatible.nix \
-            --eval-root /run/generation-axes-incompatible-eval
-      """, timeout=600)
-      incompatible_initial_state, incompatible_initial = current_config(incompatible)
-      assert incompatible_initial["module_abi_pinned"] == 1, incompatible_initial
-      assert incompatible_initial["config_module_paths"], incompatible_initial
-      incompatible_initial_number = incompatible_initial["number"]
-      incompatible_initial_hash = incompatible_initial["manifest_hash"]
-      incompatible_attestation = generation_attestation(
-          incompatible, incompatible_initial_number
-      )
-      modules = incompatible_attestation["inputs"]["config_modules"]
-      assert modules["registry"] == "sysreg", modules
-      assert modules["release_tag"] == "1.0.0", modules
-      assert modules["tag_signer_key"], modules
-      assert modules["realization"].startswith("sha256:"), modules
-      assert_live(incompatible, "axis-incompatible", "incompatible")
-
       # Image staging is image-only: neither host has re-evaluated before the
       # ABI-2 substrate is actually running.
       staged_target_config, target_candidate = stage_abi2(target)
-      staged_incompatible_config, incompatible_candidate = stage_abi2(incompatible)
 
       # The positive host boots the staged image, then first-boot production
       # units re-evaluate and activate against the ABI-2 base library.
@@ -625,35 +503,5 @@ in {
       assert image_state(target) == booted_images
       assert_live(target, "axis-two", "two")
 
-      # The second host carries a genuine ABI-1-only package config module.
-      # Its ABI-2 first-boot evaluation fails before manifest publication and
-      # activation; the old pointer and live overlay remain intact and the host
-      # stays reachable for repair. The pending image is deliberately unblessed.
-      incompatible.reboot(timeout=600)
-      incompatible.wait_until_succeeds(
-          "systemctl is-active --quiet multi-user.target", timeout=420
-      )
-      incompatible.wait_until_succeeds(
-          "systemctl is-failed --quiet aos-eval.service", timeout=180
-      )
-      failed_output = incompatible.succeed(
-          "journalctl -b -u aos-eval.service --no-pager"
-      )
-      assert "module ABI" in failed_output, failed_output
-      assert "generation-axes-abi1-config" in failed_output, failed_output
-      after_failure = config_state(incompatible)
-      assert after_failure == staged_incompatible_config, after_failure
-      failed_current = config_generation(
-          after_failure, incompatible_initial_number
-      )
-      assert failed_current["manifest_hash"] == incompatible_initial_hash
-      assert_live(incompatible, "axis-incompatible", "incompatible")
-      failed_images = image_state(incompatible)
-      assert failed_images["running"] == incompatible_candidate, failed_images
-      assert failed_images["pending"] == incompatible_candidate, failed_images
-      incompatible.succeed(
-          "test \"$(systemctl show -p ActiveState --value "
-          "aos-image-boot-commit.service)\" = inactive"
-      )
     '';
 }

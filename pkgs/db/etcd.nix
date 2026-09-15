@@ -8,7 +8,6 @@
   gnumake,
   go,
   stdenv,
-  writeShellScriptBin,
 }: let
   version = "3.7.1";
   src = fetchurl {
@@ -38,26 +37,6 @@
     sourceRoot = "etcd-${version}/etcdutl";
     hash = "sha256-P53Cgg4phztWZefOtu89XsoUPHiO7kRaYFYXPn0KpfE=";
   };
-  control = writeShellScriptBin "etcd-control" ''
-    set -eu
-    case "''${1:-}" in
-      enabled)
-        test "''${ETCD_ENABLED:-false}" = true
-        ;;
-      *)
-        echo "usage: etcd-control enabled" >&2
-        exit 64
-        ;;
-    esac
-  '';
-  credentialNames = [
-    "client-certificate"
-    "client-private-key"
-    "client-trusted-ca"
-    "peer-certificate"
-    "peer-private-key"
-    "peer-trusted-ca"
-  ];
 in
   mkDerivation {
     pname = "etcd";
@@ -71,124 +50,9 @@ in
       if stdenv.isCross
       then [buildPackages.go]
       else [gnumake go];
-    runtimeDeps = [control];
+    runtimeDeps = [];
 
-    expose = {
-      units."etcd.service" = {
-        description = "etcd distributed key-value store";
-        after = ["network-online.target"];
-        wants = ["network-online.target"];
-        restartIfChanged = true;
-        stopOnRemoval = true;
-        serviceConfig = {
-          Type = "notify";
-          NotifyAccess = "all";
-          DynamicUser = true;
-          EnvironmentFile = "/etc/aos/packages/etcd/service.env";
-          ExecCondition = "/bin/etcd-control enabled";
-          ExecStart = "/bin/etcd --config-file /etc/aos/packages/etcd/etcd.json";
-          Restart = "on-failure";
-          RestartSec = "5s";
-          StateDirectory = "aos-pkg-etcd";
-          StateDirectoryMode = "0700";
-          RuntimeDirectory = "aos-pkg-etcd";
-          RuntimeDirectoryMode = "0750";
-          LimitNOFILE = "1048576";
-          UMask = "0077";
-        };
-      };
-
-      config = {
-        artifacts = [
-          {
-            name = "service";
-            path = "/etc/aos/packages/etcd/service.env";
-            format = "env";
-            required = ["ETCD_ENABLED" "ETCD_CONFIG_GENERATION"];
-            optional = [];
-            units = ["etcd.service"];
-            reload = "restart";
-          }
-        ];
-        credentials =
-          builtins.map (name: {
-            inherit name;
-            source = "/run/credstore/etcd/${name}";
-            units = ["etcd.service"];
-            encrypted = false;
-            optional = true;
-          })
-          credentialNames;
-      };
-
-      permissions = {
-        network = "host";
-        capabilities = [];
-        devices = [];
-        host-paths = [
-          {
-            path = "/etc/aos/packages/etcd/etcd.json";
-            mode = "read-only";
-          }
-        ];
-        syscalls = "restricted";
-        security-label = "aos-pkg-etcd";
-      };
-    };
-
-    configModule = {
-      src = ./_etcd-config;
-      moduleAbiCompat = {
-        min = 1;
-        max = 2;
-      };
-      declares = [
-        "etcd.client.advertiseUrls"
-        "etcd.client.enableGrpcGateway"
-        "etcd.client.listenUrls"
-        "etcd.client.tls"
-        "etcd.cluster.members"
-        "etcd.cluster.state"
-        "etcd.cluster.token"
-        "etcd.enable"
-        "etcd.metrics"
-        "etcd.name"
-        "etcd.peer.advertiseUrls"
-        "etcd.peer.listenUrls"
-        "etcd.peer.tls"
-        "etcd.storage.autoCompaction.mode"
-        "etcd.storage.autoCompaction.retention"
-        "etcd.storage.quotaBackendBytes"
-        "etcd.storage.snapshotCount"
-      ];
-      ownsRoots = [
-        {
-          root = "etcd";
-          interfaceAbi = 1;
-          contributable = [];
-        }
-      ];
-      artifacts = {
-        etc = ["aos/packages/etcd/etcd.json"];
-        units = [];
-        users = [];
-        groups = [];
-      };
-      documentation = {
-        summary = "etcd — distributed reliable key-value store";
-        sections = {
-          topology = lib.aosDoc.section "Cluster topology" [
-            (lib.aosDoc.paragraph "The local member must appear in cluster.members and its peer URLs must exactly match peer.advertiseUrls. Use etcdctl membership operations before changing the declared topology of a live cluster.")
-          ];
-          transport = lib.aosDoc.section "Transport security" [
-            (lib.aosDoc.paragraph "Client and peer certificates, private keys, and CA bundles are opaque references delivered only through systemd credentials. HTTPS is required whenever TLS is enabled.")
-          ];
-          lifecycle = lib.aosDoc.section "State and activation" [
-            (lib.aosDoc.paragraph "Configuration changes restart etcd while retaining its database in /var/lib/aos-pkg-etcd. Binding beyond loopback also requires explicit firewall policy.")
-          ];
-        };
-      };
-    };
+    abilities = ./_etcd-config/module.nix;
 
     phases = [
       {
@@ -233,7 +97,6 @@ in
         script = ''
           mkdir -p $out/bin
           install -m 755 bin/etcd bin/etcdctl bin/etcdutl $out/bin/
-          ln -s ${control}/bin/etcd-control $out/bin/etcd-control
         '';
       }
     ];
@@ -243,31 +106,55 @@ in
       self,
       pkgs,
     }: let
+      serviceManagement = lib.abilities.interfaces.serviceManagement;
+      environmentId = lib.abilities.environmentId {
+        authority = "deployment";
+        key = "etcd-test";
+        stage = "host";
+      };
+      credentialProvider = lib.abilities.instanceId {
+        environment = environmentId;
+        key = "credential-provider";
+      };
+      credential = name:
+        lib.abilities.resourceReference {
+          interface = serviceManagement.interfaces.credentialDelivery.identity;
+          resource = {
+            provider = credentialProvider;
+            key = name;
+          };
+          operations = ["observe"];
+          lifetime = "persistent";
+        };
+      tls = prefix: {
+        enable = true;
+        certificate.resource = credential "${prefix}-certificate";
+        privateKey.resource = credential "${prefix}-private-key";
+        trustedCa.resource = credential "${prefix}-trusted-ca";
+      };
       evalConfig = etcdConfig:
         lib.evalModules {
           modules = [
-            ({lib, ...}: {
-              options = {
-                assertions = lib.mkOption {
-                  type = lib.types.listOf lib.types.attrs;
-                  default = [];
-                };
-                etcd.config = lib.mkOption {
-                  type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
-                  default = {};
-                };
-                etcd.credentials = lib.mkOption {
-                  type = lib.types.attrsOf lib.types.attrs;
-                  default = {};
-                };
-                environment.etc = lib.mkOption {
-                  type = lib.types.attrsOf lib.types.anything;
-                  default = {};
-                };
+            ../../modules/abilities/default.nix
+            {
+              options.assertions = lib.mkOption {
+                type = lib.types.listOf lib.types.attrs;
+                default = [];
+                contributable = true;
               };
-            })
-            (import ./_etcd-config/module.nix)
-            {etcd = etcdConfig;}
+              aos.abilities.environment = {
+                authority = "deployment";
+                key = "etcd-test";
+                stage = "host";
+              };
+              etcd = etcdConfig;
+            }
+          ];
+          packageModules = [
+            {
+              name = "etcd";
+              module.imports = [./_etcd-config/module.nix];
+            }
           ];
           inherit lib;
         };
@@ -290,6 +177,52 @@ in
           snapshotCount = 1000;
         };
       };
+      evaluateTls = clientTls: peerTls: let
+        clientScheme =
+          if clientTls
+          then "https"
+          else "http";
+        peerScheme =
+          if peerTls
+          then "https"
+          else "http";
+      in
+        evalConfig {
+          enable = true;
+          name = "node-a";
+          client = {
+            listenUrls = ["${clientScheme}://127.0.0.1:12379"];
+            advertiseUrls = ["${clientScheme}://127.0.0.1:12379"];
+            tls =
+              if clientTls
+              then tls "client"
+              else {};
+          };
+          peer = {
+            listenUrls = ["${peerScheme}://127.0.0.1:12380"];
+            advertiseUrls = ["${peerScheme}://127.0.0.1:12380"];
+            tls =
+              if peerTls
+              then tls "peer"
+              else {};
+          };
+          cluster.members.node-a.peerUrls = ["${peerScheme}://127.0.0.1:12380"];
+        };
+      tlsEvaluations = {
+        neither = evaluateTls false false;
+        client = evaluateTls true false;
+        peer = evaluateTls false true;
+        both = evaluateTls true true;
+      };
+      credentialRequests = evaluation:
+        builtins.filter
+        (name: lib.hasPrefix "etcd:credential-" name)
+        (builtins.attrNames evaluation.config.aos.abilities.requests);
+      qualifiedResultOf = request: output: {
+        _type = "aos-request-output-reference";
+        inherit request output;
+      };
+      disabled = evalConfig {};
       invalidMember = evalConfig {
         name = "missing";
         cluster.members.node-a.peerUrls = ["http://127.0.0.1:2380"];
@@ -307,25 +240,59 @@ in
           "http://127.0.0.1:2379"
         ];
       };
-      renderedConfig = builtins.toFile "etcd-config-module-check.json" evaluated.config.environment.etc."aos/packages/etcd/etcd.json".text;
-      signedExpose = builtins.fromJSON self.expose.manifest;
-      signedCredentials = signedExpose.expose.config.credentials;
-      credentialContract =
-        builtins.length signedCredentials
-        == builtins.length credentialNames
-        && builtins.all (credential:
-          builtins.elem credential.name credentialNames
-          && credential.source == "/run/credstore/etcd/${credential.name}"
-          && !credential.encrypted
-          && credential.optional
-          && credential.units == ["etcd.service"])
-        signedCredentials;
+      abilities = evaluated.config.aos.abilities;
+      disabledAbilities = disabled.config.aos.abilities;
+      requests = builtins.attrNames abilities.requests;
+      mainStorageMounts = abilities.requests."etcd:main-storage".parameters.mounts;
+      disabledRequirements = builtins.attrNames disabledAbilities.requirementTemplates;
+      configurationSource = abilities.requests."etcd:server-configuration".parameters.source;
+      runtimeConfig = builtins.toFile "etcd-runtime-check.json" (builtins.toJSON {
+        name = "node-a";
+        "data-dir" = "/var/lib/etcd-check";
+        "listen-client-urls" = "http://127.0.0.1:12379";
+        "advertise-client-urls" = "http://127.0.0.1:12379";
+        "listen-peer-urls" = "http://127.0.0.1:12380";
+        "initial-advertise-peer-urls" = "http://127.0.0.1:12380";
+        "initial-cluster" = "node-a=http://127.0.0.1:12380";
+        "initial-cluster-state" = "new";
+        "initial-cluster-token" = "aos-etcd-check";
+      });
       contractHolds =
         assertionsHold evaluated
         && !assertionsHold invalidMember
         && !assertionsHold invalidTls
         && !assertionsHold invalidDuplicate
-        && credentialContract;
+        && disabledAbilities.instances == {}
+        && disabledAbilities.requests == {}
+        && builtins.elem "etcd:credential-delivery" disabledRequirements
+        && builtins.elem "etcd:service-lifecycle" disabledRequirements
+        && builtins.elem "etcd:main-lifecycle" requests
+        && builtins.elem "etcd:main-dependencies" requests
+        && builtins.elem "etcd:main-readiness" requests
+        && builtins.elem "etcd:server-configuration" requests
+        && builtins.all assertionsHold (builtins.attrValues tlsEvaluations)
+        && credentialRequests tlsEvaluations.neither == []
+        && credentialRequests tlsEvaluations.client
+        == [
+          "etcd:credential-client-certificate"
+          "etcd:credential-client-private-key"
+          "etcd:credential-client-trusted-ca"
+        ]
+        && credentialRequests tlsEvaluations.peer
+        == [
+          "etcd:credential-peer-certificate"
+          "etcd:credential-peer-private-key"
+          "etcd:credential-peer-trusted-ca"
+        ]
+        && builtins.length (credentialRequests tlsEvaluations.both) == 6
+        && builtins.map (mount: mount.source) mainStorageMounts
+        == [
+          (qualifiedResultOf "etcd:data-storage" "planned-path")
+          (qualifiedResultOf "etcd:runtime-storage" "planned-path")
+        ]
+        && configurationSource.kind == "structured-value"
+        && configurationSource.format == "json"
+        && !(lib.hasInfix "/var/lib/aos-pkg-etcd" (builtins.toJSON configurationSource));
     in {
       version = testing.mkToolCheck {
         pname = "tool-etcd";
@@ -333,13 +300,13 @@ in
         command = "etcd --version";
       };
 
-      config-module = testing.mkVMTest {
-        name = "db-etcd-config-module";
-        rootfsDeps = [self renderedConfig pkgs.iproute2];
+      runtime = testing.mkVMTest {
+        name = "db-etcd-runtime";
+        rootfsDeps = [self runtimeConfig pkgs.iproute2];
         testScript = ''
           ${pkgs.iproute2}/sbin/ip link set lo up
-          mkdir -p /var/lib/aos-pkg-etcd
-          etcd --config-file ${renderedConfig} >/tmp/etcd.log 2>&1 &
+          mkdir -p /var/lib/etcd-check
+          etcd --config-file ${runtimeConfig} >/tmp/etcd.log 2>&1 &
           ETCD_PID=$!
           trap 'kill "$ETCD_PID" 2>/dev/null || true' EXIT
 
@@ -367,27 +334,18 @@ in
             echo "etcd accepted an unknown configuration field" >&2
             exit 1
           fi
-          echo "==> etcd typed config and real-binary lifecycle: PASS"
+          echo "==> etcd runtime configuration and lifecycle: PASS"
         '';
       };
 
-      config-module-contract =
+      ability-module-contract =
         if contractHolds
         then
-          pkgs.runCommand "db-etcd-config-module-contract" {} ''
-            ${pkgs.grep}/bin/grep -qx 'EnvironmentFile=/etc/aos/packages/etcd/service.env' ${self.expose}/units/etcd.service
-            ${pkgs.grep}/bin/grep -Fq -- '--config-file /etc/aos/packages/etcd/etcd.json' ${self.expose}/units/etcd.service
-            ${pkgs.grep}/bin/grep -qx 'StateDirectory=aos-pkg-etcd' ${self.expose}/units/etcd.service
-            if ${pkgs.grep}/bin/grep -Eq 'LoadCredential(Encrypted)?=.*(client|peer)-(certificate|private-key|trusted-ca)' ${self.expose}/units/etcd.service; then
-              echo "optional etcd credentials created unconditional unit bindings" >&2
-              exit 1
-            fi
-            ${pkgs.grep}/bin/grep -Fq '"initial-cluster":"node-a=http://127.0.0.1:12380"' ${renderedConfig}
-            ${pkgs.grep}/bin/grep -Fq '"data-dir":"/var/lib/aos-pkg-etcd"' ${renderedConfig}
+          pkgs.runCommand "db-etcd-ability-module-contract" {} ''
             mkdir -p "$out"
             printf '%s\n' PASS >"$out/result"
           ''
-        else throw "the etcd config-module contract checks failed";
+        else throw "the etcd ability module contract checks failed";
     };
 
     meta = {

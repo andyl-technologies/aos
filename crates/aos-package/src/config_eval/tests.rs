@@ -222,10 +222,10 @@ fn loaded(package: &str) -> WorkingSetMember {
         config_realization: None,
         package: package.to_string(),
         version: Some("1".to_string()),
+        ability: None,
         config_output: Some(format!("/nix/store/h-{package}-config")),
         config_output_nar_hash: Some("sha256:test".to_string()),
         module_abi_compat: Some(compat(1, 2)),
-        authorization: PackageAuthorization::default(),
         outputs: PackageOutputs::default(),
     }
 }
@@ -245,10 +245,10 @@ fn signed_release_identity_flows_from_resolver_members_into_manifest_input() {
         config_realization: Some(format!("sha256:{}", "aa".repeat(32))),
         package: "web".to_string(),
         version: Some("1.0.0".to_string()),
+        ability: None,
         config_output: Some("/nix/store/cccccccccccccccccccccccccccccccc-web-config".to_string()),
         config_output_nar_hash: Some(format!("sha256:{}", "bb".repeat(32))),
         module_abi_compat: Some(compat(1, 2)),
-        authorization: PackageAuthorization::default(),
         outputs: PackageOutputs::default(),
     }];
     let (registry, tag, signer, realization) =
@@ -327,7 +327,7 @@ fn seed_modules_are_fetched_and_loaded_before_iteration_zero() {
     let fetcher = RecordingFetcher::new();
     let mut seeds = vec![WorkingSetMember::seed("web")];
 
-    hydrate_seed_config_modules(&mut seeds, &resolver, &fetcher, 1).unwrap();
+    hydrate_seed_modules(&mut seeds, &resolver, &fetcher, 1).unwrap();
 
     assert_eq!(seeds[0].version.as_deref(), Some("1.0.0"));
     assert_eq!(
@@ -345,7 +345,7 @@ fn seed_module_abi_is_gated_before_fetch() {
     let fetcher = RecordingFetcher::new();
     let mut seeds = vec![WorkingSetMember::seed("web")];
 
-    let error = hydrate_seed_config_modules(&mut seeds, &resolver, &fetcher, 1).unwrap_err();
+    let error = hydrate_seed_modules(&mut seeds, &resolver, &fetcher, 1).unwrap_err();
 
     assert!(matches!(error, FixpointError::SeedAbiMismatch(_)));
     assert!(fetcher.fetched.borrow().is_empty());
@@ -389,6 +389,8 @@ fn runtime_enrichment_pins_outputs_graph_and_package_ownership() {
                 registry: "aos-core".to_string(),
                 origin: super::runtime::RuntimePackageOrigin::Registry,
                 store_path: output.to_string(),
+                nar_hash: "sha256:0000000000000000000000000000000000000000000000000000".to_string(),
+                nar_size: 1,
                 config_dependency_outputs: BTreeMap::new(),
                 closure: vec![RuntimeClosurePin {
                     store_path_hash: "0000000000000000000000000000000a".to_string(),
@@ -402,6 +404,7 @@ fn runtime_enrichment_pins_outputs_graph_and_package_ownership() {
                 expose: None,
                 expose_artifact: None,
                 config_projection: None,
+                ability: None,
                 legacy_config: None,
             },
         )]),
@@ -487,11 +490,14 @@ fn runtime_enrichment_preserves_authorized_image_store_ownership() {
                 registry: "aos-core".to_string(),
                 origin: super::runtime::RuntimePackageOrigin::Registry,
                 store_path: output.to_string(),
+                nar_hash: format!("sha256:{}", "0".repeat(52)),
+                nar_size: 1,
                 config_dependency_outputs: BTreeMap::new(),
                 closure: Vec::new(),
                 expose: None,
                 expose_artifact: None,
                 config_projection: None,
+                ability: None,
                 legacy_config: None,
             },
         )]),
@@ -558,6 +564,8 @@ fn runtime_enrichment_projects_authenticated_units_and_enablement() {
                 registry: "aos-core".to_string(),
                 origin: super::runtime::RuntimePackageOrigin::Registry,
                 store_path: output.to_string(),
+                nar_hash: nar_hash.clone(),
+                nar_size: 1,
                 config_dependency_outputs: BTreeMap::new(),
                 closure: vec![
                     RuntimeClosurePin {
@@ -592,6 +600,7 @@ fn runtime_enrichment_projects_authenticated_units_and_enablement() {
                     nar_size: 1,
                 }),
                 config_projection: None,
+                ability: None,
                 legacy_config: Some(ExposeConfigMeta::default()),
             },
         )]),
@@ -641,6 +650,579 @@ fn runtime_enrichment_projects_authenticated_units_and_enablement() {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!(artifact))
+    );
+}
+
+#[test]
+fn structured_runtime_retains_config_bytes_without_legacy_unit_actions() {
+    use super::runtime::{
+        RuntimeClosurePin, RuntimeExposeConfigPin, RuntimePackageOrigin, RuntimePackagePin,
+        RuntimeRealisationPin, RuntimeResolution,
+    };
+    use crate::types::{
+        AbilityPackageMeta, ConfigArtifactFormat, ConfigArtifactMeta, ConfigReloadPolicy,
+        ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta,
+    };
+
+    let config_for = |unit: &str| ExposeConfigMeta {
+        artifacts: vec![ConfigArtifactMeta {
+            name: "runtime".to_string(),
+            path: "/etc/aos/packages/service/runtime.env".to_string(),
+            format: ConfigArtifactFormat::Env,
+            required: vec!["ENABLED".to_string()],
+            optional: Vec::new(),
+            units: vec![unit.to_string()],
+            reload: ConfigReloadPolicy::Restart,
+        }],
+        credentials: Vec::new(),
+    };
+
+    let structured_package = |name: &str, version: &str, units: &[&str], store_ids: [char; 4]| {
+        let config = config_for(units.last().unwrap());
+        let [runtime_id, expose_id, ability_id, config_id] = store_ids;
+        let runtime_hash = runtime_id.to_string().repeat(32);
+        let expose_hash = expose_id.to_string().repeat(32);
+        let ability_hash = ability_id.to_string().repeat(32);
+        let config_hash = config_id.to_string().repeat(32);
+        let output = format!("/nix/store/{runtime_hash}-{name}-{version}");
+        let expose_artifact = format!("/nix/store/{expose_hash}-expose-{name}");
+        let nar_hash = format!("sha256:{}", "0".repeat(52));
+
+        RuntimePackagePin {
+            version: version.to_string(),
+            platform: "x86_64-linux".to_string(),
+            registry: "aos-core".to_string(),
+            origin: RuntimePackageOrigin::Registry,
+            store_path: output.clone(),
+            nar_hash: nar_hash.clone(),
+            nar_size: 1,
+            config_dependency_outputs: BTreeMap::new(),
+            closure: vec![
+                RuntimeClosurePin {
+                    store_path_hash: runtime_hash,
+                    store_path: Some(output),
+                    realisations: vec![RuntimeRealisationPin {
+                        nar_hash: nar_hash.clone(),
+                        nar_size: 1,
+                    }],
+                },
+                RuntimeClosurePin {
+                    store_path_hash: expose_hash,
+                    store_path: Some(expose_artifact.clone()),
+                    realisations: vec![RuntimeRealisationPin {
+                        nar_hash: nar_hash.clone(),
+                        nar_size: 1,
+                    }],
+                },
+            ],
+            expose: Some(ExposeMeta {
+                target: format!("aos-pkg-{name}.target"),
+                units: units.iter().map(|unit| (*unit).to_string()).collect(),
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: config.clone(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: Some(ExposeArtifactMeta {
+                store_path: expose_artifact,
+                nar_hash: nar_hash.clone(),
+                nar_size: 1,
+            }),
+            config_projection: Some(RuntimeExposeConfigPin {
+                config_output: format!("/nix/store/{config_hash}-{name}-config"),
+                config_nar_hash: format!("sha256:{}", "8".repeat(52)),
+                config: config.clone(),
+            }),
+            ability: Some(AbilityPackageMeta {
+                store_path: format!("/nix/store/{ability_hash}-{name}-abilities"),
+                nar_hash: format!("sha256:{}", "5".repeat(64)),
+                nar_size: 1,
+                references: Vec::new(),
+                manifest_sha256: format!("sha256:{}", "6".repeat(64)),
+                manifest_size: 1,
+                package_digest: format!("sha256:{}", "7".repeat(64)),
+                activation_mode: "structured-effects".to_string(),
+                artifacts: Vec::new(),
+                provenance: format!("provenance/{name}.ability.intoto.jsonl"),
+            }),
+            legacy_config: None,
+        }
+    };
+    let runtime = RuntimeResolution {
+        packages: BTreeMap::from([
+            (
+                "nginx".to_string(),
+                structured_package(
+                    "nginx",
+                    "1.29.1",
+                    &["aos-pkg-nginx.target", "nginx.service"],
+                    ['a', 'b', 'c', 'd'],
+                ),
+            ),
+            (
+                "postgresql".to_string(),
+                structured_package(
+                    "postgresql",
+                    "18.6",
+                    &[
+                        "aos-pkg-postgresql.target",
+                        "postgresql-init.service",
+                        "postgresql.service",
+                    ],
+                    ['f', 'g', 'h', 'i'],
+                ),
+            ),
+        ]),
+        edges: BTreeMap::from([
+            ("nginx".to_string(), Vec::new()),
+            ("postgresql".to_string(), Vec::new()),
+        ]),
+    };
+    let nginx_projection_hash =
+        super::materialize::expose_config_schema_hash(&config_for("nginx.service")).unwrap();
+    let postgresql_projection_hash =
+        super::materialize::expose_config_schema_hash(&config_for("postgresql.service")).unwrap();
+    let mut manifest = serde_json::json!({
+        "etc": {},
+        "presets": [],
+        "storePaths": [],
+        "config": {
+            "nginx": {"runtime": {"ENABLED": true}},
+            "postgresql": {"runtime": {"ENABLED": true}}
+        },
+        "configProjectionBindings": {
+            "nginx": {
+                "schema": "aos.expose-config-binding/v1",
+                "schema_hash": nginx_projection_hash
+            },
+            "postgresql": {
+                "schema": "aos.expose-config-binding/v1",
+                "schema_hash": postgresql_projection_hash
+            }
+        },
+        "ownership": {
+            "etc": {},
+            "units": {},
+            "jobScripts": {},
+            "users": {},
+            "presets": {},
+            "storePaths": {}
+        }
+    });
+
+    enrich_runtime_projection(manifest.as_object_mut().unwrap(), &runtime).unwrap();
+
+    for unit in [
+        "aos-pkg-nginx.target",
+        "nginx.service",
+        "aos-pkg-postgresql.target",
+        "postgresql-init.service",
+        "postgresql.service",
+    ] {
+        assert!(
+            manifest["etc"]
+                .get(format!("systemd/system/{unit}"))
+                .is_some()
+        );
+    }
+    assert!(
+        manifest["etc"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|path| !path.contains("multi-user.target.wants"))
+    );
+    assert_eq!(manifest["presets"], serde_json::json!([]));
+    for package in ["nginx", "postgresql"] {
+        let artifacts = manifest["configProjections"][package]["artifacts"]
+            .as_array()
+            .unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0]["text"], "ENABLED=true\n");
+        assert_eq!(
+            manifest["configProjections"][package]["units"],
+            serde_json::json!({})
+        );
+    }
+    for package in ["nginx", "postgresql"] {
+        let output = &manifest["packageOutputs"][package];
+        assert!(output.get("expose").is_some());
+        assert!(output.get("config_projection").is_some());
+        assert!(output.get("ability").is_some());
+        assert!(output.get("permissions").is_none());
+    }
+
+    let sidecar = |name: &str, store_id: char| {
+        serde_json::json!({
+            "store_path": format!(
+                "/nix/store/{}-{name}",
+                store_id.to_string().repeat(32)
+            ),
+            "nar_hash": format!("sha256:{}", "1".repeat(52)),
+            "nar_size": 1,
+            "references": [],
+            "document": format!("{name}.json"),
+            "document_sha256": format!("sha256:{}", "2".repeat(64)),
+            "document_size": 1
+        })
+    };
+    let config_projections = serde_json::from_value(manifest["configProjections"].clone()).unwrap();
+    let activation = super::enrich_ability_activation(
+        Some(serde_json::json!({
+            "schema": "aos.ability.activation-input/v1",
+            "required_features": ["abilities-v1", "ability-effects-v1"],
+            "desired_state": sidecar("desired-state", 'j'),
+            "authenticated_policy_set": sidecar("policy-set", 'k')
+        })),
+        &runtime,
+        &config_projections,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        activation["schema"],
+        super::materialize::AbilityActivationInput::SCHEMA
+    );
+    assert_eq!(activation["packages"][0]["name"], "nginx");
+    assert_eq!(
+        activation["packages"][0]["ability_store_path"],
+        "/nix/store/cccccccccccccccccccccccccccccccc-nginx-abilities"
+    );
+    assert_eq!(activation["packages"][1]["name"], "postgresql");
+    let activation_input: super::materialize::AbilityActivationInput =
+        serde_json::from_value(activation.clone()).unwrap();
+    activation_input
+        .validate(&runtime.packages, &config_projections)
+        .unwrap();
+    let mut missing_revision = activation_input;
+    missing_revision.packages[0].activation_revision.clear();
+    let error = missing_revision
+        .validate(&runtime.packages, &config_projections)
+        .expect_err("new activation inputs must retain the derived revision");
+    assert!(error.to_string().contains("activation revision"));
+
+    super::retain_ability_sidecar_roots(manifest.as_object_mut().unwrap(), &activation).unwrap();
+    let content_hash = format!("sha256:{}", "a".repeat(64));
+    let config_paths = runtime
+        .packages
+        .values()
+        .map(|package| {
+            package
+                .config_projection
+                .as_ref()
+                .unwrap()
+                .config_output
+                .clone()
+        })
+        .collect::<Vec<_>>();
+    let config_nar_hashes = runtime
+        .packages
+        .values()
+        .map(|package| {
+            package
+                .config_projection
+                .as_ref()
+                .unwrap()
+                .config_nar_hash
+                .clone()
+        })
+        .collect::<Vec<_>>();
+    let config_closure_hash =
+        super::config_module_closure_hash(&config_paths, &config_nar_hashes).unwrap();
+    manifest
+        .as_object_mut()
+        .unwrap()
+        .extend(serde_json::Map::from_iter([
+            (
+                "schema".to_string(),
+                serde_json::json!(super::materialize::ConfigManifest::SCHEMA_V2),
+            ),
+            ("units".to_string(), serde_json::json!({})),
+            ("jobScripts".to_string(), serde_json::json!({})),
+            ("users".to_string(), serde_json::json!([])),
+            ("module_abi".to_string(), serde_json::json!(1)),
+            (
+                "inputs".to_string(),
+                serde_json::json!({
+                    "base_lib": {
+                        "store_path": "/nix/store/11111111111111111111111111111111-base-lib",
+                        "abi_hash": content_hash,
+                        "module_abi": 1
+                    },
+                    "evaluator": {
+                        "store_path": "/nix/store/22222222222222222222222222222222-evaluator",
+                        "store_hash": format!("sha256:{}", "b".repeat(40))
+                    },
+                    "config_modules": {
+                        "closure_hash": config_closure_hash,
+                        "count": 2,
+                        "store_paths": config_paths,
+                        "nar_hashes": config_nar_hashes,
+                        "package_names": ["nginx", "postgresql"],
+                        "module_abi_compat": [
+                            {"min": 1, "max": 1},
+                            {"min": 1, "max": 1}
+                        ]
+                    },
+                    "host_nix": {
+                        "content_hash": content_hash,
+                        "trust_mode": "platform",
+                        "platform": "test",
+                        "signer_key": null,
+                        "store_path": "/nix/store/33333333333333333333333333333333-host-nix"
+                    },
+                    "expected_current_generation": 7,
+                    "ability_activation": activation,
+                    "instance_facts": {
+                        "facts_hash": content_hash,
+                        "platform": "test",
+                        "store_path": "/nix/store/44444444444444444444444444444444-facts"
+                    }
+                }),
+            ),
+        ]));
+    let decoded: super::materialize::ConfigManifest =
+        serde_json::from_value(manifest.clone()).unwrap();
+    decoded.validate().unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest_path = tmp.path().join("manifest.json");
+    let etc_root = tmp.path().join("etc");
+    std::fs::write(&manifest_path, serde_json::to_vec(&decoded).unwrap()).unwrap();
+    std::fs::create_dir(&etc_root).unwrap();
+    let error = super::materialize::materialize_manifest(
+        &manifest_path,
+        &etc_root,
+        super::materialize::DEFAULT_JOB_SCRIPTS_RUNTIME_DIR,
+    )
+    .expect_err("legacy materialization must not execute structured package metadata");
+    assert!(
+        error
+            .to_string()
+            .contains("legacy materialization is disabled")
+    );
+    assert_eq!(std::fs::read_dir(&etc_root).unwrap().count(), 0);
+}
+
+#[test]
+fn ability_activation_input_survives_removal_of_the_last_structured_package() {
+    let input = serde_json::json!({
+        "schema": "aos.ability.activation-input/v1",
+        "required_features": ["abilities-v1", "ability-effects-v1"],
+        "desired_state": {},
+        "authenticated_policy_set": {}
+    });
+
+    let enriched = super::enrich_ability_activation(
+        Some(input),
+        &super::runtime::RuntimeResolution::default(),
+        &BTreeMap::new(),
+    )
+    .expect("retained activation input must authorize native teardown planning")
+    .expect("activation input remains selected");
+
+    assert_eq!(enriched["packages"], serde_json::json!([]));
+}
+
+#[test]
+fn legacy_host_selection_cannot_activate_a_structured_package_without_owned_input() {
+    use super::runtime::{RuntimePackageOrigin, RuntimePackagePin, RuntimeResolution};
+    use crate::types::AbilityPackageMeta;
+
+    let runtime = RuntimeResolution {
+        packages: BTreeMap::from([(
+            "web".to_string(),
+            RuntimePackagePin {
+                version: "1.0.0".to_string(),
+                platform: "x86_64-linux".to_string(),
+                registry: "aos-core".to_string(),
+                origin: RuntimePackageOrigin::Registry,
+                store_path: "/nix/store/0000000000000000000000000000000a-web".to_string(),
+                nar_hash: format!("sha256:{}", "8".repeat(52)),
+                nar_size: 1,
+                config_dependency_outputs: BTreeMap::new(),
+                closure: Vec::new(),
+                expose: None,
+                expose_artifact: None,
+                config_projection: None,
+                ability: Some(AbilityPackageMeta {
+                    store_path: "/nix/store/0000000000000000000000000000000b-web-abilities"
+                        .to_string(),
+                    nar_hash: format!("sha256:{}", "5".repeat(64)),
+                    nar_size: 1,
+                    references: Vec::new(),
+                    manifest_sha256: format!("sha256:{}", "6".repeat(64)),
+                    manifest_size: 1,
+                    package_digest: format!("sha256:{}", "7".repeat(64)),
+                    activation_mode: "structured-effects".to_string(),
+                    artifacts: Vec::new(),
+                    provenance: "provenance/web.ability.intoto.jsonl".to_string(),
+                }),
+                legacy_config: None,
+            },
+        )]),
+        edges: BTreeMap::new(),
+    };
+
+    let error = super::enrich_ability_activation(None, &runtime, &BTreeMap::new())
+        .expect_err("a legacy host selection does not own structured activation input");
+
+    assert_eq!(
+        error.to_string(),
+        "structured-effects package selection requires an ability_activation input"
+    );
+}
+
+#[test]
+fn documentation_prose_changes_only_document_identity_not_activation_inputs() {
+    use aos_doc_model::{
+        DOCUMENT_SCHEMA, DocumentationIdentity, DocumentedPackage, PackageDocumentation,
+    };
+
+    use super::runtime::{
+        RuntimeExposeConfigPin, RuntimePackageOrigin, RuntimePackagePin, RuntimeResolution,
+    };
+    use crate::types::{AbilityPackageMeta, ExposeConfigMeta};
+
+    let documentation = |prose: &str, config_hash: char| {
+        let mut document = PackageDocumentation {
+            schema: DOCUMENT_SCHEMA.to_string(),
+            package: DocumentedPackage {
+                name: "web".to_string(),
+                version: "1.0.0".to_string(),
+                platform: "x86_64-linux".to_string(),
+                summary: prose.to_string(),
+                homepage: None,
+                license: "Apache-2.0".to_string(),
+            },
+            identity: DocumentationIdentity {
+                semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
+                runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
+                config_module_nar_hash: Some(format!(
+                    "sha256:{}",
+                    config_hash.to_string().repeat(64)
+                )),
+                    expose_artifact_nar_hash: None,
+                source_nar_hash: format!("sha256:{}", "2".repeat(64)),
+            },
+            options: Vec::new(),
+        };
+        document.identity.semantic_schema_sha256 =
+            document.computed_semantic_schema_sha256().unwrap();
+        document
+    };
+    let documentation_before = documentation("Original package guidance.", '3');
+    let documentation_after = documentation("Revised package guidance.", '4');
+
+    assert_ne!(
+        documentation_before.document_sha256().unwrap(),
+        documentation_after.document_sha256().unwrap()
+    );
+    assert_eq!(
+        documentation_before.identity.semantic_schema_sha256,
+        documentation_after.identity.semantic_schema_sha256
+    );
+
+    let ability = AbilityPackageMeta {
+        store_path: "/nix/store/0000000000000000000000000000000b-web-abilities".to_string(),
+        nar_hash: format!("sha256:{}", "5".repeat(52)),
+        nar_size: 2,
+        references: Vec::new(),
+        manifest_sha256: format!("sha256:{}", "6".repeat(64)),
+        manifest_size: 1,
+        package_digest: format!("sha256:{}", "7".repeat(64)),
+        activation_mode: "structured-effects".to_string(),
+        artifacts: Vec::new(),
+        provenance: "provenance/web.ability.intoto.jsonl".to_string(),
+    };
+    let runtime = |config_hash: char| RuntimeResolution {
+        packages: BTreeMap::from([(
+            "web".to_string(),
+            RuntimePackagePin {
+                version: "1.0.0".to_string(),
+                platform: "x86_64-linux".to_string(),
+                registry: "aos-core".to_string(),
+                origin: RuntimePackageOrigin::Registry,
+                store_path: "/nix/store/0000000000000000000000000000000a-web".to_string(),
+                nar_hash: format!("sha256:{}", "8".repeat(52)),
+                nar_size: 1,
+                config_dependency_outputs: BTreeMap::new(),
+                closure: Vec::new(),
+                expose: None,
+                expose_artifact: None,
+                config_projection: Some(RuntimeExposeConfigPin {
+                    config_output: format!(
+                        "/nix/store/0000000000000000000000000000000{config_hash}-web-config"
+                    ),
+                    config_nar_hash: format!("sha256:{}", config_hash.to_string().repeat(52)),
+                    config: ExposeConfigMeta::default(),
+                }),
+                ability: Some(ability.clone()),
+                legacy_config: None,
+            },
+        )]),
+        edges: BTreeMap::new(),
+    };
+    let projection = |text: &str| {
+        BTreeMap::from([(
+            "web".to_string(),
+            super::materialize::ProjectedPackageConfig {
+                schema: super::materialize::ProjectedPackageConfig::SCHEMA.to_string(),
+                schema_hash: format!("sha256:{}", "9".repeat(64)),
+                artifacts: vec![super::materialize::ProjectedConfigArtifact {
+                    path: "/etc/web.conf".to_string(),
+                    text: text.to_string(),
+                    mode: "0644".to_string(),
+                    sha256: format!("sha256:{}", hex::encode(Sha256::digest(text.as_bytes()))),
+                }],
+                units: BTreeMap::new(),
+            },
+        )])
+    };
+    let input = serde_json::json!({
+        "schema": "aos.ability.activation-input/v1",
+        "required_features": ["abilities-v1", "ability-effects-v1"],
+        "desired_state": {},
+        "authenticated_policy_set": {}
+    });
+
+    let projection_before = projection("enabled=true\n");
+    let activation_before =
+        super::enrich_ability_activation(Some(input.clone()), &runtime('3'), &projection_before)
+            .unwrap()
+            .unwrap();
+    let activation_after =
+        super::enrich_ability_activation(Some(input.clone()), &runtime('4'), &projection_before)
+            .unwrap()
+            .unwrap();
+    let changed_projection = projection("enabled=false\n");
+    let activation_changed =
+        super::enrich_ability_activation(Some(input), &runtime('4'), &changed_projection)
+            .unwrap()
+            .unwrap();
+
+    assert_eq!(activation_before, activation_after);
+    assert_ne!(
+        activation_before["packages"][0]["activation_revision"],
+        activation_changed["packages"][0]["activation_revision"]
+    );
+    assert_eq!(
+        activation_before["packages"][0],
+        serde_json::json!({
+            "name": "web",
+            "version": "1.0.0",
+            "platform": "x86_64-linux",
+            "registry": "aos-core",
+            "runtime_store_path": "/nix/store/0000000000000000000000000000000a-web",
+            "runtime_nar_hash": format!("sha256:{}", "8".repeat(52)),
+            "runtime_nar_size": 1,
+            "ability_store_path": ability.store_path,
+            "ability_nar_hash": ability.nar_hash,
+            "manifest_sha256": ability.manifest_sha256,
+            "package_digest": ability.package_digest,
+            "activation_revision": activation_before["packages"][0]["activation_revision"].clone(),
+        })
     );
 }
 
@@ -819,10 +1401,10 @@ fn seed_abi_gate_rejects_before_any_eval() {
         config_realization: None,
         package: "firewall".into(),
         version: Some("9.9.9".into()),
+        ability: None,
         config_output: Some("/nix/store/h-firewall-config".into()),
         config_output_nar_hash: Some("sha256:test".into()),
         module_abi_compat: Some(compat(2, 4)),
-        authorization: PackageAuthorization::default(),
         outputs: PackageOutputs::default(),
     }];
 
@@ -1390,10 +1972,6 @@ fn retained_manifest_abi_bands_gate_cross_abi_rollback() {
         working[0].module_abi_compat,
         Some(crate::types::ModuleAbiCompat { min: 1, max: 1 })
     );
-    assert_eq!(
-        working[0].authorization,
-        super::PackageAuthorization::default()
-    );
 }
 
 #[test]
@@ -1511,6 +2089,130 @@ fn retained_identity_rejects_modified_config_module_nar() {
         "{error:#}"
     );
     assert!(error.to_string().contains("example"), "{error:#}");
+}
+
+#[test]
+fn retained_nar_hash_reads_the_exact_local_eval_store() {
+    let store_root = tempfile::tempdir().expect("temporary local store root");
+    let source = tempfile::tempdir().expect("temporary retained input");
+    std::fs::write(source.path().join("module.nix"), b"{ lib, ... }: {}\n")
+        .expect("retained input");
+    let store_uri = format!("local?root={}", store_root.path().display());
+    let output = std::process::Command::new("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "--store",
+            &store_uri,
+            "store",
+            "add-path",
+        ])
+        .arg(source.path())
+        .output()
+        .expect("add retained input to local store");
+    assert!(
+        output.status.success(),
+        "adding retained input failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let store_path = PathBuf::from(
+        String::from_utf8(output.stdout)
+            .expect("UTF-8 store path")
+            .trim(),
+    );
+    assert!(
+        !store_path.exists(),
+        "test input unexpectedly exists in the ambient store"
+    );
+
+    let hash =
+        super::retained_store_path_nar_hash_in(&store_path, Some(std::ffi::OsStr::new(&store_uri)))
+            .expect("hash retained input through its local store");
+    assert!(hash.starts_with("sha256:"), "{hash}");
+    assert_eq!(hash.len(), "sha256:".len() + 64);
+}
+
+#[test]
+fn retained_nar_hash_derives_the_exact_aos_root_store() {
+    let root = tempfile::tempdir().expect("temporary AOS root");
+    let source = tempfile::tempdir().expect("temporary retained input");
+    std::fs::write(source.path().join("module.nix"), b"{ lib, ... }: {}\n")
+        .expect("retained input");
+    let store_dir = root.path().join("store");
+    let state_dir = root.path().join("var/nix");
+    let log_dir = root.path().join("var/nix/log/nix");
+    let rooted_nix_environment = vec![
+        ("NIX_STORE_DIR", store_dir.display().to_string()),
+        ("NIX_STATE_DIR", state_dir.display().to_string()),
+        ("NIX_LOG_DIR", log_dir.display().to_string()),
+    ];
+    let store_uri = super::retained_eval_store_uri(None, Some(&rooted_nix_environment))
+        .expect("derive local store URI")
+        .expect("AOS_ROOT selects a local store");
+    let output = std::process::Command::new("nix")
+        .args(["--extra-experimental-features", "nix-command"])
+        .arg("--store")
+        .arg(&store_uri)
+        .args(["store", "add-path"])
+        .arg(source.path())
+        .output()
+        .expect("add retained input to rooted local store");
+    assert!(
+        output.status.success(),
+        "adding retained input failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let store_path = PathBuf::from(
+        String::from_utf8(output.stdout)
+            .expect("UTF-8 store path")
+            .trim(),
+    );
+    assert!(store_path.starts_with(&store_dir));
+
+    let hash = super::retained_store_path_nar_hash_in(&store_path, Some(&store_uri))
+        .expect("hash retained input through the AOS_ROOT-derived store");
+    assert!(hash.starts_with("sha256:"), "{hash}");
+    assert_eq!(hash.len(), "sha256:".len() + 64);
+}
+
+#[test]
+fn retained_eval_store_prefers_a_nonempty_explicit_store() {
+    let rooted = vec![
+        ("NIX_STORE_DIR", "/ignored/store".to_string()),
+        ("NIX_STATE_DIR", "/ignored/state".to_string()),
+        ("NIX_LOG_DIR", "/ignored/log".to_string()),
+    ];
+    let explicit = std::ffi::OsStr::new("local?root=/explicit");
+
+    let selected = super::retained_eval_store_uri(Some(explicit), Some(&rooted))
+        .expect("select explicit evaluator store")
+        .expect("explicit evaluator store is present");
+
+    assert_eq!(selected, explicit);
+    assert!(
+        super::retained_eval_store_uri(Some(std::ffi::OsStr::new("")), Some(&rooted))
+            .expect_err("an empty explicit store must fail closed")
+            .to_string()
+            .contains("must not be empty")
+    );
+}
+
+#[test]
+fn retained_eval_store_percent_encodes_rooted_override_paths() {
+    let rooted = vec![
+        ("NIX_STORE_DIR", "/srv/aos store".to_string()),
+        ("NIX_STATE_DIR", "/srv/aos&state".to_string()),
+        ("NIX_LOG_DIR", "/srv/aos?log".to_string()),
+    ];
+
+    let selected = super::retained_eval_store_uri(None, Some(&rooted))
+        .expect("derive rooted evaluator store")
+        .expect("rooted evaluator store is present");
+
+    assert_eq!(
+        selected,
+        "local?store=%2Fsrv%2Faos+store&state=%2Fsrv%2Faos%26state&log=%2Fsrv%2Faos%3Flog"
+    );
 }
 
 #[test]

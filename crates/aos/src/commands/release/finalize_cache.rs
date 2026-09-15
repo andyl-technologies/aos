@@ -51,6 +51,7 @@ pub(super) async fn run(
             name: output.package.clone(),
             version: output.version.clone(),
             platform: output.platform.to_string(),
+            output: output.output.clone(),
             store_path: output.store_path.clone(),
         })
         .collect::<Vec<_>>();
@@ -214,7 +215,7 @@ async fn sign_narinfos(
     Ok(operations)
 }
 
-fn parse_key_spec(value: &str) -> Result<(String, PathBuf)> {
+pub(super) fn parse_key_spec(value: &str) -> Result<(String, PathBuf)> {
     let (key_id, path) = value
         .split_once('=')
         .context("cache key must use KEY_ID=PATH")?;
@@ -224,7 +225,7 @@ fn parse_key_spec(value: &str) -> Result<(String, PathBuf)> {
     Ok((key_id.to_string(), PathBuf::from(path)))
 }
 
-fn load_cache_public_key(key_id: &str, path: &Path) -> Result<TrustedEd25519Key> {
+pub(super) fn load_cache_public_key(key_id: &str, path: &Path) -> Result<TrustedEd25519Key> {
     let bytes = capture::control_file(path, "cache public key")?;
     let text = std::str::from_utf8(&bytes)
         .context("cache public key is neither a Nix key line nor supported raw encoding")?

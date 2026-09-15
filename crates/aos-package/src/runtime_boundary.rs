@@ -154,7 +154,10 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         PackageCommand::Options { command } => options_require_host_runtime(command),
         PackageCommand::Schema { system, .. } => *system,
         PackageCommand::Attest { command } => match command {
-            AttestCommand::Quote { .. } | AttestCommand::VerifyBootCommit { .. } => true,
+            AttestCommand::Quote { .. }
+            | AttestCommand::VerifyBootCommit { .. }
+            | AttestCommand::VerifyRolloutBootCommit { .. }
+            | AttestCommand::ReadUkiIdentitySection { .. } => true,
             AttestCommand::Verify { system, .. } | AttestCommand::Catalog { system, .. } => *system,
             AttestCommand::Enroll { .. } => false,
         },
@@ -185,7 +188,10 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         | PackageCommand::Config { .. }
         | PackageCommand::Fetch { .. }
         | PackageCommand::RenderOne { .. }
-        | PackageCommand::GraphCompile { .. } => true,
+        | PackageCommand::GraphCompile { .. }
+        | PackageCommand::AbilityStageRun { .. }
+        | PackageCommand::AbilityStageValidate { .. }
+        | PackageCommand::AbilityStageReceive { .. } => true,
     }
 }
 
@@ -207,7 +213,8 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Held { .. }
         | PackageCommand::Orphans { .. }
         | PackageCommand::Verify { .. }
-        | PackageCommand::TestVerifyPackageAttestation { .. } => true,
+        | PackageCommand::TestVerifyPackageAttestation { .. }
+        | PackageCommand::AbilityStageValidate { .. } => true,
         PackageCommand::Docs { command } => documentation_is_read_only(command),
         PackageCommand::Options { .. } | PackageCommand::Schema { .. } => true,
         PackageCommand::Config { command } => runtime_config_is_read_only(command),
@@ -218,6 +225,8 @@ fn is_read_only(command: &PackageCommand) -> bool {
             AttestCommand::Verify { .. }
                 | AttestCommand::Catalog { .. }
                 | AttestCommand::VerifyBootCommit { .. }
+                | AttestCommand::VerifyRolloutBootCommit { .. }
+                | AttestCommand::ReadUkiIdentitySection { .. }
         ),
         PackageCommand::Credential(CredentialCommand::Encrypt { output, .. }) => output.is_none(),
         PackageCommand::Registry { command, .. } => apm_registry_is_read_only(command),
@@ -247,7 +256,9 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Switch { .. }
         | PackageCommand::Fetch { .. }
         | PackageCommand::RenderOne { .. }
-        | PackageCommand::GraphCompile { .. } => false,
+        | PackageCommand::GraphCompile { .. }
+        | PackageCommand::AbilityStageRun { .. }
+        | PackageCommand::AbilityStageReceive { .. } => false,
     }
 }
 

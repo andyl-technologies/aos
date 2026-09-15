@@ -5,6 +5,12 @@ members = [
     "aos-oci",
     "aos-oci-types",
     "aos-contract",
+    "aos-ability-model",
+    "aos-ability-validate",
+    "aos-ability-plan",
+    "aos-ability-runtime",
+    "aos-ability-inspect",
+    "aos-ability-crucible",
     "aos-maintain",
     "aos-core",
     "aos-boot-identity",
@@ -29,6 +35,13 @@ members = [
     "aos-hub-console",
     "aos-profile",
     "aos-systemd",
+    "aos-provider-protocol",
+    "aos-configuration-provider",
+    "aos-filesystem-provider",
+    "aos-kubernetes-provider",
+    "aos-kernel-tunable-provider",
+    "aos-nix-store-provider",
+    "aos-systemd-provider",
     "crucible-cas",
     "crucible-sim",
     "crucible-assert",
@@ -57,6 +70,7 @@ thiserror = "2"
 miette = { version = "7", features = ["fancy"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+schemars = "1"
 # `application/x-www-form-urlencoded` (de)serialization — the same decoder
 # axum 0.8's `Form` extractor uses, so hand-routing a form body to a shared
 # handler reproduces axum's parsing exactly.
@@ -201,6 +215,12 @@ rcgen = "0.14"
 
 # Internal crates
 aos-contract = { path = "aos-contract" }
+aos-ability-model = { path = "aos-ability-model" }
+aos-ability-validate = { path = "aos-ability-validate" }
+aos-ability-plan = { path = "aos-ability-plan" }
+aos-ability-runtime = { path = "aos-ability-runtime" }
+aos-ability-inspect = { path = "aos-ability-inspect" }
+aos-ability-crucible = { path = "aos-ability-crucible" }
 aos-maintain = { path = "aos-maintain" }
 crucible-cas = { path = "crucible-cas" }
 aos-core = { path = "aos-core" }
@@ -216,6 +236,9 @@ aos-remote = { path = "aos-remote" }
 aos-doc = { path = "aos-doc" }
 aos-doc-model = { path = "aos-doc-model" }
 aos-package = { path = "aos-package" }
+aos-configuration-provider = { path = "aos-configuration-provider" }
+aos-filesystem-provider = { path = "aos-filesystem-provider" }
+aos-nix-store-provider = { path = "aos-nix-store-provider" }
 aos-hub-console-contract = { path = "aos-hub-console-contract" }
 aos-hub-core = { path = "aos-hub-core" }
 aos-hub = { path = "aos-hub" }
@@ -224,6 +247,8 @@ aos-release = { path = "aos-release" }
 aos-image-finalizer = { path = "aos-image-finalizer" }
 aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }
+aos-provider-protocol = { path = "aos-provider-protocol" }
+aos-kubernetes-provider = { path = "aos-kubernetes-provider" }
 
 [workspace.lints.clippy]
 all = "deny"

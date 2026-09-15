@@ -273,6 +273,7 @@ fn verify_file_closure(envelope: &ManifestEnvelopeV1, files: &[CapturedFile]) ->
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use anyhow::Context as _;
     use base64::Engine as _;
     use ed25519_dalek::{Signer as _, SigningKey};
     use std::collections::BTreeMap;
@@ -511,6 +512,10 @@ pub(crate) mod tests {
                 None,
                 vec![
                     ArtifactRelationship {
+                        relation: ArtifactRelation::AuthenticatedBy,
+                        target: "cache/example.narinfo".to_owned(),
+                    },
+                    ArtifactRelationship {
                         relation: ArtifactRelation::CorrespondingSource,
                         target: "source/example".to_owned(),
                     },
@@ -712,6 +717,7 @@ pub(crate) mod tests {
                 name: package.name.clone(),
                 role: crate::qualification::PackageRole::GeneralCatalog,
                 inherit_dependency_obligations: true,
+                execution: None,
             })
             .collect();
         plan.schema_version = crate::RELEASE_PLAN_V2.into();
@@ -775,7 +781,7 @@ pub(crate) mod tests {
                     crate::qualification_fixture::environment(&case)?
                 };
                 let capabilities = crate::qualification_fixture::capabilities(&case)?;
-                let environment_digest = environment
+                let mut environment_digest = environment
                     .as_ref()
                     .map(|environment| environment.digest())
                     .transpose()?
@@ -792,6 +798,205 @@ pub(crate) mod tests {
                 if assessment_only {
                     operations.clear();
                 }
+                let mut checks = case
+                    .checks
+                    .iter()
+                    .map(|check| {
+                        (
+                            check.clone(),
+                            crate::qualification_evidence::CheckObservation {
+                                passed: true,
+                                detail: "fixture observation".into(),
+                            },
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                let native_adapter_matrix = if case.requirement_id
+                    == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_REQUIREMENT
+                {
+                    let surface = crate::native_adapter_matrix_tests::fixture_surface();
+                    let spec = crate::qualification_evidence::native_adapter_matrix_spec_from_surface(
+                        surface,
+                    )?;
+                    let spec_digest = Sha256Digest::of_bytes(canonical::to_vec(&spec)?);
+                    let component = |name: &str, component_digest: Sha256Digest| {
+                        crate::qualification_evidence::NativeAdapterMatrixComponentIdentity {
+                            name: name.into(),
+                            version: "fixture-v1".into(),
+                            digest: component_digest,
+                        }
+                    };
+                    let executor_digest = digest("executor");
+                    let matrix_environment =
+                        crate::qualification_evidence::NativeAdapterMatrixEnvironment {
+                            schema_version:
+                                "aos.release.native-adapter-matrix-environment/v1".into(),
+                            status:
+                                crate::qualification_evidence::NativeAdapterMatrixEnvironmentStatus::Production,
+                            platform: Platform::X86_64Linux,
+                            spec_digest,
+                            scenario_registry_digest: executor_digest,
+                            candidate_subjects_digest: case.subjects_digest,
+                            predecessor_manifest_digest: case
+                                .predecessor
+                                .as_ref()
+                                .context("matrix fixture case lacks its predecessor")?
+                                .manifest_digest,
+                            unqualified_reason: None,
+                            cohort: Some("fixture-cohort".into()),
+                            qemu: Some(component("qemu", digest("qemu"))),
+                            firmware: Some(component("firmware", digest("firmware"))),
+                            guest_kernel: Some(component("guest-kernel", digest("guest kernel"))),
+                            fault_injection_tool: Some(component(
+                                "fault-injection-tool",
+                                digest("fault tool"),
+                            )),
+                            harness: Some(component("matrix-harness", digest("harness closure"))),
+                        };
+                    environment_digest =
+                        Sha256Digest::of_bytes(canonical::to_vec(&matrix_environment)?);
+                    let probe_kind = |postcondition: &str| -> anyhow::Result<&'static str> {
+                        Ok(match postcondition {
+                            "durable-attempt-state-classified" => "journal-timeline",
+                            "at-most-one-resource-owner" => "ownership-inventory",
+                            "foreign-resources-unchanged" => "foreign-resource-snapshot",
+                            "dependent-effects-not-executed" => "dependency-barrier",
+                            "fresh-receiving-authority" => "authority-incarnation",
+                            "compatible-state-adopted" => "state-adoption",
+                            "exactly-one-resource-owner" => "exact-ownership-inventory",
+                            "transfer-rejected-before-candidate-effect" => "transfer-rejection",
+                            "predecessor-remains-sole-owner" => "predecessor-ownership",
+                            "current-grants-reauthorized" => "authority-grants",
+                            "retained-target-identity-preserved" => "target-identity",
+                            "prerequisite-failure-recorded" => "prerequisite-failure",
+                            "foreign-attempt-rejected-before-mutation" => {
+                                "foreign-attempt-rejection"
+                            }
+                            _ => anyhow::bail!("matrix fixture has an unknown postcondition"),
+                        })
+                    };
+                    let cells = crate::qualification_evidence::native_adapter_applicable_cells(
+                        &spec,
+                    )
+                        .into_iter()
+                        .map(|cell| {
+                            let cell_digest = Sha256Digest::of_bytes(canonical::to_vec(cell)?);
+                            let disposition = crate::qualification_evidence::native_adapter_expected_disposition(cell)
+                                .ok_or_else(|| anyhow::anyhow!("matrix fixture has an unknown scenario"))?;
+                            let cohort_subject = serde_json::json!({
+                                "schema": "aos.release.native-adapter-cell-cohort-subject/v1",
+                                "cell_id": cell.id,
+                                "cell_digest": cell_digest,
+                                "boundary": cell.boundary,
+                                "failure": cell.failure,
+                                "candidate": cell.candidate,
+                                "predecessor": cell.predecessor,
+                                "subject": {
+                                    "schema": "aos.test.native-adapter-cohort-subject/v1",
+                                    "operation": cell.id,
+                                },
+                            });
+                            let cohort_subject_digest = Sha256Digest::of_bytes(
+                                canonical::to_vec(&cohort_subject)?,
+                            );
+                            let probes = cell
+                                .postconditions
+                                .iter()
+                                .map(|postcondition| {
+                                    let observations = BTreeMap::from([(
+                                        "fixture-observation".into(),
+                                        serde_json::json!(format!(
+                                            "{}:{postcondition}",
+                                            cell.id
+                                        )),
+                                    )]);
+                                    let observation_digest = Sha256Digest::of_bytes(
+                                        canonical::to_vec(&observations)?,
+                                    );
+                                    Ok((
+                                        postcondition.clone(),
+                                        crate::qualification_evidence::NativeAdapterPostconditionProbe {
+                                            schema_version: "aos.release.native-adapter-postcondition-probe/v1".into(),
+                                            kind: probe_kind(postcondition)?.into(),
+                                            cell_id: cell.id.clone(),
+                                            cell_digest,
+                                            disposition: disposition.into(),
+                                            subject_digest: case.subjects_digest,
+                                            cohort_subject_digest,
+                                            observation_digest,
+                                            observations,
+                                        },
+                                    ))
+                                })
+                                .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+                            Ok(crate::qualification_evidence::NativeAdapterCellObservation {
+                                id: cell.id.clone(),
+                                cell_digest,
+                                environment_digest,
+                                cohort_subject: Some(cohort_subject),
+                                postconditions: cell
+                                    .postconditions
+                                    .iter()
+                                    .map(|postcondition| {
+                                        (
+                                            postcondition.clone(),
+                                            crate::qualification_evidence::CheckObservation {
+                                                passed: true,
+                                                detail: "fixture postcondition".into(),
+                                            },
+                                        )
+                                    })
+                                    .collect(),
+                                probes,
+                            })
+                        })
+                        .collect::<anyhow::Result<Vec<_>>>()?;
+                    let matrix =
+                        crate::qualification_evidence::NativeAdapterMatrixObservation {
+                            schema_version:
+                                crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_OBSERVATION_V1
+                                    .into(),
+                            spec,
+                            spec_digest,
+                            environment: matrix_environment,
+                            cells,
+                        };
+                    let passed =
+                        crate::qualification_evidence::validate_native_adapter_matrix_observation(
+                            &case,
+                            environment_digest,
+                            executor_digest,
+                            &matrix,
+                        )?;
+                    let matrix_check = case
+                        .checks
+                        .iter()
+                        .find(|check| check.starts_with("native-adapter-matrix-v1-sha256-"))
+                        .context("matrix fixture case lacks its policy check")?;
+                    checks.insert(
+                        matrix_check.clone(),
+                        crate::qualification_evidence::native_adapter_matrix_check(
+                            &matrix, passed,
+                        )?,
+                    );
+                    operations = BTreeMap::from([
+                        (
+                            "matrix_cells_reported".into(),
+                            u64::try_from(matrix.cells.len())?,
+                        ),
+                        (
+                            "matrix_postconditions_reported".into(),
+                            matrix.cells.iter().try_fold(0_u64, |count, cell| {
+                                Ok::<_, std::num::TryFromIntError>(
+                                    count + u64::try_from(cell.postconditions.len())?,
+                                )
+                            })?,
+                        ),
+                    ]);
+                    Some(matrix)
+                } else {
+                    None
+                };
                 Ok(EvidenceRecord {
                     id: format!("qualification/{}", case.id),
                     policy_id: case.requirement_id.clone(),
@@ -808,22 +1013,11 @@ pub(crate) mod tests {
                         environment,
                         capabilities,
                         assessment,
+                        native_adapter_matrix,
                         case_digest: case.digest()?,
                         executor_digest: digest("executor"),
                         environment_digest,
-                        checks: case
-                            .checks
-                            .iter()
-                            .map(|check| {
-                                (
-                                    check.clone(),
-                                    crate::qualification_evidence::CheckObservation {
-                                        passed: true,
-                                        detail: "fixture observation".into(),
-                                    },
-                                )
-                            })
-                            .collect(),
+                        checks,
                         observed_seconds: if assessment_only { 0 } else { 1 },
                         operations,
                         predecessor: case.predecessor,
@@ -878,6 +1072,201 @@ pub(crate) mod tests {
             &records,
             "2026-09-01T00:00:02Z",
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn package_cases_inherit_the_strongest_runtime_consumer_role() -> anyhow::Result<()> {
+        use crate::qualification::{PackageRole, PackageRule, QualificationPhase};
+
+        let (mut plan, mut manifest) = qualification_fixture()?;
+        let dependency_name = "dependency";
+        let dependency_id = |platform| format!("package/{dependency_name}/{platform}");
+
+        let mut dependency_plan = plan.packages[0].clone();
+        dependency_plan.name = dependency_name.to_owned();
+        dependency_plan.platforms = Platform::ALL
+            .into_iter()
+            .map(|platform| PlatformCell {
+                platform,
+                decision: MatrixCell::Artifact {
+                    artifact: planned(&[dependency_id(platform)]),
+                },
+            })
+            .collect();
+        plan.packages.push(dependency_plan);
+        plan.packages
+            .sort_by(|left, right| left.name.cmp(&right.name));
+
+        let dependency_result = PackageResult {
+            name: dependency_name.to_owned(),
+            platforms: Platform::ALL
+                .into_iter()
+                .map(|platform| PlatformCell {
+                    platform,
+                    decision: MatrixCell::Artifact {
+                        artifact: final_set(&[dependency_id(platform)]),
+                    },
+                })
+                .collect(),
+        };
+        manifest.packages.push(dependency_result);
+        manifest
+            .packages
+            .sort_by(|left, right| left.name.cmp(&right.name));
+
+        for platform in Platform::ALL {
+            let id = dependency_id(platform);
+            let (artifact, _) = artifact(
+                id.clone(),
+                ArtifactKind::PackageNar,
+                Some(platform),
+                None,
+                vec![
+                    ArtifactRelationship {
+                        relation: ArtifactRelation::AuthenticatedBy,
+                        target: "cache/example.narinfo".to_owned(),
+                    },
+                    ArtifactRelationship {
+                        relation: ArtifactRelation::CorrespondingSource,
+                        target: "source/example".to_owned(),
+                    },
+                    ArtifactRelationship {
+                        relation: ArtifactRelation::LicensedBy,
+                        target: "license/example".to_owned(),
+                    },
+                ],
+            )?;
+            manifest.artifacts.push(artifact);
+            manifest
+                .artifacts
+                .iter_mut()
+                .find(|artifact| artifact.id == package_id(platform))
+                .unwrap()
+                .relationships
+                .push(ArtifactRelationship {
+                    relation: ArtifactRelation::Contains,
+                    target: id,
+                });
+        }
+
+        let policy = plan.qualification.as_mut().unwrap();
+        policy.package_rules = vec![
+            PackageRule {
+                name: dependency_name.to_owned(),
+                role: PackageRole::GeneralCatalog,
+                inherit_dependency_obligations: true,
+                execution: None,
+            },
+            PackageRule {
+                name: "example".to_owned(),
+                role: PackageRole::SystemIntegrity,
+                inherit_dependency_obligations: true,
+                execution: None,
+            },
+        ];
+        plan.gates = policy.gates(&plan.registry, plan.release_class)?;
+        plan.public_evidence_policy_digest = policy.digest()?;
+
+        let cases =
+            crate::qualification_evidence::cases(&plan, &manifest, QualificationPhase::Staging)?;
+        let dependency_cases = cases
+            .iter()
+            .filter(|case| {
+                case.id
+                    .starts_with(&format!("package-function/{dependency_name}/"))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(dependency_cases.len(), Platform::ALL.len());
+        assert!(
+            dependency_cases
+                .iter()
+                .all(|case| case.package_role == Some(PackageRole::SystemIntegrity))
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_package_case_binds_the_matching_image_and_predecessor() -> anyhow::Result<()> {
+        use crate::qualification::{PackageExecution, QualificationPhase};
+
+        let (mut plan, mut manifest) = qualification_fixture()?;
+        let platform = Platform::X86_64Linux;
+        let package = manifest
+            .packages
+            .iter_mut()
+            .find(|package| package.name == "example")
+            .unwrap();
+        package.platforms.retain(|cell| cell.platform == platform);
+        let package_subjects = match &package.platforms[0].decision {
+            MatrixCell::Artifact { artifact } => artifact.artifact_ids.clone(),
+            MatrixCell::Blocked { .. } | MatrixCell::NotApplicable { .. } => unreachable!(),
+        };
+        let image = manifest
+            .images
+            .iter()
+            .find(|image| image.system_variant == "server")
+            .unwrap();
+        let image_subjects = match &image
+            .platforms
+            .iter()
+            .find(|cell| cell.platform == platform)
+            .unwrap()
+            .decision
+        {
+            MatrixCell::Artifact { artifact } => artifact.artifact_ids.clone(),
+            MatrixCell::Blocked { .. } | MatrixCell::NotApplicable { .. } => unreachable!(),
+        };
+        let policy = plan.qualification.as_mut().unwrap();
+        policy
+            .package_rules
+            .iter_mut()
+            .find(|rule| rule.name == "example")
+            .unwrap()
+            .execution = Some(PackageExecution::RecoveryImage {
+            system_variant: "server".into(),
+        });
+        plan.gates = policy.gates(&plan.registry, plan.release_class)?;
+        plan.public_evidence_policy_digest = policy.digest()?;
+
+        let cases =
+            crate::qualification_evidence::cases(&plan, &manifest, QualificationPhase::Staging)?;
+        let case = cases
+            .iter()
+            .find(|case| case.id == "package-function/example/x86_64-linux")
+            .unwrap();
+        let mut expected = package_subjects;
+        expected.extend(image_subjects);
+        expected.sort();
+        expected.dedup();
+
+        assert_eq!(case.subjects, expected);
+        assert_eq!(case.predecessor, plan.qualification_predecessor);
+
+        let mut missing_predecessor = plan.clone();
+        missing_predecessor.qualification_predecessor = None;
+        assert!(
+            crate::qualification_evidence::cases(
+                &missing_predecessor,
+                &manifest,
+                QualificationPhase::Staging,
+            )
+            .is_err()
+        );
+        let mut missing_image = manifest.clone();
+        missing_image
+            .images
+            .retain(|image| image.system_variant != "server");
+        assert!(
+            crate::qualification_evidence::cases(
+                &plan,
+                &missing_image,
+                QualificationPhase::Staging,
+            )
+            .is_err()
+        );
         Ok(())
     }
 
@@ -946,6 +1335,21 @@ pub(crate) mod tests {
             )
         };
         let now = "2026-09-01T00:00:02Z";
+        let matrix_index = records
+            .iter()
+            .position(|record| record.policy_id == "ability-native-adapter-matrix")
+            .expect("fixture must carry the mandatory native-adapter matrix");
+        let mut missing_matrix = records.clone();
+        missing_matrix.remove(matrix_index);
+        assert!(check(&missing_matrix, now).is_err());
+        let mut stale_matrix_subject = records.clone();
+        stale_matrix_subject[matrix_index]
+            .qualification
+            .as_mut()
+            .expect("matrix record must be structured")
+            .case_digest = digest("stale-native-adapter-matrix-subject");
+        assert!(check(&stale_matrix_subject, now).is_err());
+
         assert!(check(&records[1..], now).is_err());
         let mut failed = records.clone();
         failed[0].result = GateResult::Failed;
@@ -1035,6 +1439,27 @@ pub(crate) mod tests {
             evidence: Vec::new(),
             recorded_at: "2026-09-03T00:00:00Z".to_owned(),
         }
+    }
+
+    #[test]
+    fn package_artifact_requires_its_exact_signed_narinfo() -> anyhow::Result<()> {
+        let fixture = release_fixture()?;
+        let plan: ReleasePlanV1 = canonical::from_slice(&fixture.plan, "fixture plan")?;
+        let envelope: ManifestEnvelopeV1 =
+            canonical::from_slice(&fixture.envelope, "fixture manifest")?;
+        let mut manifest = envelope.payload;
+        for artifact in manifest
+            .artifacts
+            .iter_mut()
+            .filter(|artifact| artifact.kind == ArtifactKind::PackageNar)
+        {
+            artifact
+                .relationships
+                .retain(|relationship| relationship.relation != ArtifactRelation::AuthenticatedBy);
+        }
+
+        assert!(manifest.validate(&plan).is_err());
+        Ok(())
     }
 
     #[test]
@@ -1189,6 +1614,53 @@ pub(crate) mod tests {
         assert!(legacy.require_current_qualification().is_err());
         let (current, _) = qualification_fixture()?;
         current.require_current_qualification()?;
+        current.require_publishable_qualification()?;
+        Ok(())
+    }
+
+    #[test]
+    fn qualification_snapshot_uses_current_build_policy_but_cannot_be_published()
+    -> anyhow::Result<()> {
+        let (mut snapshot, manifest) = qualification_fixture()?;
+        snapshot.qualification_predecessor = None;
+        snapshot.release_id = format!(
+            "{}{}",
+            crate::plan::QUALIFICATION_SNAPSHOT_RELEASE_PREFIX,
+            snapshot.version
+        );
+        snapshot.source.source_tag = format!(
+            "{}{}",
+            crate::plan::QUALIFICATION_SNAPSHOT_TAG_PREFIX,
+            snapshot.version
+        );
+        snapshot.intended_channels.clear();
+
+        snapshot.validate()?;
+        snapshot.require_current_qualification()?;
+        assert!(snapshot.require_publishable_qualification().is_err());
+        let case_error = crate::qualification_evidence::cases(
+            &snapshot,
+            &manifest,
+            crate::qualification::QualificationPhase::Staging,
+        )
+        .expect_err("matrix qualification cannot run without a frozen predecessor");
+        assert!(case_error.to_string().contains("frozen predecessor"));
+
+        let mut ordinary_name = snapshot.clone();
+        ordinary_name.release_id = "ordinary-release".into();
+        assert!(ordinary_name.validate().is_err());
+
+        let mut ordinary_tag = snapshot.clone();
+        ordinary_tag.source.source_tag = "release/ordinary".into();
+        assert!(ordinary_tag.validate().is_err());
+
+        let mut channel = snapshot;
+        channel.intended_channels.push(crate::plan::ChannelIntent {
+            channel: "stable".into(),
+            first_partition: 0,
+            last_partition: 255,
+        });
+        assert!(channel.validate().is_err());
         Ok(())
     }
 

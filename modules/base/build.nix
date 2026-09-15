@@ -101,6 +101,7 @@ in {
     # mode type catches typos (`"sym-link"`, `"0o644"`) at eval time.
     environment.etc = lib.mkOption {
       default = {};
+      contributable = true;
       type = lib.types.attrsOf (lib.types.submodule ({
         name,
         config,
@@ -507,15 +508,27 @@ in {
                 ${lib.optionalString (config.aos.apm.drainScript != null) ''
                   ln -sfn ${config.aos.apm.drainScript} $out/drain
                 ''}
+                ${lib.optionalString (config.aos.apm.healthScript != null) ''
+                  ln -sfn ${config.aos.apm.healthScript} $out/health
+                ''}
+
+                # Resolve trusted booted-image commands through the immutable
+                # rootfs command farm. The absolute target deliberately adds no
+                # package closure to the toplevel; early boot authenticates the
+                # target and every rollout command before publishing
+                # `/run/current-system`.
+                ln -s /usr $out/sw
 
                 # `aos-seed-profiles.service` reads these on first boot
                 # to populate `state.json`. Plain text — `read_meta`
                 # in the service script strips the trailing newline.
                 printf '%s' "${config.aos.system.name}" > $out/meta/package-name
                 printf '%s' "${config.aos.system.version}" > $out/meta/version
+                printf '%s' "${config.aos.system.stateVersion}" > $out/meta/state-version
                 printf '%s' "${toString config.aos.system.moduleAbi}" > $out/meta/module-abi
                 printf '%s' "${toString config.aos.system.configInputAbi}" > $out/meta/config-input-abi
                 printf '%s' "sha256:${builtins.hashString "sha256" (toString config.aos.config.evalAtBoot.baseLib)}" > $out/meta/baselib-digest
+                printf '%s' "${pkgs.aos.packageRuntime}" > $out/meta/native-executor-ref
                 printf '%s' "EFI/Linux/aos-generation-0000000001${lib.optionalString (config.aos.boot.bootCountingTries != null) "+${toString config.aos.boot.bootCountingTries}"}.efi" > $out/meta/uki-path
                 printf '%s' ${lib.escapeShellArg config.aos.filesystems.espDevice} > $out/meta/esp-device
                 printf '%s\n' ${lib.escapeShellArg (builtins.toJSON {
@@ -892,7 +905,9 @@ in {
       jobScriptOwnership = lib.mapAttrs (key: _: jobScriptOwner key) jobScripts;
       hashIdentity = value: "sha256:${builtins.hashString "sha256" value}";
       baseLibPath = pathString config.aos.config.evalAtBoot.baseLib;
-      evaluatorPath = pathString pkgs.aos;
+      # The private package runtime executes `__eval`; record the artifact that
+      # actually evaluates the manifest rather than the repository CLI.
+      evaluatorPath = pathString pkgs.aos.packageRuntime;
       evaluatorStoreHash =
         "sha256:"
         + builtins.convertHash {
@@ -907,6 +922,7 @@ in {
       emptyHostPath = pathString emptyHost;
       defaultFacts = builtins.toJSON (config.host.facts or {});
       defaultFactsFile = builtins.toFile "aos-default-instance-facts.json" defaultFacts;
+      abilityActivationInput = config.aos.abilities.activationInput;
       ownership = {
         etc = etcOwnership;
         units = unitOwnership;
@@ -930,38 +946,42 @@ in {
         jobScripts = jobScripts;
         units = config.system.build.systemdUnitActions;
         module_abi = config.aos.system.moduleAbi or 1;
-        inputs = {
-          base_lib = {
-            store_path = baseLibPath;
-            abi_hash = config.aos.config.evalAtBoot.baseLibAbiHash;
-            module_abi = config.aos.system.moduleAbi or 1;
+        inputs =
+          {
+            base_lib = {
+              store_path = baseLibPath;
+              abi_hash = config.aos.config.evalAtBoot.baseLibAbiHash;
+              module_abi = config.aos.system.moduleAbi or 1;
+            };
+            evaluator = {
+              store_path = evaluatorPath;
+              store_hash = evaluatorStoreHash;
+            };
+            config_modules = {
+              closure_hash = hashIdentity "[]";
+              count = 0;
+              store_paths = [];
+              nar_hashes = [];
+              package_names = [];
+              origins = [];
+              module_abi_compat = [];
+            };
+            host_nix = {
+              content_hash = hashIdentity "{}";
+              trust_mode = "image";
+              platform = "image";
+              signer_key = null;
+              store_path = emptyHostPath;
+            };
+            instance_facts = {
+              facts_hash = hashIdentity defaultFacts;
+              platform = "image";
+              store_path = pathString defaultFactsFile;
+            };
+          }
+          // lib.optionalAttrs (abilityActivationInput != null) {
+            ability_activation = abilityActivationInput;
           };
-          evaluator = {
-            store_path = evaluatorPath;
-            store_hash = evaluatorStoreHash;
-          };
-          config_modules = {
-            closure_hash = hashIdentity "[]";
-            count = 0;
-            store_paths = [];
-            nar_hashes = [];
-            package_names = [];
-            origins = [];
-            module_abi_compat = [];
-          };
-          host_nix = {
-            content_hash = hashIdentity "{}";
-            trust_mode = "image";
-            platform = "image";
-            signer_key = null;
-            store_path = emptyHostPath;
-          };
-          instance_facts = {
-            facts_hash = hashIdentity defaultFacts;
-            platform = "image";
-            store_path = pathString defaultFactsFile;
-          };
-        };
         packages = [];
         packageOutputs = {};
         graph.edges = {};
@@ -1005,6 +1025,16 @@ in {
       pkgs.util-linux
       pkgs.systemd
       pkgs.kmod
+      # The provider installs only libexec/module artifacts. Selecting it here
+      # makes the four shared filesystem implementations available to the
+      # final ability fixed point without adding commands to the login PATH.
+      pkgs.aos-filesystem-provider
+      # Kernel-tunable effects are selected through the provider package that
+      # ships both its authenticated module and handler.
+      pkgs.aos-kernel-tunable-provider
+      # The package owns the Nix store-database contract, provider module, and
+      # handler while selecting the exact Nix executable symbolically.
+      pkgs.aos-nix-store-provider
       pkgs.e2fsprogs
       pkgs.less
     ];

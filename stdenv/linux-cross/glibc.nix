@@ -35,6 +35,8 @@ buildStdenv.mkDerivation {
   runtimeDeps = [];
   propagatedDeps = [];
 
+  passthru.evidenceSources = [sources.glibc];
+
   hardeningDisable = ["all"];
 
   phases = [

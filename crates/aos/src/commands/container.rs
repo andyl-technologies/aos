@@ -669,9 +669,7 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
     let default_registry_origin = immutable_reference.default_origin()?.to_string();
     let registry_origin = registry_origin.unwrap_or(&default_registry_origin);
     let control_access = if !stage_only || registry_token.is_none() {
-        if hub.is_none() || token.is_none() {
-            crate::commands::hub_auth::prepare_active_profile().await?;
-        }
+        crate::commands::hub_auth::prepare_hub_access(hub, token).await?;
         let (control_origin, control_token) =
             crate::commands::hub_auth::resolve_access(hub, token)?;
         let control_token = control_token.context(
@@ -2235,8 +2233,8 @@ mod tests {
         let mut platform_manifest = descriptor(MediaType::OciImageManifest, "manifest");
         platform_manifest.platform = Some(Platform::linux_amd64());
         ContainerRelease {
-            schema_version: 1,
-            media_type: MediaType::AosContainerRelease,
+            schema_version: 2,
+            media_type: MediaType::AosContainerReleaseV2,
             identity: ContainerReleaseIdentity {
                 release: "1.0.0".to_string(),
                 package: "aos".to_string(),
@@ -2277,6 +2275,10 @@ mod tests {
                 ready_for_verified_publication: true,
             },
             evidence: ContainerReleaseEvidence {
+                abilities: Some(evidence_descriptor(
+                    MediaType::AosContainerStaticAbilities,
+                    "abilities",
+                )),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
                 source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
                 license: evidence_descriptor(MediaType::AosLicenseReport, "license"),

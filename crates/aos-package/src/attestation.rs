@@ -66,7 +66,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::config_eval::{PackageAuthorization, materialize::ConfigManifest};
+use crate::config_eval::materialize::ConfigManifest;
 use crate::graph_compile::reproject::hash_cjson;
 use crate::types::{ImageGeneration, ModuleAbiCompat};
 
@@ -716,7 +716,6 @@ fn inputs_from_manifest(
     }
     let mut provenance = serde_json::json!({
         "module_abi_compat": config.module_abi_compat,
-        "authorizations": config.authorizations,
     });
     if !config.origins.is_empty() {
         provenance["origins"] = serde_json::json!(config.origins);
@@ -887,8 +886,6 @@ pub struct VerifiedConfigModuleMember {
     pub nar_hash: String,
     /// Base-library ABI band authenticated by the signed package catalog.
     pub module_abi_compat: ModuleAbiCompat,
-    /// Shared-root write authority authenticated by the signed package catalog.
-    pub authorization: PackageAuthorization,
 }
 
 /// Verifier-side evidence recovered from a successfully verified release tag.
@@ -1159,8 +1156,7 @@ fn config_module_release_is_trusted(
     modules: &ConfigModulesAttInput,
     policy: &VerifierPolicy,
 ) -> bool {
-    let Some((abi_compat, authorizations, mut origins)) = provenance_entries(&modules.provenance)
-    else {
+    let Some((abi_compat, mut origins)) = provenance_entries(&modules.provenance) else {
         return false;
     };
     if modules.count == 0 {
@@ -1172,7 +1168,6 @@ fn config_module_release_is_trusted(
             && modules.nar_hashes.is_empty()
             && modules.package_names.is_empty()
             && abi_compat.is_empty()
-            && authorizations.is_empty()
             && origins.is_empty()
             && ct_eq(
                 &modules.closure_hash,
@@ -1184,7 +1179,6 @@ fn config_module_release_is_trusted(
         || count != modules.nar_hashes.len()
         || count != modules.package_names.len()
         || count != abi_compat.len()
-        || count != authorizations.len()
     {
         return false;
     }
@@ -1262,10 +1256,9 @@ fn config_module_release_is_trusted(
             &modules.store_paths[index],
             &modules.nar_hashes[index],
         );
-        image_catalog.get(&key).is_some_and(|member| {
-            member.module_abi_compat == abi_compat[index]
-                && member.authorization == authorizations[index]
-        })
+        image_catalog
+            .get(&key)
+            .is_some_and(|member| member.module_abi_compat == abi_compat[index])
     }) {
         return false;
     }
@@ -1346,29 +1339,29 @@ fn config_module_release_is_trusted(
             &modules.store_paths[index],
             &modules.nar_hashes[index],
         );
-        catalog_members.get(&key).is_some_and(|member| {
-            member.module_abi_compat == abi_compat[index]
-                && member.authorization == authorizations[index]
-        })
+        catalog_members
+            .get(&key)
+            .is_some_and(|member| member.module_abi_compat == abi_compat[index])
     })
 }
 
-fn provenance_entries(
-    provenance: &Value,
-) -> Option<(Vec<ModuleAbiCompat>, Vec<PackageAuthorization>, Vec<String>)> {
+fn provenance_entries(provenance: &Value) -> Option<(Vec<ModuleAbiCompat>, Vec<String>)> {
     let Some(object) = provenance.as_object() else {
         return None;
     };
-    if object.len() < 2 || object.len() > 3 {
+    if object.is_empty()
+        || object
+            .keys()
+            .any(|key| key != "module_abi_compat" && key != "origins")
+    {
         return None;
     }
     let compat = serde_json::from_value(object.get("module_abi_compat")?.clone()).ok()?;
-    let authorization = serde_json::from_value(object.get("authorizations")?.clone()).ok()?;
     let origins = object
         .get("origins")
         .map(|value| serde_json::from_value(value.clone()).ok())
         .unwrap_or_else(|| Some(Vec::new()))?;
-    Some((compat, authorization, origins))
+    Some((compat, origins))
 }
 
 fn is_short_fingerprint(value: &str) -> bool {
@@ -1590,7 +1583,7 @@ mod tests {
                 store_paths: vec![module_path],
                 nar_hashes: vec![module_nar_hash],
                 package_names: vec!["web".to_string()],
-                provenance: serde_json::json!({"module_abi_compat":[{"min":1,"max":1}],"authorizations":[{"owns":[],"contributes":{}}]}),
+                provenance: serde_json::json!({"module_abi_compat":[{"min":1,"max":1}]}),
             },
             host_nix: HostNixAttInput {
                 content_hash: "sha256:dd".to_string(),
@@ -1638,7 +1631,6 @@ mod tests {
                     .unwrap()
                     .nar_hash(),
                     module_abi_compat: ModuleAbiCompat { min: 1, max: 1 },
-                    authorization: PackageAuthorization::default(),
                 }],
             }],
             image_config_modules: Vec::new(),
@@ -1692,6 +1684,8 @@ mod tests {
             toplevel: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos".to_string(),
             package_name: "aos".to_string(),
             version: "1".to_string(),
+            state_version: None,
+            native_executor_ref: None,
             registry: "aos-core".to_string(),
             kernel_path: None,
             evaluator_ref: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-base-lib".to_string(),
@@ -1867,8 +1861,6 @@ mod tests {
                 modules.provenance["module_abi_compat"][0].clone(),
             )
             .unwrap(),
-            authorization: serde_json::from_value(modules.provenance["authorizations"][0].clone())
-                .unwrap(),
         };
         let record = computed_with_inputs(inputs);
         let mut policy = sample_policy();
@@ -1929,8 +1921,7 @@ mod tests {
             nar_hashes: Vec::new(),
             package_names: Vec::new(),
             provenance: serde_json::json!({
-                "module_abi_compat": [],
-                "authorizations": []
+                "module_abi_compat": []
             }),
         };
         let record = computed_with_inputs(inputs.clone());
@@ -2040,8 +2031,8 @@ mod tests {
         );
 
         let mut inputs = sample_inputs();
-        inputs.config_modules.provenance["authorizations"][0]["owns"] =
-            serde_json::json!(["firewall"]);
+        inputs.config_modules.provenance["authorizations"] =
+            serde_json::json!([{"owns": ["firewall"], "contributes": {}}]);
         let record = computed_with_inputs(inputs);
         assert_eq!(
             verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
@@ -2076,8 +2067,7 @@ mod tests {
             .package_names
             .push(inputs.config_modules.package_names[0].clone());
         inputs.config_modules.provenance = serde_json::json!({
-            "module_abi_compat": [{"min":1,"max":1}, {"min":1,"max":1}],
-            "authorizations": [{"owns":[],"contributes":{}}, {"owns":[],"contributes":{}}]
+            "module_abi_compat": [{"min":1,"max":1}, {"min":1,"max":1}]
         });
         let record = computed_with_inputs(inputs);
         assert_eq!(

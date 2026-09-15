@@ -116,23 +116,18 @@
     # stored but otherwise ignored. Ports of nixpkgs code frequently
     # set this on `*.unit` / `*.jobScripts` fields.
     internal ? false,
-    # `contributable` is the capability-scoped contribution
-    # surface" marker. It is a *pure declaration field* — the merge engine
-    # (phases 3-6) completely ignores it, so setting it never changes how an
-    # option's value is computed. Its sole purpose is to let a shared-root
-    # OWNER curate which sub-paths NON-OWNER packages may write into: the
-    # owner sets `contributable = true` on the curated extension points
+    deprecated ? null,
+    replacement ? null,
+    # `contributable` marks the capability-scoped contribution surface. It
+    # never changes how an option's value is merged. The declaring owner sets
+    # it on the extension points other package modules may write into
     # (e.g. `nginx.virtualHosts`, `nginx.upstreams`) and leaves the root
     # node, `enable`, and global owner-only fields unmarked (the default,
     # `false`). For `attrsOf (submodule …)` the marker sits on the `attrsOf`
-    # option node and is understood to inherit to every dynamic child; an
-    # inner submodule option may re-declare `contributable = false` to punch
-    # an owner-only hole. The flag is surfaced verbatim on the option record
-    # (and via `evalModules`' `_optionDecls` result field) so the
-    # publish-time options-only eval can fold it into the registry inverted
-    # index; the actual provenance + reject ENFORCEMENT is resolver-side
-    # (CS5), this engine only exposes the declared surface. Defaults `false`
-    # so every existing option is owner-only and inert under this primitive.
+    # option node and applies to every dynamic child. The evaluator combines
+    # this marker with resolver-stamped declaration and definition provenance
+    # to reject unauthorized package writes. The flag is also exposed through
+    # `_optionDecls` for publication and documentation. Defaults `false`.
     contributable ? false,
   }: {
     _type = "option";
@@ -146,6 +141,8 @@
       apply
       visible
       internal
+      deprecated
+      replacement
       contributable
       ;
   };
@@ -324,19 +321,19 @@
   # ---------------------------------------------------------------------------
   # Internal: collect option declarations from a module result
   # ---------------------------------------------------------------------------
-  collectOptions = prefix: optionTree: file: provenance: authorization:
+  collectOptions = prefix: optionTree: file: provenance:
     if isOption optionTree
     then [
       {
         path = prefix;
         option = optionTree;
-        inherit file provenance authorization;
+        inherit file provenance;
       }
     ]
     else if builtins.isAttrs optionTree
     then
       builtins.concatLists (
-        builtins.map (name: collectOptions (prefix ++ [name]) optionTree.${name} file provenance authorization) (
+        builtins.map (name: collectOptions (prefix ++ [name]) optionTree.${name} file provenance) (
           builtins.attrNames optionTree
         )
       )
@@ -381,9 +378,9 @@
   # to the reserved tier-75 band. It is deliberately NOT derived from any
   # module-supplied attribute (`_file` / a module-body `_provenance`), so it
   # cannot be forged by a package (review M-forgeable-file).
-  collectDefsAtPath = path: config: file: provenance: authorization:
+  collectDefsAtPath = path: config: file: provenance:
     if isMkMerge config
-    then builtins.concatLists (builtins.map (v: collectDefsAtPath path v file provenance authorization) config._values)
+    then builtins.concatLists (builtins.map (v: collectDefsAtPath path v file provenance) config._values)
     else if isMkIf config
     then
       builtins.map (
@@ -395,11 +392,11 @@
               then d.condition && config._condition
               else config._condition;
           }
-      ) (collectDefsAtPath path config._value file provenance authorization)
+      ) (collectDefsAtPath path config._value file provenance)
     else if builtins.length path == 0
     then [
       {
-        inherit file provenance authorization;
+        inherit file provenance;
         value = config;
       }
     ]
@@ -409,7 +406,7 @@
       rest = builtins.genList (i: builtins.elemAt path (i + 1)) (builtins.length path - 1);
     in
       if builtins.hasAttr key config
-      then collectDefsAtPath rest config.${key} file provenance authorization
+      then collectDefsAtPath rest config.${key} file provenance
       else []
     else [];
 
@@ -668,19 +665,25 @@
     # provisioning writes can be rejected and input identity remains auditable.
     runtimeModules ? [],
     # Config modules fetched from authenticated package outputs. Each record is
-    # `{ name; module; configRoot; outputs; authorization; }`; every field is
-    # resolver supplied from authenticated package metadata. `module` must be
+    # `{ name; module; configRoot; outputs; }`; every field is resolver supplied
+    # from authenticated package metadata. `module` must be
     # `<configRoot>/module.nix`; recursive imports must remain path literals
     # below that root. `outputs` contains only `self` and authenticated runtime
     # dependency outputs, replacing ambient package-set traversal. Definitions
     # from the module and its imports are stamped `package:<name>` for artifact
-    # ownership and checked against that exact authorization before merging.
+    # ownership. Write authority comes from the declarations and definition
+    # provenance in this same module graph.
     packageModules ? [],
+    # Resolver-selected provider modules use the same authenticated package
+    # provenance and confined import rules. Unlike a package's canonical
+    # `module.nix`, their entry path comes from the selected implementation's
+    # signed ModuleLocator and may lie anywhere below its authenticated root.
+    selectedProviderModules ? [],
     # Nested submodule evaluation retains resolver provenance for priority and
     # ownership, but the outer evaluation already validates the same authored
     # config at its full absolute option path. Re-checking a nested relative
     # path would lose that prefix and reject valid writes.
-    enforcePackageAuthorization ? true,
+    enforcePackageAuthorship ? true,
     # Stage-1 package selection deliberately evaluates against only the
     # desired-package declaration, before selected package modules contribute
     # their option schemas. The resolver disables this check only for that
@@ -766,22 +769,32 @@
         config._module.args = extraArgs // specialArgs;
       };
 
-      # `collectModules provenance authorization importRoot
-      # propagateToImports mods` recursively
+      # `collectModules provenance importRoot moduleOutputs propagateToImports
+      # mods` recursively
       # evaluates modules and stamps each result with resolver-controlled
       # provenance. Package imports retain their authenticated package owner;
       # host imports fall back to `@base`, preventing an operator module from
       # laundering an arbitrary import into tier 75. Module-authored
       # `_provenance` is rejected by `evalModule` before this point.
-      visibleConfigFor = provenance: authorization:
+      visibleConfigFor = provenance:
         if !strings.hasPrefix "package:" provenance
         then finalConfig
         else let
           package = strings.removePrefix "package:" provenance;
-          allowedRoots =
-            [package]
-            ++ authorization.owns
-            ++ builtins.attrNames authorization.contributes;
+          declaredRoots = lists.unique (builtins.map
+            (decl: builtins.head decl.path)
+            (builtins.filter
+              (decl:
+                decl.path
+                != []
+                && ownerForProvenance (decl.provenance or "@base") == package)
+              allOptionDecls));
+          contributableRoots = lists.unique (builtins.map
+            (decl: builtins.head decl.path)
+            (builtins.filter
+              (decl: decl.path != [] && (decl.option.contributable or false))
+              allOptionDecls));
+          allowedRoots = declaredRoots ++ contributableRoots;
           foreignPackageRoots =
             builtins.filter
             (root: !builtins.elem root allowedRoots)
@@ -825,13 +838,13 @@
           )
           imports;
 
-      collectModules = provenance: authorization: importRoot: moduleOutputs: propagateToImports: mods:
+      collectModules = provenance: importRoot: moduleOutputs: packageIdentity: propagateToImports: mods:
         builtins.concatLists (
           builtins.map (
             mod: let
               evaled =
                 evalModule {
-                  config = visibleConfigFor provenance authorization;
+                  config = visibleConfigFor provenance;
                   options = optionsTree;
                   pkgs =
                     if moduleOutputs == null
@@ -846,6 +859,19 @@
                       if moduleOutputs == null
                       then {}
                       else {outputs = moduleOutputs;}
+                    )
+                    // (
+                      if packageIdentity == null
+                      then {}
+                      else {
+                        packageName = packageIdentity.name;
+                        packageVersion = packageIdentity.version;
+                      }
+                      // (
+                        if packageIdentity ? artifactLocatorFor
+                        then {inherit (packageIdentity) artifactLocatorFor;}
+                        else {}
+                      )
                     );
                 }
                 mod;
@@ -862,11 +888,6 @@
               )
               (
                 if propagateToImports
-                then authorization
-                else null
-              )
-              (
-                if propagateToImports
                 then importRoot
                 else null
               )
@@ -875,42 +896,19 @@
                 then moduleOutputs
                 else null
               )
+              (
+                if propagateToImports
+                then packageIdentity
+                else null
+              )
               propagateToImports
               (confinedPackageImports provenance importRoot evaled.imports)
               ++ [
-                (evaled
-                  // {
-                    _provenance = provenance;
-                    _authorization = authorization;
-                  })
+                (evaled // {_provenance = provenance;})
               ]
           )
           mods
         );
-
-      validAuthorization = auth:
-        builtins.isAttrs auth
-        && (builtins.attrNames auth
-          == ["contributes" "owns"]
-          || builtins.attrNames auth == ["artifacts" "contributes" "owns"])
-        && builtins.isList auth.owns
-        && builtins.all (root: builtins.isString root && builtins.match "[a-zA-Z0-9][a-zA-Z0-9_-]*" root != null) auth.owns
-        && builtins.isAttrs auth.contributes
-        && builtins.all (paths:
-          builtins.isList paths
-          && builtins.all (path:
-            builtins.isString path
-            && path != ""
-            && builtins.match "[a-zA-Z0-9][a-zA-Z0-9_.-]*" path != null)
-          paths)
-        (builtins.attrValues auth.contributes)
-        && builtins.isAttrs (auth.artifacts or {})
-        && (builtins.attrNames (auth.artifacts or {})
-          == []
-          || builtins.attrNames auth.artifacts == ["etc" "groups" "units" "users"])
-        && builtins.all
-        (values: builtins.isList values && builtins.all builtins.isString values)
-        (builtins.attrValues (auth.artifacts or {}));
 
       validPackageOutputs = outputs:
         builtins.isAttrs outputs
@@ -922,6 +920,34 @@
         (path: builtins.isString path && strings.hasPrefix "/nix/store/" path)
         (builtins.attrValues outputs.dependencies);
 
+      validArtifactReference = reference:
+        builtins.isAttrs reference
+        && builtins.attrNames reference == ["closure" "content" "nar_hash" "store_path"]
+        && builtins.all builtins.isString (builtins.attrValues reference)
+        && strings.hasPrefix "/nix/store/" reference.store_path;
+      validArtifactLocators = locators:
+        builtins.isAttrs locators
+        && builtins.all
+        (locator:
+          builtins.isAttrs locator
+          && builtins.attrNames locator == ["artifactReference" "path"]
+          && validArtifactReference locator.artifactReference
+          && builtins.isString locator.path
+          && strings.hasPrefix "/nix/store/" locator.path)
+        (builtins.attrValues locators);
+      artifactLocatorFor = package: locators: selector: let
+        checked =
+          if
+            !builtins.isAttrs selector
+            || builtins.attrNames selector != ["_type" "output" "package"]
+            || (selector._type or null) != "aos-package-output-selector"
+          then throw "evalModules: package '${package}' requested an invalid artifact selector"
+          else builtins.removeAttrs selector ["_type"];
+        key = builtins.toJSON checked;
+      in
+        locators.${key}
+        or (throw "evalModules: package '${package}' requested an artifact selector outside its authenticated view");
+
       validatedPackageModules = builtins.map (record: let
         keys =
           if builtins.isAttrs record
@@ -932,13 +958,15 @@
         if
           !builtins.isAttrs record
           || !(keys
-            == ["authorization" "module" "name"]
-            || keys == ["authorization" "configRoot" "module" "name" "outputs"])
-        then throw "evalModules: packageModules entries must contain authorization/module/name or the resolver-authenticated configRoot/outputs form"
+            == ["module" "name"]
+            || keys == ["module" "name" "version"]
+            || keys == ["module" "name" "outputs"]
+            || keys == ["module" "name" "outputs" "version"]
+            || keys == ["configRoot" "module" "name" "outputs"]
+            || keys == ["configRoot" "module" "name" "outputs" "version"])
+        then throw "evalModules: packageModules entries must contain module/name, optionally with outputs, or the resolver-authenticated configRoot/outputs form"
         else if !builtins.isString record.name || builtins.match "[a-z0-9][a-z0-9._+-]*" record.name == null
         then throw "evalModules: invalid resolver-supplied package provenance name"
-        else if !validAuthorization record.authorization
-        then throw "evalModules: invalid resolver-supplied authorization for package '${record.name}'"
         else if
           configRoot
           != null
@@ -946,35 +974,76 @@
             || !builtins.isPath record.module
             || builtins.toString record.module != "${builtins.toString configRoot}/module.nix")
         then throw "evalModules: package '${record.name}' module is not module.nix beneath its authenticated configRoot"
-        else if configRoot != null && !validPackageOutputs record.outputs
+        else if record ? outputs && !validPackageOutputs record.outputs
         then throw "evalModules: package '${record.name}' has invalid resolver-supplied outputs"
-        else
-          record
-          // {
-            inherit configRoot;
-            authorization =
-              record.authorization
-              // {
-                artifacts =
-                  record.authorization.artifacts
-                  or {
-                    etc = [];
-                    groups = [];
-                    units = [];
-                    users = [];
-                  };
-              };
-            outputs = record.outputs or null;
-          })
+        else if !builtins.isString (record.version or "0")
+        then throw "evalModules: package '${record.name}' has invalid resolver-supplied version"
+        else record // {inherit configRoot;} // {outputs = record.outputs or null;} // {version = record.version or "0";})
       packageModules;
 
-      packageOwnedRoots = lists.unique (builtins.concatLists (builtins.map
-        (record: [record.name] ++ record.authorization.owns)
-        validatedPackageModules));
+      validatedProviderModules = builtins.map (record: let
+        keys =
+          if builtins.isAttrs record
+          then builtins.attrNames record
+          else [];
+        configRoot = record.configRoot or null;
+        root =
+          if builtins.isPath configRoot
+          then builtins.toString configRoot
+          else "";
+        modulePath =
+          if builtins.isPath (record.module or null)
+          then builtins.toString record.module
+          else "";
+      in
+        if
+          !builtins.isAttrs record
+          || keys != ["artifactLocators" "configRoot" "module" "name" "outputs" "packageVersion"]
+        then throw "evalModules: selectedProviderModules entries must contain exactly artifactLocators/configRoot/module/name/outputs/packageVersion"
+        else if !builtins.isString record.name || builtins.match "[a-z0-9][a-z0-9._+-]*" record.name == null
+        then throw "evalModules: invalid resolver-supplied provider package provenance name"
+        else if
+          root
+          == ""
+          || modulePath == ""
+          || !strings.hasPrefix "${root}/" modulePath
+          || !builtins.pathExists record.module
+        then throw "evalModules: selected provider module for '${record.name}' escapes or is absent from its authenticated root"
+        else if !validPackageOutputs record.outputs
+        then throw "evalModules: selected provider module for '${record.name}' has invalid resolver-supplied outputs"
+        else if !builtins.isString record.packageVersion || record.packageVersion == ""
+        then throw "evalModules: selected provider module for '${record.name}' has an invalid resolver-supplied version"
+        else if !validArtifactLocators record.artifactLocators
+        then throw "evalModules: selected provider module for '${record.name}' has invalid resolver-supplied artifact locators"
+        else record)
+      selectedProviderModules;
+
+      packageOwnedRoots = lists.unique (builtins.map
+        (decl: builtins.head decl.path)
+        (builtins.filter
+          (decl:
+            decl.path
+            != []
+            && strings.hasPrefix "package:" (decl.provenance or ""))
+          allOptionDecls));
 
       evaluatedPackageModules = builtins.concatLists (builtins.map (record:
-        collectModules "package:${record.name}" record.authorization record.configRoot record.outputs true [record.module])
+        collectModules "package:${record.name}" record.configRoot record.outputs {inherit (record) name version;} true [record.module])
       validatedPackageModules);
+
+      evaluatedProviderModules = builtins.concatLists (builtins.map (record:
+        collectModules
+        "package:${record.name}"
+        record.configRoot
+        record.outputs
+        {
+          inherit (record) name;
+          version = record.packageVersion;
+          artifactLocatorFor = artifactLocatorFor record.name record.artifactLocators;
+        }
+        true
+        [record.module])
+      validatedProviderModules);
 
       # Image modules carry `@base`; operator (host.nix) modules carry
       # `@host`. Appended last so their tier-75 defs also win any
@@ -982,14 +1051,13 @@
       evaluatedModules =
         collectModules "@base" null null null false ([internalModule] ++ modules)
         ++ evaluatedPackageModules
+        ++ evaluatedProviderModules
         ++ collectModules "@host" null null null false operatorModules
         ++ collectModules "@runtime" null null null false runtimeModules;
 
-      # Enumerate the concrete leaf paths actually authored by each package
-      # module. The authenticated metadata is only an authorization claim; it
-      # is never accepted as proof that the module stayed within that claim.
-      # Imports retain the parent's resolver stamp and authorization, and a
-      # forged `_file` is deliberately irrelevant.
+      # Enumerate the concrete leaf paths authored by each package module.
+      # Authority is derived from declarations in this graph, while imports
+      # retain the parent's resolver stamp. A forged `_file` is irrelevant.
       configLeafPaths = path: value:
         if isMkIf value
         then
@@ -1015,9 +1083,25 @@
         (builtins.genList (i: i) (builtins.length prefix));
 
       # Package modules may contribute only to these module-engine diagnostic
-      # channels without claiming a package/shared root. They are typed and
-      # consumed by the engine itself; they cannot materialize runtime state.
+      # channels without declaring their options. They are typed and consumed
+      # by the engine itself; they cannot materialize runtime state.
       packageEngineContributionRoots = ["assertions" "warnings"];
+
+      declarationsContaining = path:
+        builtins.filter
+        (decl: decl.path != [] && pathHasPrefix decl.path path)
+        allOptionDecls;
+
+      nearestDeclaration = path: let
+        candidates = declarationsContaining path;
+        ordered =
+          builtins.sort
+          (left: right: builtins.length left.path > builtins.length right.path)
+          candidates;
+      in
+        if ordered == []
+        then null
+        else builtins.head ordered;
 
       authorizePackagePath = module: path: let
         package = strings.removePrefix "package:" module._provenance;
@@ -1025,50 +1109,32 @@
           if path == []
           then ""
           else builtins.head path;
-        relative =
-          if builtins.length path <= 1
-          then []
-          else
-            builtins.genList
-            (i: builtins.elemAt path (i + 1))
-            (builtins.length path - 1);
-        owns = [package] ++ module._authorization.owns;
-        contributed = module._authorization.contributes.${root} or [];
-        allowedContribution =
-          builtins.any
-          (declared: pathHasPrefix (strings.splitString "." declared) relative)
-          contributed;
+        declaration = nearestDeclaration path;
+        declarationOwner =
+          if declaration == null
+          then null
+          else ownerForProvenance (declaration.provenance or "@base");
         foreignEnable =
-          relative
-          != []
-          && builtins.elemAt relative (builtins.length relative - 1) == "enable";
+          declarationOwner
+          != package
+          && path != []
+          && builtins.elemAt path (builtins.length path - 1) == "enable";
         pathStr = builtins.concatStringsSep "." path;
-        artifacts = module._authorization.artifacts;
-        exactArtifact =
-          if builtins.length path >= 3 && lists.take 2 path == ["environment" "etc"]
-          then builtins.elem (builtins.elemAt path 2) artifacts.etc
-          else if builtins.length path >= 3 && lists.take 2 path == ["systemd" "services"]
-          then builtins.elem "${builtins.elemAt path 2}.service" artifacts.units
-          else if builtins.length path >= 4 && lists.take 3 path == ["aos" "users" "users"]
-          then builtins.elem (builtins.elemAt path 3) artifacts.users
-          else if builtins.length path >= 4 && lists.take 3 path == ["aos" "users" "groups"]
-          then builtins.elem (builtins.elemAt path 3) artifacts.groups
-          else false;
       in
         if builtins.elem root packageEngineContributionRoots
         then true
-        else if exactArtifact
-        then true
-        else if builtins.elem root owns
+        else if declaration == null
+        then throw "evalModules: package '${package}' writes undeclared option '${pathStr}'"
+        else if declarationOwner == package
         then true
         else if foreignEnable
         then throw "evalModules: package '${package}' may not write foreign enable path '${pathStr}'"
-        else if allowedContribution
+        else if declaration.option.contributable or false
         then true
-        else throw "evalModules: package '${package}' writes unauthorized path '${pathStr}'";
+        else throw "evalModules: package '${package}' writes non-contributable option '${pathStr}' declared by '${declarationOwner}'";
 
-      packageAuthorizationCheck =
-        if !enforcePackageAuthorization
+      packageAuthorshipCheck =
+        if !enforcePackageAuthorship
         then true
         else
           builtins.foldl'
@@ -1127,15 +1193,18 @@
 
       authorizePackageDeclaration = decl: let
         package = strings.removePrefix "package:" decl.provenance;
-        root =
-          if decl.path == []
-          then ""
-          else builtins.head decl.path;
-        owns = [package] ++ decl.authorization.owns;
+        samePath =
+          builtins.filter
+          (candidate: candidate.path == decl.path)
+          allOptionDecls;
+        declaringOwners = lists.unique (builtins.map
+          (candidate: ownerForProvenance (candidate.provenance or "@base"))
+          samePath);
+        pathStr = builtins.concatStringsSep "." decl.path;
       in
-        if builtins.elem root owns
+        if declaringOwners == [package]
         then true
-        else throw "evalModules: package '${package}' declares unauthorized foreign option '${builtins.concatStringsSep "." decl.path}'";
+        else throw "evalModules: package '${package}' does not uniquely own declaration '${pathStr}'";
 
       packageDeclarationCheck =
         builtins.foldl'
@@ -1396,7 +1465,7 @@
       # --- Phase 2: Collect all option declarations ---
       allOptionDecls = builtins.concatLists (
         builtins.map (m:
-          collectOptions [] m.options m._file (m._provenance or "@base") (m._authorization or null))
+          collectOptions [] m.options m._file (m._provenance or "@base"))
         evaluatedModules
       );
 
@@ -1412,7 +1481,7 @@
       # --- Phase 3: Collect config definitions for each option ---
       configForOption = decl:
         builtins.concatLists (
-          builtins.map (m: collectDefsAtPath decl.path m.config m._file (m._provenance or null) (m._authorization or null)) evaluatedModules
+          builtins.map (m: collectDefsAtPath decl.path m.config m._file (m._provenance or null)) evaluatedModules
         );
 
       # --- Phase 4: Merge config values for each option ---
@@ -1509,7 +1578,6 @@
                     {
                       file = "<option-default:${pathStr}>";
                       provenance = decl.provenance or "@base";
-                      authorization = decl.authorization or null;
                       value =
                         tagDefaultDependency
                         (decl.provenance or "@base")
@@ -1592,7 +1660,7 @@
       freeformType = finalConfig._module.freeformType or null;
       isStrict = finalConfig._module.strict or false;
 
-      configWithFreeform = builtins.seq runtimeProvisioningCheck (builtins.seq runtimeDeclarationCheck (builtins.seq packageDeclarationCheck (builtins.seq packageAuthorizationCheck (
+      configWithFreeform = builtins.seq runtimeProvisioningCheck (builtins.seq runtimeDeclarationCheck (builtins.seq packageDeclarationCheck (builtins.seq packageAuthorshipCheck (
         if freeformType == null && !isStrict
         then finalConfig
         else let
@@ -1726,7 +1794,7 @@
       in
         evalModules ({
             modules = modules ++ extraModules;
-            inherit pkgs lib extraArgs specialArgs operatorModules packageModules enforcePackageAuthorization enforceRuntimeDeclarations;
+            inherit pkgs lib extraArgs specialArgs operatorModules packageModules enforcePackageAuthorship enforceRuntimeDeclarations;
           }
           // builtins.removeAttrs args ["modules"]);
 
@@ -1785,6 +1853,9 @@
           readOnly = option.readOnly or false;
           contributable = option.contributable or false;
           owner = ownerForProvenance (decl.provenance or "@base");
+          deprecated = option.deprecated or null;
+          replacement = option.replacement or null;
+          source = decl.file;
         }
       ) (builtins.attrNames optionMap);
 

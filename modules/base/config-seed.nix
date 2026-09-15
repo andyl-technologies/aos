@@ -30,6 +30,7 @@
       before = [
         "aos-config-seed.service"
         "etc-overlay-setup.service"
+        "initrd-fs.target"
         "initrd-switch-root.target"
       ];
       # Immutable identity and every runtime dependency resolve through the
@@ -58,7 +59,7 @@
 
     boot.initrd.systemd.services."aos-config-seed" = {
       description = "Seed the per-generation /etc lower for on-host configuration";
-      wantedBy = ["initrd-fs.target"];
+      requiredBy = ["initrd-fs.target"];
       before = [
         "etc-overlay-setup.service"
         "initrd-switch-root.target"

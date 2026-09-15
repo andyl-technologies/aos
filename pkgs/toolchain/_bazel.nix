@@ -43,6 +43,7 @@
   # Major version string for the version check test (e.g. "7.7", "8.6", "9.0")
   versionCheck ? builtins.substring 0 3 version,
 }: let
+  isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   needsDarwinMdns = builtins.compareVersions version "8.0.0" >= 0;
   needsRulesJavaRuntime = builtins.compareVersions version "9.0.0" >= 0;
@@ -87,99 +88,99 @@
       }
     else null;
   buildBash =
-    if isDarwinCross
+    if isCross
     then buildPackages.bash
     else bash;
   buildCoreutils =
-    if isDarwinCross
+    if isCross
     then buildPackages.coreutils
     else coreutils;
   buildWhich =
-    if isDarwinCross
+    if isCross
     then buildPackages.which
     else which;
   buildZip =
-    if isDarwinCross
+    if isCross
     then buildPackages.zip
     else zip;
   buildUnzip =
-    if isDarwinCross
+    if isCross
     then buildPackages.unzip
     else unzip;
   buildGawk =
-    if isDarwinCross
+    if isCross
     then buildPackages.gawk
     else gawk;
   buildPython3 =
-    if isDarwinCross
+    if isCross
     then buildPackages.python3
     else python3;
   buildOpenjdk =
-    if isDarwinCross
+    if isCross
     then buildPackages.openjdk-21
     else openjdk-21;
   buildGcc =
-    if isDarwinCross
+    if isCross
     then buildPackages.gcc
     else gcc;
   buildBinutils =
-    if isDarwinCross
+    if isCross
     then buildPackages.binutils
     else binutils;
   buildGrep =
-    if isDarwinCross
+    if isCross
     then buildPackages.grep
     else grep;
   buildGzip =
-    if isDarwinCross
+    if isCross
     then buildPackages.gzip
     else gzip;
   buildPatch =
-    if isDarwinCross
+    if isCross
     then buildPackages.patch
     else patch;
   buildDiffutils =
-    if isDarwinCross
+    if isCross
     then buildPackages.diffutils
     else diffutils;
   buildFindutils =
-    if isDarwinCross
+    if isCross
     then buildPackages.findutils
     else findutils;
   buildSed =
-    if isDarwinCross
+    if isCross
     then buildPackages.sed
     else sed;
   buildTar =
-    if isDarwinCross
+    if isCross
     then buildPackages.tar
     else tar;
   buildXz =
-    if isDarwinCross
+    if isCross
     then buildPackages.xz
     else xz;
   buildFile =
-    if isDarwinCross
+    if isCross
     then buildPackages.file
     else file;
   buildPatchelf =
-    if isDarwinCross
+    if isCross
     then buildPackages.patchelf
     else patchelf;
   buildBazelBootstrap =
-    if isDarwinCross
+    if isCross
     then buildPackages.bazel-bootstrap
     else bazel-bootstrap;
   buildBootstrapTools =
-    if isDarwinCross
+    if isCross
     then buildPackages.bootstrapTools
     else bootstrapTools;
   buildGccLibs =
-    if isDarwinCross
+    if isCross
     then buildPackages.gcc-libs
     else gcc-libs;
   buildLlvm =
-    if isDarwinCross
+    if isCross
     then buildPackages.llvm
     else llvm;
   darwinBazelCpu =
@@ -433,7 +434,7 @@
     ++ lib.optional isDarwinCross llvm
   );
   buildToolsPath =
-    if isDarwinCross
+    if isCross
     then
       lib.makeBinPath [
         buildBash
@@ -1436,7 +1437,7 @@ in
             export HOME=$(mktemp -d)
             export JAVA_HOME="${buildOpenjdk}"
             export EMBED_LABEL="${version}- (@non-git)"
-            export PATH="${lib.optionalString isDarwinCross "${buildPackages.cc}/bin:"}${buildToolsPath}:$PATH"
+            export PATH="${lib.optionalString isCross "${buildPackages.cc}/bin:"}${buildToolsPath}:$PATH"
 
             # Unset C_INCLUDE_PATH so Bazel's CC toolchain auto-detection doesn't
             # pick up bootstrapTools/include as a -I flag, which breaks

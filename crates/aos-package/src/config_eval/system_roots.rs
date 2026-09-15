@@ -49,6 +49,27 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::types::{ConfigModuleMeta, ModuleAbiCompat, OwnedRoot};
 
+/// Resolves one authenticated current package ability module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedAbilityModule {
+    /// Registry that authenticated this package version.
+    pub registry: String,
+    /// Signed-release receipt associated with the extracted registry tree.
+    pub release_trust: Option<crate::registry::ReleaseTrustReceipt>,
+    /// Hash of the signed store subgraph rooted at the module artifact.
+    pub realization: Option<String>,
+    /// Package name.
+    pub package: String,
+    /// Package version.
+    pub version: String,
+    /// Target platform.
+    pub platform: String,
+    /// Authenticated runtime payload output.
+    pub runtime_output: String,
+    /// Canonical signed package document containing the sole module locator.
+    pub document: aos_ability_model::PackageDocument,
+}
+
 /// A package configuration module resolved by name from registry metadata.
 ///
 /// This is the local, per-package replacement for a lookup that used to hit the
@@ -89,6 +110,38 @@ pub struct ResolvedConfigModule<'a> {
 /// [`RegistrySet`]: crate::registry::RegistrySet
 /// [`PackageMeta`]: crate::types::PackageMeta
 pub trait ConfigModuleResolver {
+    /// Returns the current signed ability module for `package`, when present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when signed ability metadata or its canonical package
+    /// document is malformed or disagrees with the package coordinate.
+    fn ability_module(&self, _package: &str) -> anyhow::Result<Option<ResolvedAbilityModule>> {
+        Ok(None)
+    }
+
+    /// Returns an exact current ability module matching optional installed pins.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::ability_module`].
+    fn ability_module_exact(
+        &self,
+        package: &str,
+        version: Option<&str>,
+        runtime_output: Option<&str>,
+    ) -> anyhow::Result<Option<ResolvedAbilityModule>> {
+        let Some(resolved) = self.ability_module(package)? else {
+            return Ok(None);
+        };
+        if version.is_some_and(|want| want != resolved.version)
+            || runtime_output.is_some_and(|want| want != resolved.runtime_output)
+        {
+            return Ok(None);
+        }
+        Ok(Some(resolved))
+    }
+
     /// Returns `package`'s config module, or `None` when the registry knows no
     /// such package or the package ships no config module.
     fn config_module(&self, package: &str) -> Option<ResolvedConfigModule<'_>>;

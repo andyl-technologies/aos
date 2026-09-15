@@ -1,0 +1,851 @@
+//! Provider-authored construction of checked finite effect plans.
+//!
+//! The transition planner invokes each selected pure implementation exact
+//! transition entry against scoped current and desired state, lowers explicit
+//! checked-binding boundaries, and validates the complete finite effect graph.
+//! This module performs no runtime effects.
+
+mod context;
+mod graph;
+mod snapshot;
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{self, Write};
+
+use aos_ability_model::{ABILITY_LIMITS_V1, AbilityValue, InstanceId, ResourceId};
+use aos_ability_validate::{
+    BindingAuthorityKind, CheckedEffectPlan, CheckedTransitionAuthority, ValidationContext,
+    ValidationErrors,
+};
+use aos_contract::Sha256Digest;
+use serde::Serialize;
+use thiserror::Error;
+
+use crate::{CompositionEvaluator, VerifiedPlanningSnapshot};
+
+use context::{
+    LinkedCurrentAuthorityDocument, LinkedCurrentResourceObservation, LinkedCurrentResourceState,
+    bounded_evaluation_message, controller_union, encode_ability_value, resource_changes,
+    scoped_changes_and_controllers, scoped_desired_state, scoped_observations,
+};
+use graph::{
+    AuthoredTransitionFragment, index_packages, merge_fragments, operation_scope,
+    package_for_group, pure_transition, transition_groups, validate_fragment,
+};
+
+pub use context::{
+    AuthorizedTransitionBinding, RUNTIME_OBSERVATIONS_SCHEMA, ResourceChange, ResourceChangeKind,
+    RuntimeResourceHealth, RuntimeResourceObservation, RuntimeResourceState, ScopedDesiredState,
+    ScopedObservations, TRANSITION_CONTEXT_SCHEMA, TransitionBindingAuthority, TransitionContext,
+    TransitionReconciliation,
+};
+pub use graph::{
+    TRANSITION_FRAGMENT_SCHEMA, TransitionExport, TransitionExportKind, TransitionFragment,
+    TransitionHandoff, TransitionImport, TransitionImportDirection, TransitionLink,
+};
+pub use snapshot::{
+    TRANSITION_SNAPSHOT_MAX_BYTES, TRANSITION_SNAPSHOT_SCHEMA, TransitionEvaluation,
+    TransitionEvaluationResult, TransitionReplayInputs, TransitionSnapshot,
+    TransitionSnapshotError, VerifiedTransitionPlan,
+};
+
+/// Supplies the independently verified planning states used for a transition.
+pub struct TransitionInputs<'a> {
+    /// Supplies the prior verified planning state, absent for first activation.
+    ///
+    /// This proves prior identity and desired state. It does not keep historical
+    /// grants live: teardown effects still require exact bindings authorized by
+    /// the desired checked plan.
+    pub current: Option<&'a VerifiedPlanningSnapshot>,
+    /// Supplies independently authenticated fresh authority for prior bindings.
+    pub authority: Option<&'a CheckedTransitionAuthority>,
+    /// Supplies a fresh, protected live classification when repairing drift.
+    pub reconciliation: Option<&'a TransitionReconciliation>,
+}
+
+/// Bounds pure transition evaluation and the merged effect graph.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransitionLimits {
+    /// Limits selected pure transition entries evaluated once per implementation.
+    pub max_evaluations: u32,
+    /// Limits aggregate canonical transition context and fragment bytes.
+    pub max_evaluation_bytes: u64,
+    /// Limits operations, decisions, and merges across the complete plan.
+    pub max_graph_nodes: u32,
+    /// Limits typed dependency edges across the complete plan.
+    pub max_graph_edges: u32,
+}
+
+impl Default for TransitionLimits {
+    fn default() -> Self {
+        Self {
+            max_evaluations: ABILITY_LIMITS_V1.max_graph_nodes,
+            max_evaluation_bytes: ABILITY_LIMITS_V1.max_document_bytes,
+            max_graph_nodes: ABILITY_LIMITS_V1.max_graph_nodes,
+            max_graph_edges: ABILITY_LIMITS_V1.max_graph_edges,
+        }
+    }
+}
+
+/// Reports why provider-authored transition construction could not be trusted.
+#[derive(Debug, Error)]
+pub enum TransitionError {
+    /// A retained exact package or pure transition entry is unavailable.
+    #[error("pure transition implementation for provider {provider:?} is unavailable")]
+    MissingImplementation {
+        /// Identifies the selected provider whose implementation is missing.
+        provider: InstanceId,
+    },
+    /// A prior pure provider lacks matching authority in the desired checked plan.
+    #[error("teardown authority for prior provider {provider:?} is absent from the desired plan")]
+    MissingTeardownAuthority {
+        /// Identifies the provider that still needs an authorized transition.
+        provider: InstanceId,
+    },
+    /// The sealed teardown authority commits to different planning inputs.
+    #[error("transition authority does not match the desired and prior planning snapshots")]
+    MismatchedTeardownAuthority,
+    /// A restricted transition constructor rejected its exact input.
+    #[error("transition evaluation failed for provider {provider:?}: {message}")]
+    Evaluation {
+        /// Identifies the provider whose entry failed.
+        provider: InstanceId,
+        /// Retains the bounded evaluator failure message.
+        message: String,
+        /// Retains the exact failed evaluator exchange for audit and retry.
+        evaluation: Box<TransitionEvaluation>,
+    },
+    /// A constructor returned malformed or unauthorized graph content.
+    #[error("invalid transition fragment from provider {provider:?}: {reason}")]
+    InvalidFragment {
+        /// Identifies the provider that authored the rejected fragment.
+        provider: InstanceId,
+        /// Describes the first rejected invariant.
+        reason: String,
+    },
+    /// Transition context or fragment encoding failed.
+    #[error("transition encoding failed: {0}")]
+    Encoding(String),
+    /// Aggregate transition evaluation exceeded a configured bound.
+    #[error("transition construction exceeded the {limit} limit")]
+    Limit {
+        /// Names the exhausted deterministic bound.
+        limit: &'static str,
+    },
+    /// The merged portable graph failed complete semantic validation.
+    #[error("constructed effect plan failed semantic validation: {0}")]
+    Validation(#[source] ValidationErrors),
+}
+
+/// Constructs checked effect plans from successful fixed-point composition.
+pub struct TransitionPlanner<'a> {
+    context: &'a ValidationContext,
+    limits: TransitionLimits,
+}
+
+impl<'a> TransitionPlanner<'a> {
+    /// Constructs a planner over one validated exact interface catalog.
+    #[must_use]
+    pub fn new(context: &'a ValidationContext) -> Self {
+        Self {
+            context,
+            limits: TransitionLimits::default(),
+        }
+    }
+
+    /// Overrides transition evaluation and graph-construction bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any configured bound is zero or exceeds the shared
+    /// version-1 graph ceiling.
+    pub fn with_limits(mut self, limits: TransitionLimits) -> Result<Self, TransitionError> {
+        if limits.max_evaluations == 0
+            || limits.max_evaluation_bytes == 0
+            || limits.max_graph_nodes == 0
+            || limits.max_graph_edges == 0
+            || limits.max_evaluations > ABILITY_LIMITS_V1.max_graph_nodes
+            || limits.max_evaluation_bytes > ABILITY_LIMITS_V1.max_document_bytes
+            || limits.max_graph_nodes > ABILITY_LIMITS_V1.max_graph_nodes
+            || limits.max_graph_edges > ABILITY_LIMITS_V1.max_graph_edges
+        {
+            return Err(TransitionError::Limit {
+                limit: "configured transition",
+            });
+        }
+        self.limits = limits;
+        Ok(self)
+    }
+
+    /// Evaluates exact pure transition entries and returns a sealed checked plan.
+    ///
+    /// The outcome must come from successful fixed-point composition against
+    /// this exact interface catalog. The evaluator receives only scoped state,
+    /// bindings, changes, and the operation-key scope assigned to its provider.
+    /// No runtime effect occurs during construction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing retained implementation, evaluator
+    /// failure, malformed or out-of-scope fragment, exhausted aggregate bound,
+    /// or any complete effect-plan validation diagnostic.
+    pub fn plan(
+        &self,
+        desired: &VerifiedPlanningSnapshot,
+        inputs: TransitionInputs<'_>,
+        evaluator: &mut impl CompositionEvaluator,
+    ) -> Result<VerifiedTransitionPlan, TransitionError> {
+        let (checked_effect, evaluations) = self.construct(desired, &inputs, evaluator)?;
+        let snapshot = TransitionSnapshot::from_construction(
+            desired,
+            inputs.current,
+            inputs.authority,
+            inputs.reconciliation,
+            evaluations,
+            &checked_effect,
+        )
+        .map_err(|error| TransitionError::Encoding(error.to_string()))?;
+        let snapshot_digest = snapshot
+            .digest()
+            .map_err(|error| TransitionError::Encoding(error.to_string()))?;
+
+        Ok(VerifiedTransitionPlan {
+            snapshot_digest,
+            snapshot,
+            checked_effect,
+        })
+    }
+
+    fn construct(
+        &self,
+        desired: &VerifiedPlanningSnapshot,
+        inputs: &TransitionInputs<'_>,
+        evaluator: &mut impl CompositionEvaluator,
+    ) -> Result<(CheckedEffectPlan, Vec<TransitionEvaluation>), TransitionError> {
+        let outcome = desired.outcome();
+        self.validate_authority_inputs(desired, inputs)?;
+        self.validate_reconciliation_inputs(desired, inputs)?;
+        let binding_plan = inputs.authority.map_or_else(
+            || desired.checked_binding(),
+            CheckedTransitionAuthority::binding_plan,
+        );
+        let packages = index_packages(binding_plan.packages())?;
+        let groups = transition_groups(desired, inputs.current, inputs.authority)?;
+        let changes = resource_changes(
+            outcome
+                .resolution
+                .checked
+                .environment()
+                .resources
+                .as_slice(),
+            outcome
+                .resolution
+                .checked
+                .desired_state()
+                .resources
+                .as_slice(),
+            inputs
+                .reconciliation
+                .map(|reconciliation| reconciliation.observations.as_slice()),
+        );
+        let controllers = controller_union(outcome);
+        let mut budget = TransitionBudget::default();
+        let mut fragments = Vec::new();
+        let mut evaluations = Vec::new();
+        let mut evaluated_packages = BTreeMap::new();
+
+        for group in groups.into_values() {
+            budget.begin(self.limits)?;
+            let package = package_for_group(&group, &packages)?;
+            let Some((implementation, module, transition_entry)) =
+                pure_transition(&group, package)?
+            else {
+                continue;
+            };
+            let operation_scope = operation_scope(&group.provider, group.reference.descriptor)?;
+            let outgoing: Vec<_> = binding_plan
+                .bindings()
+                .iter()
+                .filter(|binding| {
+                    binding.request.consumer == group.provider
+                        && if group.teardown {
+                            inputs.authority.is_some_and(|authority| {
+                                authority
+                                    .document()
+                                    .teardown_bindings
+                                    .iter()
+                                    .any(|entry| entry.binding.id == binding.id)
+                            })
+                        } else {
+                            desired.checked_binding().binding(&binding.id).is_some()
+                                || (group.include_teardown
+                                    && inputs.authority.is_some_and(|authority| {
+                                        authority
+                                            .document()
+                                            .teardown_bindings
+                                            .iter()
+                                            .any(|entry| entry.binding.id == binding.id)
+                                    }))
+                        }
+                })
+                .collect();
+            let authorized_bindings = outgoing
+                .iter()
+                .map(|binding| {
+                    let authority =
+                        binding_plan.binding_authority(&binding.id).ok_or_else(|| {
+                            TransitionError::InvalidFragment {
+                                provider: group.provider.clone(),
+                                reason: "transition binding lacks a sealed authority role"
+                                    .to_string(),
+                            }
+                        })?;
+                    let authority = match authority {
+                        BindingAuthorityKind::Desired => TransitionBindingAuthority::Desired,
+                        BindingAuthorityKind::Teardown {
+                            source_binding,
+                            source_request,
+                        } => TransitionBindingAuthority::Teardown {
+                            source_binding: source_binding.clone(),
+                            source_request: source_request.clone(),
+                        },
+                    };
+                    Ok(AuthorizedTransitionBinding {
+                        binding: (*binding).clone(),
+                        authority,
+                    })
+                })
+                .collect::<Result<Vec<_>, TransitionError>>()?;
+            let (visible_changes, visible_controllers) = scoped_changes_and_controllers(
+                &group.provider,
+                &changes,
+                &controllers,
+                &authorized_bindings,
+                binding_plan.bindings(),
+            );
+            let before = inputs
+                .current
+                .map(|current| scoped_desired_state(current, &group.provider));
+            let after = scoped_desired_state(desired, &group.provider);
+            let observations = scoped_observations(desired, &group.provider);
+            let context = TransitionContext {
+                schema: TRANSITION_CONTEXT_SCHEMA.to_string(),
+                desired_planning: desired.snapshot_digest(),
+                current_planning: inputs
+                    .current
+                    .map(VerifiedPlanningSnapshot::snapshot_digest),
+                provider: group.provider.clone(),
+                interface: implementation.interface.clone(),
+                implementation: group.reference.clone(),
+                package: group.package,
+                operation_scope: operation_scope.clone(),
+                authorized_bindings,
+                teardown_provider_authority: inputs.authority.and_then(|authority| {
+                    authority
+                        .document()
+                        .teardown_providers
+                        .iter()
+                        .find(|entry| {
+                            entry.provider == group.provider
+                                && entry.implementation == group.reference
+                                && entry.package == group.package
+                        })
+                        .cloned()
+                }),
+                before,
+                after,
+                observations,
+                changes: visible_changes,
+                controllers: visible_controllers,
+            };
+            budget.preflight_context(&context, self.limits)?;
+            let input = encode_ability_value(&context)?;
+            budget.retain_bytes(input.encoded_size(), self.limits)?;
+            let output =
+                match evaluator.evaluate(&group.reference, module, &transition_entry, &input) {
+                    Ok(output) => output,
+                    Err(source) => {
+                        let message = bounded_evaluation_message(&source);
+                        let evaluation = TransitionEvaluation {
+                            provider: group.provider.clone(),
+                            implementation: group.reference.clone(),
+                            entry: transition_entry.clone(),
+                            input,
+                            result: TransitionEvaluationResult::Failed {
+                                message: message.clone(),
+                            },
+                        };
+                        return Err(TransitionError::Evaluation {
+                            provider: group.provider.clone(),
+                            message,
+                            evaluation: Box::new(evaluation),
+                        });
+                    }
+                };
+            let evaluation = TransitionEvaluation {
+                provider: group.provider.clone(),
+                implementation: group.reference.clone(),
+                entry: transition_entry.clone(),
+                input,
+                result: TransitionEvaluationResult::Returned {
+                    value: output.clone(),
+                },
+            };
+            budget.preflight_fragment_value(&output, self.limits)?;
+            budget.retain_bytes(output.encoded_size(), self.limits)?;
+            let fragment: TransitionFragment =
+                serde_json::from_value(output.into_json()).map_err(|error| {
+                    TransitionError::InvalidFragment {
+                        provider: group.provider.clone(),
+                        reason: error.to_string(),
+                    }
+                })?;
+            validate_fragment(
+                &group.provider,
+                &operation_scope,
+                group.reference.descriptor,
+                package.activation_mode,
+                &outgoing,
+                &fragment,
+                self.limits,
+            )?;
+            evaluated_packages
+                .entry(group.package)
+                .or_insert_with(|| group.provider.clone());
+            evaluations.push(evaluation);
+            fragments.push(AuthoredTransitionFragment {
+                provider: group.provider,
+                implementation: group.reference,
+                operation_scope,
+                fragment,
+            });
+        }
+
+        let document = merge_fragments(
+            self.context,
+            binding_plan,
+            inputs
+                .authority
+                .map(|authority| authority.document().provider_adoptions.as_slice())
+                .unwrap_or_default(),
+            &linked_healthy_provider_adoptions(desired, inputs.reconciliation),
+            controllers,
+            fragments,
+            &packages,
+            &evaluated_packages,
+            self.limits,
+        )?;
+        let checked_effect = match inputs.authority {
+            Some(authority) => self
+                .context
+                .validate_transition_effect_plan(document, authority),
+            None => self
+                .context
+                .validate_effect_plan(document, outcome.resolution.checked.clone()),
+        }
+        .map_err(TransitionError::Validation)?;
+
+        Ok((checked_effect, evaluations))
+    }
+
+    fn validate_authority_inputs(
+        &self,
+        desired: &VerifiedPlanningSnapshot,
+        inputs: &TransitionInputs<'_>,
+    ) -> Result<(), TransitionError> {
+        match (inputs.current, inputs.authority) {
+            (None, None) => Ok(()),
+            (None, Some(_)) => Err(TransitionError::MismatchedTeardownAuthority),
+            (Some(current), Some(authority))
+                if authority.document().desired_planning == desired.snapshot_digest()
+                    && authority.document().current_planning == current.snapshot_digest()
+                    && authority.document().desired_policy_revision
+                        == desired.checked_binding().document().policy_revision
+                    && authority.document().prior_policy_revision
+                        == current.checked_binding().document().policy_revision =>
+            {
+                if authority
+                    .document()
+                    .teardown_providers
+                    .iter()
+                    .all(|authorization| {
+                        current
+                            .outcome()
+                            .resolution
+                            .policy
+                            .enabled_providers
+                            .iter()
+                            .any(|source| {
+                                source.instance == authorization.provider
+                                    && source.implementation == authorization.implementation
+                            })
+                            && current
+                                .checked_binding()
+                                .desired_state()
+                                .instances
+                                .iter()
+                                .any(|instance| {
+                                    instance.enabled
+                                        && instance.instance == authorization.provider
+                                        && instance.package == authorization.package
+                                })
+                    })
+                {
+                    Ok(())
+                } else {
+                    Err(TransitionError::MismatchedTeardownAuthority)
+                }
+            }
+            (Some(_), Some(_)) => Err(TransitionError::MismatchedTeardownAuthority),
+            (Some(_), None) => Ok(()),
+        }
+    }
+
+    pub(crate) fn validate_reconciliation_inputs(
+        &self,
+        desired: &VerifiedPlanningSnapshot,
+        inputs: &TransitionInputs<'_>,
+    ) -> Result<(), TransitionError> {
+        let Some(reconciliation) = inputs.reconciliation else {
+            return Ok(());
+        };
+        if reconciliation.schema != RUNTIME_OBSERVATIONS_SCHEMA
+            || reconciliation.authority_epoch == 0
+            || reconciliation.sequence == 0
+            || reconciliation.max_age_millis == 0
+            || reconciliation.observations.len() > ABILITY_LIMITS_V1.max_collection_items as usize
+            || reconciliation.unsettled_provider_adoptions.len()
+                > ABILITY_LIMITS_V1.max_collection_items as usize
+        {
+            return Err(TransitionError::Encoding(
+                "runtime reconciliation input is malformed or exceeds its bound".to_string(),
+            ));
+        }
+        if reconciliation
+            .observations
+            .windows(2)
+            .any(|pair| pair[0].resource >= pair[1].resource)
+        {
+            return Err(TransitionError::Encoding(
+                "runtime reconciliation observations are not in strict resource order".to_string(),
+            ));
+        }
+        if reconciliation
+            .unsettled_provider_adoptions
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(TransitionError::Encoding(
+                "runtime reconciliation provider adoptions are not in strict resource order"
+                    .to_string(),
+            ));
+        }
+        validate_reconciliation_authority(reconciliation)?;
+
+        let desired_resources = desired
+            .outcome()
+            .desired_state
+            .resources
+            .iter()
+            .map(|revision| (&revision.resource, revision.revision))
+            .collect::<BTreeMap<_, _>>();
+        let current_resources = inputs
+            .current
+            .into_iter()
+            .flat_map(|current| &current.outcome().desired_state.resources)
+            .map(|revision| (&revision.resource, revision.revision))
+            .collect::<BTreeMap<_, _>>();
+        let expected_observations = desired_resources
+            .keys()
+            .chain(current_resources.keys())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let observed_resources = reconciliation
+            .observations
+            .iter()
+            .map(|observation| &observation.resource)
+            .collect::<BTreeSet<_>>();
+        if observed_resources != expected_observations {
+            return Err(TransitionError::Encoding(
+                "runtime reconciliation observations differ from the exact desired/current resource union"
+                    .to_string(),
+            ));
+        }
+        let mut requires_repair = !reconciliation.unsettled_provider_adoptions.is_empty();
+        for resource in &reconciliation.unsettled_provider_adoptions {
+            if !desired_resources.contains_key(resource)
+                || !current_resources.contains_key(resource)
+            {
+                return Err(TransitionError::Encoding(
+                    "runtime reconciliation provider adoption is not retained by both desired and current state"
+                        .to_string(),
+                ));
+            }
+            let matching_authorizations = inputs
+                .authority
+                .into_iter()
+                .flat_map(|authority| &authority.document().provider_adoptions)
+                .filter(|adoption| adoption.resource == *resource)
+                .count();
+            if matching_authorizations != 1 {
+                return Err(TransitionError::Encoding(
+                    "runtime reconciliation provider adoption lacks one exact sealed authority entry"
+                        .to_string(),
+                ));
+            }
+        }
+        for observation in &reconciliation.observations {
+            let desired_revision = desired_resources.get(&observation.resource);
+            if desired_revision.is_none() && !current_resources.contains_key(&observation.resource)
+            {
+                return Err(TransitionError::Encoding(
+                    "runtime reconciliation observation names a foreign resource".to_string(),
+                ));
+            }
+            requires_repair |= match (desired_revision, observation.state) {
+                (Some(_), RuntimeResourceState::Absent) => true,
+                (Some(desired_revision), RuntimeResourceState::Present { revision, health }) => {
+                    revision != *desired_revision || health != RuntimeResourceHealth::Healthy
+                }
+                (None, RuntimeResourceState::Present { .. }) => true,
+                (None, RuntimeResourceState::Absent) => false,
+            };
+        }
+        if !requires_repair {
+            return Err(TransitionError::Encoding(
+                "runtime reconciliation input does not classify any drift".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn linked_healthy_provider_adoptions(
+    desired: &VerifiedPlanningSnapshot,
+    reconciliation: Option<&TransitionReconciliation>,
+) -> BTreeSet<ResourceId> {
+    let Some(reconciliation) = reconciliation else {
+        return BTreeSet::new();
+    };
+    let desired_revisions = desired
+        .outcome()
+        .desired_state
+        .resources
+        .iter()
+        .map(|revision| (&revision.resource, revision.revision))
+        .collect::<BTreeMap<_, _>>();
+
+    reconciliation
+        .unsettled_provider_adoptions
+        .iter()
+        .filter(|resource| {
+            let Some(desired_revision) = desired_revisions.get(resource) else {
+                return false;
+            };
+            reconciliation.observations.iter().any(|observation| {
+                observation.resource == **resource
+                    && matches!(
+                        observation.state,
+                        RuntimeResourceState::Present {
+                            revision,
+                            health: RuntimeResourceHealth::Healthy,
+                        } if revision == *desired_revision
+                    )
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+fn validate_reconciliation_authority(
+    reconciliation: &TransitionReconciliation,
+) -> Result<(), TransitionError> {
+    const CURRENT_AUTHORITY_SCHEMA: &str = "aos.ability.current-authority/v1";
+
+    let authority: LinkedCurrentAuthorityDocument = serde_json::from_value(
+        reconciliation.authority_document.as_json().clone(),
+    )
+    .map_err(|error| {
+        TransitionError::Encoding(format!(
+            "runtime reconciliation authority publication is malformed: {error}"
+        ))
+    })?;
+    let canonical = aos_contract::canonical::to_vec(reconciliation.authority_document.as_json())
+        .map_err(|error| {
+            TransitionError::Encoding(format!(
+                "runtime reconciliation authority publication is not canonical: {error}"
+            ))
+        })?;
+    let digest = Sha256Digest::separated(&authority.schema, canonical);
+    if authority.schema != CURRENT_AUTHORITY_SCHEMA
+        || digest != reconciliation.authority_publication
+        || authority.plan != reconciliation.source_plan
+        || authority.transaction != reconciliation.transaction
+        || authority.policy_fence != reconciliation.policy_fence
+        || authority.authority_epoch != reconciliation.authority_epoch
+        || authority.sequence != reconciliation.sequence
+        || authority.observed_at_restart_millis != reconciliation.observed_at_restart_millis
+        || authority.max_age_millis != reconciliation.max_age_millis
+        || authority.resource_observations.len() != reconciliation.observations.len()
+        || authority
+            .resource_observations
+            .iter()
+            .zip(&reconciliation.observations)
+            .any(|(authority, runtime)| !linked_observation_matches(authority, runtime))
+    {
+        return Err(TransitionError::Encoding(
+            "runtime reconciliation authority publication differs from its retained link"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn linked_observation_matches(
+    authority: &LinkedCurrentResourceObservation,
+    runtime: &RuntimeResourceObservation,
+) -> bool {
+    authority.resource == runtime.resource
+        && match (authority.state, runtime.state) {
+            (LinkedCurrentResourceState::Absent, RuntimeResourceState::Absent) => true,
+            (
+                LinkedCurrentResourceState::Present { revision: left },
+                RuntimeResourceState::Present {
+                    revision: right,
+                    health: RuntimeResourceHealth::Healthy,
+                },
+            )
+            | (
+                LinkedCurrentResourceState::Stopped { revision: left },
+                RuntimeResourceState::Present {
+                    revision: right,
+                    health: RuntimeResourceHealth::Stopped,
+                },
+            )
+            | (
+                LinkedCurrentResourceState::Divergent { revision: left },
+                RuntimeResourceState::Present {
+                    revision: right,
+                    health: RuntimeResourceHealth::Divergent,
+                },
+            ) => left == right,
+            _ => false,
+        }
+}
+
+#[derive(Default)]
+struct TransitionBudget {
+    evaluations: u32,
+    bytes: u64,
+}
+
+impl TransitionBudget {
+    fn begin(&mut self, limits: TransitionLimits) -> Result<(), TransitionError> {
+        self.evaluations = self.evaluations.saturating_add(1);
+        if self.evaluations > limits.max_evaluations {
+            return Err(TransitionError::Limit {
+                limit: "transition evaluation count",
+            });
+        }
+        Ok(())
+    }
+
+    fn retain_bytes(
+        &mut self,
+        encoded_size: Result<u64, aos_ability_model::ValueError>,
+        limits: TransitionLimits,
+    ) -> Result<(), TransitionError> {
+        let bytes = encoded_size.map_err(|error| TransitionError::Encoding(error.to_string()))?;
+        self.bytes = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or(TransitionError::Limit {
+                limit: "aggregate transition evaluation byte",
+            })?;
+        if self.bytes > limits.max_evaluation_bytes {
+            return Err(TransitionError::Limit {
+                limit: "aggregate transition evaluation byte",
+            });
+        }
+        Ok(())
+    }
+
+    fn preflight_context(
+        &self,
+        context: &impl Serialize,
+        limits: TransitionLimits,
+    ) -> Result<(), TransitionError> {
+        let remaining =
+            limits
+                .max_evaluation_bytes
+                .checked_sub(self.bytes)
+                .ok_or(TransitionError::Limit {
+                    limit: "aggregate transition evaluation byte",
+                })?;
+        let mut writer = EvaluationBoundedWriter::new(remaining);
+        serde_json::to_writer(&mut writer, context).map_err(|error| {
+            if writer.exceeded {
+                TransitionError::Limit {
+                    limit: "aggregate transition evaluation byte",
+                }
+            } else {
+                TransitionError::Encoding(error.to_string())
+            }
+        })
+    }
+
+    fn preflight_fragment_value(
+        &self,
+        value: &AbilityValue,
+        limits: TransitionLimits,
+    ) -> Result<(), TransitionError> {
+        let remaining =
+            limits
+                .max_evaluation_bytes
+                .checked_sub(self.bytes)
+                .ok_or(TransitionError::Limit {
+                    limit: "aggregate transition evaluation byte",
+                })?;
+        let mut writer = EvaluationBoundedWriter::new(remaining);
+        serde_json::to_writer(&mut writer, value).map_err(|error| {
+            if writer.exceeded {
+                TransitionError::Limit {
+                    limit: "aggregate transition evaluation byte",
+                }
+            } else {
+                TransitionError::Encoding(error.to_string())
+            }
+        })
+    }
+}
+
+struct EvaluationBoundedWriter {
+    remaining: u64,
+    exceeded: bool,
+}
+
+impl EvaluationBoundedWriter {
+    const fn new(remaining: u64) -> Self {
+        Self {
+            remaining,
+            exceeded: false,
+        }
+    }
+}
+
+impl Write for EvaluationBoundedWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() as u64 > self.remaining {
+            self.exceeded = true;
+            return Err(io::Error::other(
+                "serialized transition evaluation exceeds its byte limit",
+            ));
+        }
+        self.remaining -= bytes.len() as u64;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}

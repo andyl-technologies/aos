@@ -2,10 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
   gnumake,
-  go,
-  llvm,
-  lib,
 }: let
   version = "1.17.3";
 in
@@ -22,10 +20,14 @@ in
 
     buildDeps = [
       gnumake
-      go
-      llvm
+      buildPackages.go
+      buildPackages.llvm
     ];
     runtimeDeps = [];
+
+    # One module owns Cilium's configuration and provider-neutral ability
+    # requirements. Its typed requests are the desired-state source.
+    abilities = ./_cilium-abilities;
 
     phases = [
       {
@@ -42,19 +44,23 @@ in
           export GOCACHE=$TMPDIR/go-cache
           export CGO_ENABLED=0
           export GOPROXY=off
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            export GOOS="$AOS_GOOS"
+            export GOARCH="$AOS_GOARCH"
+          fi
           mkdir -p "$GOPATH" "$GOCACHE"
 
           # Build BPF datapath programs
-          export PATH="${llvm}/bin:$PATH"
+          export PATH="${buildPackages.llvm}/bin:$PATH"
 
           # Suppress clang 22 warning for uninitialized const pointer in SRv6 code
           # Append after -Wimplicit-fallthrough (last warning flag) so it comes after -Werror
           sed -i '/-Wimplicit-fallthrough/a CLANG_FLAGS += -Wno-uninitialized-const-pointer' bpf/Makefile.bpf
 
           make -C bpf SHELL="$CONFIG_SHELL" \
-            CLANG="${llvm}/bin/clang" \
-            LLC="${llvm}/bin/llc" \
-            STRIP="${llvm}/bin/llvm-strip"
+            CLANG="${buildPackages.llvm}/bin/clang" \
+            LLC="${buildPackages.llvm}/bin/llc" \
+            STRIP="${buildPackages.llvm}/bin/llvm-strip"
 
           mkdir -p _bin
 
@@ -72,50 +78,14 @@ in
       {
         name = "install";
         script = ''
-          mkdir -p $out/bin $out/lib/bpf $out/share
+          mkdir -p $out/bin $out/lib/bpf
           install -m 755 _bin/cilium-agent _bin/cilium-dbg $out/bin/
 
           # Install compiled BPF programs
           cp -r bpf/out/* $out/lib/bpf/ 2>/dev/null || true
-          printf '%s\n' '${builtins.toJSON {inherit version;}}' > $out/share/cilium-package.json
         '';
       }
     ];
-
-    configModule = {
-      src = ./_cilium-config;
-      moduleAbiCompat = {
-        min = 1;
-        max = 2;
-      };
-      declares = [
-        "cilium.enable"
-        "cilium.kubeProxyReplacement"
-        "cilium.operatorReplicas"
-      ];
-      ownsRoots = [
-        {
-          root = "cilium";
-          interfaceAbi = 1;
-        }
-      ];
-      contributes = [
-        {
-          root = "k3s";
-          interfaceAbi = 2;
-          paths = [
-            "integrations.cni.cilium"
-            "integrations.resources.cilium"
-          ];
-        }
-      ];
-      documentation = {
-        summary = "Cilium — eBPF-based networking, security, and observability";
-        sections.integration = lib.aosDoc.section "k3s integration" [
-          (lib.aosDoc.paragraph "Cilium contributes only its signed CNI settings and resource bundle. It cannot enable k3s or change unrelated cluster policy; the k3s owner must be installed with interface ABI 2.")
-        ];
-      };
-    };
 
     checks = {
       testing,

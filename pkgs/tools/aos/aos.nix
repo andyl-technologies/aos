@@ -19,16 +19,21 @@
   aos-ebpf-lsm-policy,
   checkpolicy,
   cmake,
+  coreutils,
   libssh2,
   policycoreutils,
   pkg-config,
   protobuf,
+  dbus,
   semodule-utils,
   sbsigntools,
   systemd,
   mtools,
+  nftables,
   qemu-img,
+  remove-references-to,
   sqlite,
+  socat,
   tpm2-tools,
   util-linux,
   which,
@@ -60,24 +65,40 @@
     if isCross
     then buildPackages.git-minimal
     else git-minimal;
+  buildNix =
+    if isCross
+    then buildPackages.nix
+    else nix;
   buildOpenSsh =
     if isCross
     then buildPackages.openssh
     else openssh;
+  buildZstd =
+    if isCross
+    then buildPackages.zstd
+    else zstd;
+  buildDbus =
+    if isCross
+    then buildPackages.dbus
+    else dbus;
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
-  # The four executables share Rust libraries and one Cargo build, but their
-  # installed outputs are separate security and portability boundaries. Each
-  # wrapper below refers only to the tools its command surface is allowed to
-  # invoke. Nix therefore computes a distinct runtime closure for every output.
+  # The five command surfaces share Rust libraries and one Cargo build. Their
+  # installed wrappers remain separate portability boundaries, while apm and
+  # the private package runtime share executable bytes. Each wrapper below
+  # refers only to the tools its command surface is allowed to invoke, so Nix
+  # still computes a bounded runtime closure for every output.
   # The caller's PATH is retained solely for explicit user-supplied commands;
   # internal subprocesses always use the corresponding hermetic PATH.
   aosRuntimeTools = [bash git-minimal nix qemu-img zstd];
   aprRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img zstd];
+  metadataRuntimeTools = [bash nix];
   apmPortableRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img tpm2-tools zstd which];
   apmRuntimeTools =
     apmPortableRuntimeTools
     ++ lib.optionals (!isDarwinCross) [systemd util-linux];
+  referenceRemovalArguments = dependencies:
+    builtins.concatStringsSep " \\\n            " (map (dependency: "-t ${dependency}") dependencies);
   runtimeBinPath = tools:
     lib.concatStringsSep ":" (
       [(lib.makeBinPath tools)]
@@ -95,6 +116,15 @@
     semodule-utils
   ];
   nonAosLinuxRuntimeDeps = builtins.filter (dependency: dependency != aos-landlock) linuxRuntimeDeps;
+  aosForbiddenRuntimeDeps =
+    [sbsigntools mtools tpm2-tools which]
+    ++ lib.optionals (!isDarwinCross) ([systemd] ++ nonAosLinuxRuntimeDeps);
+  aprForbiddenRuntimeDeps =
+    [tpm2-tools which]
+    ++ lib.optionals (!isDarwinCross) (
+      [systemd util-linux]
+      ++ lib.subtractLists [checkpolicy semodule-utils] linuxRuntimeDeps
+    );
   linuxToolEnvironment = ''
     export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
     export AOS_UNSHARE="${util-linux}/bin/unshare"
@@ -110,9 +140,29 @@
     export AOS_SEMODULE="${policycoreutils}/sbin/semodule"
     export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
   '';
+  abilityEvaluatorFixture = builtins.path {
+    path = ../../../tests/abilities/evaluator-provider;
+    name = "aos-ability-evaluator-fixture";
+  };
+  abilityEvaluatorIfdFixture = builtins.derivation {
+    name = "aos-ability-forbidden-ifd";
+    system = stdenv.buildPlatform.system;
+    # The evaluator receives JSON strings without Nix dependency context. Keep
+    # the fixture's exact derivation identity reproducible from that same
+    # context-free builder path; buildNix remains an explicit test dependency.
+    builder = builtins.unsafeDiscardStringContext "${buildNix}/bin/nix-instantiate";
+  };
+  # Retain the .drv for the denial test without realizing its intentionally forbidden output.
+  abilityEvaluatorIfdDrvPath =
+    builtins.unsafeDiscardOutputDependency abilityEvaluatorIfdFixture.drvPath;
   src = import ./_workspace-source.nix {inherit lib;};
   applicationTestPackages = [
     "aos"
+    "aos-ability-inspect"
+    "aos-ability-model"
+    "aos-ability-plan"
+    "aos-ability-runtime"
+    "aos-ability-validate"
     "aos-cache"
     "aos-contract"
     "aos-core"
@@ -143,7 +193,7 @@
     inherit src;
     name = "aos-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-yf/Gu30exf9weCOK6RRrjusN+bXZ6rj1r+tZbEJMy4g=";
+    hash = "sha256-jgo0MD4rN+B9hjCBswyllyYc1ImfEBPZMJsh0BxADhg=";
   };
   cargoArtifactContract = {
     family = "aos-native-release-and-test";
@@ -170,25 +220,38 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos"
-      "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos --features release-fleet-fixture"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES --features release-fleet-fixture ${applicationTestFlags}"
     ];
     inherit cargoEnv;
-    buildDeps = [buildPerl buildPkgConfig openssl sqlite buildProtobuf buildCmake libssh2];
-    runtimeDeps = [openssl sqlite zlib];
+    buildDeps = [buildPerl buildPkgConfig buildProtobuf buildCmake];
+    runtimeDeps = [openssl sqlite libssh2 zlib];
   };
 in
   mkCargoPackage {
     pname = "aos";
     inherit version src;
 
-    outputs = ["out" "apm" "apr" "packageRuntime" "testSupport"];
+    outputs = ["out" "apm" "apr" "packageRuntime" "metadataRuntime" "testSupport"];
 
-    cargoFlags = "-p aos";
+    abilities = ./_abilities;
+
+    # Enforce command-surface separation after fixup and reference scrubbing.
+    # Cross-linkers can leave build-environment paths in intermediate binaries;
+    # the scrub phase removes those paths before Nix applies these checks.
+    outputChecks = {
+      out.disallowedReferences = aosForbiddenRuntimeDeps;
+      apr.disallowedReferences = aprForbiddenRuntimeDeps;
+    };
+
+    cargoFlags = "-p aos --features release-fleet-fixture";
 
     inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
+    # The CI profile retains failed output in a machine-readable report. The
+    # shared Cargo phase prints its failed cases when a sandboxed check exits.
+    cargoNextestProfile = "ci";
     # Compilation still uses every allocated build core. Bound concurrent test
     # processes separately so loopback servers and SQLite workers retain enough
     # scheduler time to satisfy their production-sized deadlines on large hosts.
@@ -197,22 +260,26 @@ in
       inherit cargoArtifacts cargoDeps cargoEnv;
     };
 
-    # cmake + libssh2: git2's vendored libgit2 is compiled from source here
-    # (CMake build) with SSH smart-transport support against system libssh2.
+    # cmake builds git2's vendored libgit2 from source. OpenSSL, SQLite, and
+    # libssh2 are target libraries; keeping them in runtimeDeps makes cross
+    # builds expose target headers and libraries without splicing in native
+    # Linux shared objects.
     #
-    # openssh is build-only: the `doCheck` workspace tests use `ssh-keygen` to
-    # build repository fixtures. `git-minimal` is also used by those tests, but
-    # remains in the `aos` runtime closure because maintainer commands create,
-    # inspect, commit, and publish isolated Git worktrees without host tools.
+    # openssh and zstd are build-only inputs for the check phase: the workspace
+    # tests use `ssh-keygen` for repository fixtures and exercise compressed
+    # registry packs. Nix supplies the multicall commands exercised by the
+    # executable-resolution tests. `git-minimal` is also used by tests, but remains in
+    # the `aos` runtime closure because maintainer commands create, inspect,
+    # commit, and publish isolated Git worktrees without host tools.
     buildDeps =
-      [buildPerl buildPkgConfig openssl sqlite buildProtobuf buildCmake libssh2 buildGitMinimal buildOpenSsh]
+      [buildPerl buildPkgConfig buildProtobuf buildCmake buildGitMinimal buildNix buildOpenSsh buildZstd buildDbus remove-references-to]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
-      [openssl sqlite zlib]
+      [openssl sqlite libssh2 zlib]
       ++ aosRuntimeTools
       ++ aprRuntimeTools
       ++ apmRuntimeTools
-      ++ lib.optionals (!isDarwinCross) linuxRuntimeDeps;
+      ++ lib.optionals (!isDarwinCross) (linuxRuntimeDeps ++ [socat]);
 
     # mkDerivation normally constructs one RPATH from every runtimeDep. That
     # is correct for a single-output package, but would make each executable
@@ -220,6 +287,93 @@ in
     # dynamically link only these shared libraries; command-specific tools are
     # referenced exclusively by the corresponding installed wrapper.
     NIX_LDFLAGS = "-Wl,-rpath,${openssl}/lib -Wl,-rpath,${sqlite}/lib -Wl,-rpath,${zlib}/lib";
+
+    postBuild = ''
+      if [ -z "''${AOS_CROSS_COMPILING:-}" ]; then
+        pinned_bus_dir="$NIX_BUILD_TOP/aos-pinned-dbus"
+        pinned_bus_socket="$pinned_bus_dir/bus"
+        pinned_bus_info="$pinned_bus_dir/daemon.info"
+        pinned_bus_log="$pinned_bus_dir/daemon.log"
+        mkdir -p "$pinned_bus_dir"
+        cat > "$pinned_bus_dir/session.conf" <<EOF
+      <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+       "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+      <busconfig>
+        <type>session</type>
+        <listen>unix:path=$pinned_bus_socket</listen>
+        <auth>EXTERNAL</auth>
+        <policy context="default">
+          <allow send_destination="*" eavesdrop="true"/>
+          <allow eavesdrop="true"/>
+          <allow own="*"/>
+        </policy>
+      </busconfig>
+      EOF
+
+        ${buildDbus}/bin/dbus-daemon \
+          --nofork \
+          --nopidfile \
+          --config-file="$pinned_bus_dir/session.conf" \
+          --print-address=1 \
+          --print-pid=1 \
+          > "$pinned_bus_info" \
+          2> "$pinned_bus_log" &
+        pinned_bus_pid=$!
+        cleanup_pinned_bus() {
+          if kill -0 "$pinned_bus_pid" 2>/dev/null; then
+            kill "$pinned_bus_pid"
+            wait "$pinned_bus_pid" || true
+          fi
+        }
+        trap cleanup_pinned_bus EXIT HUP INT TERM
+
+        pinned_bus_attempt=0
+        while [ ! -S "$pinned_bus_socket" ] || [ "$(wc -l < "$pinned_bus_info")" -lt 2 ]; do
+          if ! kill -0 "$pinned_bus_pid" 2>/dev/null; then
+            cat "$pinned_bus_log" >&2
+            exit 1
+          fi
+          pinned_bus_attempt=$((pinned_bus_attempt + 1))
+          if [ "$pinned_bus_attempt" -ge 100 ]; then
+            echo "timed out waiting for the hermetic D-Bus broker" >&2
+            cat "$pinned_bus_log" >&2
+            exit 1
+          fi
+          sleep 0.05
+        done
+
+        export AOS_TEST_DBUS_ADDRESS
+        AOS_TEST_DBUS_ADDRESS=$(sed -n '1p' "$pinned_bus_info")
+        reported_pinned_bus_pid=$(sed -n '2p' "$pinned_bus_info")
+        if [ "$reported_pinned_bus_pid" != "$pinned_bus_pid" ]; then
+          echo "D-Bus broker reported pid $reported_pinned_bus_pid, expected $pinned_bus_pid" >&2
+          exit 1
+        fi
+
+        cargo test \
+          --frozen \
+          --offline \
+          -p aos-systemd \
+          --test pinned_bus \
+          replacement_owner_cannot_complete_reused_job_path \
+          -- \
+          --ignored \
+          --exact
+
+        cargo test \
+          --frozen \
+          --offline \
+          -p aos-package \
+          --lib \
+          config_eval::systemd_ability::tests::supplied_catalog_dispatches_exact_unit_and_recovers_observation \
+          -- \
+          --ignored \
+          --exact
+
+        cleanup_pinned_bus
+        trap - EXIT HUP INT TERM
+      fi
+    '';
 
     preBuild = ''
       # Keep the integration-test executable below the bounded verifier-
@@ -235,6 +389,37 @@ in
       export OPENSSL_STATIC=0
       export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
       export PROTOC="${buildProtobuf}/bin/protoc"
+      export AOS_NIX_INSTANTIATE="${buildNix}/bin/nix-instantiate"
+      export AOS_TEST_ABILITY_FIXTURE="${abilityEvaluatorFixture}"
+      export AOS_TEST_ABILITY_FIXTURE_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityEvaluatorFixture})"
+      export AOS_TEST_ABILITY_BUILD_SYSTEM=${lib.escapeShellArg stdenv.buildPlatform.system}
+      export AOS_TEST_ABILITY_CACHE="$NIX_BUILD_TOP/ability-evaluator-cache"
+      ${lib.optionalString (!isCross) ''
+        ability_nix_root="$NIX_BUILD_TOP/ability-retention-nix"
+        ability_nix_state="$ability_nix_root/state"
+        ability_nix_log="$ability_nix_root/log"
+        mkdir -p \
+          "$ability_nix_state/db" \
+          "$ability_nix_state/gcroots" \
+          "$ability_nix_state/profiles" \
+          "$ability_nix_log"
+
+        NIX_STORE_DIR=/nix/store \
+        NIX_STATE_DIR="$ability_nix_state" \
+        NIX_LOG_DIR="$ability_nix_log" \
+        NIX_REMOTE=local \
+          ${buildNix}/bin/nix-store --init
+        export AOS_TEST_ABILITY_NIX_STORE_DIR=/nix/store
+        export AOS_TEST_ABILITY_NIX_STATE_DIR="$ability_nix_state"
+        export AOS_TEST_ABILITY_NIX_LOG_DIR="$ability_nix_log"
+        export AOS_TEST_ABILITY_NIX_REMOTE=local
+      ''}
+      export AOS_TEST_ABILITY_IFD_DERIVATION="${abilityEvaluatorIfdDrvPath}"
+      export AOS_TEST_ABILITY_IFD_SYSTEM="${stdenv.buildPlatform.system}"
+      export AOS_ABILITY_EVALUATOR_SECRET="must-not-leak"
+      ${lib.optionalString isCross ''
+        export AOS_TEST_ABILITY_EVALUATOR_DISABLED=1
+      ''}
       export AOS_MCOPY="${mtools}/bin/mcopy"
       export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
@@ -282,20 +467,21 @@ in
     # preserving full coverage without weakening the release security posture.
     checkType = "debug";
 
-    # Install each Cargo binary into its own output behind a thin wrapper. The
-    # programs have independent parsers and entry points; none derives
-    # authority or command shape from argv[0]. The wrapper execs an absolute
-    # store path baked in at build time -- deriving it with dirname would
-    # require coreutils on PATH and enlarge the runtime contract.
+    # Install each command surface behind a thin wrapper. The public apm and
+    # private package runtime share one executable in the apm output; their
+    # distinct entry-point names select distinct parsers. Native effects still
+    # require the signed handler artifact and current operator authority. Each
+    # wrapper execs an absolute store path baked in at build time -- deriving it
+    # with dirname would require coreutils on PATH and enlarge the closure.
     postInstall = ''
-          install_cli() {
+          write_cli_wrapper() {
             name=$1
             destination=$2
             tool_path=$3
             include_linux_environment=$4
+            entry_point=$5
 
             mkdir -p "$destination/bin"
-            mv "$out/bin/$name" "$destination/bin/.$name-unwrapped"
             {
               cat << 'WRAPPER_HEADER'
       #!${bash}/bin/bash
@@ -329,6 +515,8 @@ in
                   ;;
                 apm|aos-package-runtime)
                   cat << 'APM_ENVIRONMENT'
+      export AOS_NIX_STORE="${nix}/bin/nix-store"
+      export AOS_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"
       export AOS_MCOPY="${mtools}/bin/mcopy"
       export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
@@ -343,15 +531,98 @@ in
               esac
               printf '%s\n' \
                 "export PATH=\"$tool_path\"" \
-                "exec \"$destination/bin/.$name-unwrapped\" \"\$@\""
+                "exec \"$destination/bin/$entry_point\" \"\$@\""
             } > "$destination/bin/$name"
             chmod +x "$destination/bin/$name"
+          }
+
+          install_cli() {
+            name=$1
+            destination=$2
+            tool_path=$3
+            include_linux_environment=$4
+
+            mkdir -p "$destination/bin"
+            mv "$out/bin/$name" "$destination/bin/.$name-unwrapped"
+            write_cli_wrapper \
+              "$name" "$destination" "$tool_path" \
+              "$include_linux_environment" ".$name-unwrapped"
           }
 
           install_cli aos "$out" ${lib.escapeShellArg (runtimeBinPath aosRuntimeTools)} 0
           install_cli apm "$apm" ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 1
           install_cli apr "$apr" ${lib.escapeShellArg (runtimeBinPath aprRuntimeTools)} 0
-          install_cli aos-package-runtime "$packageRuntime" ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 1
+          install_cli aos-metadata-runtime "$metadataRuntime" ${lib.escapeShellArg (runtimeBinPath metadataRuntimeTools)} 0
+
+          # Give the shared binary the private entry-point name so
+          # current_exe() resolves to the exact signed handler path. The public
+          # and split-output private links preserve their own argv[0], which
+          # selects the corresponding parser in crates/aos/src/apm.rs.
+          mv \
+            "$apm/bin/.apm-unwrapped" \
+            "$apm/bin/.aos-package-runtime-unwrapped"
+          ln -s .aos-package-runtime-unwrapped "$apm/bin/.apm-unwrapped"
+          rm "$out/bin/aos-package-runtime"
+
+          mkdir -p "$packageRuntime/bin"
+          ln -s \
+            "$apm/bin/.aos-package-runtime-unwrapped" \
+            "$packageRuntime/bin/.aos-package-runtime-unwrapped"
+          write_cli_wrapper \
+            aos-package-runtime \
+            "$packageRuntime" \
+            ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} \
+            1 \
+            .aos-package-runtime-unwrapped
+
+          ${lib.optionalString (!isDarwinCross) ''
+        mkdir -p "$packageRuntime/libexec"
+        mv "$out/bin/aos-configuration-provider" "$packageRuntime/libexec/"
+        mv "$out/bin/aos-image-rollout-provider" "$packageRuntime/libexec/"
+        mkdir -p "$packageRuntime/share/aos/providers"
+        cp ${./_abilities/configuration-provider/provider.nix} \
+          "$packageRuntime/share/aos/providers/configuration-materialization.nix"
+        ln -s ${coreutils}/bin/env "$packageRuntime/libexec/aos-env"
+        ln -s ${nftables}/bin/nft "$packageRuntime/libexec/aos-nft"
+        ln -s ${util-linux}/bin/setpriv "$packageRuntime/libexec/aos-setpriv"
+        ln -s ${socat}/bin/socat "$packageRuntime/libexec/aos-socat"
+        for handler in \
+          aos-credential-delivery-handler \
+          aos-network-endpoint-handler \
+          aos-host-storage-handler \
+          aos-host-network-policy-handler \
+          aos-postgresql-handler; do
+          ln -s ../bin/.aos-package-runtime-unwrapped "$packageRuntime/libexec/$handler"
+        done
+      ''}
+
+          grep -Fqx 'export AOS_NIX_STORE="${nix}/bin/nix-store"' "$packageRuntime/bin/aos-package-runtime"
+          grep -Fqx 'export AOS_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"' "$packageRuntime/bin/aos-package-runtime"
+          test "$(readlink "$apm/bin/.apm-unwrapped")" = .aos-package-runtime-unwrapped
+          test "$(readlink "$packageRuntime/bin/.aos-package-runtime-unwrapped")" = \
+            "$apm/bin/.aos-package-runtime-unwrapped"
+          ${lib.optionalString (!isDarwinCross) ''
+        test "$(readlink "$packageRuntime/libexec/aos-env")" = "${coreutils}/bin/env"
+        test "$(readlink "$packageRuntime/libexec/aos-nft")" = "${nftables}/bin/nft"
+        test "$(readlink "$packageRuntime/libexec/aos-setpriv")" = "${util-linux}/bin/setpriv"
+        test "$(readlink "$packageRuntime/libexec/aos-socat")" = "${socat}/bin/socat"
+        test -x "$packageRuntime/libexec/aos-configuration-provider"
+        test -x "$packageRuntime/libexec/aos-image-rollout-provider"
+        test -s "$packageRuntime/share/aos/providers/configuration-materialization.nix"
+      ''}
+          ${lib.optionalString (!isDarwinCross) ''
+        grep -Fqx 'export AOS_PRLIMIT="${util-linux}/bin/prlimit"' "$packageRuntime/bin/aos-package-runtime"
+      ''}
+          ${lib.optionalString (!isCross) ''
+        if PATH=/unreachable "$apm/bin/.apm-unwrapped" __eval --help > /dev/null 2>&1; then
+          echo "public apm entry point accepted a private runtime command" >&2
+          exit 1
+        fi
+        PATH=/unreachable "$apm/bin/.aos-package-runtime-unwrapped" __eval --help > /dev/null
+        PATH=/unreachable "$packageRuntime/bin/.aos-package-runtime-unwrapped" __eval --help > /dev/null
+        PATH=/unreachable "$packageRuntime/bin/aos-package-runtime" __eval --help > /dev/null
+        PATH=/unreachable "$metadataRuntime/bin/aos-metadata-runtime" --help > /dev/null
+      ''}
 
           # This deterministic signer/fixture process exists only for the
           # isolated fleet release exercise. Keep it out of every shipped CLI
@@ -359,15 +630,28 @@ in
           mkdir -p "$testSupport/bin"
           mv "$out/bin/aos-release-fleet-fixture" "$testSupport/bin/"
 
+          # The common fixup phase visits only the primary output. Strip every
+          # shipped executable here so the split-output closure checks inspect
+          # the same bytes that are ultimately published. In particular,
+          # cross-link debug records can retain tools used only by sibling
+          # command surfaces.
+          for binary in \
+            "$out/bin/.aos-unwrapped" \
+            "$apm/bin/.aos-package-runtime-unwrapped" \
+            "$apr/bin/.apr-unwrapped" \
+            "$metadataRuntime/bin/.aos-metadata-runtime-unwrapped"; do
+            strip -s "$binary"
+          done
+
           # Cargo links the binaries before they are distributed among the
           # named outputs, so its default install-prefix RPATH names $out/lib.
           # No output ships Rust shared libraries. Remove that nonexistent
-          # entry so apm/apr/runtime do not retain the aos output itself.
+          # entry so split outputs do not retain the aos output itself.
           if [ -z "''${AOS_CROSS_COMPILING:-}" ]; then
             for binary in \
-              "$apm/bin/.apm-unwrapped" \
+              "$apm/bin/.aos-package-runtime-unwrapped" \
               "$apr/bin/.apr-unwrapped" \
-              "$packageRuntime/bin/.aos-package-runtime-unwrapped"; do
+              "$metadataRuntime/bin/.aos-metadata-runtime-unwrapped"; do
               rpath=$(patchelf --print-rpath "$binary")
               rpath=$(printf '%s' "$rpath" | sed \
                 -e "s|$out/lib:||g" \
@@ -379,30 +663,24 @@ in
                 exit 1
               fi
             done
-          fi
 
-          reject_output_reference() {
-            output=$1
-            dependency=$2
-            if grep -R -aFq "$dependency" "$output"; then
-              echo "$output unexpectedly references $dependency" >&2
+            if grep -aFrq "$out" "$packageRuntime"; then
+              echo "$packageRuntime retains the aos output" >&2
               exit 1
             fi
-          }
-          for dependency in \
-            ${sbsigntools} ${mtools} ${tpm2-tools} ${which} \
-            ${lib.optionalString (!isDarwinCross) "${systemd} ${builtins.concatStringsSep " " (map toString nonAosLinuxRuntimeDeps)}"}; do
-            reject_output_reference "$out" "$dependency"
-          done
-          # APR validates package-owned SELinux modules at publication time,
-          # so its compiler and module packager are intentional APR runtime
-          # dependencies. The remaining host-enforcement helpers belong only
-          # to APM/runtime.
-          for dependency in \
-            ${tpm2-tools} ${which} \
-            ${lib.optionalString (!isDarwinCross) "${systemd} ${util-linux} ${builtins.concatStringsSep " " (map toString (lib.subtractLists [checkpolicy semodule-utils] linuxRuntimeDeps))}"}; do
-            reject_output_reference "$apr" "$dependency"
-          done
+          fi
+
+          # Cargo links all five command surfaces in one build environment, so
+          # cross linkers can retain target tool paths from sibling binaries
+          # even after stripping. Remove each policy-forbidden reference before
+          # the general derivation scrub preserves the union of every output's
+          # runtime dependencies.
+          remove-references-to \
+            ${referenceRemovalArguments aosForbiddenRuntimeDeps} \
+            "$out/bin/.aos-unwrapped"
+          remove-references-to \
+            ${referenceRemovalArguments aprForbiddenRuntimeDeps} \
+            "$apr/bin/.apr-unwrapped"
 
           # Exercise the installed wrapper, not the pre-install Cargo binary.
           # The wrapper must exec .aos-unwrapped so current_exe() materializes

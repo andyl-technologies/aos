@@ -133,34 +133,40 @@ in
       }
       {
         name = "configure";
-        script = ''
-          meson setup build \
-            $mesonFlags \
-            --prefix=$out \
-            --buildtype=release \
-            -Dselinux=disabled \
-            -Dxattr=false \
-            -Dlibmount=${
-            if stdenv.hostPlatform.isDarwin
-            then "disabled"
-            else "enabled"
-          } \
-            -Dman-pages=disabled \
-            -Ddtrace=disabled \
-            -Dsystemtap=disabled \
-            -Ddocumentation=false \
-            -Dintrospection=${
-            if enableIntrospection
-            then "enabled"
-            else "disabled"
-          } \
-            -Dinstalled_tests=false \
-            -Dnls=disabled \
-            -Doss_fuzz=disabled \
-            -Dglib_checks=true \
-            -Dglib_assert=false \
-            -Dtests=false
-        '';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # Meson records explicit linker flags in every target, including
+            # GLib's shared libraries whose dependencies load transitively.
+            export LDFLAGS="$NIX_LDFLAGS ''${LDFLAGS:-}"
+          ''
+          + ''
+            meson setup build \
+              $mesonFlags \
+              --prefix=$out \
+              --buildtype=release \
+              -Dselinux=disabled \
+              -Dxattr=false \
+              -Dlibmount=${
+              if stdenv.hostPlatform.isDarwin
+              then "disabled"
+              else "enabled"
+            } \
+              -Dman-pages=disabled \
+              -Ddtrace=disabled \
+              -Dsystemtap=disabled \
+              -Ddocumentation=false \
+              -Dintrospection=${
+              if enableIntrospection
+              then "enabled"
+              else "disabled"
+            } \
+              -Dinstalled_tests=false \
+              -Dnls=disabled \
+              -Doss_fuzz=disabled \
+              -Dglib_checks=true \
+              -Dglib_assert=false \
+              -Dtests=false
+          '';
       }
       {
         name = "build";

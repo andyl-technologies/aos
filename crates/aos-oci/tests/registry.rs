@@ -88,13 +88,14 @@ async fn signed_release_push_uploads_every_evidence_object_by_digest_only() {
         .await
         .expect("complete signed graph push");
     assert_eq!(pushed.root_index_digest, release.oci.index.digest);
-    assert_eq!(pushed.object_count, 18);
+    assert_eq!(pushed.object_count, 20);
 
     let manifests = registry.state.manifests.lock().expect("manifest lock");
     for descriptor in [
         &release.oci.index,
         &release.oci.platform_manifests[0],
         &release.nix.closure,
+        release.evidence.abilities.as_ref().expect("v2 abilities"),
         &release.evidence.sbom,
         &release.evidence.source,
         &release.evidence.license,

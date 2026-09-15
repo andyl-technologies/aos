@@ -1,0 +1,642 @@
+{
+  "adapters": [
+    {
+      "adapter": "credential-delivery",
+      "interface_abi": 1,
+      "interface_descriptor": "sha256:bc251c0837c1d453a6c5840d9146d9e27a95ad82032d9b4c60baf40d293cf1eb",
+      "interface_name": "aos.credential-delivery-effects",
+      "methods": [
+        {
+          "cancel": "acquire",
+          "effect_class": "observation",
+          "method": "acquire",
+          "reconcile": "acquire"
+        },
+        {
+          "cancel": "deliver",
+          "effect_class": "mutation",
+          "method": "deliver",
+          "reconcile": "deliver"
+        },
+        {
+          "cancel": "release",
+          "effect_class": "mutation",
+          "method": "release",
+          "reconcile": "release"
+        }
+      ],
+      "provider_contract": {
+        "resource_lifetime": "instance",
+        "state_format": null
+      },
+      "scope": "host-resource"
+    },
+    {
+      "adapter": "foreground-process",
+      "interface_abi": 1,
+      "interface_descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+      "interface_name": "aos.foreground-process",
+      "methods": [
+        {
+          "cancel": "observe",
+          "effect_class": "observation",
+          "method": "observe",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": "observe",
+          "effect_class": "mutation",
+          "method": "start",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": "observe",
+          "effect_class": "mutation",
+          "method": "stop",
+          "reconcile": "observe"
+        }
+      ],
+      "provider_contract": {
+        "resource_lifetime": "instance",
+        "state_format": null
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "host-network-policy",
+      "interface_abi": 1,
+      "interface_descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
+      "interface_name": "aos.host-network-policy-effects",
+      "methods": [
+        {
+          "cancel": "apply",
+          "effect_class": "mutation",
+          "method": "apply",
+          "reconcile": "apply"
+        },
+        {
+          "cancel": "observe",
+          "effect_class": "observation",
+          "method": "observe",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": "remove",
+          "effect_class": "mutation",
+          "method": "remove",
+          "reconcile": "remove"
+        }
+      ],
+      "provider_contract": {
+        "resource_lifetime": "instance",
+        "state_format": null
+      },
+      "scope": "host-resource"
+    },
+    {
+      "adapter": "host-storage",
+      "interface_abi": 1,
+      "interface_descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
+      "interface_name": "aos.host-storage-effects",
+      "methods": [
+        {
+          "cancel": "ensure",
+          "effect_class": "mutation",
+          "method": "ensure",
+          "reconcile": "ensure"
+        },
+        {
+          "cancel": "observe",
+          "effect_class": "observation",
+          "method": "observe",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": "release",
+          "effect_class": "mutation",
+          "method": "release",
+          "reconcile": "release"
+        }
+      ],
+      "provider_contract": {
+        "resource_lifetime": "instance",
+        "state_format": null
+      },
+      "scope": "host-resource"
+    },
+    {
+      "adapter": "image-rollout",
+      "interface_abi": 1,
+      "interface_descriptor": "sha256:5776469b1b825c017ced9db370a84d693631dad739b91961dee4ef14d8816c7c",
+      "interface_name": "aos.ab-image-rollout-effects",
+      "methods": [
+        {
+          "cancel": "drain",
+          "effect_class": "mutation",
+          "method": "drain",
+          "reconcile": "drain"
+        },
+        {
+          "cancel": "hold",
+          "effect_class": "mutation",
+          "method": "hold",
+          "reconcile": "hold"
+        },
+        {
+          "cancel": "observe-boot",
+          "effect_class": "observation",
+          "method": "observe-boot",
+          "reconcile": "observe-boot"
+        },
+        {
+          "cancel": "observe-health",
+          "effect_class": "observation",
+          "method": "observe-health",
+          "reconcile": "observe-health"
+        },
+        {
+          "cancel": "prepare",
+          "effect_class": "mutation",
+          "method": "prepare",
+          "reconcile": "prepare"
+        },
+        {
+          "cancel": "retain",
+          "effect_class": "mutation",
+          "method": "retain",
+          "reconcile": "retain"
+        },
+        {
+          "cancel": "retire",
+          "effect_class": "mutation",
+          "method": "retire",
+          "reconcile": "retire"
+        },
+        {
+          "cancel": "select",
+          "effect_class": "mutation",
+          "method": "select",
+          "reconcile": "select"
+        },
+        {
+          "cancel": "withdraw",
+          "effect_class": "mutation",
+          "method": "withdraw",
+          "reconcile": "withdraw"
+        }
+      ],
+      "provider_contract": {
+        "resource_lifetime": "persistent",
+        "state_format": "sha256:ab3d033a412b9b81a99491c719eb8ff6d564080701f45a20ccd723c1133fb8e8"
+      },
+      "scope": "host-machine"
+    },
+    {
+      "adapter": "kubernetes-object",
+      "interface_abi": 1,
+      "interface_descriptor": "sha256:bbced9c501c3c41ab4b5f2a70a2945bde2128ef0a37ad900f6d9f1e2f110963e",
+      "interface_name": "aos.kubernetes-object-effects",
+      "methods": [
+        {
+          "cancel": "apply",
+          "effect_class": "mutation",
+          "method": "apply",
+          "reconcile": "apply"
+        },
+        {
+          "cancel": "delete",
+          "effect_class": "mutation",
+          "method": "delete",
+          "reconcile": "delete"
+        },
+        {
+          "cancel": "observe",
+          "effect_class": "observation",
+          "method": "observe",
+          "reconcile": "observe"
+        }
+      ],
+      "provider_contract": {
+        "resource_lifetime": "instance",
+        "state_format": null
+      },
+      "scope": "kubernetes-cluster"
+    },
+    {
+      "adapter": "managed-configuration",
+      "interface_abi": 1,
+      "interface_descriptor": "sha256:682ee08aadd9d0198b409146a373bf38d901ba530b74180400c9087616a41dab",
+      "interface_name": "aos.managed-configuration-effects",
+      "methods": [
+        {
+          "cancel": "prepare",
+          "effect_class": "mutation",
+          "method": "prepare",
+          "reconcile": "prepare"
+        },
+        {
+          "cancel": "publish",
+          "effect_class": "mutation",
+          "method": "publish",
+          "reconcile": "publish"
+        },
+        {
+          "cancel": "release",
+          "effect_class": "mutation",
+          "method": "release",
+          "reconcile": "release"
+        }
+      ],
+      "provider_contract": {
+        "resource_lifetime": "instance",
+        "state_format": null
+      },
+      "scope": "host-filesystem"
+    },
+    {
+      "adapter": "network-endpoint",
+      "interface_abi": 1,
+      "interface_descriptor": "sha256:6b4d345ab4350917a04b770f0ac4b82888ffe6ef7e647caa9fe94ccb9f9dac6a",
+      "interface_name": "aos.network-endpoint-effects",
+      "methods": [
+        {
+          "cancel": "materialize",
+          "effect_class": "mutation",
+          "method": "materialize",
+          "reconcile": "materialize"
+        },
+        {
+          "cancel": "observe",
+          "effect_class": "observation",
+          "method": "observe",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": "release",
+          "effect_class": "mutation",
+          "method": "release",
+          "reconcile": "release"
+        }
+      ],
+      "provider_contract": {
+        "resource_lifetime": "instance",
+        "state_format": null
+      },
+      "scope": "host-resource"
+    },
+    {
+      "adapter": "nginx-validation",
+      "interface_abi": 1,
+      "interface_descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+      "interface_name": "aos.nginx-validation",
+      "methods": [
+        {
+          "cancel": "record",
+          "effect_class": "mutation",
+          "method": "record",
+          "reconcile": "record"
+        },
+        {
+          "cancel": "release",
+          "effect_class": "mutation",
+          "method": "release",
+          "reconcile": "release"
+        },
+        {
+          "cancel": "validate",
+          "effect_class": "observation",
+          "method": "validate",
+          "reconcile": "validate"
+        }
+      ],
+      "provider_contract": {
+        "resource_lifetime": "instance",
+        "state_format": null
+      },
+      "scope": "host-process"
+    },
+    {
+      "adapter": "service-management",
+      "interface_abi": 1,
+      "interface_descriptor": "sha256:a51e8ccfbde3b8caa89120afdd033edfaa51f087ffc399c3aa3006f34e6c0dff",
+      "interface_name": "aos.service-management",
+      "methods": [
+        {
+          "cancel": "observe",
+          "effect_class": "observation",
+          "method": "observe",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": "observe",
+          "effect_class": "mutation",
+          "method": "reload",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": "observe",
+          "effect_class": "mutation",
+          "method": "restart",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": "observe",
+          "effect_class": "mutation",
+          "method": "start",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": "observe",
+          "effect_class": "mutation",
+          "method": "stop",
+          "reconcile": "observe"
+        }
+      ],
+      "provider_contract": {
+        "resource_lifetime": "instance",
+        "state_format": null
+      },
+      "scope": "host-manager"
+    },
+    {
+      "adapter": "systemd-bootstrap",
+      "interface_abi": 1,
+      "interface_descriptor": "sha256:833e92258892d87a1f1cb16f66bfd1629c47a97386a9853cd93ffa30037b82f1",
+      "interface_name": "aos.systemd-provider-bootstrap",
+      "methods": [
+        {
+          "cancel": "observe-manager",
+          "effect_class": "observation",
+          "method": "observe-manager",
+          "reconcile": "observe-manager"
+        },
+        {
+          "cancel": null,
+          "effect_class": "mutation",
+          "method": "start",
+          "reconcile": "observe-manager"
+        },
+        {
+          "cancel": "observe-manager",
+          "effect_class": "mutation",
+          "method": "stop",
+          "reconcile": "observe-manager"
+        }
+      ],
+      "provider_contract": {
+        "resource_lifetime": "instance",
+        "state_format": null
+      },
+      "scope": "bootstrap-manager"
+    },
+    {
+      "adapter": "systemd-manager",
+      "interface_abi": 1,
+      "interface_descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
+      "interface_name": "aos.systemd-manager",
+      "methods": [
+        {
+          "cancel": "observe",
+          "effect_class": "observation",
+          "method": "observe",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": null,
+          "effect_class": "mutation",
+          "method": "reload",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": null,
+          "effect_class": "mutation",
+          "method": "restart",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": null,
+          "effect_class": "mutation",
+          "method": "start",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": "observe",
+          "effect_class": "mutation",
+          "method": "stop",
+          "reconcile": "observe"
+        }
+      ],
+      "provider_contract": {
+        "resource_lifetime": "instance",
+        "state_format": null
+      },
+      "scope": "host-manager"
+    }
+  ],
+  "limits": {
+    "max_adapters": 12,
+    "max_methods": 46,
+    "max_scenarios": 28
+  },
+  "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+  "scenarios": [
+    {
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "failure": "injected-interruption",
+      "id": "interrupt-before-acquisition",
+      "predecessor": "none"
+    },
+    {
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "failure": "injected-interruption",
+      "id": "interrupt-after-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "after-durable-intent",
+      "candidate": "same",
+      "failure": "injected-interruption",
+      "id": "interrupt-after-durable-intent",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "after-external-return",
+      "candidate": "same",
+      "failure": "lost-result",
+      "id": "lose-external-result",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "after-durable-outcome",
+      "candidate": "same",
+      "failure": "injected-interruption",
+      "id": "interrupt-after-durable-outcome",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "cancellation",
+      "candidate": "same",
+      "failure": "route-dependent",
+      "id": "cancel-unsettled-attempt",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "deadline",
+      "candidate": "same",
+      "failure": "deadline-expired",
+      "id": "expire-attempt-deadline",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "cleanup",
+      "candidate": "same",
+      "failure": "cleanup-failed",
+      "id": "fail-cleanup",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "release",
+      "candidate": "same",
+      "failure": "release-failed",
+      "id": "fail-release",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "failure": "caller-authority-revoked",
+      "id": "revoke-caller-before-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "failure": "caller-authority-revoked",
+      "id": "revoke-caller-after-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "failure": "caller-authority-revoked",
+      "id": "revoke-caller-before-external-effect",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "failure": "provider-authority-revoked",
+      "id": "revoke-provider-before-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "failure": "provider-authority-revoked",
+      "id": "revoke-provider-after-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "failure": "provider-authority-revoked",
+      "id": "revoke-provider-before-external-effect",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "failure": "enforcement-authority-revoked",
+      "id": "revoke-enforcement-before-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "failure": "enforcement-authority-revoked",
+      "id": "revoke-enforcement-after-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "failure": "enforcement-authority-revoked",
+      "id": "revoke-enforcement-before-external-effect",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "failure": "assignment-authority-revoked",
+      "id": "revoke-assignment-before-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "failure": "assignment-authority-revoked",
+      "id": "revoke-assignment-after-acquisition",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "failure": "assignment-authority-revoked",
+      "id": "revoke-assignment-before-external-effect",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "recovery",
+      "candidate": "new-executor-incarnation",
+      "failure": "stale-executor-rejected",
+      "id": "replace-executor-incarnation",
+      "predecessor": "in-flight"
+    },
+    {
+      "boundary": "recovery",
+      "candidate": "new-provider-incarnation",
+      "failure": "stale-provider-rejected",
+      "id": "replace-provider-incarnation",
+      "predecessor": "in-flight"
+    },
+    {
+      "boundary": "recovery",
+      "candidate": "compatible-replacement",
+      "failure": "none",
+      "id": "adopt-compatible-state",
+      "predecessor": "in-flight-compatible"
+    },
+    {
+      "boundary": "recovery",
+      "candidate": "unsupported-replacement",
+      "failure": "transfer-rejected",
+      "id": "reject-unsupported-transfer",
+      "predecessor": "in-flight-incompatible"
+    },
+    {
+      "boundary": "retained-target-activation",
+      "candidate": "current-authority",
+      "failure": "none",
+      "id": "activate-retained-target",
+      "predecessor": "retained"
+    },
+    {
+      "boundary": "prerequisite",
+      "candidate": "same",
+      "failure": "prerequisite-failed",
+      "id": "block-dependent-effect",
+      "predecessor": "same"
+    },
+    {
+      "boundary": "foreign-resource",
+      "candidate": "same",
+      "failure": "foreign-authority-rejected",
+      "id": "reject-foreign-resource-mutation",
+      "predecessor": "same"
+    }
+  ],
+  "schema": "aos.qualification.native-adapter-surface/v1",
+  "subject_schema": "aos.qualification.native-adapter-subject/v1"
+}

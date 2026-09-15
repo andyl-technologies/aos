@@ -33,10 +33,9 @@
 ##!
 ##! suidHelper note
 ##! ---------------
-##! AOS has no security-wrappers framework, so <servicehelper> points at
-##! /bin/false. The helper is only used for non-root activation requests
-##! that need privilege — a path AOS doesn't exercise today. This matches
-##! NixOS's initrd codepath.
+##! <servicehelper> points at /bin/false. The helper is only used for non-root
+##! activation requests that need privilege — a path AOS doesn't exercise
+##! today. This matches NixOS's initrd codepath.
 ##!
 ##! This module contributes:
 ##!   * aos.users.users.messagebus + group (dbus's default runtime user)

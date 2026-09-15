@@ -59,6 +59,7 @@ in {
     ## # See Also
     ## - `aos.users.groups`
     users = lib.mkOption {
+      contributable = true;
       type = lib.types.attrsOf (
         lib.types.submodule {
           options = {
@@ -117,6 +118,7 @@ in {
     ## # See Also
     ## - `aos.users.users`
     groups = lib.mkOption {
+      contributable = true;
       type = lib.types.attrsOf (
         lib.types.submodule {
           options = {

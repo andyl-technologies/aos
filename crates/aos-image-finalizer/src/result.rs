@@ -43,6 +43,26 @@ pub enum FinalizedImageKind {
     Metadata,
 }
 
+impl FinalizedImageKind {
+    /// Returns the stable artifact id assigned to this output kind.
+    #[must_use]
+    pub const fn artifact_id(self) -> &'static str {
+        match self {
+            Self::LogicalDisk => "logical-disk",
+            Self::Raw => "raw",
+            Self::Qcow2 => "qcow2",
+            Self::Vmdk => "vmdk",
+            Self::Vhd => "vhd",
+            Self::UkiA => "uki-a",
+            Self::UkiB => "uki-b",
+            Self::RecoveryUkiA => "recovery-uki-a",
+            Self::RecoveryUkiB => "recovery-uki-b",
+            Self::RecoveryBundle => "recovery-bundle",
+            Self::Metadata => "metadata",
+        }
+    }
+}
+
 /// Exact final output bytes.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -106,11 +126,12 @@ impl FinalizedImageSetV1 {
         let mut paths = BTreeSet::new();
         for artifact in &self.artifacts {
             require_identifier(&artifact.id, "finalized image artifact id")?;
-            if artifact.size_bytes == 0
+            if artifact.id != artifact.kind.artifact_id()
+                || artifact.size_bytes == 0
                 || !kinds.insert(artifact.kind)
                 || !paths.insert(artifact.path.as_str())
             {
-                bail!("finalized image set contains an empty or duplicate artifact kind");
+                bail!("finalized image set contains a mislabeled, empty, or duplicate artifact");
             }
         }
         for required in [

@@ -150,10 +150,6 @@
           packageModules = [
             {
               name = "typed-owner";
-              authorization = {
-                owns = ["systemd"];
-                contributes = {};
-              };
               module.config.systemd.services.collision = {
                 description = "typed";
                 serviceConfig.ExecStart = "/bin/true";
@@ -161,10 +157,6 @@
             }
             {
               name = "raw-owner";
-              authorization = {
-                owns = ["systemd"];
-                contributes = {};
-              };
               module.config.systemd.units."collision.service".text = "[Service]\nExecStart=/bin/false\n";
             }
           ];
@@ -187,10 +179,6 @@
           packageModules = [
             {
               name = "typed-owner";
-              authorization = {
-                owns = ["systemd"];
-                contributes = {};
-              };
               module.config.systemd.services.base-collision = {
                 description = "typed";
                 serviceConfig.ExecStart = "/bin/true";

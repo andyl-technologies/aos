@@ -88,11 +88,38 @@
         targetPlatform = hostPlatform;
       };
 
+  # UEFI firmware is freestanding guest code, independent of the host OS that
+  # runs QEMU. Darwin package builds therefore use the matching Linux-target
+  # GNU toolchain instead of producing Mach-O firmware inputs. x86_64 reuses
+  # the native build package set; aarch64 needs the existing Linux cross set.
+  firmwarePackages =
+    if !hostPlatform.isDarwin
+    then null
+    else if hostPlatform.isAarch64
+    then let
+      firmwarePlatform = lib.mkPlatform "aarch64-linux";
+      firmwareStdenv = import ./stdenv/linux-cross {
+        inherit
+          lib
+          buildStdenv
+          buildPackages
+          buildPlatform
+          ;
+        hostPlatform = firmwarePlatform;
+        targetPlatform = firmwarePlatform;
+      };
+    in
+      import ./pkgs {
+        inherit lib buildPackages;
+        stdenv = firmwareStdenv;
+      }
+    else buildPackages;
+
   # Host packages produce artifacts for hostPlatform. Package definitions use
   # pkgs.buildPackages for generators, compilers, and other executable build
   # dependencies, and ordinary package arguments for host libraries.
   pkgs = import ./pkgs {
-    inherit lib stdenv buildPackages;
+    inherit lib stdenv buildPackages firmwarePackages;
   };
 
   # Auto-discovered module list.
@@ -100,10 +127,12 @@
 
   # Assemble the in-image, eval-only base library for every
   # system. See `lib/build/base-lib.nix`.
-  mkBaseLib = import ./lib/build/base-lib.nix {
-    inherit lib pkgs;
-    system = hostPlatform.system;
-  };
+  mkBaseLibFor = effectivePkgs:
+    import ./lib/build/base-lib.nix {
+      inherit lib;
+      pkgs = effectivePkgs;
+      system = hostPlatform.system;
+    };
 
   # Build a system from a system definition module (or list of modules).
   #
@@ -122,6 +151,10 @@
       if builtins.isAttrs args && args ? specialArgs
       then args.specialArgs
       else {};
+    # A caller-provided package set must bind both stage-1 modules and the
+    # frozen on-host evaluator. Otherwise first-boot re-evaluation could
+    # silently restore executor paths from the outer package set.
+    effectivePkgs = specialArgs.pkgs or pkgs;
     systemName =
       if builtins.isAttrs args && args ? systemName
       then args.systemName
@@ -147,31 +180,68 @@
       then args.packageModules
       else [];
     systemModules = builtins.filter builtins.isPath moduleList;
+    baseLibProbe = {
+      aos.config.evalAtBoot = {
+        baseLib = "/nix/store/00000000000000000000000000000000-aos-base-lib-probe";
+        baseLibAbiHash = "sha256:${builtins.concatStringsSep "" (builtins.genList (_: "0") 64)}";
+      };
+    };
+    # Resolve the static package selection before admitting package modules.
+    # This pass chooses the module set only; the final evaluation below remains
+    # the sole authoritative configuration fixed point.
+    selectionEvaluation = lib.evalModules {
+      modules = modules ++ moduleList ++ [baseLibProbe];
+      inherit pkgs lib operatorModules runtimeModules packageModules;
+      specialArgs = moduleSpecialArgs;
+    };
+    selectedAbilityPackages = let
+      selectedByPath = builtins.listToAttrs (
+        builtins.map (package: {
+          name = builtins.unsafeDiscardStringContext (builtins.toString package);
+          value = package;
+        })
+        (builtins.filter
+          (package:
+            builtins.isAttrs package
+            && package ? abilities
+            && package ? contract
+            && package ? module
+            && (
+              if package.contract.value.package_module != null
+              then true
+              else
+                throw
+                "selected package '${package.pname or package.name or "<unnamed>"}' has no package module locator"
+            ))
+          selectionEvaluation.config.environment.systemPackages)
+      );
+    in
+      builtins.attrValues selectedByPath;
+    callerPackageNames = builtins.map (record: record.name) packageModules;
+    nativeAbilityPackageModules =
+      builtins.map (package: {
+        name = package.pname or package.name;
+        version = package.version or "0";
+        module = package.module + "/module.nix";
+        outputs = {
+          self = builtins.toString package;
+          dependencies = {};
+        };
+      }) (builtins.filter
+        (package: !(builtins.elem (package.pname or package.name) callerPackageNames))
+        selectedAbilityPackages);
+    finalPackageModules = packageModules ++ nativeAbilityPackageModules;
     # Determine the resolved image ABI from the complete caller module list.
     # The base library bundles only source-backed system modules, so without
     # carrying this value explicitly an inline image override would leave the
     # runtime image and its evaluator library on different ABIs.
     moduleAbi =
-      (lib.evalModules {
-        modules =
-          modules
-          ++ moduleList
-          ++ [
-            {
-              aos.config.evalAtBoot = {
-                baseLib = "/nix/store/00000000000000000000000000000000-aos-base-lib-probe";
-                baseLibAbiHash = "sha256:${builtins.concatStringsSep "" (builtins.genList (_: "0") 64)}";
-              };
-            }
-          ];
-        inherit pkgs lib operatorModules runtimeModules packageModules;
-        specialArgs = moduleSpecialArgs;
-      })
+      selectionEvaluation
       .config
       .aos
       .system
       .moduleAbi;
-    baseLib = mkBaseLib {
+    baseLib = (mkBaseLibFor effectivePkgs) {
       baseModules = modules;
       inherit systemModules systemName moduleAbi;
     };
@@ -188,7 +258,8 @@
             };
           }
         ];
-      inherit pkgs lib operatorModules runtimeModules packageModules;
+      inherit pkgs lib operatorModules runtimeModules;
+      packageModules = finalPackageModules;
       specialArgs = moduleSpecialArgs;
     };
 
@@ -264,6 +335,602 @@
 
   # Testing harness (headless mode for package integration tests)
   testing = import ./lib/testing {inherit pkgs lib;};
+  qualificationPackageProbes = import ./qualification/package-probes {
+    inherit testing;
+  };
+  qualificationPackageNamesByPlatform = builtins.listToAttrs (
+    map (platform: {
+      name = platform;
+      value =
+        pkgs.platformSupport.publicationEligibleNames
+        platform
+        pkgs.allPackageNames;
+    })
+    pkgs.platformSupport.canonicalSystems
+  );
+  qualificationPackageNames =
+    pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
+  unknownQualificationPackageProbes =
+    builtins.filter (
+      name: !(builtins.elem name pkgs.allPackageNames)
+    )
+    (builtins.attrNames qualificationPackageProbes);
+  qualificationPackageProbesFor = packageNames:
+    lib.filterAttrs (name: _: builtins.elem name packageNames) qualificationPackageProbes;
+  qualificationPackageCoverageFor = packageNames: let
+    implementedPackages =
+      builtins.filter (
+        name: builtins.hasAttr name qualificationPackageProbes
+      )
+      packageNames;
+    missingPackages =
+      builtins.filter (
+        name: !(builtins.hasAttr name qualificationPackageProbes)
+      )
+      packageNames;
+  in {
+    complete = missingPackages == [];
+    implemented = builtins.length implementedPackages;
+    total = builtins.length packageNames;
+    inherit implementedPackages missingPackages;
+  };
+  qualificationPackageCoverage = qualificationPackageCoverageFor qualificationPackageNames;
+  qualificationPackageCoverageByPlatform =
+    lib.mapAttrs (
+      _: names: qualificationPackageCoverageFor names
+    )
+    qualificationPackageNamesByPlatform;
+  neverPublicationEligiblePackageNames =
+    builtins.filter (
+      name: !(builtins.elem name qualificationPackageNames)
+    )
+    pkgs.allPackageNames;
+  qualificationPackageCoverageReport = assert unknownQualificationPackageProbes == [];
+    qualificationPackageCoverage
+    // {
+      schema_version = "aos.release.package-probe-coverage/v1";
+      platforms = qualificationPackageCoverageByPlatform;
+      neverPublicationEligiblePackages = neverPublicationEligiblePackageNames;
+    };
+  nativeAdapterMatrix = nativeAdapterMatrixCohort.nativeAdapterMatrix;
+  releaseQualification = import ./qualification {
+    inherit lib nativeAdapterMatrix;
+    packageNames = qualificationPackageNames;
+  };
+  qualificationExecutorIdentity = "aos-${hostPlatform.system}-qualification-v1";
+  qualificationReportScenario = testing.mkQualificationReportScenario {
+    name = "aos-qualification-${hostPlatform.system}-report";
+    identity = qualificationExecutorIdentity;
+    reportRoot = "/run/aos-release/qualification-reports/${hostPlatform.system}";
+  };
+  operatorRecoveryScenario = testing.mkQualificationReportScenario {
+    name = "aos-qualification-operator-recovery";
+    identity = qualificationExecutorIdentity;
+    reportPath = "/run/aos-release/qualification-reports/operator-recovery.json";
+  };
+  productionRecoveryScenario = testing.mkQualificationReportScenario {
+    name = "aos-qualification-production-recovery";
+    identity = qualificationExecutorIdentity;
+    reportPath = "/run/aos-release/qualification-reports/production-recovery.json";
+  };
+  qualificationPackageScenario = testing.mkQualificationPackageScenario {
+    name = "aos-qualification-${hostPlatform.system}-package-function";
+    identity = qualificationExecutorIdentity;
+    packageNames = qualificationPackageNamesByPlatform.${hostPlatform.system};
+    probes = qualificationPackageProbesFor (
+      qualificationPackageNamesByPlatform.${hostPlatform.system}
+    );
+    trustKeys = discoverSystems."aos-testing".config.aos.release.trustKeys;
+  };
+  containerLifecycleScenario =
+    if hostPlatform.isLinux
+    then
+      testing.mkQualificationContainerScenario {
+        name = "aos-qualification-${hostPlatform.system}-container-lifecycle";
+        identity = qualificationExecutorIdentity;
+      }
+    else null;
+  imageLifecycleScenario =
+    if hostPlatform.isLinux
+    then
+      testing.mkQualificationImageScenario {
+        name = "aos-qualification-${hostPlatform.system}-image-lifecycle";
+        identity = qualificationExecutorIdentity;
+      }
+    else null;
+  nativeAbilityScenarioIds = [
+    "ability-crucible-baseline"
+    "ability-native-activation"
+    "ability-native-adapter-matrix"
+    "ability-native-image-rollout"
+    "ability-native-kubernetes"
+    "ability-native-recovery"
+  ];
+  qualificationRequirementChecks = scenarioId:
+    (builtins.head (
+      builtins.filter (
+        requirement: requirement.id == scenarioId
+      )
+      releaseQualification.requirements
+    ))
+    .checks;
+  mkNativeAbilityScenario = scenarioId: source: let
+    spec = import source {
+      inherit lib mkSystem pkgs;
+      qualificationImage = true;
+    };
+  in
+    testing.mkQualificationAbilityScenario {
+      name = "aos-qualification-${scenarioId}";
+      identity = qualificationExecutorIdentity;
+      inherit scenarioId;
+      checks = qualificationRequirementChecks scenarioId;
+      testScript = spec.qualification.testScript or spec.testScript;
+      stagingHubUrl = spec.qualification.stagingHubUrl or null;
+      inherit (spec.qualification) candidateRuntimeCompanions extraClosures setupBody;
+    };
+  nativeAdapterMatrixCohort = import ./tests/fleet/ability-native-power-loss.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
+  nativeAdapterPrimaryCells = [
+    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/interrupt-after-durable-intent"
+    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/lose-external-result"
+    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/interrupt-after-durable-outcome"
+    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/reject-foreign-resource-mutation"
+    "service-management/aos.service-management/abi-1/reload/block-dependent-effect"
+  ];
+  nativeEffectBoundaryCells = import ./tests/fleet/_ability-effect-boundary-cells.nix {
+    inherit lib;
+    matrix = nativeAdapterMatrix;
+  };
+  nativeEffectReferenceCohort = import ./tests/fleet/ability-native-effect-boundaries-reference.nix {
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    qualificationImage = true;
+  };
+  nativeEffectKubernetesCohort = import ./tests/fleet/ability-native-effect-boundaries-kubernetes.nix {
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    qualificationImage = true;
+  };
+  nativeEffectForegroundCohort = import ./tests/fleet/ability-native-effect-boundaries-foreground.nix {
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    qualificationImage = true;
+  };
+  nativeEffectRolloutCohorts = map (cellId:
+    import ./tests/fleet/_ability-effect-boundary-rollout-cohort.nix {
+      inherit lib mkSystem pkgs cellId nativeAdapterMatrix;
+      systems = discoverSystems;
+    })
+  nativeEffectBoundaryCells.groups.rollout;
+
+  nativeProviderStateCells = import ./tests/fleet/_ability-provider-state-cells.nix {
+    inherit lib;
+    matrix = nativeAdapterMatrix;
+  };
+  nativeProviderStateReferenceCohort = import ./tests/fleet/ability-native-provider-state-reference.nix {
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    qualificationImage = true;
+  };
+  nativeProviderStateKubernetesCohort = import ./tests/fleet/ability-native-provider-state-kubernetes.nix {
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    qualificationImage = true;
+  };
+  nativeProviderStateForegroundCohort = import ./tests/fleet/ability-native-provider-state-foreground.nix {
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    qualificationImage = true;
+  };
+  nativeProviderStateRolloutCohorts = map (cellId:
+    import ./tests/fleet/_ability-provider-state-rollout-cohort.nix {
+      inherit lib mkSystem pkgs cellId nativeAdapterMatrix;
+      systems = discoverSystems;
+    })
+  nativeProviderStateCells.groups.rollout;
+
+  nativeCancellationCells = import ./tests/fleet/_ability-cancellation-cells.nix {
+    inherit lib;
+    matrix = nativeAdapterMatrix;
+  };
+  nativeCancellationKubernetesCells = let
+    selected =
+      nativeCancellationCells.groups.kubernetes
+      ++ builtins.filter (
+        cellId: builtins.head (lib.splitString "/" cellId) == "systemd-bootstrap"
+      )
+      nativeCancellationCells.groups.systemd;
+  in
+    selected;
+  nativeCancellationSystemdCells = let
+    selected =
+      builtins.filter (
+        cellId: builtins.head (lib.splitString "/" cellId) != "systemd-bootstrap"
+      )
+      nativeCancellationCells.groups.systemd;
+  in
+    assert builtins.sort builtins.lessThan (
+      nativeCancellationKubernetesCells ++ selected
+    )
+    == builtins.sort builtins.lessThan (
+      nativeCancellationCells.groups.kubernetes ++ nativeCancellationCells.groups.systemd
+    ); selected;
+  nativeCancellationKubernetesCohort = import ./tests/fleet/ability-native-cancellation-kubernetes.nix {
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    qualificationImage = true;
+  };
+  nativeCancellationSystemdCohort = import ./tests/fleet/ability-native-cancellation-systemd.nix {
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    qualificationImage = true;
+  };
+  nativeCancellationRolloutCohorts = map (cellId:
+    import ./tests/fleet/_ability-cancellation-rollout-cohort.nix {
+      inherit lib mkSystem pkgs cellId nativeAdapterMatrix;
+    })
+  nativeCancellationCells.groups.rollout;
+  nativeCancellationReferenceCohort = import ./tests/fleet/ability-native-cancellation-reference.nix {
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    qualificationImage = true;
+  };
+  nativeCancellationForegroundCohort = import ./tests/fleet/ability-native-cancellation-foreground.nix {
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    qualificationImage = true;
+  };
+
+  nativeProviderNegativeCells = import ./tests/fleet/_ability-provider-negative-cells.nix {
+    inherit lib;
+    matrix = nativeAdapterMatrix;
+  };
+  nativeProviderNegativeReference = import ./tests/fleet/ability-native-provider-negative-reference.nix {
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    qualificationImage = true;
+  };
+  nativeProviderNegativeForeground = import ./tests/fleet/ability-native-provider-negative-foreground.nix {
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    qualificationImage = true;
+  };
+  nativeProviderNegativeSystemdManager = import ./tests/fleet/ability-native-provider-negative-systemd-manager.nix {
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    qualificationImage = true;
+  };
+  nativeProviderNegativeKubernetes = import ./tests/fleet/ability-native-provider-negative-kubernetes.nix {
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    qualificationImage = true;
+  };
+  nativeProviderNegativeRolloutMethods = lib.unique (
+    map (
+      cellId: builtins.elemAt (lib.splitString "/" cellId) 3
+    )
+    nativeProviderNegativeCells.groups.rollout
+  );
+  nativeProviderNegativeRollouts =
+    map (method: let
+      cellIds =
+        builtins.filter (
+          cellId:
+            builtins.elemAt (lib.splitString "/" cellId) 3 == method
+        )
+        nativeProviderNegativeCells.groups.rollout;
+      cohort = import ./tests/fleet/_ability-provider-negative-rollout-cohort.nix {
+        inherit lib mkSystem method pkgs cellIds nativeAdapterMatrix;
+        systems = discoverSystems;
+      };
+    in {
+      id = "provider-negative-rollout-${method}";
+      qualifiedCells = cellIds;
+      inherit (cohort) testScript;
+      inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+    })
+    nativeProviderNegativeRolloutMethods;
+
+  nativeAdapterRoleScenarios = [
+    "revoke-caller-before-acquisition"
+    "revoke-caller-after-acquisition"
+    "revoke-caller-before-external-effect"
+    "revoke-provider-before-acquisition"
+    "revoke-provider-after-acquisition"
+    "revoke-provider-before-external-effect"
+    "revoke-enforcement-before-acquisition"
+    "revoke-enforcement-after-acquisition"
+    "revoke-enforcement-before-external-effect"
+    "revoke-assignment-before-acquisition"
+    "revoke-assignment-after-acquisition"
+    "revoke-assignment-before-external-effect"
+  ];
+  nativeAdapterRoleCells = map (cell: cell.id) (
+    builtins.filter (cell:
+      builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) nativeAdapterRoleScenarios)
+    nativeAdapterMatrix.cells
+  );
+  nativeAdapterReplacementScenarios = [
+    "replace-executor-incarnation"
+    "replace-provider-incarnation"
+  ];
+  nativeAdapterReplacementCells = map (cell: cell.id) (
+    builtins.filter (cell:
+      builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) nativeAdapterReplacementScenarios)
+    nativeAdapterMatrix.cells
+  );
+  nativeAdapterFailureControlScenarios = [
+    "expire-attempt-deadline"
+    "fail-cleanup"
+    "fail-release"
+  ];
+  nativeAdapterFailureControlCells = map (cell: cell.id) (
+    builtins.filter (cell:
+      builtins.elem
+      (builtins.elemAt (lib.splitString "/" cell.id) 4)
+      nativeAdapterFailureControlScenarios)
+    nativeAdapterMatrix.cells
+  );
+  nativeAdapterInterruptionCells = map (cell: cell.id) (
+    builtins.filter (cell:
+      builtins.elemAt (lib.splitString "/" cell.id) 4 == "interrupt-before-acquisition")
+    nativeAdapterMatrix.cells
+  );
+
+  nativeAdapterQualifiedCells = let
+    selected =
+      nativeAdapterPrimaryCells
+      ++ nativeAdapterInterruptionCells
+      ++ nativeAdapterRoleCells
+      ++ nativeAdapterReplacementCells
+      ++ nativeAdapterFailureControlCells
+      ++ nativeEffectBoundaryCells.groups.reference
+      ++ nativeEffectBoundaryCells.groups.systemdManager
+      ++ nativeEffectBoundaryCells.groups.kubernetes
+      ++ nativeEffectBoundaryCells.groups.rollout
+      ++ nativeEffectBoundaryCells.groups.foreground
+      ++ nativeProviderStateCells.all
+      ++ nativeCancellationKubernetesCells
+      ++ nativeCancellationSystemdCells
+      ++ nativeCancellationCells.groups.reference
+      ++ nativeCancellationCells.groups.foreground
+      ++ nativeCancellationCells.groups.rollout
+      ++ nativeProviderNegativeCells.all;
+    cellsById = builtins.listToAttrs (map (cell: {
+        name = cell.id;
+        value = cell;
+      })
+      nativeAdapterMatrix.cells);
+    postconditions =
+      builtins.foldl' (
+        count: cellId: count + builtins.length cellsById.${cellId}.postconditions
+      )
+      0
+      selected;
+    expectedPostconditions =
+      builtins.foldl' (
+        count: cell: count + builtins.length cell.postconditions
+      )
+      0
+      nativeAdapterMatrix.applicable_cells;
+  in
+    assert builtins.length selected == nativeAdapterMatrix.required_production_vm_cells;
+    assert builtins.length (lib.unique selected) == nativeAdapterMatrix.required_production_vm_cells;
+    assert postconditions == expectedPostconditions; selected;
+
+  nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
+    ability-crucible-baseline =
+      mkNativeAbilityScenario
+      "ability-crucible-baseline"
+      ./tests/fleet/ability-crucible-baseline.nix;
+    ability-native-adapter-matrix = testing.mkQualificationAbilityScenario {
+      name = "aos-qualification-ability-native-adapter-matrix";
+      identity = qualificationExecutorIdentity;
+      scenarioId = "ability-native-adapter-matrix";
+      checks = qualificationRequirementChecks "ability-native-adapter-matrix";
+      matrixSpec = nativeAdapterMatrix.spec;
+      matrixQualifiedCells = nativeAdapterQualifiedCells;
+      # Image cancellation cells run the same predecessor-to-candidate path as
+      # the production rollout requirement and fail closed without this origin.
+      stagingHubUrl = "https://aos.staging.andyl.org";
+      matrixAdditionalCohorts =
+        [
+          {
+            id = "provider-effect-boundaries-reference";
+            qualifiedCells = nativeEffectBoundaryCells.groups.reference ++ nativeEffectBoundaryCells.groups.systemdManager;
+            inherit (nativeEffectReferenceCohort) testScript;
+            inherit (nativeEffectReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-effect-boundaries-kubernetes";
+            qualifiedCells = nativeEffectBoundaryCells.groups.kubernetes;
+            inherit (nativeEffectKubernetesCohort) testScript;
+            inherit (nativeEffectKubernetesCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+        ]
+        ++ lib.imap (index: cohort: {
+          id = "provider-effect-boundary-rollout-${builtins.toString index}";
+          qualifiedCells = [(builtins.elemAt nativeEffectBoundaryCells.groups.rollout index)];
+          inherit (cohort) testScript;
+          inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+        })
+        nativeEffectRolloutCohorts
+        ++ [
+          {
+            id = "provider-effect-boundaries-foreground";
+            qualifiedCells = nativeEffectBoundaryCells.groups.foreground;
+            inherit (nativeEffectForegroundCohort) testScript;
+            inherit (nativeEffectForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-state-reference";
+            qualifiedCells = nativeProviderStateCells.groups.reference;
+            inherit (nativeProviderStateReferenceCohort) testScript;
+            inherit (nativeProviderStateReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-state-kubernetes";
+            qualifiedCells = nativeProviderStateCells.groups.kubernetes;
+            inherit (nativeProviderStateKubernetesCohort) testScript;
+            inherit (nativeProviderStateKubernetesCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+        ]
+        ++ lib.imap (index: cohort: {
+          id = "provider-state-rollout-${builtins.toString index}";
+          qualifiedCells = [(builtins.elemAt nativeProviderStateCells.groups.rollout index)];
+          inherit (cohort) testScript;
+          inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+        })
+        nativeProviderStateRolloutCohorts
+        ++ [
+          {
+            id = "provider-state-foreground";
+            qualifiedCells = nativeProviderStateCells.groups.foreground;
+            inherit (nativeProviderStateForegroundCohort) testScript;
+            inherit (nativeProviderStateForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-cancellation-kubernetes";
+            qualifiedCells = nativeCancellationKubernetesCells;
+            inherit (nativeCancellationKubernetesCohort) testScript;
+            inherit (nativeCancellationKubernetesCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-cancellation-systemd";
+            qualifiedCells = nativeCancellationSystemdCells;
+            inherit (nativeCancellationSystemdCohort) testScript;
+            inherit (nativeCancellationSystemdCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "supported-cancellation-reference";
+            qualifiedCells = nativeCancellationCells.groups.reference;
+            inherit (nativeCancellationReferenceCohort) testScript;
+            inherit (nativeCancellationReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "supported-cancellation-foreground";
+            qualifiedCells = nativeCancellationCells.groups.foreground;
+            inherit (nativeCancellationForegroundCohort) testScript;
+            inherit (nativeCancellationForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+        ]
+        ++ lib.imap (index: cohort: {
+          id = "provider-cancellation-rollout-${builtins.toString index}";
+          qualifiedCells = [(builtins.elemAt nativeCancellationCells.groups.rollout index)];
+          inherit (cohort) testScript;
+          inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+        })
+        nativeCancellationRolloutCohorts
+        ++ [
+          {
+            id = "provider-negative-reference";
+            qualifiedCells = nativeProviderNegativeCells.groups.reference;
+            inherit (nativeProviderNegativeReference) testScript;
+            inherit (nativeProviderNegativeReference.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-negative-foreground";
+            qualifiedCells = nativeProviderNegativeCells.groups.foreground-process;
+            inherit (nativeProviderNegativeForeground) testScript;
+            inherit (nativeProviderNegativeForeground.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-negative-systemd-manager";
+            qualifiedCells = nativeProviderNegativeCells.groups.systemd-manager;
+            inherit (nativeProviderNegativeSystemdManager) testScript;
+            inherit (nativeProviderNegativeSystemdManager.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-negative-kubernetes";
+            qualifiedCells = nativeProviderNegativeCells.groups.kubernetes;
+            inherit (nativeProviderNegativeKubernetes) testScript;
+            inherit (nativeProviderNegativeKubernetes.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+        ]
+        ++ nativeProviderNegativeRollouts;
+
+      inherit (nativeAdapterMatrixCohort) testScript;
+      inherit (nativeAdapterMatrixCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+    };
+    ability-native-activation =
+      mkNativeAbilityScenario
+      "ability-native-activation"
+      ./tests/fleet/ability-native-activation.nix;
+    ability-native-image-rollout =
+      mkNativeAbilityScenario
+      "ability-native-image-rollout"
+      ./tests/fleet/ability-native-image-rollout.nix;
+    ability-native-kubernetes =
+      mkNativeAbilityScenario
+      "ability-native-kubernetes"
+      ./tests/fleet/ability-native-kubernetes.nix;
+    ability-native-recovery =
+      mkNativeAbilityScenario
+      "ability-native-recovery"
+      ./tests/fleet/ability-native-power-loss.nix;
+  };
+  recoveryPackageScenario =
+    if hostPlatform.isLinux
+    then
+      testing.mkQualificationRecoveryPackageScenario {
+        name = "aos-qualification-${hostPlatform.system}-aos-recovery";
+        packageExecutable = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
+        imageExecutable = "${imageLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-image-lifecycle";
+        systemVariant = "server";
+      }
+    else null;
+  qualificationTargetIds = map (target: target.id) (
+    builtins.filter (target: target.platform == hostPlatform.system) releaseQualification.targets
+  );
+  qualificationRequirementScenarioIds = map (requirement: requirement.id) (
+    builtins.filter (
+      requirement:
+        requirement.scope
+        == "packages"
+        || (
+          hostPlatform.system
+          == "x86_64-linux"
+          && requirement.scope == "release"
+          && requirement.phase != "build"
+        )
+    )
+    releaseQualification.requirements
+  );
+  qualificationClaimScenarioIds = map (claim: "claim-${claim.id}") (
+    builtins.filter (claim: builtins.elem claim.target qualificationTargetIds) releaseQualification.claims
+  );
+  qualificationScenarioIds = qualificationRequirementScenarioIds ++ qualificationClaimScenarioIds;
+  qualificationReportScenarios = builtins.listToAttrs (map (scenarioId: {
+      name = scenarioId;
+      value = "${qualificationReportScenario}/bin/aos-qualification-${hostPlatform.system}-report";
+    })
+    (builtins.filter (
+        scenarioId:
+          scenarioId
+          != "package-function"
+          && !(builtins.elem scenarioId nativeAbilityScenarioIds)
+      )
+      qualificationScenarioIds));
+  qualificationAutomatedScenarios =
+    {
+      # Package cases must execute the staged-byte lifecycle and reviewed
+      # probe. Missing catalog entries fail inside this native scenario.
+      package-function = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
+    }
+    // lib.optionalAttrs hostPlatform.isLinux {
+      "claim-container-${hostPlatform.system}-functional" = "${containerLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-container-lifecycle";
+      "claim-disk-${hostPlatform.system}-functional" = "${imageLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-image-lifecycle";
+    }
+    // lib.mapAttrs (
+      scenarioId: scenario: "${scenario}/bin/aos-qualification-${scenarioId}"
+    )
+    nativeAbilityScenarios;
+  releaseQualificationExecutor = testing.mkQualificationExecutor {
+    name = "aos-qualification-${hostPlatform.system}";
+    platform = hostPlatform.system;
+    identity = qualificationExecutorIdentity;
+    scenarios =
+      qualificationReportScenarios
+      // qualificationAutomatedScenarios
+      // lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
+        operator-recovery = "${operatorRecoveryScenario}/bin/aos-qualification-operator-recovery";
+        production-recovery = "${productionRecoveryScenario}/bin/aos-qualification-production-recovery";
+      };
+    caseScenarios = lib.optionalAttrs hostPlatform.isLinux {
+      "package-function/aos-recovery/${hostPlatform.system}" = "${recoveryPackageScenario}/bin/aos-qualification-${hostPlatform.system}-aos-recovery";
+    };
+    workRoot = "/var/lib/aos-release/qualification/${hostPlatform.system}";
+    timeoutSeconds = 21600;
+  };
 
   prefixAttrs = prefix: attrs:
     builtins.listToAttrs (
@@ -303,20 +970,8 @@
       else acc
   ) {} (builtins.attrNames pkgs);
 
-  packagesWithExpose =
-    lib.filterAttrs (_: p: builtins.isAttrs p && p ? expose) pkgs;
-
-  packageExposeLifecycleCheck = import ./lib/testing/package-expose-lifecycle.nix {
-    inherit pkgs lib mkSystem testing;
-  };
-  packageFirewallReloadCheck = import ./lib/testing/package-firewall-reload.nix {
+  packagePresetCheck = import ./tests/packages/preset.nix {
     inherit pkgs mkSystem testing;
-  };
-  packagePresetCheck = import ./lib/testing/package-preset.nix {
-    inherit pkgs mkSystem testing;
-  };
-  packageTestHttpServerCheck = import ./lib/testing/package-test-http-server.nix {
-    inherit pkgs lib mkSystem testing;
   };
   apmInstallAtBootCheck = import ./lib/testing/apm-install-at-boot.nix {
     inherit pkgs mkSystem testing;
@@ -1086,15 +1741,13 @@
       referenceIntegrity = crucibleReferenceIntegrity;
     };
 in {
-  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions;
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem containerImages containerDefinitions releaseQualificationExecutor;
+  packageQualificationCoverage = qualificationPackageCoverageReport;
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
   # this value with strict JSON evaluation before resolving any derivation.
   releasePackageInventory = pkgs.platformSupport.releaseInventory pkgs.allPackageNames;
-  releaseQualification = import ./qualification {
-    inherit lib;
-    packageNames = pkgs.allPackageNames;
-  };
+  inherit releaseQualification;
   releasePackageDerivations =
     pkgs.platformSupport.releaseDerivations
     hostPlatform.system
@@ -1112,7 +1765,11 @@ in {
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
   checks = rec {
-    qualification = import ./tests/qualification {inherit pkgs lib build fleet container;};
+    qualification = import ./tests/qualification {
+      inherit pkgs lib build fleet container nativeAdapterMatrix;
+      packageCoverage = qualificationPackageCoverageReport;
+      releaseExecutor = releaseQualificationExecutor;
+    };
     rust = {
       cargo-artifacts = import ./tests/cargo-artifacts {inherit pkgs;};
       aos = pkgs.aos;
@@ -1121,10 +1778,11 @@ in {
       crucible-guest = pkgs.crucible-guest;
     };
     eval-standalone = import ./lib/testing/eval.nix {
-      inherit pkgs lib mkSystem packagesWithExpose;
+      inherit pkgs lib mkSystem;
       system = serverSystem;
     };
-    package-maintenance = import ./lib/testing/package-maintenance.nix {inherit pkgs lib;};
+    abilities = import ./tests/abilities {inherit pkgs lib mkSystem;};
+    package-maintenance = import ./tests/packages/maintenance.nix {inherit pkgs lib;};
     # Pure evaluation and focused all-variant output contracts are one gate.
     # Rendered store paths remain contextual Nix references rather than
     # duplicated source snapshots.
@@ -1133,6 +1791,7 @@ in {
       version = "0";
       src = null;
       buildDeps = [
+        abilities
         eval-standalone
         system-structure
         config-eval
@@ -1158,6 +1817,10 @@ in {
         if buildPlatform.isLinux && buildPlatform.isx86_64
         then import ./tests/build/bootstrap-seed.nix {pkgs = buildPackages;}
         else null;
+      artifact-consumption =
+        if hostPlatform.isLinux && hostPlatform.is64bit
+        then import ./tests/build/artifact-consumption.nix {inherit pkgs lib;}
+        else null;
       critical-pkgs = import ./tests/build/critical-pkgs.nix {inherit pkgs lib;};
       cross-platform-foundation = import ./tests/build/cross-platform-foundation.nix {
         pkgs = buildPackages;
@@ -1180,18 +1843,47 @@ in {
       linux-cross-smoke = import ./tests/build/linux-cross-smoke.nix {
         pkgs = buildPackages;
       };
+      linux-hosted-toolchain = import ./tests/build/linux-hosted-toolchain.nix {
+        pkgs = buildPackages;
+      };
+      linux-hosted-llvm = builtins.listToAttrs (map (version: {
+        name = "llvm-${version}";
+        value = import ./tests/build/linux-hosted-toolchain.nix {
+          pkgs = buildPackages;
+          llvmVersion = version;
+        };
+      }) ["17" "18" "19" "20" "21" "22"]);
+      linux-hosted-rust = builtins.listToAttrs (map (name: {
+        inherit name;
+        value = import ./tests/build/linux-hosted-toolchain.nix {
+          pkgs = buildPackages;
+          rustPackage = name;
+        };
+      }) ["rust-1_74" "rust"]);
+      linux-workerd = import ./tests/build/linux-workerd.nix {
+        pkgs = buildPackages;
+      };
       package-platform-support = import ./tests/build/package-platform-support.nix {
+        pkgs = buildPackages;
+      };
+      runtime-python-outputs = import ./tests/build/runtime-python-outputs.nix {
+        pkgs = buildPackages;
+      };
+      structured-attrs-export = import ./tests/build/structured-attrs-export.nix {
         pkgs = buildPackages;
       };
       external-image-assembly = import ./tests/build/external-image-assembly.nix {
         inherit pkgs lib mkSystem;
       };
-      package-root-image = import ./lib/testing/package-root-image.nix {inherit pkgs lib;};
+      initrd-stage-contract = import ./tests/build/initrd-stage-contract.nix {
+        inherit pkgs lib mkSystem;
+      };
+      package-root-image = import ./tests/packages/root-image.nix {inherit pkgs lib;};
       systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in
       {
-        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke package-platform-support package-root-image systemd-verity golden-image-budgets;
+        inherit artifact-consumption critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe initrd-stage-contract kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-support package-root-image runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
           pname = "aos-build-checks-all";
@@ -1203,8 +1895,11 @@ in {
               then [bootstrap-seed]
               else []
             )
-            ++ [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config package-platform-support package-root-image systemd-verity]
+            ++ lib.optional (artifact-consumption != null) artifact-consumption
+            ++ [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell initrd-stage-contract kernel-config linux-hosted-toolchain linux-workerd package-platform-support package-root-image runtime-python-outputs structured-attrs-export systemd-verity]
             ++ builtins.attrValues hardening-probe
+            ++ builtins.attrValues linux-hosted-llvm
+            ++ builtins.attrValues linux-hosted-rust
             ++ builtins.attrValues golden-image-budgets;
           phases = [
             {
@@ -1225,7 +1920,7 @@ in {
     trivial-builders = import ./lib/testing/trivial-builders.nix {inherit pkgs lib;};
     module-args = import ./lib/testing/module-args.nix {inherit pkgs lib;};
     module-enforcement = import ./lib/testing/module-enforcement.nix {inherit pkgs lib;};
-    package-documentation = import ./lib/testing/package-documentation.nix {
+    package-documentation = import ./tests/packages/documentation.nix {
       inherit pkgs lib;
       system = serverSystem;
     };
@@ -1240,18 +1935,15 @@ in {
       inherit pkgs mkSystem;
       serverModule = ./systems/server.nix;
     };
-    nginx-config = import ./lib/testing/nginx-config.nix {
+    nginx-config = import ./tests/packages/nginx-config.nix {
       inherit pkgs lib mkSystem;
       serverModule = ./systems/server.nix;
     };
-    registry-hub = import ./lib/testing/registry-hub.nix {
+    registry-hub = import ./tests/packages/registry-hub.nix {
       inherit pkgs lib mkSystem;
       serverModule = ./systems/server.nix;
     };
-    aos-registry-server-config = import ./lib/testing/aos-registry-server-config.nix {
-      inherit pkgs lib;
-    };
-    k3s-config = import ./lib/testing/k3s-config.nix {inherit pkgs lib;};
+    k3s-config = import ./tests/packages/k3s-config.nix {inherit pkgs lib;};
     config-source-gc = import ./lib/testing/config-source-gc.nix {inherit pkgs lib;};
     container = rec {
       phase0 = import ./tests/containers/phase0.nix {
@@ -1330,23 +2022,20 @@ in {
           module-args
           module-enforcement
           package-documentation
-          package-expose
-          aos-registry-server-config
           registry-hub
           nginx-config
           k3s-config
-          integration.envoy-config-module-contract
+          integration.envoy-ability-module-contract
           integration.cloudcore-config
           integration.conntrack-tools-config
           integration.containerd-config-module-contract
           integration.edgecore-config
-          integration.etcd-config-module-contract
+          integration.etcd-ability-module-contract
           integration.garage-config-module-contract
           integration.krb5-config
           integration.mariadb-config-module-contract
           integration.openldap-config
-          integration.postgresql-expose-contract
-          integration.postgresql-module-contract
+          integration.postgresql-ability-module-contract
           integration.rsync-config
           config-source-gc
           config-provenance
@@ -1400,16 +2089,10 @@ in {
       };
     systemd-credentials = import ./lib/testing/systemd-credentials.nix {inherit pkgs lib;};
     systemd-verity = build.systemd-verity;
-    package-expose = import ./lib/testing/package-expose.nix {
-      inherit pkgs lib mkSystem packagesWithExpose;
-    };
-    package-firewall-reload = packageFirewallReloadCheck;
-    package-expose-lifecycle = packageExposeLifecycleCheck;
     package-preset = packagePresetCheck;
-    package-test-http-server = packageTestHttpServerCheck;
     selinux-base = selinuxBaseCheck;
     apm-install-at-boot = apmInstallAtBootCheck;
-    lint = import ./lib/testing/package-lint.nix {inherit pkgs lib;};
+    lint = import ./tests/packages/lint.nix {inherit pkgs lib;};
     # Module-level VM checks (from server system, for backwards compat)
     vm =
       serverVmSystem.config.system.build.checks
@@ -1418,15 +2101,17 @@ in {
         hub-native-operations = hubNativeOperationsTest;
         hub-settings = hubSettingsTest;
         apm-install-at-boot = apmInstallAtBootCheck;
-        package-expose-lifecycle = packageExposeLifecycleCheck;
         package-preset = packagePresetCheck;
-        package-test-http-server = packageTestHttpServerCheck;
         selinux-base = selinuxBaseCheck;
       };
     integration = packageChecks // stdenvChecks;
     fleet = let
       base = discoverFleetTests // crucibleFleetChecks;
       runtimeConfigNames = [
+        "ability-native-activation"
+        "ability-native-image-rollout"
+        "ability-native-kubernetes"
+        "ability-native-power-loss"
         "apm-desired-sequencing"
         "apm-sysroot-lock"
         "apm-system-activation-fail"

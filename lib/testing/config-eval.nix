@@ -69,6 +69,10 @@
   factsFixture = builtins.toFile "config-eval-preflight-facts.json" "{}\n";
   baseLib = systemA.config.aos.config.evalAtBoot.baseLib;
   moduleAbi = systemA.config.aos.system.moduleAbi;
+  evalInputClosure = import ../build/closure-info.nix {inherit pkgs lib;} {
+    pname = "config-eval-input-closure";
+    rootPaths = [baseLib hostSource factsFixture];
+  };
 
   # (1) eval succeeds + (3) determinism: two independent evals are byte-identical.
   evalSucceeds = builtins.isString anchorA;
@@ -99,25 +103,37 @@
     systemA.config.aos.config.evalAtBoot.trust
     == "platform"
     && systemA.config.aos.config.evalAtBoot.hostNix == "/run/aos-metadata/host.nix";
+  metadataRuntimeCommand = "${pkgs.aos.metadataRuntime}/bin/aos-metadata-runtime";
+  metadataRuntimeCommandText = builtins.unsafeDiscardStringContext metadataRuntimeCommand;
+  signedAuthorizeService =
+    signedSystem.config.boot.initrd.systemd.services.aos-metadata-authorize;
+  signedAuthorizeScript = signedAuthorizeService.script;
+  stage2Script = signedSystem.config.systemd.services.aos-eval.script;
+  stage2BeforeBindingVerification =
+    builtins.head (lib.splitString "${metadataRuntimeCommandText} verify-binding" stage2Script);
   signedModeRequiresSignature =
-    builtins.match
-    ".*metadata authorize.*--trust signed.*--trusted-config-keys-dir.*"
-    signedSystem.config.boot.initrd.systemd.services.aos-metadata-authorize.script
-    != null;
-  stage2UsesAcceptedBinding =
-    builtins.match
-    ".*metadata verify-binding.*"
-    signedSystem.config.systemd.services.aos-eval.script
+    lib.hasInfix
+    "${metadataRuntimeCommand} authorize"
+    signedAuthorizeScript
+    && lib.hasInfix "--trust signed" signedAuthorizeScript
+    && builtins.match
+    ".*--trusted-config-keys-dir /nix/store/[a-z0-9]+-aos-provisioning-trust-anchors.*"
+    signedAuthorizeScript
     != null
+    && builtins.elem "aos-metadata-fetch.service" signedAuthorizeService.requires
+    && builtins.elem "aos-provisioning-eval.service" signedAuthorizeService.before;
+  stage2UsesAcceptedBinding =
+    lib.hasInfix
+    "${metadataRuntimeCommand} verify-binding"
+    stage2Script
     && builtins.match
     ".*--require-signed-host-nix.*"
-    signedSystem.config.systemd.services.aos-eval.script
+    stage2Script
     == null;
   stage2InvalidatesStaleEvidenceBeforeVerification =
-    builtins.match
-    ".*rm -f .*manifest.json.*graph.json.*metadata verify-binding.*"
-    signedSystem.config.systemd.services.aos-eval.script
-    != null;
+    lib.hasInfix "rm -f" stage2BeforeBindingVerification
+    && lib.hasInfix "manifest.json" stage2BeforeBindingVerification
+    && lib.hasInfix "graph.json" stage2BeforeBindingVerification;
   signedModeWithoutKeyThrows =
     !(builtins.tryEval signedWithoutKeySystem.config.system.build.toplevel.name).success;
 
@@ -148,7 +164,7 @@ in
     pname = "config-eval-check";
     version = "0";
     src = null;
-    buildDeps = [pkgs.aos pkgs.coreutils pkgs.diffutils pkgs.jq pkgs.nix];
+    buildDeps = [pkgs.aos pkgs.coreutils pkgs.diffutils pkgs.jq pkgs.nix baseLib evalInputClosure];
     phases = [
       {
         name = "check";
@@ -172,6 +188,23 @@ in
 
           eval_store_root="$TMPDIR/nix-eval-store"
           eval_store="local?root=$eval_store_root"
+          eval_base_lib=${baseLib}
+          eval_host_source=${hostSource}
+          eval_facts=${factsFixture}
+
+          mkdir -p "$eval_store_root/nix/store"
+          while IFS= read -r store_path; do
+            cp -a --no-preserve=ownership \
+              "$store_path" "$eval_store_root/nix/store/"
+          done < ${evalInputClosure}/store-paths
+
+          ${pkgs.nix}/bin/nix-store --store "$eval_store" --init
+          ${pkgs.nix}/bin/nix-store --store "$eval_store" \
+            --load-db < ${evalInputClosure}/registration
+          for eval_input in "$eval_base_lib" "$eval_host_source" "$eval_facts"; do
+            ${pkgs.nix}/bin/nix-store --store "$eval_store" \
+              --check-validity "$eval_input"
+          done
 
           export AOS_ROOT="$eval_state"
           export AOS_PROFILE_ROOT="$profile_root"

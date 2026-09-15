@@ -2,15 +2,171 @@
 {
   pkgs,
   lib,
+  nativeAdapterMatrix,
+  packageCoverage,
+  releaseExecutor,
 }: let
+  packageNames = pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
   contract = import ../../qualification {
+    inherit lib nativeAdapterMatrix;
+    inherit packageNames;
+  };
+  fixtureObserver = provider: {
+    artifact = {
+      path = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-fixture-observer";
+      selector = {
+        _type = "aos-package-output-selector";
+        package = "fixture-observer";
+        output = "out";
+      };
+    };
+    entry_point = "bin/fixture-observer";
+    arguments = {
+      kind = "record";
+      fields.request_path = {
+        kind = "string";
+        max_length = 4096;
+        syntax = null;
+      };
+      optional_fields = [];
+    };
+    result = {
+      kind = "record";
+      fields = {
+        kind = {
+          kind = "string-enum";
+          values = ["fixture-state"];
+        };
+        observation = {
+          kind = "string";
+          max_length = 1048576;
+          syntax = null;
+        };
+        provider = {
+          kind = "string-enum";
+          values = [provider];
+        };
+        scope = {
+          kind = "string-enum";
+          values = ["host-resource"];
+        };
+      };
+      optional_fields = [];
+    };
+  };
+  fixtureAdapter = {
+    name,
+    interface,
+    descriptor,
+    method,
+    effectClass,
+    family,
+    lifetime,
+    stateFormat,
+  }: {
+    adapter = name;
+    conformance_families = [family];
+    interface_abi = 1;
+    interface_descriptor = descriptor;
+    interface_name = interface;
+    methods = [
+      {
+        effect_class = effectClass;
+        inherit method;
+      }
+    ];
+    provider_contract = {
+      resource_lifetime = lifetime;
+      state_format = stateFormat;
+    };
+    provider_implementation = {
+      contract = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-${name}-abilities";
+      implementation = "${name}-implementation";
+      observer = fixtureObserver name;
+    };
+    scope = "host-resource";
+  };
+  syntheticNativeAdapterSurface = {
+    schema = "aos.qualification.native-adapter-surface/v1";
+    matrix_schema = "aos.qualification.native-adapter-matrix/v1";
+    subject_schema = "aos.qualification.native-adapter-subject/v1";
+    families = ["durability-recovery" "provider-state-transfer"];
+    adapters = [
+      (fixtureAdapter {
+        name = "fixture-a";
+        interface = "aos.fixture-a";
+        descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        method = "operate";
+        effectClass = "mutation";
+        family = "durability-recovery";
+        lifetime = "instance";
+        stateFormat = null;
+      })
+      (fixtureAdapter {
+        name = "fixture-z";
+        interface = "aos.fixture-z";
+        descriptor = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        method = "observe";
+        effectClass = "observation";
+        family = "provider-state-transfer";
+        lifetime = "persistent";
+        stateFormat = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+      })
+    ];
+    scenarios = [
+      {
+        boundary = "before-acquisition";
+        candidate = "same";
+        failure = "injected-interruption";
+        family = "durability-recovery";
+        id = "interrupt-before-acquisition";
+        postconditions = [
+          {
+            evidence_kind = "journal-timeline";
+            name = "durable-attempt-state-classified";
+          }
+        ];
+        predecessor = "none";
+      }
+      {
+        boundary = "recovery";
+        candidate = "different-provider";
+        failure = "none";
+        family = "provider-state-transfer";
+        id = "adopt-compatible-state";
+        postconditions = [
+          {
+            evidence_kind = "state-adoption";
+            name = "compatible-state-adopted";
+          }
+        ];
+        predecessor = "present";
+      }
+    ];
+    limits = {
+      max_adapters = 2;
+      max_methods = 2;
+      max_scenarios = 2;
+    };
+  };
+  syntheticNativeAdapterMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {
     inherit lib;
-    packageNames = pkgs.allPackageNames;
+    surface = syntheticNativeAdapterSurface;
   };
   fixture = import ../../qualification {
     inherit lib;
+    nativeAdapterMatrix = syntheticNativeAdapterMatrix;
     packageNames = ["aos" "nginx" "containerd" "runc"];
   };
+  fixtureWithoutNativeAdapterMatrix =
+    fixture
+    // {
+      requirements =
+        builtins.filter (
+          requirement: requirement.id != "ability-native-adapter-matrix"
+        )
+        fixture.requirements;
+    };
   capturedFixture = builtins.fromJSON (builtins.readFile ../../crates/aos-release/tests/fixtures/qualification-contract.json);
   sourceTree = builtins.path {
     path = ../../qualification;
@@ -33,10 +189,204 @@
     };
   };
   sourceRoot = builtins.head sourceEvidence.sourcePaths;
+  testing = import ../../lib/testing {inherit pkgs lib;};
+  declarativeProbe = testing.mkQualificationPackageProbe {
+    name = "fixture";
+    spec = {
+      schema_version = "aos.release.package-probe/v1";
+      package = "fixture";
+      primary = {
+        input = "A C source file that prints one fixed line.";
+        operation = "Compile the source and execute the resulting program.";
+        expected = "The compiled program prints fixture followed by a newline.";
+        files."fixture.c" = ''
+          #include <stdio.h>
+
+          int main(void) {
+              return fputs("fixture\n", stdout) == EOF;
+          }
+        '';
+        steps = [
+          {
+            argv = ["@cc@" "fixture.c" "-o" "fixture"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = ["@work@/primary/fixture"];
+            exit_code = 0;
+            stdout.exact = "fixture\n";
+            stderr.exact = "";
+          }
+        ];
+        artifacts = [];
+      };
+      bad_input = {
+        input = "A path that does not exist.";
+        operation = "Attempt to read the absent input.";
+        expected = "The operation rejects the missing file with status 7 and a fixed diagnostic.";
+        files = {};
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              "import sys; from pathlib import Path; missing = not Path('absent').exists(); sys.stderr.write('missing input\\n' if missing else 'unexpected input\\n'); raise SystemExit(7 if missing else 0)"
+            ];
+            exit_code = 7;
+            stdout.exact = "";
+            stderr.exact = "missing input\n";
+            observes_rejection = true;
+          }
+        ];
+        artifacts = [];
+      };
+    };
+  };
+  declarativeProbeCheck = pkgs.runCommand "qualification-package-declarative-probe-check" {} ''
+    mkdir -p work/home work/tmp work/profile
+    export HOME=$PWD/work/home
+    export USER=aos-qualification
+    export TMPDIR=$PWD/work/tmp
+    export LC_ALL=C
+    buildPath=$PATH
+    export PATH=
+    export AOS_QUALIFICATION_PACKAGE=fixture
+    export AOS_QUALIFICATION_PLATFORM=x86_64-linux
+    export AOS_QUALIFICATION_PACKAGE_OUTPUTS='{"out":"/nix/store/00000000000000000000000000000000-fixture"}'
+    export AOS_QUALIFICATION_PACKAGE_CLOSURE='["/nix/store/00000000000000000000000000000000-fixture"]'
+    export AOS_QUALIFICATION_PACKAGE_PROFILE=$PWD/work/profile
+    export AOS_QUALIFICATION_PROBE_REPORT=$PWD/work/result.json
+    export AOS_QUALIFICATION_PROBE_WORK=$PWD/work
+    export AOS_QUALIFICATION_BASH=${pkgs.bash}/bin/bash
+    export AOS_QUALIFICATION_CC=${pkgs.cc}/bin/cc
+    export AOS_QUALIFICATION_CXX=${pkgs.cc}/bin/c++
+    export AOS_QUALIFICATION_PYTHON=${pkgs.python3}/bin/python3
+
+    ${declarativeProbe}
+    export PATH=$buildPath
+    ${pkgs.python3}/bin/python3 - "$AOS_QUALIFICATION_PROBE_REPORT" <<'PY'
+    import json
+    import pathlib
+    import sys
+
+    report = pathlib.Path(sys.argv[1]).read_bytes()
+    parsed = json.loads(report)
+    assert report == json.dumps(
+        parsed, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode() + b"\n"
+    assert parsed["primary"]["observed"].startswith("step1=exit:0")
+    assert parsed["bad_input"]["observed"].startswith("step1=exit:7")
+    PY
+    ${pkgs.coreutils}/bin/cp "$AOS_QUALIFICATION_PROBE_REPORT" $out/result.json
+  '';
+  executor = testing.mkQualificationExecutor {
+    name = "qualification-executor-contract-fixture";
+    platform = "x86_64-linux";
+    identity = "fixture-executor";
+    scenarios.package-function = "/nix/store/00000000000000000000000000000000-scenario/bin/run";
+    workRoot = "/var/lib/aos-release/qualification-fixture";
+  };
+  packageProbe = declarativeProbe;
+  packageExecutor = testing.mkQualificationPackageScenario {
+    name = "qualification-package-scenario-fixture";
+    identity = "fixture-executor";
+    packageNames = ["fixture"];
+    probes.fixture = packageProbe;
+    trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
+  };
+  partialPackageExecutor = testing.mkQualificationPackageScenario {
+    name = "qualification-package-scenario-partial-fixture";
+    identity = "fixture-executor";
+    packageNames = ["fixture" "missing"];
+    probes.fixture = packageProbe;
+    trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
+  };
+  rejectsPackageExecutor = packageNames: probes:
+    !(builtins.tryEval (builtins.deepSeq (testing.mkQualificationPackageScenario {
+        name = "qualification-package-scenario-invalid";
+        identity = "fixture-executor";
+        inherit packageNames probes;
+        trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
+      })
+      true))
+    .success;
   names = map (rule: rule.name) contract.package_rules;
   phases = map (gate: gate.phase) contract.requirements;
-  composed = import ../../qualification/_eval.nix {
+  imageRecovery = builtins.head (
+    builtins.filter (requirement: requirement.id == "image-update-recovery") contract.requirements
+  );
+  abilityRequirements = builtins.listToAttrs (map (id: {
+      name = id;
+      value = builtins.head (
+        builtins.filter (requirement: requirement.id == id) contract.requirements
+      );
+    }) [
+      "ability-crucible-baseline"
+      "ability-native-activation"
+      "ability-native-adapter-matrix"
+      "ability-native-image-rollout"
+      "ability-native-kubernetes"
+      "ability-native-recovery"
+    ]);
+  containerExecutionMatrix = import ../../qualification/modules/_container-execution-matrix.nix {inherit lib;};
+  nativeAdapterSurface = nativeAdapterMatrix.spec.surface;
+  providerContract = adapterName:
+    (builtins.head (builtins.filter (adapter: adapter.adapter == adapterName) nativeAdapterSurface.adapters)).provider_contract;
+  rolloutPackageContract = import ../abilities/reference-image-rollout/package.nix {
     inherit lib;
+    mkDerivation = arguments: arguments;
+    rolloutRuntime = "/nix/store/00000000000000000000000000000000-rollout-runtime";
+  };
+  nativeCells = nativeAdapterMatrix.cells;
+  firstNativeCell = builtins.head nativeCells;
+  remainingNativeCells = builtins.tail nativeCells;
+  applicableNativeIds = nativeAdapterMatrix.applicable_cell_ids;
+  inapplicableNativeIds = nativeAdapterMatrix.inapplicable_cell_ids;
+  partitionedNativeIds = builtins.sort builtins.lessThan (applicableNativeIds ++ inapplicableNativeIds);
+  nativeRoleRevocationCells = builtins.filter (cell:
+    builtins.match "revoke-(caller|provider|enforcement|assignment)-(before-acquisition|after-acquisition|before-external-effect)"
+    (builtins.elemAt (lib.splitString "/" cell.id) 4)
+    != null)
+  nativeCells;
+  nativeFailureControlCells = builtins.filter (cell: let
+    scenario = builtins.elemAt (lib.splitString "/" cell.id) 4;
+  in
+    builtins.elem scenario ["expire-attempt-deadline" "fail-cleanup" "fail-release"])
+  nativeCells;
+  replaceFirstNativeCell = replacement: [replacement] ++ remainingNativeCells;
+  rejectsNativeMatrix = arguments:
+    !(builtins.tryEval (builtins.deepSeq (import ../../qualification/modules/_native-adapter-matrix.nix ({
+        inherit lib;
+        surface = nativeAdapterSurface;
+      }
+      // arguments))
+    true))
+    .success;
+  recoveryPackage = builtins.head (
+    builtins.filter (rule: rule.name == "aos-recovery") contract.package_rules
+  );
+  coveredAndMissingPackageNames = builtins.sort builtins.lessThan (
+    packageCoverage.implementedPackages ++ packageCoverage.missingPackages
+  );
+  coveragePartitions =
+    builtins.all (
+      platform: let
+        coverage = packageCoverage.platforms.${platform};
+        eligible = pkgs.platformSupport.publicationEligibleNames platform pkgs.allPackageNames;
+        coveredAndMissing = builtins.sort builtins.lessThan (
+          coverage.implementedPackages ++ coverage.missingPackages
+        );
+      in
+        coverage.total
+        == builtins.length eligible
+        && coverage.total == coverage.implemented + builtins.length coverage.missingPackages
+        && coveredAndMissing == eligible
+    )
+    pkgs.platformSupport.canonicalSystems;
+  composed = import ../../qualification/_eval.nix {
+    inherit lib nativeAdapterMatrix;
     packageNames = ["aos" "fixture"];
     modules = [
       {
@@ -85,21 +435,342 @@
   configured = composed.config.qualification;
   rejects = module:
     !(builtins.tryEval (builtins.deepSeq (import ../../qualification {
-        inherit lib;
+        inherit lib nativeAdapterMatrix;
         packageNames = ["aos"];
         modules = [module];
       })
       true))
     .success;
 in
-  assert fixture == capturedFixture;
+  assert fixtureWithoutNativeAdapterMatrix == capturedFixture;
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" (builtins.toString sourceRoot) != null;
   assert builtins.readFile (sourceRoot + "/server.nix") == builtins.readFile (nestedSource + "/server.nix");
-  assert names == builtins.sort builtins.lessThan pkgs.allPackageNames;
+  assert names == builtins.sort builtins.lessThan packageNames;
+  assert imageRecovery.regressions
+  == [
+    "checks.fleet.system-image-rollback"
+    "checks.fleet.boot-identity-fail-closed"
+    "checks.fleet.measured-boot"
+  ];
+  assert abilityRequirements.ability-crucible-baseline.regressions
+  == ["checks.fleet.ability-crucible-baseline"];
+  assert abilityRequirements.ability-crucible-baseline.checks
+  == [
+    "connected-generic-markers-before-selected-interruption"
+    "retained-boundary-selection-and-digest-bound-adapter-acknowledgement"
+    "reproduced-reconciliation-through-production-executor"
+    "inspector-explains-retained-crucible-recovery-finding"
+    "disabled-production-executor-has-no-crucible-closure"
+  ];
+  assert abilityRequirements.ability-native-activation.regressions
+  == ["checks.fleet.ability-native-activation"];
+  assert abilityRequirements.ability-native-activation.checks
+  == [
+    "authenticated-package-policy-and-operator-authority"
+    "exact-interface-binding-effect-plan-and-artifact-identities"
+    "consumer-scoped-access-and-independent-service-observation"
+    "aggregate-publication-reload-and-unchanged-input-no-op"
+    "post-publication-reload-failure-retains-new-configuration-and-old-or-unknown-consumer-state"
+    "rollback-revalidates-and-retains-transaction-evidence"
+    "typed-opaque-tls-credential-version-delivery-and-validation-binding"
+    "independent-served-certificate-observation-matches-declared-version"
+    "missing-credential-and-invalid-certificate-reject-with-live-target-preserved"
+    "tls-private-key-sentinel-absent-from-durable-and-rendered-records"
+    "credential-renewal-reloads-and-serves-new-version"
+    "selected-tls-generation-and-credential-view-survive-gc-and-reboot"
+    "tls-disable-and-cleartext-transition-release-credential-views-after-service-change"
+    "endpoint-and-ingress-policy-precede-service-readiness-and-release-in-reverse-order"
+    "authenticated-nginx-storage-ownership-lifetime-and-service-ordering"
+  ];
+  assert abilityRequirements.ability-native-image-rollout.regressions
+  == ["checks.fleet.ability-native-image-rollout"];
+  assert abilityRequirements.ability-native-image-rollout.checks
+  == [
+    "advisory-exact-candidate-staging-without-selection-or-reboot"
+    "authenticated-rollout-plan-and-exact-native-request"
+    "booted-candidate-health-hook-before-config-generation-commit"
+    "healthy-provider-and-journal-evidence-before-physical-commit"
+    "failed-health-mark-reboot-and-predecessor-retention"
+    "exact-generation-roots-and-uki-retention"
+    "post-expiry-rollout-root-retirement"
+  ];
+  assert abilityRequirements.ability-native-image-rollout.production_only;
+  assert abilityRequirements.ability-native-kubernetes.regressions
+  == ["checks.fleet.ability-native-kubernetes"];
+  assert abilityRequirements.ability-native-kubernetes.checks
+  == [
+    "authenticated-k3s-bootstrap-and-provider-authority"
+    "exact-service-and-kubernetes-object-resource-mapping"
+    "consumer-observed-kubernetes-readiness"
+    "forged-mapping-grant-and-namespace-rejected-without-mutation"
+    "object-update-removal-and-retained-owner-evidence"
+    "bounded-bootstrap-planning-rejections-before-effect-construction"
+  ];
+  assert abilityRequirements.ability-native-recovery.regressions
+  == [
+    "checks.fleet.ability-initrd-activation"
+    "checks.fleet.ability-initrd-handoff-fail-closed"
+    "checks.fleet.ability-native-power-loss"
+  ];
+  assert abilityRequirements.ability-native-recovery.checks
+  == [
+    "exact-boot-initrd-artifact-and-static-stage-handoff-contract"
+    "process-loss-after-external-effect-reconciles-before-retry"
+    "power-loss-after-external-effect-reconciles-after-boot"
+    "fresh-receiving-authority-and-resource-incarnations"
+    "retained-plan-journal-and-independent-service-observation"
+    "gc-after-crashed-unlocked-partial-activation-retains-recovery-set"
+  ];
+  assert abilityRequirements.ability-native-adapter-matrix.regressions
+  == [
+    "checks.fleet.ability-native-activation"
+    "checks.fleet.ability-native-foreground-container"
+    "checks.fleet.ability-native-image-rollout"
+    "checks.fleet.ability-native-kubernetes"
+    "checks.fleet.ability-native-power-loss"
+  ];
+  assert abilityRequirements.ability-native-adapter-matrix.production_only;
+  assert nativeAdapterMatrix.cell_count == builtins.length nativeCells;
+  assert syntheticNativeAdapterMatrix.cell_count == 2;
+  assert map (cell: cell.id) syntheticNativeAdapterMatrix.cells
+  == [
+    "fixture-a/aos.fixture-a/abi-1/operate/interrupt-before-acquisition"
+    "fixture-z/aos.fixture-z/abi-1/observe/adopt-compatible-state"
+  ];
+  assert nativeAdapterMatrix.required_production_vm_cells == builtins.length applicableNativeIds;
+  assert builtins.length applicableNativeIds
+  == builtins.length (lib.unique applicableNativeIds);
+  assert builtins.length inapplicableNativeIds
+  == builtins.length (lib.unique inapplicableNativeIds);
+  assert builtins.all (id: !builtins.elem id inapplicableNativeIds) applicableNativeIds;
+  assert partitionedNativeIds == map (cell: cell.id) nativeCells;
+  assert nativeAdapterMatrix.spec.applicability == nativeAdapterMatrix.applicability;
+  assert (providerContract "image-rollout")
+  == {
+    resource_lifetime = "persistent";
+    state_format = rolloutPackageContract.abilities.config.aos.abilities.implementations.rollout.definition.state_format;
+  };
+  assert rolloutPackageContract.abilities.config.aos.abilities.implementations.rollout.definition.outputs.machine.lifetime == "persistent";
+  assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) nativeRoleRevocationCells;
+  assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) nativeFailureControlCells;
+  assert nativeAdapterMatrix.spec.cells == nativeAdapterMatrix.cells;
+  assert builtins.all (cell: !(cell ? evidence)) nativeAdapterMatrix.cells;
+  assert abilityRequirements.ability-native-adapter-matrix.checks
+  == [
+    nativeAdapterMatrix.check
+    containerExecutionMatrix.check
+  ];
+  assert containerExecutionMatrix.missing_container_cells == 1;
+  assert rejectsNativeMatrix {cells = remainingNativeCells;};
+  assert rejectsNativeMatrix {
+    applicability =
+      nativeAdapterMatrix.applicability
+      // {
+        required_production_vm_cells =
+          nativeAdapterMatrix.required_production_vm_cells - 1;
+      };
+  };
+  assert rejectsNativeMatrix {
+    applicability =
+      nativeAdapterMatrix.applicability
+      // {inapplicable_cells = builtins.tail nativeAdapterMatrix.inapplicable_cells;};
+  };
+  assert rejectsNativeMatrix {
+    applicability =
+      nativeAdapterMatrix.applicability
+      // {
+        inapplicable_cells =
+          [
+            ((builtins.head nativeAdapterMatrix.inapplicable_cells) // {reason = "foreign";})
+          ]
+          ++ builtins.tail nativeAdapterMatrix.inapplicable_cells;
+      };
+  };
+  assert rejectsNativeMatrix {cells = [firstNativeCell] ++ nativeCells;};
+  assert rejectsNativeMatrix {cells = [(builtins.elemAt nativeCells 1) firstNativeCell] ++ lib.drop 2 nativeCells;};
+  assert rejectsNativeMatrix {subject = nativeAdapterMatrix.subject // {surface_digest = "sha256:stale";};};
+  assert rejectsNativeMatrix {
+    subject = nativeAdapterMatrix.subject;
+    surface =
+      nativeAdapterSurface
+      // {
+        scenarios =
+          [(builtins.head nativeAdapterSurface.scenarios // {failure = "INVALID";})]
+          ++ builtins.tail nativeAdapterSurface.scenarios;
+      };
+  };
+  assert rejectsNativeMatrix {
+    subject = nativeAdapterMatrix.subject;
+    surface =
+      nativeAdapterSurface
+      // {
+        adapters =
+          [
+            ((builtins.head nativeAdapterSurface.adapters)
+              // {conformance_families = ["unknown-family"];})
+          ]
+          ++ builtins.tail nativeAdapterSurface.adapters;
+      };
+  };
+  assert rejectsNativeMatrix {
+    surface =
+      nativeAdapterSurface
+      // {
+        adapters =
+          [
+            ((builtins.head nativeAdapterSurface.adapters)
+              // {
+                provider_contract =
+                  (builtins.head nativeAdapterSurface.adapters).provider_contract
+                  // {resource_lifetime = "forever";};
+              })
+          ]
+          ++ builtins.tail nativeAdapterSurface.adapters;
+      };
+  };
+  assert rejectsNativeMatrix {
+    subject = nativeAdapterMatrix.subject;
+    surface =
+      nativeAdapterSurface
+      // {
+        adapters =
+          lib.take 4 nativeAdapterSurface.adapters
+          ++ [
+            ((builtins.elemAt nativeAdapterSurface.adapters 4)
+              // {
+                provider_contract =
+                  (builtins.elemAt nativeAdapterSurface.adapters 4).provider_contract
+                  // {state_format = "sha256:invalid";};
+              })
+          ]
+          ++ lib.drop 5 nativeAdapterSurface.adapters;
+      };
+  };
+  assert rejectsNativeMatrix {invalidatedBy = ["subject" "policy" "executor"];};
+  assert rejectsNativeMatrix {
+    regressions = abilityRequirements.ability-native-adapter-matrix.regressions ++ ["checks.fleet.foreign"];
+  };
+  assert rejectsNativeMatrix {
+    cells = replaceFirstNativeCell (firstNativeCell
+      // {
+        interface = firstNativeCell.interface // {abi = 2;};
+      });
+  };
+  assert rejectsNativeMatrix {
+    cells = replaceFirstNativeCell (firstNativeCell
+      // {
+        interface = firstNativeCell.interface // {descriptor = "sha256:${builtins.hashString "sha256" "foreign interface"}";};
+      });
+  };
+  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {adapter = "foreign";});};
+  assert rejectsNativeMatrix {
+    cells = replaceFirstNativeCell (firstNativeCell
+      // {
+        interface = firstNativeCell.interface // {name = "aos.foreign";};
+      });
+  };
+  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {method = "foreign";});};
+  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {scope = "host-manager";});};
+  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {boundary = "deadline";});};
+  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {failure = "foreign";});};
+  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {predecessor = "foreign";});};
+  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {candidate = "foreign";});};
+  assert rejectsNativeMatrix {
+    cells = replaceFirstNativeCell (firstNativeCell
+      // {
+        evidence = {
+          environment = "production-vm";
+          status = "passed";
+          regressions = ["checks.fleet.foreign"];
+        };
+      });
+  };
+  assert builtins.all (requirement:
+    requirement.phase
+    == "staging"
+    && requirement.scope == "release"
+    && requirement.method == "automated"
+    && requirement.invalidated_by == ["subject" "policy" "executor" "environment"])
+  (builtins.attrValues abilityRequirements);
+  assert rejects {
+    qualification.requirements.ability-native-adapter-matrix.production_only = lib.mkForce false;
+  };
+  assert rejects {
+    qualification.requirements.ability-native-image-rollout.production_only = lib.mkForce false;
+  };
+  assert packageCoverage.schema_version == "aos.release.package-probe-coverage/v1";
+  assert packageCoverage.total == builtins.length packageNames;
+  assert packageCoverage.total
+  == packageCoverage.implemented + builtins.length packageCoverage.missingPackages;
+  assert coveredAndMissingPackageNames == packageNames;
+  assert coveragePartitions;
+  assert builtins.all (
+    name: !(builtins.elem name packageNames)
+  )
+  packageCoverage.neverPublicationEligiblePackages;
   assert builtins.all (rule: rule.inherit_dependency_obligations) contract.package_rules;
+  assert recoveryPackage.role == "system-integrity";
+  assert recoveryPackage.execution
+  == {
+    kind = "recovery-image";
+    system_variant = "server";
+  };
   assert builtins.all (phase: builtins.elem phase phases) ["build" "staging" "rollout" "complete"];
   assert builtins.length contract.targets == 4;
   assert builtins.all (target: builtins.length target.environment.layers == 2) contract.targets;
+  assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+/scenarios.json$" executor.passthru.qualification.registryPath != null;
+  assert executor.passthru.qualification.platform == "x86_64-linux";
+  assert executor.passthru.qualification.caseScenarios == {};
+  assert executor.passthru.qualification.scenarios.package-function == "/nix/store/00000000000000000000000000000000-scenario/bin/run";
+  assert packageExecutor.passthru.qualification.platform == "x86_64-linux";
+  assert packageExecutor.passthru.qualification.packageNames == ["fixture"];
+  assert packageExecutor.passthru.qualification.probes == ["fixture"];
+  assert packageExecutor.passthru.qualification.missingProbes == [];
+  assert packageExecutor.passthru.qualification.probeCoverage
+  == {
+    complete = true;
+    implemented = 1;
+    total = 1;
+  };
+  assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+/probes.json$" packageExecutor.passthru.qualification.probeRegistry != null;
+  assert partialPackageExecutor.passthru.qualification.missingProbes == ["missing"];
+  assert partialPackageExecutor.passthru.qualification.probeCoverage
+  == {
+    complete = false;
+    implemented = 1;
+    total = 2;
+  };
+  assert rejectsPackageExecutor ["fixture"] {
+    extra = packageProbe;
+    fixture = packageProbe;
+  };
+  assert builtins.attrNames releaseExecutor.passthru.qualification.scenarios
+  == [
+    "ability-crucible-baseline"
+    "ability-native-activation"
+    "ability-native-adapter-matrix"
+    "ability-native-image-rollout"
+    "ability-native-kubernetes"
+    "ability-native-recovery"
+    "claim-container-x86_64-linux-functional"
+    "claim-container-x86_64-linux-qualified"
+    "claim-disk-x86_64-linux-functional"
+    "claim-disk-x86_64-linux-qualified"
+    "operator-recovery"
+    "package-function"
+    "production-recovery"
+    "rollout-health"
+    "rollout-observation"
+    "staging-delivery"
+  ];
+  assert builtins.match ".*/aos-qualification-x86_64-linux-package-function" releaseExecutor.passthru.qualification.scenarios.package-function != null;
+  assert builtins.all (id:
+    builtins.match ".*/aos-qualification-${id}" releaseExecutor.passthru.qualification.scenarios.${id}
+    != null) (builtins.attrNames abilityRequirements);
+  assert builtins.match ".*/aos-qualification-x86_64-linux-container-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-container-x86_64-linux-functional != null;
+  assert builtins.match ".*/aos-qualification-x86_64-linux-image-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-disk-x86_64-linux-functional != null;
+  assert builtins.attrNames releaseExecutor.passthru.qualification.caseScenarios == ["package-function/aos-recovery/x86_64-linux"];
+  assert builtins.match ".*/aos-qualification-x86_64-linux-aos-recovery" releaseExecutor.passthru.qualification.caseScenarios."package-function/aos-recovery/x86_64-linux" != null;
   assert builtins.length contract.claims == 8;
   assert contract.support.default
   == {
@@ -146,4 +817,11 @@ in
       name = "aos-qualification-policy-check";
       destination = "/contract.json";
       text = builtins.toJSON contract;
+      checkPhase = ''
+        test -f ${declarativeProbeCheck}/result.json
+        ${pkgs.python3}/bin/python3 \
+          ${./ability-check-details.py} \
+          $out/contract.json \
+          ${../../lib/testing/qualification-ability.py}
+      '';
     }

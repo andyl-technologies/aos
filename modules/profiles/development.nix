@@ -150,14 +150,20 @@ in {
 
     aos.security.sudo.enable = lib.mkDefault true;
     aos.security.utempter.enable = lib.mkDefault true;
-    aos.security.wrappers = {
+    aos.security.wrappers = let
+      inetutilsArtifact = lib.abilities.packageOutput {package = "inetutils";};
+    in {
       ping = {
-        source = "${pkgs.inetutils}/bin/ping";
-        mode = "4755";
+        source = {
+          artifact = inetutilsArtifact;
+          path = "bin/ping";
+        };
       };
       ping6 = {
-        source = "${pkgs.inetutils}/bin/ping6";
-        mode = "4755";
+        source = {
+          artifact = inetutilsArtifact;
+          path = "bin/ping6";
+        };
       };
     };
 

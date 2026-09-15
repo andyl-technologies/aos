@@ -26,7 +26,15 @@
   };
   checks = import ./checks.nix;
 in {
+  mkQualificationAbilityScenario = import ./qualification-ability.nix {inherit pkgs lib;};
+  mkQualificationNativeAdapterMatrixScenario = import ./qualification-native-adapter-matrix.nix {inherit pkgs;};
+  mkQualificationContainerScenario = import ./qualification-container.nix {inherit pkgs lib;};
+  mkQualificationImageScenario = import ./qualification-image.nix {inherit pkgs lib;};
+  mkQualificationPackageProbe = import ./qualification-package-probe.nix {inherit pkgs lib;};
+  mkQualificationPackageScenario = import ./qualification-package.nix {inherit pkgs lib;};
+  mkQualificationRecoveryPackageScenario = import ./qualification-recovery-package.nix {inherit pkgs;};
   mkQualificationExecutor = import ./qualification.nix {inherit pkgs;};
+  mkQualificationReportScenario = import ./qualification-report.nix {inherit pkgs;};
   inherit (vm) mkVMTest mkTestDisk;
   inherit (fleet) mkFleetTest uriEncode dataUrl;
   inherit (darling) mkDarlingFleetSpec mkDarlingFleetSuite;

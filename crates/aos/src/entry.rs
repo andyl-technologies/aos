@@ -152,6 +152,9 @@ fn internal_package_command(arguments: &[OsString]) -> Option<&str> {
         "fetch",
         "render-one",
         "__graph-compile",
+        "__ability-stage-run",
+        "__ability-stage-validate",
+        "__ability-stage-receive",
     ];
 
     arguments.iter().find_map(|argument| {
@@ -218,6 +221,12 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
     if let Commands::Completions { shell } = &cli.command {
         commands::completions::run(*shell);
         return Ok(());
+    }
+
+    // Portable inspection revalidates captured pure inputs without Nix or a
+    // live provider connection.
+    if let Commands::Ability { command } = &cli.command {
+        return commands::ability::run(command, printer).await;
     }
 
     // The server command doesn't need NixRunner, handle it before construction.
@@ -362,6 +371,12 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         return commands::release::tuf_offline(args, printer).await;
     }
     if let Commands::Release {
+        command: crate::cli::ReleaseCommand::PrepareRegistry(args),
+    } = &cli.command
+    {
+        return commands::release::prepare_registry(args, printer).await;
+    }
+    if let Commands::Release {
         command: crate::cli::ReleaseCommand::FinalizeRegistry(args),
     } = &cli.command
     {
@@ -500,6 +515,7 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         Commands::Container { .. } => unreachable!(),
         Commands::Vm { .. } => unreachable!(),
         Commands::LanguageServer { .. } => unreachable!(),
+        Commands::Ability { .. } => unreachable!(),
     }
 }
 

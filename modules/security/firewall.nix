@@ -10,6 +10,22 @@
   ...
 }: let
   cfg = config.aos.firewall;
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
+  serviceTypes = serviceManagement.types;
+  resultOf = lib.abilities.resultOf;
+  producer = key: interface: parameters:
+    serviceManagement.forProducer {
+      consumerInstance = "system:firewall";
+      inherit key interface parameters;
+    };
+  command = arguments: {
+    executable = {
+      artifact = lib.abilities.packageOutput {package = "nftables";};
+      entry_point = "sbin/nft";
+      inherit arguments;
+    };
+    ignore_failure = false;
+  };
 
   # Render a named set's `elements = { 22, 80, 443 }` line. Omitted
   # entirely when the port list is empty — a declared-but-empty set
@@ -84,6 +100,68 @@
       }
     }
   '';
+  abilityFragments = [
+    (producer "firewall-filesystems" serviceManagement.interfaces.filesystemReadiness {
+      scope = "local-filesystems";
+    })
+    (producer "firewall-network-stack" serviceManagement.interfaces.networkReadiness {
+      scope = "stack-prepared";
+      address_families = ["ipv4" "ipv6"];
+    })
+    (serviceManagement.forConfiguration {
+      inherit serviceTypes;
+      consumerInstance = "system:firewall";
+      declaration = {
+        name = "firewall-ruleset";
+        source = {
+          kind = "inline-text";
+          content = nftablesConf;
+        };
+        mode = "0444";
+      };
+    })
+    (serviceManagement.forService {
+      inherit serviceTypes;
+      consumerInstance = "system:firewall";
+      declaration = {
+        service = "nftables";
+        enabled = true;
+        lifecycle = {
+          description = "nftables Firewall";
+          execution_model = "oneshot";
+          environment_files = [];
+          condition = [];
+          pre_start = [];
+          start = [(command ["-f" (resultOf "firewall-ruleset" "execution-path")])];
+          post_start = [];
+          stop = [(command ["flush" "ruleset"])];
+          post_stop = [];
+          restart = "never";
+          restart_delay_millis = 100;
+          configuration_change_action = "reload";
+          remain_after_exit = true;
+          start_timeout_millis = 90000;
+          stop_timeout_millis = 90000;
+        };
+        dependencies = {
+          after = [(resultOf "firewall-filesystems" "readiness-resource")];
+          before = [(resultOf "firewall-network-stack" "readiness-resource")];
+          requires = [];
+          wants = [(resultOf "firewall-network-stack" "readiness-resource")];
+        };
+        reload = {
+          strategy = "command";
+          commands = [(command ["-f" (resultOf "firewall-ruleset" "execution-path")])];
+          completion = "command-exit";
+        };
+        configuration.views = [{
+          name = "ruleset";
+          source = resultOf "firewall-ruleset" "execution-path";
+          optional = false;
+        }];
+      };
+    })
+  ];
 in {
   options.aos.firewall = {
     ## Enable the nftables-based firewall.
@@ -158,61 +236,32 @@ in {
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    system.checks.firewall = {
-      description = "nftables firewall checks";
-      checks = [
-        {
-          name = "nftables-active";
-          description = "nftables service is active";
-          script = ''
-            vm.succeed("systemctl is-active nftables")
-          '';
-        }
-        {
-          name = "ruleset-loaded";
-          description = "nftables ruleset is loaded";
-          # `nft` by absolute store path: image slimming keeps nftables off the
-          # system PATH (it is in the closure via this module's own units), so
-          # the bare command is not available in-guest.
-          script = ''
-            vm.succeed("${pkgs.nftables}/sbin/nft list ruleset")
-          '';
-        }
-      ];
-    };
-
-    # /etc/nftables.conf — complete nftables ruleset.
-    environment.etc."nftables.conf" = {
-      text = nftablesConf;
-    };
-
-    # nftables.service — load the firewall rules at boot.
-    systemd.services."nftables" = {
-      description = "nftables Firewall";
-      # Live in-place upgrades (`apm upgrade --system`): when the firewall
-      # ruleset changes between generations, reload gracefully via
-      # `ExecReload=` (an atomic `nft -f`) instead of a stop+start that
-      # would briefly `flush ruleset` and leave a window with no firewall.
-      # `allowedTCP` / `allowedUDP` are baked into the base
-      # `/etc/nftables.conf` (the `set allowed_tcp { elements = … }` lines
-      # above). Package-scoped firewall side effects are re-applied by
-      # their own ReloadPropagatedFrom=nftables.service units.
-      reloadIfChanged = true;
-      reloadTriggers = [
-        "/etc/nftables.conf"
-      ];
-      wantedBy = ["multi-user.target"];
-      before = ["network-pre.target"];
-      wants = ["network-pre.target"];
-      after = ["local-fs.target"];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = "${pkgs.nftables}/sbin/nft -f /etc/nftables.conf";
-        ExecReload = "${pkgs.nftables}/sbin/nft -f /etc/nftables.conf";
-        ExecStop = "${pkgs.nftables}/sbin/nft flush ruleset";
+  config = lib.mkIf cfg.enable (lib.mkMerge ([
+    {
+      system.checks.firewall = {
+        description = "nftables firewall checks";
+        checks = [
+          {
+            name = "nftables-active";
+            description = "nftables service is active";
+            script = ''
+              vm.succeed("systemctl is-active nftables")
+            '';
+          }
+          {
+            name = "ruleset-loaded";
+            description = "nftables ruleset is loaded";
+            # `nft` by absolute store path: image slimming keeps nftables off the
+            # system PATH (it is in the closure via this module's own units), so
+            # the bare command is not available in-guest.
+            script = ''
+              vm.succeed("${pkgs.nftables}/sbin/nft list ruleset")
+            '';
+          }
+        ];
       };
-    };
-  };
+
+      aos.abilities.instances."system:firewall" = {};
+    }
+  ] ++ builtins.map (fragment: {aos.abilities = fragment;}) abilityFragments));
 }

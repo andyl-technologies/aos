@@ -4,6 +4,7 @@
 //! module. The `aos-release` crate remains the sole semantic contract.
 
 mod artifact_profiles;
+mod assemble;
 mod bootstrap;
 mod build;
 mod capture;
@@ -48,9 +49,13 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
         ReleaseCommand::Contract(args) => contract::run(args, nix, printer),
         ReleaseCommand::Plan(args) => plan::run(args, nix, printer),
         ReleaseCommand::Build(args) => build::run(args, nix, printer),
+        ReleaseCommand::Assemble(args) => assemble::run(args, nix, printer),
         ReleaseCommand::Status(args) => status::run(args, printer),
         ReleaseCommand::FinalizeImage(_) => {
             anyhow::bail!("release image finalization must use the asynchronous dispatcher")
+        }
+        ReleaseCommand::PrepareRegistry(_) => {
+            anyhow::bail!("release registry preparation must use the asynchronous dispatcher")
         }
         ReleaseCommand::FinalizeRegistry(_) => {
             anyhow::bail!("release registry finalization must use the asynchronous dispatcher")
@@ -145,7 +150,20 @@ pub async fn finalize_image(
     finalize_image::run(args, nix, printer).await
 }
 
-/// Authors and signs one complete isolated canonical registry transaction.
+/// Authors a complete registry tree and emits its exact review transaction.
+///
+/// # Errors
+///
+/// Returns an error for plan/build drift, untrusted provenance provider output,
+/// incomplete authoring, or non-atomic persistence.
+pub async fn prepare_registry(
+    args: &crate::cli::ReleasePrepareRegistryArgs,
+    printer: &Printer,
+) -> Result<()> {
+    finalize_registry::prepare(args, printer).await
+}
+
+/// Commits and signs one reviewed isolated canonical registry transaction.
 ///
 /// # Errors
 ///
@@ -155,7 +173,7 @@ pub async fn finalize_registry(
     args: &crate::cli::ReleaseFinalizeRegistryArgs,
     printer: &Printer,
 ) -> Result<()> {
-    finalize_registry::run(args, printer).await
+    finalize_registry::finalize(args, printer).await
 }
 
 /// Closes and threshold-signs one exact release bundle.

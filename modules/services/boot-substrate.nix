@@ -60,6 +60,158 @@
     if config.aos.boot.recovery.enable
     then "true"
     else "false";
+  validateNixStoreRootShell = ''
+    validate_nix_store_root() {
+      value=$1
+      case "$value" in
+        /nix/store/*) name=''${value#/nix/store/} ;;
+        *) return 1 ;;
+      esac
+      case "$name" in
+        ""|*/*) return 1 ;;
+      esac
+      hash=''${name%%-*}
+      store_name=''${name#*-}
+      [ "$hash" != "$name" ] && [ -n "$store_name" ] || return 1
+      [ "''${#hash}" -eq 32 ] || return 1
+      case "$hash" in
+        *[!0123456789abcdfghijklmnpqrsvwxyz]*) return 1 ;;
+      esac
+      case "$store_name" in
+        *[!A-Za-z0-9+._?=-]*) return 1 ;;
+      esac
+    }
+  '';
+  validateRootedExecutableShell = ''
+    validate_rooted_executable() {
+      root=$1
+      command_path=$2
+      target=$(readlink "$root$command_path") || return 1
+
+      case "$target" in
+        /nix/store/*/*) ;;
+        *) return 1 ;;
+      esac
+      store_relative=''${target#/nix/store/}
+      store_entry=''${store_relative%%/*}
+      executable_relative=''${store_relative#*/}
+      validate_nix_store_root "/nix/store/$store_entry" || return 1
+      case "/$executable_relative/" in
+        *"//"*|*"/./"*|*"/../"*) return 1 ;;
+      esac
+
+      rooted_target="$root/nix/store/$store_entry/$executable_relative"
+      [ ! -L "$rooted_target" ] \
+        && [ -f "$rooted_target" ] \
+        && [ -x "$rooted_target" ]
+    }
+  '';
+  nativeExecutorPathCheck = pkgs.runCommand "aos-native-executor-path-check" {} ''
+    ${validateNixStoreRootShell}
+    valid=/nix/store/44444444444444444444444444444444-aos-package-runtime
+    validate_nix_store_root "$valid"
+    for invalid in \
+      "$valid/bin/aos-package-runtime" \
+      /nix/store/short-runtime \
+      /nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-runtime \
+      /tmp/44444444444444444444444444444444-runtime
+    do
+      if validate_nix_store_root "$invalid"; then
+        echo "unexpectedly accepted native executor path: $invalid" >&2
+        exit 1
+      fi
+    done
+    touch $out
+  '';
+  rootedExecutablePathCheck = pkgs.runCommand "aos-rooted-executable-path-check" {} ''
+    ${validateNixStoreRootShell}
+    ${validateRootedExecutableShell}
+
+    sysroot=$TMPDIR/sysroot
+    store_name=44444444444444444444444444444444-rollout-tools
+    rooted_store="$sysroot/nix/store/$store_name"
+    mkdir -p "$sysroot/usr/bin" "$rooted_store/bin"
+    printf '%s\n' '#!${pkgs.bash}/bin/bash' 'exit 0' > "$rooted_store/bin/bootctl"
+    chmod 0555 "$rooted_store/bin/bootctl"
+    ln -s "/nix/store/$store_name/bin/bootctl" "$sysroot/usr/bin/bootctl"
+
+    # An initrd lookup follows the absolute link in its own namespace. The
+    # validator must instead inspect the executable below the mounted root.
+    test ! -x "$sysroot/usr/bin/bootctl"
+    validate_rooted_executable "$sysroot" /usr/bin/bootctl
+
+    chmod 0444 "$rooted_store/bin/bootctl"
+    if validate_rooted_executable "$sysroot" /usr/bin/bootctl; then
+      echo "unexpectedly accepted a non-executable command" >&2
+      exit 1
+    fi
+
+    printf '%s\n' '#!${pkgs.bash}/bin/bash' 'exit 0' > "$TMPDIR/escape"
+    chmod 0555 "$TMPDIR/escape"
+    ln -sfn "$TMPDIR/escape" "$rooted_store/bin/bootctl"
+    if validate_rooted_executable "$sysroot" /usr/bin/bootctl; then
+      echo "unexpectedly accepted a store-local symlink escape" >&2
+      exit 1
+    fi
+
+    ln -sfn "$TMPDIR/escape" "$sysroot/usr/bin/bootctl"
+    if validate_rooted_executable "$sysroot" /usr/bin/bootctl; then
+      echo "unexpectedly accepted a command outside the store" >&2
+      exit 1
+    fi
+
+    touch $out
+  '';
+
+  # This is a read-only description of the handoff the units below already
+  # implement. The initrd builder validates these units and target links before
+  # it publishes the artifact contract; this value does not schedule work.
+  bootSubstrateContract = {
+    completionTarget = "initrd-fs.target";
+    requiredUnits =
+      lib.optionals config.aos.boot.initrd.abilityHandoff.enable [
+        "aos-ability-initrd-controller.service"
+        "aos-ability-initrd-handoff-barrier.service"
+      ]
+      ++ [
+        "aos-config-seed.service"
+        "aos-credential-recovery.service"
+        "aos-machine-id.service"
+        "aos-seed-profiles.service"
+        "etc-overlay-setup.service"
+        "mount-var.service"
+        "nix-overlay-setup.service"
+        "run-etc-setup.service"
+      ];
+    preservedMounts = [
+      {
+        initrdPath = "/run";
+        hostPath = "/run";
+      }
+      {
+        initrdPath = "/sysroot/etc";
+        hostPath = "/etc";
+      }
+      {
+        initrdPath = "/sysroot/nix";
+        hostPath = "/nix";
+      }
+      {
+        initrdPath = "/sysroot/var";
+        hostPath = "/var";
+      }
+    ];
+    durableStateRoots = [
+      {
+        initrdPath = "/sysroot/var/lib/profiles/image";
+        hostPath = "/var/lib/profiles/image";
+      }
+      {
+        initrdPath = "/sysroot/var/lib/profiles/system";
+        hostPath = "/var/lib/profiles/system";
+      }
+    ];
+  };
 
   # The neutral boot-infrastructure units are always emitted and ordered
   # against `disksUnit` and `filesUnit`.
@@ -111,9 +263,12 @@
         ++ lib.optional (!zfsState && disksUnit != null) disksUnit
         ++ lib.optional zfsState "aos-zfs-unlock.service"
         ++ ["systemd-udev-settle.service"];
-      unitConfig = lib.optionalAttrs (!zfsState) {
-        ConditionPathExists = "/dev/disk/by-partlabel/var";
-      };
+      # Normal service defaults pull stage-2 targets back into the switch-root isolate.
+      unitConfig =
+        {DefaultDependencies = "no";}
+        // lib.optionalAttrs (!zfsState) {
+          ConditionPathExists = "/dev/disk/by-partlabel/var";
+        };
       environment.PATH = bootPath + lib.optionalString zfsState ":${zfsPackage}/bin:${zfsPackage}/sbin";
       serviceConfig = {
         Type = "oneshot";
@@ -176,7 +331,7 @@
     # a child of the previous image until first-boot re-evaluation commits.
     "etc-overlay-setup" = {
       description = "Set Up /etc Overlay Filesystem";
-      wantedBy = ["initrd-fs.target"];
+      requiredBy = ["initrd-fs.target"];
       before = [
         "initrd-fs.target"
         "initrd-switch-root.target"
@@ -287,7 +442,7 @@
     # bridge keeps the live AOS profile closure reachable.
     "nix-overlay-setup" = {
       description = "Set Up /nix Overlay Filesystem";
-      wantedBy = ["initrd-fs.target"];
+      requiredBy = ["initrd-fs.target"];
       before = [
         "initrd-fs.target"
         "initrd-switch-root.target"
@@ -301,6 +456,8 @@
         "mount-var.service"
         "initrd-root-fs.target"
       ];
+      # This initrd-only mount must not acquire normal-boot target dependencies.
+      unitConfig.DefaultDependencies = "no";
       environment.PATH = bootPath;
       serviceConfig = {
         Type = "oneshot";
@@ -334,7 +491,7 @@
     # (toplevel ships the initrd). Spec v12 §6.1.1, §6.1.
     "aos-seed-profiles" = {
       description = "Seed apm system-profile state on first boot";
-      wantedBy = ["initrd-fs.target"];
+      requiredBy = ["initrd-fs.target"];
       before = [
         filesUnit
         "run-etc-setup.service"
@@ -416,6 +573,9 @@
           printf '%s' "$result"
         }
 
+        ${validateNixStoreRootShell}
+        ${validateRootedExecutableShell}
+
         read_pcr11() {
           # cryptsetup may leave the swtpm resource manager busy briefly after
           # an unattended unlock. Never let an informational PCR read wedge
@@ -436,7 +596,9 @@
         }
 
         abi=$(read_meta module-abi)
+        state_version=$(read_meta state-version)
         baselib_digest=$(read_meta baselib-digest)
+        native_executor=$(read_meta native-executor-ref)
         base_lib=$(readlink "/sysroot$toplevel/base-lib")
         uki_path=$(read_meta uki-path)
         kern=$(readlink "/sysroot$toplevel/kernel" 2>/dev/null || true)
@@ -447,10 +609,34 @@
           /nix/store/*) ;;
           *) fail_image_identity "immutable toplevel has unsafe target $toplevel" ;;
         esac
+        validate_nix_store_root "$toplevel" \
+          || fail_image_identity "immutable toplevel is not a canonical Nix store root"
+        [ "$(readlink "/sysroot$toplevel/sw" 2>/dev/null || true)" = /usr ] \
+          || fail_image_identity "immutable toplevel has an invalid system command tree"
+        [ -d /sysroot/usr/bin ] && [ -d /sysroot/usr/sbin ] \
+          || fail_image_identity "immutable rootfs has no system command directories"
+        for command in mount bootctl systemctl aos-rollout-drain aos-rollout-health; do
+          validate_rooted_executable /sysroot "/usr/bin/$command" \
+            || fail_image_identity "immutable rootfs omits rollout command $command"
+        done
+
+        # The initrd's /run mount moves into the real root during switch-root,
+        # shadowing the rootfs tree. Publish the authenticated immutable image
+        # identity here so stage-2 consumers observe the toplevel that actually
+        # booted, independently of the mutable configured-generation pointer.
+        if [ -e /run/current-system ] && [ ! -L /run/current-system ]; then
+          fail_image_identity "/run/current-system is not a symbolic link"
+        fi
+        ln -sfn "$toplevel" /run/current-system
+
         case "$base_lib" in
           /nix/store/*) ;;
           *) fail_image_identity "immutable base-lib has unsafe target $base_lib" ;;
         esac
+        validate_nix_store_root "$native_executor" \
+          || fail_image_identity "immutable native executor is not a canonical Nix store root"
+        [ -n "$state_version" ] \
+          || fail_image_identity "immutable image has an empty state version"
         case "$uki_path" in
           EFI/Linux/*.efi) ;;
           *) fail_image_identity "immutable image records unsafe UKI path $uki_path" ;;
@@ -467,12 +653,16 @@
           || fail_image_identity "immutable os-release has no unique base-lib digest"
         os_version=$(read_os_release VERSION_ID "/sysroot$os_release") \
           || fail_image_identity "immutable os-release has no unique version"
+        os_state_version=$(read_os_release AOS_STATE_VERSION "/sysroot$os_release") \
+          || fail_image_identity "immutable os-release has no unique state version"
         [ "$abi" = "$os_abi" ] \
           || fail_image_identity "toplevel metadata disagrees with measured module ABI"
         [ "$baselib_digest" = "$os_digest" ] \
           || fail_image_identity "toplevel metadata disagrees with measured base-lib digest"
         [ "$(read_meta version)" = "$os_version" ] \
           || fail_image_identity "toplevel metadata disagrees with measured version"
+        [ "$state_version" = "$os_state_version" ] \
+          || fail_image_identity "toplevel metadata disagrees with measured state version"
 
         root_hash=$(read_cmdline_value roothash) \
           || fail_image_identity "kernel command line has ambiguous roothash"
@@ -523,16 +713,19 @@
           recovery_audit=/run/aos-seed-recovery-audit
           rm -rf "$recovery_audit"
           mkdir -p "$recovery_audit"
-          ${pkgs.binutils}/bin/objcopy -O binary --only-section=.cmdline \
-            "$recovery_mount/$recovery_uki" "$recovery_audit/cmdline" \
+          ${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped \
+            attest __read-uki-identity-section \
+            --uki "$recovery_mount/$recovery_uki" --section cmdline \
+            > "$recovery_audit/cmdline" \
             || fail_image_identity "cannot inspect paired recovery command line"
-          recovery_cmdline=$(tr -d '\000' < "$recovery_audit/cmdline")
+          recovery_cmdline=$(cat "$recovery_audit/cmdline")
           [ "$recovery_cmdline" = "console=ttyS0,115200 rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0" ] \
             || fail_image_identity "paired recovery UKI has a noncanonical signed command line"
-          ${pkgs.binutils}/bin/objcopy -O binary --only-section=.osrel \
-            "$recovery_mount/$recovery_uki" "$recovery_audit/os-release" \
+          ${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped \
+            attest __read-uki-identity-section \
+            --uki "$recovery_mount/$recovery_uki" --section osrel \
+            > "$recovery_audit/os-release.clean" \
             || fail_image_identity "cannot inspect paired recovery identity"
-          tr -d '\000' < "$recovery_audit/os-release" > "$recovery_audit/os-release.clean"
           recovery_release=$(read_os_release VERSION_ID "$recovery_audit/os-release.clean") \
             || fail_image_identity "paired recovery UKI has no unique signed release"
           recovery_copy=$(read_os_release AOS_RECOVERY_COPY "$recovery_audit/os-release.clean") \
@@ -626,6 +819,8 @@
             --arg top "$toplevel" \
             --arg kern "$kern" \
             --arg base "$base_lib" \
+            --arg state_version "$state_version" \
+            --arg native_executor "$native_executor" \
             --arg digest "$baselib_digest" \
             --arg now "$now" \
             --arg uki "$uki_path" \
@@ -638,6 +833,8 @@
             '({ running: 1, default: 1, pending: 1,
                generations: [({ number: 1, slot: $slot, uki_path: $uki,
                  toplevel: $top, package_name: $pn, version: $ver,
+                 state_version: $state_version,
+                 native_executor_ref: $native_executor,
                  registry: "seed", kernel_path: $kern,
                  evaluator_ref: $base, module_abi: $abi,
                  baselib_digest: $digest, created_at: $now }
@@ -654,6 +851,7 @@
             ${pkgs.jq}/bin/jq \
               --arg pn "$(read_meta package-name)" --arg ver "$(read_meta version)" \
               --arg top "$toplevel" --arg kern "$kern" --arg base "$base_lib" \
+              --arg state_version "$state_version" --arg native_executor "$native_executor" \
               --arg digest "$baselib_digest" --arg now "$now" \
               --arg uki "$uki_path" --arg slot "$boot_slot" \
               --arg root_hash "$root_hash" --arg initrd_pcr11 "$initrd_pcr11" \
@@ -663,7 +861,9 @@
               '.generations += [({ number: $next,
                  slot: $slot,
                  uki_path: $uki, toplevel: $top, package_name: $pn,
-                 version: $ver, registry: "seed", kernel_path: $kern,
+                 version: $ver, state_version: $state_version,
+                 native_executor_ref: $native_executor,
+                 registry: "seed", kernel_path: $kern,
                  evaluator_ref: $base, module_abi: $abi,
                  baselib_digest: $digest, created_at: $now }
                  + (if $root_hash == "" then {} else {root_verity_roothash: $root_hash} end)
@@ -681,12 +881,15 @@
               --arg top "$toplevel" --arg pn "$(read_meta package-name)" \
               --arg ver "$(read_meta version)" --arg kern "$kern" \
               --arg base "$base_lib" --arg digest "$baselib_digest" \
+              --arg state_version "$state_version" --arg native_executor "$native_executor" \
               --arg uki "$uki_path" --arg slot "$boot_slot" \
               --arg root_hash "$root_hash" --arg initrd_pcr11 "$initrd_pcr11" \
               --argjson abi "$abi" --argjson recovery "$recovery_json" \
               --argjson recovery_enabled ${recoveryEnabledJson} \
               '[.generations[] | select(
                  .toplevel == $top and .package_name == $pn and .version == $ver
+                 and .state_version == $state_version
+                 and .native_executor_ref == $native_executor
                  and .kernel_path == $kern and .evaluator_ref == $base
                  and .module_abi == $abi and .baselib_digest == $digest
                  and ((.uki_source_path // .uki_path) == $uki) and .slot == $slot
@@ -894,7 +1097,7 @@
     # upper) into stage-2 still reachable at /run/etc/... by path.
     "run-etc-setup" = {
       description = "Mount /run/etc tmpfs";
-      wantedBy = ["initrd-fs.target"];
+      requiredBy = ["initrd-fs.target"];
       before = [
         filesUnit
         "etc-overlay-setup.service"
@@ -922,7 +1125,7 @@
     # regenerating the ID every reboot. Spec v12 §6.1.5.
     "aos-machine-id" = {
       description = "Seed /var/etc/machine-id on first boot";
-      wantedBy = ["initrd-fs.target"];
+      requiredBy = ["initrd-fs.target"];
       before = [
         "etc-overlay-setup.service"
         "initrd-fs.target"
@@ -959,7 +1162,45 @@
     };
   };
 in {
+  options.system.build.bootSubstrateContract = lib.mkOption {
+    type = lib.types.submodule {
+      config._module.strict = true;
+      options = {
+        completionTarget = lib.mkOption {type = lib.types.str;};
+        requiredUnits = lib.mkOption {type = lib.types.listOf lib.types.str;};
+        preservedMounts = lib.mkOption {
+          type = lib.types.listOf (lib.types.submodule {
+            config._module.strict = true;
+            options = {
+              initrdPath = lib.mkOption {type = lib.types.str;};
+              hostPath = lib.mkOption {type = lib.types.str;};
+            };
+          });
+        };
+        durableStateRoots = lib.mkOption {
+          type = lib.types.listOf (lib.types.submodule {
+            config._module.strict = true;
+            options = {
+              initrdPath = lib.mkOption {type = lib.types.str;};
+              hostPath = lib.mkOption {type = lib.types.str;};
+            };
+          });
+        };
+      };
+    };
+    readOnly = true;
+    internal = true;
+    description = ''
+      Exact mount and durable-state handoff already implemented by the neutral
+      initrd units. The initrd assembly contract consumes this read-only value.
+    '';
+  };
+
   config = {
+    system.build.bootSubstrateContract = bootSubstrateContract;
+    system.build.checks.native-executor-path = nativeExecutorPathCheck;
+    system.build.checks.rooted-executable-path = rootedExecutablePathCheck;
+
     # Initrd services. The cpio assembler in modules/base/initrd-builder.nix
     # picks these up via `system.build.systemdInitrdUnits`.
     boot.initrd.systemd.services = neutralBootServices;

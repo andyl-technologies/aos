@@ -31,13 +31,49 @@ pub struct QualificationObjectV1 {
     pub sha256: Sha256Digest,
 }
 
+/// One verified object from a retained, non-public predecessor bundle.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct QualificationRetainedObjectV1 {
+    /// Manifest artifact identity in the predecessor release.
+    pub artifact_id: String,
+    /// Absolute local path from which the executor must recapture the bytes.
+    pub source_path: String,
+    /// Exact expected byte length.
+    pub size_bytes: u64,
+    /// Exact expected SHA-256 digest.
+    pub sha256: Sha256Digest,
+}
+
+/// One public verification key supplied with a retained predecessor bundle.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct QualificationTrustedKeyV1 {
+    /// Stable manifest signer key identity.
+    pub key_id: String,
+    /// Exact Ed25519 public key as 64 lowercase hexadecimal digits.
+    pub public_key_hex: String,
+}
+
+/// Closed local input needed to reverify and exercise a prior release.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct QualificationRetainedBundleV1 {
+    /// Absolute root of the complete retained predecessor bundle.
+    pub bundle_path: String,
+    /// Exact predecessor subject graph recaptured before scenario execution.
+    pub objects: Vec<QualificationRetainedObjectV1>,
+    /// Ordered public keys with which the executor reverifies the bundle.
+    pub trusted_keys: Vec<QualificationTrustedKeyV1>,
+}
+
 /// Closed request for one planned gate on one artifact-bearing platform.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct QualificationExecutorRequestV1 {
     /// Exact request schema identifier.
     pub schema_version: String,
-    /// Applicable v2 execution case, absent only in legacy requests.
+    /// Applicable shared-contract execution case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qualification_case: Option<crate::qualification_evidence::QualificationCase>,
     /// Canonical registry identity.
@@ -58,6 +94,9 @@ pub struct QualificationExecutorRequestV1 {
     pub subjects: Vec<String>,
     /// Complete immutable public staging object inventory.
     pub objects: Vec<QualificationObjectV1>,
+    /// Verified local predecessor input required by an update case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_predecessor: Option<QualificationRetainedBundleV1>,
     /// Coordinator-chosen replay-resistant request nonce.
     pub nonce: String,
 }
@@ -70,14 +109,11 @@ impl QualificationExecutorRequestV1 {
     /// Returns an error for malformed identity, ordering, subject, URL, or
     /// nonce fields.
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V1
-            && self.schema_version != "aos.release.qualification-executor-request/v2"
-        {
+        if self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V1 {
             bail!("unsupported qualification executor request schema");
         }
         if let Some(case) = &self.qualification_case {
-            if self.schema_version != "aos.release.qualification-executor-request/v2"
-                || case.requirement_id != self.policy_id
+            if case.requirement_id != self.policy_id
                 || case.policy_digest != self.policy_digest
                 || case.subjects != self.subjects
                 || case
@@ -86,8 +122,6 @@ impl QualificationExecutorRequestV1 {
             {
                 bail!("qualification request differs from its exact execution case");
             }
-        } else if self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V1 {
-            bail!("v2 qualification request lacks an execution case");
         }
         require_identifier(&self.registry, "qualification registry")?;
         require_identifier(&self.release_id, "qualification release id")?;
@@ -127,6 +161,20 @@ impl QualificationExecutorRequestV1 {
         {
             bail!("qualification request subject is absent from its public object inventory");
         }
+        let case_predecessor = self
+            .qualification_case
+            .as_ref()
+            .and_then(|case| case.predecessor.as_ref());
+        match (case_predecessor, &self.retained_predecessor) {
+            (Some(_), Some(retained)) => retained.validate(&self.subjects)?,
+            (Some(_), None) => {
+                bail!("qualification update request lacks its exact predecessor bundle")
+            }
+            (None, Some(_)) => {
+                bail!("qualification request has a predecessor bundle without an update case")
+            }
+            (None, None) => {}
+        }
         Ok(())
     }
 
@@ -138,6 +186,72 @@ impl QualificationExecutorRequestV1 {
     pub fn digest(&self) -> Result<Sha256Digest> {
         Sha256Digest::of_canonical(QUALIFICATION_EXECUTOR_REQUEST_V1, self)
     }
+}
+
+impl QualificationRetainedBundleV1 {
+    fn validate(&self, subjects: &[String]) -> Result<()> {
+        let bundle = std::path::Path::new(&self.bundle_path);
+        if !normalized_absolute_path(bundle) {
+            bail!("qualification predecessor bundle path must be absolute and normalized");
+        }
+        if self.objects.is_empty()
+            || self
+                .objects
+                .windows(2)
+                .any(|pair| pair[0].artifact_id >= pair[1].artifact_id)
+        {
+            bail!("qualification predecessor objects must be nonempty, unique, and sorted");
+        }
+        for object in &self.objects {
+            require_identifier(&object.artifact_id, "qualification predecessor object id")?;
+            let path = std::path::Path::new(&object.source_path);
+            if !normalized_absolute_path(path) || !path.starts_with(bundle) {
+                bail!("qualification predecessor object path escapes its retained bundle");
+            }
+        }
+        let object_ids = self
+            .objects
+            .iter()
+            .map(|object| object.artifact_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        if !object_ids.contains("control/release-manifest-envelope")
+            || subjects
+                .iter()
+                .any(|subject| !object_ids.contains(subject.as_str()))
+        {
+            bail!("qualification update request lacks its exact predecessor object graph");
+        }
+        if self.trusted_keys.is_empty()
+            || self
+                .trusted_keys
+                .windows(2)
+                .any(|pair| pair[0].key_id >= pair[1].key_id)
+        {
+            bail!("qualification predecessor keys must be nonempty, unique, and sorted");
+        }
+        for key in &self.trusted_keys {
+            require_identifier(&key.key_id, "qualification predecessor key id")?;
+            if key.public_key_hex.len() != 64
+                || !key
+                    .public_key_hex
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                bail!("qualification predecessor key must be lowercase hexadecimal Ed25519 bytes");
+            }
+        }
+        Ok(())
+    }
+}
+
+fn normalized_absolute_path(path: &std::path::Path) -> bool {
+    path.is_absolute()
+        && !path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
 }
 
 /// Canonical response emitted by a bounded native qualification executor.
@@ -733,6 +847,7 @@ mod tests {
                 size_bytes: 42,
                 sha256: digest("package"),
             }],
+            retained_predecessor: None,
             nonce: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
         };
         assert!(request.validate().is_ok());
@@ -740,6 +855,11 @@ mod tests {
         let mut missing = request.clone();
         missing.subjects = vec!["package/not-present".to_owned()];
         assert!(missing.validate().is_err());
+
+        let mut removed_executor_draft = request.clone();
+        removed_executor_draft.schema_version =
+            "aos.release.qualification-executor-request/v2".to_owned();
+        assert!(removed_executor_draft.validate().is_err());
 
         let mut mutable_url = request;
         mutable_url.objects[0].url.push_str("?token=secret");

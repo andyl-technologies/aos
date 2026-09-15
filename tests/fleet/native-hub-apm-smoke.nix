@@ -620,7 +620,6 @@ in {
             --name aos-hub --version '${pkgs.aos-hub.version}' \\
             --description 'Native and Worker registry Hub service.' \\
             --license Apache-2.0 --maintainer publisher@example.test \\
-            --documentation-base-lib {shlex.quote(DOCUMENTATION_BASE_LIB)} \\
             --key-id initial
           {APR} release 1.0.0 --registry production \\
             --store-path {TOOL_V1} --name hub-tool \\
@@ -673,10 +672,7 @@ in {
               token,
           ) + f" | {JQ} -e '.package.name == \"aos-hub\" "
           "and (.options | length > 10) "
-          "and (.options | any(.display_path == \"aos.registry-hub.listen\")) "
-          "and (.runtime.units | any(.name == \"aos-hub.service\")) "
-          "and (.runtime.units | all((.summary | type == \"string\") and (length > 0))) "
-          "and (.identity.system_module_nar_hash | type == \"string\")'"
+          "and (.options | any(.display_path == \"aos.registry-hub.listen\"))'"
       )
       publisher.succeed(
           hub_command(
@@ -708,7 +704,6 @@ in {
       publisher.succeed(
           f"{JQ} -e '.schema == \"aos.package-documentation/v1\" "
           "and .package.name == \"nginx\" and (.options | length > 0) "
-          "and (.runtime.units | all((.summary | type == \"string\") and (length > 0)))' "
           "/var/tmp/nginx-documentation.json"
       )
 

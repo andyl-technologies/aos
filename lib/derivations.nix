@@ -167,7 +167,7 @@
   # would turn harmless `#!/usr/bin/env ...` references into live
   # `/nix/store/<hash>-python3/bin/python3` paths, pulling python/perl/etc.
   # into closures that never needed them.
-  fixupPhase = {
+  fixupPhaseFor = stripCommand: {
     name = "fixup";
     script = ''
       object_format="''${AOS_OBJECT_FORMAT:-elf}"
@@ -177,11 +177,14 @@
         for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
           [ -d "$p" ] || continue
-          find "$p" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) -exec strip --strip-unneeded {} \; 2>/dev/null || true
-          find "$p" -type f -name '*.a' -exec strip -S {} \; 2>/dev/null || true
+          find "$p" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) \
+            -exec chmod u+w {} \; -exec ${stripCommand} --strip-unneeded {} \; 2>/dev/null || true
+          find "$p" -type f -name '*.a' \
+            -exec chmod u+w {} \; -exec ${stripCommand} -S {} \; 2>/dev/null || true
           for d in bin sbin libexec; do
             if [ -d "$p/$d" ]; then
-              find "$p/$d" -type f -exec strip -s {} \; 2>/dev/null || true
+              find "$p/$d" -type f \
+                -exec chmod u+w {} \; -exec ${stripCommand} -s {} \; 2>/dev/null || true
             fi
           done
         done
@@ -237,6 +240,13 @@
     '';
   };
 
+  fixupPhase = fixupPhaseFor "strip";
+
+  # A native binutils only recognizes its own object targets. Cross packages
+  # without a custom fixup must use the selected target strip so debug sections
+  # cannot retain the compiler in otherwise small runtime closures.
+  crossElfFixupPhase = fixupPhaseFor "\"$STRIP\"";
+
   # Preserve the native phase bytes while avoiding grep -q's intentional
   # early pipe close for large Mach-O archives in Darwin cross builds.
   darwinCrossFixupPhase = let
@@ -277,17 +287,39 @@
         # The env vars are nixpkgs-style ($buildInputs = runtimeDeps,
         # $propagatedBuildInputs = propagatedDeps).
         keep_args=""
+        append_keep_paths() {
+          for p in "$@"; do
+            [ -n "$p" ] && keep_args="$keep_args -e $p"
+          done
+        }
+
         for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
-          [ -n "$p" ] && keep_args="$keep_args -e $p"
-        done
-        for p in ''${buildInputs:-} ''${propagatedBuildInputs:-} ''${nukeRefsKeep:-}; do
-          [ -n "$p" ] && keep_args="$keep_args -e $p"
+          append_keep_paths "$p"
         done
 
-        # Default target set: every executable, every shared lib, every
+        # Structured attrs expose dependency lists as arrays. An ordinary
+        # scalar expansion reads only element zero, which would silently scrub
+        # every later intentional runtime reference from scripts and binaries.
+        if declare -p buildInputs 2>/dev/null | grep -q 'declare -a'; then
+          append_keep_paths "''${buildInputs[@]}"
+        else
+          append_keep_paths ''${buildInputs:-}
+        fi
+        if declare -p propagatedBuildInputs 2>/dev/null | grep -q 'declare -a'; then
+          append_keep_paths "''${propagatedBuildInputs[@]}"
+        else
+          append_keep_paths ''${propagatedBuildInputs:-}
+        fi
+        if declare -p nukeRefsKeep 2>/dev/null | grep -q 'declare -a'; then
+          append_keep_paths "''${nukeRefsKeep[@]}"
+        else
+          append_keep_paths ''${nukeRefsKeep:-}
+        fi
+
+        # Default target set: every executable, library, and
         # pkgconfig/.la/Makefile/sysconfig file. These are the locations
-        # autotools/python embed build-tool paths into. Python's
+        # compilers, Autotools, and Python embed build-tool paths into. Python's
         # __pycache__ is included because import compiles _sysconfigdata
         # to .pyc at install time, baking the build-time toolchain refs
         # into a binary blob that the .py-only pattern would miss.
@@ -298,6 +330,7 @@
                -path "*/bin/*" -o -path "*/sbin/*" -o -path "*/libexec/*" \
             -o -name "*.so" -o -name "*.so.*" \
             -o -name "*.dylib" -o -name "*.dylib.*" \
+            -o -name "*.a" -o -name "*.rlib" \
             -o -name "*.pc"  -o -name "*.la" \
             -o -name "Makefile" \
             -o -name "_sysconfigdata*.py"  -o -name "_sysconfigdata*.pyc" \
@@ -456,7 +489,7 @@
   # ---------------------------------------------------------------------------
   # Internal: generate the build script from a list of phases
   # ---------------------------------------------------------------------------
-  phasesToScript = phases: shell: let
+  phasesToScript = phases: shell: useStructuredAttrs: let
     phaseScripts =
       builtins.map (phase: ''
         echo ">>> Phase: ${phase.name}"
@@ -464,6 +497,31 @@
         echo "<<< Phase: ${phase.name} complete"
       '')
       phases;
+    structuredAttrsPreSource =
+      if useStructuredAttrs
+      then
+        "\n"
+        + builtins.concatStringsSep "\n" [
+          "  # Nix writes scalar attrs as plain `declare` statements. Mark those"
+          "  # assignments for export while sourcing the file so compiler and build"
+          "  # subprocesses receive the same environment as an unstructured build."
+          "  case \"$-\" in"
+          "    *a*) __attrs_allexport_was_set=1 ;;"
+          "    *) __attrs_allexport_was_set=0; set -a ;;"
+          "  esac"
+        ]
+      else "";
+    structuredAttrsPostSource =
+      if useStructuredAttrs
+      then
+        builtins.concatStringsSep "\n" [
+          "  if [ \"$__attrs_allexport_was_set\" = 0 ]; then"
+          "    set +a"
+          "  fi"
+          "  unset __attrs_allexport_was_set"
+          ""
+        ]
+      else "";
   in ''
     #!${shell}
     set -eu
@@ -477,9 +535,9 @@
     # array (declare -A outputs=([out]=/nix/store/… [dev]=/nix/store/…))
     # but does NOT set each output name as a scalar. Re-declare them so
     # phase scripts that reference $out / $dev / etc. keep working.
-    if [ -n "''${NIX_ATTRS_SH_FILE:-}" ]; then
+    if [ -n "''${NIX_ATTRS_SH_FILE:-}" ]; then${structuredAttrsPreSource}
       . "$NIX_ATTRS_SH_FILE"
-      if declare -p outputs 2>/dev/null | grep -q 'declare -A'; then
+    ${structuredAttrsPostSource}  if declare -p outputs 2>/dev/null | grep -q 'declare -A'; then
         AOS_OUTPUT_NAMES="''${!outputs[*]}"
         for __o in "''${!outputs[@]}"; do
           declare -g "$__o=''${outputs[$__o]}"
@@ -618,7 +676,6 @@
     passthru ? {},
     update ? null,
     checks ? null,
-    expose ? null,
     # ── Compiler-hardening policy ─────────────────────────────────────
     # Per-package opt-in / opt-out over the central token set. The
     # effective set is (defaultHardeningFlags ++ hardeningEnable) minus
@@ -728,6 +785,8 @@
         != outputPlatform.system
         && outputPlatform.objectFormat == "macho"
       then darwinCrossFixupPhase
+      else if buildPlatform.system != outputPlatform.system
+      then crossElfFixupPhase
       else fixupPhase;
 
     allPhases =
@@ -741,7 +800,7 @@
         (targetPlatformMetadataPhase outputPlatform.system)
       ];
 
-    builder = phasesToScript allPhases shell;
+    builder = phasesToScript allPhases shell useStructuredAttrs;
 
     # Extra args to pass through to builtins.derivation
     extraArgs = builtins.removeAttrs args [
@@ -778,7 +837,6 @@
       "passthru"
       "update"
       "checks"
-      "expose"
       "hardeningEnable"
       "hardeningDisable"
       "defaultHardeningFlags"
@@ -1039,11 +1097,6 @@
             platforms = derivationPlatforms;
           }
           // (
-            if expose != null
-            then {inherit expose;}
-            else {}
-          )
-          // (
             if update != null
             then {
               aos = (passthru.aos or {}) // {maintenance = update;};
@@ -1051,11 +1104,6 @@
             else {}
           );
       }
-      // (
-        if expose != null
-        then {inherit expose;}
-        else {}
-      )
       // (
         if checks != null
         then {inherit checks;}

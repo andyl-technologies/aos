@@ -32,7 +32,8 @@ use super::policy::admit_package_roots;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
 use super::profile::meta::{
-    delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
+    delete_meta, list_meta, snapshot_profile_meta_to_generation,
+    validate_ordinary_profile_ability_state, write_meta,
 };
 use super::registry::{RegistrySet, store_path_hash};
 use super::remove::retained_installed_indexes;
@@ -108,6 +109,8 @@ pub async fn run(
     printer.step(1, 7, "Loading installed packages...");
     let inspect_profile = Profile::open_readonly(config.scope);
     let installed = list_meta(&inspect_profile)?;
+    validate_ordinary_profile_ability_state(&installed)
+        .context("admitting retained package state for upgrade")?;
 
     // Step 2: Load registries from cache.
     printer.step(2, 7, "Loading registries...");
@@ -188,14 +191,14 @@ pub async fn run(
         .context("computing post-upgrade profile roots")?;
     let obsolete_hashes = obsolete_installed_hashes(&installed, &needed_hashes);
     let mut expose_artifacts = collect_expose_artifacts(&to_upgrade)?;
-    collect_documentation_artifacts(&upgrade_closures, &mut expose_artifacts)?;
+    collect_closure_secondary_artifacts(&upgrade_closures, &mut expose_artifacts)?;
 
     // Sysroot-lock check for upgraded packages.
     if !matches!(ignore_lock, IgnoreSysrootLock::All) {
         if let Some((sysroot_refs, sys_name, sys_version)) =
-            sysroot_lock::get_sysroot_references(config)
+            sysroot_lock::get_sysroot_references(config)?
         {
-            let lookup = sysroot_lock::build_registry_lookup(config);
+            let lookup = sysroot_lock::build_registry_lookup(config)?;
             for (_reg_name, closure_metas) in &upgrade_closures {
                 let pkg_refs: Vec<String> = closure_metas
                     .iter()
@@ -337,6 +340,15 @@ pub async fn run(
         printer.info("All packages already in store, skipping download.");
     }
 
+    let _verified_ability_packages = super::install::verify_ability_packages_from_cache_with_store(
+        config,
+        upgrade_closures
+            .iter()
+            .flat_map(|(registry_name, closure)| {
+                closure.iter().map(|meta| (registry_name.as_str(), meta))
+            }),
+    )?;
+
     // Step 8: Create new generation.
     printer.step(6, 7, "Updating profile...");
     let profile = Profile::open(config.scope)?;
@@ -408,6 +420,7 @@ pub async fn run(
                     expose_artifact: meta.expose_artifact.clone(),
                     config_module: meta.config_module.clone(),
                     documentation: meta.documentation.clone(),
+                    ability: meta.ability.clone(),
                     permissions: meta.permissions.clone(),
                     bpf_lsm: meta.bpf_lsm.clone(),
                     attestation: meta.attestation.clone(),
@@ -609,9 +622,7 @@ fn hashes_for_installed_names(
         .collect()
 }
 
-/// Hashes of installed entries (and their source derivations) not in the
-/// needed set — their GC roots and metadata are dropped from the new
-/// generation.
+/// Hashes of every root owned by installed entries absent from the needed set.
 fn obsolete_installed_hashes(
     installed: &[InstalledMeta],
     needed_hashes: &HashSet<String>,
@@ -630,6 +641,18 @@ fn obsolete_installed_hashes(
         hashes.insert(hash);
         if !apm.source_drv.is_empty() {
             hashes.insert(store_path_hash(&apm.source_drv).to_string());
+        }
+        if let Some(documentation) = &apm.documentation {
+            hashes.insert(store_path_hash(&documentation.store_path).to_string());
+        }
+        if let Some(ability) = &apm.ability {
+            hashes.insert(store_path_hash(&ability.store_path).to_string());
+            hashes.extend(
+                ability
+                    .artifacts
+                    .iter()
+                    .map(|artifact| store_path_hash(&artifact.store_path).to_string()),
+            );
         }
     }
     hashes
@@ -724,7 +747,7 @@ fn upgrade_candidate_json(candidate: &UpgradeCandidate) -> serde_json::Value {
 /// Load registries from the config's cache directory.
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
-    RegistrySet::load(&config.cache_path(), &reg_configs, &native_platform())
+    RegistrySet::load_for_package_operations(&config.cache_path(), &reg_configs, &native_platform())
 }
 
 /// Prompt for confirmation. Returns `Err(UserCancelled)` on "n".
@@ -904,7 +927,7 @@ fn collect_expose_artifacts(
     Ok(artifacts)
 }
 
-fn collect_documentation_artifacts(
+fn collect_closure_secondary_artifacts(
     closures: &[(String, Vec<PackageMeta>)],
     artifacts: &mut Vec<SecondaryArtifactDownload>,
 ) -> Result<()> {
@@ -915,18 +938,39 @@ fn collect_documentation_artifacts(
         .collect::<HashMap<_, _>>();
     for (registry_name, packages) in closures {
         for package in packages {
-            let Some(documentation) = &package.documentation else {
-                continue;
-            };
-            push_secondary_artifact(
-                artifacts,
-                &mut seen,
-                registry_name,
-                &documentation.store_path,
-                &documentation.nar_hash,
-                true,
-                true,
-            )?;
+            if let Some(documentation) = &package.documentation {
+                push_secondary_artifact(
+                    artifacts,
+                    &mut seen,
+                    registry_name,
+                    &documentation.store_path,
+                    &documentation.nar_hash,
+                    true,
+                    true,
+                )?;
+            }
+            if let Some(ability) = &package.ability {
+                push_secondary_artifact(
+                    artifacts,
+                    &mut seen,
+                    registry_name,
+                    &ability.store_path,
+                    &ability.nar_hash,
+                    true,
+                    false,
+                )?;
+                for artifact in &ability.artifacts {
+                    push_secondary_artifact(
+                        artifacts,
+                        &mut seen,
+                        registry_name,
+                        &artifact.store_path,
+                        &artifact.nar_hash,
+                        true,
+                        false,
+                    )?;
+                }
+            }
         }
     }
     Ok(())
@@ -1161,6 +1205,7 @@ mod tests {
                 expose_artifact: None,
                 config_module: None,
                 documentation: None,
+                ability: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -1193,6 +1238,7 @@ mod tests {
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),
@@ -1785,6 +1831,7 @@ nar_size = 42
                     expose_artifact: None,
                     config_module: None,
                     documentation: None,
+                    ability: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),
@@ -1820,6 +1867,7 @@ nar_size = 42
                     expose_artifact: None,
                     config_module: None,
                     documentation: None,
+                    ability: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),
@@ -1873,6 +1921,7 @@ nar_size = 42
                     expose_artifact: None,
                     config_module: None,
                     documentation: None,
+                    ability: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),
@@ -1908,6 +1957,7 @@ nar_size = 42
                     expose_artifact: None,
                     config_module: None,
                     documentation: None,
+                    ability: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),
@@ -1962,6 +2012,7 @@ nar_size = 42
                     expose_artifact: None,
                     config_module: None,
                     documentation: None,
+                    ability: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),
@@ -1997,6 +2048,7 @@ nar_size = 42
                     expose_artifact: None,
                     config_module: None,
                     documentation: None,
+                    ability: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),

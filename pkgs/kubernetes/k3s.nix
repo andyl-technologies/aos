@@ -3,8 +3,8 @@
   mkDerivation,
   fetchurl,
   fetchGoModules,
+  buildPackages,
   gnumake,
-  go,
 }: let
   version = "1.35.1-k3s1";
   srcVersion = "1.35.1+k3s1";
@@ -27,7 +27,7 @@ in
 
     buildDeps = [
       gnumake
-      go
+      buildPackages.go
     ];
     runtimeDeps = [];
 
@@ -87,6 +87,10 @@ in
           export CGO_ENABLED=1
           export GOPROXY=off
           export GOFLAGS="-mod=readonly"
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            export GOOS="$AOS_GOOS"
+            export GOARCH="$AOS_GOARCH"
+          fi
           mkdir -p "$GOCACHE"
 
           # Build from cmd/server, NOT from the repo root. The root

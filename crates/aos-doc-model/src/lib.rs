@@ -14,13 +14,37 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub use aos_ability_model::{
+    AbilityValue, DocumentedValue, OptionEnumValue as EnumValue, OptionSource as SourceLocator,
+    OptionType, OptionVisibility as Visibility, RelativePath,
+};
+
+mod ability_deployment;
+mod ability_nar;
+mod ability_reference;
 mod nar;
 
+pub use ability_deployment::{
+    ABILITY_DEPLOYMENT_OVERLAY_SCHEMA, AbilityDeploymentExport, AbilityDeploymentObservation,
+    AbilityDeploymentObservationState, AbilityDeploymentPackage, AbilityDeploymentPlan,
+    AbilityDeploymentPlanState, MAX_ABILITY_DEPLOYMENT_OVERLAY_BYTES,
+    MAX_ABILITY_DEPLOYMENT_VALID_FOR_SECONDS, PackageAbilityDeploymentOverlay,
+    ability_deployment_supported_features,
+};
+pub use ability_nar::{
+    AbilityCompanionDocuments, MAX_ABILITY_COMPANION_NAR_BYTES, decode_ability_companion_nar,
+};
+pub use ability_reference::{
+    ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1, ABILITY_REFERENCE_SCHEMA, AbilityExportReference,
+    AbilityHandlerReference, MAX_ABILITY_REFERENCE_BYTES, PackageAbilityReference,
+    ability_reference_supported_features,
+};
 pub use nar::decode_single_file_nar;
 
 /// Returns the stable HTML anchor for a documentation search kind and key.
@@ -46,15 +70,37 @@ pub const DOCUMENT_SCHEMA: &str = "aos.package-documentation/v1";
 /// Media/format identifier advertised by signed registry metadata.
 pub const DOCUMENT_FORMAT: &str = "aos.package-documentation/v1+json";
 
-/// Closed JSON Schema served to editors and language tooling.
-pub const DOCUMENT_JSON_SCHEMA: &str = include_str!("../schema-v1.json");
+/// Generates the closed JSON Schema served to editors and language tooling.
+///
+/// The schema is derived from the same Rust data contract that decodes package
+/// documentation. This keeps new variants and field changes visible to every
+/// frontend without a separately maintained schema snapshot.
+///
+/// # Errors
+///
+/// Returns an error if the generated schema cannot be represented as JSON.
+pub fn document_json_schema() -> Result<Vec<u8>> {
+    let mut schema = serde_json::to_value(schemars::schema_for!(PackageDocumentation))?;
+    let schema_property = schema
+        .pointer_mut("/properties/schema")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            DocumentationError::Invalid(
+                "generated documentation schema omits its schema property".to_string(),
+            )
+        })?;
+    schema_property.insert(
+        "const".to_string(),
+        Value::String(DOCUMENT_SCHEMA.to_string()),
+    );
+
+    Ok(serde_json::to_vec_pretty(&schema)?)
+}
 
 /// Maximum canonical document size admitted by version 1.
 pub const MAX_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
 
 const MAX_OPTIONS: usize = 16_384;
-const MAX_SECTIONS: usize = 256;
-const MAX_RUNTIME_ITEMS: usize = 8_192;
 const MAX_TEXT_BYTES: usize = 256 * 1024;
 const MAX_LITERAL_DEPTH: usize = 32;
 const MAX_LITERAL_ITEMS: usize = 16_384;
@@ -74,7 +120,7 @@ pub enum DocumentationError {
 pub type Result<T> = std::result::Result<T, DocumentationError>;
 
 /// One canonical package documentation object.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PackageDocumentation {
     /// Closed document schema identifier.
@@ -83,19 +129,13 @@ pub struct PackageDocumentation {
     pub package: DocumentedPackage,
     /// Content and cross-artifact identities without store paths.
     pub identity: DocumentationIdentity,
-    /// Package-authored structured explanatory sections.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sections: Vec<Section>,
     /// Mechanically extracted option reference.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<OptionDocument>,
-    /// Mechanically derived runtime surface.
-    #[serde(default)]
-    pub runtime: RuntimeSurface,
 }
 
 /// Package identity and short catalog metadata embedded in a document.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DocumentedPackage {
     /// Registry package name.
@@ -114,7 +154,7 @@ pub struct DocumentedPackage {
 }
 
 /// Semantic and artifact digests repeated for self-description.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DocumentationIdentity {
     /// Digest over configuration meaning, excluding explanatory prose.
@@ -124,9 +164,6 @@ pub struct DocumentationIdentity {
     /// Optional config-module NAR hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_module_nar_hash: Option<String>,
-    /// Optional image base-module NAR hash for system-owned options.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub system_module_nar_hash: Option<String>,
     /// Optional expose-artifact NAR hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose_artifact_nar_hash: Option<String>,
@@ -134,20 +171,8 @@ pub struct DocumentationIdentity {
     pub source_nar_hash: String,
 }
 
-/// One package-authored conceptual section.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Section {
-    /// Stable document-local identifier.
-    pub id: String,
-    /// Human section title.
-    pub title: String,
-    /// Structured prose blocks.
-    pub blocks: Vec<ProseBlock>,
-}
-
 /// Closed structured-prose block understood by every renderer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ProseBlock {
     /// A paragraph of safe inline spans.
@@ -184,7 +209,7 @@ pub enum ProseBlock {
 }
 
 /// One safe inline prose span.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum InlineSpan {
     /// Plain text.
@@ -207,7 +232,7 @@ pub enum InlineSpan {
 }
 
 /// Link destination admitted by structured prose.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum LinkTarget {
     /// Another package in the selected registry.
@@ -219,11 +244,6 @@ pub enum LinkTarget {
     Option {
         /// Option path.
         path: Vec<PathSegment>,
-    },
-    /// A section in the current document.
-    Section {
-        /// Section identifier.
-        id: String,
     },
     /// A repository-relative source locator.
     Source {
@@ -238,7 +258,7 @@ pub enum LinkTarget {
 }
 
 /// Note severity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum NoteSeverity {
     /// General useful information.
@@ -250,7 +270,7 @@ pub enum NoteSeverity {
 }
 
 /// One definition-table row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DefinitionEntry {
     /// Plain-text term.
@@ -260,7 +280,7 @@ pub struct DefinitionEntry {
 }
 
 /// One exact or dynamic option-path segment.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum PathSegment {
     /// Exact option attribute segment.
@@ -284,140 +304,8 @@ impl PathSegment {
     }
 }
 
-/// Closed rich option type algebra.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum OptionType {
-    /// Boolean value.
-    Bool,
-    /// Signed integer value.
-    Integer {
-        /// Inclusive lower bound.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        min: Option<i64>,
-        /// Inclusive upper bound.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max: Option<i64>,
-    },
-    /// Unsigned integer value.
-    Unsigned {
-        /// Inclusive lower bound.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        min: Option<u64>,
-        /// Inclusive upper bound.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max: Option<u64>,
-    },
-    /// String with optional constraints.
-    String {
-        /// Optional regular-expression description.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pattern: Option<String>,
-        /// Optional maximum byte length.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_length: Option<u64>,
-    },
-    /// TCP/UDP port number.
-    Port,
-    /// Filesystem path.
-    Path,
-    /// Duration value.
-    Duration,
-    /// CIDR network prefix.
-    Cidr,
-    /// Opaque credential or secret reference.
-    OpaqueReference,
-    /// Enumerated string values.
-    Enum {
-        /// Admitted values and their optional descriptions.
-        values: Vec<EnumValue>,
-    },
-    /// Ordered list.
-    List {
-        /// Element type.
-        element: Box<OptionType>,
-        /// Whether duplicate values are forbidden.
-        #[serde(default)]
-        unique: bool,
-    },
-    /// Unordered semantic set.
-    Set {
-        /// Element type.
-        element: Box<OptionType>,
-    },
-    /// Attribute map with dynamic keys.
-    AttrsOf {
-        /// Value type.
-        value: Box<OptionType>,
-        /// Dynamic segment placeholder.
-        placeholder: String,
-    },
-    /// Fixed-field record.
-    Submodule {
-        /// Sorted fixed fields.
-        fields: BTreeMap<String, OptionType>,
-        /// Whether unknown additional attributes are admitted.
-        #[serde(default)]
-        open: bool,
-    },
-    /// Nullable value.
-    Nullable {
-        /// Non-null value type.
-        value: Box<OptionType>,
-    },
-    /// Bounded union.
-    OneOf {
-        /// Alternative types.
-        alternatives: Vec<OptionType>,
-    },
-    /// Stable fallback for an AOS type that has not yet gained a rich variant.
-    Opaque {
-        /// Stable type signature.
-        signature: String,
-    },
-}
-
-/// One enum value and its structured description.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EnumValue {
-    /// Literal value.
-    pub value: String,
-    /// Structured value description.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub description: Vec<ProseBlock>,
-}
-
-/// A safe option default or example.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum DocumentedValue {
-    /// Bounded JSON-compatible literal.
-    Literal {
-        /// Literal value; floats are rejected during validation.
-        value: Value,
-    },
-    /// Human text for a computed value that must not be forced.
-    Text {
-        /// Stable explanatory text.
-        text: String,
-    },
-}
-
-/// Public visibility of an option or runtime fact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Visibility {
-    /// Public user-facing interface.
-    Public,
-    /// Internal interface available to authenticated tooling.
-    Internal,
-    /// Hidden implementation plumbing.
-    Hidden,
-}
-
 /// Authenticated owner of an option path.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OptionOwner {
     /// Package declaring or owning the option.
@@ -429,53 +317,8 @@ pub struct OptionOwner {
     pub interface_abi: Option<u32>,
 }
 
-/// Effect expected when an option changes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ActivationEffect {
-    /// Activation action.
-    pub kind: ActivationKind,
-    /// Exact affected systemd units.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub units: Vec<String>,
-}
-
-/// Closed activation action vocabulary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ActivationKind {
-    /// No live action.
-    None,
-    /// Re-evaluate configuration only.
-    Reevaluate,
-    /// Reload live service state.
-    Reload,
-    /// Restart affected services.
-    Restart,
-    /// Recreate runtime resources.
-    Recreate,
-    /// Reboot the system.
-    Reboot,
-    /// Package-specific lifecycle operation.
-    PackageOperation,
-}
-
-/// Repository-relative declaration locator.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourceLocator {
-    /// Repository-relative source path.
-    pub path: String,
-    /// Optional stable attribute locator.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attribute: Option<String>,
-    /// Optional one-based source line.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub line: Option<u32>,
-}
-
 /// One mechanically extracted option document.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OptionDocument {
     /// Structured path segments.
@@ -511,148 +354,16 @@ pub struct OptionDocument {
     /// Whether non-owner packages may contribute below this option.
     #[serde(default)]
     pub contributable: bool,
-    /// Expected live activation effect.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activation: Option<ActivationEffect>,
     /// Declaration source locator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceLocator>,
-}
-
-/// Runtime interface derived from expose/config package metadata.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeSurface {
-    /// Authenticated unit inventory.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub units: Vec<RuntimeUnit>,
-    /// Declared network listeners.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub listeners: Vec<RuntimeListener>,
-    /// State/cache/log/runtime/config paths.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub managed_paths: Vec<ManagedPath>,
-    /// Typed rendered configuration artifacts.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub config_artifacts: Vec<RuntimeConfigArtifact>,
-    /// Credential contracts without secret values.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub credentials: Vec<CredentialContract>,
-    /// Provided/used capability tokens.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub capabilities: Vec<RuntimeCapability>,
-    /// Workload confinement summary.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub confinement: Option<ConfinementSummary>,
-}
-
-/// One systemd runtime unit.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeUnit {
-    /// Exact unit name.
-    pub name: String,
-    /// Unit kind.
-    pub kind: String,
-    /// Human summary.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub summary: String,
-    /// Units required before this unit.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub requires: Vec<String>,
-}
-
-/// One declared network listener.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeListener {
-    /// Owning unit.
-    pub unit: String,
-    /// Transport protocol.
-    pub protocol: String,
-    /// Optional port when statically known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub port: Option<u16>,
-    /// Declared network mode.
-    pub network_mode: String,
-}
-
-/// One managed runtime path.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ManagedPath {
-    /// Absolute path without store identity.
-    pub path: String,
-    /// State, cache, log, runtime, or configuration.
-    pub purpose: String,
-    /// Whether the workload may write the path.
-    pub writable: bool,
-}
-
-/// One rendered configuration artifact.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeConfigArtifact {
-    /// Signed artifact handle.
-    pub name: String,
-    /// Destination path.
-    pub destination: String,
-    /// Stable format name.
-    pub format: String,
-    /// Reload or restart action.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activation: Option<ActivationEffect>,
-}
-
-/// One credential declaration without secret material.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CredentialContract {
-    /// Signed credential handle.
-    pub name: String,
-    /// Human purpose.
-    pub purpose: String,
-    /// Volatile workload destination.
-    pub destination: String,
-    /// Accepted opaque-reference source kinds.
-    pub accepted_kinds: Vec<String>,
-    /// Whether configuration requires the credential.
-    pub required: bool,
-    /// File mode delivered to the workload.
-    pub mode: u32,
-    /// Live action after rotation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activation: Option<ActivationEffect>,
-}
-
-/// One provided or consumed typed capability.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeCapability {
-    /// Capability token.
-    pub name: String,
-    /// `provides` or `uses`.
-    pub direction: String,
-}
-
-/// High-level confinement information suitable for reference docs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfinementSummary {
-    /// Confinement class.
-    pub class: String,
-    /// Network confinement mode.
-    pub network: String,
-    /// Whether the workload has a private root.
-    pub private_root: bool,
 }
 
 /// One deterministic search row derived from a canonical document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SearchDocument {
-    /// Result kind (`package`, `option`, `service`, `credential`, or
-    /// `capability`).
+    /// Result kind (`package` or `option`).
     pub kind: String,
     /// Stable document-local key.
     pub key: String,
@@ -676,8 +387,6 @@ pub struct DocumentationComparison {
     pub to_version: String,
     /// Whether the semantic schema digest changed.
     pub semantic_changed: bool,
-    /// Whether the authenticated runtime contract changed.
-    pub runtime_changed: bool,
     /// Sorted option additions, removals, and semantic modifications.
     pub option_changes: Vec<OptionChange>,
 }
@@ -759,27 +468,10 @@ impl PackageDocumentation {
             self.identity.config_module_nar_hash.as_deref(),
         )?;
         validate_optional_digest(
-            "system-module NAR hash",
-            self.identity.system_module_nar_hash.as_deref(),
-        )?;
-        validate_optional_digest(
             "expose-artifact NAR hash",
             self.identity.expose_artifact_nar_hash.as_deref(),
         )?;
         validate_digest("source NAR hash", &self.identity.source_nar_hash)?;
-
-        if self.sections.len() > MAX_SECTIONS {
-            return Err(invalid("too many package sections"));
-        }
-        let mut section_ids = BTreeSet::new();
-        for section in &self.sections {
-            validate_token("section id", &section.id)?;
-            validate_text("section title", &section.title)?;
-            if !section_ids.insert(section.id.as_str()) {
-                return Err(invalid(format!("duplicate section '{}'", section.id)));
-            }
-            validate_blocks(&section.blocks, 0)?;
-        }
 
         if self.options.len() > MAX_OPTIONS {
             return Err(invalid("too many options"));
@@ -794,8 +486,6 @@ impl PackageDocumentation {
                 )));
             }
         }
-        validate_runtime(&self.runtime)?;
-
         let canonical = serde_json::to_vec(self)?;
         if canonical.len() > MAX_DOCUMENT_BYTES {
             return Err(invalid("canonical document exceeds the 4 MiB limit"));
@@ -855,7 +545,7 @@ impl PackageDocumentation {
 
     /// Derives deterministic bounded search rows.
     pub fn search_documents(&self) -> Vec<SearchDocument> {
-        let mut rows = Vec::with_capacity(1 + self.options.len() + self.runtime.units.len());
+        let mut rows = Vec::with_capacity(1 + self.options.len());
         rows.push(search_row(
             "package",
             &self.package.name,
@@ -875,33 +565,6 @@ impl PackageDocumentation {
                     (option.type_signature.as_str(), 40),
                     (summary.as_str(), 20),
                 ],
-            ));
-        }
-        for unit in &self.runtime.units {
-            rows.push(search_row(
-                "service",
-                &unit.name,
-                &unit.name,
-                &unit.summary,
-                [(&unit.name, 100), (&unit.summary, 20)],
-            ));
-        }
-        for credential in &self.runtime.credentials {
-            rows.push(search_row(
-                "credential",
-                &credential.name,
-                &credential.name,
-                &credential.purpose,
-                [(&credential.name, 100), (&credential.purpose, 30)],
-            ));
-        }
-        for capability in &self.runtime.capabilities {
-            rows.push(search_row(
-                "capability",
-                &capability.name,
-                &capability.name,
-                &capability.direction,
-                [(&capability.name, 100), (&capability.direction, 20)],
             ));
         }
         rows
@@ -983,7 +646,6 @@ impl PackageDocumentation {
             to_version: other.package.version.clone(),
             semantic_changed: self.identity.semantic_schema_sha256
                 != other.identity.semantic_schema_sha256,
-            runtime_changed: self.runtime != other.runtime,
             option_changes,
         })
     }
@@ -994,14 +656,6 @@ impl PackageDocumentation {
             "{} {} ({})\n{}\n",
             self.package.name, self.package.version, self.package.platform, self.package.summary
         );
-        for section in &self.sections {
-            output.push_str(&format!(
-                "\n{}\n{}\n",
-                section.title,
-                "-".repeat(section.title.len())
-            ));
-            render_blocks_plain(&section.blocks, &mut output, 0);
-        }
         if !self.options.is_empty() {
             output.push_str("\nOPTIONS\n-------\n");
             for option in &self.options {
@@ -1013,7 +667,6 @@ impl PackageDocumentation {
                 ));
             }
         }
-        render_runtime_plain(&self.runtime, &mut output);
         output
     }
 
@@ -1054,15 +707,6 @@ impl PackageDocumentation {
         output.push_str(" · ");
         escape_html_into(&self.package.platform, output);
         output.push_str("</code></p></header>");
-        for section in &self.sections {
-            output.push_str("<section id=\"");
-            escape_html_into(&section.id, output);
-            output.push_str("\"><h2>");
-            escape_html_into(&section.title, output);
-            output.push_str("</h2>");
-            render_blocks_html(&section.blocks, output);
-            output.push_str("</section>");
-        }
         if !self.options.is_empty() {
             output.push_str("<section id=\"options\"><h2>Options</h2><dl>");
             for option in &self.options {
@@ -1078,7 +722,6 @@ impl PackageDocumentation {
             }
             output.push_str("</dl></section>");
         }
-        render_runtime_html(&self.runtime, output);
         output.push_str("</main>");
     }
 
@@ -1095,12 +738,6 @@ impl PackageDocumentation {
         output.push_str(" for ");
         escape_roff_into(&self.package.platform, &mut output);
         output.push('\n');
-        for section in &self.sections {
-            output.push_str(".SH \"");
-            escape_roff_into(&section.title.to_uppercase(), &mut output);
-            output.push_str("\"\n");
-            render_blocks_roff(&section.blocks, &mut output);
-        }
         if !self.options.is_empty() {
             output.push_str(".SH OPTIONS\n");
             for option in &self.options {
@@ -1113,13 +750,6 @@ impl PackageDocumentation {
                 output.push('\n');
             }
         }
-        let mut runtime = String::new();
-        render_runtime_plain(&self.runtime, &mut runtime);
-        if !runtime.is_empty() {
-            output.push_str(".SH RUNTIME\n");
-            escape_roff_into(runtime.trim(), &mut output);
-            output.push('\n');
-        }
         output
     }
 
@@ -1130,216 +760,11 @@ impl PackageDocumentation {
     }
 }
 
-fn runtime_is_empty(runtime: &RuntimeSurface) -> bool {
-    runtime.units.is_empty()
-        && runtime.listeners.is_empty()
-        && runtime.managed_paths.is_empty()
-        && runtime.config_artifacts.is_empty()
-        && runtime.credentials.is_empty()
-        && runtime.capabilities.is_empty()
-        && runtime.confinement.is_none()
-}
-
-fn render_runtime_plain(runtime: &RuntimeSurface, output: &mut String) {
-    if runtime_is_empty(runtime) {
-        return;
-    }
-    output.push_str("\nRUNTIME\n-------\n");
-    for unit in &runtime.units {
-        output.push_str(&format!("unit\t{}\t{}", unit.name, unit.kind));
-        if !unit.summary.is_empty() {
-            output.push_str(&format!("\t{}", unit.summary));
-        }
-        output.push('\n');
-    }
-    for listener in &runtime.listeners {
-        let port = listener
-            .port
-            .map(|port| port.to_string())
-            .unwrap_or_else(|| "dynamic".to_string());
-        output.push_str(&format!(
-            "listener\t{}\t{}/{}\t{}\n",
-            listener.unit, listener.protocol, port, listener.network_mode
-        ));
-    }
-    for path in &runtime.managed_paths {
-        output.push_str(&format!(
-            "path\t{}\t{}\t{}\n",
-            path.path,
-            path.purpose,
-            if path.writable {
-                "writable"
-            } else {
-                "read-only"
-            }
-        ));
-    }
-    for artifact in &runtime.config_artifacts {
-        output.push_str(&format!(
-            "configuration\t{}\t{}\t{}\n",
-            artifact.name, artifact.destination, artifact.format
-        ));
-    }
-    for credential in &runtime.credentials {
-        output.push_str(&format!(
-            "credential\t{}\t{}\t{}\n",
-            credential.name,
-            credential.destination,
-            if credential.required {
-                "required"
-            } else {
-                "optional"
-            }
-        ));
-    }
-    for capability in &runtime.capabilities {
-        output.push_str(&format!(
-            "capability\t{}\t{}\n",
-            capability.name, capability.direction
-        ));
-    }
-    if let Some(confinement) = &runtime.confinement {
-        output.push_str(&format!(
-            "confinement\t{}\tnetwork={}\tprivate-root={}\n",
-            confinement.class, confinement.network, confinement.private_root
-        ));
-    }
-}
-
-fn render_runtime_html(runtime: &RuntimeSurface, output: &mut String) {
-    if runtime_is_empty(runtime) {
-        return;
-    }
-    output.push_str("<section id=\"runtime\"><h2>Runtime</h2>");
-    if !runtime.units.is_empty() {
-        output.push_str("<h3>Services</h3><dl>");
-        for unit in &runtime.units {
-            output.push_str("<dt id=\"");
-            output.push_str(&documentation_anchor("service", &unit.name));
-            output.push_str("\"><code>");
-            escape_html_into(&unit.name, output);
-            output.push_str("</code></dt><dd>");
-            escape_html_into(&unit.kind, output);
-            if !unit.summary.is_empty() {
-                output.push_str(" — ");
-                escape_html_into(&unit.summary, output);
-            }
-            output.push_str("</dd>");
-        }
-        output.push_str("</dl>");
-    }
-    if !runtime.listeners.is_empty() {
-        output.push_str("<h3>Listeners</h3><ul>");
-        for listener in &runtime.listeners {
-            output.push_str("<li><code>");
-            escape_html_into(&listener.unit, output);
-            output.push_str("</code> ");
-            escape_html_into(&listener.protocol, output);
-            output.push(':');
-            escape_html_into(
-                &listener
-                    .port
-                    .map(|port| port.to_string())
-                    .unwrap_or_else(|| "dynamic".to_string()),
-                output,
-            );
-            output.push_str(" · ");
-            escape_html_into(&listener.network_mode, output);
-            output.push_str("</li>");
-        }
-        output.push_str("</ul>");
-    }
-    if !runtime.managed_paths.is_empty() {
-        output.push_str("<h3>Managed paths</h3><ul>");
-        for path in &runtime.managed_paths {
-            output.push_str("<li><code>");
-            escape_html_into(&path.path, output);
-            output.push_str("</code> · ");
-            escape_html_into(&path.purpose, output);
-            output.push_str(if path.writable {
-                " · writable"
-            } else {
-                " · read-only"
-            });
-            output.push_str("</li>");
-        }
-        output.push_str("</ul>");
-    }
-    if !runtime.config_artifacts.is_empty() {
-        output.push_str("<h3>Configuration artifacts</h3><ul>");
-        for artifact in &runtime.config_artifacts {
-            output.push_str("<li><strong>");
-            escape_html_into(&artifact.name, output);
-            output.push_str("</strong> <code>");
-            escape_html_into(&artifact.destination, output);
-            output.push_str("</code> · ");
-            escape_html_into(&artifact.format, output);
-            output.push_str("</li>");
-        }
-        output.push_str("</ul>");
-    }
-    if !runtime.credentials.is_empty() {
-        output.push_str("<h3>Credentials</h3><ul>");
-        for credential in &runtime.credentials {
-            output.push_str("<li id=\"");
-            output.push_str(&documentation_anchor("credential", &credential.name));
-            output.push_str("\"><strong>");
-            escape_html_into(&credential.name, output);
-            output.push_str("</strong> — ");
-            escape_html_into(&credential.purpose, output);
-            output.push_str(" · <code>");
-            escape_html_into(&credential.destination, output);
-            output.push_str("</code>");
-            output.push_str(if credential.required {
-                " · required"
-            } else {
-                " · optional"
-            });
-            output.push_str("</li>");
-        }
-        output.push_str("</ul>");
-    }
-    if !runtime.capabilities.is_empty() {
-        output.push_str("<h3>Capabilities</h3><ul>");
-        // A capability may appear in both directions. Search keys identify its
-        // name, so the first entry owns the anchor shared by those results.
-        let mut anchored_names = BTreeSet::new();
-        for capability in &runtime.capabilities {
-            output.push_str("<li");
-            if anchored_names.insert(capability.name.as_str()) {
-                output.push_str(" id=\"");
-                output.push_str(&documentation_anchor("capability", &capability.name));
-                output.push('"');
-            }
-            output.push_str("><code>");
-            escape_html_into(&capability.name, output);
-            output.push_str("</code> · ");
-            escape_html_into(&capability.direction, output);
-            output.push_str("</li>");
-        }
-        output.push_str("</ul>");
-    }
-    if let Some(confinement) = &runtime.confinement {
-        output.push_str("<h3>Confinement</h3><p>");
-        escape_html_into(&confinement.class, output);
-        output.push_str(" · network ");
-        escape_html_into(&confinement.network, output);
-        output.push_str(if confinement.private_root {
-            " · private root"
-        } else {
-            " · shared root"
-        });
-        output.push_str("</p>");
-    }
-    output.push_str("</section>");
-}
-
 #[derive(Serialize)]
 struct SemanticProjection<'a> {
     package: &'a str,
     platform: &'a str,
     options: Vec<SemanticOption<'a>>,
-    runtime: &'a RuntimeSurface,
 }
 
 #[derive(PartialEq, Eq, Serialize)]
@@ -1353,7 +778,6 @@ struct SemanticOption<'a> {
     replacement: &'a Option<Vec<PathSegment>>,
     owner: &'a OptionOwner,
     contributable: bool,
-    activation: &'a Option<ActivationEffect>,
 }
 
 impl<'a> From<&'a PackageDocumentation> for SemanticProjection<'a> {
@@ -1374,10 +798,8 @@ impl<'a> From<&'a PackageDocumentation> for SemanticProjection<'a> {
                     replacement: &option.replacement,
                     owner: &option.owner,
                     contributable: option.contributable,
-                    activation: &option.activation,
                 })
                 .collect(),
-            runtime: &document.runtime,
         }
     }
 }
@@ -1393,7 +815,6 @@ fn semantic_option(option: &OptionDocument) -> SemanticOption<'_> {
         replacement: &option.replacement,
         owner: &option.owner,
         contributable: option.contributable,
-        activation: &option.activation,
     }
 }
 
@@ -1420,7 +841,7 @@ fn validate_option(option: &OptionDocument) -> Result<()> {
         )));
     }
     validate_nonempty("option type signature", &option.type_signature)?;
-    validate_option_type(&option.option_type, 0)?;
+    validate_option_type(&option.option_type)?;
     validate_blocks(&option.description, 0)?;
     if option.visibility == Visibility::Public && prose_plain_text(&option.description).is_empty() {
         return Err(invalid(format!(
@@ -1437,76 +858,16 @@ fn validate_option(option: &OptionDocument) -> Result<()> {
     validate_token("option owner package", &option.owner.package)?;
     validate_token("option owner root", &option.owner.root)?;
     if let Some(source) = &option.source {
-        validate_relative_source_path(&source.path)?;
-    }
-    if let Some(activation) = &option.activation {
-        validate_sorted_unique("activation units", &activation.units)?;
+        validate_relative_source_path(source.path.as_str())?;
     }
     Ok(())
 }
 
-fn validate_option_type(option_type: &OptionType, depth: usize) -> Result<()> {
-    if depth > 32 {
-        return Err(invalid("option type nesting exceeds 32"));
-    }
-    match option_type {
-        OptionType::Integer { min, max } if min.zip(*max).is_some_and(|(a, b)| a > b) => {
-            Err(invalid("integer type range is inverted"))
-        }
-        OptionType::Unsigned { min, max } if min.zip(*max).is_some_and(|(a, b)| a > b) => {
-            Err(invalid("unsigned type range is inverted"))
-        }
-        OptionType::String {
-            pattern,
-            max_length,
-        } => {
-            if let Some(pattern) = pattern {
-                validate_text("string constraint pattern", pattern)?;
-            }
-            if max_length.is_some_and(|length| length > MAX_TEXT_BYTES as u64) {
-                return Err(invalid("string maximum exceeds document text limit"));
-            }
-            Ok(())
-        }
-        OptionType::Enum { values } => {
-            if values.is_empty() || values.len() > 4096 {
-                return Err(invalid("enum must contain 1..=4096 values"));
-            }
-            let mut seen = BTreeSet::new();
-            for value in values {
-                validate_text("enum value", &value.value)?;
-                validate_blocks(&value.description, 0)?;
-                if !seen.insert(value.value.as_str()) {
-                    return Err(invalid(format!("duplicate enum value '{}'", value.value)));
-                }
-            }
-            Ok(())
-        }
-        OptionType::List { element, .. }
-        | OptionType::Set { element }
-        | OptionType::AttrsOf { value: element, .. }
-        | OptionType::Nullable { value: element } => validate_option_type(element, depth + 1),
-        OptionType::Submodule { fields, .. } => {
-            if fields.len() > 4096 {
-                return Err(invalid("submodule has too many fields"));
-            }
-            for (name, field_type) in fields {
-                validate_token("submodule field", name)?;
-                validate_option_type(field_type, depth + 1)?;
-            }
-            Ok(())
-        }
-        OptionType::OneOf { alternatives } => {
-            if alternatives.is_empty() || alternatives.len() > 32 {
-                return Err(invalid("one-of must contain 1..=32 alternatives"));
-            }
-            for alternative in alternatives {
-                validate_option_type(alternative, depth + 1)?;
-            }
-            Ok(())
-        }
-        OptionType::Opaque { signature } => validate_nonempty("opaque type signature", signature),
-        _ => Ok(()),
+fn validate_option_type(option_type: &OptionType) -> Result<()> {
+    if option_type.is_within_limits(&aos_ability_model::ABILITY_LIMITS_V1) {
+        Ok(())
+    } else {
+        Err(invalid("option type exceeds the canonical ability limits"))
     }
 }
 
@@ -1514,7 +875,7 @@ fn validate_documented_value(value: &DocumentedValue) -> Result<()> {
     match value {
         DocumentedValue::Literal { value } => {
             let mut items = 0;
-            validate_literal(value, 0, &mut items)
+            validate_literal(value.as_json(), 0, &mut items)
         }
         DocumentedValue::Text { text } => validate_text("documented value text", text),
     }
@@ -1607,64 +968,11 @@ fn validate_inline(span: &InlineSpan) -> Result<()> {
                     }
                     Ok(())
                 }
-                LinkTarget::Section { id } => validate_token("linked section", id),
                 LinkTarget::Source { path } => validate_relative_source_path(path),
                 LinkTarget::Https { url } => validate_https(url),
             }
         }
     }
-}
-
-fn validate_runtime(runtime: &RuntimeSurface) -> Result<()> {
-    let total = runtime.units.len()
-        + runtime.listeners.len()
-        + runtime.managed_paths.len()
-        + runtime.config_artifacts.len()
-        + runtime.credentials.len()
-        + runtime.capabilities.len();
-    if total > MAX_RUNTIME_ITEMS {
-        return Err(invalid("runtime surface contains too many items"));
-    }
-    validate_unique_by(
-        "runtime unit",
-        runtime.units.iter().map(|unit| unit.name.as_str()),
-    )?;
-    validate_unique_by(
-        "config artifact",
-        runtime
-            .config_artifacts
-            .iter()
-            .map(|artifact| artifact.name.as_str()),
-    )?;
-    validate_unique_by(
-        "credential",
-        runtime
-            .credentials
-            .iter()
-            .map(|credential| credential.name.as_str()),
-    )?;
-    Ok(())
-}
-
-fn validate_unique_by<'a>(label: &str, values: impl Iterator<Item = &'a str>) -> Result<()> {
-    let mut seen = BTreeSet::new();
-    for value in values {
-        validate_text(label, value)?;
-        if !seen.insert(value) {
-            return Err(invalid(format!("duplicate {label} '{value}'")));
-        }
-    }
-    Ok(())
-}
-
-fn validate_sorted_unique(label: &str, values: &[String]) -> Result<()> {
-    for value in values {
-        validate_text(label, value)?;
-    }
-    if values.windows(2).any(|pair| pair[0] >= pair[1]) {
-        return Err(invalid(format!("{label} must be sorted and unique")));
-    }
-    Ok(())
 }
 
 fn validate_token(label: &str, value: &str) -> Result<()> {
@@ -1946,7 +1254,6 @@ fn link_href(target: &LinkTarget) -> String {
                 .collect::<Vec<_>>()
                 .join(".")
         ),
-        LinkTarget::Section { id } => format!("#{id}"),
         LinkTarget::Source { path } => format!("./source/{path}"),
         LinkTarget::Https { url } => url.clone(),
     }
@@ -1961,51 +1268,6 @@ fn escape_html_into(input: &str, output: &mut String) {
             '"' => output.push_str("&quot;"),
             '\'' => output.push_str("&#39;"),
             _ => output.push(character),
-        }
-    }
-}
-
-fn render_blocks_roff(blocks: &[ProseBlock], output: &mut String) {
-    for block in blocks {
-        match block {
-            ProseBlock::Paragraph { spans } => {
-                output.push_str(".PP\n");
-                let mut plain = String::new();
-                render_spans_plain(spans, &mut plain);
-                escape_roff_into(&plain, output);
-                output.push('\n');
-            }
-            ProseBlock::List { ordered, items } => {
-                for (index, item) in items.iter().enumerate() {
-                    output.push_str(".IP \"");
-                    if *ordered {
-                        output.push_str(&format!("{}.", index + 1));
-                    } else {
-                        output.push_str("\\[bu]");
-                    }
-                    output.push_str("\" 2\n");
-                    render_blocks_roff(item, output);
-                }
-            }
-            ProseBlock::Code { text, .. } => {
-                output.push_str(".nf\n");
-                escape_roff_into(text, output);
-                output.push_str("\n.fi\n");
-            }
-            ProseBlock::Note { severity, blocks } => {
-                output.push_str(".SS \"");
-                output.push_str(&format!("{:?}", severity).to_uppercase());
-                output.push_str("\"\n");
-                render_blocks_roff(blocks, output);
-            }
-            ProseBlock::Definitions { entries } => {
-                for entry in entries {
-                    output.push_str(".TP\n.B \"");
-                    escape_roff_into(&entry.term, output);
-                    output.push_str("\"\n");
-                    render_blocks_roff(&entry.body, output);
-                }
-            }
         }
     }
 }
@@ -2056,15 +1318,9 @@ mod tests {
                 semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
                 runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
                 config_module_nar_hash: Some(format!("sha256:{}", "2".repeat(64))),
-                system_module_nar_hash: None,
                 expose_artifact_nar_hash: Some(format!("sha256:{}", "3".repeat(64))),
                 source_nar_hash: format!("sha256:{}", "4".repeat(64)),
             },
-            sections: vec![Section {
-                id: "overview".to_string(),
-                title: "Overview".to_string(),
-                blocks: vec![paragraph("Configure virtual hosts and upstreams.")],
-            }],
             options: vec![OptionDocument {
                 path: vec![
                     PathSegment::Literal {
@@ -2085,10 +1341,12 @@ mod tests {
                 type_signature: "unsigned 16-bit TCP port".to_string(),
                 description: vec![paragraph("Port on which this virtual host listens.")],
                 default: Some(DocumentedValue::Literal {
-                    value: Value::from(80),
+                    value: aos_ability_model::AbilityValue::new(Value::from(80))
+                        .expect("valid default"),
                 }),
                 example: Some(DocumentedValue::Literal {
-                    value: Value::from(8080),
+                    value: aos_ability_model::AbilityValue::new(Value::from(8080))
+                        .expect("valid example"),
                 }),
                 visibility: Visibility::Public,
                 read_only: false,
@@ -2100,17 +1358,13 @@ mod tests {
                     interface_abi: Some(1),
                 },
                 contributable: true,
-                activation: Some(ActivationEffect {
-                    kind: ActivationKind::Reload,
-                    units: vec!["nginx.service".to_string()],
-                }),
                 source: Some(SourceLocator {
-                    path: "pkgs/networking/_nginx-config/module.nix".to_string(),
-                    attribute: None,
-                    line: None,
+                    path: aos_ability_model::RelativePath::new(
+                        "pkgs/networking/_nginx-config/module.nix",
+                    )
+                    .expect("valid source path"),
                 }),
             }],
-            runtime: RuntimeSurface::default(),
         };
         document.identity.semantic_schema_sha256 = document
             .computed_semantic_schema_sha256()
@@ -2132,7 +1386,10 @@ mod tests {
     fn literal_values_preserve_empty_strings_and_attribute_names() {
         let mut document = fixture();
         document.options[0].default = Some(DocumentedValue::Literal {
-            value: serde_json::json!({"": "", "nested": [""]}),
+            value: aos_ability_model::AbilityValue::new(
+                serde_json::json!({"": "", "nested": [""]}),
+            )
+            .expect("valid literal"),
         });
         document.identity.semantic_schema_sha256 = document
             .computed_semantic_schema_sha256()
@@ -2149,7 +1406,6 @@ mod tests {
         let before = document
             .computed_semantic_schema_sha256()
             .expect("digest before");
-        document.sections[0].blocks = vec![paragraph("Corrected explanation.")];
         document.options[0].description = vec![paragraph("Corrected option prose.")];
         let after = document
             .computed_semantic_schema_sha256()
@@ -2183,7 +1439,7 @@ mod tests {
         let before = fixture();
         let mut prose_only = before.clone();
         prose_only.package.version = "2.0.0".to_string();
-        prose_only.sections[0].title = "New prose".to_string();
+        prose_only.package.summary = "New prose".to_string();
         prose_only.identity.semantic_schema_sha256 = prose_only
             .computed_semantic_schema_sha256()
             .expect("semantic digest");
@@ -2230,65 +1486,12 @@ mod tests {
     fn renderers_escape_untrusted_content() {
         let mut document = fixture();
         document.package.summary = "<script>alert('x')</script>".into();
-        document.sections[0].blocks = vec![paragraph(".danger \\ macro")];
+        document.options[0].description = vec![paragraph(".danger \\ macro")];
         let html = document.render_html();
         assert!(!html.contains("<script>"));
         assert!(html.contains("&lt;script&gt;"));
         let roff = document.render_roff();
         assert!(roff.contains("\\&.danger \\e macro"));
-    }
-
-    #[test]
-    fn renderers_include_the_complete_runtime_surface() {
-        let mut document = fixture();
-        document.runtime.units.push(RuntimeUnit {
-            name: "nginx.service".into(),
-            kind: "service".into(),
-            summary: "HTTP proxy".into(),
-            requires: Vec::new(),
-        });
-        document.runtime.listeners.push(RuntimeListener {
-            unit: "nginx.service".into(),
-            protocol: "tcp".into(),
-            port: Some(8080),
-            network_mode: "private".into(),
-        });
-        document.runtime.credentials.push(CredentialContract {
-            name: "tls-key".into(),
-            purpose: "TLS private key".into(),
-            destination: "/run/credentials/nginx.service/tls-key".into(),
-            accepted_kinds: vec!["system-credential".into()],
-            required: false,
-            mode: 0o400,
-            activation: None,
-        });
-
-        document.runtime.capabilities.push(RuntimeCapability {
-            name: "http-server".into(),
-            direction: "provides".into(),
-        });
-        document.runtime.capabilities.push(RuntimeCapability {
-            name: "http-server".into(),
-            direction: "uses".into(),
-        });
-        let html = document.render_html_fragment();
-        for row in document.search_documents() {
-            let id = format!("id=\"{}\"", documentation_anchor(&row.kind, &row.key));
-            assert_eq!(html.matches(&id).count(), 1, "missing or ambiguous {id}");
-        }
-        assert!(html.contains("nginx.virtualHosts.&lt;name&gt;.listenPort"));
-
-        let plain = document.render_plain();
-        assert!(plain.contains("RUNTIME"));
-        assert!(plain.contains("nginx.service"));
-        assert!(plain.contains("tls-key"));
-        let html = document.render_html_fragment();
-        assert!(html.contains("id=\"runtime\""));
-        assert!(html.contains("tcp:8080"));
-        assert!(html.contains("TLS private key"));
-        let roff = document.render_roff();
-        assert!(roff.contains(".SH RUNTIME"));
-        assert!(roff.contains("nginx.service"));
     }
 
     #[test]
@@ -2309,9 +1512,11 @@ mod tests {
         let anchors = identities.map(|(kind, key)| documentation_anchor(kind, key));
         assert_eq!(anchors.iter().collect::<BTreeSet<_>>().len(), anchors.len());
         for anchor in anchors {
-            assert!(anchor
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b':'));
+            assert!(
+                anchor
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b':')
+            );
             assert!(validate_token("section id", &anchor).is_err());
         }
     }
@@ -2330,39 +1535,58 @@ mod tests {
     }
 
     #[test]
+    fn option_types_preserve_canonical_lists_and_document_keys() {
+        let canonical_list = OptionType::List {
+            element: Box::new(OptionType::String {
+                max_length: Some(16),
+                pattern: None,
+            }),
+            max_items: Some(8),
+            unique: true,
+            canonical_order: true,
+        };
+        let canonical_list_json = serde_json::to_value(&canonical_list).expect("serialize list");
+
+        assert_eq!(canonical_list_json["unique"], true);
+        assert_eq!(canonical_list_json["canonical_order"], true);
+        validate_option_type(&canonical_list).expect("valid canonical list");
+
+        let document_record = OptionType::DocumentRecord {
+            key_max_length: 64,
+            fields: BTreeMap::from([("@type".to_string(), OptionType::Bool)]),
+            optional_fields: Vec::new(),
+        };
+        let document_record_json =
+            serde_json::to_value(&document_record).expect("serialize document record");
+
+        assert_eq!(document_record_json["key_max_length"], 64);
+        assert!(document_record_json["fields"].get("@type").is_some());
+        validate_option_type(&document_record).expect("valid document record");
+    }
+
+    #[test]
     fn checked_json_schema_exposes_the_complete_tooling_contract() {
-        let schema: Value = serde_json::from_str(DOCUMENT_JSON_SCHEMA).expect("valid JSON Schema");
+        let bytes = document_json_schema().expect("generate documentation JSON Schema");
+        assert_eq!(
+            bytes,
+            document_json_schema().expect("regenerate documentation JSON Schema")
+        );
+
+        let schema: Value = serde_json::from_slice(&bytes).expect("valid JSON Schema");
+        assert_eq!(
+            schema.get("$schema").and_then(Value::as_str),
+            Some("https://json-schema.org/draft/2020-12/schema")
+        );
         assert_eq!(
             schema
                 .pointer("/properties/schema/const")
                 .and_then(Value::as_str),
             Some(DOCUMENT_SCHEMA)
         );
+        assert!(schema.pointer("/$defs/OptionType").is_some());
         assert_eq!(
             schema
-                .pointer("/$defs/optionType/oneOf")
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(17)
-        );
-        for runtime_field in [
-            "units",
-            "listeners",
-            "managed_paths",
-            "config_artifacts",
-            "credentials",
-            "capabilities",
-            "confinement",
-        ] {
-            assert!(
-                schema
-                    .pointer(&format!("/$defs/runtime/properties/{runtime_field}"))
-                    .is_some()
-            );
-        }
-        assert_eq!(
-            schema
-                .pointer("/$defs/runtime/additionalProperties")
+                .pointer("/additionalProperties")
                 .and_then(Value::as_bool),
             Some(false)
         );

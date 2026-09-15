@@ -1,9 +1,10 @@
 ##! lib/build/oci/image-layout.nix -- OCI image layout and archive assembly.
 ##!
 ##! The assembler treats layer outputs as untrusted build inputs: it verifies
-##! descriptor syntax, size, SHA-256, and DiffID shape before copying blobs.  All
-##! layout members are regular files, so the result can be copied away from the
-##! Nix store without retaining or resolving its input derivations.
+##! descriptor syntax, size, SHA-256, and DiffID shape before copying blobs.  It
+##! also reruns static ability contract semantics rather than trusting a Nix
+##! passthru marker.  All layout members are regular files, so the result can be
+##! copied away from the Nix store without retaining its input derivations.
 {
   lib,
   mkDerivation,
@@ -12,10 +13,12 @@
   gzip,
   jq,
   tar,
+  abilityContractValidator,
   common,
 }: {
   layers,
   runtimeAudit,
+  abilityContract,
   platform,
   config ? {},
   annotations ? {},
@@ -92,6 +95,17 @@
   checkedAnnotations = validateAnnotations "annotations" annotations;
   checkedIndexAnnotations = validateAnnotations "indexAnnotations" indexAnnotations;
   labels = validateAnnotations "config.labels" (config.labels or {});
+  abilityAnnotationNames = [
+    "dev.andyl.aos.ability-contract.digest"
+    "dev.andyl.aos.ability-contract.media-type"
+    "dev.andyl.aos.ability-contract.schema"
+  ];
+  authoredAbilityAnnotations = builtins.filter (name:
+    checkedAnnotations
+    ? ${name}
+    || checkedIndexAnnotations ? ${name}
+    || labels ? ${name})
+  abilityAnnotationNames;
   descriptorAnnotations =
     if referenceName == null
     then {}
@@ -115,6 +129,10 @@
     if builtins.isAttrs runtimeAudit && runtimeAudit ? outPath
     then runtimeAudit
     else common.fail "runtimeAudit must be an AOS runtime-closure-audit derivation";
+  checkedAbilityContract =
+    if builtins.isAttrs abilityContract && (abilityContract.passthru.ociStaticAbilityContract or false)
+    then abilityContract
+    else common.fail "abilityContract must be produced by mkStaticAbilityContract";
   validated =
     if !(builtins.isString user && builtins.match "^([0-9]+(:[0-9]+)?|[A-Za-z_][A-Za-z0-9_-]*)$" user != null)
     then common.fail "config.user must be a numeric uid[:gid] or a safe user name"
@@ -122,7 +140,11 @@
     then common.fail "config.stopSignal must be a symbolic signal such as SIGTERM"
     else if entrypoint != [] && builtins.head entrypoint == ""
     then common.fail "config.entrypoint[0] must not be empty"
-    else builtins.deepSeq [checkedPlatform checkedLayers checkedRuntimeAudit envList checkedPorts checkedAnnotations checkedIndexAnnotations labels] true;
+    else if authoredAbilityAnnotations != []
+    then common.fail "static ability contract annotations are builder-owned"
+    else if checkedAbilityContract.passthru.checkedPlatform != checkedPlatform
+    then common.fail "abilityContract platform must exactly match the image platform"
+    else builtins.deepSeq [checkedPlatform checkedLayers checkedRuntimeAudit checkedAbilityContract envList checkedPorts checkedAnnotations checkedIndexAnnotations labels] true;
 
   imageSpec = {
     inherit created;
@@ -149,12 +171,23 @@
     lib.concatMapStringsSep " "
     (layer: lib.escapeShellArg (builtins.toString layer))
     layers;
+  abilityContractPlatformArguments = lib.concatMapStringsSep " " lib.escapeShellArg [
+    checkedPlatform.os
+    checkedPlatform.architecture
+    (
+      if checkedPlatform.variant == null
+      then "-"
+      else checkedPlatform.variant
+    )
+  ];
 in
   builtins.deepSeq validated (mkDerivation {
     inherit pname;
     version = "1";
     src = null;
-    buildDeps = [coreutils findutils gzip jq tar runtimeAudit] ++ layers;
+    buildDeps =
+      [abilityContractValidator coreutils findutils gzip jq tar]
+      ++ checkedAbilityContract.passthru.packageAbilityContracts;
 
     outputChecks.out = {};
     inherit imageSpec;
@@ -182,6 +215,67 @@ in
 
           mkdir -p "$out/layout/blobs/sha256"
           jq '.imageSpec' "$NIX_ATTRS_JSON_FILE" > image-spec.input.json
+          test -f ${checkedAbilityContract}/contract.json
+          test -f ${checkedAbilityContract}/descriptor.json
+          ${abilityContractValidator}/bin/aos-ability-contract-validator \
+            static-contract ${checkedAbilityContract}/contract.json \
+            container - ${abilityContractPlatformArguments}
+          contract_digest=$(jq -r .digest ${checkedAbilityContract}/descriptor.json)
+          contract_media_type=$(jq -r .mediaType ${checkedAbilityContract}/descriptor.json)
+          contract_size=$(jq -r .size ${checkedAbilityContract}/descriptor.json)
+          contract_hex=''${contract_digest#sha256:}
+          test "$(sha256sum ${checkedAbilityContract}/contract.json | cut -d ' ' -f 1)" = "$contract_hex"
+          test "$(stat -c %s ${checkedAbilityContract}/contract.json)" -eq "$contract_size"
+          jq -e '.schema == "aos.container.static-abilities/v1" and .runtime_grants == []' \
+            ${checkedAbilityContract}/contract.json >/dev/null
+          jq -e \
+            --slurpfile spec image-spec.input.json '
+              (.platforms | length) == 1
+              and .platforms[0].platform
+                == ($spec[0].platform | with_entries(select(.value != null)))
+            ' ${checkedAbilityContract}/contract.json >/dev/null || {
+              echo "static ability contract platform does not match the image platform" >&2
+              exit 1
+            }
+          jq -r '.platforms[0].packages[].payload.store_path' \
+            ${checkedAbilityContract}/contract.json \
+            | while IFS= read -r payload_path; do
+                grep -Fx "$payload_path" realized-store-paths.allowed >/dev/null || {
+                  echo "static ability package payload is absent from the image: $payload_path" >&2
+                  exit 1
+                }
+              done
+          jq -r '
+            .platforms[0].abilities[]
+            | [.implementation_artifact.store_path, .availability]
+            | @tsv
+          ' ${checkedAbilityContract}/contract.json \
+            | while IFS="$(printf '\t')" read -r artifact_path availability; do
+                if grep -Fx "$artifact_path" realized-store-paths.allowed >/dev/null; then
+                  actual=baked
+                else
+                  actual=unresolved-at-launch
+                fi
+                if [ "$availability" != "$actual" ]; then
+                  echo "static ability implementation availability does not match the image: $artifact_path" >&2
+                  exit 1
+                fi
+              done
+          jq -S \
+            --arg digest "$contract_digest" \
+            --arg mediaType "$contract_media_type" '
+              def contract_annotations: {
+                "dev.andyl.aos.ability-contract.digest": $digest,
+                "dev.andyl.aos.ability-contract.media-type": $mediaType,
+                "dev.andyl.aos.ability-contract.schema": "aos.container.static-abilities/v1"
+              };
+              .manifestAnnotations += contract_annotations
+              | .indexAnnotations += contract_annotations
+              | .config.Labels += contract_annotations
+            ' image-spec.input.json > image-spec.with-contract.json
+          mv image-spec.with-contract.json image-spec.input.json
+          cp --reflink=auto ${checkedAbilityContract}/contract.json "$out/static-ability-contract.json"
+          cp --reflink=auto ${checkedAbilityContract}/descriptor.json "$out/static-ability-contract.descriptor.json"
           jq -e '.schema == "aos.runtime-closure-audit/v1"' \
             ${runtimeAudit}/report.json >/dev/null
           cp --reflink=auto ${runtimeAudit}/report.json "$out/runtime-closure-audit.json"
@@ -265,7 +359,7 @@ in
                   history: [
                     $layersJson[0][] | {
                       created: $specification.created,
-                      created_by: "AOS OCI builder layer ABI v1",
+                      created_by: "AOS OCI builder layer ABI v2",
                       empty_layer: false
                     }
                   ]
@@ -363,7 +457,7 @@ in
 
     passthru = {
       ociImage = true;
-      inherit checkedPlatform;
+      inherit checkedPlatform checkedAbilityContract;
       mediaType = common.indexMediaType;
     };
 

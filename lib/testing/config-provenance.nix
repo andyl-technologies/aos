@@ -9,10 +9,6 @@
     packageModules = [
       {
         name = "provenance-demo";
-        authorization = {
-          owns = ["environment" "systemd"];
-          contributes = {};
-        };
         module = {
           environment.etc."provenance-demo.conf".text = "package-owned\n";
           systemd.services.provenance-demo = {
@@ -48,6 +44,17 @@
     .build
     .configManifest;
   testAgentPath = builtins.unsafeDiscardStringContext (builtins.toString pkgs.aos-test-agent);
+  selectedAbilityImplementations =
+    (mkSystem {
+      modules = [
+        serverModule
+        {environment.systemPackages = [pkgs.nginx];}
+      ];
+    })
+    .config
+    .aos
+    .abilities
+    .implementations;
   hostSessionManifest =
     (mkSystem {
       modules = [serverModule];
@@ -82,10 +89,6 @@
       packageModules = [
         {
           name = "path-contributor";
-          authorization = {
-            owns = ["environment"];
-            contributes = {};
-          };
           module.environment.systemPackages = [pkgs.aos-test-agent];
         }
       ];
@@ -101,10 +104,6 @@
       packageModules = [
         {
           name = "session-contributor";
-          authorization = {
-            owns = ["environment"];
-            contributes = {};
-          };
           module.environment.sessionVariables.PROVENANCE_TEST = "package";
         }
       ];
@@ -141,10 +140,6 @@
       packageModules = [
         {
           name = "group-provider";
-          authorization = {
-            owns = ["aos"];
-            contributes = {};
-          };
           module.aos.users.groups.pkgonly = {
             gid = 778;
             members = [];
@@ -176,6 +171,7 @@ in
   assert hostComposedManifest.ownership.etc.profile == "@host";
   assert hostComposedManifest.ownership.etc."pam/environment" == "@host";
   assert hostComposedManifest.ownership.storePaths.${testAgentPath} == "@host";
+  assert builtins.attrNames selectedAbilityImplementations == ["nginx" "nginx-validation"];
   assert hostSessionManifest.ownership.etc.profile == "@base";
   assert hostSessionManifest.ownership.etc."pam/environment" == "@host";
   assert directHostLoginManifest.ownership.etc.profile == "@host";

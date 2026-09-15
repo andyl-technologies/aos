@@ -228,6 +228,11 @@ apm rollback --system --dry-run
 apm rollback --system
 ```
 
+The preview is an authenticated read-only activatability check. Resolve every
+structured blocked reason before applying rollback; historical authorization
+and a retained profile entry do not make revoked credentials or unavailable
+providers current again.
+
 Configuration rollback under the same module ABI reactivates the retained
 generation directly. Across an ABI boundary, APM re-evaluates its retained
 inputs against the running image before committing a compatible generation.

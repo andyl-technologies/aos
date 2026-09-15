@@ -41,6 +41,7 @@
 //! - `runtime_boundary` — fail-closed container and read-only command
 //!   admission before configuration, profile, or host-service access.
 
+pub mod ability_package;
 pub mod attestation;
 pub mod clean;
 pub mod config;
@@ -168,7 +169,7 @@ pub(crate) mod testutil;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -855,6 +856,45 @@ pub enum PackageCommand {
         #[arg(long = "run-root")]
         run_root: Option<PathBuf>,
     },
+    /// Hidden: complete initrd ability work and release journal ownership.
+    #[command(name = "__ability-stage-run", hide = true)]
+    AbilityStageRun {
+        /// Execution stage owned by this controller.
+        #[arg(long)]
+        stage: String,
+        /// Mounted root that will become the host root.
+        #[arg(long)]
+        root: PathBuf,
+        /// Durable image profile beneath the mounted host root.
+        #[arg(long = "image-profile")]
+        image_profile: PathBuf,
+        /// Signed initrd activation selection.
+        #[arg(long)]
+        input: PathBuf,
+    },
+    /// Hidden: validate initrd ownership release before switch-root.
+    #[command(name = "__ability-stage-validate", hide = true)]
+    AbilityStageValidate {
+        /// Earlier execution stage releasing ownership.
+        #[arg(long = "from-stage")]
+        from_stage: String,
+        /// Mounted root that will become the host root.
+        #[arg(long)]
+        root: PathBuf,
+        /// Durable image profile beneath the mounted host root.
+        #[arg(long = "image-profile")]
+        image_profile: PathBuf,
+    },
+    /// Hidden: revalidate and receive an initrd ability journal.
+    #[command(name = "__ability-stage-receive", hide = true)]
+    AbilityStageReceive {
+        /// Earlier execution stage releasing ownership.
+        #[arg(long = "from-stage")]
+        from_stage: String,
+        /// Durable image profile for the running image.
+        #[arg(long = "image-profile")]
+        image_profile: PathBuf,
+    },
 }
 
 /// Canonical package-documentation operations.
@@ -1238,7 +1278,9 @@ impl PackageCommand {
                 | PackageCommand::TestVerifyPackageAttestation { .. }
                 | PackageCommand::TestProducePackageAttestationQuote { .. }
                 | PackageCommand::Attest {
-                    command: AttestCommand::VerifyBootCommit { .. },
+                    command: AttestCommand::VerifyBootCommit { .. }
+                        | AttestCommand::VerifyRolloutBootCommit { .. }
+                        | AttestCommand::ReadUkiIdentitySection { .. },
                 }
                 | PackageCommand::LoadEbpfLsmPolicies { .. }
                 | PackageCommand::Eval { .. }
@@ -1248,6 +1290,9 @@ impl PackageCommand {
                 | PackageCommand::Fetch { .. }
                 | PackageCommand::RenderOne { .. }
                 | PackageCommand::GraphCompile { .. }
+                | PackageCommand::AbilityStageRun { .. }
+                | PackageCommand::AbilityStageValidate { .. }
+                | PackageCommand::AbilityStageReceive { .. }
         )
     }
 
@@ -1269,6 +1314,9 @@ impl PackageCommand {
             | PackageCommand::Fetch { .. }
             | PackageCommand::RenderOne { .. }
             | PackageCommand::GraphCompile { .. } => LiveAos,
+            PackageCommand::AbilityStageRun { .. }
+            | PackageCommand::AbilityStageValidate { .. }
+            | PackageCommand::AbilityStageReceive { .. } => Portable,
             PackageCommand::RecoverCredentialTransactions | PackageCommand::Switch { .. } => {
                 AosRoot
             }
@@ -1392,6 +1440,29 @@ pub enum AttestCommand {
         #[arg(long = "expected-pcr11")]
         expected_pcr11: Option<String>,
     },
+    /// Verify native transaction and provider health before rollout finalization.
+    #[command(name = "__verify-rollout-boot-commit", hide = true)]
+    VerifyRolloutBootCommit {
+        /// Configuration generation that owns the protected transaction
+        #[arg(long)]
+        generation: u32,
+        /// Exact native ability transaction named by activation evidence
+        #[arg(long)]
+        transaction: String,
+        /// Authenticated running image generation
+        #[arg(long)]
+        running: u32,
+    },
+    /// Read one bounded identity section from an installed UKI.
+    #[command(name = "__read-uki-identity-section", hide = true)]
+    ReadUkiIdentitySection {
+        /// Installed regular-file UKI to inspect.
+        #[arg(long)]
+        uki: PathBuf,
+        /// Fixed identity section to emit as exact UTF-8 text.
+        #[arg(long, value_enum)]
+        section: UkiIdentitySection,
+    },
     /// Verify a package event log against a PCR 15 value or quote bundle
     Verify {
         /// Use system registry metadata
@@ -1419,8 +1490,14 @@ pub enum AttestCommand {
         #[arg(long = "catalog-file")]
         catalog_files: Vec<PathBuf>,
         /// Expected PCR 15 value before package measurements
-        #[arg(long)]
+        #[arg(long, conflicts_with = "pcr15_baseline_file")]
         pcr15_baseline: Option<String>,
+        /// File containing the expected PCR 15 value before package measurements
+        #[arg(long, conflicts_with = "pcr15_baseline")]
+        pcr15_baseline_file: Option<PathBuf>,
+        /// Atomically replace this file with the JSON verification result
+        #[arg(long, requires = "json")]
+        result_file: Option<PathBuf>,
         /// Generation-attestation JSON record to verify after CEL replay
         #[arg(long)]
         generation_attestation: Option<PathBuf>,
@@ -1442,6 +1519,24 @@ pub enum AttestCommand {
     },
 }
 
+/// Selects one bounded UKI text section used by early boot identity checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum UkiIdentitySection {
+    /// Selects the measured kernel command line.
+    Cmdline,
+    /// Selects the measured operating-system release fields.
+    Osrel,
+}
+
+impl UkiIdentitySection {
+    fn as_pe_name(self) -> &'static str {
+        match self {
+            Self::Cmdline => ".cmdline",
+            Self::Osrel => ".osrel",
+        }
+    }
+}
+
 impl AttestCommand {
     fn is_system(&self) -> bool {
         match self {
@@ -1449,7 +1544,9 @@ impl AttestCommand {
             AttestCommand::Catalog { system, .. } => *system,
             AttestCommand::Quote { .. }
             | AttestCommand::Enroll { .. }
-            | AttestCommand::VerifyBootCommit { .. } => false,
+            | AttestCommand::VerifyBootCommit { .. }
+            | AttestCommand::VerifyRolloutBootCommit { .. }
+            | AttestCommand::ReadUkiIdentitySection { .. } => false,
         }
     }
 }
@@ -1710,9 +1807,6 @@ pub enum RegistryCommand {
         /// Trusted AOS base-lib store path used for the publish-time options-only eval
         #[arg(long = "config-base-lib", requires = "config_module")]
         config_base_lib: Option<String>,
-        /// Trusted AOS base library used to extract system-owned service options
-        #[arg(long = "documentation-base-lib")]
-        documentation_base_lib: Option<String>,
         /// Named runtime output exposed to the config module (`name=/nix/store/...`)
         #[arg(long = "config-dependency", requires = "config_module")]
         config_dependencies: Vec<String>,
@@ -3705,12 +3799,7 @@ pub async fn run(
                 host_nix,
                 runtime_modules,
                 runtime_module_root: runtime_module_root.clone(),
-                expected_current_generation: runtime_module_root
-                    .as_ref()
-                    .map(|_| expected_current_generation)
-                    .or_else(|| {
-                        (!runtime_module.is_empty()).then_some(expected_current_generation)
-                    }),
+                expected_current_generation: Some(expected_current_generation),
                 base_lib,
                 facts_json: Some(facts_json.clone()),
                 desired: desired.clone(),
@@ -3848,6 +3937,34 @@ pub async fn run(
         );
     }
 
+    if let PackageCommand::Attest {
+        command:
+            AttestCommand::VerifyRolloutBootCommit {
+                generation,
+                transaction,
+                running,
+            },
+    } = command
+    {
+        let transaction = aos_ability_model::TransactionId(
+            aos_ability_model::LocalKey::new(transaction.clone())
+                .context("decoding rollout transaction identity")?,
+        );
+        return config_eval::verify_rollout_boot_commit(*generation, &transaction, *running);
+    }
+
+    if let PackageCommand::Attest {
+        command: AttestCommand::ReadUkiIdentitySection { uki, section },
+    } = command
+    {
+        let text = sysroot::read_uki_section_text(uki, section.as_pe_name())?;
+        let mut output = std::io::stdout().lock();
+        output
+            .write_all(text.as_bytes())
+            .context("writing UKI identity section")?;
+        return Ok(());
+    }
+
     // The hidden activate split runs during the activate script while that
     // script holds the switch lock. These paths talk to systemd over D-Bus,
     // need no apm config, and must return their own 0/1/2 exit codes (which
@@ -3873,6 +3990,30 @@ pub async fn run(
         return credential_artifact::recover_credential_transactions(
             &credential_artifact::aos_root_path(),
         );
+    }
+    if let PackageCommand::AbilityStageRun {
+        stage,
+        root,
+        image_profile,
+        input,
+    } = command
+    {
+        return config_eval::stage_handoff::run_initrd_stage(stage, root, image_profile, input);
+    }
+    if let PackageCommand::AbilityStageValidate {
+        from_stage,
+        root,
+        image_profile,
+    } = command
+    {
+        return config_eval::stage_handoff::validate_initrd_stage(from_stage, root, image_profile);
+    }
+    if let PackageCommand::AbilityStageReceive {
+        from_stage,
+        image_profile,
+    } = command
+    {
+        return config_eval::stage_handoff::receive_initrd_stage(from_stage, image_profile);
     }
 
     validate_system_transition_options(command)?;
@@ -4065,12 +4206,25 @@ pub async fn run(
                     quote_identity_files,
                     catalog_files,
                     pcr15_baseline,
+                    pcr15_baseline_file,
+                    result_file,
                     generation_attestation,
                     generation_policy_file,
                     rederived_manifest,
                     ..
                 },
         } => {
+            if let Some(path) = result_file.as_deref() {
+                clear_attestation_result(path)?;
+            }
+            let pcr15_baseline = match (pcr15_baseline, pcr15_baseline_file) {
+                (Some(value), None) => Some(value.clone()),
+                (None, Some(path)) => Some(read_attestation_baseline(path)?),
+                (None, None) => None,
+                (Some(_), Some(_)) => {
+                    bail!("inline and file-backed PCR 15 baselines are mutually exclusive")
+                }
+            };
             let measurement = read_attestation_measurement(
                 pcr15,
                 quote_dir,
@@ -4083,10 +4237,11 @@ pub async fn run(
                 event_log,
                 measurement,
                 catalog_files,
-                pcr15_baseline,
+                &pcr15_baseline,
                 generation_attestation.as_deref(),
                 generation_policy_file.as_deref(),
                 rederived_manifest.as_deref(),
+                result_file.as_deref(),
                 printer,
             )
         }
@@ -4102,6 +4257,16 @@ pub async fn run(
         PackageCommand::Attest {
             command: AttestCommand::VerifyBootCommit { .. },
         } => unreachable!("AttestCommand::VerifyBootCommit is handled before ApmConfig::load"),
+        PackageCommand::Attest {
+            command: AttestCommand::VerifyRolloutBootCommit { .. },
+        } => {
+            unreachable!("AttestCommand::VerifyRolloutBootCommit is handled before ApmConfig::load")
+        }
+        PackageCommand::Attest {
+            command: AttestCommand::ReadUkiIdentitySection { .. },
+        } => {
+            unreachable!("AttestCommand::ReadUkiIdentitySection is handled before ApmConfig::load")
+        }
         PackageCommand::Hold { package } => hold::run_hold(&config, package, printer).await,
         PackageCommand::Unhold { package } => hold::run_unhold(&config, package, printer).await,
         PackageCommand::Held { .. } => hold::run_held(&config, printer).await,
@@ -4167,6 +4332,7 @@ pub async fn run(
             None,
             None,
             None,
+            None,
             printer,
         ),
         PackageCommand::TestProducePackageAttestationQuote { .. } => {
@@ -4220,6 +4386,15 @@ pub async fn run(
         }
         PackageCommand::GraphCompile { .. } => {
             unreachable!("GraphCompile is handled before ApmConfig::load")
+        }
+        PackageCommand::AbilityStageRun { .. } => {
+            unreachable!("AbilityStageRun is handled before ApmConfig::load")
+        }
+        PackageCommand::AbilityStageValidate { .. } => {
+            unreachable!("AbilityStageValidate is handled before ApmConfig::load")
+        }
+        PackageCommand::AbilityStageReceive { .. } => {
+            unreachable!("AbilityStageReceive is handled before ApmConfig::load")
         }
         PackageCommand::Fetch { .. } => {
             unreachable!("Fetch is handled before ApmConfig::load")
@@ -4354,6 +4529,7 @@ fn run_verify_package_attestation(
     generation_attestation: Option<&Path>,
     generation_policy_file: Option<&Path>,
     rederived_manifest: Option<&Path>,
+    result_file: Option<&Path>,
     printer: &Printer,
 ) -> Result<()> {
     let (pcr15, trust, quoted_generation_quote) = match measurement {
@@ -4457,6 +4633,9 @@ fn run_verify_package_attestation(
                 output["quote_identity_label"] = serde_json::json!(anchor);
             }
         }
+        if let Some(path) = result_file {
+            write_attestation_result(path, &output)?;
+        }
         printer.json(&output);
     } else {
         let mut message = format!(
@@ -4491,6 +4670,98 @@ fn run_verify_package_attestation(
         printer.success(&message);
     }
     Ok(())
+}
+
+fn read_attestation_baseline(path: &Path) -> Result<String> {
+    let baseline = fs::read_to_string(path)
+        .with_context(|| format!("reading package attestation baseline {}", path.display()))?;
+    let baseline = baseline.trim();
+    if baseline.is_empty() {
+        bail!(
+            "package attestation baseline file is empty: {}",
+            path.display()
+        );
+    }
+
+    Ok(baseline.to_string())
+}
+
+fn clear_attestation_result(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .context("package attestation result path must have a parent directory")?;
+
+    match fs::remove_file(path) {
+        Ok(()) => std::fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .with_context(|| {
+                format!(
+                    "syncing package attestation result directory {} after invalidation",
+                    parent.display()
+                )
+            }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "invalidating prior package attestation result {}",
+                path.display()
+            )
+        }),
+    }
+}
+
+fn write_attestation_result(path: &Path, value: &serde_json::Value) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .context("package attestation result path must have a parent directory")?;
+    let mut bytes = serde_json::to_vec(value).context("encoding package attestation result")?;
+    bytes.push(b'\n');
+
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).with_context(|| {
+        format!(
+            "creating package attestation result beside {}",
+            path.display()
+        )
+    })?;
+    temporary
+        .as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o644))
+        .with_context(|| {
+            format!(
+                "setting package attestation result mode for {}",
+                path.display()
+            )
+        })?;
+    temporary
+        .write_all(&bytes)
+        .with_context(|| format!("writing package attestation result for {}", path.display()))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("syncing package attestation result for {}", path.display()))?;
+    temporary
+        .persist(path)
+        .map_err(|error| error.error)
+        .with_context(|| {
+            format!(
+                "atomically replacing package attestation result {}",
+                path.display()
+            )
+        })?;
+
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .with_context(|| {
+            format!(
+                "syncing package attestation result directory {}",
+                parent.display()
+            )
+        })
 }
 
 fn verify_generation_attestation_cli(
@@ -4891,7 +5162,7 @@ fn verify_generation_release_snapshot(
         .zip(&modules.store_paths)
         .zip(&modules.nar_hashes)
     {
-        let (module_abi_compat, authorization) = verify_signed_config_module_member(
+        let module_abi_compat = verify_signed_config_module_member(
             &repo,
             &tag.object,
             package_name,
@@ -4906,7 +5177,6 @@ fn verify_generation_release_snapshot(
             store_path: store_path.clone(),
             nar_hash: nar_hash.clone(),
             module_abi_compat,
-            authorization,
         });
     }
     realization_members.sort_by(|left, right| {
@@ -4953,7 +5223,7 @@ fn verify_signed_config_module_member(
     package_name: &str,
     store_path: &str,
     nar_hash: &str,
-) -> Result<(types::ModuleAbiCompat, config_eval::PackageAuthorization)> {
+) -> Result<types::ModuleAbiCompat> {
     types::validate_package_name(package_name)?;
     let path = format!(
         "packages/{}/{}.toml",
@@ -4985,38 +5255,7 @@ fn verify_signed_config_module_member(
             "signed release catalog must authenticate config output {store_path} exactly once for package {package_name}"
         );
     };
-    Ok((
-        module.module_abi_compat,
-        signed_module_authorization(module),
-    ))
-}
-
-fn signed_module_authorization(
-    module: &types::ConfigModuleMeta,
-) -> config_eval::PackageAuthorization {
-    let mut owns = module
-        .owns_roots
-        .iter()
-        .map(|owned| owned.root.clone())
-        .collect::<Vec<_>>();
-    owns.sort();
-    owns.dedup();
-    let mut contributes = BTreeMap::<String, Vec<String>>::new();
-    for contribution in &module.contributes {
-        contributes
-            .entry(contribution.root.clone())
-            .or_default()
-            .extend(contribution.paths.iter().cloned());
-    }
-    for paths in contributes.values_mut() {
-        paths.sort();
-        paths.dedup();
-    }
-    config_eval::PackageAuthorization {
-        owns,
-        contributes,
-        artifacts: module.artifacts.clone(),
-    }
+    Ok(module.module_abi_compat)
 }
 
 fn signed_store_subset_hash(repo: &Path, commit: &str, root: &str) -> Result<String> {
@@ -5380,7 +5619,6 @@ async fn run_registry(
             expose_manifest,
             config_module,
             config_base_lib,
-            documentation_base_lib,
             config_dependencies,
             bless,
             no_ca,
@@ -5411,7 +5649,6 @@ async fn run_registry(
                 expose_manifest.as_deref(),
                 config_module.as_deref(),
                 config_base_lib.as_deref(),
-                documentation_base_lib.as_deref(),
                 config_dependencies,
                 *bless,
                 *no_ca,
@@ -6939,6 +7176,7 @@ mod tests {
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {
@@ -7166,11 +7404,6 @@ contributable = ["allowedTCPPorts"]
             release.config_modules[0].module_abi_compat,
             types::ModuleAbiCompat { min: 1, max: 1 }
         );
-        assert_eq!(
-            release.config_modules[0].authorization.owns,
-            vec!["firewall".to_string()]
-        );
-
         assert!(
             verify_generation_release_snapshot(
                 &repo,
@@ -7200,8 +7433,7 @@ contributable = ["allowedTCPPorts"]
         ]));
         verified_modules.realization = Some(release.realization.clone());
         verified_modules.provenance = serde_json::json!({
-            "module_abi_compat": [{"min": 1, "max": 1}],
-            "authorizations": [{"owns": ["firewall"], "contributes": {}}]
+            "module_abi_compat": [{"min": 1, "max": 1}]
         });
         let base_record = attestation::GenAttestation {
             schema: attestation::GEN_ATTESTATION_SCHEMA.to_string(),
@@ -7441,10 +7673,6 @@ contributable = ["allowedTCPPorts"]
                     {"min": 1, "max": 1},
                     {"min": 1, "max": 1}
                 ],
-                "authorizations": [
-                    {"owns": [], "contributes": {}},
-                    {"owns": [], "contributes": {}}
-                ],
                 "origins": ["image", "registry"]
             }),
         };
@@ -7532,6 +7760,8 @@ contributable = ["allowedTCPPorts"]
                     quote_identity_files: Vec::new(),
                     catalog_files: Vec::new(),
                     pcr15_baseline: None,
+                    pcr15_baseline_file: None,
+                    result_file: None,
                     generation_attestation: None,
                     generation_policy_file: None,
                     rederived_manifest: None,
@@ -7944,5 +8174,45 @@ contributable = ["allowedTCPPorts"]
         fs::write(z_dir.join("zstd.toml"), "test").unwrap();
 
         assert_eq!(count_packages_in_dir(tmp.path()), 3);
+    }
+
+    #[test]
+    fn attestation_baseline_file_requires_bytes_and_trims_line_endings() {
+        let tmp = TempDir::new().unwrap();
+        let baseline = tmp.path().join("baseline");
+
+        fs::write(&baseline, "sha256:abcd\r\n").unwrap();
+        assert_eq!(read_attestation_baseline(&baseline).unwrap(), "sha256:abcd");
+
+        fs::write(&baseline, "").unwrap();
+        assert!(read_attestation_baseline(&baseline).is_err());
+
+        fs::write(&baseline, " \r\n\t").unwrap();
+        assert!(read_attestation_baseline(&baseline).is_err());
+    }
+
+    #[test]
+    fn attestation_result_atomically_replaces_complete_json() {
+        let tmp = TempDir::new().unwrap();
+        let result = tmp.path().join("result.json");
+        fs::write(&result, "stale").unwrap();
+
+        write_attestation_result(&result, &serde_json::json!({"verified": true})).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&result).unwrap(),
+            "{\"verified\":true}\n"
+        );
+    }
+
+    #[test]
+    fn attestation_result_invalidation_removes_stale_success() {
+        let tmp = TempDir::new().unwrap();
+        let result = tmp.path().join("result.json");
+        fs::write(&result, "{\"verified\":true}\n").unwrap();
+
+        clear_attestation_result(&result).unwrap();
+
+        assert!(!result.exists());
     }
 }

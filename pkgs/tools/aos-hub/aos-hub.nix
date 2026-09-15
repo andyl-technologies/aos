@@ -68,7 +68,7 @@
     inherit src;
     name = "aos-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-yf/Gu30exf9weCOK6RRrjusN+bXZ6rj1r+tZbEJMy4g=";
+    hash = "sha256-4G8waM8fsmqSjIgkaitrG3HmPy2e6KShpDDJn7THqZc=";
   };
   cargoEnv = {
     OPENSSL_DIR = "${openssl}";
@@ -116,6 +116,8 @@ in
     buildDeps = [buildPerl buildPkgConfig openssl sqlite buildProtobuf];
     # libgit2 still links zlib for compressed Git objects.
     runtimeDeps = [openssl sqlite zlib];
+
+    abilities = ./_aos-hub/module.nix;
 
     # The workspace test suite is exercised by the `aos` package's
     # `cargoTestFlags = "--workspace"`; this derivation only needs to compile

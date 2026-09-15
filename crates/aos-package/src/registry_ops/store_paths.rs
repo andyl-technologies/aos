@@ -17,6 +17,17 @@ use std::process::Command;
 pub(in crate::registry_ops) fn nix_command(program: &str) -> Command {
     let mut command = Command::new(program);
     command.envs(aos_nix_env());
+    #[cfg(test)]
+    for (source, target) in [
+        ("AOS_TEST_ABILITY_NIX_STORE_DIR", "NIX_STORE_DIR"),
+        ("AOS_TEST_ABILITY_NIX_STATE_DIR", "NIX_STATE_DIR"),
+        ("AOS_TEST_ABILITY_NIX_LOG_DIR", "NIX_LOG_DIR"),
+        ("AOS_TEST_ABILITY_NIX_REMOTE", "NIX_REMOTE"),
+    ] {
+        if let Some(value) = std::env::var_os(source) {
+            command.env(target, value);
+        }
+    }
     command
 }
 
@@ -543,6 +554,25 @@ pub(in crate::registry_ops) fn introspect_closure_nars(
             nar_size,
         })
         .collect())
+}
+
+/// Returns one store object's sorted direct reference hashes.
+///
+/// # Errors
+///
+/// Returns an error when Nix cannot query the object or emits a malformed
+/// store path.
+pub(in crate::registry_ops) fn introspect_direct_reference_hashes(
+    store_path: &str,
+) -> Result<Vec<String>> {
+    let mut references = nix_store_query("--references", &[store_path])?
+        .into_iter()
+        .filter(|reference| reference != store_path)
+        .map(|reference| extract_hash(&reference).to_string())
+        .collect::<Vec<_>>();
+    references.sort();
+    references.dedup();
+    Ok(references)
 }
 
 /// Run `nix store make-content-addressed --json` over a closure root and

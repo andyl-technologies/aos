@@ -15,17 +15,18 @@ use crate::registry_ops::mac::PublishExposeManifest;
 use crate::registry_ops::provenance::bind_documentation_provenance;
 use crate::registry_ops::store_paths::StorePathInfo;
 use crate::types::{
-    AttestationMeta, ConfigModuleMeta, DocumentationArtifactMeta, ExposeArtifactMeta,
-    FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1,
-    FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
-    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_OPTIONAL_CREDENTIALS_V1,
-    FEATURE_PACKAGE_DOCUMENTATION_V1, FEATURE_PERMISSIONS_V1, FEATURE_RECOVERY_UKIS_V1,
-    FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1, PACKAGE_META_FORMAT,
-    validate_attestation_meta, validate_config_module_meta, validate_documentation_artifact_meta,
-    validate_expose_artifact_meta,
+    AbilityPackageMeta, AttestationMeta, ConfigModuleMeta, DocumentationArtifactMeta,
+    ExposeArtifactMeta, FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1, FEATURE_ATTESTATION_V1,
+    FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1,
+    FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
+    FEATURE_MAC_PROFILE_V1, FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_NETWORK_POLICY_V1,
+    FEATURE_OPTIONAL_CREDENTIALS_V1, FEATURE_PACKAGE_DOCUMENTATION_V1, FEATURE_PERMISSIONS_V1,
+    FEATURE_RECOVERY_UKIS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1,
+    PACKAGE_META_FORMAT, validate_attestation_meta, validate_config_module_meta,
+    validate_documentation_artifact_meta, validate_expose_artifact_meta,
 };
 use anyhow::{Context, Result, bail};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 
 /// Build package TOML content, merging with existing content if present.
@@ -78,6 +79,12 @@ pub(in crate::registry_ops) fn build_package_toml_with_documentation(
         expose_artifact_info,
         expose_manifest_digest,
     )?;
+    if sysroot {
+        let table = platform_table
+            .as_table_mut()
+            .context("new sysroot platform metadata is not a TOML table")?;
+        record_native_image_rollout_gate(table)?;
+    }
     if let Some(documentation) = documentation {
         let table = platform_table
             .as_table_mut()
@@ -262,6 +269,239 @@ pub(in crate::registry_ops) fn build_package_toml_with_documentation(
 
         Ok(toml::to_string_pretty(&toml_val)?)
     }
+}
+
+/// Records one non-`out` derivation output beside an authored platform entry.
+///
+/// Supplemental outputs retain their own store-graph roots without replacing
+/// the installable output or duplicating package documentation and provenance.
+///
+/// # Errors
+///
+/// Returns an error when the output identity is invalid, the exact package
+/// coordinate is absent, or an existing output name is bound to another path.
+pub(crate) fn record_named_output(
+    existing: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    output: &str,
+    store_path: &str,
+) -> Result<String> {
+    if output == "out"
+        || output.is_empty()
+        || output.len() > 256
+        || !output
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'+'))
+    {
+        bail!("invalid supplemental Nix output name '{output}'");
+    }
+    if !store_path.starts_with("/nix/store/") {
+        bail!("invalid supplemental store path '{store_path}'");
+    }
+
+    let mut document: toml::Value =
+        toml::from_str(existing).context("parsing package TOML for supplemental output")?;
+    let package_name = document
+        .get("package")
+        .and_then(|package| package.get("name"))
+        .and_then(toml::Value::as_str)
+        .context("package TOML is missing package.name")?;
+    if package_name != name {
+        bail!("package TOML name '{package_name}' does not match '{name}'");
+    }
+
+    let versions = document
+        .get_mut("versions")
+        .and_then(toml::Value::as_array_mut)
+        .context("package TOML is missing versions")?;
+    let mut matching_versions = versions.iter_mut().filter(|candidate| {
+        candidate.get("version").and_then(toml::Value::as_str) == Some(version)
+    });
+    let version_entry = matching_versions
+        .next()
+        .with_context(|| format!("package {name} is missing version {version}"))?;
+    if matching_versions.next().is_some() {
+        bail!("package {name} repeats version {version}");
+    }
+
+    let platform_entry = version_entry
+        .get_mut("platforms")
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|platforms| platforms.get_mut(platform))
+        .and_then(toml::Value::as_table_mut)
+        .with_context(|| format!("package {name} {version} is missing platform {platform}"))?;
+    platform_entry
+        .get("store_path")
+        .and_then(toml::Value::as_str)
+        .context("package platform entry is missing store_path")?;
+
+    let named_outputs = platform_entry
+        .entry("named_outputs")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .context("package platform named_outputs is not a table")?;
+    if let Some(previous) = named_outputs.get(output).and_then(toml::Value::as_str)
+        && previous != store_path
+    {
+        bail!("package {name} {version} {platform} output {output} is already bound to {previous}");
+    }
+    named_outputs.insert(
+        output.to_string(),
+        toml::Value::String(store_path.to_string()),
+    );
+
+    toml::to_string_pretty(&document).context("serializing package TOML with supplemental output")
+}
+
+/// Records an authenticated ability output and its fail-closed feature gates.
+///
+/// # Errors
+///
+/// Returns an error when the package coordinate is absent, the named output or
+/// ability metadata is invalid, an existing binding conflicts, or the platform
+/// and structural reference gates cannot be merged without losing information.
+pub(crate) fn record_ability_output(
+    existing: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    projection_store_path: &str,
+    ability: &AbilityPackageMeta,
+) -> Result<String> {
+    crate::ability_package::validate_ability_package_meta(ability)?;
+    let updated = record_named_output(
+        existing,
+        name,
+        version,
+        platform,
+        crate::types::ABILITY_MANIFEST_OUTPUT,
+        projection_store_path,
+    )?;
+    let mut document: toml::Value =
+        toml::from_str(&updated).context("parsing package TOML for ability output")?;
+    let platform_entry = document
+        .get_mut("versions")
+        .and_then(toml::Value::as_array_mut)
+        .and_then(|versions| {
+            versions.iter_mut().find(|candidate| {
+                candidate.get("version").and_then(toml::Value::as_str) == Some(version)
+            })
+        })
+        .and_then(|version| version.get_mut("platforms"))
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|platforms| platforms.get_mut(platform))
+        .and_then(toml::Value::as_table_mut)
+        .with_context(|| format!("package {name} {version} is missing platform {platform}"))?;
+
+    let mut features = BTreeSet::from([FEATURE_ABILITIES_V1.to_string()]);
+    if ability.activation_mode == "structured-effects" {
+        features.insert(FEATURE_ABILITY_EFFECTS_V1.to_string());
+    }
+    merge_feature_gate(platform_entry, "requires-features", &features)?;
+    merge_minimum_format(platform_entry, "platform")?;
+
+    let prior_references = platform_entry.remove("references");
+    let mut reference_gate = match prior_references {
+        Some(toml::Value::Array(hashes)) => {
+            let mut gate = toml::map::Map::new();
+            gate.insert("hashes".into(), toml::Value::Array(hashes));
+            gate
+        }
+        Some(toml::Value::Table(gate)) => gate,
+        Some(_) => bail!("platform references metadata is neither a hash list nor a gate table"),
+        None => {
+            let mut gate = toml::map::Map::new();
+            gate.insert("hashes".into(), toml::Value::Array(Vec::new()));
+            gate
+        }
+    };
+    merge_feature_gate(&mut reference_gate, "requires-features", &features)?;
+    merge_minimum_format(&mut reference_gate, "platform references")?;
+    platform_entry.insert("references".into(), toml::Value::Table(reference_gate));
+    platform_entry.insert(
+        "ability".into(),
+        toml::Value::try_from(ability).context("serializing ability metadata")?,
+    );
+
+    toml::to_string_pretty(&document).context("serializing package TOML with ability output")
+}
+
+fn merge_feature_gate(
+    table: &mut toml::map::Map<String, toml::Value>,
+    key: &str,
+    additions: &BTreeSet<String>,
+) -> Result<()> {
+    let values = table
+        .entry(key)
+        .or_insert_with(|| toml::Value::Array(Vec::new()))
+        .as_array_mut()
+        .with_context(|| format!("{key} metadata is not an array"))?;
+    let mut merged = values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .with_context(|| format!("{key} contains a non-string feature"))
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    merged.extend(additions.iter().cloned());
+    *values = merged.into_iter().map(toml::Value::String).collect();
+    Ok(())
+}
+
+fn merge_minimum_format(
+    table: &mut toml::map::Map<String, toml::Value>,
+    label: &str,
+) -> Result<()> {
+    let existing = match table.get("min-format") {
+        Some(value) => {
+            let value = value
+                .as_integer()
+                .with_context(|| format!("{label} min-format metadata is not an integer"))?;
+            u32::try_from(value)
+                .with_context(|| format!("{label} min-format metadata is outside the u32 range"))?
+        }
+        None => 0,
+    };
+    let required = existing.max(PACKAGE_META_FORMAT);
+    table.insert(
+        "min-format".into(),
+        toml::Value::Integer(i64::from(required)),
+    );
+    Ok(())
+}
+
+fn record_native_image_rollout_gate(
+    platform: &mut toml::map::Map<String, toml::Value>,
+) -> Result<()> {
+    let features = BTreeSet::from([FEATURE_NATIVE_IMAGE_ROLLOUT_V1.to_string()]);
+    merge_feature_gate(platform, "requires-features", &features)?;
+    merge_minimum_format(platform, "sysroot platform")?;
+
+    // The table representation makes readers that predate structural feature
+    // gates reject the sysroot before they can stage its A/B payload.
+    let prior_references = platform.remove("references");
+    let mut reference_gate = match prior_references {
+        Some(toml::Value::Array(hashes)) => {
+            let mut gate = toml::map::Map::new();
+            gate.insert("hashes".into(), toml::Value::Array(hashes));
+            gate
+        }
+        Some(toml::Value::Table(gate)) => gate,
+        Some(_) => bail!("sysroot references metadata is neither a hash list nor a gate table"),
+        None => {
+            let mut gate = toml::map::Map::new();
+            gate.insert("hashes".into(), toml::Value::Array(Vec::new()));
+            gate
+        }
+    };
+    merge_feature_gate(&mut reference_gate, "requires-features", &features)?;
+    merge_minimum_format(&mut reference_gate, "sysroot references")?;
+    platform.insert("references".into(), toml::Value::Table(reference_gate));
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

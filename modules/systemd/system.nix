@@ -93,6 +93,18 @@ in {
       '';
     };
 
+    providerUnitArtifacts = lib.mkOption {
+      type = lib.types.listOf lib.types.path;
+      default = [];
+      internal = true;
+      contributable = true;
+      description = ''
+        Unit trees and manifests produced by authenticated provider renderers.
+        The compiled systemd assembler validates each manifest and rejects all
+        collisions before adding its entries to the boot unit tree.
+      '';
+    };
+
     globalEnvironment = lib.mkOption {
       type = with lib.types; attrsOf (nullOr (oneOf [str path package]));
       default = {};
@@ -109,54 +121,63 @@ in {
     services = lib.mkOption {
       type = systemdTypes.services;
       default = {};
+      contributable = true;
       description = "Typed systemd .service units.";
     };
 
     targets = lib.mkOption {
       type = systemdTypes.targets;
       default = {};
+      contributable = true;
       description = "Typed systemd .target units.";
     };
 
     sockets = lib.mkOption {
       type = systemdTypes.sockets;
       default = {};
+      contributable = true;
       description = "Typed systemd .socket units.";
     };
 
     timers = lib.mkOption {
       type = systemdTypes.timers;
       default = {};
+      contributable = true;
       description = "Typed systemd .timer units.";
     };
 
     paths = lib.mkOption {
       type = systemdTypes.paths;
       default = {};
+      contributable = true;
       description = "Typed systemd .path units.";
     };
 
     slices = lib.mkOption {
       type = systemdTypes.slices;
       default = {};
+      contributable = true;
       description = "Typed systemd .slice units.";
     };
 
     mounts = lib.mkOption {
       type = systemdTypes.mounts;
       default = [];
+      contributable = true;
       description = "Typed systemd .mount units. Keyed by `where`, not by name.";
     };
 
     automounts = lib.mkOption {
       type = systemdTypes.automounts;
       default = [];
+      contributable = true;
       description = "Typed systemd .automount units. Keyed by `where`, not by name.";
     };
 
     units = lib.mkOption {
       type = systemdTypes.units;
       default = {};
+      contributable = true;
       description = ''
         Generic escape-hatch unit type. Modules that want to ship raw
         unit text — e.g. to extend an upstream systemd.packages-provided
@@ -498,14 +519,28 @@ in {
     # the *-ToUnit renderers) in a single place.
     systemd.units = renderedUnits;
 
-    # Materialize the builder-side directory from the same manifest emitted by
-    # the on-host evaluator. No independently assembled systemd derivation path
-    # remains: byte layout and job-script substitution are driven by
-    # `configManifest.etc` and `configManifest.jobScripts`.
-    system.build.systemdSystemUnits = systemdLib.materializeUnits {
-      type = "system";
-      inherit (config.system.build.systemdMaterializationData) etc jobScripts;
-    };
+    # Provider-owned units are rendered by the same compiled implementation
+    # used at runtime. Its manifest is the only filename authority for those
+    # entries; the assembler validates bytes, links, and collisions with the
+    # ordinary module-rendered tree before publishing the boot unit directory.
+    system.build.systemdSystemUnits = let
+      baseUnits = systemdLib.materializeUnits {
+        type = "system";
+        inherit (config.system.build.systemdMaterializationData) etc jobScripts;
+      };
+      providerArtifacts = config.systemd.providerUnitArtifacts;
+      providerArtifactsJson = builtins.toJSON providerArtifacts;
+    in
+      if providerArtifacts == []
+      then baseUnits
+      else
+        pkgs.runCommand "systemd-system-units-with-provider-artifacts" {
+          inherit baseUnits providerArtifactsJson;
+          passAsFile = ["providerArtifactsJson"];
+        } ''
+          providerArtifactsPath="$providerArtifactsJsonPath" \
+            ${pkgs.buildPackages.aos-systemd-provider}/bin/aos-systemd-provider assemble
+        '';
 
     # --- Pure render values ---------------------------------------------
     #

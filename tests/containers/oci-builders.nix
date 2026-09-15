@@ -11,6 +11,7 @@
   oci = import ../../lib/build/oci {
     inherit lib;
     inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
+    abilityContractValidator = pkgs.aos-ability-contract-validator;
   };
 
   base = pkgs.runCommand "oci-builder-fixture-base" {} ''
@@ -59,6 +60,11 @@
     pname = "oci-fixture-application-changed-delta";
     layerName = "fixture-application";
   };
+  abilityLayer = oci.mkClosureLayer {
+    roots = [pkgs.ability-package-smoke];
+    pname = "oci-fixture-ability-layer";
+    layerName = "fixture-ability";
+  };
   metadata = oci.mkRootMetadataLayer {
     pname = "oci-fixture-metadata";
     layerName = "fixture-metadata";
@@ -96,12 +102,12 @@
         requireExecutable = true;
       }
     ];
-    storeLayers = [baseLayerA applicationDelta];
+    storeLayers = [baseLayerA applicationDelta abilityLayer];
   };
   runtimeAudit = import ../../lib/build/runtime-closure-audit.nix {
     inherit pkgs lib;
     name = "oci-builder-fixture";
-    roots = [application];
+    roots = [application pkgs.ability-package-smoke];
     maxClosureMiB = 32;
     maxDevelopmentPayloadMiB = 1;
     allowTestArtifacts = true;
@@ -109,10 +115,190 @@
   changedRuntimeAudit = import ../../lib/build/runtime-closure-audit.nix {
     inherit pkgs lib;
     name = "oci-builder-changed-fixture";
-    roots = [changedApplication];
+    roots = [changedApplication pkgs.ability-package-smoke];
     maxClosureMiB = 32;
     maxDevelopmentPayloadMiB = 1;
     allowTestArtifacts = true;
+  };
+  abilityPackageSmokeProvider = import ../../pkgs/tests/_ability-package-smoke-provider.nix {
+    inherit (pkgs) mkDerivation;
+  };
+  abilityPackageRegistry = {
+    ability-package-smoke = pkgs.ability-package-smoke;
+    ability-package-smoke-provider = abilityPackageSmokeProvider;
+  };
+  abilityContractFor = {
+    architecture,
+    applicationRoot ? application,
+  }:
+    oci.mkStaticAbilityContract {
+      pname = "oci-fixture-${architecture}-static-abilities";
+      platform = {
+        inherit architecture;
+        os = "linux";
+      };
+      packageRegistry = abilityPackageRegistry;
+      packageRoots = [pkgs.ability-package-smoke];
+      runtimeRoots = [applicationRoot pkgs.ability-package-smoke];
+    };
+  amd64AbilityContract = abilityContractFor {architecture = "amd64";};
+  resolvedSmokePackageDocument =
+    builtins.head amd64AbilityContract.passthru.packageAbilityContracts;
+  changedAmd64AbilityContract = abilityContractFor {
+    architecture = "amd64";
+    applicationRoot = changedApplication;
+  };
+  arm64AbilityContract = abilityContractFor {architecture = "arm64";};
+  multiPlatformAbilityContract = oci.mkStaticAbilityContract {
+    pname = "oci-fixture-multi-platform-static-abilities";
+    contracts = [arm64AbilityContract amd64AbilityContract];
+  };
+  # Recompute the descriptor after mutation so only semantic validation can
+  # reject these otherwise self-consistent forged contracts.
+  rewriteStaticAbilityContract = pname: sourceContract: filter:
+    pkgs.runCommand pname {
+      buildDeps = [pkgs.coreutils pkgs.jq];
+      passthru = sourceContract.passthru;
+    } ''
+      mkdir -p "$out"
+      jq -cS ${lib.escapeShellArg filter} \
+        ${sourceContract}/contract.json > "$out/contract.with-newline.json"
+      size=$(stat -c %s "$out/contract.with-newline.json")
+      truncate -s "$((size - 1))" "$out/contract.with-newline.json"
+      mv "$out/contract.with-newline.json" "$out/contract.json"
+
+      contract_size=$(stat -c %s "$out/contract.json")
+      contract_hex=$(sha256sum "$out/contract.json" | cut -d ' ' -f 1)
+      jq -cS -n \
+        --arg mediaType ${lib.escapeShellArg sourceContract.passthru.mediaType} \
+        --arg digest "sha256:$contract_hex" \
+        --argjson size "$contract_size" \
+        '{mediaType: $mediaType, digest: $digest, size: $size}' \
+        > "$out/descriptor.json"
+    '';
+  forgeStaticAbilityContract = pname: sourceContract:
+    rewriteStaticAbilityContract
+    pname
+    sourceContract
+    ".platforms[0].semantic_validation_was_bypassed = true";
+  forgedPlatformAbilityContract =
+    forgeStaticAbilityContract
+    "oci-fixture-forged-platform-static-abilities"
+    amd64AbilityContract;
+  forgedAggregateAbilityContract = (forgeStaticAbilityContract
+    "oci-fixture-forged-aggregate-static-abilities"
+    multiPlatformAbilityContract).overrideAttrs (_: {
+    passthru =
+      multiPlatformAbilityContract.passthru
+      // {
+        inputContractPaths = map builtins.toString [
+          arm64AbilityContract
+          forgedPlatformAbilityContract
+        ];
+      };
+  });
+  reorderedPlatformAbilityContract =
+    rewriteStaticAbilityContract
+    "oci-fixture-reordered-platform-static-abilities"
+    multiPlatformAbilityContract
+    ".platforms |= reverse";
+  requirementObligation = acceptedInterfaces: ''
+    .platforms[0].packages[0].manifest as $manifest
+    | .platforms[0].unresolved_launch_obligations = ([{
+        kind: "ability-requirement",
+        consumer: {package: $manifest},
+        requirement: {
+          alias: "semantic-order-probe",
+          accepted_interfaces: ${acceptedInterfaces},
+          methods: [],
+          guarantees: [],
+          strength: "required",
+          fallback: null
+        },
+        disposition: "external-launch-obligation"
+      }] + .platforms[0].unresolved_launch_obligations)
+  '';
+  reorderedRequirementAbilityContract =
+    rewriteStaticAbilityContract
+    "oci-fixture-reordered-requirement-static-abilities"
+    amd64AbilityContract
+    (requirementObligation ''      [
+            {
+              name: "aos.test.zzz",
+              abi: 1,
+              descriptor: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            },
+            {
+              name: "aos.test.aaa",
+              abi: 1,
+              descriptor: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            }
+          ]'');
+  duplicateRequirementAbilityContract =
+    rewriteStaticAbilityContract
+    "oci-fixture-duplicate-requirement-static-abilities"
+    amd64AbilityContract
+    (requirementObligation ''      [
+            {
+              name: "aos.test.duplicate",
+              abi: 1,
+              descriptor: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            },
+            {
+              name: "aos.test.duplicate",
+              abi: 1,
+              descriptor: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            }
+          ]'');
+  changedPackageIdentityAbilityContract =
+    rewriteStaticAbilityContract
+    "oci-fixture-changed-package-identity-static-abilities"
+    amd64AbilityContract
+    ".platforms[0].packages[0].name = \"forged-package\"";
+  changedProviderIdentityAbilityContract =
+    rewriteStaticAbilityContract
+    "oci-fixture-changed-provider-identity-static-abilities"
+    amd64AbilityContract
+    ".platforms[0].abilities[0].implementation = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"";
+  changedRequiredRequirementAbilityContract =
+    rewriteStaticAbilityContract
+    "oci-fixture-changed-required-requirement-static-abilities"
+    amd64AbilityContract
+    ''
+      .platforms[0].packages[0].manifest as $manifest
+      | .platforms[0].unresolved_launch_obligations = ([{
+          kind: "ability-requirement",
+          consumer: {package: $manifest},
+          requirement: {
+            alias: "canonical-edge",
+            accepted_interfaces: [{
+              name: "aos.test.canonical-edge",
+              abi: 4294967295,
+              descriptor: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            }],
+            methods: [],
+            guarantees: [],
+            strength: "required",
+            fallback: null
+          },
+          disposition: "external-launch-obligation"
+        }] + .platforms[0].unresolved_launch_obligations)
+    '';
+
+  # The probe makes the integration call observable while the production
+  # validator assertions below establish that the same forged bytes fail.
+  semanticValidationProbe = pkgs.writeShellScriptBin "aos-ability-contract-validator" ''
+    set -eu
+    test "$1" = static-contract
+    if ${pkgs.jq}/bin/jq -e '.platforms[] | has("semantic_validation_was_bypassed")' "$2" >/dev/null; then
+      . "$NIX_ATTRS_SH_FILE"
+      touch "''${outputs[out]}/semantic-validator-observed-forged-marker"
+    fi
+  '';
+  probeOci = import ../../lib/build/oci {
+    inherit lib;
+    inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
+    abilityContractValidator = semanticValidationProbe;
   };
 
   mkPlatformImage = {
@@ -120,11 +306,17 @@
     pname ? "oci-fixture-${architecture}-image",
     applicationLayer ? applicationDelta,
     audit ? runtimeAudit,
+    abilityContract ? (
+      if architecture == "amd64"
+      then amd64AbilityContract
+      else arm64AbilityContract
+    ),
   }:
     oci.mkImageLayout {
       inherit pname;
-      layers = [baseLayerA applicationLayer metadata];
+      layers = [baseLayerA applicationLayer abilityLayer metadata];
       runtimeAudit = audit;
+      inherit abilityContract;
       platform = {
         inherit architecture;
         os = "linux";
@@ -159,15 +351,69 @@
     pname = "oci-fixture-amd64-image-changed-app";
     applicationLayer = changedApplicationDelta;
     audit = changedRuntimeAudit;
+    abilityContract = changedAmd64AbilityContract;
   };
   arm64Image = mkPlatformImage {architecture = "arm64";};
+  forgedAmd64Image =
+    pkgs.runCommand "oci-fixture-forged-amd64-image" {
+      buildDeps = [pkgs.coreutils pkgs.jq];
+      passthru =
+        amd64Image.passthru
+        // {
+          checkedAbilityContract = forgedPlatformAbilityContract;
+        };
+    } ''
+      cp -a ${amd64Image}/. "$out"
+      chmod -R u+w "$out"
+      cp ${forgedPlatformAbilityContract}/contract.json "$out/static-ability-contract.json"
+      cp ${forgedPlatformAbilityContract}/descriptor.json \
+        "$out/static-ability-contract.descriptor.json"
+
+      contract_digest=$(jq -r .digest ${forgedPlatformAbilityContract}/descriptor.json)
+      jq -cS \
+        --arg digest "$contract_digest" \
+        '.annotations."dev.andyl.aos.ability-contract.digest" = $digest' \
+        ${amd64Image}/manifest.json > "$out/manifest.with-newline.json"
+      manifest_size=$(stat -c %s "$out/manifest.with-newline.json")
+      truncate -s "$((manifest_size - 1))" "$out/manifest.with-newline.json"
+      mv "$out/manifest.with-newline.json" "$out/manifest.json"
+
+      manifest_size=$(stat -c %s "$out/manifest.json")
+      manifest_hex=$(sha256sum "$out/manifest.json" | cut -d ' ' -f 1)
+      cp "$out/manifest.json" "$out/layout/blobs/sha256/$manifest_hex"
+      jq -cS \
+        --arg digest "sha256:$manifest_hex" \
+        --argjson size "$manifest_size" \
+        '.digest = $digest | .size = $size' \
+        ${amd64Image}/manifest-descriptor.json > "$out/manifest-descriptor.with-newline.json"
+      descriptor_size=$(stat -c %s "$out/manifest-descriptor.with-newline.json")
+      truncate -s "$((descriptor_size - 1))" "$out/manifest-descriptor.with-newline.json"
+      mv "$out/manifest-descriptor.with-newline.json" "$out/manifest-descriptor.json"
+    '';
+  forgedMarkerImageProbe = probeOci.mkImageLayout {
+    pname = "oci-fixture-forged-marker-image-probe";
+    layers = [baseLayerA applicationDelta abilityLayer metadata];
+    runtimeAudit = runtimeAudit;
+    abilityContract = forgedPlatformAbilityContract;
+    platform = {
+      architecture = "amd64";
+      os = "linux";
+    };
+    config.entrypoint = ["/bin/base-tool"];
+  };
   multiPlatform = oci.mkMultiPlatformIndex {
     pname = "oci-fixture-multi-platform";
     images = [arm64Image amd64Image];
+    abilityContract = multiPlatformAbilityContract;
     referenceName = "aos-fixture:latest";
     annotations = {
       "org.opencontainers.image.title" = "AOS multi-platform fixture";
     };
+  };
+  forgedMarkerIndexProbe = probeOci.mkMultiPlatformIndex {
+    pname = "oci-fixture-forged-marker-index-probe";
+    images = [arm64Image forgedAmd64Image];
+    abilityContract = forgedAggregateAbilityContract;
   };
   # With one platform and identical empty index annotations, the composed
   # image-index blob is byte-identical to the input layout's index blob. This
@@ -175,6 +421,7 @@
   singlePlatform = oci.mkMultiPlatformIndex {
     pname = "oci-fixture-single-platform";
     images = [amd64Image];
+    abilityContract = amd64AbilityContract;
     referenceName = "aos-fixture:latest";
   };
   dockerArchive = oci.mkDockerArchive {
@@ -182,6 +429,51 @@
     image = amd64Image;
     references = ["aos-fixture:latest"];
   };
+  tryBuilder = value: builtins.tryEval (builtins.deepSeq value true);
+  absentAbilityPayload = tryBuilder (oci.mkStaticAbilityContract {
+    pname = "oci-absent-ability-payload-eval";
+    platform = {
+      architecture = "amd64";
+      os = "linux";
+    };
+    packageRegistry = abilityPackageRegistry;
+    packageRoots = [pkgs.ability-package-smoke];
+    runtimeRoots = [application];
+  });
+  wrongPlatformContract = tryBuilder (mkPlatformImage {
+    architecture = "amd64";
+    pname = "oci-wrong-platform-contract-eval";
+    abilityContract = arm64AbilityContract;
+  });
+  aggregateContractMismatch = tryBuilder (oci.mkMultiPlatformIndex {
+    pname = "oci-aggregate-contract-mismatch-eval";
+    images = [arm64Image amd64Image];
+    abilityContract = amd64AbilityContract;
+  });
+  evidenceReferenceGraph = oci.mkReferenceGraph {
+    pname = "oci-evidence-contract-mismatch-reference-graph";
+    rootPaths = [application];
+  };
+  evidenceSourceGraph = oci.mkEvidenceSourceGraph {
+    pname = "oci-evidence-contract-mismatch-source-graph";
+    referenceGraph = evidenceReferenceGraph;
+    packageCatalog = [];
+    candidateSources = [];
+  };
+  evidenceContractMismatch = tryBuilder (oci.mkEvidenceLayout {
+    pname = "oci-evidence-contract-mismatch-eval";
+    image = multiPlatform;
+    abilityContract = arm64AbilityContract;
+    referenceGraph = evidenceReferenceGraph;
+    sourceGraph = evidenceSourceGraph;
+    closureLayers = [baseLayerA];
+    packageCatalog = [];
+    definitionAttribute = "systems.fixture.build.containers.aos-fixture";
+    releaseIdentity = "fixture";
+    packageName = "aos";
+    packageVersion = "0.1.0";
+    imageName = "aos-fixture";
+  });
 
   validStickyMode = builtins.tryEval (oci.mkRootMetadataLayer {
     pname = "oci-valid-sticky-mode-eval";
@@ -253,12 +545,19 @@
   );
   accepts = validator: value: (builtins.tryEval (validator "test vector" value)).success;
   evalContracts = assert validStickyMode.success;
+  assert !(builtins.elem
+    (builtins.toString abilityPackageSmokeProvider)
+    amd64AbilityContract.passthru.runtimeRootPaths);
   assert !invalidMode.success;
   assert !unsafePath.success;
   assert !symlinkParent.success;
   assert !missingFilePayload.success;
   assert !ambiguousFilePayload.success;
   assert !hostFileSource.success;
+  assert !absentAbilityPayload.success;
+  assert !wrongPlatformContract.success;
+  assert !aggregateContractMismatch.success;
+  assert !evidenceContractMismatch.success;
   assert lib.all (accepts oci.common.validateRepository) referenceVectors.repositories.valid;
   assert lib.all (value: !accepts oci.common.validateRepository value) referenceVectors.repositories.invalid;
   assert lib.all (accepts oci.common.validateTag) referenceVectors.tags.valid;
@@ -278,6 +577,7 @@ in
       pkgs.grep
       pkgs.jq
       pkgs.tar
+      pkgs.aos-ability-contract-validator
       baseLayerA
       baseLayerB
       applicationDelta
@@ -290,6 +590,17 @@ in
       changedAmd64Image
       arm64Image
       multiPlatform
+      forgedPlatformAbilityContract
+      forgedAggregateAbilityContract
+      reorderedPlatformAbilityContract
+      reorderedRequirementAbilityContract
+      duplicateRequirementAbilityContract
+      changedPackageIdentityAbilityContract
+      changedProviderIdentityAbilityContract
+      changedRequiredRequirementAbilityContract
+      forgedAmd64Image
+      forgedMarkerImageProbe
+      forgedMarkerIndexProbe
       dockerArchive
     ];
     dontStrip = true;
@@ -307,7 +618,67 @@ in
             exit 1
           }
 
+          test -f ${forgedMarkerImageProbe}/semantic-validator-observed-forged-marker \
+            || fail "image layout bypassed static ability semantic validation"
+          test -f ${forgedMarkerIndexProbe}/semantic-validator-observed-forged-marker \
+            || fail "multi-platform index bypassed static ability semantic validation"
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            static-contract ${forgedPlatformAbilityContract}/contract.json \
+            container - linux amd64 - 2>/dev/null; then
+            fail "forged image-layout static ability contract passed semantic validation"
+          fi
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            static-contract ${forgedAggregateAbilityContract}/contract.json \
+            container - 2>/dev/null; then
+            fail "forged aggregate static ability contract passed semantic validation"
+          fi
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            static-contract ${reorderedPlatformAbilityContract}/contract.json \
+            container - 2>/dev/null; then
+            fail "rehashed contract with reordered platforms passed semantic validation"
+          fi
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            static-contract ${reorderedRequirementAbilityContract}/contract.json \
+            container - linux amd64 - 2>/dev/null; then
+            fail "rehashed contract with reordered requirement members passed semantic validation"
+          fi
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            static-contract ${duplicateRequirementAbilityContract}/contract.json \
+            container - linux amd64 - 2>/dev/null; then
+            fail "rehashed contract with duplicate requirement members passed semantic validation"
+          fi
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            static-contract ${changedPackageIdentityAbilityContract}/contract.json \
+            container - linux amd64 - 2>/dev/null; then
+            fail "rehashed contract with changed package identity passed artifact validation"
+          fi
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            static-contract ${changedProviderIdentityAbilityContract}/contract.json \
+            container - linux amd64 - 2>/dev/null; then
+            fail "rehashed contract with changed provider identity passed artifact validation"
+          fi
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            static-contract ${changedRequiredRequirementAbilityContract}/contract.json \
+            container - linux amd64 - 2>/dev/null; then
+            fail "rehashed contract with changed required requirement passed artifact validation"
+          fi
+
           ${oci.common.realizedStorePolicyScript}
+
+          mkdir -p invalid-ability/interfaces
+          cp ${resolvedSmokePackageDocument}/interfaces/*.json \
+            invalid-ability/interfaces/
+          jq -cS \
+            '.exports[0].implementation = "sha256:0000000000000000000000000000000000000000000000000000000000000000"' \
+            ${resolvedSmokePackageDocument}/package.json \
+            > invalid-ability/package.with-newline.json
+          invalid_size=$(stat -c %s invalid-ability/package.with-newline.json)
+          truncate -s "$((invalid_size - 1))" invalid-ability/package.with-newline.json
+          mv invalid-ability/package.with-newline.json invalid-ability/package.json
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            package-source invalid-ability/package.json invalid-ability/interfaces 2>/dev/null; then
+            fail "canonical package bypassed the shared Rust semantic validator"
+          fi
 
           validate_disjoint_layer_inventories \
             policy-valid \
@@ -356,7 +727,7 @@ in
               || fail "descriptor size mismatch for $blob"
           }
 
-          # Derivation names do not enter layer identity or companion metadata.
+          # Derivation names do not enter layer or package-document identity.
           diff -r ${baseLayerA} ${baseLayerB} \
             || fail "equivalent closure layers differ by derivation name"
           diff -r ${amd64Image} ${equivalentAmd64Image} \
@@ -408,12 +779,12 @@ in
             assert_compact_sorted_json "$image/layout/index.json"
             jq -e '
               .rootfs.type == "layers"
-              and (.rootfs.diff_ids | length) == 3
+              and (.rootfs.diff_ids | length) == 4
               and .config.Entrypoint == ["/bin/base-tool"]
               and .config.ExposedPorts == {"8080/tcp": {}}
             ' "$image/config.json" >/dev/null \
               || fail "image config contract is incorrect"
-            jq -e '(.layers | length) == 3' "$image/manifest.json" >/dev/null \
+            jq -e '(.layers | length) == 4' "$image/manifest.json" >/dev/null \
               || fail "platform manifest layer count is incorrect"
 
             for blob in "$image/layout/blobs/sha256/"*; do
@@ -428,12 +799,43 @@ in
             rm -rf extracted-layout
           done
 
+          manifest_hex=$(jq -r '.digest | sub("^sha256:"; "")' ${amd64Image}/manifest-descriptor.json)
+          cp ${amd64Image}/manifest.json mismatched-manifest-sidecar.json
+          jq -cS '.annotations."dev.andyl.aos.ability-contract.digest" = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"' \
+            mismatched-manifest-sidecar.json > mismatched-manifest-sidecar.next.json
+          mv mismatched-manifest-sidecar.next.json mismatched-manifest-sidecar.json
+          if cmp mismatched-manifest-sidecar.json ${amd64Image}/layout/blobs/sha256/$manifest_hex; then
+            fail "mismatched platform manifest sidecar/blob fixture was accepted"
+          fi
+
           assert_compact_sorted_json ${multiPlatform}/image-index.json
           assert_compact_sorted_json ${multiPlatform}/layout/index.json
-          jq -e '
+          assert_compact_sorted_json ${multiPlatform}/static-ability-contract.json
+          ability_contract_hex=$(sha256sum ${multiPlatform}/static-ability-contract.json | cut -d ' ' -f 1)
+          jq -e --arg provider ${lib.escapeShellArg (builtins.toString abilityPackageSmokeProvider)} '
+            .schema == "aos.container.static-abilities/v1"
+            and .runtime_grants == []
+            and (.platforms | length) == 2
+            and all(.platforms[];
+              . as $platform
+              | ($platform.packages | length) == 1
+                and ($platform.abilities | length) == 1
+                and $platform.abilities[0].export == "default"
+                and $platform.abilities[0].interface.name == "aos.test.package-smoke"
+                and $platform.abilities[0].implementation_artifact.store_path == $provider
+                and $platform.abilities[0].availability == "unresolved-at-launch"
+                and any($platform.unresolved_launch_obligations[];
+                  .kind == "implementation-artifact"
+                  and .consumer.ability == $platform.abilities[0].interface
+                )
+            )
+          ' ${multiPlatform}/static-ability-contract.json >/dev/null \
+            || fail "static ability contract lost selected package ability identities"
+          jq -e --arg abilityDigest "sha256:$ability_contract_hex" '
             (.manifests | length) == 2
             and .manifests[0].platform.architecture == "amd64"
             and .manifests[1].platform.architecture == "arm64"
+            and .annotations."dev.andyl.aos.ability-contract.digest" == $abilityDigest
           ' ${multiPlatform}/image-index.json >/dev/null \
             || fail "multi-platform descriptors are missing or not canonical"
           jq -e '
@@ -477,7 +879,7 @@ in
           jq -e '
             length == 1
             and .[0].RepoTags == ["aos-fixture:latest"]
-            and (.[0].Layers | length) == 3
+            and (.[0].Layers | length) == 4
           ' docker-root/manifest.json >/dev/null \
             || fail "Docker archive manifest is incorrect"
           jq -r '.[0].Layers[]' docker-root/manifest.json | while IFS= read -r layer; do

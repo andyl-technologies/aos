@@ -1,5 +1,6 @@
 ##! aos-ebpf-lsm-policy — Load fleet-managed BPF-LSM policy artifacts
 {
+  lib,
   mkDerivation,
   stdenv,
   linux-headers,
@@ -92,6 +93,29 @@ in
       self,
       pkgs,
     }: {
+      policy-consumption = import ../../lib/build/artifact-consumption-audit.nix {
+        inherit pkgs lib;
+        name = "ebpf-lsm-immutable-policy";
+        consumer = self;
+        consumerPath = "/bin/aos-ebpf-lsm-policy";
+        provider = self;
+        providerPath = "/share/aos/ebpf-lsm/aos-task-audit.json";
+        targetPlatform = {
+          system = stdenv.hostPlatform.constraints.os;
+          architecture = stdenv.hostPlatform.constraints.cpu;
+        };
+        mechanism = "immutable-data-input";
+        arguments = [
+          "validate"
+          "--policy"
+          "${self}/share/aos/ebpf-lsm/aos-task-audit.json"
+          "--object"
+          "${self}/lib/bpf/aos-ebpf-lsm-task-audit.bpf.o"
+        ];
+        expectedOutputSha256 = "sha256:${builtins.hashString "sha256" ""}";
+        inspector = pkgs.buildPackages.aos;
+      };
+
       validate = pkgs.runCommand "security-aos-ebpf-lsm-policy-validate" {} ''
         ${self}/bin/aos-ebpf-lsm-policy validate \
           --policy ${self}/share/aos/ebpf-lsm/aos-task-audit.json \

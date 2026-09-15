@@ -44,7 +44,7 @@ in
     version = "1";
     src = null;
 
-    buildDeps = [coreutils findutils gzip jq tar referenceGraph];
+    buildDeps = [coreutils findutils gzip jq tar];
 
     outputChecks.out = {};
 

@@ -53,6 +53,8 @@
     };
   });
   desiredCredentialsType = lib.types.attrsOf (lib.types.attrsOf secretRefType);
+  rolloutDrain = config.aos.config.artifacts.aos-rollout-drain;
+  rolloutHealth = config.aos.config.artifacts.aos-rollout-health;
   desiredSystemCredentialsType = lib.types.attrsOf (lib.types.attrsOf credentialNameType);
 
   desiredSystemCredentialValues =
@@ -147,6 +149,16 @@ in {
       Executable hook invoked before an A/B system transition requested with
       `--drain --reboot`. The hook is linked into the immutable system
       toplevel and must return successfully before the reboot is queued.
+    '';
+  };
+
+  options.aos.apm.healthScript = lib.mkOption {
+    type = lib.types.nullOr lib.types.path;
+    default = null;
+    description = ''
+      Executable hook used by an ability-qualified A/B rollout after the
+      candidate configuration activates. Exit status zero admits the candidate,
+      status one requests fallback, and any other status is indeterminate.
     '';
   };
 
@@ -296,10 +308,52 @@ in {
 
     aos.apm.installAtBoot.etc = installAtBootEtc;
 
+    # These image-fixed helpers must be built in stage 1. The on-host stage-2
+    # evaluator receives only their frozen paths and has no script builder.
+    aos.config._artifactSources = {
+      aos-rollout-drain =
+        if config.aos.config.frozenArtifacts ? "aos-rollout-drain"
+        then null
+        else
+          pkgs.writeShellScriptBin "aos-rollout-drain" ''
+            set -eu
+
+            hook=/run/current-system/drain
+            if [ ! -x "$hook" ]; then
+              echo "aos-rollout-drain: the current system has no configured drain hook" >&2
+              exit 1
+            fi
+            exec "$hook"
+          '';
+      aos-rollout-health =
+        if config.aos.config.frozenArtifacts ? "aos-rollout-health"
+        then null
+        else
+          pkgs.writeShellScriptBin "aos-rollout-health" ''
+            set -eu
+
+            hook=/run/current-system/health
+            if [ ! -x "$hook" ]; then
+              echo "aos-rollout-health: the current system has no configured health hook" >&2
+              exit 2
+            fi
+            if "$hook"; then
+              exit 0
+            else
+              status=$?
+            fi
+            if [ "$status" -eq 1 ]; then
+              exit 1
+            fi
+            echo "aos-rollout-health: health hook failed without a conclusive result" >&2
+            exit 2
+          '';
+    };
+
     # The consumer CLI is the only AOS command surface on the system PATH.
     # Repository construction (`aos`) and registry authoring (`apr`) remain
     # host tools; private activation helpers are referenced by absolute path.
-    environment.systemPackages = [pkgs.aos.apm];
+    environment.systemPackages = [pkgs.aos.apm rolloutDrain rolloutHealth];
 
     # install-at-boot's baked /etc (desired.toml + registry config) plus the
     # tmpfiles config. `apm registry add` writes

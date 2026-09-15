@@ -470,7 +470,6 @@ async fn publish_release_store_path(
         None,
         None,
         None,
-        None,
         &[],
         publish_opts.bless,
         false,

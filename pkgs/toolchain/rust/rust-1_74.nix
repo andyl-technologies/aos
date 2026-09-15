@@ -60,6 +60,21 @@ in
       supportsSplitDebuginfo = false;
       description = "Rust 1.74.0 — Darwin-hosted bootstrap root built with native Rust 1.74";
     }
+  else if stdenv.isCross && stdenv.hostPlatform.isLinux
+  then
+    import ./_rust-linux-hosted.nix {
+      inherit mkDerivation version buildPackages stdenv curl openssl zlib;
+      pname = "rust-1_74";
+      src = rustcSrc;
+      changeId = 0;
+      configFileName = "config.toml";
+      nativeRust = buildPackages.rust-1_74;
+      nativeLlvm = buildPackages.llvm-17;
+      targetLlvm = llvm-17;
+      supportsChangeId = false;
+      supportsSplitDebuginfo = false;
+      description = "Rust 1.74.0 — Linux-hosted bootstrap root built with native Rust 1.74";
+    }
   else
     mkDerivation {
       pname = "rust-1_74";

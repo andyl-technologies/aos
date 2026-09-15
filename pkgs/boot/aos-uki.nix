@@ -45,9 +45,9 @@
 ##! Output: $out/aos-${name}-${version}.efi
 {
   mkDerivation,
+  stdenv,
   systemd,
   sbsigntools,
-  binutils,
   openssl,
 }: {
   kernel,
@@ -93,7 +93,7 @@ in
       [systemd.tools systemd]
       ++ (
         if measuring
-        then [binutils openssl]
+        then [openssl]
         else []
       )
       ++ (
@@ -178,7 +178,7 @@ in
               mkdir -p pcr11-sections
               measure_args=""
               for section in linux osrel cmdline initrd ucode splash dtb uname sbat pcrpkey; do
-                ${binutils}/bin/objcopy -O binary --only-section=.$section \
+                ${stdenv.binutils}/bin/objcopy -O binary --only-section=.$section \
                   "$uki" "pcr11-sections/$section" 2>/dev/null || true
                 if [ -s "pcr11-sections/$section" ]; then
                   measure_args="$measure_args --$section=pcr11-sections/$section"

@@ -417,7 +417,7 @@ pub async fn files(config: &ApmConfig, package: &str, printer: &Printer) -> Resu
 /// Load enabled registries from config.
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
-    RegistrySet::load(&config.cache_path(), &reg_configs, &native_platform())
+    RegistrySet::load_for_package_operations(&config.cache_path(), &reg_configs, &native_platform())
 }
 
 /// Collect the store-path hashes identifying the rdepends target: every
@@ -1237,6 +1237,7 @@ references = ["llllllllllllllllllllllllllllllll"]
                 expose_artifact: None,
                 config_module: None,
                 documentation: None,
+                ability: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -1283,6 +1284,7 @@ references = ["llllllllllllllllllllllllllllllll"]
                 expose_artifact: None,
                 config_module: None,
                 documentation: None,
+                ability: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -1317,6 +1319,7 @@ references = ["llllllllllllllllllllllllllllllll"]
                 expose_artifact: None,
                 config_module: None,
                 documentation: None,
+                ability: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -1347,6 +1350,7 @@ references = ["llllllllllllllllllllllllllllllll"]
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),
@@ -1376,6 +1380,7 @@ references = ["llllllllllllllllllllllllllllllll"]
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),
@@ -1446,6 +1451,7 @@ references = []
                     expose_artifact: None,
                     config_module: None,
                     documentation: None,
+                    ability: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),
@@ -1472,6 +1478,7 @@ references = []
                     expose_artifact: None,
                     config_module: None,
                     documentation: None,
+                    ability: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),

@@ -1,7 +1,8 @@
 //! Tests for package catalog TOML construction and platform metadata recording.
 
 use super::{
-    build_package_toml, build_package_toml_with_documentation, record_config_module_platform_fields,
+    build_package_toml, build_package_toml_with_documentation, record_ability_output,
+    record_config_module_platform_fields, record_named_output,
 };
 use crate::registry_ops::attestation::{package_nar_root_digest, publish_config_attestation_meta};
 use crate::registry_ops::mac::{PublishExposeManifest, PublishMacProfileManifest};
@@ -12,16 +13,187 @@ use crate::registry_ops::test_support::{
     rewrite_test_image_parent, verity_expose_manifest, write_direct_image_output,
 };
 use crate::types::{
-    AttestationMeta, DocumentationArtifactMeta, ExposeMeta, FEATURE_ATTESTATION_V1,
+    AbilityPackageMeta, AttestationMeta, DocumentationArtifactMeta, ExposeMeta,
+    FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1, FEATURE_ATTESTATION_V1,
     FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1,
     FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
-    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PACKAGE_DOCUMENTATION_V1,
-    FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT,
-    PermissionsMeta, RecoveryUkiEntry, SbatEntry, UkiSlot,
+    FEATURE_MAC_PROFILE_V1, FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_NETWORK_POLICY_V1,
+    FEATURE_PACKAGE_DOCUMENTATION_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1,
+    FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT, PermissionsMeta, RecoveryUkiEntry, SbatEntry,
+    UkiSlot,
 };
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
+
+#[test]
+fn sysroot_publication_emits_structural_native_rollout_gate() {
+    let info = StorePathInfo {
+        path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-system".to_string(),
+        nar_hash: format!("sha256:{}", "1".repeat(64)),
+        nar_size: 1024,
+        references: Vec::new(),
+        closure_size: 1024,
+    };
+    let content = build_package_toml(
+        "",
+        "aos",
+        "1",
+        "x86_64-linux",
+        &info,
+        Some("AOS system"),
+        None,
+        Some("Apache-2.0"),
+        Some("Andyl, Inc."),
+        true,
+        None,
+        &[],
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("build sysroot metadata");
+    let parsed = crate::registry::parse::parse_package_file(&content)
+        .expect("parse published sysroot metadata");
+    let platform = &parsed.versions[0].platforms["x86_64-linux"];
+
+    assert!(platform.references.is_gate());
+    for features in [
+        platform.requires_features.as_slice(),
+        platform.references.requires_features(),
+    ] {
+        assert_eq!(features, [FEATURE_NATIVE_IMAGE_ROLLOUT_V1]);
+    }
+    assert_eq!(platform.min_format, Some(PACKAGE_META_FORMAT));
+    assert_eq!(platform.references.min_format(), Some(PACKAGE_META_FORMAT));
+}
+
+#[test]
+fn record_ability_preserves_stronger_format_and_feature_gates() {
+    let info = StorePathInfo {
+        path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-demo-1".to_string(),
+        nar_hash: format!("sha256:{}", "1".repeat(64)),
+        nar_size: 1024,
+        references: Vec::new(),
+        closure_size: 1024,
+    };
+    let initial = build_package_toml(
+        "",
+        "demo",
+        "1",
+        "x86_64-linux",
+        &info,
+        Some("Demo"),
+        None,
+        Some("Apache-2.0"),
+        Some("Andyl, Inc."),
+        false,
+        None,
+        &[],
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("build package metadata");
+    let mut document: toml::Value = toml::from_str(&initial).expect("parse initial metadata");
+    let platform = document["versions"][0]["platforms"]["x86_64-linux"]
+        .as_table_mut()
+        .expect("platform table");
+    let stronger_format = PACKAGE_META_FORMAT + 7;
+    platform.insert(
+        "min-format".to_string(),
+        toml::Value::Integer(i64::from(stronger_format)),
+    );
+    platform.insert(
+        "requires-features".to_string(),
+        toml::Value::Array(vec![toml::Value::String("future-feature".to_string())]),
+    );
+    platform.insert(
+        "references".to_string(),
+        toml::Value::Table(toml::map::Map::from_iter([
+            ("hashes".to_string(), toml::Value::Array(Vec::new())),
+            (
+                "min-format".to_string(),
+                toml::Value::Integer(i64::from(stronger_format)),
+            ),
+            (
+                "requires-features".to_string(),
+                toml::Value::Array(vec![toml::Value::String("future-feature".to_string())]),
+            ),
+        ])),
+    );
+    let ability = AbilityPackageMeta {
+        store_path: "/nix/store/123456789abcdfghijklmnpqrsvwxyz0-demo-abilities".to_string(),
+        nar_hash: format!("sha256:{}", "2".repeat(64)),
+        nar_size: 512,
+        references: Vec::new(),
+        manifest_sha256: format!("sha256:{}", "3".repeat(64)),
+        manifest_size: 256,
+        package_digest: format!("sha256:{}", "4".repeat(64)),
+        activation_mode: "contracts-only".to_string(),
+        artifacts: Vec::new(),
+        provenance: "provenance/demo.ability.intoto.jsonl".to_string(),
+    };
+
+    let recorded = record_ability_output(
+        &toml::to_string(&document).expect("serialize initial metadata"),
+        "demo",
+        "1",
+        "x86_64-linux",
+        &ability.store_path,
+        &ability,
+    )
+    .expect("record ability output");
+    let parsed = crate::registry::parse::parse_package_file(&recorded)
+        .expect("parse recorded package metadata");
+    let platform = &parsed.versions[0].platforms["x86_64-linux"];
+
+    assert_eq!(platform.min_format, Some(stronger_format));
+    assert_eq!(platform.references.min_format(), Some(stronger_format));
+    for features in [
+        platform.requires_features.as_slice(),
+        platform.references.requires_features(),
+    ] {
+        assert!(features.iter().any(|feature| feature == "future-feature"));
+        assert!(
+            features
+                .iter()
+                .any(|feature| feature == FEATURE_ABILITIES_V1)
+        );
+    }
+    assert_eq!(platform.ability.as_ref(), Some(&ability));
+
+    let mut structured_ability = ability;
+    structured_ability.activation_mode = "structured-effects".to_string();
+    let structured_recorded = record_ability_output(
+        &recorded,
+        "demo",
+        "1",
+        "x86_64-linux",
+        &structured_ability.store_path,
+        &structured_ability,
+    )
+    .expect("record structured ability output");
+    let structured = crate::registry::parse::parse_package_file(&structured_recorded)
+        .expect("parse structured package metadata");
+    let structured_platform = &structured.versions[0].platforms["x86_64-linux"];
+    for features in [
+        structured_platform.requires_features.as_slice(),
+        structured_platform.references.requires_features(),
+    ] {
+        assert!(
+            features
+                .iter()
+                .any(|feature| feature == FEATURE_ABILITY_EFFECTS_V1)
+        );
+    }
+}
 
 #[test]
 fn record_config_module_emits_table_and_feature() {
@@ -134,7 +306,6 @@ fn build_package_toml_binds_documentation_as_a_signed_platform_artifact() {
         document_size: 384,
         semantic_schema_sha256:
             "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_string(),
-        system_module_nar_hash: None,
         references: vec![],
     };
     let attestation = AttestationMeta {
@@ -235,6 +406,58 @@ fn build_package_toml_new() {
     assert!(!content.contains("nar_size"));
     assert!(content.contains("source_drv = \"\""));
     assert!(content.contains("source_nar_hash = \"\""));
+}
+
+#[test]
+fn named_output_extends_the_exact_primary_platform() {
+    let existing = r#"
+[package]
+name = "curl"
+description = "URL transfer tool"
+license = "curl"
+maintainer = "aos"
+
+[[versions]]
+version = "8.5.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/abc123-curl-8.5.0"
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+"#;
+    let content = record_named_output(
+        existing,
+        "curl",
+        "8.5.0",
+        "x86_64-linux",
+        "dev",
+        "/nix/store/def456-curl-8.5.0-dev",
+    )
+    .expect("record named output");
+    let package: aos_registry_surface::manifest::PackageToml =
+        toml::from_str(&content).expect("parse extended package");
+    let platform = package.versions[0]
+        .platforms
+        .get("x86_64-linux")
+        .expect("platform entry");
+
+    assert_eq!(platform.store_path, "/nix/store/abc123-curl-8.5.0");
+    assert_eq!(
+        platform.named_outputs.get("dev").map(String::as_str),
+        Some("/nix/store/def456-curl-8.5.0-dev")
+    );
+
+    let error = record_named_output(
+        &content,
+        "curl",
+        "8.5.0",
+        "x86_64-linux",
+        "dev",
+        "/nix/store/ghi789-curl-8.5.0-tools",
+    )
+    .expect_err("conflicting named output");
+    assert!(format!("{error:#}").contains("already bound"));
 }
 
 #[test]

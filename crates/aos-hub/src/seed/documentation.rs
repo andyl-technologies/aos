@@ -6,8 +6,8 @@
 
 use anyhow::{Context as _, Result};
 use aos_doc_model::{
-    ActivationEffect, ActivationKind, DocumentedValue, EnumValue, InlineSpan, OptionDocument,
-    OptionOwner, OptionType, PackageDocumentation, PathSegment, ProseBlock, Visibility,
+    AbilityValue, DocumentedValue, EnumValue, InlineSpan, OptionDocument, OptionOwner, OptionType,
+    PackageDocumentation, PathSegment, ProseBlock, RelativePath, Visibility,
 };
 use sha2::{Digest as _, Sha256};
 use std::path::Path;
@@ -23,8 +23,8 @@ fn option(
     option_type: OptionType,
     signature: &str,
     description: &str,
-) -> OptionDocument {
-    OptionDocument {
+) -> Result<OptionDocument> {
+    Ok(OptionDocument {
         path: path
             .iter()
             .map(|value| PathSegment::Literal {
@@ -47,16 +47,10 @@ fn option(
             interface_abi: None,
         },
         contributable: false,
-        activation: Some(ActivationEffect {
-            kind: ActivationKind::Restart,
-            units: vec!["demo.service".into()],
-        }),
         source: Some(aos_doc_model::SourceLocator {
-            path: "modules/services/demo.nix".into(),
-            attribute: None,
-            line: Some(12),
+            path: RelativePath::new("modules/services/demo.nix")?,
         }),
-    }
+    })
 }
 
 pub(super) fn write(root: &Path) -> Result<String> {
@@ -66,11 +60,13 @@ pub(super) fn write(root: &Path) -> Result<String> {
         OptionType::Bool,
         "bool",
         "Enables the demo service and its runtime configuration.",
-    );
+    )?;
     enable.default = Some(DocumentedValue::Literal {
-        value: false.into(),
+        value: AbilityValue::new(false.into())?,
     });
-    enable.example = Some(DocumentedValue::Literal { value: true.into() });
+    enable.example = Some(DocumentedValue::Literal {
+        value: AbilityValue::new(true.into())?,
+    });
     options.push(enable);
     let mut backend = option(
         &["services", "demo", "storage", "backend"],
@@ -78,22 +74,20 @@ pub(super) fn write(root: &Path) -> Result<String> {
             values: vec![
                 EnumValue {
                     value: "memory".into(),
-                    description: paragraph("Keeps ephemeral data in memory."),
                 },
                 EnumValue {
                     value: "disk".into(),
-                    description: paragraph("Retains data across service restarts."),
                 },
             ],
         },
         "enum [ memory disk ]",
         "Selects where the demo service stores its working data.",
-    );
+    )?;
     backend.default = Some(DocumentedValue::Literal {
-        value: "memory".into(),
+        value: AbilityValue::new("memory".into())?,
     });
     backend.example = Some(DocumentedValue::Literal {
-        value: "disk".into(),
+        value: AbilityValue::new("disk".into())?,
     });
     options.push(backend);
     for index in 0..137 {
@@ -103,7 +97,7 @@ pub(super) fn write(root: &Path) -> Result<String> {
             OptionType::Bool,
             "bool",
             "Enables this worker in the wide configuration subtree.",
-        ));
+        )?);
     }
     let mut document = PackageDocumentation {
         schema: aos_doc_model::DOCUMENT_SCHEMA.into(),
@@ -120,38 +114,9 @@ pub(super) fn write(root: &Path) -> Result<String> {
             runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
             source_nar_hash: format!("sha256:{}", "2".repeat(64)),
             config_module_nar_hash: None,
-            system_module_nar_hash: None,
             expose_artifact_nar_hash: None,
         },
-        sections: vec![aos_doc_model::Section {
-            id: "getting-started".into(),
-            title: "Configure the demo service".into(),
-            blocks: vec![ProseBlock::Paragraph {
-                spans: vec![
-                    InlineSpan::Text {
-                        text: "Start with ".into(),
-                    },
-                    InlineSpan::Link {
-                        label: "services.demo.enable".into(),
-                        target: aos_doc_model::LinkTarget::Option {
-                            path: vec![
-                                PathSegment::Literal {
-                                    value: "services".into(),
-                                },
-                                PathSegment::Literal {
-                                    value: "demo".into(),
-                                },
-                                PathSegment::Literal {
-                                    value: "enable".into(),
-                                },
-                            ],
-                        },
-                    },
-                ],
-            }],
-        }],
         options,
-        runtime: aos_doc_model::RuntimeSurface::default(),
     };
     document.identity.semantic_schema_sha256 = document.computed_semantic_schema_sha256()?;
     let contents = document.canonical_json()?;
@@ -172,7 +137,6 @@ pub(super) fn write(root: &Path) -> Result<String> {
         document_sha256: format!("sha256:{}", hex::encode(Sha256::digest(&contents))),
         document_size: u64::try_from(contents.len())?,
         semantic_schema_sha256: document.identity.semantic_schema_sha256,
-        system_module_nar_hash: None,
         references: Vec::new(),
     };
     let mut package: toml::Value = toml::from_str(&format!(

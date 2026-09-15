@@ -23,6 +23,7 @@ in
     runtimeDeps = [ncurses];
     propagatedDeps = [];
 
+
     phases = [
       {
         name = "unpack";

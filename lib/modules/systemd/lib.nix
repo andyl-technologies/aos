@@ -596,7 +596,6 @@ in rec {
     in
       filter (entry: elem entry.root normalRoots) (entriesFor pkg owner))
     uniquePackages);
-
     upstreamInventory =
       if upstreamUnits == [] && upstreamWants == []
       then []

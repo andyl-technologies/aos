@@ -214,6 +214,22 @@
   qemuConfigureFlagsMaterial = builtins.concatStringsSep "\n" qemuConfigureFlags;
   qemuConfigureFlagsHash = builtins.hashString "sha256" "${qemuConfigureFlagsMaterial}\n";
   qemuConfigureFlagsScript = builtins.concatStringsSep " \\\n            " qemuConfigureFlags;
+  qemuRuntimeDeps =
+    [
+      glib
+      pixman
+      zlib
+      libslirp
+      dtc
+    ]
+    ++ lib.optionals (!isDarwinCross) [
+      libcap-ng
+      libusb1
+      libgcrypt
+      gnutls
+      fuse3
+    ];
+  qemuRuntimeRpath = builtins.concatStringsSep ":" (map (dependency: "${dependency}/lib") qemuRuntimeDeps);
   qemuBuildIdentityMaterial = ''
     qemu_package=${pname}
     qemu_version=${version}
@@ -351,21 +367,7 @@ in
           glib.dev
           glib.tools
         ];
-      runtimeDeps =
-        [
-          glib
-          pixman
-          zlib
-          libslirp
-          dtc
-        ]
-        ++ lib.optionals (!isDarwinCross) [
-          libcap-ng
-          libusb1
-          libgcrypt
-          gnutls
-          fuse3
-        ];
+      runtimeDeps = qemuRuntimeDeps;
       propagatedDeps = [];
       # The Darwin install is finalized and signed below. Either generic
       # mutating pass would invalidate the resulting Mach-O code signatures.
@@ -500,6 +502,17 @@ in
                 vof.bin; do
                 test -f "$out/share/qemu/$firmware"
                 chmod a-x "$out/share/qemu/$firmware"
+              done
+            ''}
+            ${lib.optionalString (stdenv.isCross && !isDarwinCross) ''
+              # QEMU's generated Meson cross file preserves explicitly found
+              # GLib paths but drops the wrapper's remaining install RPATH.
+              # Restore the declared target runtime closure before the common
+              # fixup phase shrinks each executable to the libraries it uses.
+              for executable in "$out"/bin/*; do
+                [ -f "$executable" ] || continue
+                patchelf --print-rpath "$executable" >/dev/null 2>&1 || continue
+                patchelf --add-rpath "${qemuRuntimeRpath}" "$executable"
               done
             ''}
 
@@ -658,6 +671,18 @@ in
       passthru = {
         standaloneRelease = !applyCruciblePatches && !testOnlyNonDistributable;
         inherit testOnlyNonDistributable;
+        serviceDocumentation =
+          if pname == "qemu"
+          then {
+            kind = "on-demand";
+            summary = "Per-VM monitor launched by a VM orchestrator.";
+          }
+          else if pname == "qemu-crucible"
+          then {
+            kind = "on-demand";
+            summary = "Crucible-controlled monitor launched across the process boundary.";
+          }
+          else null;
         releaseVia =
           if applyCruciblePatches && !testOnlyNonDistributable
           then "crucible"

@@ -6,6 +6,7 @@
   lib,
   stdenv,
   buildPackages ? null,
+  firmwarePackages ? null,
   targetPackages ? null,
 }: let
   fetchurl = lib.fetchurl;
@@ -128,19 +129,14 @@
     };
   withDefaultMaintainers = withDistributionMeta {};
 
-  exposeRenderer = import ./build-support/_expose-renderer.nix {
-    inherit lib;
-    pkgs = self;
-  };
   cargoArtifactsSupport = import ./build-support/_cargo-artifacts.nix {
     inherit lib mkDerivation;
   };
 
-  # Turn a package-authored `configModule` arg into the package's logical
-  # `config` output (a pure-data store path carrying `module.nix` plus a
-  # declared-interface manifest). A fixed companion derivation builds it so
-  # package-authored phases cannot skip or mutate its validation boundary.
-  configModuleRenderer = import ./build-support/_config-module-renderer.nix {inherit lib;};
+  projectPackageAbilities = import ../lib/abilities/package-projection.nix {
+    inherit lib;
+    abilities = lib.abilities;
+  };
 
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH),
   # wrapped to inject nuke-references into every package's buildDeps so
@@ -151,239 +147,265 @@
       args.pname
       or args.name
       or (throw "mkDerivation: package must set pname or name");
-    renderedExpose =
-      if args ? expose
-      then
-        exposeRenderer.render {
-          inherit packageName drv;
-          expose = args.expose;
-        }
-      else null;
-    exposeAttrs =
-      if args ? expose
-      then {expose = renderedExpose;}
-      else {};
-    hasGeneratedExposeConfig = args ? expose;
-    generatedExposeDeclares = [
-      "${packageName}._aosExposeConfigProjection"
-      "${packageName}.config"
-      "${packageName}.credentials"
-    ];
-    generatedExposeConfigFile =
-      if hasGeneratedExposeConfig
-      then
-        builtins.toFile "expose-config-${packageName}.json" (builtins.toJSON {
-          package = packageName;
-          config = exposeRenderer.normalizeConfig packageName (args.expose.config or {});
-        })
-      else null;
-    generatedConfigSource =
-      if hasGeneratedExposeConfig
-      then
-        rawMkDerivation {
-          pname = "${packageName}-generated-config-source";
-          version = args.version or "0";
-          src = null;
-          phases = [
-            {
-              name = "install";
-              script = ''
-                mkdir -p "$out"
-                cp ${./build-support/_generated-expose-config-module.nix} "$out/module.nix"
-                cp ${generatedExposeConfigFile} "$out/expose-config.json"
-              '';
-            }
-          ];
-          preferLocalBuild = true;
-          allowSubstitutes = false;
-        }
-      else null;
-    authoredConfigModule = args.configModule or null;
-    preparedAuthoredConfigModule =
-      if authoredConfigModule != null
-      then
-        configModuleRenderer.prepare {
-          inherit packageName;
-          configModule = authoredConfigModule;
-        }
-      else null;
-    authoredConfigMeta =
-      if preparedAuthoredConfigModule != null
-      then builtins.fromJSON preparedAuthoredConfigModule.metaJson
-      else null;
-    composedModuleFile = builtins.toFile "composed-config-module-${packageName}.nix" ''
-      { ... }: {
-        imports = [
-          ./authored/module.nix
-          ./generated/module.nix
-        ];
-      }
-    '';
-    composedConfigSource =
-      if authoredConfigModule != null && hasGeneratedExposeConfig
-      then
-        rawMkDerivation {
-          pname = "${packageName}-composed-config-source";
-          version = args.version or "0";
-          src = null;
-          phases = [
-            {
-              name = "install";
-              script = ''
-                mkdir -p "$out/authored" "$out/generated"
-                cp -R ${preparedAuthoredConfigModule.src}/. "$out/authored/"
-                cp -R ${generatedConfigSource}/. "$out/generated/"
-                cp ${composedModuleFile} "$out/module.nix"
-              '';
-            }
-          ];
-          preferLocalBuild = true;
-          allowSubstitutes = false;
-        }
-      else null;
-    effectiveConfigModule =
-      if authoredConfigModule != null
-      then authoredConfigModule
-      else if hasGeneratedExposeConfig
-      then {
-        src = generatedConfigSource;
-        moduleAbiCompat = {
-          min = 1;
-          max = 1;
-        };
-        declares = generatedExposeDeclares;
-      }
-      else null;
-    hasConfigModule = effectiveConfigModule != null;
-    preparedConfigModule =
-      if authoredConfigModule != null && hasGeneratedExposeConfig
-      then {
-        src = composedConfigSource;
-        metaJson = builtins.toJSON (authoredConfigMeta
-          // {
-            declares = lib.unique (authoredConfigMeta.declares ++ generatedExposeDeclares);
-          });
-        dependencyOutputs = preparedAuthoredConfigModule.dependencyOutputs;
-      }
-      else if hasGeneratedExposeConfig
-      then {
-        src = generatedConfigSource;
-        metaJson = builtins.toJSON {
-          schema = "aos.config-module-meta/v1";
-          module_abi_compat = {
-            min = 1;
-            max = 1;
-          };
-          declares = effectiveConfigModule.declares;
-          owns_roots = [];
-          contributes = [];
-          provides_capabilities = [];
-          dependencies = [];
-        };
-        dependencyOutputs = {};
-      }
-      else if hasConfigModule
-      then preparedAuthoredConfigModule
-      else null;
-    configModuleMetaFile =
-      if hasConfigModule
-      then builtins.toFile "config-meta-${packageName}.json" preparedConfigModule.metaJson
-      else null;
     existingOutputs = args.outputs or ["out"];
-    configStoreDir = args.storeDir or "/nix/store";
-    configArtifact =
-      if hasConfigModule
-      then
-        lib.throwIfNot
-        (!(builtins.elem "config" existingOutputs))
-        "mkDerivation configModule for package '${packageName}' reserves the 'config' output name"
+    reservedAbilityOutputs = ["abilities" "abilityContract" "abilityModule" "module"];
+    conflictingAbilityOutputs =
+      builtins.filter
+      (output: builtins.elem output reservedAbilityOutputs)
+      existingOutputs;
+    authoredAbilities = args.abilities or null;
+    authoredQualification = args.qualification or null;
+    authoredPackageProbe =
+      if authoredQualification == null
+      then null
+      else if !builtins.isAttrs authoredQualification
+      then throw "mkDerivation qualification for package '${packageName}' must be an attribute set"
+      else if builtins.attrNames authoredQualification != ["packageProbe"]
+      then throw "mkDerivation qualification for package '${packageName}' supports only packageProbe"
+      else lib.qualification.normalizePackageProbe authoredQualification.packageProbe;
+    abilityModuleSource =
+      if authoredAbilities == null
+      then null
+      else if conflictingAbilityOutputs != []
+      then throw "mkDerivation abilities for package '${packageName}' reserves output names ${builtins.toJSON conflictingAbilityOutputs}"
+      else if !builtins.isPath authoredAbilities
+      then throw "mkDerivation abilities for package '${packageName}' must be a path-backed file or directory module"
+      else let
+        sourceType = builtins.readFileType authoredAbilities;
+        modulePath = authoredAbilities + "/module.nix";
+      in
+        if sourceType == "regular"
+        then {
+          source = authoredAbilities;
+          isDirectory = false;
+          path = "module.nix";
+        }
+        else if sourceType != "directory"
+        then throw "mkDerivation abilities for package '${packageName}' must name a regular file or directory"
+        else if !builtins.pathExists modulePath || builtins.readFileType modulePath != "regular"
+        then throw "mkDerivation abilities directory for package '${packageName}' must contain a regular module.nix"
+        else {
+          source = authoredAbilities;
+          isDirectory = true;
+          path = "module.nix";
+        };
+    abilityModules =
+      if authoredAbilities == null
+      then []
+      else if abilityModuleSource.isDirectory
+      then [(abilityModuleSource.source + "/module.nix")]
+      else [abilityModuleSource.source];
+    retainedAbilityModule = {imports = abilityModules;};
+    abilityModuleArtifact =
+      if abilityModuleSource == null
+      then null
+      else
+        lib.throwIf
+        (builtins.elem "module" existingOutputs)
+        "mkDerivation abilities for package '${packageName}' reserve the 'module' output name for the separately built ability module"
         (rawMkDerivation {
-          pname = "${packageName}-config";
+          pname = "${packageName}-module";
           version = args.version or "0";
-          src = preparedConfigModule.src;
-          outputs = ["config"];
+          src = null;
+          outputs = ["module"];
           buildDeps = [resolvedBuildPackages.nix];
           phases = [
             {
               name = "install";
               script = ''
-                ${stdenv.coreutils}/bin/env -i TMPDIR=/build \
-                  ${stdenv.bash}/bin/bash --noprofile --norc -euo pipefail -c ${
-                  lib.escapeShellArg ''
-                    output=$1
-                    source=$2
-                    authored_meta=$(${stdenv.findutils}/bin/find "$source" -name config-meta.json -print -quit)
-                    if [[ -n "$authored_meta" ]]; then
-                      echo "config module for '${packageName}' must not author config-meta.json" >&2
-                      exit 1
-                    fi
-
-                    ${stdenv.coreutils}/bin/mkdir -p "$output"
-                    ${stdenv.coreutils}/bin/cp -R "$source/." "$output/"
-                    ${stdenv.coreutils}/bin/chmod -R u+w "$output"
-                    # Directory derivations carry an AOS target marker. Nested
-                    # generated inputs are module content here, not separately
-                    # publishable outputs, so discard their copied metadata.
-                    ${stdenv.findutils}/bin/find "$output" -path '*/nix-support/aos-target-platform' -delete
-                    ${stdenv.findutils}/bin/find "$output" -type d -name nix-support -empty -delete
-                    ${stdenv.coreutils}/bin/cp "${configModuleMetaFile}" "$output/config-meta.json"
-
-                    invalid_entry=$(${stdenv.findutils}/bin/find "$output" ! -type d ! -type f -print -quit)
-                    if [[ -n "$invalid_entry" ]]; then
-                      echo "config module for '${packageName}' contains a non-regular entry: $invalid_entry" >&2
-                      exit 1
-                    fi
-                    if [[ ! -f "$output/module.nix" ]]; then
-                      echo "config module for '${packageName}' must contain a regular module.nix" >&2
-                      exit 1
-                    fi
-                    invalid_helper=$(${stdenv.findutils}/bin/find "$output" -type f ! -name '*.nix' ! -path "$output/config-meta.json" ${lib.optionalString hasGeneratedExposeConfig ''! -path "$output/expose-config.json" ! -path "$output/generated/expose-config.json"''} -print -quit)
-                    if [[ -n "$invalid_helper" ]]; then
-                      echo "config module for '${packageName}' contains a non-Nix helper: $invalid_helper" >&2
-                      exit 1
-                    fi
-                    if ! ${stdenv.diffutils}/bin/cmp -s "${configModuleMetaFile}" "$output/config-meta.json"; then
-                      echo "config module for '${packageName}' did not retain the generated metadata bytes" >&2
-                      exit 1
-                    fi
-                    ${stdenv.findutils}/bin/find "$output" -type f -name '*.nix' \
-                      -exec ${resolvedBuildPackages.nix}/bin/nix-instantiate --store dummy:// --parse {} \; >/dev/null
-                      # Reject direct store literals and builtins.storeDir. The
-                      # evaluated manifest validator is the semantic boundary for
-                      # paths assembled by otherwise ordinary Nix expressions.
-                      if ${stdenv.grep}/bin/grep -R -n -F "${configStoreDir}/" "$output" \
-                        || ${stdenv.grep}/bin/grep -R -n -E 'builtins\.storeDir' "$output"; then
-                      echo "config module for '${packageName}' contains a Nix store-path construction" >&2
-                      exit 1
-                    fi
-                  ''
-                } _ "$config" "$src"
+                mkdir -p "$module"
+                ${
+                  if abilityModuleSource.isDirectory
+                  then ''cp -R ${abilityModuleSource.source}/. "$module/"''
+                  else ''cp ${abilityModuleSource.source} "$module/module.nix"''
+                }
+                test -f "$module/module.nix"
+                invalid_entry=$(${stdenv.findutils}/bin/find "$module" ! -type d ! -type f -print -quit)
+                if [ -n "$invalid_entry" ]; then
+                  echo "ability module for '${packageName}' contains a non-regular entry: $invalid_entry" >&2
+                  exit 1
+                fi
+                ${stdenv.findutils}/bin/find "$module" -type f -name '*.nix' \
+                  -exec ${resolvedBuildPackages.nix}/bin/nix-instantiate --store dummy:// --parse {} \; >/dev/null
               '';
             }
           ];
-          outputChecks.config.allowedReferences = [];
+          outputChecks.module.allowedReferences = [];
           preferLocalBuild = true;
           allowSubstitutes = false;
+        });
+    symbolicAbilityModuleLocator =
+      if abilityModuleArtifact == null
+      then null
+      else {
+        artifact = lib.abilities.packageOutput {output = "module";};
+        inherit (abilityModuleSource) path;
+      };
+    abilityEvaluation =
+      if authoredAbilities == null
+      then null
+      else
+        lib.evalModules {
+          modules = [lib.abilities.module];
+          packageModules = [
+            {
+              name = packageName;
+              module = retainedAbilityModule;
+            }
+          ];
+          inherit lib;
+          pkgs = self;
+          specialArgs = {
+            inherit packageName;
+            packageVersion = args.version or "0";
+          };
+        };
+    evaluatedAbilities =
+      if abilityEvaluation == null
+      then null
+      else abilityEvaluation.config.aos.abilities;
+    projectedAbilities =
+      if evaluatedAbilities != null
+      then evaluatedAbilities
+      else {
+        guarantees = {};
+        implementations = {};
+        interfaces = {};
+        qualification.implementations = {};
+        requirementTemplates = {};
+      };
+    projectLocalAbilityMap = values:
+      builtins.listToAttrs (lib.concatMap (name:
+        lib.optional (lib.hasPrefix "${packageName}:" name) {
+          name = lib.removePrefix "${packageName}:" name;
+          value = values.${name};
         })
-      else null;
-    configModuleAttrs =
-      if hasConfigModule
-      then {
-        config = configArtifact;
-        configModule = configArtifact;
-        configModuleDependencies = preparedConfigModule.dependencyOutputs;
-      }
-      else {};
-    darwinCrossPhases = builtins.map (
+      (builtins.attrNames values));
+    localAbilityProjection =
+      if evaluatedAbilities == null
+      then null
+      else {
+        guarantees = projectLocalAbilityMap evaluatedAbilities.guarantees;
+        interfaces = projectLocalAbilityMap evaluatedAbilities.interfaces;
+        implementations = projectLocalAbilityMap evaluatedAbilities.implementations;
+        requirementTemplates = projectLocalAbilityMap evaluatedAbilities.requirementTemplates;
+      };
+    normalizeOptionType = value:
+      if builtins.isList value
+      then builtins.map normalizeOptionType value
+      else if builtins.isAttrs value
+      then
+        lib.mapAttrs (_: normalizeOptionType)
+        (lib.filterAttrs (_: field: field != null) value)
+      else value;
+    abilityOptionDeclarations =
+      if abilityEvaluation == null
+      then []
+      else let
+        moduleSource = builtins.toString abilityModuleSource.source;
+        sourceFor = declaration: let
+          source = builtins.toString declaration.source;
+          directoryPrefix = "${moduleSource}/";
+        in
+          if !abilityModuleSource.isDirectory && source == moduleSource
+          then "module.nix"
+          else if abilityModuleSource.isDirectory && lib.hasPrefix directoryPrefix source
+          then builtins.substring (builtins.stringLength directoryPrefix) (-1) source
+          else throw "ability option '${declaration.pathStr}' for package '${packageName}' is declared outside its authenticated module tree";
+      in
+        builtins.map (declaration:
+          {
+            inherit (declaration) path description visibility contributable;
+            type_signature = declaration.typeSig;
+            structured_type = normalizeOptionType declaration.type;
+            read_only = declaration.readOnly;
+            source.path = sourceFor declaration;
+          }
+          // lib.optionalAttrs (declaration.default != null) {inherit (declaration) default;}
+          // lib.optionalAttrs (declaration.example != null) {inherit (declaration) example;}
+          // lib.optionalAttrs (declaration.deprecated != null) {inherit (declaration) deprecated;}
+          // lib.optionalAttrs (declaration.replacement != null) {inherit (declaration) replacement;}) (builtins.filter
+          (declaration: declaration.owner == packageName)
+          abilityEvaluation._optionDecls);
+    packageProjectionResult =
+      if localAbilityProjection == null && authoredPackageProbe == null
+      then null
+      else if builtins.elem "contract" existingOutputs
+      then throw "mkDerivation package contract for '${packageName}' reserves the 'contract' output name"
+      else
+        projectPackageAbilities {
+          inherit packageName;
+          version = args.version or "0";
+          evaluated = projectedAbilities;
+          packageModuleLocator = symbolicAbilityModuleLocator;
+          optionDeclarations = abilityOptionDeclarations;
+          packageProbe = authoredPackageProbe;
+        };
+    packageProjection =
+      if packageProjectionResult == null
+      then null
+      else packageProjectionResult.value;
+    packageAbilityProjection =
+      if localAbilityProjection == null
+      then null
+      else {
+        inherit (packageProjection) guarantees interfaces;
+        implementations = builtins.listToAttrs (map (implementation: {
+            name = implementation.name;
+            value = implementation;
+          })
+          packageProjection.implementation.providers);
+        requirementTemplates = builtins.listToAttrs (map (requirement: {
+            name = requirement.alias;
+            value = requirement;
+          })
+          packageProjection.requirements);
+      };
+    packageProjectionSource =
+      if packageProjection == null
+      then null
+      else let
+        projectionJson = builtins.unsafeDiscardStringContext (builtins.toJSON packageProjection);
+      in
+        if builtins.hasContext projectionJson || lib.hasInfix "/nix/store/" projectionJson
+        then throw "ability projection for package '${packageName}' contains a store locator"
+        else let
+          source = builtins.toFile "${packageName}-package-projection.json" projectionJson;
+        in
+          rawMkDerivation {
+            pname = "${packageName}-package-contract";
+            version = args.version or "0";
+            src = null;
+            phases = [
+              {
+                name = "install";
+                script = ''
+                  ${stdenv.coreutils}/bin/rm -rf "$out"
+                  ${stdenv.coreutils}/bin/cp ${source} "$out"
+                '';
+              }
+            ];
+            outputChecks.out.allowedReferences = [];
+            preferLocalBuild = true;
+            allowSubstitutes = false;
+          };
+    crossFixupPhase =
+      if stdenv.hostPlatform.objectFormat == "macho"
+      then phases.darwinCrossFixupPhase
+      else phases.crossElfFixupPhase;
+    crossPhases = builtins.map (
       phase:
-        if builtins.isAttrs phase && (phase.name or null) == "fixup"
-        then phases.darwinCrossFixupPhase
+        if
+          builtins.isAttrs phase
+          && (phase.name or null) == "fixup"
+          && (phase.script or null) == phases.fixupPhase.script
+        then crossFixupPhase
         else phase
     ) (args.phases or []);
     lowerArgs =
-      # `configModule` is an mkDerivation-level arg consumed here, not passed
-      # down to the raw builder (mirrors how `expose` is handled).
-      (builtins.removeAttrs args ["configModule"])
+      # Package integration modules are evaluated by this wrapper and never
+      # become low-level derivation attributes.
+      (builtins.removeAttrs args ["abilities" "qualification"])
       // {
         meta =
           (args.meta or {})
@@ -393,32 +415,36 @@
         buildDeps =
           builtins.map spliceBuildDependency (args.buildDeps or [])
           ++ [resolvedBuildPackages.nuke-references];
-        passthru = (args.passthru or {}) // exposeAttrs // configModuleAttrs;
+        passthru = args.passthru or {};
       }
       // lib.optionalAttrs (
         args
         ? phases
         && stdenv.buildPlatform.system != stdenv.hostPlatform.system
-        && stdenv.hostPlatform.objectFormat == "macho"
       ) {
-        phases = darwinCrossPhases;
-      }
-      // exposeAttrs;
+        # Phase-generating language builders embed the shared fixup record.
+        # Replace only that exact implementation so package-authored phases
+        # that happen to use the same name retain their behavior.
+        phases = crossPhases;
+      };
     drv = rawMkDerivation lowerArgs;
-    exposeCheck =
-      if args ? expose
-      then
-        resolvedBuildPackages.runCommand "expose-payload-closure-check-${packageName}" {
-          payload = drv;
-          exposePath = renderedExpose;
-          disallowedRequisites = [renderedExpose];
-          preferLocalBuild = true;
-          allowSubstitutes = false;
-        } ''
-          set -eu
-          ln -s "$payload" "$out"
-        ''
-      else null;
+    abilityAttrs =
+      if packageProjection == null
+      then {}
+      else
+        {
+          contract = {
+            value = packageProjection;
+            document = packageProjectionSource;
+            selectors = packageProjectionResult.selectors;
+          };
+        }
+        // lib.optionalAttrs (localAbilityProjection != null) {
+          abilities = packageAbilityProjection;
+          # Module selection and artifact binding use the package's real
+          # module output. The static ability view contains semantic data only.
+          module = abilityModuleArtifact.module;
+        };
     secondaryOutputAttrs = builtins.listToAttrs (
       builtins.map (outputName: {
         name = outputName;
@@ -431,18 +457,7 @@
           // lib.optionalAttrs (args ? version) {inherit (args) version;};
       }) (builtins.filter (outputName: outputName != drv.outputName) drv.outputs)
     );
-    result =
-      drv
-      // secondaryOutputAttrs
-      // configModuleAttrs
-      // (
-        if args ? expose
-        then {
-          inherit exposeCheck;
-          passthru = drv.passthru // {inherit exposeCheck;};
-        }
-        else {}
-      );
+    result = drv // secondaryOutputAttrs // abilityAttrs;
   in
     addBuilderOverrides mkDerivation args result;
 
@@ -559,6 +574,7 @@
     "installCargoArtifacts"
     "cargoArtifactContract"
     "cargoNextest"
+    "cargoNextestProfile"
     "cargoNextestOpenFilesLimit"
     "cargoNextestMaxTestThreads"
     "nextestFlags"
@@ -653,6 +669,15 @@
             else f
           )
         );
+    };
+
+  # Language builders consume dependency source bundles in addition to the
+  # package's primary source. Keep both in the release evidence contract even
+  # though these evaluation-only attributes do not enter the runtime closure.
+  appendEvidenceSources = passthru: sources:
+    passthru
+    // {
+      evidenceSources = (passthru.evidenceSources or []) ++ sources;
     };
 
   mkCargoPackage = args: let
@@ -803,7 +828,12 @@
               )
               ++ (args.buildDeps or []);
             phases = phases.cargoPhases cargoArgs;
-            passthru = (args.passthru or {}) // {inherit cargoArtifactContract;};
+            passthru =
+              appendEvidenceSources (args.passthru or {}) [
+                args.src
+                args.cargoDeps
+              ]
+              // {inherit cargoArtifactContract;};
             # Cargo's JSON messages and restored target metadata contain
             # source paths by design. None of those build-only roots may
             # survive in an ordinary package output. Keep artifact-producing
@@ -871,6 +901,10 @@
         // {
           buildDeps = [resolvedBuildPackages.go] ++ (args.buildDeps or []);
           phases = phases.goPhases goArgsWithDefaults;
+          passthru = appendEvidenceSources (args.passthru or {}) (
+            [args.src]
+            ++ lib.optional ((args.goModules or null) != null) args.goModules
+          );
           # Guard: the Go toolchain must not leak into the runtime closure.
           # -trimpath (in goPhases) prevents source-path embedding; this
           # disallowedReferences catches any residual leak at build time.
@@ -953,6 +987,10 @@
             ]
             ++ tools
             ++ (args.buildDeps or []);
+          passthru = appendEvidenceSources (args.passthru or {}) [
+            args.src
+            deps
+          ];
           phases = phases.bazelPhases {
             bazelDeps = deps;
             inherit bazel jdk tools;
@@ -985,6 +1023,7 @@
     "tar"
     "gzip"
     "patch"
+    "cmake"
   ];
   targetPackageArgumentProxy = name: {
     type = "derivation";
@@ -999,7 +1038,8 @@
   };
   packageArgumentScope =
     self
-    // lib.optionalAttrs stdenv.hostPlatform.isDarwin (
+    // {inherit firmwarePackages;}
+    // lib.optionalAttrs stdenv.isCross (
       builtins.listToAttrs (
         builtins.map (name: {
           inherit name;
@@ -1131,6 +1171,44 @@
     bash = self.bash;
     zlib = self.zlib;
   };
+  linuxHostedBinutils = import ./toolchain/_linux-hosted-binutils.nix {
+    inherit mkDerivation fetchurl stdenv buildPackages;
+    bash = self.bash;
+    zlib = self.zlib;
+  };
+  linuxHostedGcc = import ./toolchain/_linux-hosted-gcc.nix {
+    inherit mkDerivation stdenv buildPackages;
+    bash = self.bash;
+    binutils = linuxHostedBinutils;
+  };
+  linuxHostedCc = import ./toolchain/_linux-hosted-cc.nix {
+    inherit lib stdenv buildPackages;
+    bash = self.bash;
+    gcc = linuxHostedGcc;
+    binutils = linuxHostedBinutils;
+  };
+  linuxTargetGccLibs = mkDerivation {
+    pname = "gcc-libs";
+    inherit (stdenv.gccRuntime) version;
+    src = null;
+    runtimeDeps = [stdenv.gccRuntime];
+    propagatedDeps = [];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          ln -s ${stdenv.gccRuntime}/lib "$out/lib"
+        '';
+      }
+    ];
+    passthru.evidenceSources = stdenv.gccRuntime.passthru.evidenceSources;
+    meta = {
+      description = "GCC runtime shared libraries for ${stdenv.hostPlatform.system}";
+      homepage = "https://gcc.gnu.org/";
+      license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+    };
+  };
   darwinDtraceCompiler = import ./darwin/_darwin-dtrace-compiler.nix {
     inherit mkDerivation fetchurl;
     llvm = resolvedBuildPackages.llvm;
@@ -1200,6 +1278,9 @@
       platformSupport.selectTargetPackages targetSystem self allPackageNames
     );
   localMaintenanceRoots = [
+    "ability-package-smoke"
+    "aos-ability-contract-validator"
+    "aos-ability-crucible"
     "aos"
     "aos-agent-rpc"
     "aos-boot-identity"
@@ -1225,7 +1306,6 @@
     "aos-verity-root-guard"
     "aos-vm"
     "apm-systemd-client-test"
-    "config-module-smoke"
     "crucible"
     "crucible-controller"
     "crucible-fixtures"
@@ -1235,7 +1315,6 @@
     "crucible-qemu-trace-plugin"
     "desired-config-test"
     "desired-prune-test"
-    "expose-smoke"
     "test-http-server"
     "test-static-cache-server"
   ];
@@ -1396,7 +1475,7 @@
       nuke-references = import ../lib/build-support/nuke-references {
         mkDerivation = args:
           withDefaultMaintainers (rawMkDerivation args);
-        inherit (self) bash gawk sed;
+        inherit (self) bash coreutils grep sed;
       };
     }
     // discoveredPackages
@@ -1497,6 +1576,8 @@
           (
             if stdenv.hostPlatform.isDarwin
             then darwinGcc
+            else if stdenv.isCross && stdenv.hostPlatform.isLinux
+            then linuxHostedGcc
             else stdenv.gcc
           ))
         // {version = "16.2.0";};
@@ -1521,6 +1602,8 @@
           (
             if stdenv.hostPlatform.isDarwin
             then darwinBinutils
+            else if stdenv.isCross && stdenv.hostPlatform.isLinux
+            then linuxHostedBinutils
             else stdenv.binutils
           ))
         // {version = "2.41.0";};
@@ -1535,6 +1618,8 @@
           (
             if stdenv.hostPlatform.isDarwin
             then darwinCc
+            else if stdenv.isCross && stdenv.hostPlatform.isLinux
+            then linuxHostedCc
             else stdenv.cc
           ))
         // {version = "0.1.0";};
@@ -1550,6 +1635,8 @@
           (
             if stdenv.hostPlatform.isDarwin
             then darwinGcc
+            else if stdenv.isCross && stdenv.hostPlatform.isLinux
+            then linuxHostedGcc
             else if stdenv ? gccStage2
             then stdenv.gccStage2
             else stdenv.gcc
@@ -1558,6 +1645,8 @@
       gcc-libs =
         if stdenv.hostPlatform.isDarwin
         then withDefaultMaintainers darwinGcc
+        else if stdenv.isCross && stdenv.hostPlatform.isLinux
+        then withDefaultMaintainers linuxTargetGccLibs
         else discoveredPackages.gcc-libs;
       getent =
         (withDistributionMeta {
@@ -1565,62 +1654,65 @@
             license = "LGPL-2.1-or-later";
           }
           (lib.getOutput "getent" stdenv.glibc))
-        // {version = "2.39.0";};
-      # Native package sets retain the final stdenv tools. Darwin package roots
-      # must be actual target builds; Linux build tools remain available only
-      # through buildPackages and build-dependency splicing.
+        // {
+          version = "2.39.0";
+          passthru.evidenceSources = stdenv.glibc.passthru.evidenceSources;
+        };
+      # Native package sets retain the final stdenv tools. Cross package roots
+      # must be actual target builds; scheduler-native tools remain available
+      # only through buildPackages and build-dependency splicing.
       bash = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.bash
         else stdenv.bash
       );
       coreutils = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.coreutils
         else stdenv.coreutils
       );
       gnumake = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.gnumake
         else stdenv.gnumake
       );
       sed = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.sed
         else stdenv.sed
       );
       grep = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.grep
         else stdenv.grep
       );
       findutils = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.findutils
         else stdenv.findutils
       );
       gawk = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.gawk
         else stdenv.gawk
       );
       diffutils = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.diffutils
         else stdenv.diffutils
       );
       tar = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.tar
         else stdenv.tar
       );
       gzip = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.gzip
         else stdenv.gzip
       );
       patch = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.patch
         else stdenv.patch
       );

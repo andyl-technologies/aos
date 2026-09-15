@@ -427,6 +427,8 @@ let
   # but they do not represent a Darwin package root and must not be published
   # under a Darwin platform key.
   buildOnly = [
+    "ability-package-smoke"
+    "aos-ability-contract-validator"
     "aos-hub-dialect-tests"
     "aos-hub-e2e"
     "aos-hub-worker-do-e2e"
@@ -435,11 +437,9 @@ let
     "aos-test-agent"
     "apm-systemd-client-test"
     "bazel-bootstrap"
-    "config-module-smoke"
     "crucible-fixtures"
     "desired-config-test"
     "desired-prune-test"
-    "expose-smoke"
     "landlock-argv-test"
     "nuke-references"
   ];
@@ -450,14 +450,20 @@ let
   linuxOnly = [
     "acl"
     "alsa-lib"
+    "aos-ability-crucible"
     "aos-boot-identity"
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"
+    "aos-filesystem-provider"
     "aos-landlock"
+    "aos-kubernetes-provider"
+    "aos-kernel-tunable-provider"
+    "aos-nix-store-provider"
     "aos-recovery"
     "aos-registry-server"
     "aos-service-root"
     "aos-selinux-run"
+    "aos-systemd-provider"
     "aos-var-policy-migrate"
     "aos-verity-root-guard"
     "attr"
@@ -677,6 +683,7 @@ let
   };
 
   architectureOverrides = {
+    darling = ["x86_64"];
     "go-1_4" = ["x86_64"];
     "openjdk-7" = ["x86_64"];
     "openjdk-8" = ["x86_64"];
@@ -704,10 +711,6 @@ let
   helperInventory = {
     "_platform-support.nix" = "platform-policy";
     "build-support/_cargo-artifacts.nix" = "native-build-helper";
-    "build-support/_config-module-renderer.nix" = "native-build-helper";
-    "build-support/_expose-module.nix" = "target-independent-source";
-    "build-support/_expose-renderer.nix" = "native-build-helper";
-    "build-support/_generated-expose-config-module.nix" = "target-independent-source";
     "build-support/_github-upstream.nix" = "native-build-helper";
     "build-support/_manual-upstream.nix" = "native-build-helper";
     "build-support/_perl-module.nix" = "native-build-helper";
@@ -722,18 +725,38 @@ let
     "emulation/_darling-sources.nix" = "linux-only-source";
     "emulation/qemu-patches/_series.nix" = "linux-only-source";
     "kernel/_source.nix" = "linux-only-source";
+    "kubernetes/_ability-contracts.nix" = "target-independent-source";
     "kubernetes/_k3s-common.nix" = "linux-only-build-helper";
-    "kubernetes/_k3s-expose-package.nix" = "linux-only-build-helper";
+    "kubernetes/_k3s-role-package.nix" = "linux-only-build-helper";
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
+    "system/_kmod-abilities.nix" = "target-independent-source";
+    "system/_kmod-provider.nix" = "target-independent-source";
+    "system/_systemd-abilities.nix" = "target-independent-source";
+    "system/_systemd-provider.nix" = "target-independent-source";
+    "system/_systemd-service-document.nix" = "target-independent-source";
+    "system/_systemd-service-provider-lib.nix" = "target-independent-source";
+    "system/_systemd-unit-document.nix" = "target-independent-source";
+    "tests/_ability-package-smoke-module.nix" = "target-independent-source";
+    "tests/_ability-package-smoke-provider.nix" = "target-independent-source";
     "toolchain/_bazel.nix" = "native-build-helper";
+    "toolchain/_linux-hosted-binutils.nix" = "cross-build-helper";
+    "toolchain/_linux-hosted-cc.nix" = "cross-build-helper";
+    "toolchain/_linux-hosted-gcc.nix" = "cross-build-helper";
     "toolchain/go/_go-darwin.nix" = "cross-build-helper";
+    "toolchain/go/_go-linux-cross.nix" = "cross-build-helper";
     "toolchain/java/_darwin-mig.nix" = "linux-only-build-helper";
     "toolchain/java/_openjdk-bootstrap.nix" = "native-build-helper";
     "toolchain/llvm/_llvm.nix" = "cross-build-helper";
+    "toolchain/rust/_current.nix" = "mixed-source";
     "toolchain/rust/_rust-darwin-build-tool.nix" = "cross-build-helper";
     "toolchain/rust/_rust-darwin.nix" = "cross-build-helper";
     "toolchain/rust/_rust-bootstrap.nix" = "native-build-helper";
+    "toolchain/rust/_rust-linux-hosted.nix" = "cross-build-helper";
+    "tools/_aos-kernel-tunable-provider-module.nix" = "target-independent-source";
+    "tools/_aos-nix-store-provider-module.nix" = "target-independent-source";
+    "tools/_kernel-tunable-provider.nix" = "target-independent-source";
+    "tools/_nix-store-provider.nix" = "target-independent-source";
     "tools/aos/_tests.nix" = "native-test-helper";
     "tools/aos/_workspace-source.nix" = "target-independent-source";
     "tools/crucible/_cargo-deps-hash.nix" = "target-independent-source";
@@ -753,38 +776,59 @@ let
   # Source fragments kept below underscore-prefixed directories are also
   # excluded from discovery, but are consumed by package factories.
   resourceInventory = {
+    "tests/_ability-package-smoke/default.nix" = "linux-only-test-source";
     "containers/_containerd-config/module.nix" = "linux-only-config-source";
     "containers/_containerd-tests/contract.nix" = "linux-only-test-source";
     "containers/_containerd-tests/lifecycle.nix" = "linux-only-test-source";
     "db/_etcd-config/module.nix" = "linux-only-config-source";
-    "kubernetes/_cilium-config/module.nix" = "linux-only-config-source";
+    "filesystem/_aos-filesystem-provider/module.nix" = "linux-only-config-source";
+    "filesystem/_aos-filesystem-provider/provider.nix" = "linux-only-config-source";
+    "kubernetes/_cilium-abilities/module.nix" = "linux-only-config-source";
     "kubernetes/_cloudcore-config/module.nix" = "linux-only-config-source";
     "kubernetes/_edgecore-config/module.nix" = "linux-only-config-source";
+    "kubernetes/_k3s-ability-provider/default.nix" = "target-independent-source";
     "kubernetes/_k3s-config/module.nix" = "linux-only-config-source";
+    "kubernetes/_k3s-config/configuration-interface.nix" = "target-independent-source";
+    "kubernetes/_k3s-config/configuration-provider.nix" = "linux-only-config-source";
+    "kubernetes/_k3s-config/object-provider.nix" = "linux-only-config-source";
+    "kubernetes/_k3s-config/roles.nix" = "linux-only-config-source";
     "kubernetes/_kubelet-config/module.nix" = "linux-only-config-source";
-    "networking/_envoy-config/module.nix" = "linux-only-config-source";
-    "networking/_envoy-config/render.nix" = "linux-only-config-source";
-    "networking/_envoy-config/types.nix" = "linux-only-config-source";
-    "networking/_nginx-config/module.nix" = "linux-only-config-source";
-    "networking/_openldap-config/module.nix" = "linux-only-config-source";
-    "security/_krb5-kdc-config/module.nix" = "linux-only-config-source";
+    "networking/_bind/module.nix" = "linux-only-config-source";
+    "networking/_chrony-abilities/module.nix" = "linux-only-config-source";
+    "networking/_dnsmasq/module.nix" = "linux-only-config-source";
+    "networking/_envoy/module.nix" = "linux-only-config-source";
+    "networking/_envoy/render.nix" = "linux-only-config-source";
+    "networking/_envoy/types.nix" = "linux-only-config-source";
+    "networking/_nginx/module.nix" = "linux-only-config-source";
+    "networking/_openldap/module.nix" = "linux-only-config-source";
+    "security/_krb5-kdc/module.nix" = "linux-only-config-source";
     "storage/_garage-config/module.nix" = "linux-only-config-source";
+    "tools/_rsyncd/module.nix" = "linux-only-config-source";
+    "tools/aos/_abilities/attestation-verifier.nix" = "target-independent-source";
     "storage/_garage-tests/lifecycle.nix" = "linux-only-test-source";
     "storage/_longhorn-config/module.nix" = "linux-only-config-source";
-    "storage/_mariadb-config/module.nix" = "linux-only-config-source";
+    "storage/_mariadb/module.nix" = "linux-only-config-source";
     "storage/_mariadb-tests/lifecycle.nix" = "linux-only-test-source";
-    "storage/_postgresql-config/module.nix" = "linux-only-config-source";
-    "storage/_postgresql-tests/expose.nix" = "linux-only-test-source";
+    "storage/_postgresql/module.nix" = "linux-only-config-source";
     "storage/_postgresql-tests/lifecycle.nix" = "linux-only-test-source";
-    "storage/_postgresql-tests/module.nix" = "linux-only-test-source";
     "system/_dbus-conf-xsl/make-session-conf.xsl" = "target-independent-source";
     "system/_dbus-conf-xsl/make-system-conf.xsl" = "target-independent-source";
-    "tests/_aos-registry-server-config/module.nix" = "linux-only-config-source";
-    "tests/_aos-test-agent-config/module.nix" = "linux-only-test-source";
-    "tests/_config-module-smoke/module.nix" = "linux-only-test-source";
-    "tests/_config-module-smoke/private.nix" = "linux-only-test-source";
-    "tools/_conntrackd-config/module.nix" = "linux-only-config-source";
-    "tools/_rsyncd-config/module.nix" = "linux-only-config-source";
+    "tests/_aos-registry-server/module.nix" = "linux-only-config-source";
+    "tests/_aos-secret-reference-test/module.nix" = "linux-only-config-source";
+    "tests/_aos-test-agent/module.nix" = "linux-only-config-source";
+    "tests/_apm-systemd-client-test/module.nix" = "linux-only-config-source";
+    "tests/_desired-config-test/module.nix" = "linux-only-config-source";
+    "tests/_desired-prune-test/module.nix" = "linux-only-config-source";
+    "tests/_landlock-argv-test/module.nix" = "linux-only-config-source";
+    "tests/_test-http-server/module.nix" = "linux-only-config-source";
+    "tests/_test-static-cache-server/module.nix" = "linux-only-config-source";
+    "tools/_conntrackd/module.nix" = "linux-only-config-source";
+    "tools/_smartmontools/module.nix" = "linux-only-config-source";
+    "tools/aos/_abilities/configuration-provider/module.nix" = "target-independent-source";
+    "tools/aos/_abilities/configuration-provider/provider.nix" = "target-independent-source";
+    "tools/aos/_abilities/module.nix" = "linux-only-config-source";
+    "tools/aos/_abilities/release-coordinator/module.nix" = "linux-only-config-source";
+    "tools/aos-hub/_aos-hub/module.nix" = "linux-only-config-source";
   };
 
   isLinux = system: builtins.match "[a-zA-Z0-9_]+-linux" system != null;
@@ -846,12 +890,35 @@ in rec {
     if eligible
     then {
       state = "eligible";
-      inherit (entry) disposition wave blockers;
+      inherit (entry) disposition wave;
+      # The inventory blockers track the Linux-hosted Darwin cross-build
+      # roadmap. Linux realizations and public runtime qualification are
+      # separate release gates, so these reasons must not block Linux planning.
+      blockers =
+        if isDarwin system
+        then entry.blockers
+        else [];
     }
     else {
       state = "not-applicable";
       inherit rule reason;
     };
+
+  publicationEligibleNames = system: names:
+    builtins.filter (
+      name: (publicationDecision system name).state == "eligible"
+    )
+    names;
+
+  publicationEligibleNamesAny = names:
+    builtins.filter (
+      name:
+        builtins.any (
+          system: (publicationDecision system name).state == "eligible"
+        )
+        canonicalSystems
+    )
+    names;
 
   releaseInventory = names: {
     schema_version = "aos.release.package-inventory/v1";
@@ -869,23 +936,94 @@ in rec {
       names;
   };
 
-  releaseDerivations = system: packages: names: {
+  releaseDerivations = system: packages: names: let
+    eligibleNames = publicationEligibleNames system names;
+    outputStorePath = package: output:
+      if output == "module"
+      then package.module
+      else if output == "out"
+      then package
+      else package.${output};
+  in {
     schema_version = "aos.release.derivation-inventory/v1";
     platform = system;
     packages = map (
       name: let
         package = packages.${name};
-      in {
-        inherit name;
-        source_store_paths = let
-          source =
-            if package ? src
-            then builtins.unsafeDiscardStringContext (toString package.src)
-            else "";
+        selectedOutput = package.outputName or "out";
+        publishedOutputs =
+          (if selectedOutput == "out"
+          then package.outputs or ["out"]
+          else [selectedOutput])
+          ++ (if package ? module then ["module"] else []);
+        normalizeSource = source: let
+          sourcePath = toString source;
+          storePath = builtins.match "^(/nix/store/[0-9a-z]{32}-[^/]+)(/.*)?$" sourcePath;
         in
-          if builtins.substring 0 11 source == "/nix/store/"
-          then [source]
-          else [];
+          if storePath != null
+          then builtins.head storePath
+          # Checked-in subdirectories are not store roots during local
+          # evaluation. Capture each as an immutable root so the release plan
+          # can retain the same source evidence as container publication.
+          else if builtins.isPath source
+          then
+            builtins.path {
+              path = source;
+              name = builtins.baseNameOf sourcePath;
+            }
+          else source;
+        # Generated packages and language builders declare every source bundle
+        # through this passthru contract. Ordinary packages retain their src.
+        declaredSources =
+          if package ? passthru && package.passthru ? evidenceSources
+          then package.passthru.evidenceSources
+          else if !(package ? src) || package.src == null
+          then []
+          else if builtins.isList package.src
+          then package.src
+          else if toString package.src == ""
+          then []
+          else [package.src];
+        sourcePaths =
+          map (
+            source:
+              builtins.unsafeDiscardStringContext (toString (normalizeSource source))
+          )
+          (declaredSources
+            ++ (if package ? module then [package.module.drvPath] else []));
+        contract =
+          if !(package ? contract)
+          then null
+          else {
+            document = {
+              derivation = builtins.unsafeDiscardStringContext package.contract.document.drvPath;
+              store_path = builtins.unsafeDiscardStringContext (toString package.contract.document);
+            };
+            selectors =
+              map (selector: let
+                selectedPackageName =
+                  if selector.package == "self"
+                  then name
+                  else selector.package;
+                selectedPackage =
+                  if builtins.elem selectedPackageName eligibleNames
+                  then packages.${selectedPackageName}
+                  else throw "package contract for '${name}' selects unpublished package '${selectedPackageName}'";
+              in {
+                inherit (selector) package output;
+                store_path = builtins.unsafeDiscardStringContext (toString (outputStorePath selectedPackage selector.output));
+              })
+              package.contract.selectors;
+          };
+      in {
+        inherit name contract;
+        source_store_paths = builtins.attrNames (builtins.listToAttrs (
+          map (source: {
+            name = source;
+            value = true;
+          })
+          sourcePaths
+        ));
         publication = let
           license = package.meta.license or null;
           licenseExpression =
@@ -904,12 +1042,26 @@ in rec {
             license_expression = licenseExpression;
           };
         derivation = builtins.unsafeDiscardStringContext package.drvPath;
-        outputs = map (output: {
-          name = output;
-          store_path = builtins.unsafeDiscardStringContext (toString package.${output});
-        }) (package.outputs or ["out"]);
+        outputs =
+          map (output:
+            {
+            # A public alias of one non-default derivation output is itself a
+            # single-output package root. Normalize that selected root to `out`
+            # so package qualification cannot silently exercise a sibling output.
+            name =
+              if selectedOutput == "out"
+              then output
+              else "out";
+            store_path = builtins.unsafeDiscardStringContext (toString (
+              outputStorePath package output
+            ));
+            }
+            // (if output == "module"
+            then {derivation = builtins.unsafeDiscardStringContext package.module.drvPath;}
+            else {}))
+          publishedOutputs;
       }
-    ) (builtins.filter (name: (publicationDecision system name).state == "eligible") names);
+    ) eligibleNames;
   };
 
   publicationMatrix = names:

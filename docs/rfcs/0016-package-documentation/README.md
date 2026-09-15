@@ -60,17 +60,17 @@ identity.
 6. **All user interfaces share one semantic model.** Web, API, CLI, man-page
    rendering, completion, and LSP behavior may format differently but must not
    invent different option types, defaults, visibility, or ownership rules.
-7. **Handwritten per-service option references are transitional.** They are
-   removed only after generated documentation reaches acceptance parity. Unique
-   conceptual and operational prose is migrated into structured package
-   sections or retained cross-package guides first.
+7. **Handwritten package references are transitional.** They are removed only
+   after the checked package projection reaches acceptance parity. Unique
+   conceptual and operational prose remains in ordinary package declarations
+   or deliberate cross-package guides.
 
 ## Topic files
 
 | File | Contents |
 | --- | --- |
 | [`00-goals-and-invariants.md`](00-goals-and-invariants.md) | Goals, non-goals, terminology, and invariants |
-| [`01-document-object.md`](01-document-object.md) | Canonical schema, option type algebra, runtime surface, and authoring rules |
+| [`01-document-object.md`](01-document-object.md) | Canonical schema, option type algebra, ability declarations, deployment observations, and authoring rules |
 | [`02-generation-and-publication.md`](02-generation-and-publication.md) | Restricted Nix extraction, store-object materialization, signed metadata, and atomic publication |
 | [`03-indexing-search-and-retention.md`](03-indexing-search-and-retention.md) | Native/Worker verification, SQL search projections, release retention, profile retention, and GC |
 | [`04-web-experience.md`](04-web-experience.md) | World-class public and authenticated Web information architecture and interaction design |
@@ -110,4 +110,4 @@ The completed implementation uses these repository seams:
 This RFC does not make generated prose canonical for AOS concepts that span
 packages. Architecture, security model, tutorials, incident procedures, and
 multi-package workflows remain authored documents. It removes duplicated
-package option/service reference pages, not deliberate human explanation.
+package option and ability reference pages, not deliberate human explanation.

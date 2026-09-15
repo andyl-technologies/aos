@@ -2,6 +2,7 @@
   lib,
   mkDerivation,
   k3s,
+  aos-kubernetes-provider,
   containerd,
   runc,
   cni-plugins,
@@ -14,14 +15,15 @@
   util-linux,
   kmod,
   coreutils,
-  jq,
   writeShellScriptBin,
-}: let
-  mkK3sExposePackage = import ./_k3s-expose-package.nix {
+}:
+let
+  mkK3sRolePackage = import ./_k3s-role-package.nix {
     inherit
       lib
       mkDerivation
       k3s
+      aos-kubernetes-provider
       containerd
       runc
       cni-plugins
@@ -34,20 +36,11 @@
       util-linux
       kmod
       coreutils
-      jq
       writeShellScriptBin
       ;
   };
 in
-  mkK3sExposePackage {
-    pname = "k3s-worker";
-    role = "worker";
-    description = "Lightweight Kubernetes (agent / worker)";
-    command = "agent";
-    requiredEnv = ["K3S_URL"];
-    firewall = {
-      allowedTCP = [10250];
-      allowedUDP = [8472];
-      forwardPolicy = "accept";
-    };
-  }
+mkK3sRolePackage {
+  pname = "k3s-worker";
+  evidenceSources = [ ./k3s-worker.nix ];
+}

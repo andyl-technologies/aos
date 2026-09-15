@@ -44,6 +44,8 @@
 
 pub mod load;
 
+mod ability_reference;
+
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
@@ -75,6 +77,8 @@ use crate::db::{
 };
 use crate::fetch::SurfaceFetch;
 
+pub use self::ability_reference::fetch_package_ability_reference;
+use self::ability_reference::verify_package_ability_references;
 use self::load::{load_registry_tree_with_reader, load_release_tree_with_reader, ObjectReader};
 
 /// Maximum branches (channels) processed per index run.
@@ -448,7 +452,10 @@ async fn index_registry_inner(
     let release_documentation_complete = db
         .release_documentation_projection_complete(registry.id)
         .await?
-        && db.release_browse_projection_complete(registry.id).await?;
+        && db.release_browse_projection_complete(registry.id).await?
+        && db
+            .package_ability_reference_projection_complete(registry.id)
+            .await?;
     if incremental_preconditions(
         status.as_ref().map(|status| status.state.as_str()),
         status
@@ -531,6 +538,9 @@ async fn index_registry_inner(
         .as_ref()
         .is_some_and(|status| status.state == "fresh")
         && indexed_roster_matches(db, registry.id, &roster_rows).await?
+        && db
+            .package_ability_reference_projection_complete(registry.id)
+            .await?
         // Signed container roots bind exact placement evidence. The reusable
         // artifact projection does not rehydrate that evidence, so force the
         // normal signed-release validation path for container registries.
@@ -738,6 +748,8 @@ async fn index_registry_inner(
 
                 let artifacts = release_snapshot_artifacts(&release_tree.packages);
                 let search = verify_package_documentation(fetch, &release_tree.packages).await?;
+                let ability_references =
+                    verify_package_ability_references(fetch, &release_tree.packages).await?;
                 {
                     let _projection = browse_projection_gate.lock().await;
                     db.retain_release_browse_catalog(
@@ -746,6 +758,12 @@ async fn index_registry_inner(
                         &release_tree.packages,
                         release_tree.root.registry.default_release.as_deref(),
                         &search,
+                    )
+                    .await?;
+                    db.retain_package_ability_reference_catalog(
+                        registry.id,
+                        &source_commit,
+                        &ability_references,
                     )
                     .await?;
                 }
@@ -865,6 +883,8 @@ async fn index_registry_inner(
     let image_presence = deduplicated_presence;
 
     let package_documentation = verify_package_documentation(fetch, &tree.packages).await?;
+    let package_ability_references =
+        verify_package_ability_references(fetch, &tree.packages).await?;
     db.retain_release_browse_catalog(
         registry.id,
         &commit_oid.to_hex(),
@@ -889,6 +909,7 @@ async fn index_registry_inner(
         roster: roster_rows,
         packages: tree.packages,
         package_documentation,
+        package_ability_references,
         releases,
         release_artifact_snapshots,
         release_images,
@@ -1573,6 +1594,7 @@ async fn signed_container_admin_projection(
 fn container_evidence_kind(role: ContainerReleaseDescriptorRole) -> &'static str {
     match role {
         ContainerReleaseDescriptorRole::NixClosure => "closure",
+        ContainerReleaseDescriptorRole::Abilities => "abilities",
         ContainerReleaseDescriptorRole::Sbom => "sbom",
         ContainerReleaseDescriptorRole::Source => "source",
         ContainerReleaseDescriptorRole::License => "license",
@@ -1698,8 +1720,8 @@ fn descriptor_identity_matches(left: &Descriptor, right: &Descriptor) -> bool {
 
 fn container_evidence_descriptors(
     release: &ContainerRelease,
-) -> [(&'static str, ContainerReleaseDescriptorRole, &Descriptor); 6] {
-    [
+) -> Vec<(&'static str, ContainerReleaseDescriptorRole, &Descriptor)> {
+    let mut descriptors = vec![
         (
             "Nix closure",
             ContainerReleaseDescriptorRole::NixClosure,
@@ -1730,7 +1752,15 @@ fn container_evidence_descriptors(
             ContainerReleaseDescriptorRole::Signature,
             &release.evidence.signature,
         ),
-    ]
+    ];
+    if let Some(abilities) = &release.evidence.abilities {
+        descriptors.push((
+            "abilities",
+            ContainerReleaseDescriptorRole::Abilities,
+            abilities,
+        ));
+    }
+    descriptors
 }
 
 fn release_snapshot_artifacts(
@@ -1748,6 +1778,16 @@ fn release_snapshot_artifacts(
                     store_hash: store_hash_component(&entry.store_path),
                     store_path: entry.store_path.clone(),
                 });
+                for store_path in entry.named_outputs.values() {
+                    artifacts.push(ReleaseSnapshotArtifact {
+                        package_name: package.package.name.clone(),
+                        package_version: version.version.clone(),
+                        platform: platform.clone(),
+                        artifact_kind: "output".to_string(),
+                        store_hash: store_hash_component(store_path),
+                        store_path: store_path.clone(),
+                    });
+                }
                 if !entry.source_drv.is_empty() {
                     artifacts.push(ReleaseSnapshotArtifact {
                         package_name: package.package.name.clone(),
@@ -2608,11 +2648,6 @@ async fn verify_package_documentation(
                         "package documentation config-module identity mismatch"
                     );
                 }
-                anyhow::ensure!(
-                    document.identity.system_module_nar_hash.as_deref()
-                        == artifact.system_module_nar_hash.as_deref(),
-                    "package documentation system-module identity mismatch"
-                );
                 if let Some(expose) = &entry.expose_artifact {
                     anyhow::ensure!(
                         document
@@ -3407,6 +3442,8 @@ fn sshsig_signer(armored: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::db::Database;
     use crate::fetch::{StreamedRead, SurfaceFetch};
@@ -3480,6 +3517,10 @@ mod tests {
             closure: evidence(MediaType::AosNixClosure, "closure"),
         };
         let release_evidence = ContainerReleaseEvidence {
+            abilities: Some(evidence(
+                MediaType::AosContainerStaticAbilities,
+                "abilities",
+            )),
             sbom: evidence(MediaType::SpdxJson, "sbom"),
             source: evidence(MediaType::AosSourceClosure, "source"),
             license: evidence(MediaType::AosLicenseReport, "license"),
@@ -3492,6 +3533,7 @@ mod tests {
             oci: oci.clone(),
             nix: nix.clone(),
             evidence: ContainerSignatureInputEvidence {
+                abilities: release_evidence.abilities.clone(),
                 sbom: release_evidence.sbom.clone(),
                 source: release_evidence.source.clone(),
                 license: release_evidence.license.clone(),
@@ -3501,7 +3543,7 @@ mod tests {
         };
         let release = ContainerRelease {
             schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
-            media_type: MediaType::AosContainerRelease,
+            media_type: MediaType::AosContainerReleaseV2,
             identity,
             oci,
             nix,
@@ -3666,6 +3708,61 @@ mod tests {
         assert!(signed.validate().is_err());
     }
 
+    #[test]
+    fn release_snapshots_retain_every_named_output() {
+        let package = aos_registry_surface::manifest::parse_package_file(
+            r#"
+[package]
+name = "compiler"
+description = "test compiler"
+license = "MIT"
+maintainer = "AOS test"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-compiler"
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+
+[versions.platforms.x86_64-linux.named_outputs]
+dev = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-compiler-dev"
+tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
+"#,
+        )
+        .expect("parse multi-output package");
+
+        let required_hashes = load::required_package_store_hashes(std::slice::from_ref(&package));
+        assert_eq!(
+            required_hashes,
+            BTreeSet::from([
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                "cccccccccccccccccccccccccccccccc".to_string(),
+            ])
+        );
+
+        let artifacts = release_snapshot_artifacts(&[package]);
+
+        assert_eq!(artifacts.len(), 3);
+        assert!(artifacts
+            .iter()
+            .all(|entry| entry.artifact_kind == "output"));
+        assert_eq!(
+            artifacts
+                .iter()
+                .map(|entry| entry.store_path.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-compiler",
+                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-compiler-dev",
+                "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools",
+            ])
+        );
+    }
+
     #[tokio::test]
     async fn fresh_index_exposes_complete_release_snapshots_for_reuse() {
         let db = Database::open_in_memory().await.unwrap();
@@ -3824,13 +3921,10 @@ mod tests {
                 semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
                 runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
                 config_module_nar_hash: Some(format!("sha256:{}", "2".repeat(64))),
-                system_module_nar_hash: None,
                 expose_artifact_nar_hash: Some(format!("sha256:{}", "3".repeat(64))),
                 source_nar_hash: format!("sha256:{}", "4".repeat(64)),
             },
-            sections: Vec::new(),
             options: Vec::new(),
-            runtime: aos_doc_model::RuntimeSurface::default(),
         };
         document.identity.semantic_schema_sha256 = document
             .computed_semantic_schema_sha256()
@@ -3872,7 +3966,6 @@ mod tests {
                 document_sha256: format!("sha256:{document_digest}"),
                 document_size: u64::try_from(contents.len()).expect("document size"),
                 semantic_schema_sha256: document.identity.semantic_schema_sha256.clone(),
-                system_module_nar_hash: None,
                 references: Vec::new(),
             },
         )

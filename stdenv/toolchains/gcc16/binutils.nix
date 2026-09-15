@@ -88,6 +88,7 @@ in
     ];
   }
   // {
+    passthru.evidenceSources = [src ./binutils.nix];
     meta = {
       description = "GNU binutils 2.41 — linker, assembler, and binary utilities";
       homepage = "https://www.gnu.org/software/binutils/";

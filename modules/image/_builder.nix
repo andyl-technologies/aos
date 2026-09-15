@@ -201,6 +201,20 @@
       # The baked toplevel ceases to be a GC root after host configuration is
       # activated, while this copy remains protected by the immutable root.
       postPopulate = ''
+        mkdir -p rootfs/usr/lib/aos/host
+        cp ${system.config.system.build.staticAbilityContract}/contract.json \
+          rootfs/usr/lib/aos/host/static-ability-contract.json
+        chmod 0444 rootfs/usr/lib/aos/host/static-ability-contract.json
+
+        ${lib.optionalString system.config.aos.boot.initrd.abilityHandoff.enable ''
+          # The host receiver authenticates the producer's static-contract
+          # commitment against this image-owned copy after switch-root.
+          mkdir -p rootfs/usr/lib/aos/initrd
+          cp ${system.config.system.build.initrdStaticAbilityContract}/contract.json \
+            rootfs/usr/lib/aos/initrd/static-ability-contract.json
+          chmod 0444 rootfs/usr/lib/aos/initrd/static-ability-contract.json
+        ''}
+
         ${lib.optionalString sb.enable ''
           mkdir -p rootfs/usr/lib/aos/image-trust
           cp ${activeImageDbCerts}/active-db-certs.pem \
@@ -228,6 +242,10 @@
           mkdir -p rootfs/usr/lib/aos
           cp ${system.config.aos.apm.drainScript} rootfs/usr/lib/aos/drain
           chmod 0555 rootfs/usr/lib/aos/drain
+        ''}
+        ${lib.optionalString (system.config.aos.apm.healthScript != null) ''
+          cp ${system.config.aos.apm.healthScript} rootfs/usr/lib/aos/health
+          chmod 0555 rootfs/usr/lib/aos/health
         ''}
       '';
       shrinkToFit = true;
@@ -489,6 +507,12 @@
           cp ${rootfs}/root.verity "$out/inputs/root.verity"
           cp ${rootfs}/root.roothash "$out/inputs/root.roothash"
           cp ${system.config.system.build.initrd}/initrd.img "$out/inputs/initrd.img"
+          cp ${system.config.system.build.initrd}/initrd-stage-contract.json \
+            "$out/inputs/initrd-stage-contract.json"
+          cp ${system.config.system.build.initrdStaticAbilityContract}/contract.json \
+            "$out/inputs/initrd-static-ability-contract.json"
+          cp ${system.config.system.build.staticAbilityContract}/contract.json \
+            "$out/inputs/host-static-ability-contract.json"
           ${lib.optionalString recoveryEnabled ''
             cp ${recoveryInitrdA}/initrd.img "$out/inputs/recovery-initrd-a.img"
             cp ${recoveryInitrdB}/initrd.img "$out/inputs/recovery-initrd-b.img"

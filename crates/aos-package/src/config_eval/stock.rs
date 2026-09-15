@@ -38,13 +38,22 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail, ensure};
+use aos_ability_model::{ProviderImplementation, RequirementDeclaration};
+use aos_contract::Sha256Digest;
 use base64::Engine as _;
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use super::ability_rounds::{
+    AbilityFixedPointProjection, AbilityRoundEvaluation, AbilityRoundEvaluator,
+    AbilityRoundResolver, AbilityRoundSelections, CompleteAbilityRound, PendingAbilityProjection,
+    SelectedAbilityBinding, SelectedProviderModule,
+};
 use super::classify::{EvalClass, KillReason, classify};
-use super::system_roots::{ConfigModuleResolver, ResolvedConfigModule};
+use super::system_roots::{ConfigModuleResolver, ResolvedAbilityModule, ResolvedConfigModule};
 use super::{ConfigOutputFetcher, EvalAttempt, NixEvaluator, SelectedProvider, WorkingSetMember};
+use crate::platform::native_platform;
 use crate::registry::RegistrySet;
 use crate::types::ProfileScope;
 
@@ -69,6 +78,207 @@ pub struct StockNixEvaluator {
     root: PathBuf,
     /// `verbose > 0` adds `--show-trace`.
     verbose: u8,
+}
+
+/// Binds one stock-Nix evaluator to the unchanged inputs of a complete module graph.
+pub struct StockAbilityRoundEvaluator<'a> {
+    evaluator: &'a StockNixEvaluator,
+    attempt: EvalAttempt<'a>,
+}
+
+/// Selects child providers only from authenticated packages in one working set.
+pub(super) struct StockAbilityRoundResolver<'a> {
+    working_set: &'a [WorkingSetMember],
+}
+
+impl<'a> StockAbilityRoundResolver<'a> {
+    /// Creates a resolver over the exact package set admitted to this evaluation.
+    pub(super) const fn new(working_set: &'a [WorkingSetMember]) -> Self {
+        Self { working_set }
+    }
+
+    fn implementation(
+        &self,
+        qualified: &str,
+    ) -> Result<(&'a WorkingSetMember, &'a ProviderImplementation)> {
+        let matches = self
+            .working_set
+            .iter()
+            .flat_map(|member| {
+                member
+                    .ability
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(move |package| {
+                        package
+                            .implementation
+                            .providers
+                            .iter()
+                            .filter(move |provider| {
+                                format!("{}:{}", member.package, provider.name.as_str())
+                                    == qualified
+                            })
+                            .map(move |provider| (member, provider))
+                    })
+            })
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [selected] => Ok(*selected),
+            [] => bail!(
+                "selected ability implementation {qualified:?} is absent from the authenticated working set"
+            ),
+            _ => bail!(
+                "selected ability implementation {qualified:?} is ambiguous in the authenticated working set"
+            ),
+        }
+    }
+
+    fn authenticate_requirement(
+        &self,
+        implementation: &str,
+        requirement: &RequirementDeclaration,
+    ) -> Result<()> {
+        let (_, provider) = self.implementation(implementation)?;
+        ensure!(
+            provider
+                .requirements
+                .iter()
+                .any(|declared| declared == requirement),
+            "pending child requirement is absent from its authenticated implementation"
+        );
+        Ok(())
+    }
+
+    fn selected_module(
+        member: &WorkingSetMember,
+        provider: &ProviderImplementation,
+    ) -> Result<Option<SelectedProviderModule>> {
+        let Some(locator) = provider.provider_module.clone() else {
+            return Ok(None);
+        };
+        let version = member.version.clone().with_context(|| {
+            format!(
+                "selected provider package {} has no authenticated version",
+                member.package
+            )
+        })?;
+        ensure!(
+            member.outputs.self_output.is_some(),
+            "selected provider package {} has no authenticated runtime output",
+            member.package
+        );
+
+        Ok(Some(SelectedProviderModule {
+            package: member.package.clone(),
+            version,
+            locator,
+            outputs: member.outputs.clone(),
+            // Current provider modules consume exact values and resource
+            // references from the fixed point. They do not resolve additional
+            // package-output selectors during an outer round.
+            artifact_locators: BTreeMap::new(),
+        }))
+    }
+}
+
+impl AbilityRoundResolver for StockAbilityRoundResolver<'_> {
+    fn select(&self, pending: &PendingAbilityProjection) -> Result<Vec<SelectedAbilityBinding>> {
+        let mut selections = Vec::with_capacity(pending.requests.len());
+        for request in pending.requests.values() {
+            let requirement_key = request
+                .declaration
+                .as_json()
+                .get("requirement")
+                .and_then(serde_json::Value::as_str)
+                .context("pending child request has no exact requirement key")?;
+            let requirement = pending
+                .requirements
+                .get(requirement_key)
+                .context("pending child request names an absent exact requirement")?;
+            self.authenticate_requirement(&requirement.implementation, &requirement.requirement)?;
+
+            let candidates = self
+                .working_set
+                .iter()
+                .flat_map(|member| {
+                    member
+                        .ability
+                        .as_ref()
+                        .into_iter()
+                        .flat_map(move |package| {
+                            package
+                                .implementation
+                                .providers
+                                .iter()
+                                .filter_map(move |provider| {
+                                    let implementation =
+                                        format!("{}:{}", member.package, provider.name.as_str());
+                                    let matches_contract = requirement
+                                        .requirement
+                                        .accepted_interfaces
+                                        .iter()
+                                        .any(|selector| selector.matches(&provider.interface))
+                                        && requirement.requirement.guarantees.iter().all(
+                                            |guarantee| provider.guarantees.contains(guarantee),
+                                        );
+                                    matches_contract.then_some((member, provider, implementation))
+                                })
+                        })
+                })
+                .flat_map(|(member, provider, implementation)| {
+                    pending.provider_instances.iter().filter_map(
+                        move |(provider_instance, selected)| {
+                            let local_instance = provider_instance
+                                .strip_prefix(member.package.as_str())?
+                                .strip_prefix(':')?;
+                            let implementation_matches = selected
+                                .implementation
+                                .as_deref()
+                                .is_none_or(|selected| selected == implementation);
+
+                            (!local_instance.is_empty() && implementation_matches).then(|| {
+                                (provider_instance, implementation.clone(), member, provider)
+                            })
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+            let [(provider_instance, implementation, member, provider)] = candidates.as_slice()
+            else {
+                bail!(
+                    "pending child request {:?} resolves to {} authenticated provider candidates",
+                    request.request,
+                    candidates.len()
+                );
+            };
+            let key = Sha256Digest::of_canonical(
+                "aos.ability.child-binding/v1",
+                &(
+                    request.request.as_str(),
+                    implementation.as_str(),
+                    provider_instance.as_str(),
+                    request.slot.as_str(),
+                ),
+            )?;
+            selections.push(SelectedAbilityBinding {
+                key: format!("binding-{}", key.hex()),
+                request: request.request.clone(),
+                implementation: implementation.clone(),
+                provider_instance: (*provider_instance).clone(),
+                slot: request.slot.clone(),
+                provider_module: Self::selected_module(member, provider)?,
+            });
+        }
+        Ok(selections)
+    }
+}
+
+impl<'a> StockAbilityRoundEvaluator<'a> {
+    /// Creates a complete-fixed-point adapter around one immutable eval attempt.
+    #[must_use]
+    pub const fn new(evaluator: &'a StockNixEvaluator, attempt: EvalAttempt<'a>) -> Self {
+        Self { evaluator, attempt }
+    }
 }
 
 impl StockNixEvaluator {
@@ -102,6 +312,8 @@ impl StockNixEvaluator {
         self.render_entry_nix_with_inputs(
             attempt,
             &package_modules,
+            "[ ]",
+            "{}",
             &nix_path(attempt.base_lib),
             &nix_path(attempt.host_nix),
         )
@@ -111,13 +323,35 @@ impl StockNixEvaluator {
         let package_modules = render_package_module_list(attempt.working_set, true)?;
         let base = locked_store_input(attempt.base_lib, None)?;
         let host = locked_store_input(attempt.host_nix, None)?;
-        self.render_entry_nix_with_inputs(attempt, &package_modules, &base, &host)
+        self.render_entry_nix_with_inputs(attempt, &package_modules, "[ ]", "{}", &base, &host)
+    }
+
+    fn render_locked_ability_round_entry_nix(
+        &self,
+        attempt: &EvalAttempt<'_>,
+        selections: &AbilityRoundSelections,
+    ) -> Result<String> {
+        let package_modules = render_package_module_list(attempt.working_set, true)?;
+        let provider_modules = render_selected_provider_module_list(selections, true)?;
+        let bindings = render_selected_ability_bindings(selections);
+        let base = locked_store_input(attempt.base_lib, None)?;
+        let host = locked_store_input(attempt.host_nix, None)?;
+        self.render_entry_nix_with_inputs(
+            attempt,
+            &package_modules,
+            &provider_modules,
+            &bindings,
+            &base,
+            &host,
+        )
     }
 
     fn render_entry_nix_with_inputs(
         &self,
         attempt: &EvalAttempt<'_>,
         package_modules: &str,
+        selected_provider_modules: &str,
+        ability_bindings: &str,
         base: &str,
         host: &str,
     ) -> Result<String> {
@@ -151,6 +385,8 @@ impl StockNixEvaluator {
             \x20   operatorModules = [ hostModule ];\n\
             \x20   runtimeModules = [ {runtime_modules} ];\n\
             \x20   packageModules = {modules};\n\
+            \x20   selectedProviderModules = {selected_provider_modules};\n\
+            \x20   abilityBindings = {ability_bindings};\n\
             \x20   factsModules = {facts_modules};\n\
             \x20 }};\n\
             \x20 baselineSystem = baseLib.evalHostConfig {{\n\
@@ -161,9 +397,7 @@ impl StockNixEvaluator {
             \x20 candidate = system.config.system.build.configManifest;\n\
             \x20 baseline = baselineSystem.config.system.build.configManifest;\n\
             \x20 mergedManifest = baseLib.mergeImageManifest {{ inherit baseline candidate; }};\n\
-             in {{\n\
-            \x20 optionWrites = system._optionWrites;\n\
-            \x20 manifest = mergedManifest // {{\n\
+            \x20 finalManifest = mergedManifest // {{\n\
             \x20   config = baseLib.lib.recursiveUpdate\n\
             \x20     candidate.config\n\
             \x20     system.config.aos.apm.installAtBoot.config;\n\
@@ -183,10 +417,35 @@ impl StockNixEvaluator {
             \x20           handles)\n\
             \x20         system.config.aos.apm.installAtBoot.systemCredentials));\n\
             \x20 }};\n\
+            \x20 pendingAbilityRequests = system.config.aos.abilities.compositionPendingRequests;\n\
+             in {{\n\
+            \x20 optionWrites = system._optionWrites;\n\
+            \x20 manifest = finalManifest;\n\
+            \x20 abilityRound =\n\
+            \x20   if pendingAbilityRequests == {{}}\n\
+            \x20   then {{\n\
+            \x20     status = \"complete\";\n\
+            \x20     manifest = finalManifest;\n\
+            \x20     fixedPoint = {{\n\
+            \x20       inherit (system.config.aos.abilities) bindings resolvedResources;\n\
+            \x20     }};\n\
+            \x20   }}\n\
+            \x20   else {{\n\
+            \x20     status = \"pending\";\n\
+            \x20     pending = {{\n\
+            \x20       requests = pendingAbilityRequests;\n\
+            \x20       requirements = system.config.aos.abilities.compositionRequirements;\n\
+            \x20       providerInstances = builtins.mapAttrs\n\
+            \x20         (_: instance: {{ inherit (instance) implementation; }})\n\
+            \x20         system.config.aos.abilities.instances;\n\
+            \x20     }};\n\
+            \x20   }};\n\
              }}\n",
             base = base,
             host = host,
             modules = package_modules,
+            selected_provider_modules = selected_provider_modules,
+            ability_bindings = ability_bindings,
             facts_binding = facts_binding,
             facts_modules = facts_modules,
             runtime_modules = runtime_modules,
@@ -243,6 +502,63 @@ impl NixEvaluator for StockNixEvaluator {
         let kill = kill_reason(&output.status, &stderr);
 
         classify(output.status.success(), &stdout, &stderr, kill)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
+enum StockAbilityRoundResult {
+    Complete {
+        manifest: serde_json::Value,
+        #[serde(rename = "fixedPoint")]
+        fixed_point: AbilityFixedPointProjection,
+    },
+    Pending {
+        pending: PendingAbilityProjection,
+    },
+}
+
+impl AbilityRoundEvaluator for StockAbilityRoundEvaluator<'_> {
+    fn evaluate(
+        &self,
+        _round: u32,
+        selections: &AbilityRoundSelections,
+    ) -> Result<AbilityRoundEvaluation> {
+        let expression = self
+            .evaluator
+            .render_locked_ability_round_entry_nix(&self.attempt, selections)?;
+        let mut command = pure_eval_command()?;
+        command.arg("-A").arg("abilityRound").arg("-");
+        if self.evaluator.verbose > 0 {
+            command.arg("--show-trace");
+        }
+
+        let output = output_with_expression(&mut command, &expression)
+            .context("running bounded ability-round module evaluation")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let kill = kill_reason(&output.status, &stderr);
+            bail!(
+                "complete ability module evaluation failed{}: {}",
+                kill.map_or_else(String::new, |reason| format!(" ({reason:?})")),
+                stderr.trim()
+            );
+        }
+
+        let result: StockAbilityRoundResult = serde_json::from_slice(&output.stdout)
+            .context("decoding complete ability-round module result")?;
+        match result {
+            StockAbilityRoundResult::Complete {
+                manifest,
+                fixed_point,
+            } => Ok(AbilityRoundEvaluation::Complete(CompleteAbilityRound {
+                manifest: serde_json::to_string(&manifest)?,
+                fixed_point,
+            })),
+            StockAbilityRoundResult::Pending { pending } => {
+                Ok(AbilityRoundEvaluation::Pending(pending))
+            }
+        }
     }
 }
 
@@ -349,7 +665,7 @@ fn kill_reason(status: &std::process::ExitStatus, stderr: &str) -> Option<KillRe
 
 /// Renders authenticated working-set modules as resolver-owned provenance records.
 fn render_package_module_list(members: &[WorkingSetMember], locked: bool) -> Result<String> {
-    render_package_module_list_with(members, locked, |path| locked_store_input(path, None))
+    render_package_module_list_with(members, locked, locked_store_input)
 }
 
 /// Renders package modules with an injectable locked-input renderer.
@@ -364,19 +680,41 @@ fn render_package_module_list_with<F>(
     mut lock_input: F,
 ) -> Result<String>
 where
-    F: FnMut(&Path) -> Result<String>,
+    F: FnMut(&Path, Option<&str>) -> Result<String>,
 {
     let mut items = Vec::new();
     for member in members {
-        if let Some(path) = member.config_output.as_deref() {
+        if member.ability.is_some() && member.config_output.is_some() {
+            bail!(
+                "working-set package {} carries both current ability-module and legacy config-module authority",
+                member.package
+            );
+        }
+        let module = member.ability.as_ref().and_then(|document| {
+            document.package_module.as_ref().map(|locator| {
+                (
+                    locator.artifact.store_path.as_str(),
+                    locator.artifact.nar_hash.to_string(),
+                    locator.path.as_str(),
+                )
+            })
+        });
+        let legacy_module = member.config_output.as_deref().map(|path| {
+            (
+                path,
+                member.config_output_nar_hash.clone().unwrap_or_default(),
+                "module.nix",
+            )
+        });
+        if let Some((path, nar_hash, entry_point)) = module.or(legacy_module) {
             let config_root = if locked {
-                let nar_hash = member.config_output_nar_hash.as_deref().with_context(|| {
-                    format!(
-                        "working-set package {} has a config output without an authenticated NAR hash",
+                if nar_hash.is_empty() {
+                    bail!(
+                        "working-set package {} has a module without an authenticated NAR hash",
                         member.package
-                    )
-                })?;
-                let authenticated = locked_store_input(Path::new(path), Some(nar_hash))?;
+                    );
+                }
+                let authenticated = lock_input(Path::new(path), Some(&nar_hash))?;
                 // `fetchTree.outPath` is a context-bearing string, while the
                 // module boundary deliberately requires a Nix path. The NAR
                 // hash above has already authenticated the exact tree; drop
@@ -386,45 +724,13 @@ where
             } else {
                 nix_path_str(path)
             };
-            let owns = member
-                .authorization
-                .owns
-                .iter()
-                .map(|root| nix_string(root))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let contributes = member
-                .authorization
-                .contributes
-                .iter()
-                .map(|(root, paths)| {
-                    let paths = paths
-                        .iter()
-                        .map(|path| nix_string(path))
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    format!("{} = [ {paths} ];", nix_string(root))
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            let artifact_list = |values: &[String]| {
-                values
-                    .iter()
-                    .map(|value| nix_string(value))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            };
-            let artifact_etc = artifact_list(&member.authorization.artifacts.etc);
-            let artifact_units = artifact_list(&member.authorization.artifacts.units);
-            let artifact_users = artifact_list(&member.authorization.artifacts.users);
-            let artifact_groups = artifact_list(&member.authorization.artifacts.groups);
             let self_output = member
                 .outputs
                 .self_output
                 .as_deref()
                 .map(|output| {
                     if locked {
-                        lock_input(Path::new(output))
+                        lock_input(Path::new(output), None)
                     } else {
                         Ok(nix_string(output))
                     }
@@ -437,7 +743,7 @@ where
                 .iter()
                 .map(|(package, output)| {
                     let output = if locked {
-                        lock_input(Path::new(output))?
+                        lock_input(Path::new(output), None)?
                     } else {
                         nix_string(output)
                     };
@@ -445,9 +751,17 @@ where
                 })
                 .collect::<Result<Vec<_>>>()?
                 .join(" ");
+            let package_version = member.version.as_deref().with_context(|| {
+                format!(
+                    "working-set package {} has a module without an authenticated package version",
+                    member.package
+                )
+            })?;
             items.push(format!(
-                    "    (let configRoot = {config_root}; in {{ name = {}; authorization = {{ owns = [ {owns} ]; contributes = {{ {contributes} }}; artifacts = {{ etc = [ {artifact_etc} ]; units = [ {artifact_units} ]; users = [ {artifact_users} ]; groups = [ {artifact_groups} ]; }}; }}; inherit configRoot; module = configRoot + \"/module.nix\"; outputs = {{ self = {self_output}; dependencies = {{ {dependency_outputs} }}; }}; }})",
+                    "    (let configRoot = {config_root}; in {{ name = {}; packageVersion = {}; inherit configRoot; module = configRoot + {}; outputs = {{ self = {self_output}; dependencies = {{ {dependency_outputs} }}; }}; }})",
                     nix_string(&member.package),
+                    nix_string(package_version),
+                    nix_string(&format!("/{entry_point}")),
                 ));
         }
     }
@@ -456,6 +770,105 @@ where
     } else {
         Ok(format!("[\n{}\n  ]", items.join("\n")))
     }
+}
+
+fn render_selected_provider_module_list(
+    selections: &AbilityRoundSelections,
+    locked: bool,
+) -> Result<String> {
+    let mut items = Vec::new();
+    for selected in selections.provider_modules() {
+        let artifact = &selected.locator.artifact;
+        let authenticated_root = if locked {
+            let input = locked_store_input(
+                Path::new(&artifact.store_path),
+                Some(&artifact.nar_hash.to_string()),
+            )?;
+            format!("(/. + builtins.unsafeDiscardStringContext ({input}))")
+        } else {
+            nix_path_str(&artifact.store_path)
+        };
+        let self_output = selected
+            .outputs
+            .self_output
+            .as_deref()
+            .context("selected provider module has no authenticated self output")?;
+        let self_output = render_output_path(self_output, locked)?;
+        let dependencies = selected
+            .outputs
+            .dependencies
+            .iter()
+            .map(|(package, output)| {
+                Ok(format!(
+                    "{} = {};",
+                    nix_string(package),
+                    render_output_path(output, locked)?
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .join(" ");
+        let artifact_locators = selected
+            .artifact_locators
+            .iter()
+            .map(|(selector, artifact)| {
+                let selector_json = serde_json::to_string(selector)
+                    .context("encoding selected package-output selector")?;
+                let artifact_json = serde_json::to_string(artifact)
+                    .context("encoding authenticated artifact reference")?;
+                let path = render_output_path(&artifact.store_path, locked)?;
+                Ok(format!(
+                    "{} = {{ artifactReference = builtins.fromJSON {}; path = {path}; }};",
+                    nix_string(&selector_json),
+                    nix_string(&artifact_json),
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .join(" ");
+
+        items.push(format!(
+            "    (let configRoot = {authenticated_root}; in {{ name = {}; packageVersion = {}; inherit configRoot; module = configRoot + {}; outputs = {{ self = {self_output}; dependencies = {{ {dependencies} }}; }}; artifactLocators = {{ {artifact_locators} }}; }})",
+            nix_string(&selected.package),
+            nix_string(&selected.version),
+            nix_string(&format!("/{}", selected.locator.path.as_str())),
+        ));
+    }
+
+    if items.is_empty() {
+        Ok("[ ]".to_string())
+    } else {
+        Ok(format!("[\n{}\n  ]", items.join("\n")))
+    }
+}
+
+fn render_output_path(path: &str, locked: bool) -> Result<String> {
+    if locked {
+        locked_store_input(Path::new(path), None)
+    } else {
+        Ok(nix_string(path))
+    }
+}
+
+fn render_selected_ability_bindings(selections: &AbilityRoundSelections) -> String {
+    if selections.bindings().is_empty() {
+        return "{}".to_string();
+    }
+
+    let bindings = selections
+        .bindings()
+        .iter()
+        .map(|(key, binding)| {
+            format!(
+                "  {} = {{ request = {}; implementation = {}; providerInstance = {}; slot = {}; }};",
+                nix_string(key),
+                nix_string(&binding.request),
+                nix_string(&binding.implementation),
+                nix_string(&binding.provider_instance),
+                nix_string(&binding.slot),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{{\n{bindings}\n}}")
 }
 
 /// Renders one store path as a fixed, pure evaluator input.
@@ -487,16 +900,44 @@ pub(super) fn locked_store_input(path: &Path, expected_nar_hash: Option<&str>) -
     }
 }
 
-fn store_root_and_suffix(path: &Path) -> Result<(PathBuf, PathBuf)> {
+pub(crate) fn store_root_and_suffix(path: &Path) -> Result<(PathBuf, PathBuf)> {
     let relative = path
         .strip_prefix("/nix/store")
         .with_context(|| format!("evaluator input {} is outside /nix/store", path.display()))?;
     let mut components = relative.components();
-    let root_name = components
-        .next()
-        .context("evaluator input has no store object component")?;
+    let Some(std::path::Component::Normal(root_name)) = components.next() else {
+        bail!("evaluator input has no valid store object component");
+    };
+    let root_name = root_name
+        .to_str()
+        .context("evaluator store object name is not UTF-8")?;
+    let (hash, name) = root_name
+        .split_at_checked(32)
+        .and_then(|(hash, suffix)| suffix.strip_prefix('-').map(|name| (hash, name)))
+        .context("evaluator input has a malformed store object name")?;
+    ensure!(
+        hash.bytes()
+            .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte)),
+        "evaluator input has an invalid Nix store hash"
+    );
+    ensure!(
+        !name.is_empty()
+            && name.len() <= 211
+            && name.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric()
+                    || matches!(byte, b'+' | b'-' | b'.' | b'_' | b'?' | b'=')
+            }),
+        "evaluator input has an invalid Nix store name"
+    );
+
     let root = Path::new("/nix/store").join(root_name);
-    let suffix = components.collect::<PathBuf>();
+    let mut suffix = PathBuf::new();
+    for component in components {
+        let std::path::Component::Normal(component) = component else {
+            bail!("evaluator input has a non-canonical store-path suffix");
+        };
+        suffix.push(component);
+    }
     Ok((root, suffix))
 }
 
@@ -510,7 +951,7 @@ fn sha256_sri(hash: &str) -> Result<String> {
 }
 
 /// Renders a Rust string as a quoted Nix string literal.
-fn nix_string(value: &str) -> String {
+pub(super) fn nix_string(value: &str) -> String {
     format!(
         "\"{}\"",
         value
@@ -746,7 +1187,12 @@ impl RegistryConfigModules {
     pub fn load_system() -> Result<Self> {
         let scope = crate::types::ProfileScope::System;
         let config = crate::config::ApmConfig::load(scope)?;
-        let registries = crate::install::load_registries(&config)?;
+        let enabled = config.enabled_registries();
+        let registries = RegistrySet::load_for_config_evaluation(
+            &config.cache_path(),
+            &enabled,
+            &native_platform(),
+        )?;
         let profile = crate::profile::Profile::open_readonly(scope);
         let mut image_catalog = None;
         let mut installed = Vec::new();
@@ -812,6 +1258,7 @@ impl RegistryConfigModules {
                         expose: apm.expose,
                         expose_artifact: apm.expose_artifact,
                         config_module,
+                        ability: apm.ability,
                         closure: std::cell::RefCell::new(None),
                     },
                 );
@@ -823,42 +1270,132 @@ impl RegistryConfigModules {
             image_packages,
         })
     }
+}
 
-    fn exact_in_registry(
-        &self,
-        registry_name: Option<&str>,
-        package: &str,
-        version: Option<&str>,
-        runtime_output: Option<&str>,
-    ) -> Option<ResolvedConfigModule<'_>> {
-        self.registries
-            .registries()
-            .iter()
-            .filter(|registry| registry_name.is_none_or(|name| registry.config.name == name))
-            .find_map(|registry| {
-                let meta = registry.package_versions().find(|meta| {
-                    meta.name == package
-                        && version.is_none_or(|want| meta.version == want)
-                        && runtime_output.is_none_or(|want| meta.store_path == want)
-                        && meta.config_module.is_some()
-                })?;
-                let module = meta.config_module.as_ref()?;
-                let root = crate::registry::store_path_hash(&module.config_output.store_path);
-                Some(ResolvedConfigModule {
-                    registry: &registry.config.name,
-                    release_trust: registry.release_trust(),
-                    config_realization: registry
-                        .store_map()
-                        .realization_subset_hash(&[root.to_string()])
-                        .ok(),
-                    package: &meta.name,
-                    version: &meta.version,
-                    platform: &meta.platform,
-                    runtime_output: &meta.store_path,
-                    module,
-                })
-            })
-    }
+fn resolved_registry_config_module<'a>(
+    registry: &'a crate::registry::Registry,
+    package: &'a crate::types::PackageMeta,
+) -> Option<ResolvedConfigModule<'a>> {
+    let module = package.config_module.as_ref()?;
+    let root = crate::registry::store_path_hash(&module.config_output.store_path);
+    Some(ResolvedConfigModule {
+        registry: &registry.config.name,
+        release_trust: registry.release_trust(),
+        config_realization: registry
+            .store_map()
+            .realization_subset_hash(&[root.to_string()])
+            .ok(),
+        package: &package.name,
+        version: &package.version,
+        platform: &package.platform,
+        runtime_output: &package.store_path,
+        module,
+    })
+}
+
+fn resolved_registry_ability_module(
+    registry: &crate::registry::Registry,
+    package: &crate::types::PackageMeta,
+) -> Result<Option<ResolvedAbilityModule>> {
+    ensure!(
+        package.ability.is_none() || package.config_module.is_none(),
+        "package {} carries both current ability and legacy config module metadata",
+        package.name
+    );
+    let Some(document) = crate::ability_package::resolve_package_document(package)? else {
+        return Ok(None);
+    };
+    let module = document
+        .package_module
+        .as_ref()
+        .context("resolved ability package is missing its module locator")?;
+    let root = crate::registry::store_path_hash(&module.artifact.store_path);
+
+    Ok(Some(ResolvedAbilityModule {
+        registry: registry.config.name.clone(),
+        release_trust: registry.release_trust().cloned(),
+        realization: registry
+            .store_map()
+            .realization_subset_hash(&[root.to_string()])
+            .ok(),
+        package: package.name.clone(),
+        version: package.version.clone(),
+        platform: package.platform.clone(),
+        runtime_output: package.store_path.clone(),
+        document,
+    }))
+}
+
+fn resolved_image_config_module<'a>(
+    name: &'a str,
+    package: &'a super::runtime::LocalRuntimePackage,
+) -> Option<ResolvedConfigModule<'a>> {
+    Some(ResolvedConfigModule {
+        registry: "",
+        release_trust: None,
+        config_realization: None,
+        package: name,
+        version: &package.version,
+        platform: "image",
+        runtime_output: &package.store_path,
+        module: package.config_module.as_ref()?,
+    })
+}
+
+fn resolved_image_ability_module(
+    name: &str,
+    package: &super::runtime::LocalRuntimePackage,
+) -> Result<Option<ResolvedAbilityModule>> {
+    ensure!(
+        package.ability.is_none() || package.config_module.is_none(),
+        "image package {name} carries both current ability and legacy config module metadata"
+    );
+    let Some(ability) = package.ability.clone() else {
+        return Ok(None);
+    };
+    let manifest = crate::ability_package::read_package_manifest(&ability.store_path)?;
+    let decoded = crate::ability_package::decode_package_manifest(&manifest)?;
+    let package_meta = crate::types::PackageMeta {
+        name: name.to_string(),
+        version: package.version.clone(),
+        description: "immutable image package".to_string(),
+        homepage: None,
+        license: "LicenseRef-AOS-Image".to_string(),
+        maintainer: "AOS image".to_string(),
+        platform: "x86_64-linux".to_string(),
+        store_path: package.store_path.clone(),
+        nar_hash: decoded.package.payload.nar_hash.to_string(),
+        nar_size: 0,
+        references: Vec::new(),
+        source_drv: String::new(),
+        source_nar_hash: String::new(),
+        closure_size: 0,
+        sysroot: false,
+        previous: None,
+        images: Vec::new(),
+        min_format: None,
+        requires_features: Vec::new(),
+        expose: package.expose.clone(),
+        expose_artifact: package.expose_artifact.clone(),
+        config_module: package.config_module.clone(),
+        documentation: None,
+        ability: Some(ability),
+        permissions: Default::default(),
+        bpf_lsm: None,
+        attestation: Default::default(),
+    };
+    let document = crate::ability_package::resolve_package_document(&package_meta)?;
+
+    Ok(document.map(|document| ResolvedAbilityModule {
+        registry: String::new(),
+        release_trust: None,
+        realization: None,
+        package: name.to_string(),
+        version: package.version.clone(),
+        platform: "image".to_string(),
+        runtime_output: package.store_path.clone(),
+        document,
+    }))
 }
 
 fn immutable_image_seed_catalog() -> Result<BTreeMap<String, crate::types::InstalledMeta>> {
@@ -951,35 +1488,63 @@ fn validate_image_seed_metadata(
 }
 
 impl ConfigModuleResolver for RegistryConfigModules {
-    fn config_module(&self, package: &str) -> Option<ResolvedConfigModule<'_>> {
-        if let Some((registry, meta)) = self.registries.resolve(package) {
-            let module = meta.config_module.as_ref()?;
-            let root = crate::registry::store_path_hash(&module.config_output.store_path);
-            return Some(ResolvedConfigModule {
-                registry: &registry.config.name,
-                release_trust: registry.release_trust(),
-                config_realization: registry
-                    .store_map()
-                    .realization_subset_hash(&[root.to_string()])
-                    .ok(),
-                package: &meta.name,
-                version: &meta.version,
-                platform: &meta.platform,
-                runtime_output: &meta.store_path,
-                module,
-            });
+    fn ability_module(&self, package: &str) -> Result<Option<ResolvedAbilityModule>> {
+        if let Ok(Some((registry, resolved))) =
+            self.registries.resolve_for_config_evaluation(package)
+        {
+            return resolved_registry_ability_module(registry, resolved);
         }
+
+        let (local_name, local) = match self.image_packages.get_key_value(package) {
+            Some(value) => value,
+            None => return Ok(None),
+        };
+        resolved_image_ability_module(local_name, local)
+    }
+
+    fn ability_module_exact(
+        &self,
+        package: &str,
+        version: Option<&str>,
+        runtime_output: Option<&str>,
+    ) -> Result<Option<ResolvedAbilityModule>> {
+        let exact =
+            self.registries
+                .resolve_exact_for_config_evaluation(package, version, runtime_output);
+        match exact {
+            Ok(Some((registry, resolved))) => {
+                return resolved_registry_ability_module(registry, resolved);
+            }
+            Ok(None) | Err(_) => {}
+        }
+        if self
+            .registries
+            .resolve_for_config_evaluation(package)
+            .is_ok_and(|resolved| resolved.is_some())
+        {
+            return Ok(None);
+        }
+
+        let Some((local_name, local)) = self.image_packages.get_key_value(package) else {
+            return Ok(None);
+        };
+        if version.is_some_and(|want| want != local.version)
+            || runtime_output.is_some_and(|want| want != local.store_path)
+        {
+            return Ok(None);
+        }
+        resolved_image_ability_module(local_name, local)
+    }
+
+    fn config_module(&self, package: &str) -> Option<ResolvedConfigModule<'_>> {
+        if let Ok(Some((registry, resolved))) =
+            self.registries.resolve_for_config_evaluation(package)
+        {
+            return resolved_registry_config_module(registry, resolved);
+        }
+
         let (local_name, local) = self.image_packages.get_key_value(package)?;
-        Some(ResolvedConfigModule {
-            registry: "",
-            release_trust: None,
-            config_realization: None,
-            package: local_name,
-            version: &local.version,
-            platform: "image",
-            runtime_output: &local.store_path,
-            module: local.config_module.as_ref()?,
-        })
+        resolved_image_config_module(local_name, local)
     }
 
     fn config_module_exact(
@@ -988,25 +1553,31 @@ impl ConfigModuleResolver for RegistryConfigModules {
         version: Option<&str>,
         runtime_output: Option<&str>,
     ) -> Option<ResolvedConfigModule<'_>> {
-        if self.registries.resolve(package).is_some() {
-            self.exact_in_registry(None, package, version, runtime_output)
-        } else {
+        let exact =
+            self.registries
+                .resolve_exact_for_config_evaluation(package, version, runtime_output);
+        match exact {
+            Ok(Some((registry, resolved))) => {
+                return resolved_registry_config_module(registry, resolved);
+            }
+            Ok(None) | Err(_) => {}
+        }
+        if self
+            .registries
+            .resolve_for_config_evaluation(package)
+            .is_ok_and(|resolved| resolved.is_some())
+        {
+            return None;
+        }
+
+        {
             let (local_name, local) = self.image_packages.get_key_value(package)?;
             if version.is_some_and(|want| want != local.version)
                 || runtime_output.is_some_and(|want| want != local.store_path)
             {
                 return None;
             }
-            Some(ResolvedConfigModule {
-                registry: "",
-                release_trust: None,
-                config_realization: None,
-                package: local_name,
-                version: &local.version,
-                platform: "image",
-                runtime_output: &local.store_path,
-                module: local.config_module.as_ref()?,
-            })
+            resolved_image_config_module(local_name, local)
         }
     }
 
@@ -1029,8 +1600,8 @@ impl ConfigModuleResolver for RegistryConfigModules {
     fn known_shared_roots(&self) -> BTreeSet<String> {
         let mut roots = self
             .registries
-            .registries()
-            .iter()
+            .registries_before_config_evaluation_gap()
+            .into_iter()
             .flat_map(|registry| registry.package_versions())
             .filter_map(|meta| meta.config_module.as_ref())
             .flat_map(|module| module.owns_roots.iter().map(|owned| owned.root.clone()))
@@ -1047,8 +1618,18 @@ impl ConfigModuleResolver for RegistryConfigModules {
 
 #[cfg(test)]
 mod tests {
+    use aos_ability_model::document::PackageSubject;
+    use aos_ability_model::{
+        AbilityActivationMode, ArtifactReference, LocalKey, ModuleLocator, PackageDocument,
+        PackageImplementation, RelativePath, RequiredFeature, VersionedDocument,
+    };
+    use aos_ability_validate::PackageOutputSelector;
+    use aos_contract::Sha256Digest;
+
     use super::*;
-    use crate::types::{ApmMeta, ModuleAbiCompat};
+    use crate::config_eval::PackageOutputs;
+    use crate::config_eval::ability_rounds::{SelectedAbilityBinding, SelectedProviderModule};
+    use crate::types::{ApmMeta, ConfigModuleMeta, ConfigOutputMeta, ModuleAbiCompat};
 
     fn member(pkg: &str, config_output: Option<&str>) -> WorkingSetMember {
         WorkingSetMember {
@@ -1057,11 +1638,39 @@ mod tests {
             config_realization: None,
             package: pkg.to_string(),
             version: Some("1.0.0".to_string()),
+            ability: None,
             config_output: config_output.map(str::to_string),
             config_output_nar_hash: config_output.map(|_| "sha256:test".to_string()),
             module_abi_compat: Some(ModuleAbiCompat { min: 1, max: 2 }),
-            authorization: super::super::PackageAuthorization::default(),
             outputs: super::super::PackageOutputs::default(),
+        }
+    }
+
+    fn ability_document(package: &str, package_module: ModuleLocator) -> PackageDocument {
+        let artifact = package_module.artifact.clone();
+
+        PackageDocument {
+            schema: PackageDocument::SCHEMA.to_string(),
+            required_features: vec![RequiredFeature::new("abilities-v1").unwrap()],
+            activation_mode: AbilityActivationMode::ContractsOnly,
+            package: PackageSubject {
+                name: LocalKey::new(package).unwrap(),
+                version: "1.0.0".to_string(),
+                payload: artifact.clone(),
+                source: artifact.clone(),
+            },
+            artifacts: vec![artifact],
+            interfaces: BTreeMap::new(),
+            guarantees: BTreeMap::new(),
+            package_module: Some(package_module),
+            option_declarations: Vec::new(),
+            exports: Vec::new(),
+            requirements: Vec::new(),
+            implementation: PackageImplementation {
+                providers: Vec::new(),
+                handlers: BTreeMap::new(),
+            },
+            qualification: Default::default(),
         }
     }
 
@@ -1079,9 +1688,32 @@ mod tests {
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),
+        }
+    }
+
+    fn image_config_module() -> ConfigModuleMeta {
+        ConfigModuleMeta {
+            config_output: ConfigOutputMeta {
+                store_path: "/nix/store/11111111111111111111111111111111-image-web-config"
+                    .to_string(),
+                nar_hash: "sha256:test".to_string(),
+                nar_size: 1,
+                references: Vec::new(),
+            },
+            evaluation_base_lib: None,
+            dependency_outputs: BTreeMap::new(),
+            module_abi_compat: ModuleAbiCompat { min: 1, max: 1 },
+            declares: Vec::new(),
+            declaration_schema: Vec::new(),
+            requires: Vec::new(),
+            owns_roots: Vec::new(),
+            contributes: Vec::new(),
+            provides_capabilities: Vec::new(),
+            artifacts: Default::default(),
         }
     }
 
@@ -1099,6 +1731,140 @@ mod tests {
                 .to_string()
                 .contains("disagrees with immutable image metadata"),
             "{error:#}"
+        );
+    }
+
+    #[test]
+    fn unavailable_registry_uses_image_module_with_exact_identity_pins() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let missing = crate::registry::tests::registry_config("andyl", 500);
+        let registries =
+            RegistrySet::load_for_config_evaluation(temp.path(), &[&missing], "x86_64-linux")
+                .unwrap();
+        let store_path = "/nix/store/00000000000000000000000000000000-image-web";
+        let image_packages = BTreeMap::from([(
+            "image-web".to_string(),
+            super::super::runtime::LocalRuntimePackage {
+                version: "1.2.3".to_string(),
+                store_path: store_path.to_string(),
+                expose: None,
+                expose_artifact: None,
+                config_module: Some(image_config_module()),
+                ability: None,
+                closure: std::cell::RefCell::new(None),
+            },
+        )]);
+        let resolver = RegistryConfigModules {
+            registries,
+            installed: Vec::new(),
+            image_packages,
+        };
+
+        let by_name = resolver.config_module("image-web").unwrap();
+        let exact = resolver
+            .config_module_exact("image-web", Some("1.2.3"), Some(store_path))
+            .unwrap();
+
+        assert_eq!(by_name.registry, "");
+        assert_eq!(by_name.platform, "image");
+        assert_eq!(exact.version, "1.2.3");
+        assert_eq!(exact.runtime_output, store_path);
+        assert!(
+            resolver
+                .config_module_exact("image-web", Some("9.9.9"), Some(store_path))
+                .is_none()
+        );
+        assert!(
+            resolver
+                .config_module_exact(
+                    "image-web",
+                    Some("1.2.3"),
+                    Some("/nix/store/22222222222222222222222222222222-other"),
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn loaded_registry_name_prevents_exact_image_fallback_across_a_gap() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let loaded = crate::registry::tests::registry_config("loaded", 600);
+        let missing = crate::registry::tests::registry_config("missing", 500);
+        let nar_digest = "0".repeat(52);
+        let catalog = format!(
+            r#"[package]
+name = "image-web"
+description = "registry package with the same name as an image package"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "2.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/22222222222222222222222222222222-image-web"
+nar_hash = "sha256:{nar_digest}"
+nar_size = 1
+closure_size = 1
+source_drv = "/nix/store/33333333333333333333333333333333-image-web.drv"
+source_nar_hash = "sha256:{nar_digest}"
+provenance = "provenance/image-web.jsonl"
+
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["config-module-v1", "attestation-v1"]
+
+[versions.platforms.x86_64-linux.config_module.config_output]
+store_path = "/nix/store/44444444444444444444444444444444-image-web-config"
+nar_hash = "sha256:{nar_digest}"
+nar_size = 1
+references = []
+
+[versions.platforms.x86_64-linux.config_module.module_abi_compat]
+min = 1
+max = 1
+"#
+        );
+        let _ = crate::registry::tests::make_registry(
+            &temp,
+            &loaded.name,
+            loaded.priority,
+            &[("image-web", &catalog)],
+        );
+        let registries = RegistrySet::load_for_config_evaluation(
+            temp.path(),
+            &[&loaded, &missing],
+            "x86_64-linux",
+        )
+        .unwrap();
+        let image_store_path = "/nix/store/00000000000000000000000000000000-image-web";
+        let image_packages = BTreeMap::from([(
+            "image-web".to_string(),
+            super::super::runtime::LocalRuntimePackage {
+                version: "1.2.3".to_string(),
+                store_path: image_store_path.to_string(),
+                expose: None,
+                expose_artifact: None,
+                config_module: Some(image_config_module()),
+                ability: None,
+                closure: std::cell::RefCell::new(None),
+            },
+        )]);
+        let resolver = RegistryConfigModules {
+            registries,
+            installed: Vec::new(),
+            image_packages,
+        };
+
+        let by_name = resolver.config_module("image-web").unwrap();
+
+        assert_eq!(by_name.registry, "loaded");
+        assert_eq!(by_name.version, "2.0.0");
+        assert!(
+            resolver
+                .config_module_exact("image-web", Some("1.2.3"), Some(image_store_path))
+                .is_none()
         );
     }
 
@@ -1150,7 +1916,10 @@ mod tests {
 
     #[test]
     fn locked_entry_coerces_authenticated_config_roots_to_nix_paths() {
-        let mut web = member("web", Some("/nix/store/hash-web-config"));
+        let mut web = member(
+            "web",
+            Some("/nix/store/00000000000000000000000000000000-web-config"),
+        );
         web.config_output_nar_hash = Some(format!("sha256:{}", "00".repeat(32)));
         let working = vec![web];
         let text = render_package_module_list(&working, true).unwrap();
@@ -1165,8 +1934,74 @@ mod tests {
     }
 
     #[test]
+    fn locked_entry_imports_the_authenticated_package_module_and_version() {
+        let mut web = member("web", None);
+        web.ability = Some(ability_document(
+            "web",
+            ModuleLocator {
+                artifact: ArtifactReference {
+                    content: Sha256Digest::of_bytes(b"web module"),
+                    store_path: "/nix/store/00000000000000000000000000000000-web-module"
+                        .to_string(),
+                    nar_hash: Sha256Digest::of_bytes(b"web module NAR"),
+                    closure: Sha256Digest::of_bytes(b"web module closure"),
+                },
+                path: RelativePath::new("abilities/module.nix").unwrap(),
+            },
+        ));
+
+        let mut admitted = Vec::new();
+        let rendered = render_package_module_list_with(&[web], true, |path, nar_hash| {
+            admitted.push((path.to_path_buf(), nar_hash.map(str::to_string)));
+            Ok("(authenticated-module-root)".to_string())
+        })
+        .unwrap();
+
+        assert_eq!(
+            admitted,
+            [(
+                PathBuf::from("/nix/store/00000000000000000000000000000000-web-module"),
+                Some(Sha256Digest::of_bytes(b"web module NAR").to_string()),
+            )]
+        );
+        assert!(rendered.contains("packageVersion = \"1.0.0\""));
+        assert!(rendered.contains("module = configRoot + \"/abilities/module.nix\""));
+    }
+
+    #[test]
+    fn package_module_and_legacy_config_module_cannot_coexist() {
+        let mut web = member(
+            "web",
+            Some("/nix/store/11111111111111111111111111111111-web-config"),
+        );
+        web.ability = Some(ability_document(
+            "web",
+            ModuleLocator {
+                artifact: ArtifactReference {
+                    content: Sha256Digest::of_bytes(b"web module"),
+                    store_path: "/nix/store/00000000000000000000000000000000-web-module"
+                        .to_string(),
+                    nar_hash: Sha256Digest::of_bytes(b"web module NAR"),
+                    closure: Sha256Digest::of_bytes(b"web module closure"),
+                },
+                path: RelativePath::new("module.nix").unwrap(),
+            },
+        ));
+
+        let error = render_package_module_list(&[web], true).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("both current ability-module and legacy")
+        );
+    }
+
+    #[test]
     fn locked_entry_admits_self_and_dependency_outputs() {
-        let mut web = member("web", Some("/nix/store/hash-web-config"));
+        let mut web = member(
+            "web",
+            Some("/nix/store/00000000000000000000000000000000-web-config"),
+        );
         web.config_output_nar_hash = Some(format!("sha256:{}", "00".repeat(32)));
         web.outputs.self_output = Some("/nix/store/hash-web-runtime".to_string());
         web.outputs.dependencies.insert(
@@ -1175,7 +2010,7 @@ mod tests {
         );
 
         let mut admitted = Vec::new();
-        let text = render_package_module_list_with(&[web], true, |path| {
+        let text = render_package_module_list_with(&[web], true, |path, _nar_hash| {
             admitted.push(path.to_path_buf());
             Ok(format!("(admit {})", nix_path(path)))
         })
@@ -1190,6 +2025,7 @@ mod tests {
         );
         assert!(text.contains("self = (admit /nix/store/hash-web-runtime)"));
         assert!(text.contains("\"openssl\" = (admit /nix/store/hash-openssl-runtime);"));
+        assert!(!text.contains("authorization"), "{text}");
     }
 
     #[test]
@@ -1205,6 +2041,129 @@ mod tests {
         };
         let text = evaluator.render_entry_nix(&attempt).unwrap();
         assert!(text.contains("packageModules = [ ]"), "{text}");
+    }
+
+    #[test]
+    fn selected_provider_round_keeps_original_inputs_and_exact_selections() {
+        let evaluator = StockNixEvaluator::new("/run/aos-eval", 0);
+        let working = vec![member("consumer", Some("/nix/store/hash-consumer-config"))];
+        let attempt = EvalAttempt {
+            host_nix: Path::new("/nix/store/hash-host.nix"),
+            runtime_modules: &[],
+            base_lib: Path::new("/nix/store/hash-aos-base-lib"),
+            facts_json: None,
+            working_set: &working,
+            iteration: 0,
+        };
+        let module = SelectedProviderModule {
+            package: "provider".to_string(),
+            version: "1.0.0".to_string(),
+            locator: ModuleLocator {
+                artifact: ArtifactReference {
+                    content: Sha256Digest::from_bytes([1; 32]),
+                    store_path: "/nix/store/00000000000000000000000000000000-provider".to_string(),
+                    nar_hash: Sha256Digest::from_bytes([2; 32]),
+                    closure: Sha256Digest::from_bytes([3; 32]),
+                },
+                path: RelativePath::new("lib/aos/provider.nix").unwrap(),
+            },
+            outputs: PackageOutputs {
+                self_output: Some(
+                    "/nix/store/00000000000000000000000000000000-provider".to_string(),
+                ),
+                dependencies: BTreeMap::from([(
+                    "helper".to_string(),
+                    "/nix/store/11111111111111111111111111111111-helper".to_string(),
+                )]),
+            },
+            artifact_locators: BTreeMap::from([(
+                PackageOutputSelector {
+                    package: LocalKey::new("helper").unwrap(),
+                    output: LocalKey::new("out").unwrap(),
+                },
+                ArtifactReference {
+                    content: Sha256Digest::from_bytes([4; 32]),
+                    store_path: "/nix/store/11111111111111111111111111111111-helper".to_string(),
+                    nar_hash: Sha256Digest::from_bytes([5; 32]),
+                    closure: Sha256Digest::from_bytes([6; 32]),
+                },
+            )]),
+        };
+        let binding = SelectedAbilityBinding {
+            key: "binding-child".to_string(),
+            request: "request-child".to_string(),
+            implementation: "provider:implementation".to_string(),
+            provider_instance: "provider:instance".to_string(),
+            slot: "service".to_string(),
+            provider_module: Some(module.clone()),
+        };
+        let selections = AbilityRoundSelections {
+            bindings: BTreeMap::from([(binding.key.clone(), binding)]),
+            provider_modules: BTreeMap::from([("module".to_string(), module)]),
+        };
+
+        let package_modules = render_package_module_list(&working, false).unwrap();
+        let provider_modules = render_selected_provider_module_list(&selections, false).unwrap();
+        let bindings = render_selected_ability_bindings(&selections);
+        let rendered = evaluator
+            .render_entry_nix_with_inputs(
+                &attempt,
+                &package_modules,
+                &provider_modules,
+                &bindings,
+                &nix_path(attempt.base_lib),
+                &nix_path(attempt.host_nix),
+            )
+            .unwrap();
+
+        assert!(rendered.contains("operatorModules = [ hostModule ]"));
+        assert!(rendered.contains("name = \"consumer\""));
+        assert!(rendered.contains("name = \"provider\""));
+        assert!(rendered.contains("module = configRoot + \"/lib/aos/provider.nix\""));
+        assert!(rendered.contains("artifactLocators"));
+        assert!(rendered.contains("artifactReference = builtins.fromJSON"));
+        assert!(rendered.contains("\"binding-child\" = { request = \"request-child\""));
+        assert!(!rendered.contains("-A abilityRound"));
+    }
+
+    #[test]
+    fn pending_child_projection_decodes_from_the_real_module_fixed_point() {
+        let Ok(mut command) = command_from_path("nix-instantiate") else {
+            return;
+        };
+        let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let repository = crate_root
+            .parent()
+            .and_then(Path::parent)
+            .expect("aos-package must remain below the workspace root");
+        let expression = format!(
+            "let pkgs = import {} {{}}; in import {} {{ inherit (pkgs) lib; returnPending = true; }}",
+            nix_path(&repository.join("default.nix")),
+            nix_path(&repository.join("tests/abilities/composition-driver.nix")),
+        );
+        command.env_remove("LD_LIBRARY_PATH");
+        command.args(["--eval", "--strict", "--json", "--expr", &expression]);
+
+        let output = command
+            .output()
+            .expect("the AOS Nix evaluator must execute the fixed-point fixture");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let projection: PendingAbilityProjection = serde_json::from_slice(&output.stdout)
+            .expect("the real camelCase Nix projection must decode");
+        let pending = projection
+            .requests
+            .values()
+            .next()
+            .expect("the fixture must emit one pending child");
+
+        assert_eq!(projection.requests.len(), 1);
+        assert_eq!(pending.local_request_key, "child");
+        assert_eq!(pending.requirement, "network");
+        assert_eq!(pending.provider_instance, "provider:manager");
     }
 
     #[test]

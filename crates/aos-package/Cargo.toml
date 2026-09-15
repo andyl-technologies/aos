@@ -5,11 +5,18 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+aos-ability-inspect = { workspace = true }
+aos-ability-model = { workspace = true }
+aos-ability-plan = { workspace = true }
+aos-ability-runtime = { workspace = true }
+aos-ability-validate = { workspace = true }
+aos-contract = { workspace = true }
 aos-core = { workspace = true }
 aos-doc-model = { workspace = true }
 aos-cache = { workspace = true }
 aos-net = { workspace = true }
 aos-oci-types = { workspace = true }
+aos-provider-protocol = { workspace = true }
 aos-remote = { workspace = true }
 aos-proto-types = { workspace = true }
 aos-systemd = { workspace = true }
@@ -32,6 +39,7 @@ base64 = { workspace = true }
 humantime = { workspace = true }
 glob = { workspace = true }
 regex = { workspace = true }
+rnix = { workspace = true }
 clap = { workspace = true }
 semver = { workspace = true }
 zstd = { workspace = true }
@@ -47,7 +55,15 @@ ssh-key = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 rayon = { workspace = true }
-rustix = { workspace = true }
+rustix = { workspace = true, features = ["event", "net", "process"] }
+zeroize = { workspace = true }
+
+[build-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
+aos-ability-plan = { workspace = true, features = ["test-support"] }
+aos-ability-validate = { workspace = true, features = ["test-support"] }
 crc32fast = { workspace = true }
+zbus = { version = "5", default-features = false, features = ["tokio", "p2p", "bus-impl"] }

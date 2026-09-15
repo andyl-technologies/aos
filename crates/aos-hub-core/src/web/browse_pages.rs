@@ -1160,6 +1160,10 @@ pub fn package_page(
     context: &ReleaseContext,
     documentation: Option<&PackageDocumentationReference>,
     documentation_unavailable: bool,
+    ability_reference: Option<&super::ability_reference_page::PackageAbilityReferencePanel>,
+    ability_reference_unavailable: bool,
+    ability_deployments: Option<&[super::ability_reference_page::PackageAbilityDeploymentPanel]>,
+    ability_deployments_unavailable: bool,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -1187,7 +1191,7 @@ pub fn package_page(
         );
     }
     body.push_str(
-        "<nav class=\"package-section-nav\" aria-label=\"Package documentation sections\"><a href=\"#overview\">Overview</a><a href=\"#install\">Install</a><a href=\"#versions\">Versions</a><a href=\"#configure\">Documentation</a><a href=\"#dependencies\">Dependencies</a><a href=\"#integrity\">Integrity</a></nav>",
+        "<nav class=\"package-section-nav\" aria-label=\"Package documentation sections\"><a href=\"#overview\">Overview</a><a href=\"#install\">Install</a><a href=\"#versions\">Versions</a><a href=\"#configure\">Documentation</a><a href=\"#abilities\">Abilities</a><a href=\"#dependencies\">Dependencies</a><a href=\"#integrity\">Integrity</a></nav>",
     );
 
     // The union of every version's platforms, as chips near the top.
@@ -1338,6 +1342,14 @@ pub fn package_page(
         );
     }
     body.push_str("</section>");
+
+    body.push_str(&super::ability_reference_page::section(
+        slug,
+        ability_reference,
+        ability_reference_unavailable,
+        ability_deployments,
+        ability_deployments_unavailable,
+    ));
 
     body.push_str(
         "<h2 id=\"dependencies\">Dependencies</h2>\n<div class=\"package-dependencies\">",
@@ -3006,13 +3018,10 @@ mod tests {
                 semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
                 runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
                 config_module_nar_hash: None,
-                system_module_nar_hash: None,
-                expose_artifact_nar_hash: None,
+                    expose_artifact_nar_hash: None,
                 source_nar_hash: format!("sha256:{}", "2".repeat(64)),
             },
-            sections: Vec::new(),
             options: Vec::new(),
-            runtime: aos_doc_model::RuntimeSurface::default(),
         };
         document.identity.semantic_schema_sha256 = document
             .computed_semantic_schema_sha256()
@@ -3536,6 +3545,10 @@ mod tests {
             &release_context("1.0.0"),
             None,
             false,
+            None,
+            false,
+            None,
+            false,
             Instant::now(),
             &anon(),
         );
@@ -3553,6 +3566,10 @@ mod tests {
             std::slice::from_ref(&closure),
             &setup,
             &release_context("1.0.0"),
+            None,
+            false,
+            None,
+            false,
             None,
             false,
             Instant::now(),
@@ -3608,6 +3625,10 @@ mod tests {
             std::slice::from_ref(&closure),
             &setup,
             &release_context("1.0.0"),
+            None,
+            false,
+            None,
+            false,
             None,
             false,
             Instant::now(),
@@ -3683,6 +3704,10 @@ mod tests {
             &release_context("1.0.0"),
             None,
             false,
+            None,
+            false,
+            None,
+            false,
             Instant::now(),
             &anon(),
         );
@@ -3718,6 +3743,10 @@ mod tests {
             &[],
             &setup,
             &release_context("1.0.0"),
+            None,
+            false,
+            None,
+            false,
             None,
             false,
             Instant::now(),
@@ -3759,6 +3788,10 @@ mod tests {
             &setup,
             &release_context("1.0.0"),
             Some(&reference),
+            false,
+            None,
+            false,
+            None,
             false,
             Instant::now(),
             &anon(),

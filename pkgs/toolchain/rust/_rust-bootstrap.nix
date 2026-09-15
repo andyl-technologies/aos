@@ -69,6 +69,16 @@ in
       targetLlvm = llvm;
       description = "Rust ${version} — Darwin-hosted bootstrap chain intermediate";
     }
+  else if stdenv.isCross && stdenv.hostPlatform.isLinux
+  then
+    import ./_rust-linux-hosted.nix {
+      inherit mkDerivation pname version src changeId configFileName;
+      inherit buildPackages stdenv curl openssl zlib needsDownloadRustc disableLld;
+      nativeRust = buildPackages.${prevRust.pname};
+      nativeLlvm = buildPackages.${"llvm-${llvmMajor}"};
+      targetLlvm = llvm;
+      description = "Rust ${version} — Linux-hosted bootstrap chain intermediate";
+    }
   else
     mkDerivation {
       inherit pname version src;
@@ -179,7 +189,10 @@ in
 
             [rust]
             channel = "stable"
-            codegen-units = 0
+            # Zero auto-detects all physical host CPUs, bypassing x.py's job
+            # limit. Keep compiler-internal code generation within the same
+            # scheduler allocation as the surrounding bootstrap.
+            codegen-units = $NIX_BUILD_CORES
             rpath = true
             omit-git-hash = true
             ${

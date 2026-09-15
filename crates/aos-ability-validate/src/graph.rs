@@ -1,0 +1,1174 @@
+//! Validated interface catalogs and checked binding/effect-plan handles.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+use aos_ability_model::{
+    ArtifactReference, Binding, BindingId, BindingPlanDocument, DecisionNode, DesiredStateDocument,
+    Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase, EffectPlanDocument,
+    EnvironmentDocument, InterfaceDocument, InterfaceKey, MergeNode, MethodDescriptor,
+    MethodReference, Operation, PackageDocument, PlanId, PlanNodeKey, ProviderReadiness,
+    RequiredFeature, ScopedOperationKey, encode_canonical,
+};
+use aos_contract::Sha256Digest;
+
+use crate::ValidationErrors;
+use crate::authority::{InvocationAuthorizationError, authorize_invocation};
+use crate::binding::{
+    prepare_binding_candidates, validate_binding_document, validate_package_contract,
+};
+use crate::effect::validate_effect_document;
+use crate::error::push_diagnostic;
+use crate::schema::{SchemaPath, validate_schema_definition};
+
+/// Owns an exact validated interface catalog and supported format features.
+#[derive(Clone, Debug)]
+pub struct ValidationContext {
+    supported_features: BTreeSet<RequiredFeature>,
+    interfaces: Arc<BTreeMap<InterfaceKey, InterfaceDocument>>,
+}
+
+/// Retains one package document after semantic validation.
+#[derive(Clone, Debug)]
+pub struct CheckedPackageDocument {
+    document: PackageDocument,
+}
+
+impl CheckedPackageDocument {
+    /// Returns the exact canonical package document that was validated.
+    #[must_use]
+    pub const fn document(&self) -> &PackageDocument {
+        &self.document
+    }
+}
+
+impl ValidationContext {
+    /// Constructs a context after validating every interface descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns structured diagnostics for an invalid document, unsupported
+    /// required feature, invalid schema, duplicate exact key, or method whose
+    /// declared target resource interface is absent.
+    pub fn new(
+        supported_features: BTreeSet<RequiredFeature>,
+        interface_documents: impl IntoIterator<Item = InterfaceDocument>,
+    ) -> Result<Self, ValidationErrors> {
+        let mut interfaces = BTreeMap::new();
+        let mut diagnostics = Vec::new();
+        let limits = aos_ability_model::ABILITY_LIMITS_V1;
+        let mut aggregate_bytes = 0_u64;
+
+        for (index, document) in interface_documents.into_iter().enumerate() {
+            if index >= limits.max_graph_nodes as usize {
+                push_diagnostic(
+                    &mut diagnostics,
+                    diagnostic(
+                        DiagnosticCode::LimitExceeded,
+                        DiagnosticClass::InvalidContract,
+                        DiagnosticPhase::Schema,
+                        vec!["interfaces".to_string()],
+                        "interface catalog exceeds the version-1 entry limit".to_string(),
+                    ),
+                );
+                break;
+            }
+            let path = vec!["interfaces".to_string(), index.to_string()];
+            for feature in &document.required_features {
+                if !supported_features.contains(feature) {
+                    push_diagnostic(
+                        &mut diagnostics,
+                        diagnostic(
+                            DiagnosticCode::UnsupportedRequiredFeature,
+                            DiagnosticClass::InvalidContract,
+                            DiagnosticPhase::Schema,
+                            path.clone(),
+                            format!("unsupported required feature '{}'", feature.as_str()),
+                        ),
+                    );
+                }
+            }
+
+            let bytes = match encode_canonical(&document) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    push_diagnostic(
+                        &mut diagnostics,
+                        diagnostic(
+                            DiagnosticCode::UnsupportedSchema,
+                            DiagnosticClass::InvalidContract,
+                            DiagnosticPhase::Schema,
+                            path,
+                            error.to_string(),
+                        ),
+                    );
+                    continue;
+                }
+            };
+            aggregate_bytes = aggregate_bytes.saturating_add(bytes.len() as u64);
+            if aggregate_bytes > limits.max_document_bytes {
+                push_diagnostic(
+                    &mut diagnostics,
+                    diagnostic(
+                        DiagnosticCode::LimitExceeded,
+                        DiagnosticClass::InvalidContract,
+                        DiagnosticPhase::Schema,
+                        vec!["interfaces".to_string()],
+                        "interface catalog exceeds the version-1 aggregate byte limit".to_string(),
+                    ),
+                );
+                break;
+            }
+            let key = match document.interface_key() {
+                Ok(key) => key,
+                Err(error) => {
+                    push_diagnostic(
+                        &mut diagnostics,
+                        diagnostic(
+                            DiagnosticCode::ValueTypeMismatch,
+                            DiagnosticClass::InvalidContract,
+                            DiagnosticPhase::Schema,
+                            path,
+                            error.to_string(),
+                        ),
+                    );
+                    continue;
+                }
+            };
+
+            validate_interface_document(&document, index, &mut diagnostics);
+            if interfaces.insert(key, document).is_some() {
+                push_diagnostic(
+                    &mut diagnostics,
+                    diagnostic(
+                        DiagnosticCode::DuplicateIdentity,
+                        DiagnosticClass::InvalidContract,
+                        DiagnosticPhase::Schema,
+                        vec!["interfaces".to_string(), index.to_string()],
+                        "duplicate exact interface descriptor".to_string(),
+                    ),
+                );
+            }
+        }
+
+        for (interface_key, document) in &interfaces {
+            for (method_name, method) in &document.interface.methods {
+                if !interfaces
+                    .keys()
+                    .any(|candidate| candidate.name == method.target_resource)
+                {
+                    push_diagnostic(
+                        &mut diagnostics,
+                        diagnostic(
+                            DiagnosticCode::MissingReference,
+                            DiagnosticClass::IncompatibleInterface,
+                            DiagnosticPhase::Schema,
+                            vec![
+                                "interfaces".to_string(),
+                                interface_key.name.as_str().to_string(),
+                                "methods".to_string(),
+                                method_name.as_str().to_string(),
+                                "target_resource".to_string(),
+                            ],
+                            "method target resource interface is absent from the catalog"
+                                .to_string(),
+                        ),
+                    );
+                }
+            }
+        }
+
+        if diagnostics.is_empty() {
+            Ok(Self {
+                supported_features,
+                interfaces: Arc::new(interfaces),
+            })
+        } else {
+            Err(ValidationErrors::new(diagnostics))
+        }
+    }
+
+    /// Returns the supported required-feature set.
+    #[must_use]
+    pub fn supported_features(&self) -> &BTreeSet<RequiredFeature> {
+        &self.supported_features
+    }
+
+    /// Resolves one exact interface descriptor from the validated catalog.
+    #[must_use]
+    pub fn interface(&self, key: &InterfaceKey) -> Option<&InterfaceDocument> {
+        self.interfaces.get(key)
+    }
+
+    /// Returns authenticated interfaces admitted by one provider-neutral selector.
+    pub fn interfaces_matching(
+        &self,
+        selector: &aos_ability_model::InterfaceSelector,
+    ) -> impl Iterator<Item = (&InterfaceKey, &InterfaceDocument)> {
+        self.interfaces
+            .iter()
+            .filter(|(key, _)| selector.matches(key))
+    }
+
+    /// Validates one package contract against its retained public interfaces.
+    ///
+    /// Interfaces named only by unresolved requirements may be absent because
+    /// publication cannot assume a future deployment's provider catalog.
+    /// Exported and implemented interfaces must be present and exact.
+    ///
+    /// # Errors
+    ///
+    /// Returns structured diagnostics when the package envelope, ordering,
+    /// feature negotiation, exports, implementations, handlers, ownership, or
+    /// locally resolvable requirement semantics are invalid.
+    pub fn validate_package_contract(
+        &self,
+        document: PackageDocument,
+    ) -> Result<CheckedPackageDocument, ValidationErrors> {
+        validate_package_contract(self, document)
+            .map(|document| CheckedPackageDocument { document })
+    }
+
+    pub(crate) fn interface_catalog(&self) -> &BTreeMap<InterfaceKey, InterfaceDocument> {
+        &self.interfaces
+    }
+
+    pub(crate) fn interfaces(&self) -> &BTreeMap<InterfaceKey, InterfaceDocument> {
+        &self.interfaces
+    }
+
+    pub(crate) fn shared_interfaces(&self) -> Arc<BTreeMap<InterfaceKey, InterfaceDocument>> {
+        Arc::clone(&self.interfaces)
+    }
+
+    /// Validates a binding plan without acquiring providers or resources.
+    ///
+    /// # Errors
+    ///
+    /// Returns structured diagnostics when identities, bindings, grants,
+    /// guarantees, lifetimes, policy commitments, or request coverage fail.
+    pub fn validate_binding_plan(
+        &self,
+        document: BindingPlanDocument,
+        inputs: BindingValidationInputs,
+    ) -> Result<CheckedBindingPlan, ValidationErrors> {
+        validate_binding_document(self, document, inputs)
+    }
+
+    /// Prevalidates and indexes exact inputs for bounded provider search.
+    ///
+    /// The returned snapshot applies the same per-binding checks as
+    /// [`Self::validate_binding_plan`] without accepting an incomplete plan.
+    /// It performs no provider acquisition or other external effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns structured diagnostics when an input document, package,
+    /// request, resource, controller, or commitment is invalid.
+    pub fn prepare_binding_candidates(
+        &self,
+        environment: &EnvironmentDocument,
+        desired_state: &DesiredStateDocument,
+        packages: &[PackageDocument],
+    ) -> Result<crate::PreparedBindingCandidates, ValidationErrors> {
+        prepare_binding_candidates(self, environment, desired_state, packages)
+    }
+
+    /// Validates one provider-qualified pure composition output and its references.
+    ///
+    /// The output schema comes from its exact interface port. Aggregate-output
+    /// references must route through a selected lower binding; artifact and
+    /// resource references must stay within the supplied retained catalog and
+    /// caller/provider grants.
+    ///
+    /// # Errors
+    ///
+    /// Returns structured diagnostics for an unknown output, schema or phase
+    /// mismatch, foreign aggregate projection, unretained artifact, or resource
+    /// reference outside selected binding authority.
+    pub fn validate_composed_output(
+        &self,
+        provider: &aos_ability_model::InstanceId,
+        output: &aos_ability_model::AggregateOutput,
+        outputs: &[aos_ability_model::AggregateOutput],
+        bindings: &[aos_ability_model::Binding],
+        resources: &[aos_ability_model::ResourceRevision],
+        artifacts: &[ArtifactReference],
+        root_authority: Option<(
+            &aos_ability_model::AuthorityGrant,
+            aos_ability_model::ResourceLifetime,
+        )>,
+    ) -> Result<(), ValidationErrors> {
+        crate::projection::validate_composed_output(
+            self,
+            provider,
+            output,
+            outputs,
+            bindings,
+            resources,
+            artifacts,
+            root_authority,
+        )
+    }
+
+    /// Validates a finite effect graph against one exact checked binding plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns structured diagnostics when graph references, method contracts,
+    /// value schemas, authority, conditional branches, resource ownership, or
+    /// scheduling invariants fail.
+    pub fn validate_effect_plan(
+        &self,
+        document: EffectPlanDocument,
+        binding_plan: CheckedBindingPlan,
+    ) -> Result<CheckedEffectPlan, ValidationErrors> {
+        validate_effect_document(self, document, binding_plan)
+    }
+
+    /// Validates an effect graph against sealed current-policy transition authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns structured diagnostics when graph content exceeds the desired
+    /// bindings or the explicitly reauthorized teardown bindings.
+    pub fn validate_transition_effect_plan(
+        &self,
+        document: EffectPlanDocument,
+        authority: &crate::CheckedTransitionAuthority,
+    ) -> Result<CheckedEffectPlan, ValidationErrors> {
+        validate_effect_document(self, document, authority.binding_plan().clone())
+    }
+}
+
+/// Supplies the exact documents whose digests a binding plan commits to.
+#[derive(Clone, Debug)]
+pub struct BindingValidationInputs {
+    /// Supplies the observed target environment and provider inventory.
+    pub environment: EnvironmentDocument,
+    /// Supplies the normalized desired state being bound.
+    pub desired_state: DesiredStateDocument,
+    /// Supplies exact package manifests for desired provider instances.
+    pub packages: Vec<PackageDocument>,
+}
+
+/// Retains a semantically validated binding plan and exact lookup indexes.
+#[derive(Clone, Debug)]
+pub struct CheckedBindingPlan {
+    pub(crate) id: PlanId,
+    pub(crate) document: BindingPlanDocument,
+    pub(crate) inputs: BindingValidationInputs,
+    pub(crate) binding_indices: BTreeMap<BindingId, usize>,
+    /// Distinguishes ordinary desired bindings from specialized teardown remaps.
+    pub(crate) binding_authority: BTreeMap<BindingId, BindingAuthorityKind>,
+    pub(crate) provider_states: BTreeMap<BindingId, BindingProviderState>,
+    pub(crate) planned_providers: BTreeSet<aos_ability_model::InstanceId>,
+    pub(crate) executable: bool,
+}
+
+/// Identifies whether a checked binding serves desired state or explicit teardown.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BindingAuthorityKind {
+    /// The binding belongs to the ordinary checked desired-state plan.
+    Desired,
+    /// The binding remaps exact prior selection under fresh transition authority.
+    ///
+    /// Its remapped request preserves historical provenance. Current-policy
+    /// grants govern invocation and may name teardown methods that were not
+    /// requested by the historical desired state.
+    Teardown {
+        /// Identifies the binding in the prior planning snapshot.
+        source_binding: BindingId,
+        /// Identifies the exact request in the prior planning snapshot.
+        source_request: aos_ability_model::RequestId,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BindingProviderState {
+    Available,
+    Planned,
+    PureComposition,
+    Unavailable,
+}
+
+impl CheckedBindingPlan {
+    /// Returns the domain-separated canonical plan identity.
+    #[must_use]
+    pub const fn id(&self) -> PlanId {
+        self.id
+    }
+
+    /// Returns the exact checked portable document.
+    #[must_use]
+    pub const fn document(&self) -> &BindingPlanDocument {
+        &self.document
+    }
+
+    /// Resolves a binding by its plan-local identity.
+    #[must_use]
+    pub fn binding(&self, id: &BindingId) -> Option<&Binding> {
+        self.binding_indices
+            .get(id)
+            .map(|index| &self.document.bindings[*index])
+    }
+
+    /// Returns all bindings in canonical document order.
+    #[must_use]
+    pub fn bindings(&self) -> &[Binding] {
+        &self.document.bindings
+    }
+
+    /// Returns the typed authority role assigned to a checked binding.
+    #[must_use]
+    pub fn binding_authority(&self, id: &BindingId) -> Option<&BindingAuthorityKind> {
+        self.binding_authority.get(id)
+    }
+
+    /// Returns the checked target environment input.
+    #[must_use]
+    pub const fn environment(&self) -> &EnvironmentDocument {
+        &self.inputs.environment
+    }
+
+    /// Returns the checked normalized desired-state input.
+    #[must_use]
+    pub const fn desired_state(&self) -> &DesiredStateDocument {
+        &self.inputs.desired_state
+    }
+
+    /// Returns exact checked package manifests used for provider resolution.
+    #[must_use]
+    pub fn packages(&self) -> &[PackageDocument] {
+        &self.inputs.packages
+    }
+
+    /// Returns providers that require a checked readiness path before use.
+    #[must_use]
+    pub fn planned_providers(&self) -> &BTreeSet<aos_ability_model::InstanceId> {
+        &self.planned_providers
+    }
+
+    pub(crate) fn provider_state(&self, binding: &BindingId) -> Option<BindingProviderState> {
+        self.provider_states.get(binding).copied()
+    }
+
+    /// Reports whether this plan retains unresolved deployment obligations.
+    #[must_use]
+    pub fn has_unresolved_obligations(&self) -> bool {
+        !self.document.obligations.is_empty()
+    }
+
+    /// Reports whether every deployment obligation is discharged.
+    #[must_use]
+    pub const fn is_executable(&self) -> bool {
+        self.executable
+    }
+}
+
+/// Retains a semantically validated effect plan and scheduling indexes.
+#[derive(Clone, Debug)]
+pub struct CheckedEffectPlan {
+    pub(crate) id: PlanId,
+    pub(crate) document: EffectPlanDocument,
+    pub(crate) binding_plan: CheckedBindingPlan,
+    pub(crate) operation_indices: BTreeMap<ScopedOperationKey, usize>,
+    pub(crate) decision_indices: BTreeMap<ScopedOperationKey, usize>,
+    pub(crate) merge_indices: BTreeMap<ScopedOperationKey, usize>,
+    pub(crate) readiness_indices: BTreeMap<BindingId, usize>,
+    pub(crate) dispatch_order: Vec<PlanNodeKey>,
+    pub(crate) interfaces: Arc<BTreeMap<InterfaceKey, InterfaceDocument>>,
+    pub(crate) artifact_index: BTreeMap<Sha256Digest, ArtifactReference>,
+    pub(crate) required_runtime_artifacts: Vec<ArtifactReference>,
+    pub(crate) executable: bool,
+}
+
+impl CheckedEffectPlan {
+    /// Returns the domain-separated canonical plan identity.
+    #[must_use]
+    pub const fn id(&self) -> PlanId {
+        self.id
+    }
+
+    /// Returns the exact checked portable document.
+    #[must_use]
+    pub const fn document(&self) -> &EffectPlanDocument {
+        &self.document
+    }
+
+    /// Returns the exact checked desired or transition binding plan authorizing this graph.
+    #[must_use]
+    pub const fn binding_plan(&self) -> &CheckedBindingPlan {
+        &self.binding_plan
+    }
+
+    /// Returns the exact validated interface catalog used to check this plan.
+    #[must_use]
+    pub fn interfaces(&self) -> &BTreeMap<InterfaceKey, InterfaceDocument> {
+        &self.interfaces
+    }
+
+    /// Resolves an operation by scoped identity.
+    #[must_use]
+    pub fn operation(&self, key: &ScopedOperationKey) -> Option<&Operation> {
+        self.operation_indices
+            .get(key)
+            .map(|index| &self.document.operations[*index])
+    }
+
+    /// Returns operations in canonical document order.
+    #[must_use]
+    pub fn operations(&self) -> &[Operation] {
+        &self.document.operations
+    }
+
+    /// Resolves the exact authenticated descriptor selected by an operation.
+    #[must_use]
+    pub fn operation_method(&self, operation: &Operation) -> Option<&MethodDescriptor> {
+        if self.operation(&operation.key) != Some(operation) {
+            return None;
+        }
+
+        self.interfaces
+            .get(&operation.interface)
+            .and_then(|interface| interface.interface.methods.get(&operation.method))
+    }
+
+    /// Resolves the exact assignment-readiness declaration for a planned binding.
+    #[must_use]
+    pub fn provider_readiness(&self, binding: &BindingId) -> Option<&ProviderReadiness> {
+        self.readiness_indices
+            .get(binding)
+            .map(|index| &self.document.provider_readiness[*index])
+    }
+
+    /// Checks one primary, reconcile, cancel, or compensate invocation against
+    /// the exact interface descriptor and binding grants retained by this plan.
+    ///
+    /// Runtime admission calls this again with fresh policy, provider, and
+    /// resource evidence before dispatching the method.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `operation` is not the exact checked graph member,
+    /// its binding is unavailable, or the method exceeds its descriptor,
+    /// provider scope, mediation setting, or selected role grant.
+    pub fn authorize_invocation(
+        &self,
+        operation: &Operation,
+        method: &MethodReference,
+    ) -> Result<(), InvocationAuthorizationError> {
+        if self.operation(&operation.key) != Some(operation) {
+            return Err(InvocationAuthorizationError::UnknownOperation);
+        }
+        let binding = self
+            .binding_plan
+            .binding(&operation.binding)
+            .ok_or(InvocationAuthorizationError::UnknownBinding)?;
+
+        authorize_invocation(&self.interfaces, binding, operation, method)
+    }
+
+    /// Resolves a conditional decision by scoped identity.
+    #[must_use]
+    pub fn decision(&self, key: &ScopedOperationKey) -> Option<&DecisionNode> {
+        self.decision_indices
+            .get(key)
+            .map(|index| &self.document.decisions[*index])
+    }
+
+    /// Returns decisions in canonical document order.
+    #[must_use]
+    pub fn decisions(&self) -> &[DecisionNode] {
+        &self.document.decisions
+    }
+
+    /// Resolves a conditional merge by scoped identity.
+    #[must_use]
+    pub fn merge(&self, key: &ScopedOperationKey) -> Option<&MergeNode> {
+        self.merge_indices
+            .get(key)
+            .map(|index| &self.document.merges[*index])
+    }
+
+    /// Returns merges in canonical document order.
+    #[must_use]
+    pub fn merges(&self) -> &[MergeNode] {
+        &self.document.merges
+    }
+
+    /// Returns all declared graph edges in canonical order.
+    #[must_use]
+    pub fn edges(&self) -> &[aos_ability_model::DependencyEdge] {
+        &self.document.edges
+    }
+
+    /// Returns a deterministic topological order over scheduling edges.
+    #[must_use]
+    pub fn dispatch_order(&self) -> &[PlanNodeKey] {
+        &self.dispatch_order
+    }
+
+    /// Returns the complete validator-derived artifact roots required to
+    /// interpret, recover, and execute this checked plan.
+    #[must_use]
+    pub fn required_runtime_artifacts(&self) -> &[ArtifactReference] {
+        &self.required_runtime_artifacts
+    }
+
+    /// Reports whether binding and effect obligations permit runtime admission.
+    #[must_use]
+    pub const fn is_executable(&self) -> bool {
+        self.executable
+    }
+}
+
+fn validate_interface_document(
+    document: &InterfaceDocument,
+    index: usize,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let limits = aos_ability_model::ABILITY_LIMITS_V1;
+    let root = SchemaPath::root()
+        .child("interfaces")
+        .child(index.to_string())
+        .child("interface");
+    validate_schema_definition(
+        &document.interface.request,
+        &root.child("request"),
+        1,
+        limits.max_structural_depth,
+        limits.max_string_bytes,
+        limits.max_collection_items,
+        diagnostics,
+    );
+    if let Some(configuration) = &document.interface.configuration {
+        validate_schema_definition(
+            configuration,
+            &root.child("configuration"),
+            1,
+            limits.max_structural_depth,
+            limits.max_string_bytes,
+            limits.max_collection_items,
+            diagnostics,
+        );
+        if !instance_configuration_schema_is_literal(configuration) {
+            push_diagnostic(
+                diagnostics,
+                diagnostic(
+                    DiagnosticCode::ResourceScopeEscape,
+                    DiagnosticClass::Unauthorized,
+                    DiagnosticPhase::Schema,
+                    root.child("configuration").components().to_vec(),
+                    "instance configuration cannot carry references or provider assignments"
+                        .to_string(),
+                ),
+            );
+        }
+    }
+    for (name, output) in &document.interface.outputs {
+        validate_schema_definition(
+            &output.schema,
+            &root.child("outputs").child(name.as_str()),
+            1,
+            limits.max_structural_depth,
+            limits.max_string_bytes,
+            limits.max_collection_items,
+            diagnostics,
+        );
+    }
+    check_strict_order(
+        &document.interface.guarantees,
+        &root.child("guarantees"),
+        diagnostics,
+    );
+
+    let mut stopping_targets = BTreeSet::new();
+    let mut retained_instance_targets = BTreeSet::new();
+
+    for (name, method) in &document.interface.methods {
+        let method_path = root.child("methods").child(name.as_str());
+        validate_schema_definition(
+            &method.parameters,
+            &method_path.child("parameters"),
+            1,
+            limits.max_structural_depth,
+            limits.max_string_bytes,
+            limits.max_collection_items,
+            diagnostics,
+        );
+        validate_schema_definition(
+            &method.outcome.completion_evidence,
+            &method_path.child("outcome").child("completion_evidence"),
+            1,
+            limits.max_structural_depth,
+            limits.max_string_bytes,
+            limits.max_collection_items,
+            diagnostics,
+        );
+        validate_schema_definition(
+            &method.outcome.observation_evidence,
+            &method_path.child("outcome").child("observation_evidence"),
+            1,
+            limits.max_structural_depth,
+            limits.max_string_bytes,
+            limits.max_collection_items,
+            diagnostics,
+        );
+        for (output_name, output) in &method.outputs {
+            validate_schema_definition(
+                &output.schema,
+                &method_path.child("outputs").child(output_name.as_str()),
+                1,
+                limits.max_structural_depth,
+                limits.max_string_bytes,
+                limits.max_collection_items,
+                diagnostics,
+            );
+        }
+        let retained_resource_outputs = method
+            .outputs
+            .values()
+            .filter(|output| output.is_retained_resource())
+            .count();
+        if retained_resource_outputs > 1 {
+            push_diagnostic(
+                diagnostics,
+                diagnostic(
+                    DiagnosticCode::MethodContractMismatch,
+                    DiagnosticClass::IncompatibleInterface,
+                    DiagnosticPhase::Schema,
+                    method_path.child("outputs").components().to_vec(),
+                    "method declares more than one retained-resource result".to_string(),
+                ),
+            );
+        }
+        if retained_resource_outputs == 1
+            && (!method.semantics.required_target_access.is_write()
+                || method.semantics.stops_provider)
+        {
+            push_diagnostic(
+                diagnostics,
+                diagnostic(
+                    DiagnosticCode::MethodContractMismatch,
+                    DiagnosticClass::IncompatibleInterface,
+                    DiagnosticPhase::Schema,
+                    method_path.child("outputs").components().to_vec(),
+                    "a retained-resource result requires a non-stopping write method".to_string(),
+                ),
+            );
+        }
+        if method.outputs.values().any(|output| {
+            output.is_retained_resource()
+                && output.lifetime == aos_ability_model::ResourceLifetime::Instance
+        }) {
+            retained_instance_targets.insert(method.target_resource.clone());
+        }
+        check_strict_order(
+            &method.permitted_operations,
+            &method_path.child("permitted_operations"),
+            diagnostics,
+        );
+        check_strict_order(
+            &method.guarantees,
+            &method_path.child("guarantees"),
+            diagnostics,
+        );
+        if method.semantics.stops_provider
+            && method.semantics.required_target_access
+                != aos_ability_model::AccessMode::ExclusiveWrite
+        {
+            push_diagnostic(
+                diagnostics,
+                diagnostic(
+                    DiagnosticCode::MethodContractMismatch,
+                    DiagnosticClass::IncompatibleInterface,
+                    DiagnosticPhase::Schema,
+                    method_path.components().to_vec(),
+                    "a provider-stopping method must require exclusive target access".to_string(),
+                ),
+            );
+        }
+        if method.semantics.stops_provider
+            && method.semantics.required_target_access
+                == aos_ability_model::AccessMode::ExclusiveWrite
+        {
+            stopping_targets.insert(method.target_resource.clone());
+        }
+    }
+
+    let lifecycle_path = root.child("lifecycle");
+    if document.interface.lifecycle.releases_ephemeral_on_disable && stopping_targets.is_empty() {
+        push_diagnostic(
+            diagnostics,
+            diagnostic(
+                DiagnosticCode::MethodContractMismatch,
+                DiagnosticClass::IncompatibleInterface,
+                DiagnosticPhase::Schema,
+                lifecycle_path
+                    .child("releases_ephemeral_on_disable")
+                    .components()
+                    .to_vec(),
+                "ephemeral release requires an exclusive provider-stopping method".to_string(),
+            ),
+        );
+    }
+    if document.interface.lifecycle.releases_ephemeral_on_disable {
+        for target in retained_instance_targets.difference(&stopping_targets) {
+            push_diagnostic(
+                diagnostics,
+                diagnostic(
+                    DiagnosticCode::MethodContractMismatch,
+                    DiagnosticClass::IncompatibleInterface,
+                    DiagnosticPhase::Schema,
+                    lifecycle_path
+                        .child("releases_ephemeral_on_disable")
+                        .components()
+                        .to_vec(),
+                    format!(
+                        "ephemeral release lacks an exclusive provider-stopping method for retained target '{}'",
+                        target.as_str()
+                    ),
+                ),
+            );
+        }
+    }
+    if let Some(delete_name) = &document.interface.lifecycle.persistent_delete_method {
+        match document.interface.methods.get(delete_name) {
+            Some(method)
+                if method.semantics.stops_provider
+                    && method.semantics.required_target_access
+                        == aos_ability_model::AccessMode::ExclusiveWrite => {}
+            Some(_) => push_diagnostic(
+                diagnostics,
+                diagnostic(
+                    DiagnosticCode::MethodContractMismatch,
+                    DiagnosticClass::IncompatibleInterface,
+                    DiagnosticPhase::Schema,
+                    lifecycle_path
+                        .child("persistent_delete_method")
+                        .components()
+                        .to_vec(),
+                    "persistent delete method must require exclusive access and stop the provider"
+                        .to_string(),
+                ),
+            ),
+            None => push_diagnostic(
+                diagnostics,
+                diagnostic(
+                    DiagnosticCode::MissingReference,
+                    DiagnosticClass::IncompatibleInterface,
+                    DiagnosticPhase::Schema,
+                    lifecycle_path
+                        .child("persistent_delete_method")
+                        .components()
+                        .to_vec(),
+                    "persistent delete method is absent from the exact interface".to_string(),
+                ),
+            ),
+        }
+    }
+}
+
+fn instance_configuration_schema_is_literal(schema: &aos_ability_model::ValueSchema) -> bool {
+    use aos_ability_model::ValueSchema;
+
+    let mut pending = vec![schema];
+    while let Some(schema) = pending.pop() {
+        match schema {
+            ValueSchema::Boolean
+            | ValueSchema::Integer { .. }
+            | ValueSchema::String { .. }
+            | ValueSchema::StringEnum { .. } => {}
+            ValueSchema::List { element, .. }
+            | ValueSchema::Map { value: element, .. }
+            | ValueSchema::Optional { value: element } => pending.push(element),
+            ValueSchema::Record { fields, .. } => pending.extend(fields.values()),
+            ValueSchema::DocumentRecord { fields, .. } => pending.extend(fields.values()),
+            ValueSchema::TaggedUnion { variants, .. } => pending.extend(variants.values()),
+            ValueSchema::DisjointUnion { variants } => pending.extend(variants),
+            ValueSchema::ArtifactReference
+            | ValueSchema::ResourceReference
+            | ValueSchema::ProviderAssignment
+            | ValueSchema::OperationResultReference => return false,
+        }
+    }
+
+    true
+}
+
+#[cfg(test)]
+mod instance_configuration_tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use aos_ability_model::{
+        AccessMode, DiagnosticCode, InterfaceDocument, InterfaceName, LocalKey, StringConstraint,
+        ValueSchema, builtin::service_management_interface,
+    };
+
+    use super::{ValidationContext, instance_configuration_schema_is_literal};
+
+    #[test]
+    fn shared_invalid_fixture_is_rejected_by_interface_validation() {
+        let mut document: InterfaceDocument = serde_json::from_str(include_str!(
+            "../../../tests/abilities/fixtures/interface.json"
+        ))
+        .expect("canonical interface fixture must decode");
+        let configuration: ValueSchema = serde_json::from_str(include_str!(
+            "../../../tests/abilities/fixtures/invalid-configuration-schema.json"
+        ))
+        .expect("shared invalid configuration schema must decode");
+        let supported_features: BTreeSet<_> = document.required_features.iter().cloned().collect();
+        document.interface.configuration = Some(configuration);
+
+        let errors = ValidationContext::new(supported_features, [document])
+            .expect_err("reference-bearing instance configuration must fail validation");
+
+        assert!(errors.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::ResourceScopeEscape
+                && diagnostic.path == ["interfaces", "0", "interface", "configuration"]
+        }));
+    }
+
+    #[test]
+    fn method_target_may_name_another_declared_interface() {
+        let mut controller = service_management_interface().expect("service interface");
+        let mut resource = service_management_interface().expect("resource interface template");
+        let resource_name = InterfaceName::new("test.declarative-object").expect("resource name");
+        resource.interface.name = resource_name.clone();
+        for method in resource.interface.methods.values_mut() {
+            method.target_resource = resource_name.clone();
+        }
+        controller
+            .interface
+            .methods
+            .get_mut(&key("start"))
+            .expect("start method")
+            .target_resource = resource_name;
+
+        ValidationContext::new(BTreeSet::new(), [controller, resource])
+            .expect("cross-interface target exists in the catalog");
+    }
+
+    #[test]
+    fn method_target_must_name_a_declared_interface() {
+        let mut document = service_management_interface().expect("service interface");
+        document
+            .interface
+            .methods
+            .get_mut(&key("start"))
+            .expect("start method")
+            .target_resource = InterfaceName::new("test.missing-resource").expect("resource name");
+
+        let errors = ValidationContext::new(BTreeSet::new(), [document])
+            .expect_err("missing target resource interface must fail closed");
+
+        assert!(errors.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::MissingReference
+                && diagnostic
+                    .path
+                    .last()
+                    .is_some_and(|field| field == "target_resource")
+        }));
+    }
+
+    #[test]
+    fn stopping_provider_requires_exclusive_target_access() {
+        let mut document = service_management_interface().expect("service interface");
+        let stop = document
+            .interface
+            .methods
+            .get_mut(&key("stop"))
+            .expect("stop method");
+        stop.semantics.required_target_access = AccessMode::Read;
+
+        let errors = ValidationContext::new(BTreeSet::new(), [document])
+            .expect_err("provider stop with read authority must fail closed");
+
+        assert!(errors.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::MethodContractMismatch
+                && diagnostic
+                    .message
+                    .contains("must require exclusive target access")
+        }));
+    }
+
+    #[test]
+    fn observation_only_interface_cannot_promise_ephemeral_release() {
+        let mut document = service_management_interface().expect("service interface");
+        document
+            .interface
+            .methods
+            .retain(|name, _| name.as_str() == "observe");
+
+        let errors = ValidationContext::new(BTreeSet::new(), [document])
+            .expect_err("an observation-only interface cannot release provider state");
+
+        assert!(errors.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::MethodContractMismatch
+                && diagnostic
+                    .message
+                    .contains("ephemeral release requires an exclusive provider-stopping method")
+        }));
+    }
+
+    #[test]
+    fn ephemeral_release_requires_provider_stopping_semantics() {
+        let mut document = service_management_interface().expect("service interface");
+        document
+            .interface
+            .methods
+            .get_mut(&key("stop"))
+            .expect("stop method")
+            .semantics = aos_ability_model::MethodSemantics::ordinary(AccessMode::ExclusiveWrite);
+
+        let errors = ValidationContext::new(BTreeSet::new(), [document])
+            .expect_err("ordinary write access cannot satisfy release semantics");
+
+        assert!(errors.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::MethodContractMismatch
+                && diagnostic
+                    .path
+                    .last()
+                    .is_some_and(|field| field == "releases_ephemeral_on_disable")
+        }));
+    }
+
+    #[test]
+    fn persistent_delete_method_must_exist_and_stop_the_provider() {
+        let mut absent = service_management_interface().expect("service interface");
+        absent.interface.lifecycle.persistent_delete_method = Some(key("delete"));
+
+        let absent_errors = ValidationContext::new(BTreeSet::new(), [absent])
+            .expect_err("an absent persistent delete method cannot be authorized");
+
+        assert!(absent_errors.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::MissingReference
+                && diagnostic
+                    .path
+                    .last()
+                    .is_some_and(|field| field == "persistent_delete_method")
+        }));
+
+        let mut non_stopping = service_management_interface().expect("service interface");
+        non_stopping.interface.lifecycle.persistent_delete_method = Some(key("start"));
+
+        let semantic_errors = ValidationContext::new(BTreeSet::new(), [non_stopping])
+            .expect_err("persistent deletion must stop the exact provider");
+
+        assert!(semantic_errors.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::MethodContractMismatch
+                && diagnostic
+                    .path
+                    .last()
+                    .is_some_and(|field| field == "persistent_delete_method")
+        }));
+    }
+
+    #[test]
+    fn nested_containers_cannot_hide_reference_bearing_configuration() {
+        let nested = ValueSchema::Record {
+            fields: BTreeMap::from([(
+                key("outer"),
+                ValueSchema::List {
+                    element: Box::new(ValueSchema::TaggedUnion {
+                        tag: key("kind"),
+                        variants: BTreeMap::from([(
+                            key("resource"),
+                            ValueSchema::Map {
+                                key: StringConstraint {
+                                    max_length: 32,
+                                    syntax: None,
+                                },
+                                value: Box::new(ValueSchema::ResourceReference),
+                                max_entries: 8,
+                            },
+                        )]),
+                    }),
+                    max_items: 8,
+                    unique: false,
+                    canonical_order: false,
+                },
+            )]),
+            optional_fields: Vec::new(),
+        };
+
+        assert!(!instance_configuration_schema_is_literal(&nested));
+    }
+
+    #[test]
+    fn every_reference_bearing_kind_is_rejected() {
+        for schema in [
+            ValueSchema::ArtifactReference,
+            ValueSchema::ResourceReference,
+            ValueSchema::ProviderAssignment,
+            ValueSchema::OperationResultReference,
+        ] {
+            assert!(!instance_configuration_schema_is_literal(&schema));
+        }
+    }
+
+    #[test]
+    fn bounded_literal_configuration_schema_is_accepted() {
+        let literal = ValueSchema::Record {
+            fields: BTreeMap::from([(
+                key("ports"),
+                ValueSchema::List {
+                    element: Box::new(ValueSchema::Integer {
+                        minimum: 1024,
+                        maximum: 65535,
+                    }),
+                    max_items: 8,
+                    unique: false,
+                    canonical_order: false,
+                },
+            )]),
+            optional_fields: Vec::new(),
+        };
+
+        assert!(instance_configuration_schema_is_literal(&literal));
+    }
+
+    fn key(value: &str) -> LocalKey {
+        LocalKey::new(value).expect("test key must be valid")
+    }
+}
+
+pub(crate) fn check_strict_order<T: Ord>(
+    values: &[T],
+    path: &SchemaPath,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !values.windows(2).all(|pair| pair[0] < pair[1]) {
+        push_diagnostic(
+            diagnostics,
+            diagnostic(
+                DiagnosticCode::NonCanonicalOrder,
+                DiagnosticClass::InvalidContract,
+                DiagnosticPhase::Schema,
+                path.components().to_vec(),
+                "values must be strictly sorted without duplicates".to_string(),
+            ),
+        );
+    }
+}
+
+pub(crate) fn diagnostic(
+    code: DiagnosticCode,
+    class: DiagnosticClass,
+    phase: DiagnosticPhase,
+    path: Vec<String>,
+    message: String,
+) -> Diagnostic {
+    Diagnostic {
+        code,
+        class,
+        phase,
+        path,
+        message: message.chars().take(512).collect(),
+        request: None,
+        operation: None,
+        resource: None,
+        live_effect_may_have_occurred: false,
+    }
+}

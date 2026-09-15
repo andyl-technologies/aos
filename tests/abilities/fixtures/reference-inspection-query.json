@@ -1,0 +1,1 @@
+{"direction":"outgoing","max_depth":1,"max_nodes":2,"required_features":[],"roots":[{"identity":"sha256:160a817d54b233dae1c6d54d22385eb84bc0a050b937040b3a28be8d90ed7cc1","kind":"package"}],"schema":"aos.ability.inspection-query/v1"}

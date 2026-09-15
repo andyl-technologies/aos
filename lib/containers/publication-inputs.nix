@@ -12,7 +12,7 @@ pkgs.mkDerivation {
   inherit pname;
   version = "1";
   src = null;
-  buildDeps = [pkgs.coreutils index evidenceLayout];
+  buildDeps = [pkgs.coreutils];
   outputChecks.out = {};
   unsafeDiscardReferences.out = true;
   phases = [
