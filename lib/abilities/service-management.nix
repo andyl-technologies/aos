@@ -29,5 +29,5 @@ in {
       value = value.declaration;
     })
     (builtins.attrValues interfaces));
-  inherit (constructors) featureInterfaces forConfiguration forProducer forService validate;
+  inherit (constructors) featureInterfaces forConfiguration forProducer forService structuredSource validate;
 }
