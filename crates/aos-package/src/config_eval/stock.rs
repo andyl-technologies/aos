@@ -2,11 +2,9 @@
 //!
 //! [`StockNixEvaluator`] renders the working set into `entry.nix`, runs a cold
 //! stock-Nix subprocess under the determinism flags, and classifies its result
-//! via [`super::classify`]. [`SubstituterFetcher`] realises a provider's
-//! `config` output through the configured substituter (the registry static
-//! cache). Both are **builder-gated**: they require a real stock-nix and a
-//! reachable registry, so they cannot run on a developer's macOS host and are
-//! unit-tested here only for `entry.nix` rendering.
+//! via [`super::classify`]. It is **builder-gated** because it requires a real
+//! stock-nix, so it cannot run on a developer's macOS host and is unit-tested
+//! here only for `entry.nix` rendering.
 //!
 //! # The eval invocation
 //!
@@ -32,7 +30,7 @@
 //! operator module seam) and each provider's config-only module
 //! imported by store path.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -43,7 +41,6 @@ use aos_ability_model::{ProviderImplementation, RequirementDeclaration};
 use aos_contract::Sha256Digest;
 use base64::Engine as _;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 use super::ability_rounds::{
     AbilityFixedPointProjection, AbilityRoundEvaluation, AbilityRoundEvaluator,
@@ -52,12 +49,9 @@ use super::ability_rounds::{
 };
 use super::classify::{EvalClass, KillReason, classify};
 use super::system_roots::{PackageModuleResolver, ResolvedPackageModule};
-use super::{
-    EvalAttempt, NixEvaluator, PackageModuleFetcher, SelectedPackageModule, WorkingSetMember,
-};
+use super::{EvalAttempt, NixEvaluator, WorkingSetMember};
 use crate::platform::native_platform;
 use crate::registry::RegistrySet;
-use crate::types::ProfileScope;
 
 /// The default on-host eval root that `aos-eval.service` prepares.
 pub const DEFAULT_EVAL_ROOT: &str = "/run/aos-eval";
@@ -967,158 +961,6 @@ fn nix_path_str(path: &str) -> String {
 
 fn is_nix_path_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'-' | b'_' | b'+')
-}
-
-/// Fetches a provider's `config` output by realising it through substituters.
-///
-/// On AOS the registry static cache is a configured substituter, so realising
-/// the content-addressed `config` output path materializes it locally (and only
-/// it — the `out` binary closure is fetched lazily, later, by the install path).
-/// Builder-gated: it requires a reachable registry substituter.
-pub struct SubstituterFetcher {
-    verbose: u8,
-    substituters: Vec<String>,
-    nix_cache_dir: PathBuf,
-}
-
-impl SubstituterFetcher {
-    /// Creates a fetcher from the cache endpoints in a registry snapshot.
-    ///
-    /// Cache locations are taken from the already-authenticated local registry
-    /// snapshots rather than ambient Nix configuration. Cache signatures are
-    /// not used as an authority here: the selected output's NAR hash and size
-    /// are independently checked against signed registry metadata after
-    /// realization.
-    pub fn new(
-        verbose: u8,
-        registries: &RegistrySet,
-        scope: ProfileScope,
-        nix_cache_dir: impl Into<PathBuf>,
-    ) -> Self {
-        let registries_base = scope.registries_path();
-        let mut seen = HashSet::new();
-        let mut substituters = Vec::new();
-        for registry in registries.registries() {
-            let registry_name = &registry.config.name;
-            let registry_dir = registries_base.join(registry_name);
-            let mirrors =
-                crate::registry_ops::resolve_mirrors_for_registry(&registry_dir, &registry.config);
-            if verbose > 0 && mirrors.is_empty() {
-                eprintln!(
-                    "config-eval: registry '{registry_name}' has no cache endpoints in {}",
-                    registry_dir.display()
-                );
-            }
-            for cache in mirrors {
-                let url = cache.url.trim_end_matches('/').to_string();
-                if !url.is_empty() && seen.insert(url.clone()) {
-                    if verbose > 0 {
-                        eprintln!(
-                            "config-eval: using cache endpoint from registry '{registry_name}': {url}"
-                        );
-                    }
-                    substituters.push(url);
-                }
-            }
-        }
-        Self {
-            verbose,
-            substituters,
-            nix_cache_dir: nix_cache_dir.into(),
-        }
-    }
-}
-
-/// Configures a Nix realization against the authenticated registry cache set.
-fn configure_realise_command(
-    command: &mut Command,
-    store_path: &str,
-    substituters: &[String],
-    nix_cache_dir: &Path,
-    verbose: u8,
-) {
-    command.env("XDG_CACHE_HOME", nix_cache_dir);
-    command.arg("--realise").arg(store_path);
-    if !substituters.is_empty() {
-        command
-            .args(["--option", "substituters"])
-            .arg(substituters.join(" "))
-            // Registry metadata pins the expected NAR identity, so an
-            // independently signed narinfo is optional for this fetch path.
-            .args(["--option", "require-sigs", "false"]);
-    }
-    if verbose > 0 {
-        command.arg("-v");
-    }
-}
-
-impl PackageModuleFetcher for SubstituterFetcher {
-    fn fetch_package_module(&self, provider: &SelectedPackageModule<'_>) -> Result<()> {
-        std::fs::create_dir_all(&self.nix_cache_dir).with_context(|| {
-            format!("creating Nix client cache {}", self.nix_cache_dir.display())
-        })?;
-        let mut cmd = command_from_path("nix-store")?;
-        configure_realise_command(
-            &mut cmd,
-            provider.module_artifact,
-            &self.substituters,
-            &self.nix_cache_dir,
-            self.verbose,
-        );
-        let output = cmd
-            .output()
-            .context("failed to spawn `nix-store --realise`")?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!(
-                "realising package module artifact {} for '{}' failed: {}",
-                provider.module_artifact,
-                provider.package,
-                stderr.trim()
-            );
-        }
-        let dump = command_from_path("nix-store")?
-            .args(["--dump", provider.module_artifact])
-            .output()
-            .with_context(|| {
-                format!(
-                    "dumping realised package module artifact {} for verification",
-                    provider.module_artifact
-                )
-            })?;
-        if !dump.status.success() {
-            anyhow::bail!(
-                "verifying package module artifact {} for '{}' failed: {}",
-                provider.module_artifact,
-                provider.package,
-                String::from_utf8_lossy(&dump.stderr).trim()
-            );
-        }
-        let actual_hash = format!("sha256:{:x}", Sha256::digest(&dump.stdout));
-        let actual_size =
-            u64::try_from(dump.stdout.len()).context("package module artifact NAR too large")?;
-        let expected =
-            crate::registry::store::NarBytes::from_hash(provider.nar_hash, provider.nar_size)
-                .with_context(|| {
-                    format!(
-                        "invalid authenticated package-module-artifact pin for '{}'",
-                        provider.package
-                    )
-                })?;
-        if !expected.matches(&actual_hash, actual_size) {
-            anyhow::bail!(
-                "realised package module artifact {} for '{}' does not match authenticated NAR {}:{} \
-                 (actual {}:{})",
-                provider.module_artifact,
-                provider.package,
-                expected.nar_hash(),
-                expected.size,
-                actual_hash,
-                actual_size
-            );
-        }
-        Ok(())
-    }
 }
 
 /// The on-host package-contract resolver used by configuration evaluation.
