@@ -738,7 +738,7 @@ in
 
     bazel = buildBazel;
     jdk = buildJdk;
-    abilities = ./_envoy/module.nix;
+    abilities = ./_envoy;
 
     inherit tools;
     caCertificates = buildCaCertificates;
