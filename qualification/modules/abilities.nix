@@ -73,7 +73,7 @@
   requiredRegressions = {
     ability-native-activation = ["checks.fleet.ability-native-activation"];
     ability-native-image-rollout = ["checks.fleet.ability-native-image-rollout"];
-    ability-native-kubernetes = ["checks.fleet.ability-native-kubernetes"];
+    ability-native-kubernetes = ["checks.fleet.k3s-control-plane-worker"];
     ability-native-recovery = [
       "checks.fleet.ability-initrd-activation"
       "checks.fleet.ability-initrd-handoff-fail-closed"

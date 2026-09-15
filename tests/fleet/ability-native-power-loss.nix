@@ -13,16 +13,11 @@
     inherit lib mkSystem pkgs;
     guestTools = qualificationImage;
   };
-  kubernetesFixture = import ./_kubernetes-runtime-reference.nix {
-    inherit lib mkSystem pkgs;
-    guestTools = qualificationImage;
-  };
   imageRolloutFixture = import ./_image-rollout-runtime-reference.nix {
     inherit lib pkgs;
   };
   selectedPackageEntries =
     fixture.orderedPackages
-    ++ kubernetesFixture.orderedPackages
     ++ imageRolloutFixture.orderedPackages;
   selectedPackages = builtins.attrValues (builtins.listToAttrs (map (entry: {
       name = builtins.unsafeDiscardStringContext (builtins.toString entry.package);
@@ -37,7 +32,7 @@
       "checks.fleet.ability-native-activation"
       "checks.fleet.ability-native-foreground-container"
       "checks.fleet.ability-native-image-rollout"
-      "checks.fleet.ability-native-kubernetes"
+      "checks.fleet.k3s-control-plane-worker"
       "checks.fleet.ability-native-power-loss"
     ];
   };

@@ -426,7 +426,6 @@
     "ability-native-activation"
     "ability-native-adapter-matrix"
     "ability-native-image-rollout"
-    "ability-native-kubernetes"
     "ability-native-recovery"
   ];
   qualificationRequirementChecks = scenarioId:
@@ -471,10 +470,6 @@
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
-  nativeEffectKubernetesCohort = import ./tests/fleet/ability-native-effect-boundaries-kubernetes.nix {
-    inherit lib mkSystem pkgs nativeAdapterMatrix;
-    qualificationImage = true;
-  };
   nativeEffectForegroundCohort = import ./tests/fleet/ability-native-effect-boundaries-foreground.nix {
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
@@ -494,10 +489,6 @@
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
-  nativeProviderStateKubernetesCohort = import ./tests/fleet/ability-native-provider-state-kubernetes.nix {
-    inherit lib mkSystem pkgs nativeAdapterMatrix;
-    qualificationImage = true;
-  };
   nativeProviderStateForegroundCohort = import ./tests/fleet/ability-native-provider-state-foreground.nix {
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
@@ -513,32 +504,7 @@
     inherit lib;
     matrix = nativeAdapterMatrix;
   };
-  nativeCancellationKubernetesCells = let
-    selected =
-      nativeCancellationCells.groups.kubernetes
-      ++ builtins.filter (
-        cellId: builtins.head (lib.splitString "/" cellId) == "systemd-bootstrap"
-      )
-      nativeCancellationCells.groups.systemd;
-  in
-    selected;
-  nativeCancellationSystemdCells = let
-    selected =
-      builtins.filter (
-        cellId: builtins.head (lib.splitString "/" cellId) != "systemd-bootstrap"
-      )
-      nativeCancellationCells.groups.systemd;
-  in
-    assert builtins.sort builtins.lessThan (
-      nativeCancellationKubernetesCells ++ selected
-    )
-    == builtins.sort builtins.lessThan (
-      nativeCancellationCells.groups.kubernetes ++ nativeCancellationCells.groups.systemd
-    ); selected;
-  nativeCancellationKubernetesCohort = import ./tests/fleet/ability-native-cancellation-kubernetes.nix {
-    inherit lib mkSystem pkgs nativeAdapterMatrix;
-    qualificationImage = true;
-  };
+  nativeCancellationSystemdCells = nativeCancellationCells.groups.systemd;
   nativeCancellationSystemdCohort = import ./tests/fleet/ability-native-cancellation-systemd.nix {
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
@@ -570,10 +536,6 @@
     qualificationImage = true;
   };
   nativeProviderNegativeSystemdManager = import ./tests/fleet/ability-native-provider-negative-systemd-manager.nix {
-    inherit lib mkSystem pkgs nativeAdapterMatrix;
-    qualificationImage = true;
-  };
-  nativeProviderNegativeKubernetes = import ./tests/fleet/ability-native-provider-negative-kubernetes.nix {
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
@@ -658,11 +620,9 @@
       ++ nativeAdapterFailureControlCells
       ++ nativeEffectBoundaryCells.groups.reference
       ++ nativeEffectBoundaryCells.groups.systemdManager
-      ++ nativeEffectBoundaryCells.groups.kubernetes
       ++ nativeEffectBoundaryCells.groups.rollout
       ++ nativeEffectBoundaryCells.groups.foreground
       ++ nativeProviderStateCells.all
-      ++ nativeCancellationKubernetesCells
       ++ nativeCancellationSystemdCells
       ++ nativeCancellationCells.groups.reference
       ++ nativeCancellationCells.groups.foreground
@@ -713,12 +673,6 @@
             inherit (nativeEffectReferenceCohort) testScript;
             inherit (nativeEffectReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
-          {
-            id = "provider-effect-boundaries-kubernetes";
-            qualifiedCells = nativeEffectBoundaryCells.groups.kubernetes;
-            inherit (nativeEffectKubernetesCohort) testScript;
-            inherit (nativeEffectKubernetesCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
         ]
         ++ lib.imap (index: cohort: {
           id = "provider-effect-boundary-rollout-${builtins.toString index}";
@@ -740,12 +694,6 @@
             inherit (nativeProviderStateReferenceCohort) testScript;
             inherit (nativeProviderStateReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
-          {
-            id = "provider-state-kubernetes";
-            qualifiedCells = nativeProviderStateCells.groups.kubernetes;
-            inherit (nativeProviderStateKubernetesCohort) testScript;
-            inherit (nativeProviderStateKubernetesCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
         ]
         ++ lib.imap (index: cohort: {
           id = "provider-state-rollout-${builtins.toString index}";
@@ -760,12 +708,6 @@
             qualifiedCells = nativeProviderStateCells.groups.foreground;
             inherit (nativeProviderStateForegroundCohort) testScript;
             inherit (nativeProviderStateForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
-          {
-            id = "provider-cancellation-kubernetes";
-            qualifiedCells = nativeCancellationKubernetesCells;
-            inherit (nativeCancellationKubernetesCohort) testScript;
-            inherit (nativeCancellationKubernetesCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
           {
             id = "provider-cancellation-systemd";
@@ -812,12 +754,6 @@
             inherit (nativeProviderNegativeSystemdManager) testScript;
             inherit (nativeProviderNegativeSystemdManager.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
-          {
-            id = "provider-negative-kubernetes";
-            qualifiedCells = nativeProviderNegativeCells.groups.kubernetes;
-            inherit (nativeProviderNegativeKubernetes) testScript;
-            inherit (nativeProviderNegativeKubernetes.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
         ]
         ++ nativeProviderNegativeRollouts;
 
@@ -832,10 +768,6 @@
       mkNativeAbilityScenario
       "ability-native-image-rollout"
       ./tests/fleet/ability-native-image-rollout.nix;
-    ability-native-kubernetes =
-      mkNativeAbilityScenario
-      "ability-native-kubernetes"
-      ./tests/fleet/ability-native-kubernetes.nix;
     ability-native-recovery =
       mkNativeAbilityScenario
       "ability-native-recovery"
@@ -2091,7 +2023,6 @@ in {
       runtimeConfigNames = [
         "ability-native-activation"
         "ability-native-image-rollout"
-        "ability-native-kubernetes"
         "ability-native-power-loss"
         "apm-desired-sequencing"
         "apm-sysroot-lock"
