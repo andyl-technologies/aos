@@ -481,7 +481,7 @@ in
   assert lifecycleImplementation.handlerDescriptor == null;
   assert builtins.isFunction lifecycleImplementation.transition;
   assert lifecycleImplementation.requirements.directory-preparation.strength == "required";
-  assert builtins.length matchedOwnership.realizations.main.units == 2;
+  assert builtins.length matchedOwnership.realizations.main.units == 3;
   assert ownershipPreparation
   == {
     requirement = "directory-preparation";
