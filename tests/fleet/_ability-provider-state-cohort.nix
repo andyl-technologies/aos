@@ -144,6 +144,7 @@ in {
 
       MATRIX_SPEC = json.loads(Path(MATRIX_SPEC_PATH).read_text())
       COHORT_CELLS = json.loads(Path(COHORT_CELLS_PATH).read_text())
+      EFFECT_ORACLES.__dict__["MATRIX_SPEC"] = MATRIX_SPEC
       STATE_BUILDER = PROVIDER_STATE_EVIDENCE.ProviderStateEvidence(
           MATRIX_SPEC, COHORT_CELLS, PROVIDER_STATE_VALIDATOR
       )
