@@ -204,21 +204,7 @@ in
     ];
     propagatedDeps = [libxml2];
 
-    passthru.systemdUnitInventory = {
-      system = [
-        "lib/systemd/system/libvirtd.service"
-        "lib/systemd/system/libvirtd.socket"
-        "lib/systemd/system/libvirtd-ro.socket"
-        "lib/systemd/system/libvirtd-admin.socket"
-        "lib/systemd/system/virtlockd.service"
-        "lib/systemd/system/virtlockd.socket"
-        "lib/systemd/system/virtlockd-admin.socket"
-        "lib/systemd/system/virtlogd.service"
-        "lib/systemd/system/virtlogd.socket"
-        "lib/systemd/system/virtlogd-admin.socket"
-      ];
-      user = [];
-    };
+    abilities = ./_libvirt-dbus-registration.nix;
 
     phases = [
       {

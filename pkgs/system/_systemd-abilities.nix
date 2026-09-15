@@ -1,5 +1,9 @@
 ##! Package-owned systemd ability declarations and executable implementations.
-{lib, ...}: let
+{
+  config,
+  lib,
+  ...
+}: let
   types = lib.abilities.types;
   artifact = lib.abilities.packageOutput {};
   handlerArtifact = lib.abilities.packageOutput {
@@ -7,6 +11,19 @@
   };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceInterfaces = serviceManagement.interfaces;
+  dbusRegistrationInterface = {
+    name = "aos.dbus.system-registration-contribution";
+    abi = 1;
+    descriptor = null;
+  };
+  dbusRegistrationAvailable =
+    config.aos.abilities.environment
+    == null
+    || builtins.any (declaration:
+      declaration.name
+      == dbusRegistrationInterface.name
+      && declaration.abi == dbusRegistrationInterface.abi)
+    (builtins.attrValues config.aos.abilities.interfaces);
   directoryPreparationRequirement = {
     alias = "directory-preparation";
     description = "Prepares service directories whose ownership differs from the selected service identity.";
@@ -907,5 +924,36 @@ in {
           requiredFeatures = [];
         };
       };
+
+    requirementTemplates.dbus-system-registration = lib.mkIf dbusRegistrationAvailable {
+      description = "Contributes systemd's system-bus activation and policy artifacts.";
+      interface = dbusRegistrationInterface.name;
+      inherit (dbusRegistrationInterface) abi descriptor;
+      methods = ["observe"];
+      guarantees = [];
+      strength = "required";
+      fallback = null;
+    };
+
+    requests.dbus-system-registration = lib.mkIf dbusRegistrationAvailable {
+      requirement = "dbus-system-registration";
+      consumer = "manager";
+      scope = ["system-bus"];
+      parameters = {
+        name = "systemd";
+        activation_directories = [
+          {
+            inherit artifact;
+            path = "share/dbus-1/system-services";
+          }
+        ];
+        policy_directories = [
+          {
+            inherit artifact;
+            path = "share/dbus-1/system.d";
+          }
+        ];
+      };
+    };
   };
 }

@@ -1298,10 +1298,7 @@
   # them as buildable `pkg-*` flake outputs or aggregate build dependencies.
   # This explicit structural inventory preserves lazy package enumeration:
   # probing every value with tryEval would execute unrelated IFDs.
-  packageFactories = [
-    "aos-uki"
-    "dbus-conf"
-  ];
+  packageFactories = ["aos-uki"];
   uncheckedPackageNames = builtins.attrNames (
     builtins.removeAttrs discoveredPackages (["trivial-builders"] ++ packageFactories)
     // {

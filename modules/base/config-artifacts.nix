@@ -1,10 +1,9 @@
 ##! modules/base/config-artifacts.nix — image-fixed configuration artifacts
 ##!
-##! Some config modules build a *derivation* at eval time
-##! for a `/etc` artifact or a unit input — e.g. `dbus-conf` merges the
-##! `share/dbus-1` trees of several packages into a system bus config. These
-##! artifacts are **image-fixed**: they depend on *image* config (which packages
-##! are enabled), not on the operator `host.nix`, so they are identical across
+##! Some config modules build a *derivation* at eval time for a `/etc` artifact
+##! or unit input. These artifacts are **image-fixed**: they depend on *image*
+##! config (which packages are enabled), not on the operator `host.nix`, so
+##! they are identical across
 ##! every config generation of a given image. They cannot be Layer-1 frozen
 ##! (they are builder *calls*, not top-level packages) and cannot be rendered as
 ##! pure text (they merge file trees).
@@ -12,13 +11,6 @@
 ##! A module registers such an artifact as a derivation under
 ##! `aos.config._artifactSources.<key>` and references it through
 ##! `config.aos.config.artifacts.<key>` (never the source directly):
-##!
-##! ```nix
-##!   aos.config._artifactSources.dbus-system-conf =
-##!     pkgs.dbus-conf { packages = cfg.packages; ... };
-##!   # reference:
-##!   "--config-file=${config.aos.config.artifacts.dbus-system-conf}/system.conf"
-##! ```
 ##!
 ##! `artifacts.<key>` resolves to:
 ##!   - the **frozen store path** (a string-coercible record) when the on-host
