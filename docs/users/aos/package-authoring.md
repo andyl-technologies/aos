@@ -260,138 +260,80 @@ changing the Cargo.lock-selected graph, advance the generated lock's exact
 checksum in the source patch phase and assert the new value. Do not enable
 repinning in production fetches merely to bypass a stale rule digest.
 
-## Expose the runtime interface
+## Declare the native package module
 
-The `expose` attribute is the contract used by APM. It renders a separate
-activation artifact containing units, firewall rules, configuration, and a
-permission declaration. A package without `expose` can be used at image build
-time, but it cannot be registered under `aos.packages` or activated as an APM
-package.
-
-The renderer creates a package target named:
-
-```text
-aos-pkg-<package-name>.target
-```
-
-## Author generated package documentation
-
-Configuration reference belongs beside the package's Nix interface. Add a
-structured `documentation` value to `configModule`; do not create a per-package
-Markdown option guide:
+Set `abilities` to a checked-in, path-backed module. The same ordinary module
+owns the package's typed options, symbolic ability declarations, desired
+resources, and effect planning. A function value cannot be published and
+reevaluated on another host, so the package field must identify a module
+artifact:
 
 ```nix
-configModule = {
-  module = ./_acme-health-agent-config/module.nix;
-  documentation = {
-    summary = "Health reporting, listener policy, and reload behavior.";
-    sections.quickstart = {
-      title = "Quick start";
-      blocks = [
-        {
-          kind = "paragraph";
-          spans = [
-            {
-              kind = "text";
-              text = "Enable the agent and select its reporting interval.";
-            }
-          ];
-        }
-        {
-          kind = "code";
-          language = "nix";
-          text = ''
-            {
-              acmeHealthAgent.enable = true;
-              acmeHealthAgent.interval = "60s";
-            }
-          '';
-        }
-      ];
-    };
-  };
-};
-```
+mkDerivation {
+  pname = "acme-health-agent";
+  version = "1.0.0";
 
-The restricted publisher evaluation mechanically extracts option paths, types,
-defaults, examples, ownership and contribution rules. It cross-checks any
-package-authored option enrichment against that declared interface, combines it
-with expose metadata for services, listeners, credentials, paths and
-capabilities, and emits canonical `aos.package-documentation/v1` JSON. Structured
-prose supports paragraphs, lists, notes and code blocks; raw Markdown, HTML and
-external includes are intentionally not representable.
-
-Publication stores the canonical JSON as a reference-free Nix store object and
-binds its NAR and semantic identities into signed package metadata. A prose-only
-change updates documentation without changing runtime measurement, while an
-option or runtime-interface change updates the semantic schema digest. Verify
-the package's generated interface and publication contract with:
-
-```sh
-nix-build -A checks.package-documentation --no-out-link
-nix-build -A checks.package-expose --no-out-link
-apr verify --registry <name>
-```
-
-Activating `acme-health-agent` enables
-`aos-pkg-acme-health-agent.target`, which owns the service unit above. Units
-marked `onlyManualStart = true` are installed but are not pulled into that
-target.
-
-Declare the narrowest permissions the service needs. `network = "private"`
-gives the package an isolated network namespace. A service that must use the
-host network needs `network = "host"` and the appropriate `tcp-bind` ports.
-The package renderer rejects inconsistent permissions during evaluation. The
-port list remains signed audit and socket-listener intent, but host networking
-is an explicit downgrade from per-package Landlock/eBPF network enforcement;
-filesystem, MAC, capability, and systemd sandboxing still apply.
-
-## Add an on-host configuration module
-
-Use `configModule` when host policy must set typed package options at runtime.
-Keep the module in a local directory containing `module.nix`; it receives
-`lib`, `config`, and a resolver-supplied `outputs` attrset. Declare every
-runtime output that the module interpolates by name:
-
-```nix
-configModule = {
-  src = ./config-module;
-  dependencies = {
-    bash = bash;
-  };
-  declares = ["acmeHealth.command"];
-  ownsRoots = [{root = "acmeHealth";}];
-};
-```
-
-The module refers to that output without importing a package set:
-
-```nix
-{lib, outputs, ...}: {
-  options.acmeHealth.command = lib.mkOption {
-    type = lib.types.str;
-    default = "${outputs.dependencies.bash}/bin/bash";
-  };
+  abilities = ./_acme-health-agent/module.nix;
+  # Sources, dependencies, and phases are declared normally.
 }
 ```
 
-`mkDerivation` exposes the resolved map as `configModuleDependencies` without
-copying store paths into the config-only output. Publication must bind the same
-names to their exact runtime outputs:
+Declare public options with ordinary `mkOption` declarations in that module.
+Author descriptions, defaults, examples, types, visibility, and provenance
+there once. Declare package-owned implementations and consumed requirement
+templates in `config.aos.abilities`. Use a canonical core interface when the
+contract is provider neutral; declare an interface in the package only when it
+is intrinsically specific to that package or backend. Request values use the
+standard structured option vocabulary and the final module fixed point checks
+them against the selected interface schema.
+
+`mkDerivation` exposes three related views:
+
+- `package.abilities` is the checked local symbolic module projection. Its
+  public declaration maps include `interfaces`, `implementations`,
+  `requirementTemplates`, and `guarantees`.
+- `package.module` is the authenticated path-backed module output used for
+  on-host reevaluation.
+- `package.contract.value` is the derived signed package document. It retains
+  the exact option declarations and provenance, interface documents, provider
+  implementations, requirements, guarantees, handlers, artifact selectors,
+  and qualification claims. `package.contract.document` is its canonical store
+  object.
+
+Consumers select provider-neutral interfaces symbolically. They do not import
+an implementation package or copy the provider's schema. The final system
+fixed point selects an implementation from enabled packages, checks each
+request against the retained interface document, and builds the desired,
+binding, and effect plans.
+
+## Generate package documentation
+
+Generated reference documentation has the same owners as the executable
+package contract. The package summary comes from ordinary package metadata.
+Option rows come from the checked contract's `option_declarations`; ability
+pages come from its retained interfaces, implementations, requirements, and
+guarantees. Method, output, and guarantee prose is authored beside its module
+declaration and retained in the signed document without changing semantic
+interface or implementation identity.
+
+Do not add a documentation attrset, a package-specific option table, or a unit
+catalog. Deployment pages add concrete resource realizations only from the
+checked final desired, binding, effect, and inspection views. A disabled
+package can therefore publish its static option and ability reference without
+appearing as a selected deployment provider.
+
+Verify the native projection and generated reference with:
 
 ```sh
-apr publish "$STORE_PATH" \
-  --config-module "$CONFIG_MODULE_PATH" \
-  --config-base-lib "$BASE_LIB_PATH" \
-  --config-dependency "bash=$BASH_PATH" \
-  --registry acme \
-  --key-id initial
+nix-build -A checks.abilities --no-out-link
+nix-build -A checks.package-documentation --no-out-link
+apr verify --registry <name>
 ```
 
-Each dependency must be a direct reference of the published runtime output.
-The registry signs the name-to-path map, and on-host evaluation injects that
-authenticated map as plain strings. It never exposes ambient packages or
-instantiates a derivation.
+Declare the narrowest permissions and resources that the provider needs in
+the same ability module. The selected provider translates those declarations
+into its backend-specific realization; package documentation does not predict
+unit names, listener allocation, or activation steps from a second inventory.
 
 ## Build and inspect the package
 
@@ -403,12 +345,13 @@ git add pkgs/acme/acme-health-agent.nix
 nix build .#pkg-acme-health-agent
 ```
 
-Inspect the payload and rendered activation manifest:
+Inspect the payload, local symbolic ability tree, and derived package contract:
 
 ```sh
 find result -maxdepth 3 -type f -o -type l
-nix-build -A pkgs.acme-health-agent.expose -o result-expose
-sed -n '1,240p' result-expose/manifest.json
+nix eval --json --file . pkgs.acme-health-agent.abilities
+nix-build -A pkgs.acme-health-agent.contract.document -o result-contract
+cat result-contract
 ```
 
 Run repository checks before publishing:
@@ -446,9 +389,9 @@ Register the package in a system variant:
 }
 ```
 
-`bundle = true` includes the package and its activation artifact in the image.
-`preset = true` enables its package target when AOS seeds the initial system
-package profile. A preset package must also be bundled.
+`bundle = true` includes the package payload, authenticated module, and signed
+contract artifacts in the image. `preset = true` selects it in the initial
+machine-wide desired package set. A preset package must also be bundled.
 
 Build and validate the image as described in the release-image maintainer
 guide linked above.

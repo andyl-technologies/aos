@@ -57,6 +57,11 @@ options.aos.abilities = {
     default = {};
   };
 
+  guarantees = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.submodule guaranteeModule);
+    default = {};
+  };
+
   instances = lib.mkOption {
     type = lib.types.attrsOf (lib.types.submodule instanceModule);
     default = {};
@@ -221,19 +226,22 @@ package call mechanism. They use `lib.abilities` constructors and MUST NOT
 import private library files by relative path.
 
 The module owns the package's configuration options, static interfaces,
-implementations, requirement templates, and conditional instance/request
+implementations, requirement templates, guarantees, and conditional instance/request
 definitions. Package authors do not maintain a configuration module and a
 parallel ability manifest containing the same facts. The wrapper removes
 `abilities` before invoking the low-level derivation primitive, evaluates it
-against the shared ability schema for its package projection, and returns that
-projection as `package.abilities`. When the package is admitted to a system,
+against the shared ability schema, and returns the normalized package-local
+tree as `package.abilities`. Its public fields remain `interfaces`,
+`implementations`, `requirementTemplates`, and `guarantees`; wire names in the
+separately derived signed `PackageDocument` are not part of the Nix API. When
+the package is admitted to a system,
 the evaluator imports the exact same module value into the complete system
 fixed point. The public model does not use
 `passthru.abilityPackage`, `passthru.abilities`, or a parallel package wrapper.
 
-The package projection contains statically discoverable implementations and
-requirement templates, the module option surface and provenance, and the exact
-package module or authenticated module locator used by selection. It does not
+The signed package projection contains statically discoverable implementations,
+requirement templates, guarantees, the module option surface and provenance,
+and the exact authenticated module locator used by selection. It does not
 expose another `abilityModule` or `configModule` field alongside
 `package.abilities`. The final system projection contains enabled instances
 and concrete requests. An enabled
@@ -245,7 +253,7 @@ static discovery without introducing a second declaration.
 Static interface declarations, implementation declarations, and requirement
 templates are unconditional module definitions. Disabling a package feature
 must not erase the package's potential provided or consumed abilities from its
-signed projection. Enable conditions apply only to concrete instances,
+signed publication projection. Enable conditions apply only to concrete instances,
 requests, desired resources, and effects in the final system fixed point.
 
 The package carrier derives collision-free final keys from the package identity
