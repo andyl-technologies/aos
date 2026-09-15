@@ -78,13 +78,8 @@
         builtins.map (name: "${package}.${name}") overlaps
     )
     credentialPackages;
-  exposedBundledPackages =
-    lib.filterAttrs
-    (_: package: package.bundle && (package.package ? expose))
-    config.aos.packages;
   packageAttestationReadinessUnits =
-    lib.optionals (exposedBundledPackages != {}) ["aos-seed-baked-packages.service"]
-    ++ lib.optionals cfg.enable ["aos-install-baked-packages.service"];
+    lib.optionals cfg.enable ["aos-install-baked-packages.service"];
 
   desiredToml = toml.toTOML ({
       packages = cfg.packages;
@@ -398,10 +393,7 @@ in {
     systemd.services.aos-attest = {
       description = "Produce AOS package attestation quote";
       requires = packageAttestationReadinessUnits;
-      after = [
-        "aos-seed-baked-packages.service"
-        "aos-install-baked-packages.service"
-      ];
+      after = packageAttestationReadinessUnits;
       serviceConfig = {
         Type = "oneshot";
         RuntimeDirectory = "aos-attest";

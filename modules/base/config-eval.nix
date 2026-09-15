@@ -20,12 +20,6 @@
   cfg = config.aos.config.evalAtBoot;
   provisioningStateDir = config.aos.provisioning.stateDir;
   espSync = config.aos.config.artifacts.esp-sync;
-  exposedBundledPackages =
-    lib.filterAttrs
-    (_: package: package.bundle && (package.package ? expose))
-    config.aos.packages;
-  packageSeedReadinessUnits =
-    lib.optionals (exposedBundledPackages != {}) ["aos-seed-baked-packages.service"];
   rolloutRecordValid = ''
     .active_rollout as $rollout
     | $rollout.schema == "aos.image-rollout/v1"
@@ -651,8 +645,7 @@ in {
           "aos-nix-db.service"
         ]
         ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "systemd-pcrphase.service"
-        ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "aos-image-measurement-index.service"
-        ++ packageSeedReadinessUnits;
+        ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "aos-image-measurement-index.service";
       after =
         [
           "network-online.target"
@@ -665,8 +658,7 @@ in {
           "aos-nix-db.service"
           "aos-registry-sync.service"
         ]
-        ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "aos-image-measurement-index.service"
-        ++ packageSeedReadinessUnits;
+        ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "aos-image-measurement-index.service";
       before = [
         "aos-install-baked-packages.service"
         "aos-graph-compile.service"
