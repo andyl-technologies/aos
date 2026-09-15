@@ -19,9 +19,11 @@ use super::{
 
 mod ability;
 mod process;
+mod provider;
 
-pub(super) use ability::retained_uki_entry_ids;
 pub(crate) use ability::NativeAbRolloutBackend;
+pub(super) use ability::retained_uki_entry_ids;
+pub use provider::run_from_process as run_provider_from_process;
 
 const IMAGE_ROLLOUT_SCHEMA: &str = "aos.image-rollout/v1";
 

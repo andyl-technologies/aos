@@ -1,6 +1,11 @@
 ##! Pure realization of configuration resources for the native materializer.
-{lib, ...}: let
+{
+  config,
+  lib,
+  ...
+}: let
   interface = lib.abilities.interfaces.serviceManagement.interfaces.managedConfiguration;
+  rolloutInterface = config.aos.abilities.interfaces.image-rollout-effects;
   emptyProvision = {
     requests = {};
     outputs = {};
@@ -10,7 +15,8 @@
   provide = {requests, ...}:
     emptyProvision
     // {
-      resourceFragments = builtins.mapAttrs (_: request: {
+      resourceFragments =
+        builtins.mapAttrs (_: request: {
           kind = interface.identity.name;
           lifetime = "instance";
           value = request.parameters;
@@ -21,7 +27,8 @@
     digest = builtins.hashString "sha256" (builtins.toJSON resource.resource);
   in "/run/aos/configurations/${resource.resource.key}-${digest}";
   compose = {resources, ...}: let
-    realizations = builtins.mapAttrs (_: resource: {
+    realizations =
+      builtins.mapAttrs (_: resource: {
         schema = "aos.configuration.materializer-realization/v1";
         path = pathFor resource;
       })
@@ -41,8 +48,35 @@
       conditionalRequirements = [];
       inherit realizations;
     };
+  provideRollout = {requests, ...}:
+    emptyProvision
+    // {
+      resourceFragments =
+        builtins.mapAttrs (_: request: {
+          kind = rolloutInterface.name;
+          lifetime = "persistent";
+          value = request.parameters;
+        })
+        requests;
+    };
+  composeRollout = {resources, ...}: {
+    requests = {};
+    outputs = {};
+    conditionalRequirements = [];
+    realizations =
+      builtins.mapAttrs (_: _: {
+        schema = "aos.image-rollout.realization/v1";
+      })
+      resources;
+  };
 in {
-  config.aos.abilities.implementations.configuration-materialization = {
-    inherit provide compose;
+  config.aos.abilities.implementations = {
+    configuration-materialization = {
+      inherit provide compose;
+    };
+    image-rollout-effects = {
+      provide = provideRollout;
+      compose = composeRollout;
+    };
   };
 }
