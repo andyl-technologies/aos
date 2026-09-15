@@ -4,6 +4,7 @@
   lib,
   ...
 }: let
+  cfg = config.aos.services.libvirt;
   contributionInterface = {
     name = "aos.dbus.system-registration-contribution";
     abi = 1;
@@ -19,7 +20,7 @@
       && declaration.abi == contributionInterface.abi)
     (builtins.attrValues config.aos.abilities.interfaces);
 in {
-  config.aos.abilities = lib.mkIf registrationAvailable {
+  config.aos.abilities = lib.mkIf (cfg.enable && registrationAvailable) {
     requirementTemplates.dbus-system-registration = {
       description = "Contributes libvirt's system-bus activation and policy artifacts.";
       interface = contributionInterface.name;
@@ -32,7 +33,7 @@ in {
 
     requests.dbus-system-registration = {
       requirement = "dbus-system-registration";
-      consumer = "service";
+      consumer = "libvirt";
       scope = ["system-bus"];
       parameters = {
         name = "libvirt";

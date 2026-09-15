@@ -748,7 +748,8 @@ let
     "system/_systemd-service-document.nix" = "target-independent-source";
     "system/_systemd-service-provider-lib.nix" = "target-independent-source";
     "system/_systemd-unit-document.nix" = "target-independent-source";
-    "virtualization/_libvirt-dbus-registration.nix" = "linux-only-config-source";
+    "virtualization/_libvirt/dbus-registration.nix" = "linux-only-config-source";
+    "virtualization/_libvirt/module.nix" = "linux-only-config-source";
     "tests/_ability-package-smoke-module.nix" = "target-independent-source";
     "tests/_ability-package-smoke-provider.nix" = "target-independent-source";
     "toolchain/_bazel.nix" = "native-build-helper";

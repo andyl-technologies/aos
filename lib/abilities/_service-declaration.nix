@@ -225,18 +225,36 @@
       socketActivation
       == null
       || (
-        uniqueBy "name" socketActivation.sockets
-        && builtins.length (builtins.filter
-          (socket: (socket.manager_name or null) != null)
-          socketActivation.sockets)
-        == builtins.length (builtins.attrNames (builtins.listToAttrs (builtins.map
-          (socket: {
-            name = socket.manager_name;
-            value = true;
-          })
-          (builtins.filter
+        let
+          socketNames = builtins.map (socket: socket.name) socketActivation.sockets;
+          serviceDependencies = socketActivation.service_dependencies or {};
+          localReferences =
+            (serviceDependencies.after or [])
+            ++ (serviceDependencies.binds_to or [])
+            ++ (serviceDependencies.requires or [])
+            ++ (serviceDependencies.wants or [])
+            ++ builtins.concatMap
+            (socket: (socket.after or []) ++ (socket.binds_to or []))
+            socketActivation.sockets;
+        in
+          uniqueBy "name" socketActivation.sockets
+          && builtins.all (name: builtins.elem name socketNames) localReferences
+          && builtins.all
+          (socket:
+            !(builtins.elem socket.name (socket.after or []))
+            && !(builtins.elem socket.name (socket.binds_to or [])))
+          socketActivation.sockets
+          && builtins.length (builtins.filter
             (socket: (socket.manager_name or null) != null)
-            socketActivation.sockets))))
+            socketActivation.sockets)
+          == builtins.length (builtins.attrNames (builtins.listToAttrs (builtins.map
+            (socket: {
+              name = socket.manager_name;
+              value = true;
+            })
+            (builtins.filter
+              (socket: (socket.manager_name or null) != null)
+              socketActivation.sockets))))
       );
     managerIdentityValid =
       managerIdentity
@@ -344,7 +362,7 @@
     else if !storageValid
     then throw "service '${declaration.service}' has duplicate storage mount names"
     else if !socketsValid
-    then throw "service '${declaration.service}' has duplicate socket names or public manager names"
+    then throw "service '${declaration.service}' has duplicate socket names, invalid local socket dependencies, or duplicate public manager names"
     else if !terminalValid
     then throw "service '${declaration.service}' can start when the terminal is idle only with foreground process-running readiness and no alternate supervision protocol"
     else if !managerIdentityValid

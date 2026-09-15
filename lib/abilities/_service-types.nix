@@ -647,12 +647,74 @@
         };
         default = [];
       };
+      after = {
+        type = types.list {
+          element = localKey;
+          maxItems = 64;
+          unique = true;
+          canonicalOrder = true;
+        };
+        default = [];
+      };
+      binds_to = {
+        type = types.list {
+          element = localKey;
+          maxItems = 64;
+          unique = true;
+          canonicalOrder = true;
+        };
+        default = [];
+      };
+    };
+  };
+  socketServiceDependencies = types.record {
+    fields = {
+      after = {
+        type = types.list {
+          element = localKey;
+          maxItems = 64;
+          unique = true;
+          canonicalOrder = true;
+        };
+        default = [];
+      };
+      binds_to = {
+        type = types.list {
+          element = localKey;
+          maxItems = 64;
+          unique = true;
+          canonicalOrder = true;
+        };
+        default = [];
+      };
+      requires = {
+        type = types.list {
+          element = localKey;
+          maxItems = 64;
+          unique = true;
+          canonicalOrder = true;
+        };
+        default = [];
+      };
+      wants = {
+        type = types.list {
+          element = localKey;
+          maxItems = 64;
+          unique = true;
+          canonicalOrder = true;
+        };
+        default = [];
+      };
     };
   };
   socketActivationFeature = feature {
     sockets = types.list {
       element = socket;
       maxItems = 64;
+    };
+    service_dependencies = {
+      type = socketServiceDependencies;
+      default = {};
     };
   } [];
   socketActivation = request socketActivationFeature;
