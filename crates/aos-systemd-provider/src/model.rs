@@ -64,9 +64,16 @@ pub(crate) struct PackagedUnitRequest {
 pub(crate) struct PackagedUnitRealization {
     pub(crate) schema: String,
     pub(crate) source: RealizedUnitSource,
+    pub(crate) systemd_unit: SystemdUnitIdentity,
     pub(crate) activation: Activation,
-    pub(crate) dependencies: Dependencies,
-    pub(crate) drop_in: DropIn,
+    pub(crate) drop_in_text: String,
+    pub(crate) revision_receipt: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SystemdUnitIdentity {
+    pub(crate) unit_name: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

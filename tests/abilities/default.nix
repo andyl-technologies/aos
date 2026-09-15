@@ -475,7 +475,7 @@
     inherit lib;
   };
   systemdPackagedUnit = import ./systemd-packaged-unit.nix {
-    inherit lib;
+    inherit pkgs lib;
   };
   smokeAbilityProjection = pkgs.ability-package-smoke.abilities;
   smokeArtifactSelectors = smokeAbilityProjection._artifact_outputs.selectors;

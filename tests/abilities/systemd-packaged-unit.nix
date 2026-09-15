@@ -1,5 +1,8 @@
 ##! Fixed-point evaluation of the systemd-owned packaged-unit provider.
-{lib}: let
+{
+  lib,
+  pkgs,
+}: let
   interfaceModule = ../../pkgs/system/_systemd-abilities.nix;
   providerModule = ../../pkgs/system/_systemd-provider.nix;
   artifact = lib.abilities.packageOutput {};
@@ -50,17 +53,8 @@
       inherit lib;
       modules = [
         lib.abilities.module
+        ../../modules/systemd/system.nix
         {
-          options.systemd.packages = lib.mkOption {
-            type = lib.types.listOf lib.types.package;
-            default = [];
-            contributable = true;
-          };
-          options.systemd.units = lib.mkOption {
-            type = lib.types.attrsOf lib.types.attrs;
-            default = {};
-            contributable = true;
-          };
           config.aos.abilities = {
             environment = {
               authority = "test";
@@ -91,8 +85,14 @@
       ];
       specialArgs = {
         packageName = "systemd";
+        inherit pkgs;
+        provenance = {
+          dependencyOwnersOfAttr = _: _: [];
+          ownerOfListAttr = _: _: _: "@test";
+        };
         artifactLocatorFor = _: {
           artifactReference = {
+            _type = "aos-artifact-reference";
             content = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
             store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
             nar_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -120,14 +120,18 @@
   abilities = evaluation.config.aos.abilities;
   desired = builtins.head (builtins.attrValues abilities.desiredResources);
   unit = evaluation.config.systemd.units."example.service";
-  package = builtins.head evaluation.config.systemd.packages;
+  source = builtins.head evaluation.config.systemd.packagedUnitSources;
+  rendered = evaluation.config.system.build.systemdUnitBodies."example.service";
 in
-  assert desired.realization.source.unit_name == "example.service";
-  assert desired.realization.source.artifact.package == "self";
-  assert package.outPath == "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
-  assert package.systemdUnitInventory.system == ["lib/systemd/system/example.service"];
+  assert desired.realization.systemd_unit.unit_name == "example.service";
+  assert desired.realization.source.artifact.store_path == "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
+  assert source.artifactRoot == "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
+  assert source.unitFile == "lib/systemd/system/example.service";
+  assert source.unitName == "example.service";
   assert unit.overrideStrategy == "asDropin";
   assert unit.wantedBy == ["multi-user.target"];
-  assert lib.hasInfix "SuccessExitStatus=0 2" unit.text;
+  assert unit.text == desired.realization.drop_in_text;
+  assert lib.hasInfix "SuccessExitStatus=0 2" desired.realization.drop_in_text;
   assert lib.hasInfix "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example/bin" unit.text;
+  assert lib.hasInfix "SuccessExitStatus=0 2" rendered.text;
   assert !invalidUnitName.success; true

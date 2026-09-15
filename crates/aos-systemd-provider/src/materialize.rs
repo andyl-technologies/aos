@@ -20,7 +20,7 @@ pub(crate) struct UnitPaths {
     pub(crate) receipt: PathBuf,
 }
 
-pub(crate) fn paths_for(root: &Path, unit_name: &str, revision: RevisionId) -> UnitPaths {
+pub(crate) fn paths_for(root: &Path, unit_name: &str) -> UnitPaths {
     UnitPaths {
         unit: root.join("systemd/system").join(unit_name),
         drop_in: root
@@ -30,8 +30,7 @@ pub(crate) fn paths_for(root: &Path, unit_name: &str, revision: RevisionId) -> U
         receipt: root
             .join("aos/ability-revisions")
             .join(unit_name)
-            .join("sha256")
-            .join(revision.0.hex()),
+            .join("current"),
     }
 }
 
@@ -42,7 +41,7 @@ pub(crate) fn materialize(
     resource: &ResourceId,
     rendered: &RenderedUnit,
 ) -> Result<UnitPaths> {
-    let paths = paths_for(root, unit_name, revision);
+    let paths = paths_for(root, unit_name);
     let systemd_root = root.join("systemd/system");
     ensure_directory(&systemd_root)?;
     publish_symlink(&paths.unit, &rendered.source)?;

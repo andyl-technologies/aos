@@ -91,16 +91,8 @@ async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
     let expected: PackagedUnitRequest = decode_value(&request.resource_spec.value)?;
     let realization: PackagedUnitRealization = decode_value(&request.resource_spec.realization)?;
     require_matching_request(&expected, &realization)?;
-    let rendered = render(
-        &realization,
-        request.resource_spec.revision,
-        &request.resources,
-    )?;
-    let paths = paths_for(
-        Path::new(ETC_ROOT),
-        &realization.source.unit_name,
-        request.resource_spec.revision,
-    );
+    let rendered = render(&realization)?;
+    let paths = paths_for(Path::new(ETC_ROOT), &realization.systemd_unit.unit_name);
 
     let manager = PinnedSystemdManager::connect().await?;
     let inspection = inspect(
@@ -178,16 +170,8 @@ async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     {
         bail!("systemd manager changed after admission");
     }
-    let rendered = render(
-        &realization,
-        bound.resource_spec.revision,
-        &invocation.request.resources,
-    )?;
-    let paths = paths_for(
-        Path::new(ETC_ROOT),
-        &realization.source.unit_name,
-        bound.resource_spec.revision,
-    );
+    let rendered = render(&realization)?;
+    let paths = paths_for(Path::new(ETC_ROOT), &realization.systemd_unit.unit_name);
 
     let primary_method = invocation.request.method.method.as_str();
     let selected_method = invocation.method.method.as_str();
@@ -195,13 +179,15 @@ async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
         InvocationPurpose::Effect if selected_method == "apply" => {
             materialize(
                 Path::new(ETC_ROOT),
-                &realization.source.unit_name,
+                &realization.systemd_unit.unit_name,
                 bound.resource_spec.revision,
                 &bound.resource_spec.resource,
                 &rendered,
             )?;
             manager.daemon_reload().await?;
-            let identity = manager.load_unit(&realization.source.unit_name).await?;
+            let identity = manager
+                .load_unit(&realization.systemd_unit.unit_name)
+                .await?;
             if let Some(expected_identity) = &provider.unit_identity
                 && expected_identity != &identity
             {
@@ -209,10 +195,10 @@ async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
             }
             if realization.activation == Activation::Enabled {
                 let outcome = manager
-                    .start_unit_exact_revision(
-                        &realization.source.unit_name,
+                    .start_unit_exact_receipt(
+                        &realization.systemd_unit.unit_name,
                         &identity,
-                        &revision_label(bound.resource_spec.revision),
+                        &format!("file:{}", realization.revision_receipt),
                     )
                     .await?;
                 if !outcome.result.is_done() {
@@ -309,20 +295,26 @@ async fn inspect(
         paths,
         rendered,
         resource,
-        &realization.source.unit_name,
+        &realization.systemd_unit.unit_name,
         revision,
     )?;
-    let unit_identity = match manager.unit_identity(&realization.source.unit_name).await {
+    let unit_identity = match manager
+        .unit_identity(&realization.systemd_unit.unit_name)
+        .await
+    {
         Ok(identity) => Some(identity),
         Err(error) if error.is_no_such_unit() => None,
         Err(error) => return Err(error.into()),
     };
     let (state, revision_matches) = if let Some(identity) = &unit_identity {
         let state = manager
-            .active_state_exact(&realization.source.unit_name, identity)
+            .active_state_exact(&realization.systemd_unit.unit_name, identity)
             .await?;
         let revision_matches = match manager
-            .unit_identity_at_revision(&realization.source.unit_name, &revision_label(revision))
+            .unit_identity_at_receipt(
+                &realization.systemd_unit.unit_name,
+                &format!("file:{}", realization.revision_receipt),
+            )
             .await
         {
             Ok(revision_identity) if revision_identity == *identity => true,
@@ -347,13 +339,13 @@ async fn inspect(
     if !activation_matches {
         discrepancies.push("state".to_string());
     }
-    let observed = complete.then(|| normalized_request(realization));
+    let observed = complete.then(|| normalized_request(expected, realization));
     Ok(Inspection {
         observation: PackagedUnitObservation {
             schema: OBSERVATION_SCHEMA.to_string(),
             expected: expected.clone(),
             observed,
-            unit_name: realization.source.unit_name.clone(),
+            unit_name: realization.systemd_unit.unit_name.clone(),
             state,
             discrepancies,
         },
@@ -361,10 +353,6 @@ async fn inspect(
         revision_matches,
         complete,
     })
-}
-
-fn revision_label(revision: aos_ability_model::RevisionId) -> String {
-    format!("sha256:{}", revision.0.hex())
 }
 
 fn provider_context(
@@ -437,27 +425,21 @@ fn require_matching_request(
             .source
             .unit_name
             .as_ref()
-            .is_some_and(|name| name != &realization.source.unit_name)
+            .is_some_and(|name| name != &realization.systemd_unit.unit_name)
         || expected.activation != realization.activation
-        || expected.dependencies != realization.dependencies
-        || expected.drop_in != realization.drop_in
     {
         bail!("systemd realization does not exactly normalize its checked request");
     }
     Ok(())
 }
 
-fn normalized_request(realization: &PackagedUnitRealization) -> PackagedUnitRequest {
-    PackagedUnitRequest {
-        source: model::UnitSource {
-            artifact: realization.source.artifact.clone(),
-            unit_file: realization.source.unit_file.clone(),
-            unit_name: Some(realization.source.unit_name.clone()),
-        },
-        activation: realization.activation.clone(),
-        dependencies: realization.dependencies.clone(),
-        drop_in: realization.drop_in.clone(),
-    }
+fn normalized_request(
+    expected: &PackagedUnitRequest,
+    realization: &PackagedUnitRealization,
+) -> PackagedUnitRequest {
+    let mut normalized = expected.clone();
+    normalized.source.unit_name = Some(realization.systemd_unit.unit_name.clone());
+    normalized
 }
 
 fn unit_state(state: UnitActiveState) -> UnitState {
